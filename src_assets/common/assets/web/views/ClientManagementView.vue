@@ -22,7 +22,13 @@
               id="pin-input"
               v-model:value="pin"
               :placeholder="$t('navbar.pin')"
-              :input-props="{ inputmode: 'numeric', pattern: '^[0-9]{4}$', title: 'Enter 4 digits', maxlength: 4, required: true }"
+              :input-props="{
+                inputmode: 'numeric',
+                pattern: '^[0-9]{4}$',
+                title: 'Enter 4 digits',
+                maxlength: 4,
+                required: true,
+              }"
             />
           </n-form-item>
           <n-form-item class="flex flex-col" :label="$t('pin.device_name')" label-placement="top">
@@ -34,7 +40,12 @@
             />
           </n-form-item>
           <n-form-item class="flex flex-col md:items-end">
-            <n-button :disabled="pairing" class="w-full md:w-auto" type="primary" html-type="submit">
+            <n-button
+              :disabled="pairing"
+              class="w-full md:w-auto"
+              type="primary"
+              html-type="submit"
+            >
               <span v-if="!pairing">{{ $t('pin.send') }}</span>
               <span v-else>{{ $t('clients.pairing') }}</span>
             </n-button>

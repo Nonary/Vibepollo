@@ -2,11 +2,14 @@
   <div class="space-y-6">
     <div class="apps-header flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
       <h2 class="text-sm font-semibold uppercase tracking-wider">Applications</h2>
-      <div class="actions flex items-center gap-2 sm:flex-nowrap sm:justify-end w-full sm:w-auto flex-wrap">
+      <div
+        class="actions flex items-center gap-2 sm:flex-nowrap sm:justify-end w-full sm:w-auto flex-wrap"
+      >
         <!-- Windows + Playnite actions -->
         <template v-if="isWindows">
           <n-button v-if="playniteEnabled" size="small" secondary @click="purgeAutoSync">
-            <i class="fas fa-trash" /> {{ $t('playnite.delete_all_autosync') || 'Delete All Auto-Sync' }}
+            <i class="fas fa-trash" />
+            {{ $t('playnite.delete_all_autosync') || 'Delete All Auto-Sync' }}
           </n-button>
           <n-button
             v-if="playniteEnabled"
@@ -28,9 +31,9 @@
     </div>
 
     <!-- Redesigned list view -->
-  <div
-    class="rounded-2xl overflow-hidden border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur"
-  >
+    <div
+      class="rounded-2xl overflow-hidden border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur"
+    >
       <div v-if="apps && apps.length" class="divide-y divide-black/5 dark:divide-white/10">
         <button
           v-for="(app, i) in apps"
@@ -42,20 +45,36 @@
           @keydown.space.prevent="openEdit(app, i)"
         >
           <div
-        class="flex items-center justify-between px-4 py-3 hover:bg-dark/10 dark:hover:bg-light/10"
-      >
+            class="flex items-center justify-between px-4 py-3 hover:bg-dark/10 dark:hover:bg-light/10"
+          >
             <div class="min-w-0 flex-1">
               <div class="text-sm font-semibold truncate flex items-center gap-2">
                 <span class="truncate">{{ app.name || '(untitled)' }}</span>
                 <!-- Playnite badges -->
                 <template v-if="app['playnite-id']">
-                  <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold">
+                  <span
+                    class="inline-flex items-center px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold"
+                  >
                     Playnite
                   </span>
-                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70">manual</span>
-                  <span v-else-if="(app['playnite-source']||'') === 'recent'" class="text-[10px] opacity-70">recent</span>
-                  <span v-else-if="(app['playnite-source']||'') === 'category'" class="text-[10px] opacity-70">category</span>
-                  <span v-else-if="(app['playnite-source']||'') === 'recent+category'" class="text-[10px] opacity-70">recent+category</span>
+                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
+                    >manual</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'recent'"
+                    class="text-[10px] opacity-70"
+                    >recent</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'category'"
+                    class="text-[10px] opacity-70"
+                    >category</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'recent+category'"
+                    class="text-[10px] opacity-70"
+                    >recent+category</span
+                  >
                   <span v-else class="text-[10px] opacity-70">managed</span>
                 </template>
               </div>
@@ -78,7 +97,13 @@
       v-model="showModal"
       :app="currentApp"
       :index="currentIndex"
-      :key="modalKey + '|' + (currentIndex ?? -1) + '|' + ((currentApp && (currentApp.uuid || currentApp.name)) || 'new')"
+      :key="
+        modalKey +
+        '|' +
+        (currentIndex ?? -1) +
+        '|' +
+        ((currentApp && (currentApp.uuid || currentApp.name)) || 'new')
+      "
       @saved="reload"
       @deleted="reload"
     />
@@ -97,7 +122,9 @@ const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
 const syncBusy = ref(false);
-const isWindows = computed(() => (configStore.metadata?.platform || '').toLowerCase() === 'windows');
+const isWindows = computed(
+  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
+);
 const playniteInstalled = ref(false);
 const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);

@@ -52,14 +52,20 @@ const checkboxValues = computed(() => {
   if (fromModel) {
     const truthyIndex = props.inverseValues ? 1 : 0;
     const falsyIndex = props.inverseValues ? 0 : 1;
-    return { truthy: fromModel.possibleValues[truthyIndex], falsy: fromModel.possibleValues[falsyIndex] };
+    return {
+      truthy: fromModel.possibleValues[truthyIndex],
+      falsy: fromModel.possibleValues[falsyIndex],
+    };
   }
   // Fall back to provided default mapping
   const fromDefault = mapToBoolRepresentation(props.default);
   if (fromDefault) {
     const truthyIndex = props.inverseValues ? 1 : 0;
     const falsyIndex = props.inverseValues ? 0 : 1;
-    return { truthy: fromDefault.possibleValues[truthyIndex], falsy: fromDefault.possibleValues[falsyIndex] };
+    return {
+      truthy: fromDefault.possibleValues[truthyIndex],
+      falsy: fromDefault.possibleValues[falsyIndex],
+    };
   }
   // Final fallback is boolean mapping
   return { truthy: !props.inverseValues, falsy: !!props.inverseValues };
@@ -72,11 +78,15 @@ const isChecked = computed<boolean>({
     const cur = model.value;
     // Treat undefined/null as default if provided
     const mapped = mapToBoolRepresentation(cur);
-    if (mapped) return mapped.value === mapped.possibleValues[0] ? !props.inverseValues : !!props.inverseValues;
+    if (mapped)
+      return mapped.value === mapped.possibleValues[0]
+        ? !props.inverseValues
+        : !!props.inverseValues;
 
     // If model is not recognizable, try default to decide visual state
     const def = mapToBoolRepresentation(props.default);
-    if (def) return def.value === def.possibleValues[0] ? !props.inverseValues : !!props.inverseValues;
+    if (def)
+      return def.value === def.possibleValues[0] ? !props.inverseValues : !!props.inverseValues;
 
     // Fallback: only true if equals our truthy literal
     return cur === truthy;

@@ -3,4 +3,3 @@
   "include": ["**/*", "../../../../tests/frontend/**/*"],
   "exclude": ["node_modules", "dist", "build"]
 }
-

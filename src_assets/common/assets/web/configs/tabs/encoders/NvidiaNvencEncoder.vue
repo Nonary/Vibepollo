@@ -33,8 +33,17 @@ const twopassOptions = [
       <n-select
         id="nvenc_preset"
         v-model:value="config.nvenc_preset"
-        :options="presetOptions.map(o => ({ label: typeof o.label === 'function' ? o.label() : o.label, value: o.value }))"
-        :data-search-options="presetOptions.map(o => `${typeof o.label === 'function' ? o.label() : o.label}::${o.value}`).join('|')"
+        :options="
+          presetOptions.map((o) => ({
+            label: typeof o.label === 'function' ? o.label() : o.label,
+            value: o.value,
+          }))
+        "
+        :data-search-options="
+          presetOptions
+            .map((o) => `${typeof o.label === 'function' ? o.label() : o.label}::${o.value}`)
+            .join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.nvenc_preset_desc') }}
@@ -47,8 +56,8 @@ const twopassOptions = [
       <n-select
         id="nvenc_twopass"
         v-model:value="config.nvenc_twopass"
-        :options="twopassOptions.map(o => ({ label: $t(o.labelKey), value: o.value }))"
-        :data-search-options="twopassOptions.map(o => `${$t(o.labelKey)}::${o.value}`).join('|')"
+        :options="twopassOptions.map((o) => ({ label: $t(o.labelKey), value: o.value }))"
+        :data-search-options="twopassOptions.map((o) => `${$t(o.labelKey)}::${o.value}`).join('|')"
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.nvenc_twopass_desc') }}

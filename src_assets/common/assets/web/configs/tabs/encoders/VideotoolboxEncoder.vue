@@ -21,11 +21,15 @@ const config = store.config;
           { label: $t('config.coder_cabac'), value: 'cabac' },
           { label: $t('config.coder_cavlc'), value: 'cavlc' },
         ]"
-        :data-search-options="[
-          { label: $t('config.ffmpeg_auto'), value: 'auto' },
-          { label: $t('config.coder_cabac'), value: 'cabac' },
-          { label: $t('config.coder_cavlc'), value: 'cavlc' },
-        ].map(o => `${o.label}::${o.value}`).join('|')"
+        :data-search-options="
+          [
+            { label: $t('config.ffmpeg_auto'), value: 'auto' },
+            { label: $t('config.coder_cabac'), value: 'cabac' },
+            { label: $t('config.coder_cavlc'), value: 'cavlc' },
+          ]
+            .map((o) => `${o.label}::${o.value}`)
+            .join('|')
+        "
       />
     </div>
     <div class="mb-4">
@@ -39,12 +43,16 @@ const config = store.config;
           { label: $t('config.vt_software_allowed'), value: 'allowed' },
           { label: $t('config.vt_software_forced'), value: 'forced' },
         ]"
-        :data-search-options="[
-          { label: $t('_common.auto'), value: 'auto' },
-          { label: $t('_common.disabled'), value: 'disabled' },
-          { label: $t('config.vt_software_allowed'), value: 'allowed' },
-          { label: $t('config.vt_software_forced'), value: 'forced' },
-        ].map(o => `${o.label}::${o.value}`).join('|')"
+        :data-search-options="
+          [
+            { label: $t('_common.auto'), value: 'auto' },
+            { label: $t('_common.disabled'), value: 'disabled' },
+            { label: $t('config.vt_software_allowed'), value: 'allowed' },
+            { label: $t('config.vt_software_forced'), value: 'forced' },
+          ]
+            .map((o) => `${o.label}::${o.value}`)
+            .join('|')
+        "
       />
     </div>
     <Checkbox

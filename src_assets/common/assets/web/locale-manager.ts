@@ -29,4 +29,3 @@ export async function ensureLocaleLoaded(locale: string): Promise<void> {
     console.error('ensureLocaleLoaded failed', e);
   }
 }
-

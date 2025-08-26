@@ -27,7 +27,16 @@ export default defineConfig(({ mode }) => {
 
   // Dynamically include only HTML entry points that actually exist to avoid
   // Rollup errors when legacy pages are removed. Primary SPA is index.html.
-  const candidatePages = ['index', 'apps', 'playnite', 'clients', 'config', 'password', 'troubleshooting', 'pin'];
+  const candidatePages = [
+    'index',
+    'apps',
+    'playnite',
+    'clients',
+    'config',
+    'password',
+    'troubleshooting',
+    'pin',
+  ];
   const input: Record<string, string> = {};
   for (const name of candidatePages) {
     const p = resolve(assetsSrcPath, `${name}.html`);

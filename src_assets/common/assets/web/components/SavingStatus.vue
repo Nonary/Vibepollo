@@ -25,7 +25,9 @@ const route = useRoute();
 const store = useConfigStore();
 const { savingState, manualDirty } = storeToRefs(store);
 const hasPending = computed(() => store.hasPendingPatch());
-const restartRequired = computed(() => !!(store.lastSaveResult && store.lastSaveResult.restartRequired));
+const restartRequired = computed(
+  () => !!(store.lastSaveResult && store.lastSaveResult.restartRequired),
+);
 const intervalMs = computed(() => store.autosaveIntervalMs || 3000);
 const nowMs = ref(Date.now());
 const nextAt = computed(() => store.nextAutosaveAt());
@@ -44,13 +46,13 @@ onUnmounted(() => {
 });
 
 const visible = computed(() => route.path === '/settings');
-const canSave = computed(() =>
-  visible.value && (
-    savingState.value === 'error' ||
-    manualDirty.value === true ||
-    hasPending.value === true ||
-    (savingState.value === 'saved' && restartRequired.value === true)
-  ),
+const canSave = computed(
+  () =>
+    visible.value &&
+    (savingState.value === 'error' ||
+      manualDirty.value === true ||
+      hasPending.value === true ||
+      (savingState.value === 'saved' && restartRequired.value === true)),
 );
 
 const label = computed(() => {
@@ -84,7 +86,9 @@ const iconClass = computed(() => {
     case 'dirty':
       return base + ' fa-circle-exclamation text-warning';
     case 'saved':
-      return restartRequired.value ? base + ' fa-power-off text-primary' : base + ' fa-check text-success';
+      return restartRequired.value
+        ? base + ' fa-power-off text-primary'
+        : base + ' fa-check text-success';
     case 'error':
       return base + ' fa-triangle-exclamation text-danger';
     default:
@@ -92,20 +96,23 @@ const iconClass = computed(() => {
   }
 });
 
-const tooltip = computed(
-  () =>
-    hasPending.value
-      ? `Auto-save flushes every ${Math.round(intervalMs.value / 1000)}s. Tap to save now.`
-      : restartRequired.value
-        ? 'Saved; Restart required to apply runtime changes. Tap to apply now.'
-        : 'This page auto-saves most changes as you edit. Some fields may require clicking Save.',
+const tooltip = computed(() =>
+  hasPending.value
+    ? `Auto-save flushes every ${Math.round(intervalMs.value / 1000)}s. Tap to save now.`
+    : restartRequired.value
+      ? 'Saved; Restart required to apply runtime changes. Tap to apply now.'
+      : 'This page auto-saves most changes as you edit. Some fields may require clicking Save.',
 );
 
 async function onClick() {
   if (!canSave.value) return;
   try {
     if (restartRequired.value && savingState.value === 'saved') {
-      await http.post('/api/restart', {}, { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true });
+      await http.post(
+        '/api/restart',
+        {},
+        { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
+      );
       return;
     }
     if (hasPending.value) {

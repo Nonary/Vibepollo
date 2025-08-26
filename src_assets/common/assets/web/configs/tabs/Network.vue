@@ -34,7 +34,13 @@ const encryptionModeOptionsWan = [
 <template>
   <div id="network" class="config-page">
     <!-- UPnP -->
-    <Checkbox id="upnp" v-model="config.upnp" class="mb-3" locale-prefix="config" default-value="false" />
+    <Checkbox
+      id="upnp"
+      v-model="config.upnp"
+      class="mb-3"
+      locale-prefix="config"
+      default-value="false"
+    />
 
     <!-- Address family -->
     <div class="mb-6">
@@ -42,8 +48,17 @@ const encryptionModeOptionsWan = [
       <n-select
         id="address_family"
         v-model:value="config.address_family"
-        :options="addressFamilyOptions.map(o => ({ label: $t('config.address_family_' + o.value), value: o.value }))"
-        :data-search-options="addressFamilyOptions.map(o => `${$t('config.address_family_' + o.value)}::${o.value}`).join('|')"
+        :options="
+          addressFamilyOptions.map((o) => ({
+            label: $t('config.address_family_' + o.value),
+            value: o.value,
+          }))
+        "
+        :data-search-options="
+          addressFamilyOptions
+            .map((o) => `${$t('config.address_family_' + o.value)}::${o.value}`)
+            .join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.address_family_desc') }}
@@ -64,14 +79,20 @@ const encryptionModeOptionsWan = [
         {{ $t('config.port_desc') }}
       </div>
       <!-- Add warning if any port is less than 1024 -->
-      <div v-if="+effectivePort - 5 < 1024" class="mt-2 alert alert-danger p-2 flex items-start gap-2 rounded-md">
+      <div
+        v-if="+effectivePort - 5 < 1024"
+        class="mt-2 alert alert-danger p-2 flex items-start gap-2 rounded-md"
+      >
         <i class="fa-solid fa-xl fa-triangle-exclamation" />
         <div class="text-sm">
           {{ $t('config.port_alert_1') }}
         </div>
       </div>
       <!-- Add warning if any port is above 65535 -->
-      <div v-if="+effectivePort + 21 > 65535" class="mt-2 alert alert-danger p-2 flex items-start gap-2 rounded-md">
+      <div
+        v-if="+effectivePort + 21 > 65535"
+        class="mt-2 alert alert-danger p-2 flex items-start gap-2 rounded-md"
+      >
         <i class="fa-solid fa-xl fa-triangle-exclamation" />
         <div class="text-sm">
           {{ $t('config.port_alert_2') }}
@@ -104,7 +125,10 @@ const encryptionModeOptionsWan = [
           {{ +effectivePort }}
         </div>
         <div class="col-span-4">
-          <div v-if="+effectivePort !== defaultMoonlightPort" class="mt-1 alert alert-info p-2 rounded-md">
+          <div
+            v-if="+effectivePort !== defaultMoonlightPort"
+            class="mt-1 alert alert-info p-2 rounded-md"
+          >
             <i class="fa-solid fa-xl fa-circle-info" /> {{ $t('config.port_http_port_note') }}
           </div>
         </div>
@@ -134,7 +158,10 @@ const encryptionModeOptionsWan = [
         <div class="col-span-4" />
       </div>
       <!-- add warning about exposing web ui to the internet -->
-      <div v-if="config.origin_web_ui_allowed === 'wan'" class="mt-3 alert alert-warning p-2 flex items-start gap-2 rounded-md">
+      <div
+        v-if="config.origin_web_ui_allowed === 'wan'"
+        class="mt-3 alert alert-warning p-2 flex items-start gap-2 rounded-md"
+      >
         <i class="fa-solid fa-xl fa-triangle-exclamation" /> {{ $t('config.port_warning') }}
       </div>
     </div>
@@ -147,8 +174,17 @@ const encryptionModeOptionsWan = [
       <n-select
         id="origin_web_ui_allowed"
         v-model:value="config.origin_web_ui_allowed"
-        :options="originUiOptions.map(o => ({ label: $t('config.origin_web_ui_allowed_' + o.value), value: o.value }))"
-        :data-search-options="originUiOptions.map(o => `${$t('config.origin_web_ui_allowed_' + o.value)}::${o.value}`).join('|')"
+        :options="
+          originUiOptions.map((o) => ({
+            label: $t('config.origin_web_ui_allowed_' + o.value),
+            value: o.value,
+          }))
+        "
+        :data-search-options="
+          originUiOptions
+            .map((o) => `${$t('config.origin_web_ui_allowed_' + o.value)}::${o.value}`)
+            .join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.origin_web_ui_allowed_desc') }}
@@ -177,8 +213,10 @@ const encryptionModeOptionsWan = [
       <n-select
         id="lan_encryption_mode"
         v-model:value="config.lan_encryption_mode"
-        :options="encryptionModeOptionsLan.map(o => ({ label: $t(o.label), value: o.value }))"
-        :data-search-options="encryptionModeOptionsLan.map(o => `${$t(o.label)}::${o.value}`).join('|')"
+        :options="encryptionModeOptionsLan.map((o) => ({ label: $t(o.label), value: o.value }))"
+        :data-search-options="
+          encryptionModeOptionsLan.map((o) => `${$t(o.label)}::${o.value}`).join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.lan_encryption_mode_desc') }}
@@ -193,8 +231,10 @@ const encryptionModeOptionsWan = [
       <n-select
         id="wan_encryption_mode"
         v-model:value="config.wan_encryption_mode"
-        :options="encryptionModeOptionsWan.map(o => ({ label: $t(o.label), value: o.value }))"
-        :data-search-options="encryptionModeOptionsWan.map(o => `${$t(o.label)}::${o.value}`).join('|')"
+        :options="encryptionModeOptionsWan.map((o) => ({ label: $t(o.label), value: o.value }))"
+        :data-search-options="
+          encryptionModeOptionsWan.map((o) => `${$t(o.label)}::${o.value}`).join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.wan_encryption_mode_desc') }}

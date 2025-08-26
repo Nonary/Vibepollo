@@ -310,6 +310,8 @@
     "native_pen_touch_desc": "When enabled, Sunshine will pass through native pen/touch events from Moonlight clients. This can be useful to disable for older applications without native pen/touch support.",
     "notify_pre_releases": "PreRelease Notifications",
     "notify_pre_releases_desc": "Whether to be notified of new pre-release versions of Sunshine",
+    "update_check_interval": "Update Check Interval (seconds)",
+    "update_check_interval_desc": "How often Sunshine should check for updates automatically (based on build date). Set 0 to disable periodic checks.",
     "nvenc_h264_cavlc": "Prefer CAVLC over CABAC in H.264",
     "nvenc_h264_cavlc_desc": "Simpler form of entropy coding. CAVLC needs around 10% more bitrate for same quality. Only relevant for really old decoding devices.",
     "nvenc_latency_over_power": "Prefer lower encoding latency over power savings",
@@ -491,14 +493,14 @@
     "repair_button": "Repair Plugin",
     "reset_defaults": "Reset to defaults",
     "reset_done": "Section reset to defaults.",
-    
+
     "status_uninstalled": "Uninstalled",
     "status_not_running": "Playnite not running",
     "status_not_running_unknown": "Playnite not running — plugin status unknown",
     "status_unknown": "Playnite not detected",
-    
+
     "selects_disabled_hint": "Cannot modify without Playnite connectivity. Start Playnite to enable this.",
-    
+
     "install_button": "Install Sunshine Plugin",
     "reinstall_button": "Reinstall Sunshine Plugin",
     "upgrade_button": "Upgrade Plugin",
@@ -539,7 +541,7 @@
     "focus_timeout_secs_help": "How long auto-focus runs while re-applying focus (0 to disable).",
     "focus_exit_on_first": "Stop auto-focus after first successful focus",
     "focus_exit_on_first_help": "Stop auto-focus after the first success; otherwise, re-apply until attempts or timeout elapse.",
-    
+
     "diagnostic_not_installed": "Playnite plugin is not installed in the Extensions directory.",
     "diagnostic_not_running": "Playnite is not running. Launch it to resume syncing.",
     "section_auto_sync": "Auto-sync",

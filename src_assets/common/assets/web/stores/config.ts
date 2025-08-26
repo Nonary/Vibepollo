@@ -25,6 +25,7 @@ const defaultGroups = [
       min_log_level: 2,
       global_prep_cmd: [],
       notify_pre_releases: 'disabled',
+      update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
     },
   },
@@ -226,7 +227,11 @@ export const useConfigStore = defineStore('config', () => {
   let flushInFlight = false;
   const autosaveIntervalMs = 3000;
   const nextFlushAt = ref<number | null>(null); // when the current timer will fire
-  const lastSaveResult = ref<{ appliedNow?: boolean; deferred?: boolean; restartRequired?: boolean } | null>(null);
+  const lastSaveResult = ref<{
+    appliedNow?: boolean;
+    deferred?: boolean;
+    restartRequired?: boolean;
+  } | null>(null);
 
   function buildWrapper() {
     const target: any = {};
@@ -343,7 +348,9 @@ export const useConfigStore = defineStore('config', () => {
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;
       if (v === 1 || v === 0) return !!v;
-      const s = String(v ?? '').toLowerCase().trim();
+      const s = String(v ?? '')
+        .toLowerCase()
+        .trim();
       if (!s) return null;
       if (['true', 'yes', 'enable', 'enabled', 'on', '1'].includes(s)) return true;
       if (['false', 'no', 'disable', 'disabled', 'off', '0'].includes(s)) return false;
@@ -360,7 +367,10 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     // Normalize Playnite category/exclusion lists to arrays of {id,name}
-    const normalizeIdNameArray = (v: any, treatStringsAsIds: boolean): Array<{ id: string; name: string }> => {
+    const normalizeIdNameArray = (
+      v: any,
+      treatStringsAsIds: boolean,
+    ): Array<{ id: string; name: string }> => {
       const out: Array<{ id: string; name: string }> = [];
       if (Array.isArray(v)) {
         for (const el of v) {
@@ -369,7 +379,8 @@ export const useConfigStore = defineStore('config', () => {
             const name = String((el as any).name || '');
             if (id || name) out.push({ id, name });
           } else if (typeof el === 'string') {
-            const s = el.trim(); if (!s) continue;
+            const s = el.trim();
+            if (!s) continue;
             out.push(treatStringsAsIds ? { id: s, name: '' } : { id: '', name: s });
           }
         }
@@ -382,7 +393,10 @@ export const useConfigStore = defineStore('config', () => {
           return normalizeIdNameArray(parsed, treatStringsAsIds);
         } catch {}
         // CSV fallback
-        for (const s of v.split(',').map((s) => s.trim()).filter(Boolean)) {
+        for (const s of v
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)) {
           out.push(treatStringsAsIds ? { id: s, name: '' } : { id: '', name: s });
         }
       }
@@ -390,10 +404,16 @@ export const useConfigStore = defineStore('config', () => {
     };
     if (_data.value) {
       if (Object.prototype.hasOwnProperty.call(_data.value, 'playnite_sync_categories')) {
-        (_data.value as any).playnite_sync_categories = normalizeIdNameArray((_data.value as any).playnite_sync_categories, false);
+        (_data.value as any).playnite_sync_categories = normalizeIdNameArray(
+          (_data.value as any).playnite_sync_categories,
+          false,
+        );
       }
       if (Object.prototype.hasOwnProperty.call(_data.value, 'playnite_exclude_games')) {
-        (_data.value as any).playnite_exclude_games = normalizeIdNameArray((_data.value as any).playnite_exclude_games, true);
+        (_data.value as any).playnite_exclude_games = normalizeIdNameArray(
+          (_data.value as any).playnite_exclude_games,
+          true,
+        );
       }
     }
 
@@ -545,7 +565,11 @@ export const useConfigStore = defineStore('config', () => {
         } catch {}
         savingState.value = 'saved';
         setTimeout(() => {
-          if (savingState.value === 'saved' && !manualDirty.value && Object.keys(patchQueue.value).length === 0) {
+          if (
+            savingState.value === 'saved' &&
+            !manualDirty.value &&
+            Object.keys(patchQueue.value).length === 0
+          ) {
             savingState.value = 'idle';
           }
         }, 3000);

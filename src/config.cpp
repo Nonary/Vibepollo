@@ -582,7 +582,8 @@ namespace config {
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
     {},  // prep commands
-    std::chrono::hours {2}  // session_token_ttl default 2h
+    std::chrono::hours {2},  // session_token_ttl default 2h
+    86400  // update_check_interval_seconds default 24h
   };
 
   bool endline(char ch) {
@@ -1166,6 +1167,8 @@ namespace config {
 
     string_f(vars, "external_ip", nvhttp.external_ip);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
+
+    int_f(vars, "update_check_interval", config::sunshine.update_check_interval_seconds);
 
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);

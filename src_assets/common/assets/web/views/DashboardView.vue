@@ -14,17 +14,11 @@
           </p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <RouterLink
-            to="/settings"
-            class="btn btn-primary"
-          >
+          <RouterLink to="/settings" class="btn btn-primary">
             <i class="fas fa-sliders" />
             <span>Settings</span>
           </RouterLink>
-          <RouterLink
-            to="/applications"
-            class="btn btn-secondary"
-          >
+          <RouterLink to="/applications" class="btn btn-secondary">
             <i class="fas fa-th" />
             <span>Applications</span>
           </RouterLink>
@@ -41,7 +35,7 @@
         <n-card v-if="installedVersion" :segmented="{ content: true, footer: true }">
           <template #header>
             <h2 class="text-2xl font-semibold tracking-tight mx-auto text-center">
-              {{ 'Version ' + installedVersion.version }}
+              {{ 'Version ' + displayVersion }}
             </h2>
           </template>
           <div class="space-y-4 text-sm">
@@ -59,10 +53,7 @@
                   </li>
                 </ul>
                 <div>
-                  <a
-                    class="btn btn-danger"
-                    href="./troubleshooting#logs"
-                  >
+                  <a class="btn btn-danger" href="./troubleshooting#logs">
                     <i class="fas fa-file-lines" /> {{ $t('index.view_logs') || 'View Logs' }}
                   </a>
                 </div>
@@ -238,9 +229,9 @@ async function runVersionChecks() {
       console.warn('[Dashboard] latest release fetch failed', e);
     }
     try {
-      const releases = await fetch(
-        'https://api.github.com/repos/Nonary/vibeshine/releases',
-      ).then((r) => r.json());
+      const releases = await fetch('https://api.github.com/repos/Nonary/vibeshine/releases').then(
+        (r) => r.json(),
+      );
       const pre = Array.isArray(releases) ? releases.find((r) => r.prerelease) : null;
       if (pre) preReleaseRelease.value = pre;
     } catch (e) {
@@ -282,6 +273,15 @@ const installedVersionNotStable = computed(() => {
     /* ignore */
   }
   return false;
+});
+// If build is untagged (e.g., 0.0.0), display the current pre-release tag instead (when available)
+const displayVersion = computed(() => {
+  const v = installedVersion.value?.version || '0.0.0';
+  if (!v || v === '0.0.0') {
+    const pre = preReleaseRelease.value?.tag_name || '';
+    if (pre) return pre.replace(/^v/i, '');
+  }
+  return v;
 });
 const stableBuildAvailable = computed(() => {
   if (!githubRelease.value) return false;

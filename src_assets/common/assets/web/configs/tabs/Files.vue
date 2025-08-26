@@ -54,12 +54,7 @@ const config = store.config;
     <!-- Private Key -->
     <div class="mb-6">
       <label for="pkey" class="form-label">{{ $t('config.pkey') }}</label>
-      <n-input
-        id="pkey"
-        v-model:value="config.pkey"
-        type="text"
-        placeholder="/dir/pkey.pem"
-      />
+      <n-input id="pkey" v-model:value="config.pkey" type="text" placeholder="/dir/pkey.pem" />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.pkey_desc') }}
       </div>
@@ -68,12 +63,7 @@ const config = store.config;
     <!-- Certificate -->
     <div class="mb-6">
       <label for="cert" class="form-label">{{ $t('config.cert') }}</label>
-      <n-input
-        id="cert"
-        v-model:value="config.cert"
-        type="text"
-        placeholder="/dir/cert.pem"
-      />
+      <n-input id="cert" v-model:value="config.cert" type="text" placeholder="/dir/cert.pem" />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.cert_desc') }}
       </div>

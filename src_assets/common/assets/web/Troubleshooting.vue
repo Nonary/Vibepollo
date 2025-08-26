@@ -8,7 +8,9 @@
     <n-grid cols="24" x-gap="16" y-gap="16" responsive="screen">
       <!-- Force Close App -->
       <n-gi :span="24" :lg="12">
-        <section class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface">
+        <section
+          class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
+        >
           <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 id="close_apps" class="text-xl font-medium text-dark dark:text-light">
@@ -24,12 +26,18 @@
           </header>
 
           <transition name="fade">
-            <p v-if="closeAppStatus === true" class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm">
+            <p
+              v-if="closeAppStatus === true"
+              class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm"
+            >
               {{ $t('troubleshooting.force_close_success') }}
             </p>
           </transition>
           <transition name="fade">
-            <p v-if="closeAppStatus === false" class="mt-4 alert alert-danger rounded-lg px-4 py-2 text-sm">
+            <p
+              v-if="closeAppStatus === false"
+              class="mt-4 alert alert-danger rounded-lg px-4 py-2 text-sm"
+            >
               {{ $t('troubleshooting.force_close_error') }}
             </p>
           </transition>
@@ -38,7 +46,9 @@
 
       <!-- Restart Sunshine -->
       <n-gi :span="24" :lg="12">
-        <section class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface">
+        <section
+          class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
+        >
           <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 id="restart" class="text-xl font-medium text-dark dark:text-light">
@@ -54,7 +64,10 @@
           </header>
 
           <transition name="fade">
-            <p v-if="restartPressed === true" class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm">
+            <p
+              v-if="restartPressed === true"
+              class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm"
+            >
               {{ $t('troubleshooting.restart_sunshine_success') }}
             </p>
           </transition>
@@ -63,7 +76,10 @@
 
       <!-- Reset persistent display device settings (Windows only) -->
       <n-gi v-if="platform === 'windows'" :span="24">
-        <section v-if="platform === 'windows'" class="lg:col-span-2 rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface">
+        <section
+          v-if="platform === 'windows'"
+          class="lg:col-span-2 rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
+        >
           <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 id="dd_reset" class="text-xl font-medium text-dark dark:text-light">
@@ -79,12 +95,18 @@
           </header>
 
           <transition name="fade">
-            <p v-if="ddResetStatus === true" class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm">
+            <p
+              v-if="ddResetStatus === true"
+              class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm"
+            >
               {{ $t('troubleshooting.dd_reset_success') }}
             </p>
           </transition>
           <transition name="fade">
-            <p v-if="ddResetStatus === false" class="mt-4 alert alert-danger rounded-lg px-4 py-2 text-sm">
+            <p
+              v-if="ddResetStatus === false"
+              class="mt-4 alert alert-danger rounded-lg px-4 py-2 text-sm"
+            >
               {{ $t('troubleshooting.dd_reset_error') }}
             </p>
           </transition>
@@ -93,14 +115,19 @@
 
       <!-- Export Playnite Logs (Windows only) -->
       <n-gi v-if="platform === 'windows'" :span="24" :lg="12">
-        <section class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface">
+        <section
+          class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
+        >
           <header class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 id="collect_playnite_logs" class="text-xl font-medium text-dark dark:text-light">
                 {{ $t('troubleshooting.collect_playnite_logs') || 'Export Playnite Logs' }}
               </h2>
               <p class="mt-2 text-sm opacity-70">
-                {{ $t('troubleshooting.collect_playnite_logs_desc') || 'Export Playnite and plugin logs for troubleshooting.' }}
+                {{
+                  $t('troubleshooting.collect_playnite_logs_desc') ||
+                  'Export Playnite and plugin logs for troubleshooting.'
+                }}
               </p>
             </div>
             <n-button secondary @click="downloadPlayniteLogs">
@@ -112,7 +139,9 @@
 
       <!-- Unpair Clients -->
       <n-gi :span="24">
-        <section class="rounded-2xl border border-dark/10 bg-white p-0 shadow-sm dark:border-light/10 dark:bg-surface overflow-hidden">
+        <section
+          class="rounded-2xl border border-dark/10 bg-white p-0 shadow-sm dark:border-light/10 dark:bg-surface overflow-hidden"
+        >
           <div class="p-4 flex items-center gap-3 border-b border-dark/10 dark:border-light/10">
             <h2 id="unpair" class="text-lg font-medium text-dark dark:text-light mr-auto">
               {{ $t('troubleshooting.unpair_title') }}
@@ -130,10 +159,17 @@
           <div v-if="unpairAllStatus === false" class="px-4 py-2 text-sm bg-error/10 text-error">
             {{ $t('troubleshooting.unpair_all_error') }}
           </div>
-          <div v-if="clients && clients.length" class="divide-y divide-dark/10 dark:divide-light/10">
+          <div
+            v-if="clients && clients.length"
+            class="divide-y divide-dark/10 dark:divide-light/10"
+          >
             <div v-for="c in clients" :key="c.uuid" class="flex items-center gap-3 px-4 py-3">
-              <div class="text-sm flex-1">{{ c.name !== '' ? c.name : $t('troubleshooting.unpair_single_unknown') }}</div>
-              <n-button size="small" secondary @click="unpairSingle(c.uuid)"><i class="fas fa-trash" /></n-button>
+              <div class="text-sm flex-1">
+                {{ c.name !== '' ? c.name : $t('troubleshooting.unpair_single_unknown') }}
+              </div>
+              <n-button size="small" secondary @click="unpairSingle(c.uuid)"
+                ><i class="fas fa-trash"
+              /></n-button>
             </div>
           </div>
           <div v-else class="px-4 py-6 text-center text-sm opacity-60">
@@ -144,7 +180,9 @@
     </n-grid>
 
     <!-- Logs -->
-    <section class="mt-8 rounded-2xl border border-dark/10 bg-white shadow-sm dark:border-light/10 dark:bg-surface">
+    <section
+      class="mt-8 rounded-2xl border border-dark/10 bg-white shadow-sm dark:border-light/10 dark:bg-surface"
+    >
       <div class="flex flex-col gap-4 p-6 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 id="logs" class="text-xl font-medium text-dark dark:text-light">
@@ -183,7 +221,12 @@
       <div class="relative">
         <!-- New logs banner (appears at bottom of viewport inside console) -->
         <transition name="slide-up">
-          <n-button v-if="newLogsAvailable" class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg" secondary @click="jumpToLatest">
+          <n-button
+            v-if="newLogsAvailable"
+            class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
+            secondary
+            @click="jumpToLatest"
+          >
             {{ $t('troubleshooting.new_logs_available') }}
             <span v-if="unseenLines > 0" class="ml-2 rounded bg-warning/20 px-2 py-0.5 text-xs">
               +{{ unseenLines }}
@@ -193,7 +236,11 @@
         </transition>
 
         <!-- Scroll container -->
-        <div ref="logContainer" class="h-[520px] overflow-auto border-t border-dark/10 bg-light font-mono text-[13px] leading-5 text-dark dark:border-light/10 dark:bg-dark dark:text-light" @scroll.passive="onLogScroll">
+        <div
+          ref="logContainer"
+          class="h-[520px] overflow-auto border-t border-dark/10 bg-light font-mono text-[13px] leading-5 text-dark dark:border-light/10 dark:bg-dark dark:text-light"
+          @scroll.passive="onLogScroll"
+        >
           <pre class="m-0 whitespace-pre p-4" :class="{ 'whitespace-pre-wrap': wrapLongLines }">{{
             actualLogs
           }}</pre>
@@ -364,7 +411,7 @@ async function unpairAll() {
   unpairAllPressed.value = true;
   try {
     const r = await http.post('./api/clients/unpair-all', {}, { validateStatus: () => true });
-    unpairAllStatus.value = !!(r?.data?.status);
+    unpairAllStatus.value = !!r?.data?.status;
   } catch (_) {
     unpairAllStatus.value = false;
   } finally {

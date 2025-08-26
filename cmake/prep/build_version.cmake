@@ -16,6 +16,30 @@ if(DEFINED ENV{TAG})
     set(GITHUB_TAG $ENV{TAG})
 endif()
 
+# Allow forks / CI to override which GitHub repo is used for update checks.
+# Cache variables can be provided via -DSUNSHINE_REPO_OWNER=... or -DSUNSHINE_REPO_NAME=...
+set(SUNSHINE_REPO_OWNER "Nonary" CACHE STRING "GitHub repo owner for update checks")
+set(SUNSHINE_REPO_NAME "vibeshine" CACHE STRING "GitHub repo name for update checks")
+
+# Allow environment variables to override the cache values (useful in CI)
+if(DEFINED ENV{SUNSHINE_REPO_OWNER})
+    set(SUNSHINE_REPO_OWNER $ENV{SUNSHINE_REPO_OWNER})
+endif()
+if(DEFINED ENV{SUNSHINE_REPO_NAME})
+    set(SUNSHINE_REPO_NAME $ENV{SUNSHINE_REPO_NAME})
+endif()
+
+# Try to infer owner/name from the clone URL when available and the defaults are still in use
+if(DEFINED GITHUB_CLONE_URL AND (SUNSHINE_REPO_OWNER STREQUAL "Nonary" OR SUNSHINE_REPO_NAME STREQUAL "vibeshine"))
+    string(REGEX MATCH "github.com[:/]+([^/]+)/([^/]+)(\\.git)?$" _match "${GITHUB_CLONE_URL}")
+    if(_match)
+        set(SUNSHINE_REPO_OWNER "${CMAKE_MATCH_1}")
+        string(REGEX REPLACE "\\.git$" "" _repo_name "${CMAKE_MATCH_2}")
+        set(SUNSHINE_REPO_NAME "${_repo_name}")
+        message(STATUS "Inferred GitHub repo: ${SUNSHINE_REPO_OWNER}/${SUNSHINE_REPO_NAME} from ${GITHUB_CLONE_URL}")
+    endif()
+endif()
+
 # Check if env vars are defined before attempting to access them, variables will be defined even if blank
 if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))  # cmake-lint: disable=W0106
     if((DEFINED ENV{BRANCH}) AND (NOT $ENV{BUILD_VERSION} STREQUAL ""))
@@ -27,47 +51,64 @@ if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))  # cmake-lint: disabl
         set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})  # cpack will use this to set the binary versions
     endif()
 else()
-    # Generate Sunshine Version based of the git tag
-    # https://github.com/nocnokneo/cmake-git-versioning-example/blob/master/LICENSE
+    # Resolve version from environment tag or git tags
     find_package(Git)
-    if(GIT_EXECUTABLE)
-        MESSAGE("${CMAKE_SOURCE_DIR}")
-        get_filename_component(SRC_DIR "${CMAKE_SOURCE_DIR}" DIRECTORY)
-        #Get current Branch
+    set(_VER_FROM_ENV "${GITHUB_TAG}")
+    if(DEFINED ENV{TAG} AND NOT $ENV{TAG} STREQUAL "")
+        set(_VER_FROM_ENV "$ENV{TAG}")
+    endif()
+
+    if(NOT _VER_FROM_ENV STREQUAL "")
+        set(PROJECT_VERSION "${_VER_FROM_ENV}")
+        string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")
+        set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
+        message(STATUS "Using version from TAG: ${PROJECT_VERSION}")
+    elseif(GIT_EXECUTABLE)
+        # Current branch name
         execute_process(
-                COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
-                OUTPUT_VARIABLE GIT_DESCRIBE_BRANCH
-                RESULT_VARIABLE GIT_DESCRIBE_ERROR_CODE
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        # Gather current commit
+            COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+            OUTPUT_VARIABLE GIT_DESCRIBE_BRANCH
+            RESULT_VARIABLE GIT_BRANCH_ERROR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # Nearest tag (annotated or lightweight)
         execute_process(
-                COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
-                OUTPUT_VARIABLE GIT_DESCRIBE_VERSION
-                RESULT_VARIABLE GIT_DESCRIBE_ERROR_CODE
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        # Check if Dirty
+            COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=0
+            OUTPUT_VARIABLE GIT_NEAREST_TAG_RAW
+            RESULT_VARIABLE GIT_TAG_ERROR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # Short commit for logging
         execute_process(
-                COMMAND ${GIT_EXECUTABLE} diff --quiet --exit-code
-                RESULT_VARIABLE GIT_IS_DIRTY
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        if(NOT GIT_DESCRIBE_ERROR_CODE)
-            MESSAGE("Sunshine Branch: ${GIT_DESCRIBE_BRANCH}")
-            if(NOT GIT_DESCRIBE_BRANCH STREQUAL "master")
-                set(PROJECT_VERSION ${PROJECT_VERSION}.${GIT_DESCRIBE_VERSION})
-                MESSAGE("Sunshine Version: ${GIT_DESCRIBE_VERSION}")
-            endif()
-            if(GIT_IS_DIRTY)
-                set(PROJECT_VERSION ${PROJECT_VERSION}.dirty)
-                MESSAGE("Git tree is dirty!")
-            endif()
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+            OUTPUT_VARIABLE GIT_SHORT
+            RESULT_VARIABLE GIT_SHORT_ERROR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # Dirty state
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} diff --quiet --exit-code
+            RESULT_VARIABLE GIT_IS_DIRTY
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+        if(NOT GIT_TAG_ERROR)
+            set(PROJECT_VERSION "${GIT_NEAREST_TAG_RAW}")
+            string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")
+            set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
+            message(STATUS "Detected git tag version: ${PROJECT_VERSION}")
         else()
-            MESSAGE(ERROR ": Got git error while fetching tags: ${GIT_DESCRIBE_ERROR_CODE}")
+            # Fallback when no tags: leave PROJECT_VERSION as-is (from project())
+            message(WARNING "No git tags found; using default PROJECT_VERSION=${PROJECT_VERSION}")
+        endif()
+
+        if(NOT GIT_BRANCH_ERROR)
+            message(STATUS "Git branch: ${GIT_DESCRIBE_BRANCH}")
+        endif()
+        if(NOT GIT_SHORT_ERROR)
+            message(STATUS "Git short commit: ${GIT_SHORT}")
+        endif()
+        if(GIT_IS_DIRTY)
+            message(STATUS "Git tree is dirty")
         endif()
     else()
-        MESSAGE(WARNING ": Git not found, cannot find git version")
+        message(WARNING "Git not found; using default PROJECT_VERSION=${PROJECT_VERSION}")
     endif()
 endif()
 
@@ -212,3 +253,5 @@ endif()
 message("PROJECT_YEAR: ${PROJECT_YEAR}")
 message("PROJECT_MONTH: ${PROJECT_MONTH}")
 message("PROJECT_DAY: ${PROJECT_DAY}")
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_REPO_OWNER="${SUNSHINE_REPO_OWNER}")
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_REPO_NAME="${SUNSHINE_REPO_NAME}")

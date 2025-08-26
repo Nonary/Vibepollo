@@ -204,10 +204,16 @@ async function logout() {
   } catch (e) {
     console.error('Logout failed:', e);
   }
-  try { (authStore as any).logoutInitiated = true; } catch {}
-  try { authStore.setAuthenticated(false); } catch {}
+  try {
+    (authStore as any).logoutInitiated = true;
+  } catch {}
+  try {
+    authStore.setAuthenticated(false);
+  } catch {}
   // Stop background connectivity checks and any other background polling
-  try { connectivity.stop(); } catch {}
+  try {
+    connectivity.stop();
+  } catch {}
   loggedOut.value = true;
 }
 
@@ -222,7 +228,7 @@ const mobileMenuOptions = computed(() => {
   const icon = (cls: string) => () => h('i', { class: cls });
   return [
     { label: t('navbar.home'), key: '/', icon: icon('fas fa-gauge') },
-  { label: t('navbar.applications'), key: '/applications', icon: icon('fas fa-th') },
+    { label: t('navbar.applications'), key: '/applications', icon: icon('fas fa-th') },
     { label: t('clients.nav'), key: '/clients', icon: icon('fas fa-users-cog') },
     { label: t('navbar.configuration'), key: '/settings', icon: icon('fas fa-sliders') },
     { label: t('navbar.troubleshoot'), key: '/troubleshooting', icon: icon('fas fa-bug') },

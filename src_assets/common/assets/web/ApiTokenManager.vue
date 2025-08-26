@@ -115,7 +115,9 @@
             <i class="fas fa-triangle-exclamation" /> This token is shown only once. Save or copy it
             now. You cannot retrieve it later.
           </n-alert>
-          <div class="rounded-md border border-dark/10 dark:border-light/10 p-3 bg-dark/5 dark:bg-light/10">
+          <div
+            class="rounded-md border border-dark/10 dark:border-light/10 p-3 bg-dark/5 dark:bg-light/10"
+          >
             <div class="text-xs opacity-80">Token</div>
             <code class="block text-sm font-mono break-words my-1">{{ createdToken }}</code>
             <div class="flex items-center gap-3">
@@ -770,7 +772,9 @@ function watchCreatedForTester() {
     }, 300) as unknown as number,
   );
   // Stop after some time to avoid leaks
-  trackTimeout(setTimeout(() => clearInterval(iv as unknown as number), 30000) as unknown as number);
+  trackTimeout(
+    setTimeout(() => clearInterval(iv as unknown as number), 30000) as unknown as number,
+  );
 }
 </script>
 

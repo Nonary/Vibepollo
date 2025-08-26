@@ -261,6 +261,32 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### update_check_interval
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Interval in seconds between automatic checks for new Sunshine releases. Set to 0 to disable periodic checking.
+            Checks are date-based: Sunshine compares its build date to the latest release (and pre-releases if enabled) and notifies when a newer build is available.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            86400
+            @endcode (24 hours)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            update_check_interval = 14400
+            @endcode</td>
+    </tr>
+</table>
+
+<!-- The update command mechanism was removed. Sunshine now only notifies about updates. -->
+
 ## Input
 
 ### controller

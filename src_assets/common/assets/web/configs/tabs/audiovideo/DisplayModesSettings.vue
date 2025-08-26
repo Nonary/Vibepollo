@@ -13,11 +13,7 @@ const config = store.config;
   <!--max_bitrate-->
   <div class="mb-4">
     <label for="max_bitrate" class="form-label">{{ $t('config.max_bitrate') }}</label>
-    <n-input-number
-      id="max_bitrate"
-      v-model:value="config.max_bitrate"
-      :placeholder="'0'"
-    />
+    <n-input-number id="max_bitrate" v-model:value="config.max_bitrate" :placeholder="'0'" />
     <p class="text-[11px] opacity-60 mt-1">
       {{ $t('config.max_bitrate_desc') }}
     </p>

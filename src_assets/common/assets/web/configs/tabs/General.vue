@@ -73,7 +73,7 @@ function removeCmd(index: number) {
         id="locale"
         v-model:value="config.locale"
         :options="localeOptions"
-        :data-search-options="localeOptions.map(o => `${o.label}::${o.value ?? ''}`).join('|')"
+        :data-search-options="localeOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
       />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.locale_desc') }}
@@ -101,7 +101,7 @@ function removeCmd(index: number) {
         id="min_log_level"
         v-model:value="config.min_log_level"
         :options="logLevelOptions"
-        :data-search-options="logLevelOptions.map(o => `${o.label}::${o.value ?? ''}`).join('|')"
+        :data-search-options="logLevelOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
       />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.log_level_desc') }}
@@ -179,6 +179,22 @@ function removeCmd(index: number) {
       />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.session_token_ttl_seconds_desc') }}
+      </div>
+    </div>
+
+    <!-- Update Check Interval (seconds) -->
+    <div class="mb-6">
+      <label for="update_check_interval" class="form-label">{{
+        $t('config.update_check_interval')
+      }}</label>
+      <n-input-number
+        id="update_check_interval"
+        v-model:value="config.update_check_interval"
+        :min="0"
+        :step="60"
+      />
+      <div class="text-[11px] opacity-60 mt-1">
+        {{ $t('config.update_check_interval_desc') }}
       </div>
     </div>
 

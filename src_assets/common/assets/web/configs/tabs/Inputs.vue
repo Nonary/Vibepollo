@@ -20,7 +20,10 @@ const gamepadOptions = computed(() => {
     );
   }
   if (platform.value === 'windows') {
-    opts.push({ label: 'config.gamepad_ds4', value: 'ds4' }, { label: 'config.gamepad_x360', value: 'x360' });
+    opts.push(
+      { label: 'config.gamepad_ds4', value: 'ds4' },
+      { label: 'config.gamepad_x360', value: 'x360' },
+    );
   }
   return opts;
 });
@@ -43,8 +46,10 @@ const gamepadOptions = computed(() => {
       <n-select
         id="gamepad"
         v-model:value="config.gamepad"
-        :options="gamepadOptions.map(o => ({ label: $t(o.label), value: o.value }))"
-        :data-search-options="gamepadOptions.map(o => `${$t(o.label)}::${o.value ?? ''}`).join('|')"
+        :options="gamepadOptions.map((o) => ({ label: $t(o.label), value: o.value }))"
+        :data-search-options="
+          gamepadOptions.map((o) => `${$t(o.label)}::${o.value ?? ''}`).join('|')
+        "
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.gamepad_desc') }}

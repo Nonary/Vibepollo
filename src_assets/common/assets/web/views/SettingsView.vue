@@ -70,14 +70,14 @@
 
         <div v-if="showSave" class="flex gap-2">
           <n-button :disabled="saveState === 'saving'" @click="save">Save</n-button>
-          <n-button v-if="saveState === 'saved' && !restarted" tertiary @click="apply">Apply</n-button>
+          <n-button v-if="saveState === 'saved' && !restarted" tertiary @click="apply"
+            >Apply</n-button
+          >
         </div>
         <div v-else class="text-[11px] font-medium min-h-[1rem] flex items-center gap-2">
           <transition name="fade"><span v-if="saveState === 'saving'">Saving…</span></transition>
           <transition name="fade">
-            <span v-if="saveState === 'saved'" class="text-success"
-              >Saved</span
-            >
+            <span v-if="saveState === 'saved'" class="text-success">Saved</span>
           </transition>
         </div>
       </div>

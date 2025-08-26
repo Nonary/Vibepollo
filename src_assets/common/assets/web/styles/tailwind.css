@@ -6,20 +6,20 @@
 @layer base {
   :root {
     /* Sunshine Light — orange-focused with strong contrast */
-    --color-primary: 194 65 12;   /* #C2410C burnt orange */
+    --color-primary: 194 65 12; /* #C2410C burnt orange */
     --color-secondary: 120 53 15; /* #78350F deep umber */
-    --color-success: 76 175 80;   /* #4CAF50 */
-    --color-warning: 245 124 0;   /* #F57C00 (needs black text) */
-    --color-danger: 220 38 38;    /* #DC2626 */
-    --color-info: 2 136 209;      /* #0288D1 */
+    --color-success: 76 175 80; /* #4CAF50 */
+    --color-warning: 245 124 0; /* #F57C00 (needs black text) */
+    --color-danger: 220 38 38; /* #DC2626 */
+    --color-info: 2 136 209; /* #0288D1 */
 
     /* Warm paper background + surface */
-    --color-light: 255 250 244;   /* #FFFAF4 */
-    --color-dark: 33 33 33;       /* #212121 */
+    --color-light: 255 250 244; /* #FFFAF4 */
+    --color-dark: 33 33 33; /* #212121 */
     --color-surface: 255 241 230; /* #FFF1E6 */
 
     /* Accent tuned darker so white text works */
-    --color-accent: 204 76 0;     /* #CC4C00 */
+    --color-accent: 204 76 0; /* #CC4C00 */
 
     /* On-colors */
     --color-on-primary: 255 255 255;
@@ -29,7 +29,7 @@
     --color-on-dark: 255 255 255;
 
     /* Brand (e.g., nav/headings) */
-    --color-brand: 120 53 15;     /* #78350F */
+    --color-brand: 120 53 15; /* #78350F */
   }
 
   .dark {
@@ -74,34 +74,82 @@
       disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
-  .btn-primary { @apply bg-primary text-onPrimary hover:bg-primary/90 focus-visible:ring-primary/60; }
-  .btn-secondary { @apply bg-secondary text-onSecondary hover:bg-secondary/90 focus-visible:ring-secondary/60; }
-  .btn-tertiary { @apply btn-secondary; }
-  .btn-success { @apply bg-success text-onLight hover:bg-success/90 focus-visible:ring-success/60; }
-  .btn-warning { @apply bg-warning text-onLight hover:bg-warning/90 focus-visible:ring-warning/60; }
-  .btn-danger { @apply bg-danger text-onDark hover:bg-danger/90 focus-visible:ring-danger/60; }
-  .btn-info { @apply bg-info text-onLight hover:bg-info/90 focus-visible:ring-info/60; }
+  .btn-primary {
+    @apply bg-primary text-onPrimary hover:bg-primary/90 focus-visible:ring-primary/60;
+  }
+  .btn-secondary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90 focus-visible:ring-secondary/60;
+  }
+  .btn-tertiary {
+    @apply btn-secondary;
+  }
+  .btn-success {
+    @apply bg-success text-onLight hover:bg-success/90 focus-visible:ring-success/60;
+  }
+  .btn-warning {
+    @apply bg-warning text-onLight hover:bg-warning/90 focus-visible:ring-warning/60;
+  }
+  .btn-danger {
+    @apply bg-danger text-onDark hover:bg-danger/90 focus-visible:ring-danger/60;
+  }
+  .btn-info {
+    @apply bg-info text-onLight hover:bg-info/90 focus-visible:ring-info/60;
+  }
 
-  .btn-sm { @apply text-xs px-2.5 py-1 rounded-md; }
-  .btn-lg { @apply text-base px-4 py-2 rounded-lg; }
+  .btn-sm {
+    @apply text-xs px-2.5 py-1 rounded-md;
+  }
+  .btn-lg {
+    @apply text-base px-4 py-2 rounded-lg;
+  }
 
   /* Align icons inside any button */
-  .btn > .fa, .btn > .fas, .btn > .far, .btn > .fal, .btn > .fab, .btn > .icon { line-height: 1; }
+  .btn > .fa,
+  .btn > .fas,
+  .btn > .far,
+  .btn > .fal,
+  .btn > .fab,
+  .btn > .icon {
+    line-height: 1;
+  }
 
   /*
    * Naive UI button overrides to ensure solid variants across the app
    */
-  :root .n-button { @apply shadow-sm; }
-  :root .n-button .n-button__content { @apply inline-flex items-center gap-2; }
-  :root .n-button--type-default { @apply bg-dark/10 dark:bg-light/10 text-dark dark:text-light hover:bg-dark/15 dark:hover:bg-light/15; }
-  :root .n-button--type-primary { @apply bg-primary text-onPrimary hover:bg-primary/90; }
-  :root .n-button--secondary { @apply bg-secondary text-onSecondary hover:bg-secondary/90; }
-  :root .n-button--type-success { @apply bg-success text-onLight hover:bg-success/90; }
-  :root .n-button--type-error { @apply bg-danger text-onDark hover:bg-danger/90; }
-  :root .n-button--type-warning { @apply bg-warning text-onLight hover:bg-warning/90; }
-  :root .n-button--type-info { @apply bg-info text-onLight hover:bg-info/90; }
-  :root .n-button--tertiary { @apply bg-secondary text-onSecondary hover:bg-secondary/90; }
-  :root .n-button--disabled, :root .n-button[disabled] { @apply opacity-50 cursor-not-allowed; }
+  :root .n-button {
+    @apply shadow-sm;
+  }
+  :root .n-button .n-button__content {
+    @apply inline-flex items-center gap-2;
+  }
+  :root .n-button--type-default {
+    @apply bg-dark/10 dark:bg-light/10 text-dark dark:text-light hover:bg-dark/15 dark:hover:bg-light/15;
+  }
+  :root .n-button--type-primary {
+    @apply bg-primary text-onPrimary hover:bg-primary/90;
+  }
+  :root .n-button--secondary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
+  }
+  :root .n-button--type-success {
+    @apply bg-success text-onLight hover:bg-success/90;
+  }
+  :root .n-button--type-error {
+    @apply bg-danger text-onDark hover:bg-danger/90;
+  }
+  :root .n-button--type-warning {
+    @apply bg-warning text-onLight hover:bg-warning/90;
+  }
+  :root .n-button--type-info {
+    @apply bg-info text-onLight hover:bg-info/90;
+  }
+  :root .n-button--tertiary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
+  }
+  :root .n-button--disabled,
+  :root .n-button[disabled] {
+    @apply opacity-50 cursor-not-allowed;
+  }
 
   /*
    * Naive UI button content alignment and icon spacing
@@ -163,7 +211,9 @@
   }
 
   /* legacy alias kept for any dangling references */
-  .btn.apply { @apply btn-primary; }
+  .btn.apply {
+    @apply btn-primary;
+  }
 
   .form-control {
     @apply w-full px-3 py-2 text-sm rounded-md 
@@ -190,7 +240,7 @@
 
   .form-text {
     @apply text-[11px] mt-1;
-    color: rgb(var(--color-dark) / 0.70);
+    color: rgb(var(--color-dark) / 0.7);
   }
   .dark .form-text {
     color: rgb(var(--color-light) / 0.65);
@@ -245,15 +295,15 @@
   }
 
   .alert-danger {
-    background-color: rgba(var(--color-danger), 0.10);
+    background-color: rgba(var(--color-danger), 0.1);
     color: rgb(var(--color-on-dark));
     border: 1px solid rgba(var(--color-danger), 0.25);
   }
 
   .alert-success {
-    background-color: rgba(var(--color-success), 0.10);
+    background-color: rgba(var(--color-success), 0.1);
     color: rgb(var(--color-on-light));
-    border: 1px solid rgba(var(--color-success), 0.20);
+    border: 1px solid rgba(var(--color-success), 0.2);
   }
 
   .alert-warning {
@@ -263,9 +313,9 @@
   }
 
   .alert-info {
-    background-color: rgba(var(--color-info), 0.10);
+    background-color: rgba(var(--color-info), 0.1);
     color: rgb(var(--color-on-light));
-    border: 1px solid rgba(var(--color-info), 0.20);
+    border: 1px solid rgba(var(--color-info), 0.2);
   }
 
   /* spacing utilities like mb-3/mb-2 should use Tailwind classes directly in templates; do not @apply them here */
@@ -291,12 +341,13 @@
   .dark .n-checkbox:not(.n-checkbox--checked):hover .n-checkbox__input {
     box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.65);
     border-color: rgb(var(--color-light) / 0.65) !important;
-    background-color: rgb(var(--color-light) / 0.10);
+    background-color: rgb(var(--color-light) / 0.1);
   }
 
   /* Keyboard focus ring for accessibility */
   .dark .n-checkbox .n-checkbox__input:focus-visible .n-checkbox-box {
-    box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.35),
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
       inset 0 0 0 2px rgb(var(--color-light) / 0.55);
   }
 
@@ -309,8 +360,8 @@
 /* Radios — better visible outline when unchecked and clear active dot */
 @layer components {
   :root .n-radio:not(.n-radio--checked) .n-radio__input {
-    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.60);
-    border-color: rgb(var(--color-secondary) / 0.60) !important;
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.6);
+    border-color: rgb(var(--color-secondary) / 0.6) !important;
     background-color: transparent;
   }
   :root .n-radio.n-radio--checked .n-radio__dot {
@@ -325,10 +376,11 @@
   }
   .dark .n-radio:not(.n-radio--checked):hover .n-radio__input {
     box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.75);
-    background-color: rgb(var(--color-light) / 0.10);
+    background-color: rgb(var(--color-light) / 0.1);
   }
   .dark .n-radio .n-radio__input:focus-visible {
-    box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.35),
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
       inset 0 0 0 2px rgb(var(--color-light) / 0.55);
   }
   .dark .n-radio.n-radio--checked .n-radio__dot {
@@ -342,15 +394,17 @@
 
   /* Ensure the actual visible circle shows a clear outline (unselected) */
   :root .n-radio:not(.n-radio--checked) .n-radio__dot {
-    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.60) !important;
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
     background-color: transparent !important;
   }
   :root .n-radio:not(.n-radio--checked):hover .n-radio__dot {
-    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.80) !important;
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.8) !important;
     background-color: rgb(var(--color-secondary) / 0.06) !important;
   }
   :root .n-radio:focus-visible .n-radio__dot {
-    box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.35), inset 0 0 0 2px rgb(var(--color-secondary) / 0.60) !important;
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
   }
   .dark .n-radio:not(.n-radio--checked) .n-radio__dot {
     box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.55) !important;
@@ -358,14 +412,18 @@
   }
   .dark .n-radio:not(.n-radio--checked):hover .n-radio__dot {
     box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.75) !important;
-    background-color: rgb(var(--color-light) / 0.10) !important;
+    background-color: rgb(var(--color-light) / 0.1) !important;
   }
   .dark .n-radio:focus-visible .n-radio__dot {
-    box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.35), inset 0 0 0 2px rgb(var(--color-light) / 0.55) !important;
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-light) / 0.55) !important;
   }
 
   /* Keyboard focus ring in light mode */
   :root .n-radio .n-radio__input:focus-visible {
-    box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.35), inset 0 0 0 2px rgb(var(--color-secondary) / 0.60) !important;
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
   }
 }

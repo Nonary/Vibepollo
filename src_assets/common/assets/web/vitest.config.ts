@@ -1,8 +1,8 @@
-import { defineConfig } from 'vitest/config'
-import vue from '@vitejs/plugin-vue'
-import { resolve } from 'node:path'
+import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
+import { resolve } from 'node:path';
 
-const repoRoot = resolve(__dirname, '../../../..')
+const repoRoot = resolve(__dirname, '../../../..');
 
 export default defineConfig({
   plugins: [vue()],
@@ -19,5 +19,4 @@ export default defineConfig({
     include: [resolve(repoRoot, 'tests/frontend/**/*.test.ts')],
     css: true,
   },
-})
-
+});
