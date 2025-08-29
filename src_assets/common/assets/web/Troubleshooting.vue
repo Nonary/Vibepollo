@@ -137,46 +137,7 @@
         </section>
       </n-gi>
 
-      <!-- Unpair Clients -->
-      <n-gi :span="24">
-        <section
-          class="rounded-2xl border border-dark/10 bg-white p-0 shadow-sm dark:border-light/10 dark:bg-surface overflow-hidden"
-        >
-          <div class="p-4 flex items-center gap-3 border-b border-dark/10 dark:border-light/10">
-            <h2 id="unpair" class="text-lg font-medium text-dark dark:text-light mr-auto">
-              {{ $t('troubleshooting.unpair_title') }}
-            </h2>
-            <n-button secondary :disabled="unpairAllPressed" @click="unpairAll">
-              {{ $t('troubleshooting.unpair_all') }}
-            </n-button>
-          </div>
-          <div v-if="showApplyMessage" class="px-4 py-2 text-sm bg-success/10 text-success">
-            <b>{{ $t('_common.success') }}</b> {{ $t('troubleshooting.unpair_single_success') }}
-          </div>
-          <div v-if="unpairAllStatus === true" class="px-4 py-2 text-sm bg-success/10 text-success">
-            {{ $t('troubleshooting.unpair_all_success') }}
-          </div>
-          <div v-if="unpairAllStatus === false" class="px-4 py-2 text-sm bg-error/10 text-error">
-            {{ $t('troubleshooting.unpair_all_error') }}
-          </div>
-          <div
-            v-if="clients && clients.length"
-            class="divide-y divide-dark/10 dark:divide-light/10"
-          >
-            <div v-for="c in clients" :key="c.uuid" class="flex items-center gap-3 px-4 py-3">
-              <div class="text-sm flex-1">
-                {{ c.name !== '' ? c.name : $t('troubleshooting.unpair_single_unknown') }}
-              </div>
-              <n-button size="small" secondary @click="unpairSingle(c.uuid)"
-                ><i class="fas fa-trash"
-              /></n-button>
-            </div>
-          </div>
-          <div v-else class="px-4 py-6 text-center text-sm opacity-60">
-            <em>{{ $t('troubleshooting.unpair_single_no_devices') }}</em>
-          </div>
-        </section>
-      </n-gi>
+      
     </n-grid>
 
     <!-- Logs -->
@@ -382,52 +343,7 @@ function downloadPlayniteLogs() {
   } catch (_) {}
 }
 
-// ===== Clients unpairing =====
-const clients = ref<{ uuid: string; name: string }[]>([]);
-const unpairAllPressed = ref(false);
-const unpairAllStatus = ref<null | boolean>(null);
-const showApplyMessage = ref(false);
-
-async function refreshClients() {
-  try {
-    const r = await http.get('./api/clients/list', { validateStatus: () => true });
-    const data = r?.data || {};
-    if (data.status === true && Array.isArray(data.named_certs)) {
-      clients.value = [...data.named_certs].sort((a, b) => {
-        const an = (a.name || '').toLowerCase();
-        const bn = (b.name || '').toLowerCase();
-        if (an === '') return 1;
-        if (bn === '') return -1;
-        return an.localeCompare(bn);
-      });
-    } else {
-      clients.value = [];
-    }
-  } catch (_) {
-    clients.value = [];
-  }
-}
-async function unpairAll() {
-  unpairAllPressed.value = true;
-  try {
-    const r = await http.post('./api/clients/unpair-all', {}, { validateStatus: () => true });
-    unpairAllStatus.value = !!r?.data?.status;
-  } catch (_) {
-    unpairAllStatus.value = false;
-  } finally {
-    unpairAllPressed.value = false;
-    setTimeout(() => (unpairAllStatus.value = null), 5000);
-    refreshClients();
-  }
-}
-async function unpairSingle(uuid: string) {
-  try {
-    await http.post('./api/clients/unpair', { uuid }, { validateStatus: () => true });
-    showApplyMessage.value = true;
-    setTimeout(() => (showApplyMessage.value = false), 4000);
-  } catch (_) {}
-  refreshClients();
-}
+// (Removed) Clients unpairing UI and logic
 
 function jumpToLatest() {
   scrollToBottom();

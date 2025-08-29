@@ -1,6 +1,8 @@
 import fs from 'fs';
 import { resolve } from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, splitVendorChunkPlugin } from 'vite';
+import Components from 'unplugin-vue-components/vite';
+import { NaiveUiResolver } from 'unplugin-vue-components/resolvers';
 import vue from '@vitejs/plugin-vue';
 import { ViteEjsPlugin } from 'vite-plugin-ejs';
 
@@ -52,7 +54,21 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { '@': resolve(assetsSrcPath) },
     },
-    plugins: [vue(), ViteEjsPlugin({ header })],
+    // Help Rollup/ESBuild drop unused Vue features for smaller bundles
+    define: {
+      __VUE_OPTIONS_API__: false,
+      __VUE_PROD_DEVTOOLS__: false,
+    },
+    plugins: [
+      vue(),
+      splitVendorChunkPlugin(),
+      Components({
+        // Auto-import only used Naive UI components to minimize bundle
+        resolvers: [NaiveUiResolver()],
+        dts: false,
+      }),
+      ViteEjsPlugin({ header }),
+    ],
     css: {
       devSourcemap: isDebug,
     },
@@ -60,7 +76,29 @@ export default defineConfig(({ mode }) => {
       outDir: assetsDstPath,
       sourcemap: isDebug ? 'inline' : false,
       minify: isDebug ? false : 'esbuild',
-      rollupOptions: { input },
+      // Trim dead code in production
+      esbuild: isDebug
+        ? undefined
+        : {
+            drop: ['console', 'debugger'],
+          },
+      rollupOptions: {
+        input,
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('node_modules')) {
+              if (id.includes('naive-ui')) return 'naive-ui';
+              if (id.includes('vue')) return 'vue-vendor';
+              if (id.includes('pinia')) return 'pinia';
+              if (id.includes('vue-router')) return 'vue-router';
+              if (id.includes('vue-i18n')) return 'vue-i18n';
+              if (id.includes('axios')) return 'axios';
+              if (id.includes('fontawesome')) return 'fontawesome';
+              return 'vendor';
+            }
+          },
+        },
+      },
     },
   };
 });

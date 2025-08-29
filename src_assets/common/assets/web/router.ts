@@ -1,10 +1,13 @@
 import { createRouter, createWebHistory, RouteLocationNormalized } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
-import DashboardView from '@/views/DashboardView.vue';
-import ApplicationsView from '@/views/ApplicationsView.vue';
-import SettingsView from '@/views/SettingsView.vue';
-import TroubleshootingView from '@/views/TroubleshootingView.vue';
-import ClientManagementView from '@/views/ClientManagementView.vue';
+
+// Route-level code splitting via dynamic imports
+// Each view becomes a separate chunk loaded on demand
+const DashboardView = () => import('@/views/DashboardView.vue');
+const ApplicationsView = () => import('@/views/ApplicationsView.vue');
+const SettingsView = () => import('@/views/SettingsView.vue');
+const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
+const ClientManagementView = () => import('@/views/ClientManagementView.vue');
 
 const routes = [
   { path: '/', component: DashboardView },

@@ -151,17 +151,20 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, markRaw } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent } from 'vue';
 import { NInput, NButton } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
-import General from '@/configs/tabs/General.vue';
-import Inputs from '@/configs/tabs/Inputs.vue';
-import Network from '@/configs/tabs/Network.vue';
-import Files from '@/configs/tabs/Files.vue';
-import Advanced from '@/configs/tabs/Advanced.vue';
-import AudioVideo from '@/configs/tabs/AudioVideo.vue';
-import ContainerEncoders from '@/configs/tabs/ContainerEncoders.vue';
-import Playnite from '@/configs/tabs/Playnite.vue';
+// Lazy-load each settings tab on first expand/use
+const General = markRaw(defineAsyncComponent(() => import('@/configs/tabs/General.vue')));
+const Inputs = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Inputs.vue')));
+const Network = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Network.vue')));
+const Files = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Files.vue')));
+const Advanced = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Advanced.vue')));
+const AudioVideo = markRaw(defineAsyncComponent(() => import('@/configs/tabs/AudioVideo.vue')));
+const ContainerEncoders = markRaw(
+  defineAsyncComponent(() => import('@/configs/tabs/ContainerEncoders.vue')),
+);
+const Playnite = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Playnite.vue')));
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';

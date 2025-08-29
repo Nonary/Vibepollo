@@ -1,7 +1,14 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: 'class',
-  content: ['./src_assets/common/assets/web/**/*.{html,js,ts,vue}'],
+  content: [
+    './src_assets/common/assets/web/index.html',
+    './src_assets/common/assets/web/*.{vue,js,ts,html}',
+    './src_assets/common/assets/web/components/**/*.{vue,js,ts}',
+    './src_assets/common/assets/web/views/**/*.{vue,js,ts}',
+    './src_assets/common/assets/web/configs/**/*.{vue,js,ts}',
+    './src_assets/common/assets/web/stores/**/*.{js,ts}',
+  ],
   theme: {
     extend: {
       colors: {

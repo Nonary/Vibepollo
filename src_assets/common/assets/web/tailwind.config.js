@@ -1,7 +1,15 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: 'class',
-  content: ['./**/*.{html,js,ts,vue}'],
+  // Limit scanning to source files; avoid node_modules for performance
+  content: [
+    './index.html',
+    './*.{vue,js,ts,html}',
+    './components/**/*.{vue,js,ts}',
+    './views/**/*.{vue,js,ts}',
+    './configs/**/*.{vue,js,ts}',
+    './stores/**/*.{js,ts}',
+  ],
   theme: {
     extend: {
       colors: {

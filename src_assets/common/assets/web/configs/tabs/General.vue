@@ -3,7 +3,7 @@ import Checkbox from '@/Checkbox.vue';
 import { ref, computed } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
-import { NSelect, NInput, NButton, NInputNumber } from 'naive-ui';
+import { NSelect, NInput, NButton, NInputNumber, NCheckbox } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 
 const store = useConfigStore();
@@ -120,40 +120,48 @@ function removeCmd(index: number) {
         <div
           v-for="(c, i) in config.global_prep_cmd"
           :key="i"
-          class="grid grid-cols-12 gap-2 items-start"
+          class="rounded-md border border-dark/10 dark:border-light/10 p-2"
         >
-          <div class="col-span-5">
-            <n-input
-              v-model:value="c.do"
-              type="text"
-              class="monospace"
-              @update:value="store.markManualDirty()"
-            />
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
+            <div class="flex items-center gap-2">
+              <n-checkbox
+                v-if="platform === 'windows'"
+                v-model:checked="c.elevated"
+                size="small"
+                @update:checked="store.markManualDirty()"
+              >
+                {{ $t('_common.elevated') }}
+              </n-checkbox>
+              <n-button secondary size="small" @click="removeCmd(i)">
+                <i class="fas fa-trash" />
+              </n-button>
+              <n-button primary size="small" @click="addCmd">
+                <i class="fas fa-plus" />
+              </n-button>
+            </div>
           </div>
-          <div class="col-span-5">
-            <n-input
-              v-model:value="c.undo"
-              type="text"
-              class="monospace"
-              @update:value="store.markManualDirty()"
-            />
-          </div>
-          <div v-if="platform === 'windows'" class="col-span-1">
-            <Checkbox
-              :id="'prep-cmd-admin-' + i"
-              v-model="c.elevated"
-              label="_common.elevated"
-              desc=""
-              @change="store.markManualDirty()"
-            />
-          </div>
-          <div class="col-span-1 flex gap-2">
-            <n-button secondary size="small" @click="removeCmd(i)">
-              <i class="fas fa-trash" />
-            </n-button>
-            <n-button primary size="small" @click="addCmd">
-              <i class="fas fa-plus" />
-            </n-button>
+          <div class="grid grid-cols-1 gap-2">
+            <div>
+              <label class="text-[11px] opacity-60">{{ $t('_common.do_cmd') }}</label>
+              <n-input
+                v-model:value="c.do"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 3 }"
+                class="monospace"
+                @update:value="store.markManualDirty()"
+              />
+            </div>
+            <div>
+              <label class="text-[11px] opacity-60">{{ $t('_common.undo_cmd') }}</label>
+              <n-input
+                v-model:value="c.undo"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 3 }"
+                class="monospace"
+                @update:value="store.markManualDirty()"
+              />
+            </div>
           </div>
         </div>
       </div>

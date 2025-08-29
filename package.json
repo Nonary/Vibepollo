@@ -2,9 +2,9 @@
   "name": "sunshine",
   "version": "0.0.0",
   "scripts": {
-    "build": "vite build --debug",
+    "build": "vite build --mode prod",
     "build:debug": "vite build --mode debug",
-    "build-clean": "vite build --debug --emptyOutDir",
+    "build-clean": "vite build --mode prod --emptyOutDir",
     "dev": "vite build --mode debug --watch",
     "serve": "serve ./tests/fixtures/http --no-port-switching",
     "lint": "eslint --ext .js,.ts,.vue src_assets/common/assets/web src_assets --max-warnings 0",

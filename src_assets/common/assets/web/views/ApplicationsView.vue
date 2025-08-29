@@ -7,22 +7,24 @@
       >
         <!-- Windows + Playnite actions -->
         <template v-if="isWindows">
-          <n-button v-if="playniteEnabled" size="small" secondary @click="purgeAutoSync">
+          <template v-if="playniteStatusReady">
+            <n-button v-if="playniteEnabled" size="small" secondary @click="purgeAutoSync">
             <i class="fas fa-trash" />
             {{ $t('playnite.delete_all_autosync') || 'Delete All Auto-Sync' }}
-          </n-button>
-          <n-button
-            v-if="playniteEnabled"
-            size="small"
-            :loading="syncBusy"
-            :disabled="syncBusy"
-            @click="forceSync"
-          >
-            <i class="fas fa-rotate" /> {{ $t('playnite.force_sync') || 'Force Sync' }}
-          </n-button>
-          <n-button v-else size="small" tertiary @click="gotoPlaynite">
-            <i class="fas fa-plug" /> {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
-          </n-button>
+            </n-button>
+            <n-button
+              v-if="playniteEnabled"
+              size="small"
+              :loading="syncBusy"
+              :disabled="syncBusy"
+              @click="forceSync"
+            >
+              <i class="fas fa-rotate" /> {{ $t('playnite.force_sync') || 'Force Sync' }}
+            </n-button>
+            <n-button v-else size="small" tertiary @click="gotoPlaynite">
+              <i class="fas fa-plug" /> {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
+            </n-button>
+          </template>
         </template>
         <n-button type="primary" size="small" @click="openAdd">
           <i class="fas fa-plus" /> Add
@@ -50,7 +52,7 @@
             <div class="min-w-0 flex-1">
               <div class="text-sm font-semibold truncate flex items-center gap-2">
                 <span class="truncate">{{ app.name || '(untitled)' }}</span>
-                <!-- Playnite badges -->
+                <!-- Playnite or Custom badges -->
                 <template v-if="app['playnite-id']">
                   <span
                     class="inline-flex items-center px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold"
@@ -77,6 +79,13 @@
                   >
                   <span v-else class="text-[10px] opacity-70">managed</span>
                 </template>
+                <template v-else>
+                  <span
+                    class="inline-flex items-center px-1.5 py-0.5 rounded bg-dark/10 dark:bg-light/10 text-[10px] font-semibold"
+                  >
+                    Custom
+                  </span>
+                </template>
               </div>
               <div class="mt-0.5 text-[11px] opacity-60 truncate" v-if="app['working-dir']">
                 {{ app['working-dir'] }}
@@ -97,13 +106,7 @@
       v-model="showModal"
       :app="currentApp"
       :index="currentIndex"
-      :key="
-        modalKey +
-        '|' +
-        (currentIndex ?? -1) +
-        '|' +
-        ((currentApp && (currentApp.uuid || currentApp.name)) || 'new')
-      "
+      :key="modalKey + '|' + (currentIndex ?? -1) + '|' + (currentApp?.uuid || currentApp?.name || 'new')"
       @saved="reload"
       @deleted="reload"
     />
@@ -111,39 +114,59 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue';
-import AppEditModal from '@/components/AppEditModal.vue';
+import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue';
+// Lazy-load the modal when first opened
+const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import { NButton } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
+import { useAuthStore } from '@/stores/auth';
+
+// Minimal shape used for rendering items returned by the backend
+interface AppsListItem {
+  uuid?: string;
+  name?: string;
+  'working-dir'?: string;
+  'playnite-id'?: string;
+  'playnite-managed'?: string;
+  'playnite-source'?: string;
+}
+
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
+const auth = useAuthStore();
+
 const syncBusy = ref(false);
-const isWindows = computed(
-  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
-);
+const isWindows = computed(() => (configStore.metadata?.platform || '').toLowerCase() === 'windows');
+
 const playniteInstalled = ref(false);
+const playniteStatusReady = ref(false);
 const playniteEnabled = computed(() => playniteInstalled.value);
+
 const showModal = ref(false);
 const modalKey = ref(0);
-const currentApp = ref(null);
-const currentIndex = ref(-1);
-async function reload() {
+const currentApp = ref<AppsListItem | null>(null);
+const currentIndex = ref<number | null>(-1);
+
+async function reload(): Promise<void> {
   await appsStore.loadApps(true);
 }
-function openAdd() {
+
+function openAdd(): void {
   currentApp.value = null;
   currentIndex.value = -1;
   showModal.value = true;
 }
-function openEdit(app, i) {
+
+function openEdit(app: AppsListItem, i: number): void {
   currentApp.value = app;
   currentIndex.value = i;
   showModal.value = true;
 }
+
 // Reset selection when modal closes to avoid stale state on next open
 watch(showModal, (v) => {
   if (!v) {
@@ -153,12 +176,13 @@ watch(showModal, (v) => {
     modalKey.value++;
   }
 });
-// Playnite integration removed
-function appKey(app, index) {
+
+function appKey(app: AppsListItem, index: number): string {
   const id = app?.uuid || '';
   return `${app?.name || 'app'}|${id}|${index}`;
 }
-async function purgeAutoSync() {
+
+async function purgeAutoSync(): Promise<void> {
   if (typeof window !== 'undefined') {
     const ok = window.confirm('Delete all Playnite auto-synced apps?');
     if (!ok) return;
@@ -166,39 +190,78 @@ async function purgeAutoSync() {
   try {
     await http.post('./api/apps/purge_autosync', {}, { validateStatus: () => true });
     await reload();
-  } catch (_) {
-    // ignore
+  } catch {
+    /* ignore */
   }
 }
-async function forceSync() {
+
+async function forceSync(): Promise<void> {
   syncBusy.value = true;
   try {
     await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
     await reload();
-  } catch (_) {
-    // ignore
+  } catch {
+    /* ignore */
   } finally {
     syncBusy.value = false;
   }
 }
-function gotoPlaynite() {
+
+function gotoPlaynite(): void {
   try {
     if (typeof window !== 'undefined') window.location.href = '/settings#playnite';
-  } catch (_) {}
+  } catch {
+    /* ignore */
+  }
 }
+
+async function fetchPlayniteStatus(): Promise<void> {
+  // Only attempt when authenticated; http layer blocks otherwise
+  if (!auth.isAuthenticated) return;
+  try {
+    const r = await http.get('/api/playnite/status', { validateStatus: () => true });
+    if (
+      r.status === 200 &&
+      r.data &&
+      typeof r.data === 'object' &&
+      r.data !== null &&
+      'installed' in (r.data as Record<string, unknown>)
+    ) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      playniteInstalled.value = !!(r.data as any).installed;
+    }
+  } catch {
+    // ignore; will retry on next auth change
+  } finally {
+    playniteStatusReady.value = true;
+  }
+}
+
 onMounted(async () => {
   // Ensure metadata/config present for platform + playnite detection
   try {
     await configStore.fetchConfig?.();
-  } catch (_) {}
-  // Fetch Playnite status to determine installation state
-  try {
-    const r = await http.get('/api/playnite/status');
-    if (r.status === 200 && r.data) playniteInstalled.value = !!(r.data as any).installed;
-  } catch (_) {}
+  } catch {
+    /* ignore */
+  }
+  // Defer Playnite status until authenticated to avoid 401/canceled requests
+  if (auth.isAuthenticated) {
+    void fetchPlayniteStatus();
+  } else {
+    playniteStatusReady.value = false; // not ready yet
+  }
+  // Also load apps list (safe if already loaded by bootstrap)
   try {
     await appsStore.loadApps(true);
-  } catch (_) {}
+  } catch {
+    /* ignore */
+  }
+});
+
+// When user logs in while this view is mounted, refresh Playnite status
+auth.onLogin(() => {
+  playniteStatusReady.value = false;
+  void fetchPlayniteStatus();
 });
 </script>
 <style scoped>

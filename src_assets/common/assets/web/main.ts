@@ -5,7 +5,9 @@ import { router } from '@/router';
 import App from '@/App.vue';
 import './styles/tailwind.css';
 import { initHttpLayer } from '@/http';
-import '@fortawesome/fontawesome-free/css/all.min.css';
+// Load only the Font Awesome subsets we use (solid + brands)
+import '@fortawesome/fontawesome-free/css/solid.min.css';
+import '@fortawesome/fontawesome-free/css/brands.min.css';
 import { useAuthStore } from '@/stores/auth';
 import { useAppsStore } from '@/stores/apps';
 import { useConfigStore } from '@/stores/config';
@@ -60,4 +62,21 @@ initApp(app, async () => {
     );
     await appsStore.loadApps(true);
   });
+
+  // Prefetch common route chunks (settings, applications) after idle to improve UX
+  try {
+    const prefetch = () => {
+      // Trigger dynamic imports; browser caches chunks for next navigation
+      import('@/views/SettingsView.vue');
+      import('@/views/ApplicationsView.vue');
+    };
+    // Use requestIdleCallback when available to avoid competing with critical work
+    if (typeof (window as any).requestIdleCallback === 'function') {
+      (window as any).requestIdleCallback(prefetch, { timeout: 2000 });
+    } else {
+      setTimeout(prefetch, 1500);
+    }
+  } catch {
+    // ignore prefetch errors
+  }
 });
