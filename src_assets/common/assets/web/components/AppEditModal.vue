@@ -467,37 +467,27 @@ async function del() {
     const pid = (form as any)['playnite-id'];
     if (isPlayniteAuto.value && pid) {
       try {
-        const cfg = await http.get('./api/config', { validateStatus: () => true });
-        const all: Record<string, any> =
-          cfg?.data && typeof cfg.data === 'object' ? { ...(cfg.data as any) } : {};
-        // Normalize to array of {id,name}
-        let arr: Array<{ id: string; name: string }> = [];
+        // Ensure config store is loaded
         try {
-          const v = (all as any).playnite_exclude_games;
-          if (Array.isArray(v)) arr = v as any;
-          else if (typeof v === 'string') {
-            try {
-              const parsed = JSON.parse(v);
-              if (Array.isArray(parsed)) arr = parsed as any;
-            } catch {
-              arr = v
-                .split(',')
-                .map((s: string) => ({ id: s.trim(), name: '' }))
-                .filter((o: any) => o.id);
-            }
-          }
+          // @ts-ignore optional chaining for older runtime
+          if (!configStore.config) await (configStore.fetchConfig?.() || Promise.resolve());
         } catch {}
-        const name = playniteOptions.value.find((o) => o.value === String(pid))?.label || '';
-        const map = new Map(arr.map((e) => [e.id, e.name] as const));
+        // Start from current local store state to avoid desync
+        const current: Array<{ id: string; name: string }> = Array.isArray(
+          (configStore.config as any)?.playnite_exclude_games,
+        )
+          ? ((configStore.config as any).playnite_exclude_games as any)
+          : [];
+        const map = new Map(current.map((e) => [String(e.id), String(e.name || '')] as const));
+        const name =
+          playniteOptions.value.find((o) => o.value === String(pid))?.label || '';
         map.set(String(pid), name);
-        (all as any).playnite_exclude_games = Array.from(map.entries()).map(([id, name]) => ({
-          id,
-          name,
-        }));
-        // Post the full config object to avoid wiping other settings
-        await http.post('./api/config', all, { validateStatus: () => true });
+        const next = Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+        // Update local store (keeps UI in sync) and persist via store API
+        configStore.updateOption('playnite_exclude_games', next);
+        await configStore.save();
       } catch (_) {
-        // best-effort; continue with deletion
+        // best-effort; continue with deletion even if exclusion save fails
       }
     }
 
