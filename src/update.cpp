@@ -7,9 +7,7 @@
 
 // standard includes
 #include <cstdio>
-#include <ctime>
 #include <future>
-#include <regex>
 #include <sstream>
 #include <thread>
 
@@ -75,33 +73,7 @@ namespace update {
     return true;
   }
 
-  // Parse a limited ISO 8601 timestamp (YYYY-MM-DDThh:mm:ssZ) into a system_clock::time_point
-  static std::chrono::system_clock::time_point parse_iso8601_utc(const std::string &s) {
-    // Expect Zulu time from GitHub (e.g., 2024-08-20T21:30:00Z)
-    if (s.size() < 20) {
-      return std::chrono::system_clock::time_point {};
-    }
-    std::tm tm {};
-    try {
-      tm.tm_year = std::stoi(s.substr(0, 4)) - 1900;
-      tm.tm_mon = std::stoi(s.substr(5, 2)) - 1;
-      tm.tm_mday = std::stoi(s.substr(8, 2));
-      tm.tm_hour = std::stoi(s.substr(11, 2));
-      tm.tm_min = std::stoi(s.substr(14, 2));
-      tm.tm_sec = std::stoi(s.substr(17, 2));
-    } catch (...) {
-      return std::chrono::system_clock::time_point {};
-    }
-#if defined(_WIN32)
-    time_t t = _mkgmtime(&tm);
-#else
-    time_t t = timegm(&tm);
-#endif
-    if (t == (time_t) -1) {
-      return std::chrono::system_clock::time_point {};
-    }
-    return std::chrono::system_clock::from_time_t(t);
-  }
+  // (removed) previous date-based comparison helper
 
   static void notify_new_version(const std::string &version, bool prerelease) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -189,23 +161,68 @@ namespace update {
         }
       }
       state.last_check_time = std::chrono::steady_clock::now();
-      // Compare with current build by date (ISO 8601), not version
-      const std::string installed_date_str = PROJECT_RELEASE_DATE;
-      auto installed_tp = parse_iso8601_utc(installed_date_str);
-      auto stable_tp = parse_iso8601_utc(state.latest_release.published_at);
-      auto pre_tp = parse_iso8601_utc(state.latest_prerelease.published_at);
 
-      bool stable_available = (stable_tp > installed_tp);
-      bool prerelease_available = config::sunshine.notify_pre_releases && (pre_tp > installed_tp) && (pre_tp > stable_tp);
+      // --- Tag-based (semver-like) comparison ----------------------------
+      auto parse_semver = [](const std::string &ver) -> std::tuple<int, int, int> {
+        if (ver.empty()) return {0, 0, 0};
+        std::string v = ver;
+        // strip leading 'v' or 'V'
+        if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
+          v.erase(0, 1);
+        }
+        // cut off pre-release/build metadata
+        auto dash = v.find('-');
+        auto plus = v.find('+');
+        size_t cut = std::string::npos;
+        if (dash != std::string::npos) cut = dash;
+        if (plus != std::string::npos) cut = (cut == std::string::npos) ? plus : std::min(cut, plus);
+        if (cut != std::string::npos) v = v.substr(0, cut);
 
-      if (prerelease_available && !state.latest_prerelease.version.empty()) {
+        int a = 0, b = 0, c = 0;
+        try {
+          std::stringstream ss(v);
+          std::string part;
+          if (std::getline(ss, part, '.')) a = std::stoi(part);
+          if (std::getline(ss, part, '.')) b = std::stoi(part);
+          if (std::getline(ss, part, '.')) c = std::stoi(part);
+        } catch (...) {
+          // fall back to zeros
+          a = b = c = 0;
+        }
+        return {a, b, c};
+      };
+
+      auto cmp_semver = [&](const std::string &lhs, const std::string &rhs) -> int {
+        auto [a0, a1, a2] = parse_semver(lhs);
+        auto [b0, b1, b2] = parse_semver(rhs);
+        if (a0 != b0) return (a0 < b0) ? -1 : 1;
+        if (a1 != b1) return (a1 < b1) ? -1 : 1;
+        if (a2 != b2) return (a2 < b2) ? -1 : 1;
+        return 0;
+      };
+
+      const std::string installed_version_tag = PROJECT_VERSION;
+      const std::string latest_stable_tag = state.latest_release.version;
+      const std::string latest_pre_tag = state.latest_prerelease.version;
+
+      bool stable_available = !latest_stable_tag.empty() && (cmp_semver(installed_version_tag, latest_stable_tag) < 0);
+      bool prerelease_available = config::sunshine.notify_pre_releases &&
+                                  !latest_pre_tag.empty() &&
+                                  (cmp_semver(installed_version_tag, latest_pre_tag) < 0) &&
+                                  (!latest_stable_tag.empty() ? (cmp_semver(latest_stable_tag, latest_pre_tag) < 0) : true);
+
+      if (prerelease_available) {
+        BOOST_LOG(info) << "Update check: prerelease available tag="sv << state.latest_prerelease.version
+                        << ", installed="sv << installed_version_tag;
         notify_new_version(state.latest_prerelease.version, true);
-      } else if (stable_available && !state.latest_release.version.empty()) {
+      } else if (stable_available) {
+        BOOST_LOG(info) << "Update check: stable available tag="sv << state.latest_release.version
+                        << ", installed="sv << installed_version_tag;
         notify_new_version(state.latest_release.version, false);
       } else {
-        BOOST_LOG(info) << "Update check (date-based): up-to-date. installed="sv << installed_date_str
-                        << ", stable="sv << state.latest_release.published_at
-                        << ", prerelease="sv << state.latest_prerelease.published_at;
+        BOOST_LOG(info) << "Update check (tag-based): up-to-date. installed="sv << installed_version_tag
+                        << ", stable="sv << latest_stable_tag
+                        << ", prerelease="sv << latest_pre_tag;
       }
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update check failed: "sv << e.what();

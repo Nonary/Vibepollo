@@ -184,8 +184,6 @@ const loading = ref(true);
 const logs = ref('');
 const branch = ref('');
 const commit = ref('');
-// Release-date based update check; no git compare needed
-const installedReleaseDate = ref<number | null>(null); // epoch ms
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
@@ -211,13 +209,6 @@ async function runVersionChecks() {
     installedVersion.value = new SunshineVersion(serverVersion || '0.0.0');
     branch.value = cfg.branch || '';
     commit.value = cfg.commit || '';
-    // Parse installed release date from metadata if provided
-    try {
-      const rd = (configStore.metadata as any)?.release_date as string | undefined;
-      installedReleaseDate.value = rd ? new Date(rd).getTime() : null;
-    } catch {
-      installedReleaseDate.value = null;
-    }
 
     // Remote release checks (GitHub)
     try {
@@ -238,7 +229,7 @@ async function runVersionChecks() {
       // eslint-disable-next-line no-console
       console.warn('[Dashboard] releases list fetch failed', e);
     }
-    // No git compare; date-based logic uses published_at and installedReleaseDate
+    // Tag-based comparison handled below via SunshineVersion
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[Dashboard] version checks failed', e);
@@ -259,18 +250,11 @@ onMounted(async () => {
 });
 
 const installedVersionNotStable = computed(() => {
-  if (!githubRelease.value) return false;
   // treat non-main/master branches as pre-release builds automatically
   if (branch.value && !['master', 'main'].includes(branch.value)) return true;
-  try {
-    const latestStableTs = githubRelease.value?.published_at
-      ? new Date(githubRelease.value.published_at).getTime()
-      : null;
-    if (installedReleaseDate.value && latestStableTs) {
-      return installedReleaseDate.value > latestStableTs;
-    }
-  } catch {
-    /* ignore */
+  // If installed tag is ahead of the latest stable tag, assume pre-release/dev build
+  if (githubRelease.value) {
+    return installedVersion.value.isGreater(githubVersion.value);
   }
   return false;
 });
@@ -285,35 +269,11 @@ const displayVersion = computed(() => {
 });
 const stableBuildAvailable = computed(() => {
   if (!githubRelease.value) return false;
-  try {
-    const latestStableTs = githubRelease.value?.published_at
-      ? new Date(githubRelease.value.published_at).getTime()
-      : null;
-    if (installedReleaseDate.value && latestStableTs) {
-      return installedReleaseDate.value < latestStableTs;
-    }
-  } catch {
-    /* ignore */
-  }
-  // Fallback to semver compare if dates are missing
   return githubVersion.value.isGreater(installedVersion.value);
 });
 const preReleaseBuildAvailable = computed(() => {
   if (!preReleaseRelease.value || !githubRelease.value) return false;
-  try {
-    const preTs = preReleaseRelease.value?.published_at
-      ? new Date(preReleaseRelease.value.published_at).getTime()
-      : null;
-    const stableTs = githubRelease.value?.published_at
-      ? new Date(githubRelease.value.published_at).getTime()
-      : null;
-    if (preTs && installedReleaseDate.value && stableTs) {
-      return preTs > installedReleaseDate.value && preTs > stableTs;
-    }
-  } catch {
-    /* ignore */
-  }
-  // Fallback to semver compare if dates are missing
+  // Only show pre-release if it's enabled and the pre tag is newer than both installed and stable
   return (
     preReleaseVersion.value.isGreater(installedVersion.value) &&
     preReleaseVersion.value.isGreater(githubVersion.value)
