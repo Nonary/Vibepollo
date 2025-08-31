@@ -44,7 +44,7 @@
               :disabled="pairing"
               class="w-full md:w-auto"
               type="primary"
-              html-type="submit"
+              attr-type="submit"
             >
               <span v-if="!pairing">{{ $t('pin.send') }}</span>
               <span v-else>{{ $t('clients.pairing') }}</span>
