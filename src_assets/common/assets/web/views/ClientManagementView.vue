@@ -163,33 +163,50 @@
   </div>
 </template>
 
-<script setup>
-import { ref, onMounted, computed } from 'vue';
+<script setup lang="ts">
+import { ref, onMounted } from 'vue';
 import { http } from '@/http';
 import { NCard, NButton, NAlert, NModal, NInput, NForm, NFormItem } from 'naive-ui';
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import { useAuthStore } from '@/stores/auth';
 
-const clients = ref([]);
-const pin = ref('');
-const deviceName = ref('');
-const pairing = ref(false);
-const pairStatus = ref(null); // true/false/null
-const unpairAllPressed = ref(false);
-const unpairAllStatus = ref(null);
-const removing = ref({});
-const showConfirmRemove = ref(false);
-const pendingRemoveUuid = ref('');
-const pendingRemoveName = ref('');
-const showConfirmUnpairAll = ref(false);
+// ----- Types -----
+interface ClientInfo {
+  uuid: string;
+  name: string;
+}
+interface ClientsListResponse {
+  status: boolean;
+  named_certs: ClientInfo[];
+}
 
-async function refreshClients() {
+// ----- Client pairing & management state -----
+const clients = ref<ClientInfo[]>([]);
+const pin = ref<string>('');
+const deviceName = ref<string>('');
+const pairing = ref<boolean>(false);
+const pairStatus = ref<boolean | null>(null); // true/false/null
+const unpairAllPressed = ref<boolean>(false);
+const unpairAllStatus = ref<boolean | null>(null);
+const removing = ref<Record<string, boolean>>({});
+const showConfirmRemove = ref<boolean>(false);
+const pendingRemoveUuid = ref<string>('');
+const pendingRemoveName = ref<string>('');
+const showConfirmUnpairAll = ref<boolean>(false);
+
+async function refreshClients(): Promise<void> {
   const auth = useAuthStore();
   if (!auth.isAuthenticated) return;
   try {
-    const r = await http.get('./api/clients/list', { validateStatus: () => true });
-    const response = r.data || {};
-    if (response.status === true && response.named_certs && response.named_certs.length) {
+    const r = await http.get<ClientsListResponse>('./api/clients/list', {
+      validateStatus: () => true,
+    });
+    const response = r.data || ({} as ClientsListResponse);
+    if (
+      response.status === true &&
+      Array.isArray(response.named_certs) &&
+      response.named_certs.length
+    ) {
       clients.value = response.named_certs.sort((a, b) =>
         a.name.toLowerCase() > b.name.toLowerCase() || a.name === '' ? 1 : -1,
       );
@@ -201,7 +218,7 @@ async function refreshClients() {
   }
 }
 
-async function registerDevice() {
+async function registerDevice(): Promise<void> {
   if (pairing.value) return;
   pairStatus.value = null;
   pairing.value = true;
@@ -242,14 +259,14 @@ async function registerDevice() {
   }
 }
 
-function askConfirmUnpair(uuid) {
+function askConfirmUnpair(uuid: string): void {
   pendingRemoveUuid.value = uuid;
   const c = clients.value.find((x) => x.uuid === uuid);
   pendingRemoveName.value = c && c.name ? c.name : '';
   showConfirmRemove.value = true;
 }
 
-async function confirmRemove() {
+async function confirmRemove(): Promise<void> {
   const uuid = pendingRemoveUuid.value;
   showConfirmRemove.value = false;
   pendingRemoveUuid.value = '';
@@ -258,7 +275,7 @@ async function confirmRemove() {
   await unpairSingle(uuid);
 }
 
-async function unpairSingle(uuid) {
+async function unpairSingle(uuid: string): Promise<void> {
   if (removing.value[uuid]) return;
   removing.value = { ...removing.value, [uuid]: true };
   try {
@@ -271,16 +288,16 @@ async function unpairSingle(uuid) {
   }
 }
 
-function askConfirmUnpairAll() {
+function askConfirmUnpairAll(): void {
   showConfirmUnpairAll.value = true;
 }
 
-async function confirmUnpairAll() {
+async function confirmUnpairAll(): Promise<void> {
   showConfirmUnpairAll.value = false;
   await unpairAll();
 }
 
-async function unpairAll() {
+async function unpairAll(): Promise<void> {
   unpairAllPressed.value = true;
   try {
     const r = await http.post('./api/clients/unpair-all', {}, { validateStatus: () => true });
@@ -296,232 +313,10 @@ async function unpairAll() {
   }
 }
 
-// ---------------- API TOKEN MANAGEMENT LOGIC (migrated from ApiTokenManager) ----------------
-const scopes = ref([{ path: '', methods: [] }]);
-const tokenResult = ref('');
-const displayedToken = ref('');
-const tokenCopied = ref(false);
-const tokens = ref([]);
-const tokenFilter = ref('');
-const debouncedFilter = ref('');
-const sortField = ref('created_at');
-const sortDir = ref('desc');
-const copiedHash = ref('');
-const isGenerating = ref(false);
-const isLoadingTokens = ref(false);
-const revoking = ref('');
-const testPath = ref('');
-const testTokenInput = ref('');
-const testResult = ref('');
-const testError = ref('');
-const isTesting = ref(false);
-
-const API_ROUTES = [
-  { path: '/api/pin', methods: ['POST'] },
-  { path: '/api/apps', methods: ['GET', 'POST'] },
-  { path: '/api/logs', methods: ['GET'] },
-  { path: '/api/config', methods: ['GET', 'POST'] },
-  { path: '/api/configLocale', methods: ['GET'] },
-  { path: '/api/restart', methods: ['POST'] },
-  { path: '/api/reset-display-device-persistence', methods: ['POST'] },
-  { path: '/api/password', methods: ['POST'] },
-  { path: '/api/apps/([0-9]+)', methods: ['DELETE'] },
-  { path: '/api/clients/unpair-all', methods: ['POST'] },
-  { path: '/api/clients/list', methods: ['GET'] },
-  { path: '/api/clients/unpair', methods: ['POST'] },
-  { path: '/api/apps/close', methods: ['POST'] },
-  { path: '/api/covers/upload', methods: ['POST'] },
-  { path: '/api/token', methods: ['POST'] },
-  { path: '/api/tokens', methods: ['GET'] },
-  { path: '/api/token/([a-fA-F0-9]+)', methods: ['DELETE'] },
-];
-const apiRoutes = ref(API_ROUTES);
-
-const validScopes = computed(() =>
-  scopes.value.filter((s) => s.path && Array.isArray(s.methods) && s.methods.length > 0),
-);
-const isGenerateDisabled = computed(() => !validScopes.value.length || isGenerating.value);
-const filteredTokens = computed(() => {
-  const filter = (debouncedFilter.value || '').trim().toLowerCase();
-  if (!filter) return tokens.value;
-  return tokens.value.filter(
-    (t) =>
-      t.username.toLowerCase().includes(filter) ||
-      t.hash.toLowerCase().includes(filter) ||
-      (t.scopes || []).some((s) => s.path.toLowerCase().includes(filter)),
-  );
-});
-const sortedTokens = computed(() => {
-  const arr = [...filteredTokens.value];
-  arr.sort((a, b) => {
-    let av, bv;
-    if (sortField.value === 'created_at') {
-      av = a.created_at;
-      bv = b.created_at;
-    } else if (sortField.value === 'username') {
-      av = a.username.toLowerCase();
-      bv = b.username.toLowerCase();
-    } else {
-      av = a.hash.toLowerCase();
-      bv = b.hash.toLowerCase();
-    }
-    if (av < bv) return sortDir.value === 'asc' ? -1 : 1;
-    if (av > bv) return sortDir.value === 'asc' ? 1 : -1;
-    return 0;
-  });
-  return arr;
-});
-
-function addScope() {
-  scopes.value.push({ path: '', methods: [] });
-}
-function onScopePathChange(scope) {
-  scope.methods = [];
-}
-function removeScope(idx) {
-  if (scopes.value.length > 1) scopes.value.splice(idx, 1);
-  else scopes.value[0] = { path: '', methods: [] };
-}
-function getMethodsForPath(path) {
-  const found = apiRoutes.value.find((r) => r.path === path);
-  return found ? found.methods : ['GET', 'POST', 'DELETE', 'PATCH', 'PUT'];
-}
-function resetForm() {
-  scopes.value = [{ path: '', methods: [] }];
-  tokenResult.value = '';
-  displayedToken.value = '';
-  tokenCopied.value = false;
-}
-
-async function generateToken() {
-  const filtered = validScopes.value;
-  if (!filtered.length) {
-    alert(window?.app?.$t?.('auth.please_specify_scope') || 'Specify scope');
-    return;
-  }
-  isGenerating.value = true;
-  tokenCopied.value = false;
-  try {
-    const res = await http.post('/api/token', { scopes: filtered }, { validateStatus: () => true });
-    const data = res.data || {};
-    if (res.status === 200 && data.token) {
-      tokenResult.value = data.token;
-      displayedToken.value = data.token;
-      await loadTokens();
-    } else {
-      tokenResult.value = 'Error: ' + (data.error || 'Failed');
-      displayedToken.value = '';
-    }
-  } catch (e) {
-    tokenResult.value = 'Request failed: ' + e.message;
-    displayedToken.value = '';
-  } finally {
-    isGenerating.value = false;
-  }
-}
-
-async function loadTokens() {
-  isLoadingTokens.value = true;
-  try {
-    const res = await http.get('/api/tokens', { validateStatus: () => true });
-    if (res.status === 200) tokens.value = res.data || [];
-    else tokens.value = [];
-  } catch {
-    tokens.value = [];
-  } finally {
-    isLoadingTokens.value = false;
-  }
-}
-
-async function revokeToken(hash) {
-  if (!confirm(window?.app?.$t?.('auth.confirm_revoke') || 'Revoke token?')) return;
-  revoking.value = hash;
-  try {
-    const res = await http.delete(`/api/token/${hash}`, { validateStatus: () => true });
-    if (res.status === 200) await loadTokens();
-    else alert(window?.app?.$t?.('auth.failed_to_revoke_token') || 'Failed');
-  } catch (e) {
-    alert('Error: ' + e.message);
-  } finally {
-    revoking.value = '';
-  }
-}
-
-function formatDate(ts) {
-  const d = new Date(ts * 1000);
-  return (
-    d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  );
-}
-function formatFullDate(ts) {
-  return new Date(ts * 1000).toLocaleString();
-}
-
-async function testToken() {
-  testResult.value = '';
-  testError.value = '';
-  if (!testPath.value || !testTokenInput.value) {
-    testError.value = 'Select path and token';
-    return;
-  }
-  isTesting.value = true;
-  try {
-    const res = await http.get(testPath.value, {
-      headers: { Authorization: 'Bearer ' + testTokenInput.value },
-      validateStatus: () => true,
-      responseType: 'text',
-      transformResponse: [(v) => v],
-    });
-    const contentType = res.headers
-      ? res.headers['content-type'] || res.headers['Content-Type']
-      : '';
-    let bodyText = res.data;
-    const isJson = contentType && contentType.indexOf('application/json') !== -1 && bodyText;
-    if (isJson) {
-      try {
-        testResult.value = JSON.stringify(JSON.parse(bodyText), null, 2);
-      } catch {
-        testResult.value = bodyText;
-      }
-    } else testResult.value = bodyText;
-    if (res.status < 200 || res.status >= 300) testError.value = 'HTTP ' + res.status;
-    else testError.value = '';
-  } catch (e) {
-    testError.value = 'Request failed: ' + e.message;
-  } finally {
-    isTesting.value = false;
-  }
-}
-function copyToken() {
-  if (!displayedToken.value) return;
-  navigator.clipboard?.writeText(displayedToken.value).then(() => {
-    tokenCopied.value = true;
-    setTimeout(() => {
-      tokenCopied.value = false;
-    }, 3000);
-  });
-}
-let _filterTimer;
-function onFilterInput() {
-  clearTimeout(_filterTimer);
-  _filterTimer = setTimeout(() => {
-    debouncedFilter.value = tokenFilter.value;
-  }, 180);
-}
-function copyHash(hash) {
-  navigator.clipboard?.writeText(hash).then(() => {
-    copiedHash.value = hash;
-    setTimeout(() => {
-      if (copiedHash.value === hash) copiedHash.value = '';
-    }, 2000);
-  });
-}
-
 onMounted(async () => {
   const auth = useAuthStore();
   await auth.waitForAuthentication();
   await refreshClients();
-  await loadTokens();
 });
 </script>
 

@@ -31,6 +31,9 @@ export default async function (): Promise<any> {
     console.error('Failed to download translations', e);
   }
   const i18n = createI18n({
+    // Use the Composition API and inject global helpers so `$t` works in templates
+    legacy: false,
+    globalInjection: true,
     locale: locale, // set locale
     fallbackLocale: 'en', // set fallback locale
     messages: messages,

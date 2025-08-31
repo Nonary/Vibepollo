@@ -262,12 +262,12 @@
           <n-button
             v-if="form.index !== -1"
             type="error"
-            :disabled="saving.v"
+            :disabled="saving"
             @click="showDeleteConfirm = true"
           >
             <i class="fas fa-trash" /> {{ $t('apps.delete') }}
           </n-button>
-          <n-button type="primary" :loading="saving.v" :disabled="saving.v" @click="save">
+          <n-button type="primary" :loading="saving" :disabled="saving" @click="save">
             <i class="fas fa-save" /> {{ $t('_common.save') }}
           </n-button>
         </div>
@@ -283,9 +283,7 @@
           <template #header>
             <div class="flex items-center justify-between w-full">
               <span class="font-semibold">Covers Found</span>
-              <n-button quaternary size="small" @click="showCoverModal = false">
-                Close
-              </n-button>
+              <n-button quaternary size="small" @click="showCoverModal = false"> Close </n-button>
             </div>
           </template>
           <div class="min-h-[160px]">
@@ -293,7 +291,9 @@
               <n-spin size="large">Loading…</n-spin>
             </div>
             <div v-else>
-              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[420px] overflow-auto pr-1">
+              <div
+                class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[420px] overflow-auto pr-1"
+              >
                 <div
                   v-for="(cover, i) in coverCandidates"
                   :key="i"
@@ -315,7 +315,10 @@
                     {{ cover.name }}
                   </div>
                 </div>
-                <div v-if="!coverCandidates.length" class="col-span-full text-center opacity-70 py-8">
+                <div
+                  v-if="!coverCandidates.length"
+                  class="col-span-full text-center opacity-70 py-8"
+                >
                   No results. Try adjusting the app name.
                 </div>
               </div>
@@ -376,7 +379,11 @@ import { NModal, NCard, NButton, NInput, NInputNumber, NCheckbox, NSelect, NSpin
 import { useConfigStore } from '@/stores/config';
 
 // Types for form and server payload
-interface PrepCmd { do: string; undo: string; elevated?: boolean }
+interface PrepCmd {
+  do: string;
+  undo: string;
+  elevated?: boolean;
+}
 interface AppForm {
   index: number;
   name: string;
@@ -429,7 +436,6 @@ function fresh(): AppForm {
   return {
     index: -1,
     name: '',
-    output: '',
     cmd: '',
     workingDir: '',
     imagePath: '',
@@ -440,6 +446,7 @@ function fresh(): AppForm {
     exitTimeout: 5,
     prepCmd: [],
     detached: [],
+    output: '',
   };
 }
 const form = ref<AppForm>(fresh());
@@ -449,7 +456,11 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   if (!src) return { ...base, index: idx };
   const cmdStr = Array.isArray(src.cmd) ? src.cmd.join(' ') : (src.cmd ?? '');
   const prep = Array.isArray(src['prep-cmd'])
-    ? src['prep-cmd'].map((p) => ({ do: String(p?.do ?? ''), undo: String(p?.undo ?? ''), elevated: !!p?.elevated }))
+    ? src['prep-cmd'].map((p) => ({
+        do: String(p?.do ?? ''),
+        undo: String(p?.undo ?? ''),
+        elevated: !!p?.elevated,
+      }))
     : [];
   return {
     index: idx,
@@ -627,7 +638,7 @@ async function searchCovers(name: string): Promise<CoverCandidate[]> {
     }
     return null;
   });
-  const results = (await Promise.all(promises)).filter(Boolean) as any[];
+  const results = (await Promise.all(promises)).filter(Boolean);
   return results
     .filter((item) => item && item.cover && item.cover.url)
     .map((game) => {
@@ -667,8 +678,8 @@ async function useCover(cover: CoverCandidate) {
       { key: cover.key, url: cover.saveUrl },
       { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
     );
-    if (r.status >= 200 && r.status < 300 && r.data && (r.data as any).path) {
-      form.value.imagePath = String((r.data as any).path || '');
+    if (r.status >= 200 && r.status < 300 && r.data && r.data.path) {
+      form.value.imagePath = String(r.data.path || '');
       showCoverModal.value = false;
     }
   } finally {

@@ -11,7 +11,7 @@ export interface GitHubRelease {
 
 export default class SunshineVersion {
   public version: string;
-  public versionParts: number[];
+  public versionParts: [number, number, number];
   public versionMajor: number;
   public versionMinor: number;
   public versionPatch: number;
@@ -45,7 +45,7 @@ export default class SunshineVersion {
    * Parse a version string like "v1.2.3" or "1.2" into a 3-number array.
    * Always returns a length-3 array of numbers (no nulls).
    */
-  parseVersion(version: string): number[] {
+  parseVersion(version: string): [number, number, number] {
     if (!version) return [0, 0, 0];
     let v = version.trim();
     // Strip leading 'v'
@@ -62,9 +62,9 @@ export default class SunshineVersion {
     // Extract numeric major.minor.patch via regex to avoid NaN on suffixed parts
     const m = v.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
     if (m) {
-      const maj = parseInt(m[1], 10);
-      const min = parseInt(m[2], 10);
-      const pat = m[3] ? parseInt(m[3], 10) : 0;
+      const maj = parseInt(m[1]!, 10);
+      const min = parseInt(m[2]!, 10);
+      const pat = m[3] ? parseInt(m[3]!, 10) : 0;
       return [maj, min, pat];
     }
     // Fallback: split and coerce numerics defensively
@@ -73,14 +73,15 @@ export default class SunshineVersion {
       return Number.isFinite(n) ? n : 0;
     });
     while (parts.length < 3) parts.push(0);
-    return parts.slice(0, 3);
+    const tup = parts.slice(0, 3) as [number, number, number];
+    return tup;
   }
 
   /**
    * Return true if this version is greater than the other.
    */
   isGreater(otherVersion: SunshineVersion | string): boolean {
-    let otherVersionParts: number[];
+    let otherVersionParts: [number, number, number];
     if (otherVersion instanceof SunshineVersion) {
       otherVersionParts = otherVersion.versionParts;
     } else if (typeof otherVersion === 'string') {
@@ -91,11 +92,10 @@ export default class SunshineVersion {
       );
     }
 
-    for (let i = 0; i < 3; i++) {
-      if (this.versionParts[i] !== otherVersionParts[i]) {
-        return this.versionParts[i] > otherVersionParts[i];
-      }
-    }
-    return false;
+    const [a0, a1, a2] = this.versionParts;
+    const [b0, b1, b2] = otherVersionParts;
+    if (a0 !== b0) return a0 > b0;
+    if (a1 !== b1) return a1 > b1;
+    return a2 > b2;
   }
 }

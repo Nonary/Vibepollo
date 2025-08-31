@@ -210,7 +210,39 @@
     @apply flex items-center gap-3 mb-4;
   }
 
-  /* legacy alias kept for any dangling references */
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-primary text-onPrimary shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-onPrimary hover:bg-primary/90;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
+  }
+
+  .btn-success {
+    @apply bg-success text-onLight hover:bg-success/90;
+  }
+
+  .btn-danger {
+    @apply bg-danger text-onDark hover:bg-danger/90;
+  }
+
+  .btn-warning {
+    @apply bg-warning text-onLight hover:bg-warning/90; /* black text for warning */
+  }
+
+  .btn-info {
+    @apply bg-info text-onLight hover:bg-info/90;
+  }
+
+  .btn.ghost,
+  .btn-ghost {
+    @apply bg-transparent shadow-none text-brand hover:bg-brand/10;
+  }
+
   .btn.apply {
     @apply btn-primary;
   }

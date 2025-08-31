@@ -4,23 +4,25 @@ import { NCheckbox } from 'naive-ui';
 
 const model = defineModel({ required: true });
 const slots = defineSlots();
-const props = defineProps({
-  class: { type: String, default: '' },
-  desc: { type: String, default: null },
-  id: { type: String, required: true },
-  label: { type: String, default: null },
-  localePrefix: { type: String, default: 'missing-prefix' },
-  inverseValues: { type: Boolean, default: false },
+interface Props {
+  id: string;
+  label?: string | null;
+  desc?: string | null;
+  localePrefix?: string;
+  inverseValues?: boolean;
   // Default backing value used to infer mapping when model is null/undefined
-  default: { type: undefined, default: null },
+  default?: any;
+}
+const props = withDefaults(defineProps<Props>(), {
+  label: null,
+  desc: null,
+  localePrefix: 'missing-prefix',
+  inverseValues: false,
+  default: null,
 });
 
-// Add the mandatory class values
-const extendedClassStr = (() => {
-  const values = props.class.split(' ').filter(Boolean);
-  if (!values.includes('form-check')) values.push('form-check');
-  return values.join(' ');
-})();
+// Always include the mandatory class on the wrapper; user-supplied class on the
+// component itself will be merged by Vue onto the root element automatically.
 
 // Map an arbitrary value into a boolean-pair representation if recognizable.
 // Returns null when the provided value cannot be interpreted.
@@ -112,7 +114,7 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
 </script>
 
 <template>
-  <div :class="extendedClassStr">
+  <div class="form-check">
     <n-checkbox :id="props.id" v-model:checked="isChecked">
       {{ $t(labelField) }}
     </n-checkbox>

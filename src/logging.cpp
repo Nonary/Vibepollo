@@ -325,6 +325,8 @@ namespace logging {
     }
   }
 
+ 
+
   void print_help(const char *name) {
     std::cout
       << "Usage: "sv << name << " [options] [/path/to/configuration_file] [--cmd]"sv << std::endl

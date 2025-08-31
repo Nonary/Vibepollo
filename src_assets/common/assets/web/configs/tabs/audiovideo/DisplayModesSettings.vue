@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
@@ -13,7 +13,7 @@ const config = store.config;
   <!--max_bitrate-->
   <div class="mb-4">
     <label for="max_bitrate" class="form-label">{{ $t('config.max_bitrate') }}</label>
-    <n-input-number id="max_bitrate" v-model:value="config.max_bitrate" :placeholder="'0'" />
+    <n-input-number id="max_bitrate" v-model:value="config.max_bitrate" placeholder="0" />
     <p class="text-[11px] opacity-60 mt-1">
       {{ $t('config.max_bitrate_desc') }}
     </p>
@@ -27,7 +27,7 @@ const config = store.config;
       v-model:value="config.minimum_fps_target"
       :min="0"
       :max="1000"
-      :placeholder="'0'"
+      placeholder="0"
     />
     <p class="text-[11px] opacity-60 mt-1">
       {{ $t('config.minimum_fps_target_desc') }}

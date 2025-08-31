@@ -72,6 +72,42 @@ namespace {
     tree.put_child("root.api_tokens", tokens_tree);
   }
 
+  void FillPtreeWithMalformedScopeData(pt::ptree &tree) {
+    pt::ptree tokens_tree;
+    // Add valid token
+    {
+      pt::ptree valid_token;
+      valid_token.put("hash", "valid_hash");
+      valid_token.put("username", "valid_user");
+      valid_token.put("created_at", 1234567890);
+      pt::ptree valid_scopes;
+      pt::ptree valid_scope;
+      valid_scope.put("path", "/api/data");
+      pt::ptree methods;
+      methods.push_back({"", pt::ptree("GET")});
+      valid_scope.add_child("methods", methods);
+      valid_scopes.push_back({"", valid_scope});
+      valid_token.add_child("scopes", valid_scopes);
+      tokens_tree.push_back({"", valid_token});
+    }
+    // Add malformed token with empty methods
+    {
+      pt::ptree malformed_token;
+      malformed_token.put("hash", "malformed_hash");
+      malformed_token.put("username", "malformed_user");
+      malformed_token.put("created_at", 1234567890);
+      pt::ptree malformed_scopes;
+      pt::ptree malformed_scope;
+      malformed_scope.put("path", "/api/data");
+      pt::ptree empty_methods;
+      malformed_scope.add_child("methods", empty_methods);
+      malformed_scopes.push_back({"", malformed_scope});
+      malformed_token.add_child("scopes", malformed_scopes);
+      tokens_tree.push_back({"", malformed_token});
+    }
+    tree.put_child("root.api_tokens", tokens_tree);
+  }
+
 }  // namespace
 
 class ApiTokenManagerTest: public Test {

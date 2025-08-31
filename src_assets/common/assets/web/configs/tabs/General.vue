@@ -166,7 +166,7 @@ function removeCmd(index: number) {
         </div>
       </div>
       <div class="mt-4">
-        <n-button primary @click="addCmd" class="mx-auto block">
+        <n-button primary class="mx-auto block" @click="addCmd">
           &plus; {{ $t('config.add') }}
         </n-button>
       </div>
@@ -212,7 +212,7 @@ function removeCmd(index: number) {
       v-model="config.notify_pre_releases"
       class="mb-3"
       locale-prefix="config"
-      default-value="false"
+      default="false"
     />
   </div>
 </template>

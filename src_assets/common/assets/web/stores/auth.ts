@@ -16,9 +16,7 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated: Ref<boolean> = ref(false);
   const ready: Ref<boolean> = ref(false);
   const _listeners: AuthListener[] = [];
-  const pendingRedirect: Ref<string> = ref('/');
   const showLoginModal: Ref<boolean> = ref(false);
-  const logoutOverlay: Ref<boolean> = ref(false);
   const credentialsConfigured: Ref<boolean> = ref(true);
   const loggingIn: Ref<boolean> = ref(false);
   const logoutInitiated: Ref<boolean> = ref(false);
@@ -87,14 +85,9 @@ export const useAuthStore = defineStore('auth', () => {
     };
   }
 
-  function requireLogin(redirectPath?: string): void {
+  function requireLogin(): void {
     // If user intentionally logged out, do not show the login modal
     if (logoutInitiated.value) return;
-    if (redirectPath && typeof redirectPath === 'string') {
-      pendingRedirect.value = redirectPath;
-    }
-    // Do not show login if logout overlay is active
-    if (logoutOverlay.value) return;
     showLoginModal.value = true;
   }
 
@@ -119,7 +112,6 @@ export const useAuthStore = defineStore('auth', () => {
     setAuthenticated,
     initiateLogout,
     onLogin,
-    pendingRedirect,
     showLoginModal,
     requireLogin,
     hideLogin,

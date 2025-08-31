@@ -1,5 +1,21 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["**/*", "../../../../tests/frontend/**/*"],
-  "exclude": ["node_modules", "dist", "build"]
+  "include": ["**/*.ts", "**/*.tsx", "**/*.vue", "*.ts"],
+  "exclude": ["node_modules", "dist", "build"],
+  "compilerOptions": {
+    "strict": true,
+    "strictNullChecks": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "noEmit": true
+  }
 }

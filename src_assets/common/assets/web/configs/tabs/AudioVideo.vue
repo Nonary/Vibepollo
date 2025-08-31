@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
@@ -15,7 +15,7 @@ const config = store.config;
 const platform = computed(() => config.value?.platform || '');
 
 // Replace custom Checkbox with Naive UI using compatibility mapping
-function mapToBoolRepresentation(value) {
+function mapToBoolRepresentation(value: any) {
   if (value === true || value === false) return { possibleValues: [true, false], value };
   if (value === 1 || value === 0) return { possibleValues: [1, 0], value };
   const stringPairs = [
@@ -32,11 +32,14 @@ function mapToBoolRepresentation(value) {
   for (const pair of stringPairs) {
     if (v === pair[0] || v === pair[1]) return { possibleValues: pair, value: v };
   }
-  return null;
+  return null as null | {
+    possibleValues: readonly [string, string] | readonly [true, false] | readonly [1, 0];
+    value: any;
+  };
 }
 
-function boolProxy(key, defaultValue = 'true') {
-  return computed({
+function boolProxy(key: string, defaultValue: string = 'true') {
+  return computed<boolean>({
     get() {
       const raw = config.value?.[key];
       const parsed = mapToBoolRepresentation(raw);
@@ -45,13 +48,13 @@ function boolProxy(key, defaultValue = 'true') {
       const defParsed = mapToBoolRepresentation(defaultValue);
       return defParsed ? defParsed.value === defParsed.possibleValues[0] : !!raw;
     },
-    set(v) {
+    set(v: boolean) {
       const raw = config.value?.[key];
       const parsed = mapToBoolRepresentation(raw);
       const pv = parsed ? parsed.possibleValues : ['true', 'false'];
       const next = v ? pv[0] : pv[1];
       // assign preserving original type if boolean/numeric pair
-      config.value[key] = next;
+      (config.value as any)[key] = next as any;
     },
   });
 }

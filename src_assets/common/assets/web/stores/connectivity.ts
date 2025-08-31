@@ -3,51 +3,71 @@ import { ref, Ref, computed } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
 
-// Connectivity heartbeat + global offline state
 export const useConnectivityStore = defineStore('connectivity', () => {
   const offline: Ref<boolean> = ref(false);
   const checking: Ref<boolean> = ref(false);
   const lastOk: Ref<number | null> = ref(null);
   const retryMs: Ref<number> = ref(15000);
   const started: Ref<boolean> = ref(false);
+
   let intervalId: number | null = null;
-  const failCount: Ref<number> = ref(0);
-  const failThreshold: Ref<number> = ref(2);
-  const offlineSince: Ref<number | null> = ref(null);
-  const overlayDelayMs: Ref<number> = ref(0);
-  const quickRetryMs: Ref<number> = ref(1000);
   let quickRetryTimer: number | null = null;
+  let onBecameActiveHandler: ((this: Window, ev: Event) => any) | null = null;
+
+  let failCount = 0;
+  const failThreshold = 2;
+
+  let offlineSince: number | null = null;
+  const overlayDelayMs = 0;
+  const quickRetryMs = 1000;
+
+  // Utils
+  const getAuth = () => {
+    try {
+      return useAuthStore();
+    } catch {
+      return null;
+    }
+  };
+  const isLogoutInitiated = () => {
+    const auth = getAuth();
+    return !!(auth && (auth as any).logoutInitiated);
+  };
+  const isLoggingIn = () => {
+    const auth = getAuth();
+    return !!(auth && (auth as any).loggingIn && (auth as any).loggingIn.value === true);
+  };
+  const isTabActive = () => {
+    try {
+      const visible =
+        typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+      const focus =
+        typeof document !== 'undefined' && document.hasFocus ? document.hasFocus() : true;
+      return visible && focus;
+    } catch {
+      return true;
+    }
+  };
+  const later = (fn: () => void, ms: number) => window.setTimeout(fn, ms);
 
   function setOffline(v: boolean): void {
-    const auth = useAuthStore();
-    // Never show offline state when user intentionally logged out
-    if (auth && (auth as any).logoutInitiated) return;
+    if (isLogoutInitiated()) return; // don't show offline during intentional logout
     if (offline.value === v) return;
-    if (v && !offline.value && offlineSince.value == null) offlineSince.value = Date.now();
+
+    if (v && !offline.value && offlineSince == null) offlineSince = Date.now();
     offline.value = v;
   }
 
-  function hardReload(): void {
-    // Force a hard reload to fetch fresh index.html and assets.
-    // Use cache-busting query to avoid serving a stale SPA shell.
-    try {
-      const href = window.location.href;
-      const url = new URL(href);
-      url.searchParams.set('_r', String(Date.now()));
-      window.location.replace(url.toString());
-    } catch {
-      try {
-        window.location.reload();
-      } catch {}
-    }
+  function refreshPage(): void {
+    window.location.reload();
   }
 
   async function checkOnce(): Promise<void> {
     if (checking.value) return;
     checking.value = true;
+
     try {
-      // Any HTTP response (including 401/4xx/5xx) indicates server is reachable.
-      // Use an endpoint allowed while logged out.
+      // Any HTTP status means the server is reachable.
       const res = await http.get('/api/configLocale', {
         validateStatus: () => true,
         timeout: 2500,
@@ -57,34 +77,32 @@ export const useConnectivityStore = defineStore('connectivity', () => {
           clearTimeout(quickRetryTimer);
           quickRetryTimer = null;
         }
-        failCount.value = 0;
+        failCount = 0;
         setOffline(false);
         lastOk.value = Date.now();
-        // If we were offline, optionally refresh after prolonged outage only
-        if (offlineSince.value != null) {
-          const offlineDuration = Date.now() - offlineSince.value;
-          const reloadAfterOfflineMs = 10000; // avoid hard reloads on brief blips/login
+        // Handle recovery after an offline period
+        if (offlineSince != null) {
+          const offlineDuration = Date.now() - offlineSince;
+          const reloadAfterOfflineMs = 500;
           if (offlineDuration >= reloadAfterOfflineMs) {
             const delay = offlineDuration < 200 ? 200 - offlineDuration : 0;
-            setTimeout(() => hardReload(), delay);
-            // Let page reload clear state
+            later(refreshPage, delay);
           } else {
-            // Clear offline marker without reload (quick recovery)
-            offlineSince.value = null;
+            offlineSince = null;
           }
         }
       }
-    } catch (e) {
-      failCount.value += 1;
-      if (failCount.value === 1 && !quickRetryTimer) {
-        // First failure: schedule a quick verification after 1s
-        quickRetryTimer = window.setTimeout(() => {
+    } catch {
+      failCount += 1;
+
+      // First failure: quick recheck
+      if (failCount === 1 && !quickRetryTimer) {
+        quickRetryTimer = later(() => {
           quickRetryTimer = null;
-          // Only re-check if still not checking
           if (!checking.value) checkOnce();
-        }, quickRetryMs.value);
-      } else if (failCount.value >= failThreshold.value) {
-        // Second consecutive failure: consider truly offline
+        }, quickRetryMs);
+      } else if (failCount >= failThreshold) {
+        // Confirmed offline after threshold
         setOffline(true);
       }
     } finally {
@@ -93,62 +111,36 @@ export const useConnectivityStore = defineStore('connectivity', () => {
   }
 
   const overlayVisible = computed(() => {
-    if (!offline.value) return false;
-    // Suppress during active login attempts to avoid transient flicker
-    try {
-      const auth = useAuthStore();
-      if (auth && (auth as any).loggingIn && (auth as any).loggingIn.value === true) return false;
-    } catch {}
-    const since = offlineSince.value ?? Date.now();
-    return Date.now() - since >= overlayDelayMs.value;
+    if (!offline.value || isLoggingIn()) return false;
+    const since = offlineSince ?? Date.now();
+    return Date.now() - since >= overlayDelayMs;
   });
 
   function start(): void {
     if (started.value) return;
     started.value = true;
 
-    // Initial check shortly after mount
-    setTimeout(() => checkOnce(), 500);
+    later(checkOnce, 500);
 
-    // Heartbeat interval: only ping when window is active
     intervalId = window.setInterval(() => {
-      try {
-        const isVisible = typeof document !== 'undefined' && document.visibilityState === 'visible';
-        const hasFocus =
-          typeof document !== 'undefined' && document.hasFocus ? document.hasFocus() : true;
-        if (isVisible && hasFocus) checkOnce();
-      } catch {
-        // fallback: still attempt
-        checkOnce();
-      }
+      if (isTabActive()) checkOnce();
     }, retryMs.value);
 
-    // Browser online/offline events reflect network, not server, but still useful
-    window.addEventListener('online', () => {
-      // On browser regaining network, check server reachability immediately
-      setTimeout(() => checkOnce(), 200);
-    });
+    window.addEventListener('online', () => later(checkOnce, 200));
     window.addEventListener('offline', () => setOffline(true));
 
-    // When tab becomes active again, perform a quick check
-    onBecameActiveHandler = () => {
-      try {
-        if (document.visibilityState === 'visible') setTimeout(() => checkOnce(), 100);
-      } catch {
-        setTimeout(() => checkOnce(), 100);
-      }
-    };
+    onBecameActiveHandler = () =>
+      later(() => {
+        if (isTabActive()) checkOnce();
+      }, 100);
     window.addEventListener('visibilitychange', onBecameActiveHandler);
     window.addEventListener('focus', onBecameActiveHandler);
 
-    // Listen to HTTP-layer signals for faster reaction on failures
-    // We no longer react to interceptor 'offline' events; rely on heartbeat
     window.addEventListener('sunshine:offline', () => {
-      // noop: heartbeat governs offline state
+      /* noop: heartbeat governs */
     });
     window.addEventListener('sunshine:online', () => {
-      const auth = useAuthStore();
-      if (auth && (auth as any).logoutInitiated) return;
+      if (isLogoutInitiated()) return;
       setOffline(false);
       lastOk.value = Date.now();
     });
@@ -182,9 +174,6 @@ export const useConnectivityStore = defineStore('connectivity', () => {
     start,
     stop,
     checkOnce,
-    hardReload,
+    refreshPage,
   };
 });
-
-// Keep reference to remove listeners on stop
-let onBecameActiveHandler: ((this: Window, ev: Event) => any) | null = null;

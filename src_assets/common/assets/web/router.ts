@@ -12,10 +12,7 @@ const ClientManagementView = () => import('@/views/ClientManagementView.vue');
 const routes = [
   { path: '/', component: DashboardView },
   { path: '/applications', component: ApplicationsView },
-  // Full-bleed settings page
   { path: '/settings', component: SettingsView, meta: { container: 'full' } },
-  // Legacy paths (server still routes SPA shell); keep compatibility
-  { path: '/config', redirect: '/settings' },
   { path: '/logs', component: DashboardView },
   { path: '/troubleshooting', component: TroubleshootingView },
   { path: '/clients', component: ClientManagementView },
@@ -29,13 +26,23 @@ export const router = createRouter({
 
 // Lightweight guard: if navigating to a protected route and not authenticated,
 // open login modal (in-memory redirect) but allow navigation so URL stays.
-router.beforeEach((to: RouteLocationNormalized) => {
+router.beforeEach(async (_to: RouteLocationNormalized) => {
   if (typeof window === 'undefined') return true;
   try {
     const auth = useAuthStore();
-    if (!auth.isAuthenticated) {
-      auth.requireLogin(to.fullPath || to.path);
+    // Ensure auth store initialized before route components mount
+    if (!auth.ready && typeof auth.init === 'function') {
+      try {
+        await auth.init();
+      } catch {
+        /* ignore */
+      }
     }
-  } catch (_) {}
+    // If not authenticated, trigger overlay (do not redirect)
+    if (!auth.isAuthenticated) auth.requireLogin();
+  } catch {
+    /* ignore */
+  }
+  // Always allow navigation so URL remains intact
   return true;
 });

@@ -61,10 +61,6 @@
           <n-alert v-if="error" type="error" :show-icon="true">{{ error }}</n-alert>
           <n-alert v-else-if="success" type="success" :show-icon="true">{{ success }}</n-alert>
         </div>
-
-        <section class="sr-only">
-          <button type="submit" tabindex="-1" aria-hidden="true"></button>
-        </section>
       </form>
 
       <template #footer>
@@ -126,11 +122,25 @@ async function submit() {
   success.value = '';
   if (submitting.value) return;
   submitting.value = true;
+  // Toggle store logging state if the ref exists
+  const setLogging = (state: boolean) => {
+    const anyAuth = auth as any;
+    if (
+      anyAuth &&
+      anyAuth.loggingIn &&
+      typeof anyAuth.loggingIn === 'object' &&
+      'value' in anyAuth.loggingIn
+    ) {
+      anyAuth.loggingIn.value = state;
+    } else if (import.meta.env && (import.meta as any).env && (import.meta as any).env.DEV) {
+      console.warn('[LoginModal] auth.loggingIn ref missing; skipping toggle');
+    }
+  };
+  setLogging(true);
   try {
-    auth.loggingIn.value = true;
-  } catch {}
-  try {
-    if (!credentialsConfigured.value) {
+    // Capture whether this is the first-user flow before we potentially flip the flag
+    const firstUserFlow = !credentialsConfigured.value;
+    if (firstUserFlow) {
       if (!newPassword.value || newPassword.value !== confirmNewPassword.value) {
         error.value = t('auth.password_mismatch');
         return;
@@ -140,7 +150,8 @@ async function submit() {
         '/api/password',
         {
           currentUsername: username.value,
-          currentPassword: newPassword.value, // treated as current when none exist
+          // Server ignores current* when none exist
+          currentPassword: newPassword.value,
           newUsername: username.value,
           newPassword: newPassword.value,
           confirmNewPassword: confirmNewPassword.value,
@@ -156,15 +167,12 @@ async function submit() {
       // Auto attempt login after slight delay
       await new Promise((r) => setTimeout(r, 250));
     }
-    // Perform login
+    // Perform login (if first-time, use the newly created password explicitly)
     const loginRes = await http.post(
       '/api/auth/login',
       {
         username: username.value,
-        password: credentialsConfigured.value
-          ? password.value || newPassword.value
-          : newPassword.value,
-        redirect: auth.pendingRedirect,
+        password: firstUserFlow ? newPassword.value : password.value,
       },
       { validateStatus: () => true },
     );
@@ -187,35 +195,9 @@ async function submit() {
     error.value = t('auth.login_network_error');
   } finally {
     submitting.value = false;
-    try {
-      auth.loggingIn.value = false;
-    } catch {}
+    setLogging(false);
   }
 }
-
-// Backdrop and escape are disabled by UiModal when dismissible=false
+// Backdrop and Esc are disabled via NModal props (mask-closable=false, close-on-esc=false)
 </script>
-<style scoped>
-.ui-input {
-  width: 100%;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: rgba(255, 255, 255, 0.85);
-  padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 14px;
-}
-.dark .ui-input {
-  background: rgba(13, 16, 28, 0.65);
-  border-color: rgba(255, 255, 255, 0.14);
-  color: #f5f9ff;
-}
-/* Increase backdrop opacity and blur for stricter, less see-through modal */
-/* Use deep selector to target Naive UI modal mask rendered via teleport */
-:deep(.n-modal-mask) {
-  background-color: rgba(0, 0, 0, 0.6) !important;
-  backdrop-filter: blur(3px);
-}
-.dark :deep(.n-modal-mask) {
-  background-color: rgba(0, 0, 0, 0.65) !important;
-}
-</style>
+<style scoped></style>

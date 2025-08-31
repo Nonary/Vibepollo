@@ -104,7 +104,15 @@
     "wait_all": "Continue streaming until all app processes exit",
     "wait_all_desc": "This will continue streaming until all processes started by the app have terminated. When unchecked, streaming will stop when the initial app process exits, even if other app processes are still running.",
     "working_dir": "Working Directory",
-    "working_dir_desc": "The working directory that should be passed to the process. For example, some applications use the working directory to search for configuration files. If not set, Sunshine will default to the parent directory of the command"
+    "working_dir_desc": "The working directory that should be passed to the process. For example, some applications use the working directory to search for configuration files. If not set, Sunshine will default to the parent directory of the command",
+    "more_fields_below": "More fields below — scroll"
+  },
+  "offline": {
+    "title": "Lost Connection to Sunshine",
+    "description": "The web interface lost connectivity to the Sunshine service.",
+    "retrying": "Attempting to reconnect… The page will refresh once available.",
+    "refresh_now": "Refresh now",
+    "close_hint": "If you stopped Sunshine intentionally, you may close this tab."
   },
   "offline": {
     "title": "Lost Connection to Sunshine",

@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <boost/regex.hpp>
 #include <chrono>
+#include <boost/regex.hpp>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -47,6 +49,11 @@
 #include "platform/common.h"
 
 #include <nlohmann/json.hpp>
+#if defined(_WIN32)
+  #include "platform/windows/misc.h"
+
+  #include <windows.h>
+#endif
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
 
@@ -1097,6 +1104,8 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  
+
   /**
    * @brief Get the locale setting. This endpoint does not require authentication.
    * @param response The HTTP response object.
@@ -1328,6 +1337,8 @@ namespace confighttp {
     output_tree["status"] = true;
     send_response(response, output_tree);
   }
+
+  
 
   /**
    * @brief Upload a cover image.
@@ -1905,8 +1916,7 @@ namespace confighttp {
 
     // Start a background task to clean up expired session tokens every hour
     std::jthread cleanup_thread([shutdown_event]() {
-      while (!shutdown_event->peek()) {
-        std::this_thread::sleep_for(std::chrono::hours(1));
+      while (!shutdown_event->view(std::chrono::hours(1))) {
         session_token_manager.cleanup_expired_session_tokens();
       }
     });

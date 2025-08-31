@@ -59,49 +59,11 @@ const gamepadOptions = computed(() => {
     <!-- Additional options based on gamepad type -->
     <template v-if="config.controller === 'enabled'">
       <template
-        v-if="config.gamepad === 'ds4' || (config.gamepad === 'auto' && platform === 'windows')"
-      >
-        <div class="mb-4">
-          <div
-            class="px-3 py-2 rounded-md bg-light/80 dark:bg-surface/70 border border-dark/10 dark:border-light/10"
-          >
-            <div class="font-medium mb-2">
-              {{
-                $t(config.gamepad === 'ds4' ? 'config.gamepad_ds4_manual' : 'config.gamepad_auto')
-              }}
-            </div>
-            <div class="space-y-2">
-              <template v-if="config.gamepad === 'auto'">
-                <Checkbox
-                  id="motion_as_ds4"
-                  v-model="config.motion_as_ds4"
-                  class="mb-3"
-                  locale-prefix="config"
-                  default="true"
-                />
-                <Checkbox
-                  id="touchpad_as_ds4"
-                  v-model="config.touchpad_as_ds4"
-                  class="mb-3"
-                  locale-prefix="config"
-                  default="true"
-                />
-              </template>
-              <template v-if="config.gamepad === 'ds4'">
-                <Checkbox
-                  id="ds4_back_as_touchpad_click"
-                  v-model="config.ds4_back_as_touchpad_click"
-                  class="mb-3"
-                  locale-prefix="config"
-                  default="true"
-                />
-              </template>
-            </div>
-          </div>
-        </div>
-      </template>
-      <template
-        v-if="config.gamepad === 'ds5' || (config.gamepad === 'auto' && platform === 'linux')"
+        v-if="
+          config.gamepad === 'ds4' ||
+          config.gamepad === 'ds5' ||
+          (config.gamepad === 'auto' && platform !== 'macos')
+        "
       >
         <div class="mb-3 accordion">
           <div class="accordion-item">
@@ -113,7 +75,13 @@ const gamepadOptions = computed(() => {
                 data-bs-target="#panelsStayOpen-collapseOne"
               >
                 {{
-                  $t(config.gamepad === 'ds5' ? 'config.gamepad_ds5_manual' : 'config.gamepad_auto')
+                  $t(
+                    config.gamepad === 'ds4'
+                      ? 'config.gamepad_ds4_manual'
+                      : config.gamepad === 'ds5'
+                        ? 'config.gamepad_ds5_manual'
+                        : 'config.gamepad_auto',
+                  )
                 }}
               </button>
             </h2>
@@ -123,17 +91,55 @@ const gamepadOptions = computed(() => {
               aria-labelledby="panelsStayOpen-headingOne"
             >
               <div class="accordion-body">
-                <!-- Controller MAC randomization (Linux only) -->
+                <!-- Automatic detection options (for Windows and Linux) -->
+                <template
+                  v-if="
+                    config.gamepad === 'auto' && (platform === 'windows' || platform === 'linux')
+                  "
+                >
+                  <!-- Gamepad with motion-capability as DS4(Windows)/DS5(Linux) -->
+                  <Checkbox
+                    id="motion_as_ds4"
+                    v-model="config.motion_as_ds4"
+                    class="mb-3"
+                    locale-prefix="config"
+                    default="true"
+                  ></Checkbox>
+                  <!-- Gamepad with touch-capability as DS4(Windows)/DS5(Linux) -->
+                  <Checkbox
+                    id="touchpad_as_ds4"
+                    v-model="config.touchpad_as_ds4"
+                    class="mb-3"
+                    locale-prefix="config"
+                    default="true"
+                  ></Checkbox>
+                </template>
+                <!-- DS4 option: DS4 back button as touchpad click (on Automatic: Windows only) -->
+                <template
+                  v-if="
+                    config.gamepad === 'ds4' ||
+                    (config.gamepad === 'auto' && platform === 'windows')
+                  "
+                >
+                  <Checkbox
+                    id="ds4_back_as_touchpad_click"
+                    v-model="config.ds4_back_as_touchpad_click"
+                    class="mb-3"
+                    locale-prefix="config"
+                    default="true"
+                  ></Checkbox>
+                </template>
+                <!-- DS5 Option: Controller MAC randomization (on Automatic: Linux only) -->
                 <template
                   v-if="
                     config.gamepad === 'ds5' || (config.gamepad === 'auto' && platform === 'linux')
                   "
                 >
                   <Checkbox
-                    class="mb-3"
                     id="ds5_inputtino_randomize_mac"
-                    locale-prefix="config"
                     v-model="config.ds5_inputtino_randomize_mac"
+                    class="mb-3"
+                    locale-prefix="config"
                     default="true"
                   ></Checkbox>
                 </template>
@@ -152,7 +158,7 @@ const gamepadOptions = computed(() => {
       <n-input-number
         id="back_button_timeout"
         v-model:value="config.back_button_timeout"
-        :placeholder="'-1'"
+        placeholder="-1"
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.back_button_timeout_desc') }}
@@ -175,7 +181,7 @@ const gamepadOptions = computed(() => {
       <n-input-number
         id="key_repeat_delay"
         v-model:value="config.key_repeat_delay"
-        :placeholder="'500'"
+        placeholder="500"
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.key_repeat_delay_desc') }}
@@ -191,7 +197,7 @@ const gamepadOptions = computed(() => {
         id="key_repeat_frequency"
         v-model:value="config.key_repeat_frequency"
         :step="0.1"
-        :placeholder="'24.9'"
+        placeholder="24.9"
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.key_repeat_frequency_desc') }}

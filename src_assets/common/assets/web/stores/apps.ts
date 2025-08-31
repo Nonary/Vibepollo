@@ -2,8 +2,28 @@ import { defineStore } from 'pinia';
 import { ref, Ref } from 'vue';
 import { http } from '@/http';
 
-interface App {
-  [key: string]: any; // Define more specific types as needed
+export interface PrepCmd {
+  do?: string;
+  undo?: string;
+  elevated?: boolean;
+}
+
+export interface App {
+  name?: string;
+  output?: string;
+  cmd?: string | string[];
+  uuid?: string;
+  'working-dir'?: string;
+  'image-path'?: string;
+  'exclude-global-prep-cmd'?: boolean;
+  elevated?: boolean;
+  'auto-detach'?: boolean;
+  'wait-all'?: boolean;
+  'exit-timeout'?: number;
+  'prep-cmd'?: PrepCmd[];
+  detached?: string[];
+  // Fallback for any other server fields we don't model yet
+  [key: string]: any;
 }
 
 interface AppsResponse {

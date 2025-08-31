@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { NInput } from 'naive-ui';

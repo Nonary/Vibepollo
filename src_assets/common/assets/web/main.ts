@@ -5,9 +5,13 @@ import { router } from '@/router';
 import App from '@/App.vue';
 import './styles/tailwind.css';
 import { initHttpLayer } from '@/http';
+// Font Awesome core + subsets (ensure base .fa/.fas rules and fonts)
+import '@fortawesome/fontawesome-free/css/fontawesome.min.css';
 // Load only the Font Awesome subsets we use (solid + brands)
 import '@fortawesome/fontawesome-free/css/solid.min.css';
 import '@fortawesome/fontawesome-free/css/brands.min.css';
+// Include regular set in case components reference .far icons
+import '@fortawesome/fontawesome-free/css/regular.min.css';
 import { useAuthStore } from '@/stores/auth';
 import { useAppsStore } from '@/stores/apps';
 import { useConfigStore } from '@/stores/config';
@@ -55,7 +59,7 @@ initApp(app, async () => {
     watch(
       () => configStore.config?.locale,
       async (loc) => {
-        const locale = (loc as any) ?? 'en';
+        const locale = loc ?? 'en';
         await ensureLocaleLoaded(locale);
       },
       { immediate: true },

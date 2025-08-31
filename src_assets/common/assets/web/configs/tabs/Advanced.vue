@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import { useConfigStore } from '@/stores/config';
@@ -52,8 +52,6 @@ const encoderOptions = computed(() => {
   opts.push({ label: t('config.encoder_software'), value: 'software' });
   return opts;
 });
-
-// Playnite uninstall removed from Advanced tab
 </script>
 
 <template>
@@ -61,18 +59,14 @@ const encoderOptions = computed(() => {
     <!-- FEC Percentage -->
     <div class="mb-6">
       <label for="fec_percentage" class="form-label">{{ $t('config.fec_percentage') }}</label>
-      <n-input-number
-        id="fec_percentage"
-        v-model:value="config.fec_percentage"
-        :placeholder="'20'"
-      />
+      <n-input-number id="fec_percentage" v-model:value="config.fec_percentage" placeholder="20" />
       <div class="form-text">{{ $t('config.fec_percentage_desc') }}</div>
     </div>
 
     <!-- Quantization Parameter -->
     <div class="mb-6">
       <label for="qp" class="form-label">{{ $t('config.qp') }}</label>
-      <n-input-number id="qp" v-model:value="config.qp" :placeholder="'28'" />
+      <n-input-number id="qp" v-model:value="config.qp" placeholder="28" />
       <div class="form-text">{{ $t('config.qp_desc') }}</div>
     </div>
 
@@ -82,7 +76,7 @@ const encoderOptions = computed(() => {
       <n-input-number
         id="min_threads"
         v-model:value="config.min_threads"
-        :placeholder="'2'"
+        placeholder="2"
         :min="1"
       />
       <div class="form-text">{{ $t('config.min_threads_desc') }}</div>
@@ -137,7 +131,6 @@ const encoderOptions = computed(() => {
     </div>
   </div>
 
-  <!-- Playnite uninstall removed -->
 </template>
 
 <style scoped></style>

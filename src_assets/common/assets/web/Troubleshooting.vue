@@ -185,7 +185,7 @@
           <n-button
             v-if="newLogsAvailable"
             class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
-            secondary
+            type="warning"
             @click="jumpToLatest"
           >
             {{ $t('troubleshooting.new_logs_available') }}
@@ -307,7 +307,7 @@ async function refreshLogs() {
       // Count new lines before replacing
       const prev = logs.value || '';
       const prevCount = prev ? prev.split('\n').length : 0;
-      const nextText = r.data as string;
+      const nextText = r.data;
       const nextCount = nextText ? nextText.split('\n').length : 0;
 
       logs.value = nextText;
@@ -409,7 +409,6 @@ onMounted(async () => {
 
   logInterval = window.setInterval(refreshLogs, 5000);
   refreshLogs();
-  refreshClients();
 });
 
 onBeforeUnmount(() => {

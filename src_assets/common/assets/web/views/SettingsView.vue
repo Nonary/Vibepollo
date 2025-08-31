@@ -16,8 +16,8 @@
             v-model:value="searchQuery"
             type="text"
             placeholder="Search settings... (Enter to jump)"
-            @focus="searchOpen = searchQuery.length > 0"
-            @blur="() => setTimeout(() => (searchOpen = false), 120)"
+            @focus="onSearchFocus"
+            @blur="onSearchBlur"
             @keydown.enter.prevent="jumpFirstResult"
           >
             <template #suffix>
@@ -88,7 +88,7 @@
         v-for="tab in tabs"
         :id="tab.id"
         :key="tab.id"
-        :ref="(el) => sectionRefs.set(tab.id, el)"
+        :ref="(el) => setSectionRef(tab.id, el)"
         class="scroll-mt-24"
       >
         <button
@@ -154,17 +154,14 @@
 import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent } from 'vue';
 import { NInput, NButton } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
-// Lazy-load each settings tab on first expand/use
-const General = markRaw(defineAsyncComponent(() => import('@/configs/tabs/General.vue')));
-const Inputs = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Inputs.vue')));
-const Network = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Network.vue')));
-const Files = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Files.vue')));
-const Advanced = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Advanced.vue')));
-const AudioVideo = markRaw(defineAsyncComponent(() => import('@/configs/tabs/AudioVideo.vue')));
-const ContainerEncoders = markRaw(
-  defineAsyncComponent(() => import('@/configs/tabs/ContainerEncoders.vue')),
-);
-const Playnite = markRaw(defineAsyncComponent(() => import('@/configs/tabs/Playnite.vue')));
+import General from '@/configs/tabs/General.vue';
+import Inputs from '@/configs/tabs/Inputs.vue';
+import Network from '@/configs/tabs/Network.vue';
+import Files from '@/configs/tabs/Files.vue';
+import Advanced from '@/configs/tabs/Advanced.vue';
+import Playnite from '@/configs/tabs/Playnite.vue';
+import AudioVideo from '@/configs/tabs/AudioVideo.vue';
+import ContainerEncoders from '@/configs/tabs/ContainerEncoders.vue';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
@@ -172,6 +169,8 @@ import { storeToRefs } from 'pinia';
 
 const store = useConfigStore();
 const { config } = storeToRefs(store);
+// Auth store (top-level, single instance)
+const auth = useAuthStore();
 
 // derive loading/error/ready from the store instead of local flags
 const isLoading = computed(() => store.loading === true);
@@ -191,6 +190,11 @@ const searchResults = ref([]);
 const searchIndex = ref([]); // { sectionId, label, path, el }
 const sectionRefs = new Map();
 
+function setSectionRef(id, el) {
+  if (el) sectionRefs.set(id, el);
+  else sectionRefs.delete(id);
+}
+
 const tabs = [
   { id: 'general', name: 'General', component: markRaw(General) },
   { id: 'input', name: 'Input', component: markRaw(Inputs) },
@@ -198,8 +202,8 @@ const tabs = [
   { id: 'encoders', name: 'Encoders', component: markRaw(ContainerEncoders) },
   { id: 'network', name: 'Network', component: markRaw(Network) },
   { id: 'files', name: 'Files', component: markRaw(Files) },
-  { id: 'playnite', name: 'Playnite', component: markRaw(Playnite) },
   { id: 'advanced', name: 'Advanced', component: markRaw(Advanced) },
+  { id: 'playnite', name: 'Playnite', component: markRaw(Playnite) },
 ];
 
 const openSections = ref(new Set(['general']));
@@ -212,18 +216,25 @@ const toggle = (id) => {
   if (s.has(id)) queueBuildIndex();
 };
 
+const route = useRoute();
+const router = useRouter();
+
 onMounted(async () => {
+  try {
+    if (auth && typeof auth.init === 'function') await auth.init();
+  } catch (err) {
+    console.warn('auth.init failed', err);
+  }
+
   // Wait for authentication before calling APIs during mount
-  const auth = useAuthStore();
   await auth.waitForAuthentication();
   await store.fetchConfig();
   if (config.value) queueBuildIndex();
-});
-// Rebuild index after auth becomes ready / authenticated to avoid needing a manual reload
-const auth = useAuthStore();
-// If auth store hasn't been initialized, ensure it does
-onMounted(() => {
-  if (auth && typeof auth.init === 'function') auth.init().catch(() => {});
+
+  // If a target section is in the URL, scroll to it after initial render
+  if (typeof route.query.sec === 'string') {
+    setTimeout(() => scrollToOpen(route.query.sec), 0);
+  }
 });
 
 // When auth becomes ready or authenticated, rebuild index (debounced a bit)
@@ -253,15 +264,25 @@ async function apply() {
   await save();
   if (saveState.value !== 'saved') return;
   restarted.value = true;
-  http.post(
-    '/api/restart',
-    {},
-    { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
-  );
-  setTimeout(() => {
+  try {
+    const res = await http.post(
+      '/api/restart',
+      {},
+      { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
+    );
+    if (!res || res.status >= 400) {
+      console.warn('Restart request failed', res?.status);
+      restarted.value = false;
+    }
+  } catch (err) {
+    console.warn('Restart failed', err);
     restarted.value = false;
-    // state will settle back to idle via the store
-  }, 5000);
+  } finally {
+    setTimeout(() => {
+      // state will settle back to idle via the store
+      restarted.value = false;
+    }, 5000);
+  }
 }
 
 // Mark dirty / autosave when version increments (user changed something)
@@ -274,9 +295,6 @@ watch(
   },
 );
 
-const route = useRoute();
-const router = useRouter();
-
 const goSection = (id) => {
   const dest = { path: '/settings', query: { sec: id } };
   route.path === '/settings' ? router.replace(dest) : router.push(dest);
@@ -288,9 +306,6 @@ function scrollToOpen(id) {
   const el = sectionRefs.get(id);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-onMounted(() => {
-  if (typeof route.query.sec === 'string') scrollToOpen(route.query.sec);
-});
 watch(
   () => route.query.sec,
   (id) => typeof id === 'string' && scrollToOpen(id),
@@ -311,8 +326,8 @@ function buildSearchIndex() {
       if (forId) {
         try {
           target = sec.querySelector('#' + CSS.escape(forId));
-        } catch {
-          /* ignore */
+        } catch (err) {
+          console.warn('buildSearchIndex: CSS.escape lookup failed', err);
         }
       }
       if (!target)
@@ -344,8 +359,8 @@ function buildSearchIndex() {
             steps++;
           }
         }
-      } catch {
-        /* ignore */
+      } catch (err) {
+        console.warn('buildSearchIndex: description extraction failed', err);
       }
       // If the control is a select, gather option texts/values to allow matching
       let optionsList = [];
@@ -381,9 +396,10 @@ function buildSearchIndex() {
             .filter(Boolean)
             .join(' | ');
         }
-      } catch {
+      } catch (err) {
         optionsList = [];
         optionsText = '';
+        console.warn('buildSearchIndex: options extraction failed', err);
       }
 
       if (target)
@@ -463,16 +479,42 @@ function goTo(item) {
   if (item?.sectionId) goSection(item.sectionId);
   setTimeout(() => {
     try {
-      item.el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      flash(item.el);
-    } catch {
-      /* ignore */
+      // Prefer flashing the visual wrapper for Naive UI controls
+      let target = item.el;
+      try {
+        const wrapper = target?.closest?.(
+          '.n-input, .n-select, .n-input-number, .n-checkbox, .n-switch, .form-control',
+        );
+        if (wrapper) target = wrapper;
+      } catch {}
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      flash(target || item.el);
+    } catch (err) {
+      console.warn('goTo: scroll/flash failed', err);
     }
   }, 250);
 }
 function flash(el) {
-  el?.classList.add('flash-highlight');
-  setTimeout(() => el?.classList.remove('flash-highlight'), 1200);
+  // Flash on wrapper if available so the ring isn't hidden by internal structure
+  let target = el;
+  try {
+    const wrapper = target?.closest?.(
+      '.n-input, .n-select, .n-input-number, .n-checkbox, .n-switch, .form-control',
+    );
+    if (wrapper) target = wrapper;
+  } catch {}
+  target?.classList.add('flash-highlight');
+  // Let the CSS animation run to completion before cleanup
+  setTimeout(() => target?.classList.remove('flash-highlight'), 5200);
+}
+
+function onSearchFocus() {
+  searchOpen.value = (searchQuery.value || '').length > 0;
+}
+function onSearchBlur() {
+  setTimeout(() => {
+    searchOpen.value = false;
+  }, 120);
 }
 </script>
 
@@ -498,19 +540,40 @@ function flash(el) {
   transform: translateY(6px);
 }
 
-.flash-highlight {
-  box-shadow: 0 0 0 3px rgba(253, 184, 19, 0.35);
-  outline: 2px solid rgba(253, 184, 19, 0.35);
+/* Make highlight global so it applies to controls inside child tab components */
+:global(.flash-highlight) {
+  /* Use theme tokens so it works in light and dark */
+  box-shadow:
+    0 0 0 3px rgb(var(--color-primary) / 0.45),
+    0 0 0 6px rgb(var(--color-primary) / 0.2);
+  outline: 2px solid rgb(var(--color-primary) / 0.6);
+  outline-offset: 2px;
   border-radius: 6px;
-  transition: box-shadow 0.2s;
+  transition:
+    box-shadow 0.25s,
+    outline-color 0.25s;
+  animation: flash-ring-fade 5s ease-out forwards;
+  will-change: box-shadow, outline-color;
 }
 
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+@keyframes flash-ring-fade {
+  0% {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.45),
+      0 0 0 6px rgb(var(--color-primary) / 0.2);
+    outline-color: rgb(var(--color-primary) / 0.6);
+  }
+  60% {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.25),
+      0 0 0 6px rgb(var(--color-primary) / 0.12);
+    outline-color: rgb(var(--color-primary) / 0.35);
+  }
+  100% {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0),
+      0 0 0 6px rgb(var(--color-primary) / 0);
+    outline-color: rgb(var(--color-primary) / 0);
+  }
 }
 </style>

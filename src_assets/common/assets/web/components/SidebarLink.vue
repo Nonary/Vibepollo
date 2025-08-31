@@ -15,23 +15,23 @@
     </span>
   </RouterLink>
 </template>
-<script setup>
+<script setup lang="ts">
 import { useRoute } from 'vue-router';
 import { computed } from 'vue';
-const props = defineProps({
-  to: { type: [String, Object], required: true },
-  icon: { type: String, default: 'fa-circle' },
-  collapsed: { type: Boolean, default: false },
-  sub: { type: Boolean, default: false },
-});
+type ToLocation = string | { path: string; query?: Record<string, any> };
+const props = withDefaults(
+  defineProps<{ to: ToLocation; icon?: string; collapsed?: boolean; sub?: boolean }>(),
+  { icon: 'fa-circle', collapsed: false, sub: false },
+);
 const route = useRoute();
 const isActive = computed(() => {
   if (typeof props.to === 'string') return route.path === props.to;
   if (props.to && typeof props.to === 'object') {
-    const pathMatch = route.path === props.to.path;
+    const pathMatch = route.path === (props.to as any).path;
     if (!pathMatch) return false;
-    if (props.to.query && props.to.query.sec) {
-      return route.query.sec === props.to.query.sec;
+    const q = (props.to as any).query;
+    if (q && q['sec']) {
+      return (route.query as any)['sec'] === q['sec'];
     }
     return pathMatch;
   }

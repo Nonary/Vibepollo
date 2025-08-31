@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
@@ -9,11 +9,57 @@ import { NSelect, NInput, NInputNumber, NButton } from 'naive-ui';
 const store = useConfigStore();
 const config = store.config;
 
-const REFRESH_RATE_ONLY = 'refresh_rate_only';
-const RESOLUTION_ONLY = 'resolution_only';
-const MIXED = 'mixed';
+// ----- Types -----
+type RefreshRateOnly = {
+  requested_fps: string;
+  final_refresh_rate: string;
+};
+type ResolutionOnly = {
+  requested_resolution: string;
+  final_resolution: string;
+};
+type MixedRemap = RefreshRateOnly & ResolutionOnly;
+type RemapType = 'refresh_rate_only' | 'resolution_only' | 'mixed';
+type DdModeRemapping = {
+  refresh_rate_only: RefreshRateOnly[];
+  resolution_only: ResolutionOnly[];
+  mixed: MixedRemap[];
+};
 
-function canBeRemapped() {
+const REFRESH_RATE_ONLY: RemapType = 'refresh_rate_only';
+const RESOLUTION_ONLY: RemapType = 'resolution_only';
+const MIXED: RemapType = 'mixed';
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object';
+}
+function isStringRecord(v: unknown, keys: string[]): v is Record<string, string> {
+  if (!isObject(v)) return false;
+  return keys.every((k) => typeof (v as any)[k] === 'string');
+}
+function isRefreshRateOnly(v: unknown): v is RefreshRateOnly {
+  return isStringRecord(v, ['requested_fps', 'final_refresh_rate']);
+}
+function isResolutionOnly(v: unknown): v is ResolutionOnly {
+  return isStringRecord(v, ['requested_resolution', 'final_resolution']);
+}
+function isMixed(v: unknown): v is MixedRemap {
+  return isRefreshRateOnly(v) && isResolutionOnly(v);
+}
+function isRemapping(obj: unknown): obj is DdModeRemapping {
+  if (!isObject(obj)) return false;
+  const r = obj as any;
+  return (
+    Array.isArray(r.refresh_rate_only) && Array.isArray(r.resolution_only) && Array.isArray(r.mixed)
+  );
+}
+
+function getRemapping(): DdModeRemapping | null {
+  const v = config.value?.dd_mode_remapping;
+  return isRemapping(v) ? v : null;
+}
+
+function canBeRemapped(): boolean {
   if (!config.value) return false;
   return (
     (config.value.dd_resolution_option === 'auto' ||
@@ -22,7 +68,7 @@ function canBeRemapped() {
   );
 }
 
-function getRemappingType() {
+function getRemappingType(): RemapType {
   // If config isn't ready assume mixed (safe default)
   if (!config.value) return MIXED;
   // Assuming here that at least one setting is set to "auto" if other is not
@@ -35,40 +81,45 @@ function getRemappingType() {
   return MIXED;
 }
 
-function addRemappingEntry() {
+function addRemappingEntry(): void {
   const type = getRemappingType();
-  let template = {};
-
   if (!config.value) return;
+  const remap = getRemapping();
+  if (!remap) return;
 
-  if (type !== RESOLUTION_ONLY) {
-    template['requested_fps'] = '';
-    template['final_refresh_rate'] = '';
+  if (type === REFRESH_RATE_ONLY) {
+    const entry: RefreshRateOnly = { requested_fps: '', final_refresh_rate: '' };
+    remap.refresh_rate_only.push(entry);
+  } else if (type === RESOLUTION_ONLY) {
+    const entry: ResolutionOnly = { requested_resolution: '', final_resolution: '' };
+    remap.resolution_only.push(entry);
+  } else {
+    const entry: MixedRemap = {
+      requested_fps: '',
+      final_refresh_rate: '',
+      requested_resolution: '',
+      final_resolution: '',
+    };
+    remap.mixed.push(entry);
   }
 
-  if (type !== REFRESH_RATE_ONLY) {
-    template['requested_resolution'] = '';
-    template['final_resolution'] = '';
-  }
-
-  config.value.dd_mode_remapping[type].push(template);
   // reassign to trigger version bump
-  store.updateOption(
-    'dd_mode_remapping',
-    JSON.parse(JSON.stringify(config.value.dd_mode_remapping)),
-  );
+  store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
 }
 
-function removeRemappingEntry(idx) {
+function removeRemappingEntry(idx: number): void {
   const type = getRemappingType();
   if (!config.value) return;
-  if (!config.value.dd_mode_remapping) return;
-  if (!Array.isArray(config.value.dd_mode_remapping[type])) return;
-  config.value.dd_mode_remapping[type].splice(idx, 1);
-  store.updateOption(
-    'dd_mode_remapping',
-    JSON.parse(JSON.stringify(config.value.dd_mode_remapping)),
-  );
+  const remap = getRemapping();
+  if (!remap) return;
+  if (type === REFRESH_RATE_ONLY) {
+    remap.refresh_rate_only.splice(idx, 1);
+  } else if (type === RESOLUTION_ONLY) {
+    remap.resolution_only.splice(idx, 1);
+  } else {
+    remap.mixed.splice(idx, 1);
+  }
+  store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
 }
 </script>
 
@@ -229,7 +280,7 @@ function removeRemappingEntry(idx) {
               <n-input-number
                 id="dd_wa_hdr_toggle_delay"
                 v-model:value="config.dd_wa_hdr_toggle_delay"
-                :placeholder="'0'"
+                placeholder="0"
                 :min="0"
                 :max="3000"
               />
@@ -248,7 +299,7 @@ function removeRemappingEntry(idx) {
               <n-input-number
                 id="dd_config_revert_delay"
                 v-model:value="config.dd_config_revert_delay"
-                :placeholder="'3000'"
+                placeholder="3000"
                 :min="0"
               />
               <p class="text-[11px] opacity-60 mt-1">

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';

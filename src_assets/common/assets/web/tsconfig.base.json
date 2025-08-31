@@ -13,6 +13,7 @@
     "types": ["vite/client", "node"],
     "baseUrl": "./",
     "paths": {
+      // Point '@' to this folder so '@/...' works in IDE and TS
       "@/*": ["./*"]
     },
     "allowJs": true,

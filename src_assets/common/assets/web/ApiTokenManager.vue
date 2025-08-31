@@ -276,6 +276,10 @@
             <n-input v-model:value="test.query" placeholder="e.g. limit=50&tail=true" />
           </n-gi>
         </n-grid>
+        <n-alert v-if="test.scheme === 'query'" type="warning" :show-icon="true" class="text-xs">
+          Using query param (e.g., ?token=...) may expose the token in logs and referers. Prefer
+          header schemes.
+        </n-alert>
         <div class="flex items-center gap-3">
           <n-button type="primary" :disabled="!canSendTest" :loading="testing" @click="sendTest">
             <i class="fas fa-paper-plane icon" /> Test Token
@@ -318,7 +322,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import {
   NButton,
   NAlert,
@@ -332,6 +336,7 @@ import {
   NCheckbox,
   NTable,
   NSpace,
+  useMessage,
 } from 'naive-ui';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
@@ -391,19 +396,8 @@ const createError = ref('');
 const copied = ref(false);
 const showTokenModal = ref(false);
 
-// Cleanup trackers for timers and in-flight HTTP
-const _intervals: number[] = [];
-const _timeouts: number[] = [];
+// Cleanup trackers for in-flight HTTP
 const _aborts = new Set<AbortController>();
-
-function trackInterval(id: number) {
-  _intervals.push(id);
-  return id;
-}
-function trackTimeout(id: number) {
-  _timeouts.push(id);
-  return id;
-}
 function makeAbortController() {
   const ac = new AbortController();
   _aborts.add(ac);
@@ -426,15 +420,13 @@ function addScope(): void {
   const methods = Array.from(new Set(draft.selectedMethods.map((m) => m.toUpperCase())));
   const existingIdx = scopes.value.findIndex((s) => s.path === draft.path);
   if (existingIdx !== -1) {
-    // Merge and de-duplicate
-    const merged = Array.from(
-      new Set([...scopes.value[existingIdx].methods, ...methods]),
-    ) as string[];
+    // Merge and de-duplicate (guard against undefined index access)
+    const cur = scopes.value[existingIdx];
+    const merged = Array.from(new Set([...(cur?.methods ?? []), ...methods]));
     scopes.value[existingIdx] = { path: draft.path, methods: merged };
   } else {
     scopes.value.push({ path: draft.path, methods });
   }
-  // reset draft
   draft.path = '';
   draft.selectedMethods = [];
 }
@@ -449,9 +441,10 @@ function getEffectiveScopes(): Scope[] {
     const methods = Array.from(new Set(draft.selectedMethods.map((m) => m.toUpperCase())));
     const idx = s.findIndex((x) => x.path === draft.path);
     if (idx !== -1) {
+      const cur = s[idx];
       s[idx] = {
         path: draft.path,
-        methods: Array.from(new Set([...(s[idx].methods || []), ...methods])),
+        methods: Array.from(new Set([...(cur?.methods ?? []), ...methods])),
       };
     } else {
       s.push({ path: draft.path, methods });
@@ -483,9 +476,6 @@ async function createToken(): Promise<void> {
         // refresh active list
         await loadTokens();
         showTokenModal.value = true;
-        // Auto-select first GET-capable scope path for tester (if any)
-        const first = firstGetScopePath(lastCreatedScopes.value);
-        if (first) test.path = first;
       } else {
         createError.value = 'Token created, but server returned no token string.';
       }
@@ -513,6 +503,9 @@ async function copy(text: string): Promise<void> {
     try {
       const ta = document.createElement('textarea');
       ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
@@ -543,8 +536,8 @@ function normalizeToken(rec: any): TokenRecord | null {
         methods: (s.methods || s.verbs || []).map((v: any) => String(v).toUpperCase()),
       }))
     : [];
-  const hash: string = rec.hash || rec.id || rec.token_hash || '';
-  const createdAt = rec.createdAt || rec.created_at || rec.created || null;
+  const hash: string = rec.hash ?? rec.id ?? rec.token_hash ?? '';
+  const createdAt = rec.createdAt ?? rec.created_at ?? rec.created ?? null;
   if (!hash) return null;
   return { hash, scopes, createdAt };
 }
@@ -598,10 +591,11 @@ async function confirmRevoke(): Promise<void> {
       pendingRevoke.value = null;
     } else {
       const msg = (res.data && (res.data.message || res.data.error)) || `HTTP ${res.status}`;
-      alert(`Failed to revoke: ${msg}`);
+      message.error(`Failed to revoke: ${msg}`);
     }
   } catch (e: any) {
-    if (e?.code !== 'ERR_CANCELED') alert(`Failed to revoke: ${e?.message || 'Network error'}`);
+    if (e?.code !== 'ERR_CANCELED')
+      message.error(`Failed to revoke: ${e?.message || 'Network error'}`);
   } finally {
     if (ac) releaseAbortController(ac);
     revoking.value = '';
@@ -616,13 +610,14 @@ const filteredTokens = computed<TokenRecord[]>(() => {
     return t.scopes.some((s) => s.path.toLowerCase().includes(q));
   });
   if (sortBy.value === 'created') {
-    out = out
-      .slice()
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    out = out.slice().sort((a, b) => {
+      const ta = a.createdAt ? Date.parse(String(a.createdAt)) : 0;
+      const tb = b.createdAt ? Date.parse(String(b.createdAt)) : 0;
+      return tb - ta; // newest first
+    });
   } else if (sortBy.value === 'path') {
-    out = out
-      .slice()
-      .sort((a, b) => (a.scopes[0]?.path || '').localeCompare(b.scopes[0]?.path || ''));
+    const firstPath = (t: TokenRecord) => t.scopes.map((s) => s.path).sort()[0] || '';
+    out = out.slice().sort((a, b) => firstPath(a).localeCompare(firstPath(b)));
   }
   return out;
 });
@@ -720,8 +715,6 @@ onMounted(() => {
   const auth = useAuthStore();
   const start = () => {
     loadTokens();
-    // Auto-fill tester token after create
-    watchCreatedForTester();
   };
   if (auth.isAuthenticated) start();
   else {
@@ -738,9 +731,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  // Clear timers
-  for (const id of _intervals.splice(0)) clearInterval(id);
-  for (const id of _timeouts.splice(0)) clearTimeout(id);
   // Abort pending HTTP
   _aborts.forEach((ac) => {
     try {
@@ -750,32 +740,21 @@ onBeforeUnmount(() => {
   _aborts.clear();
 });
 
-function watchCreatedForTester() {
-  const auth = useAuthStore();
-  if (!auth.isAuthenticated) return;
-  let last = '';
-  const iv = trackInterval(
-    setInterval(() => {
-      if (!auth.isAuthenticated) {
-        clearInterval(iv as unknown as number);
-        return;
-      }
-      if (createdToken.value && createdToken.value !== last) {
-        test.token = createdToken.value;
-        last = createdToken.value;
-        // Also try to preselect first GET scope path from last create
-        if (!test.path) {
-          const first = firstGetScopePath(lastCreatedScopes.value);
-          if (first) test.path = first;
-        }
-      }
-    }, 300) as unknown as number,
-  );
-  // Stop after some time to avoid leaks
-  trackTimeout(
-    setTimeout(() => clearInterval(iv as unknown as number), 30000) as unknown as number,
-  );
-}
+// Message API for consistent feedback
+const message = useMessage();
+
+// React to newly-created token to auto-fill the tester
+watch(
+  () => createdToken.value,
+  (val) => {
+    if (!val) return;
+    test.token = val;
+    if (!test.path) {
+      const first = firstGetScopePath(lastCreatedScopes.value);
+      if (first) test.path = first;
+    }
+  },
+);
 </script>
 
 <style scoped>

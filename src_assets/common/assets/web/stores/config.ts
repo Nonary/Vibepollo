@@ -422,7 +422,7 @@ export const useConfigStore = defineStore('config', () => {
 
   function updateOption(key: string, value: any) {
     if (!config.value) return;
-    (config.value as any)[key] = value; // triggers setter (handles manual/auto)
+    config.value[key] = value; // triggers setter (handles manual/auto)
   }
 
   // Explicitly mark a manual-dirty change (e.g., when mutating nested fields)
@@ -435,21 +435,6 @@ export const useConfigStore = defineStore('config', () => {
     manualDirty.value = false;
   }
 
-  function serializeFull(): Record<string, any> | null {
-    if (!config.value) return null;
-    const out: Record<string, any> = {};
-    const keys = new Set<string>([...Object.keys(defaultMap), ...Object.keys(_data.value || {})]);
-    keys.forEach((k) => {
-      try {
-        (out as any)[k] = (config.value as any)[k];
-      } catch {
-        /* ignore */
-      }
-    });
-    delete (out as any).platform;
-    return out;
-  }
-
   async function save(): Promise<boolean> {
     try {
       // First flush any pending PATCH changes for auto-saved keys
@@ -458,8 +443,7 @@ export const useConfigStore = defineStore('config', () => {
         if (!ok) return false;
       }
       savingState.value = 'saving';
-      // Post the full effective config so server-side non-merge save doesn't drop keys
-      const body = serializeFull();
+      const body = serialize();
       const res = await http.post('/api/config', body || {}, {
         headers: { 'Content-Type': 'application/json' },
         validateStatus: () => true,
@@ -513,7 +497,7 @@ export const useConfigStore = defineStore('config', () => {
       try {
         const mr = await http.get('/api/metadata');
         if (mr.status === 200 && mr.data) {
-          const m = { ...(mr.data as any) } as MetaInfo;
+          const m = { ...mr.data } as MetaInfo;
           // Normalize platform identifiers across build/runtime variations
           const raw = String((m as any).platform || '').toLowerCase();
           let norm = raw;
@@ -633,7 +617,6 @@ export const useConfigStore = defineStore('config', () => {
     error,
     fetchConfig,
     setConfig,
-    serializeFull,
     updateOption,
     markManualDirty,
     resetManualDirty,

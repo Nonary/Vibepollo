@@ -51,6 +51,10 @@ else()
     set(NPM_BUILD_HOMEBREW "")
 endif()
 
+# Web UI source dir (where package.json lives)
+# Default layout: ${CMAKE_SOURCE_DIR}/src_assets/common/assets/web
+set(WEB_UI_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/web")
+
 #WebUI build
 find_program(NPM npm REQUIRED)
 
@@ -77,12 +81,12 @@ else()
 endif()
 
 add_custom_target(web-ui ALL
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Installing NPM Dependencies and Building the Web UI"
-        COMMAND "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" install ${NPM_INSTALL_FLAGS}
+    WORKING_DIRECTORY "${WEB_UI_DIR}"
+    COMMENT "Installing NPM dependencies and building the Web UI"
+    COMMAND "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ci ${NPM_INSTALL_FLAGS}
     COMMAND "${CMAKE_COMMAND}" -E env "SUNSHINE_BUILD_HOMEBREW=${NPM_BUILD_HOMEBREW}" "SUNSHINE_SOURCE_ASSETS_DIR=${NPM_SOURCE_ASSETS_DIR}" "SUNSHINE_ASSETS_DIR=${NPM_ASSETS_DIR}" "${NPM_BUILD_ENV}" "${NPM_BUILD_NODE_OPTIONS}" "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ${NPM_BUILD_COMMAND_RUN} ${NPM_BUILD_COMMAND_ARG}  # cmake-lint: disable=C0301
-        COMMAND_EXPAND_LISTS
-        VERBATIM)
+    COMMAND_EXPAND_LISTS
+    VERBATIM)
 
 # docs
 if(BUILD_DOCS)

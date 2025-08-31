@@ -1,17 +1,16 @@
 {
-  "name": "sunshine-web",
+  "name": "sunshine",
   "version": "0.0.0",
-  "private": true,
   "scripts": {
     "build": "vite build --mode prod",
     "build:debug": "vite build --mode debug",
     "build-clean": "vite build --mode prod --emptyOutDir",
     "dev": "vite build --mode debug --watch",
-    "serve": "serve ../../../../tests/fixtures/http --no-port-switching",
+    "serve": "serve ./tests/fixtures/http --no-port-switching",
     "lint": "eslint --ext .js,.ts,.vue . --max-warnings 0",
     "lint:fix": "eslint --ext .js,.ts,.vue . --fix",
     "format": "prettier --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "6.5.2",
@@ -32,6 +31,7 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.1",
     "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-eslint-comments": "^3.2.0",
     "eslint-plugin-prettier": "^5.2.1",
     "eslint-plugin-vue": "^9.12.0",
     "prettier": "^3.6.2",
@@ -41,7 +41,7 @@
     "unplugin-vue-components": "0.26.0",
     "vite": "4.5.14",
     "vite-plugin-ejs": "1.6.4",
-    "vitest": "^2.1.1",
-    "vue-eslint-parser": "^10.2.0"
+    "vue-eslint-parser": "^10.2.0",
+    "vue-tsc": "^3.0.6"
   }
 }

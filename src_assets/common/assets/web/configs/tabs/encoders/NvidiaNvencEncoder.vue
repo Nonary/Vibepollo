@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
@@ -83,7 +83,7 @@ const twopassOptions = [
         v-model:value="config.nvenc_vbv_increase"
         :min="0"
         :max="400"
-        :placeholder="'0'"
+        placeholder="0"
       />
       <p class="text-[11px] opacity-60 mt-1">
         {{ $t('config.nvenc_vbv_increase_desc') }}<br />

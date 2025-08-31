@@ -7,6 +7,7 @@
 // standard includes
 #include <chrono>
 #include <functional>
+#include <functional>
 #include <string_view>
 #include <system_error>
 
@@ -115,4 +116,9 @@ namespace platf {
    * @return true on success.
    */
   bool override_per_user_predefined_keys(HANDLE token);
+
+  // Additional helpers used by configuration HTTP to safely access user resources
+  bool is_running_as_system();
+  HANDLE retrieve_users_token(bool elevated);
+  std::error_code impersonate_current_user(HANDLE user_token, std::function<void()> callback);
 }  // namespace platf

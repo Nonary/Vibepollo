@@ -50,26 +50,11 @@ function initAuthHandling(): void {
     }
   });
 
-  function sanitizePath(path: string): string {
-    try {
-      if (typeof path !== 'string') return '/';
-      if (!path.startsWith('/')) return '/';
-      if (path.startsWith('//')) return '/';
-      if (path.includes('://')) return '/';
-      if (path.length > 512) return '/';
-      return path;
-    } catch {
-      return '/';
-    }
-  }
-
   function triggerLoginModal(): void {
     if (typeof window === 'undefined') return;
     try {
-      const current = sanitizePath(
-        window.location.pathname + window.location.search + window.location.hash,
-      );
-      auth.requireLogin(current);
+      // Show login overlay; no redirect path tracking needed
+      auth.requireLogin();
     } catch {
       /* noop */
     }
