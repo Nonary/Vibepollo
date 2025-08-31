@@ -4,7 +4,6 @@
   "scripts": {
     "build": "vite build --mode prod",
     "build:debug": "vite build --mode debug",
-    "build-clean": "vite build --mode prod --emptyOutDir",
     "dev": "vite build --mode debug --watch",
     "serve": "serve ./tests/fixtures/http --no-port-switching",
     "lint": "eslint --ext .js,.ts,.vue . --max-warnings 0",

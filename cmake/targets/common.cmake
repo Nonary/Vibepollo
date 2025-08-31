@@ -64,27 +64,34 @@ else()
     set(NPM_INSTALL_FLAGS "")
 endif()
 
-string(TOUPPER "x${CMAKE_BUILD_TYPE}" BUILD_TYPE)
+# Control web UI build mode independent of C++ config.
+# Default to production assets unless explicitly asked for debug web UI.
+option(SUNSHINE_WEBUI_DEBUG "Build web UI in Vite debug mode" OFF)
 
-if("${BUILD_TYPE}" STREQUAL "XDEBUG")
-    set(NPM_BUILD_COMMAND_RUN "run")
+# Always invoke npm via "run"; choose script from option above.
+set(NPM_BUILD_COMMAND_RUN "run")
+if(SUNSHINE_WEBUI_DEBUG)
     set(NPM_BUILD_COMMAND_ARG "build:debug")
-    # Ensure Vite produces full sourcemaps and unminified code for debug builds
     set(NPM_BUILD_ENV "NODE_ENV=development")
-    # Some Node versions support enabling source-map support; keep empty if not needed
-    set(NPM_BUILD_NODE_OPTIONS "")
 else()
-    set(NPM_BUILD_COMMAND_RUN "run")
     set(NPM_BUILD_COMMAND_ARG "build")
     set(NPM_BUILD_ENV "")
-    set(NPM_BUILD_NODE_OPTIONS "")
 endif()
+
+# Some Node versions support enabling source-map support; keep empty if not needed
+set(NPM_BUILD_NODE_OPTIONS "")
 
 add_custom_target(web-ui ALL
     WORKING_DIRECTORY "${WEB_UI_DIR}"
     COMMENT "Installing NPM dependencies and building the Web UI"
     COMMAND "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ci ${NPM_INSTALL_FLAGS}
-    COMMAND "${CMAKE_COMMAND}" -E env "SUNSHINE_BUILD_HOMEBREW=${NPM_BUILD_HOMEBREW}" "SUNSHINE_SOURCE_ASSETS_DIR=${NPM_SOURCE_ASSETS_DIR}" "SUNSHINE_ASSETS_DIR=${NPM_ASSETS_DIR}" "${NPM_BUILD_ENV}" "${NPM_BUILD_NODE_OPTIONS}" "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ${NPM_BUILD_COMMAND_RUN} ${NPM_BUILD_COMMAND_ARG}  # cmake-lint: disable=C0301
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "SUNSHINE_BUILD_HOMEBREW=${NPM_BUILD_HOMEBREW}"
+            "SUNSHINE_SOURCE_ASSETS_DIR=${NPM_SOURCE_ASSETS_DIR}"
+            "SUNSHINE_ASSETS_DIR=${NPM_ASSETS_DIR}"
+            "${NPM_BUILD_ENV}"
+            "${NPM_BUILD_NODE_OPTIONS}"
+            "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ${NPM_BUILD_COMMAND_RUN} ${NPM_BUILD_COMMAND_ARG}  # cmake-lint: disable=C0301
     COMMAND_EXPAND_LISTS
     VERBATIM)
 

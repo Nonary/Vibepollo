@@ -98,6 +98,7 @@ namespace system_tray {
         {.text = "Reset Display Device Config", .cb = tray_reset_display_device_config_cb},
   #endif
         {.text = "Check for Update", .cb = [](tray_menu *) {
+           BOOST_LOG(info) << "Manual update check requested from tray"sv;
            update::trigger_check(true);
          }},
         {.text = "Restart", .cb = tray_restart_cb},

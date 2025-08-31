@@ -13,8 +13,8 @@
     "types": ["vite/client", "node"],
     "baseUrl": "./",
     "paths": {
-      // Map web asset alias first so IDE resolves imports like '@/stores/auth'
-      "@/*": ["src_assets/common/assets/web/*", "src/*"]
+      "@/*": ["src_assets/common/assets/web/*", "src/*"],
+      "@": ["src_assets/common/assets/web"]
     },
     "allowJs": true,
     "noEmit": true

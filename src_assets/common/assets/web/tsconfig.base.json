@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2021",
     "module": "ESNext",
-    "moduleResolution": "Node",
+    "moduleResolution": "Bundler",
     "strict": true,
     "jsx": "preserve",
     "sourceMap": true,
@@ -13,8 +13,8 @@
     "types": ["vite/client", "node"],
     "baseUrl": "./",
     "paths": {
-      // Point '@' to this folder so '@/...' works in IDE and TS
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@": ["./"]
     },
     "allowJs": true,
     "noEmit": true

@@ -94,47 +94,81 @@
               {{ $t('index.version_latest') }}
             </n-alert>
 
-            <!-- Pre-release notice -->
+            <!-- Pre-release notice (modern banner) -->
             <n-alert
               v-if="notifyPreReleases && preReleaseBuildAvailable"
               type="warning"
               :show-icon="true"
+              class="rounded-xl"
             >
               <div class="flex flex-col gap-3 w-full">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <p class="text-sm m-0">{{ $t('index.new_pre_release') }}</p>
-                  <n-button
-                    tag="a"
-                    type="primary"
-                    :href="preReleaseRelease?.html_url"
-                    target="_blank"
-                  >
-                    {{ $t('index.download') }}
-                  </n-button>
+                  <div class="flex items-center gap-3">
+                    <span
+                      class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-warning/20 text-warning"
+                    >
+                      <i class="fas fa-flask" />
+                    </span>
+                    <div class="min-w-0">
+                      <p class="text-sm m-0 font-medium">{{ $t('index.new_pre_release') }}</p>
+                      <p class="text-xs opacity-80 m-0">
+                        {{ displayVersion }} → {{ preReleaseVersion.version }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="btn btn-secondary btn-sm" @click="showPreNotes = !showPreNotes">
+                      <i class="fas fa-bars-staggered" />
+                      <span>{{ showPreNotes ? $t('index.hide_notes') || 'Hide Notes' : $t('index.view_notes') || 'Release Notes' }}</span>
+                    </button>
+                    <a
+                      class="btn btn-primary btn-sm"
+                      :href="preReleaseRelease?.html_url"
+                      target="_blank"
+                    >
+                      <i class="fas fa-download" />
+                      <span>{{ $t('index.download') }}</span>
+                    </a>
+                  </div>
                 </div>
-                <div
-                  class="bg-light/5 dark:bg-dark/5 rounded p-3 overflow-auto max-h-64 text-xs font-mono"
-                >
+                <div v-if="showPreNotes" class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs">
                   <p class="font-semibold mb-2">{{ preReleaseRelease?.name }}</p>
-                  <pre class="whitespace-pre-wrap">{{ preReleaseRelease?.body }}</pre>
+                  <pre class="font-mono whitespace-pre-wrap">{{ preReleaseRelease?.body }}</pre>
                 </div>
               </div>
             </n-alert>
 
-            <!-- Stable update available -->
-            <n-alert v-if="stableBuildAvailable" type="warning" :show-icon="true">
+            <!-- Stable update available (modern banner) -->
+            <n-alert v-if="stableBuildAvailable" type="warning" :show-icon="true" class="rounded-xl">
               <div class="flex flex-col gap-3 w-full">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <p class="text-sm m-0">{{ $t('index.new_stable') }}</p>
-                  <n-button tag="a" type="primary" :href="githubRelease?.html_url" target="_blank">
-                    {{ $t('index.download') }}
-                  </n-button>
+                  <div class="flex items-center gap-3">
+                    <span
+                      class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-warning/20 text-warning"
+                    >
+                      <i class="fas fa-bolt" />
+                    </span>
+                    <div class="min-w-0">
+                      <p class="text-sm m-0 font-medium">{{ $t('index.new_stable') }}</p>
+                      <p class="text-xs opacity-80 m-0">
+                        {{ displayVersion }} → {{ githubVersion.version }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="btn btn-secondary btn-sm" @click="showStableNotes = !showStableNotes">
+                      <i class="fas fa-bars-staggered" />
+                      <span>{{ showStableNotes ? $t('index.hide_notes') || 'Hide Notes' : $t('index.view_notes') || 'Release Notes' }}</span>
+                    </button>
+                    <a class="btn btn-primary btn-sm" :href="githubRelease?.html_url" target="_blank">
+                      <i class="fas fa-download" />
+                      <span>{{ $t('index.download') }}</span>
+                    </a>
+                  </div>
                 </div>
-                <div
-                  class="bg-light/5 dark:bg-dark/5 rounded p-3 overflow-auto max-h-64 text-xs font-mono"
-                >
+                <div v-if="showStableNotes" class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs">
                   <p class="font-semibold mb-2">{{ githubRelease?.name }}</p>
-                  <pre class="whitespace-pre-wrap">{{ githubRelease?.body }}</pre>
+                  <pre class="font-mono whitespace-pre-wrap">{{ githubRelease?.body }}</pre>
                 </div>
               </div>
             </n-alert>
@@ -159,7 +193,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { NCard, NAlert, NButton, NGrid, NGi } from 'naive-ui';
+import { NCard, NAlert, NGrid, NGi } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
 import SunshineVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
@@ -180,6 +214,8 @@ const preReleaseVersion = computed(() =>
     : new SunshineVersion('0.0.0'),
 );
 const notifyPreReleases = ref(false);
+const showPreNotes = ref(false);
+const showStableNotes = ref(false);
 const loading = ref(true);
 const logs = ref('');
 const branch = ref('');

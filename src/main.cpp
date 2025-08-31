@@ -266,6 +266,10 @@ int main(int argc, char *argv[]) {
   system_tray::run_tray();
   // Schedule periodic update checks if configured
   if (config::sunshine.update_check_interval_seconds > 0) {
+    // Trigger an immediate update check on startup so users don't wait
+    // a full interval before the first detection occurs.
+    update::trigger_check(true);
+
     auto schedule_periodic = std::make_shared<std::function<void()>>();
     *schedule_periodic = [schedule_periodic]() {
       update::periodic();

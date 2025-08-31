@@ -230,18 +230,24 @@ namespace update {
   }
 
   void trigger_check(bool force) {
-    if (state.check_in_progress.load()) {
+    const bool in_progress = state.check_in_progress.load();
+    if (in_progress) {
+      BOOST_LOG(info) << "Update check trigger skipped: another check is in progress (force="sv << (force ? "true"sv : "false"sv) << ')';
       return;
     }
     if (!force && config::sunshine.update_check_interval_seconds == 0) {
+      BOOST_LOG(info) << "Update check trigger skipped: checks are disabled by config (interval=0)"sv;
       return;
     }
     if (!force) {
       auto now = std::chrono::steady_clock::now();
-      if (now - state.last_check_time < std::chrono::seconds(config::sunshine.update_check_interval_seconds)) {
+      auto since_last = std::chrono::duration_cast<std::chrono::seconds>(now - state.last_check_time);
+      if (since_last < std::chrono::seconds(config::sunshine.update_check_interval_seconds)) {
+        BOOST_LOG(info) << "Update check trigger throttled: last ran "sv << since_last.count() << "s ago (interval="sv << config::sunshine.update_check_interval_seconds << 's' << ')';
         return;
       }
     }
+    BOOST_LOG(info) << "Update check trigger accepted (force="sv << (force ? "true"sv : "false"sv) << ')';
     std::thread([]() {
       perform_check();
     }).detach();
