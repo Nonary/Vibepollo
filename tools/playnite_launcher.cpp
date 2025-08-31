@@ -860,7 +860,9 @@ static int launcher_run(int argc, char **argv) {
     return 2;
   }
 
-  int timeout_sec = 600;  // default 10 minutes safety timeout
+  // Startup timeout: only applies before the game actually starts
+  // Default to 2 minutes; once the game starts, we wait indefinitely for stop
+  int timeout_sec = 120;
   if (!timeout_s.empty()) {
     try {
       timeout_sec = std::max(1, std::stoi(timeout_s));
@@ -1181,9 +1183,13 @@ static int launcher_run(int argc, char **argv) {
     BOOST_LOG(info) << (focused ? "Applied focus after launch" : "Focus not applied after launch");
   }
 
-  // Wait for stop or timeout
+  // Wait for stop; apply timeout only if the game never starts
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
-  while (!should_exit.load() && std::chrono::steady_clock::now() < deadline) {
+  while (!should_exit.load()) {
+    // If we haven't seen the game start, enforce startup timeout
+    if (!got_started.load() && std::chrono::steady_clock::now() >= deadline) {
+      break;  // startup timeout only
+    }
     // If Playnite has exited but we saw the game start, proceed to cleanup immediately
     if (got_started.load()) {
       auto d = platf::dxgi::find_process_ids_by_name(L"Playnite.DesktopApp.exe");
@@ -1198,7 +1204,9 @@ static int launcher_run(int argc, char **argv) {
   }
 
   if (!should_exit.load()) {
-    BOOST_LOG(warning) << "Timeout waiting for gameStopped; exiting";
+    BOOST_LOG(warning) << (got_started.load() ?
+                           "Timeout after start unexpectedly; exiting" :
+                           "Timeout waiting for game start; exiting");
     // Best-effort cleanup: remove marker file
     // Discovery marker removal skipped (marker not created)
     // Fall through to schedule cleanup anyway
