@@ -114,8 +114,10 @@ namespace platf::playnite {
       return false;
     }
     std::error_code ec;
-    HANDLE job = nullptr;
-    STARTUPINFOEXW si = platf::create_startup_info(nullptr, &job, ec);
+    // We are not inserting the child into a job here, so pass nullptr (do not
+    // provide a dummy HANDLE pointer or PROC_THREAD_ATTRIBUTE_JOB_LIST will be
+    // populated with an invalid null handle causing CreateProcessAsUser to fail).
+    STARTUPINFOEXW si = platf::create_startup_info(nullptr, nullptr, ec);
     if (ec) {
       return false;
     }
@@ -138,12 +140,16 @@ namespace platf::playnite {
     std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
     cmd_buf.push_back(L'\0');
 
-    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
+    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB;
 
     BOOL ok = FALSE;
     PROCESS_INFORMATION pi {};
     auto run = [&]() {
       ok = CreateProcessAsUserW(user_token, nullptr, cmd_buf.data(), nullptr, nullptr, FALSE, flags, env_block, start_dir.empty() ? nullptr : start_dir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
+      if (!ok) {
+        DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Playnite restart: CreateProcessAsUser failed, error=" << err;
+      }
     };
     // Impersonate to ensure profile access/network shares during launch
     (void) platf::impersonate_current_user(user_token, run);
