@@ -9,7 +9,7 @@
 #include "playnite_ipc.h"
 
 #ifndef SUNSHINE_PLAYNITE_LAUNCHER
-#include "src/platform/windows/misc.h"
+  #include "src/platform/windows/misc.h"
 #endif
 #include "src/utility.h"
 
@@ -27,7 +27,11 @@ using namespace std::chrono_literals;
 
 #ifdef SUNSHINE_PLAYNITE_LAUNCHER
 // The launcher never runs as SYSTEM; provide a local stub to avoid linking heavy deps.
-namespace platf { inline bool is_running_as_system() { return false; } }
+namespace platf {
+  inline bool is_running_as_system() {
+    return false;
+  }
+}  // namespace platf
 #endif
 
 namespace platf::playnite {

@@ -8,47 +8,47 @@
 #endif
 #include "playnite_integration.h"
 
-#include "src/confighttp.h"
 #include "src/config.h"
 #include "src/config_playnite.h"
+#include "src/confighttp.h"
 #include "src/file_handler.h"
 #include "src/logging.h"
 #include "src/platform/windows/image_convert.h"
 #include "src/platform/windows/ipc/misc_utils.h"
+#include "src/platform/windows/misc.h"
 #include "src/platform/windows/playnite_ipc.h"
 #include "src/platform/windows/playnite_protocol.h"
 #include "src/platform/windows/playnite_sync.h"
-#include "src/platform/windows/misc.h"
-#include "src/utility.h"
 #include "src/process.h"
+#include "src/utility.h"
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <chrono>
+#include <ctime>
 #include <filesystem>
+#include <iomanip>
 #include <KnownFolders.h>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <ShlObj.h>
-#include <UserEnv.h>
-#include <WtsApi32.h>
-#include <winrt/base.h>
-#include <Shlwapi.h>
 #include <shellapi.h>
+#include <ShlObj.h>
+#include <Shlwapi.h>
 #include <span>
+#include <sstream>
 #include <string>
-#include <unordered_set>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <UserEnv.h>
 #include <vector>
 #include <Windows.h>
-#include <ctime>
-#include <charconv>
-#include <iomanip>
-#include <sstream>
-#include <thread>
-#include <chrono>
+#include <winrt/base.h>
+#include <WtsApi32.h>
 // boost env/filesystem for process launch helpers
-#include <boost/process/environment.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/process/environment.hpp>
 
 namespace platf::playnite {
 
@@ -64,20 +64,22 @@ namespace platf::playnite {
     try {
       auto d = platf::dxgi::find_process_ids_by_name(L"Playnite.DesktopApp.exe");
       auto f = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
-      std::vector<DWORD> pids; pids.reserve(d.size() + f.size());
+      std::vector<DWORD> pids;
+      pids.reserve(d.size() + f.size());
       pids.insert(pids.end(), d.begin(), d.end());
       pids.insert(pids.end(), f.begin(), f.end());
       for (DWORD pid : pids) {
         winrt::handle hProc {OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)};
-        if (!hProc) continue;
+        if (!hProc) {
+          continue;
+        }
         HANDLE raw = nullptr;
         if (!OpenProcessToken(hProc.get(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, &raw)) {
           continue;
         }
         // Duplicate to a primary token to ensure broad compatibility (CreateProcessAsUser, registry overrides)
         HANDLE dup = nullptr;
-        if (DuplicateTokenEx(raw, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
-                             nullptr, SecurityImpersonation, TokenPrimary, &dup)) {
+        if (DuplicateTokenEx(raw, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, nullptr, SecurityImpersonation, TokenPrimary, &dup)) {
           CloseHandle(raw);
           return dup;  // caller must CloseHandle
         }
@@ -86,7 +88,8 @@ namespace platf::playnite {
     } catch (...) {}
 
     // 2) Any active interactive session (RDP or console)
-    WTS_SESSION_INFO *infos = nullptr; DWORD count = 0;
+    WTS_SESSION_INFO *infos = nullptr;
+    DWORD count = 0;
     if (WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, &infos, &count)) {
       for (DWORD i = 0; i < count; ++i) {
         if (infos[i].State == WTSActive) {
@@ -107,19 +110,29 @@ namespace platf::playnite {
 
   // Launch specified executable under the provided user token (primary)
   static bool launch_exe_as_token(HANDLE user_token, const std::wstring &exe_full_path, const std::wstring &start_dir) {
-    if (!user_token || exe_full_path.empty()) return false;
+    if (!user_token || exe_full_path.empty()) {
+      return false;
+    }
     std::error_code ec;
     HANDLE job = nullptr;
     STARTUPINFOEXW si = platf::create_startup_info(nullptr, &job, ec);
-    if (ec) return false;
-    auto free_list = util::fail_guard([&]() { platf::free_proc_thread_attr_list(si.lpAttributeList); });
+    if (ec) {
+      return false;
+    }
+    auto free_list = util::fail_guard([&]() {
+      platf::free_proc_thread_attr_list(si.lpAttributeList);
+    });
 
     // Build user environment block
     LPVOID env_block = nullptr;
     if (!CreateEnvironmentBlock(&env_block, user_token, FALSE)) {
       env_block = nullptr;  // proceed without custom env
     }
-    auto free_env = util::fail_guard([&]() { if (env_block) DestroyEnvironmentBlock(env_block); });
+    auto free_env = util::fail_guard([&]() {
+      if (env_block) {
+        DestroyEnvironmentBlock(env_block);
+      }
+    });
 
     std::wstring cmd = L"\"" + exe_full_path + L"\"";
     std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
@@ -128,19 +141,9 @@ namespace platf::playnite {
     DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
 
     BOOL ok = FALSE;
-    PROCESS_INFORMATION pi{};
+    PROCESS_INFORMATION pi {};
     auto run = [&]() {
-      ok = CreateProcessAsUserW(user_token,
-                                nullptr,
-                                cmd_buf.data(),
-                                nullptr,
-                                nullptr,
-                                FALSE,
-                                flags,
-                                env_block,
-                                start_dir.empty() ? nullptr : start_dir.c_str(),
-                                reinterpret_cast<LPSTARTUPINFOW>(&si),
-                                &pi);
+      ok = CreateProcessAsUserW(user_token, nullptr, cmd_buf.data(), nullptr, nullptr, FALSE, flags, env_block, start_dir.empty() ? nullptr : start_dir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
     };
     // Impersonate to ensure profile access/network shares during launch
     (void) platf::impersonate_current_user(user_token, run);
@@ -153,18 +156,22 @@ namespace platf::playnite {
   }
 
   // Forward declaration: refresh config id/name fields using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
-                                            const std::vector<platf::playnite::Game> &games);
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games);
 
   class deinit_t_impl;  // forward
-  static std::atomic<deinit_t_impl*> g_instance{nullptr};
+  static std::atomic<deinit_t_impl *> g_instance {nullptr};
+
   static bool is_plugin_installed() {
     try {
       std::string dir;
-      if (!get_extension_target_dir(dir)) return false;
+      if (!get_extension_target_dir(dir)) {
+        return false;
+      }
       std::filesystem::path d(dir);
       return std::filesystem::exists(d / "extension.yaml") && std::filesystem::exists(d / "SunshinePlaynite.psm1");
-    } catch (...) { return false; }
+    } catch (...) {
+      return false;
+    }
   }
 
   class deinit_t_impl: public ::platf::deinit_t {
@@ -186,14 +193,18 @@ namespace platf::playnite {
       }
       // Start manager loop to hot-apply enablement state
       stop_flag_.store(false, std::memory_order_release);
-      manager_ = std::thread([this]() { this->manager_loop(); });
+      manager_ = std::thread([this]() {
+        this->manager_loop();
+      });
     }
 
     ~deinit_t_impl() override {
       // Stop manager thread
       try {
         stop_flag_.store(true, std::memory_order_release);
-        if (manager_.joinable()) manager_.join();
+        if (manager_.joinable()) {
+          manager_.join();
+        }
       } catch (...) {}
       if (server_) {
         server_->stop();
@@ -247,7 +258,9 @@ namespace platf::playnite {
       // Avoid hot-toggling: if a server exists and is already running (even if not
       // yet connected), do not tear it down and recreate it. This prevents rapid
       // restarts during the handshake window.
-      if (server_ && (server_->is_active() || server_->is_started())) return;
+      if (server_ && (server_->is_active() || server_->is_started())) {
+        return;
+      }
       BOOST_LOG(info) << "Playnite: starting IPC server (hot-toggle)";
       server_ = std::make_unique<platf::playnite::IpcServer>();
       server_->set_message_handler([this](std::span<const uint8_t> bytes) {
@@ -262,8 +275,11 @@ namespace platf::playnite {
       // simple periodic reconciliation loop
       while (!stop_flag_.load(std::memory_order_acquire)) {
         const bool want = is_plugin_installed();
-        if (want) { ensure_started(); }
-        else { stop_server(); }
+        if (want) {
+          ensure_started();
+        } else {
+          stop_server();
+        }
         std::this_thread::sleep_for(1500ms);
       }
     }
@@ -283,9 +299,13 @@ namespace platf::playnite {
           last_categories_.clear();
           for (const auto &c : msg.categories) {
             std::string key = !c.id.empty() ? ("id:" + c.id) : ("name:" + c.name);
-            if (seen.insert(key).second) last_categories_.push_back(c);
+            if (seen.insert(key).second) {
+              last_categories_.push_back(c);
+            }
           }
-          std::sort(last_categories_.begin(), last_categories_.end(), [](const auto &a, const auto &b){ return a.name < b.name; });
+          std::sort(last_categories_.begin(), last_categories_.end(), [](const auto &a, const auto &b) {
+            return a.name < b.name;
+          });
           new_snapshot_ = true;
         }
         // Best-effort: refresh persisted names (categories) using latest snapshot
@@ -328,7 +348,7 @@ namespace platf::playnite {
           }
         }
         BOOST_LOG(info) << "Playnite: games batch processed added=" << added << " skipped=" << skipped
-                         << " cumulative=" << (before + added) << " (unique IDs)";
+                        << " cumulative=" << (before + added) << " (unique IDs)";
         // Best-effort: refresh persisted names (games) using latest snapshot so UI has names offline
         {
           std::vector<platf::playnite::Category> cats_copy;
@@ -346,9 +366,9 @@ namespace platf::playnite {
         }
       } else if (msg.type == MT::Status) {
         BOOST_LOG(info) << "Playnite: status '" << msg.status_name
-                         << "' id='" << msg.status_game_id
-                         << "' exe='" << msg.status_exe
-                         << "' installDir='" << msg.status_install_dir << "'";
+                        << "' id='" << msg.status_game_id
+                        << "' exe='" << msg.status_exe
+                        << "' installDir='" << msg.status_install_dir << "'";
         if (msg.status_name == "gameStopped") {
           BOOST_LOG(info) << "Playnite: received gameStopped; terminating active process";
           proc::proc.terminate();
@@ -356,8 +376,12 @@ namespace platf::playnite {
       } else {
         // Truncate and log a preview of the raw message for diagnostics
         std::string preview;
-        preview.assign((const char*)bytes.data(), std::min<size_t>(bytes.size(), 256));
-        for (auto &ch : preview) if (ch == '\n' || ch == '\r') ch = ' ';
+        preview.assign((const char *) bytes.data(), std::min<size_t>(bytes.size(), 256));
+        for (auto &ch : preview) {
+          if (ch == '\n' || ch == '\r') {
+            ch = ' ';
+          }
+        }
         BOOST_LOG(warning) << "Playnite: unrecognized message; size=" << bytes.size() << " preview='" << preview << "'";
       }
     }
@@ -376,11 +400,15 @@ namespace platf::playnite {
 
       // Build all games snapshot and reconcile with apps.json via helper
       std::vector<platf::playnite::Game> all;
-      { std::scoped_lock lk(mutex_); all = last_games_; }
+      {
+        std::scoped_lock lk(mutex_);
+        all = last_games_;
+      }
       int recentN = std::max(0, config::playnite.recent_games);
       int recent_age_days = std::max(0, config::playnite.recent_max_age_days);
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
-      bool changed = false; std::size_t matched = 0;
+      bool changed = false;
+      std::size_t matched = 0;
       platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_categories, config::playnite.exclude_games, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
@@ -406,7 +434,7 @@ namespace platf::playnite {
     std::thread manager_;
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
-    std::vector<platf::playnite::Category> last_categories_;   // Last known categories (id+name)
+    std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
   };
 
   std::unique_ptr<::platf::deinit_t> start() {
@@ -421,8 +449,6 @@ namespace platf::playnite {
     return false;
   }
 
-  
-
   // Consolidated helper: query association for 'playnite' to resolve executable path
   static bool query_assoc_for_playnite(std::wstring &outExe) {
     HANDLE user_token = nullptr;
@@ -435,12 +461,14 @@ namespace platf::playnite {
       auto lg = std::lock_guard(per_user_key_mutex);
       if (!platf::override_per_user_predefined_keys(user_token)) {
         BOOST_LOG(debug) << "Playnite: per-user registry override failed (no active session?)";
-        if (user_token) CloseHandle(user_token);
+        if (user_token) {
+          CloseHandle(user_token);
+        }
         return false;
       }
 
       // Try ASSOCSTR_EXECUTABLE first
-      std::array<WCHAR, 4096> exe_buf{};
+      std::array<WCHAR, 4096> exe_buf {};
       DWORD out_len = static_cast<DWORD>(exe_buf.size());
       HRESULT hr = AssocQueryStringW(ASSOCF_NOTRUNCATE, ASSOCSTR_EXECUTABLE, L"playnite", nullptr, exe_buf.data(), &out_len);
       if (hr == S_OK) {
@@ -449,24 +477,38 @@ namespace platf::playnite {
 
       // Fallback to ASSOCSTR_COMMAND and parse
       if (exe.empty()) {
-        std::array<WCHAR, 4096> cmd_buf{};
+        std::array<WCHAR, 4096> cmd_buf {};
         out_len = static_cast<DWORD>(cmd_buf.size());
         hr = AssocQueryStringW(ASSOCF_NOTRUNCATE, ASSOCSTR_COMMAND, L"playnite", L"open", cmd_buf.data(), &out_len);
         if (hr == S_OK) {
-          int argc = 0; auto argv = CommandLineToArgvW(cmd_buf.data(), &argc);
-          if (argv && argc >= 1) { exe.assign(argv[0]); LocalFree(argv); }
-          else {
-            std::wstring s{cmd_buf.data()};
-            if (!s.empty() && s.front() == L'"') { auto p = s.find(L'"', 1); if (p != std::wstring::npos) exe = s.substr(1, p - 1); }
-            else { auto p = s.find(L' '); exe = (p == std::wstring::npos) ? s : s.substr(0, p); }
+          int argc = 0;
+          auto argv = CommandLineToArgvW(cmd_buf.data(), &argc);
+          if (argv && argc >= 1) {
+            exe.assign(argv[0]);
+            LocalFree(argv);
+          } else {
+            std::wstring s {cmd_buf.data()};
+            if (!s.empty() && s.front() == L'"') {
+              auto p = s.find(L'"', 1);
+              if (p != std::wstring::npos) {
+                exe = s.substr(1, p - 1);
+              }
+            } else {
+              auto p = s.find(L' ');
+              exe = (p == std::wstring::npos) ? s : s.substr(0, p);
+            }
           }
         }
       }
 
       platf::override_per_user_predefined_keys(nullptr);
     }
-    if (user_token) CloseHandle(user_token);
-    if (exe.empty() || !std::filesystem::exists(exe)) return false;
+    if (user_token) {
+      CloseHandle(user_token);
+    }
+    if (exe.empty() || !std::filesystem::exists(exe)) {
+      return false;
+    }
     outExe = exe;
     return true;
   }
@@ -475,7 +517,9 @@ namespace platf::playnite {
   // Uses per-user registry views and impersonates the active user before calling AssocQueryString.
   static bool resolve_extensions_dir_via_assoc(std::filesystem::path &destOut) {
     std::wstring exe_path_w;
-    if (!query_assoc_for_playnite(exe_path_w)) return false;
+    if (!query_assoc_for_playnite(exe_path_w)) {
+      return false;
+    }
     std::filesystem::path exePath = exe_path_w;
     std::filesystem::path base = exePath.parent_path();
     destOut = base / L"Extensions" / L"SunshinePlaynite";
@@ -519,7 +563,7 @@ namespace platf::playnite {
     std::vector<platf::playnite::Game> copy;
     inst->snapshot_games(copy);
     try {
-      auto &vec = arr.get_ref<nlohmann::json::array_t&>();
+      auto &vec = arr.get_ref<nlohmann::json::array_t &>();
       vec.reserve(copy.size());
     } catch (...) {}
     for (const auto &g : copy) {
@@ -548,87 +592,156 @@ namespace platf::playnite {
       std::unordered_set<std::string> uniq;
       std::vector<platf::playnite::Category> tmp;
       for (const auto &g : copy) {
-        for (const auto &cname : g.categories) if (!cname.empty() && uniq.insert(cname).second) tmp.push_back(platf::playnite::Category{std::string(), cname});
+        for (const auto &cname : g.categories) {
+          if (!cname.empty() && uniq.insert(cname).second) {
+            tmp.push_back(platf::playnite::Category {std::string(), cname});
+          }
+        }
       }
-      std::sort(tmp.begin(), tmp.end(), [](const auto &a, const auto &b){ return a.name < b.name; });
+      std::sort(tmp.begin(), tmp.end(), [](const auto &a, const auto &b) {
+        return a.name < b.name;
+      });
       cats = std::move(tmp);
     }
     nlohmann::json arr = nlohmann::json::array();
-    for (const auto &c : cats) { nlohmann::json j; j["id"]=c.id; j["name"]=c.name; arr.push_back(std::move(j)); }
+    for (const auto &c : cats) {
+      nlohmann::json j;
+      j["id"] = c.id;
+      j["name"] = c.name;
+      arr.push_back(std::move(j));
+    }
     out_json = arr.dump();
     return true;
   }
 
   // Reconcile persisted config names for categories/exclusions using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
-                                            const std::vector<platf::playnite::Game> &games) {
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games) {
     try {
       // Build lookup maps
-      std::unordered_map<std::string, std::string> cat_by_id; // id->name
-      std::unordered_map<std::string, std::string> cat_id_by_name; // name->id (best effort)
+      std::unordered_map<std::string, std::string> cat_by_id;  // id->name
+      std::unordered_map<std::string, std::string> cat_id_by_name;  // name->id (best effort)
       for (const auto &c : cats) {
-        if (!c.id.empty()) cat_by_id[c.id] = c.name;
-        if (!c.name.empty()) cat_id_by_name[c.name] = c.id;
+        if (!c.id.empty()) {
+          cat_by_id[c.id] = c.name;
+        }
+        if (!c.name.empty()) {
+          cat_id_by_name[c.name] = c.id;
+        }
       }
       std::unordered_map<std::string, std::string> game_name_by_id;
-      for (const auto &g : games) if (!g.id.empty()) game_name_by_id[g.id] = g.name;
+      for (const auto &g : games) {
+        if (!g.id.empty()) {
+          game_name_by_id[g.id] = g.name;
+        }
+      }
 
       // Load config
       auto current = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
       bool changed = false;
 
       auto parse_any = [](const std::string &raw) -> nlohmann::json {
-        try { return nlohmann::json::parse(raw); } catch (...) { return nlohmann::json(); }
+        try {
+          return nlohmann::json::parse(raw);
+        } catch (...) {
+          return nlohmann::json();
+        }
       };
 
       auto update_array = [&](const char *key, bool treat_strings_as_ids, const auto &resolver) {
         auto it = current.find(key);
-        if (it == current.end()) return;
+        if (it == current.end()) {
+          return;
+        }
         nlohmann::json j = parse_any(it->second);
         std::vector<nlohmann::json> out;
         bool local_changed = false;
         auto push_obj = [&](const std::string &id, const std::string &name) {
-          nlohmann::json o; o["id"] = id; o["name"] = name; out.push_back(std::move(o)); };
+          nlohmann::json o;
+          o["id"] = id;
+          o["name"] = name;
+          out.push_back(std::move(o));
+        };
         if (j.is_array()) {
           for (auto &el : j) {
             std::string id, name;
-            if (el.is_object()) { id = el.value("id", std::string()); name = el.value("name", std::string()); }
-            else if (el.is_string()) { if (treat_strings_as_ids) id = el.get<std::string>(); else name = el.get<std::string>(); }
+            if (el.is_object()) {
+              id = el.value("id", std::string());
+              name = el.value("name", std::string());
+            } else if (el.is_string()) {
+              if (treat_strings_as_ids) {
+                id = el.get<std::string>();
+              } else {
+                name = el.get<std::string>();
+              }
+            }
             // Resolve missing/mismatched pieces
-            std::string rid=id, rname=name; resolver(rid, rname);
-            if (rid != id || rname != name) local_changed = true;
+            std::string rid = id, rname = name;
+            resolver(rid, rname);
+            if (rid != id || rname != name) {
+              local_changed = true;
+            }
             push_obj(rid, rname);
           }
         } else {
           // CSV fallback
-          std::stringstream ss(it->second); std::string item;
+          std::stringstream ss(it->second);
+          std::string item;
           while (std::getline(ss, item, ',')) {
-            item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char ch){return !std::isspace(ch);}));
-            item.erase(std::find_if(item.rbegin(), item.rend(), [](unsigned char ch){return !std::isspace(ch);}).base(), item.end());
-            if (item.empty()) continue;
-            std::string rid, rname; if (treat_strings_as_ids) rid=item; else rname=item; resolver(rid, rname); push_obj(rid, rname); local_changed = true; // converted to objects
+            item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char ch) {
+                         return !std::isspace(ch);
+                       }));
+            item.erase(std::find_if(item.rbegin(), item.rend(), [](unsigned char ch) {
+                         return !std::isspace(ch);
+                       }).base(),
+                       item.end());
+            if (item.empty()) {
+              continue;
+            }
+            std::string rid, rname;
+            if (treat_strings_as_ids) {
+              rid = item;
+            } else {
+              rname = item;
+            }
+            resolver(rid, rname);
+            push_obj(rid, rname);
+            local_changed = true;  // converted to objects
           }
         }
         if (local_changed) {
-          nlohmann::json arr = nlohmann::json::array(); for (auto &o : out) arr.push_back(std::move(o));
-          current[key] = arr.dump(); changed = true;
+          nlohmann::json arr = nlohmann::json::array();
+          for (auto &o : out) {
+            arr.push_back(std::move(o));
+          }
+          current[key] = arr.dump();
+          changed = true;
         }
       };
 
       // Categories: complete id/name using snapshot
-      update_array("playnite_sync_categories", /*treat_strings_as_ids=*/false, [&](std::string &id, std::string &name){
-        if (!id.empty() && cat_by_id.count(id)) { name = cat_by_id[id]; return; }
-        if (!name.empty() && cat_id_by_name.count(name)) { id = cat_id_by_name[name]; return; }
+      update_array("playnite_sync_categories", /*treat_strings_as_ids=*/false, [&](std::string &id, std::string &name) {
+        if (!id.empty() && cat_by_id.count(id)) {
+          name = cat_by_id[id];
+          return;
+        }
+        if (!name.empty() && cat_id_by_name.count(name)) {
+          id = cat_id_by_name[name];
+          return;
+        }
         // Not resolvable: leave as-is
       });
       // Excluded games: ensure names match latest snapshot
-      update_array("playnite_exclude_games", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name){
-        if (!id.empty() && game_name_by_id.count(id)) name = game_name_by_id[id];
+      update_array("playnite_exclude_games", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name) {
+        if (!id.empty() && game_name_by_id.count(id)) {
+          name = game_name_by_id[id];
+        }
       });
 
       if (changed) {
         std::stringstream config_stream;
-        for (const auto &kv : current) config_stream << kv.first << " = " << kv.second << std::endl;
+        for (const auto &kv : current) {
+          config_stream << kv.first << " = " << kv.second << std::endl;
+        }
         file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
         BOOST_LOG(info) << "Playnite: refreshed id/name fields in config";
       }
@@ -639,11 +752,15 @@ namespace platf::playnite {
 
   bool stop_game(const std::string &playnite_id) {
     auto inst = g_instance.load(std::memory_order_acquire);
-    if (!inst) return false;
+    if (!inst) {
+      return false;
+    }
     nlohmann::json j;
     j["type"] = "command";
     j["command"] = "stop";
-    if (!playnite_id.empty()) j["id"] = playnite_id;
+    if (!playnite_id.empty()) {
+      j["id"] = playnite_id;
+    }
     return inst->send_cmd_json_line(j.dump());
   }
 
@@ -671,12 +788,12 @@ namespace platf::playnite {
         break;
       }
     }
-  if (!gptr || gptr->box_art_path.empty()) {
+    if (!gptr || gptr->box_art_path.empty()) {
       return false;
     }
 
     try {
-  std::filesystem::path src = gptr->box_art_path;
+      std::filesystem::path src = gptr->box_art_path;
       std::filesystem::path dstDir = platf::appdata() / "covers";
       file_handler::make_directory(dstDir.string());
       std::filesystem::path dst = dstDir / ("playnite_" + playnite_id + ".png");
@@ -711,7 +828,9 @@ namespace platf::playnite {
       pids.insert(pids.end(), f.begin(), f.end());
       for (DWORD pid : pids) {
         HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!hp) continue;
+        if (!hp) {
+          continue;
+        }
         std::wstring buf;
         buf.resize(32768);
         DWORD size = static_cast<DWORD>(buf.size());
@@ -738,7 +857,11 @@ namespace platf::playnite {
         if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token, &local)) && local) {
           std::filesystem::path p = std::filesystem::path(local) / L"Playnite" / L"Playnite.DesktopApp.exe";
           CoTaskMemFree(local);
-          if (std::filesystem::exists(p)) { CloseHandle(user_token); exe_path_out = p.wstring(); return true; }
+          if (std::filesystem::exists(p)) {
+            CloseHandle(user_token);
+            exe_path_out = p.wstring();
+            return true;
+          }
         }
         CloseHandle(user_token);
       }
@@ -749,7 +872,10 @@ namespace platf::playnite {
       wchar_t buf[MAX_PATH] = {};
       if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
         std::filesystem::path p = std::filesystem::path(buf) / L"Playnite" / L"Playnite.DesktopApp.exe";
-        if (std::filesystem::exists(p)) { exe_path_out = p.wstring(); return true; }
+        if (std::filesystem::exists(p)) {
+          exe_path_out = p.wstring();
+          return true;
+        }
       }
     } catch (...) {}
 
@@ -758,7 +884,11 @@ namespace platf::playnite {
 
   // Close by posting WM_CLOSE to windows owned by process name, then kill leftovers
   static void close_then_kill_by_name(const wchar_t *exeName) {
-    struct Ctx { const wchar_t *name; std::vector<DWORD> pids; } ctx{exeName, {}};
+    struct Ctx {
+      const wchar_t *name;
+      std::vector<DWORD> pids;
+    } ctx {exeName, {}};
+
     // Build a set of target PIDs by name
     try {
       auto ids = platf::dxgi::find_process_ids_by_name(exeName);
@@ -768,14 +898,21 @@ namespace platf::playnite {
     if (!ctx.pids.empty()) {
       BOOST_LOG(info) << "Playnite: posting WM_CLOSE to " << ctx.pids.size() << " window(s) for '" << platf::to_utf8(std::wstring(exeName)) << "'";
       EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-        auto *c = reinterpret_cast<Ctx*>(lparam);
-        DWORD pid = 0; GetWindowThreadProcessId(hwnd, &pid);
-        if (!pid) return TRUE;
+        auto *c = reinterpret_cast<Ctx *>(lparam);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (!pid) {
+          return TRUE;
+        }
         for (DWORD p : c->pids) {
-          if (p == pid) { PostMessageW(hwnd, WM_CLOSE, 0, 0); break; }
+          if (p == pid) {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            break;
+          }
         }
         return TRUE;
-      }, reinterpret_cast<LPARAM>(&ctx));
+      },
+                  reinterpret_cast<LPARAM>(&ctx));
     }
 
     Sleep(1200);
@@ -783,11 +920,16 @@ namespace platf::playnite {
     // Kill any remaining processes by name
     try {
       auto ids = platf::dxgi::find_process_ids_by_name(exeName);
-      if (!ids.empty()) BOOST_LOG(info) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
+      if (!ids.empty()) {
+        BOOST_LOG(info) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
+      }
       for (DWORD pid : ids) {
         HANDLE hp = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!hp) continue;
-        DWORD code = 0; if (!GetExitCodeProcess(hp, &code) || code == STILL_ACTIVE) {
+        if (!hp) {
+          continue;
+        }
+        DWORD code = 0;
+        if (!GetExitCodeProcess(hp, &code) || code == STILL_ACTIVE) {
           TerminateProcess(hp, 1);
         }
         CloseHandle(hp);
@@ -797,7 +939,8 @@ namespace platf::playnite {
 
   bool restart_playnite() {
     // 1) Collect current state and attempt graceful-then-force close from the user's session
-    std::vector<DWORD> pids; std::wstring running_exe;
+    std::vector<DWORD> pids;
+    std::wstring running_exe;
     collect_playnite_state(pids, running_exe);
     // Gracefully request close then kill stragglers, native
     close_then_kill_by_name(L"Playnite.DesktopApp.exe");
@@ -817,7 +960,8 @@ namespace platf::playnite {
     }
 
     // 3) Launch Playnite (impersonates active user when running as SYSTEM)
-    std::filesystem::path exePath = exe; std::filesystem::path startDir = exePath.parent_path();
+    std::filesystem::path exePath = exe;
+    std::filesystem::path startDir = exePath.parent_path();
     std::string cmd = platf::to_utf8(exe);
     std::error_code ec_launch;
     // platf::run_command expects a boost::filesystem::path&
@@ -960,7 +1104,5 @@ namespace platf::playnite {
   bool uninstall_plugin(std::string &error) {
     return do_uninstall_plugin_impl(error);
   }
-
-  
 
 }  // namespace platf::playnite

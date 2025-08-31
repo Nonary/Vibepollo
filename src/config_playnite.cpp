@@ -40,7 +40,6 @@ namespace config {
     vars.erase(it);
   }
 
-
   static void parse_id_name_array(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::vector<config::id_name_t> &out, std::vector<std::string> *names_out = nullptr, bool treat_strings_as_ids = false) {
     std::string raw;
     erase_take(vars, name, raw);
@@ -118,7 +117,7 @@ namespace config {
       }
     }
   }
-  
+
   void apply_playnite(std::unordered_map<std::string, std::string> &vars) {
     // booleans
     std::string tmp;

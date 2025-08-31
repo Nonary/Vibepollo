@@ -13,31 +13,31 @@
 
 namespace update {
   struct asset_info_t {
-    std::string name; ///< Asset filename
-    std::string download_url; ///< Direct download URL
-    std::string sha256; ///< SHA256 hash of the asset
-    std::int64_t size; ///< Size in bytes
-    std::string content_type; ///< MIME type
+    std::string name;  ///< Asset filename
+    std::string download_url;  ///< Direct download URL
+    std::string sha256;  ///< SHA256 hash of the asset
+    std::int64_t size;  ///< Size in bytes
+    std::string content_type;  ///< MIME type
   };
 
   struct release_info_t {
-    std::string version; ///< Version tag (e.g., "v1.2.3")
-    std::string url; ///< Release page URL
-    std::string name; ///< Release name/title
-    std::string body; ///< Release body/changelog
-    std::string published_at; ///< Publish date
-    bool is_prerelease; ///< Whether this is a prerelease
-    std::vector<asset_info_t> assets; ///< Available binary assets
+    std::string version;  ///< Version tag (e.g., "v1.2.3")
+    std::string url;  ///< Release page URL
+    std::string name;  ///< Release name/title
+    std::string body;  ///< Release body/changelog
+    std::string published_at;  ///< Publish date
+    bool is_prerelease;  ///< Whether this is a prerelease
+    std::vector<asset_info_t> assets;  ///< Available binary assets
   };
 
   struct state_t {
-    std::string last_notified_version; ///< Version string last notified to user
-    std::string last_notified_url; ///< Release page URL last notified to user
-    bool last_notified_is_prerelease {false}; ///< Whether last notification was for a prerelease
-    release_info_t latest_release; ///< Latest stable release info
-    release_info_t latest_prerelease; ///< Latest prerelease info (if enabled)
-    std::chrono::steady_clock::time_point last_check_time; ///< Last time we checked
-    std::atomic<bool> check_in_progress {false}; ///< True while a check is running
+    std::string last_notified_version;  ///< Version string last notified to user
+    std::string last_notified_url;  ///< Release page URL last notified to user
+    bool last_notified_is_prerelease {false};  ///< Whether last notification was for a prerelease
+    release_info_t latest_release;  ///< Latest stable release info
+    release_info_t latest_prerelease;  ///< Latest prerelease info (if enabled)
+    std::chrono::steady_clock::time_point last_check_time;  ///< Last time we checked
+    std::atomic<bool> check_in_progress {false};  ///< True while a check is running
   };
 
   extern state_t state;
@@ -48,7 +48,6 @@ namespace update {
    * @param force If true, forces the check regardless of throttling.
    */
   void trigger_check(bool force);
-
 
   /**
    * @brief Handle stream start event for update notification.

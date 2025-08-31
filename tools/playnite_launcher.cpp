@@ -818,8 +818,6 @@ namespace {
     std::unordered_map<DWORD, std::wstring> img_path;
   };
 
-
-
   static bool pid_alive(DWORD pid) {
     HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
     if (!h) {

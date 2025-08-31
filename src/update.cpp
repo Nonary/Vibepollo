@@ -7,8 +7,8 @@
 
 // standard includes
 #include <cstdio>
-#include <future>
 #include <ctime>
+#include <future>
 #include <regex>
 #include <sstream>
 #include <thread>
@@ -28,7 +28,6 @@
 #include "utility.h"
 
 #include <boost/process/v1/environment.hpp>
-
 
 using namespace std::literals;
 
@@ -80,18 +79,18 @@ namespace update {
   static std::chrono::system_clock::time_point parse_iso8601_utc(const std::string &s) {
     // Expect Zulu time from GitHub (e.g., 2024-08-20T21:30:00Z)
     if (s.size() < 20) {
-      return std::chrono::system_clock::time_point{};
+      return std::chrono::system_clock::time_point {};
     }
     std::tm tm {};
     try {
       tm.tm_year = std::stoi(s.substr(0, 4)) - 1900;
-      tm.tm_mon  = std::stoi(s.substr(5, 2)) - 1;
+      tm.tm_mon = std::stoi(s.substr(5, 2)) - 1;
       tm.tm_mday = std::stoi(s.substr(8, 2));
       tm.tm_hour = std::stoi(s.substr(11, 2));
-      tm.tm_min  = std::stoi(s.substr(14, 2));
-      tm.tm_sec  = std::stoi(s.substr(17, 2));
+      tm.tm_min = std::stoi(s.substr(14, 2));
+      tm.tm_sec = std::stoi(s.substr(17, 2));
     } catch (...) {
-      return std::chrono::system_clock::time_point{};
+      return std::chrono::system_clock::time_point {};
     }
 #if defined(_WIN32)
     time_t t = _mkgmtime(&tm);
@@ -99,7 +98,7 @@ namespace update {
     time_t t = timegm(&tm);
 #endif
     if (t == (time_t) -1) {
-      return std::chrono::system_clock::time_point{};
+      return std::chrono::system_clock::time_point {};
     }
     return std::chrono::system_clock::from_time_t(t);
   }
@@ -135,13 +134,13 @@ namespace update {
       if (download_github_release_data(SUNSHINE_REPO_OWNER, SUNSHINE_REPO_NAME, releases_json)) {
         auto j = nlohmann::json::parse(releases_json);
         // Reset release info
-        state.latest_release = release_info_t{};
-        state.latest_prerelease = release_info_t{};
+        state.latest_release = release_info_t {};
+        state.latest_prerelease = release_info_t {};
 
         for (auto &rel : j) {
           bool is_prerelease = rel.value("prerelease", false);
           bool is_draft = rel.value("draft", false);
-          
+
           // Parse assets for this release
           std::vector<asset_info_t> assets;
           if (rel.contains("assets") && rel["assets"].is_array()) {
@@ -151,13 +150,13 @@ namespace update {
               asset_info.download_url = asset.value("browser_download_url", "");
               asset_info.size = asset.value("size", 0);
               asset_info.content_type = asset.value("content_type", "");
-              
+
               // Extract SHA256 from digest field (format: "sha256:hash")
               std::string digest = asset.value("digest", "");
               if (digest.starts_with("sha256:")) {
                 asset_info.sha256 = digest.substr(7);
               }
-              
+
               if (!asset_info.name.empty() && !asset_info.download_url.empty()) {
                 assets.push_back(asset_info);
               }
