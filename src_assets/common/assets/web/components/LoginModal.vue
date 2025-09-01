@@ -21,6 +21,7 @@
       </template>
 
       <form
+        id="loginForm"
         class="px-1 py-2 space-y-4"
         novalidate
         @submit.prevent="submit"
@@ -61,18 +62,22 @@
           <n-alert v-if="error" type="error" :show-icon="true">{{ error }}</n-alert>
           <n-alert v-else-if="success" type="success" :show-icon="true">{{ success }}</n-alert>
         </div>
-      </form>
-
-      <template #footer>
+        <!-- Actions: keep inside the form so Enter triggers submit via native form semantics -->
         <div class="flex items-center justify-end w-full">
-          <n-button type="primary" :disabled="submitting" :loading="submitting" @click="submit">
+          <n-button
+            type="primary"
+            attr-type="submit"
+            :disabled="submitting"
+            :loading="submitting"
+          >
             <span v-if="!credentialsConfigured">{{
               submitting ? t('auth.creating_user') : t('auth.create_user')
             }}</span>
             <span v-else>{{ submitting ? t('auth.login_loading') : t('auth.login_sign_in') }}</span>
           </n-button>
         </div>
-      </template>
+      </form>
+
     </n-card>
   </n-modal>
 </template>
