@@ -57,7 +57,6 @@ namespace confighttp {
   void loginUser(resp_https_t response, req_https_t request);
   void authStatus(resp_https_t response, req_https_t request);
   void logoutUser(resp_https_t response, req_https_t request);
-  void getLoginPage(resp_https_t response, req_https_t request);
   void getSpaEntry(resp_https_t response, req_https_t request);
 
   // Writes the apps file and refreshes the client-visible app cache/list
@@ -70,16 +69,6 @@ namespace confighttp {
 
   TokenScope scope_from_string(std::string_view s);
   std::string scope_to_string(TokenScope scope);
-
-  // Web UI endpoints
-  void listApiTokens(resp_https_t response, req_https_t request);
-  void revokeApiToken(resp_https_t response, req_https_t request);
-  void getTokenPage(resp_https_t response, req_https_t request);
-  void loginUser(resp_https_t response, req_https_t request);
-  void authStatus(resp_https_t response, req_https_t request);
-  void logoutUser(resp_https_t response, req_https_t request);
-  void getLoginPage(resp_https_t response, req_https_t request);
-  void getSpaEntry(resp_https_t response, req_https_t request);
 
 }  // namespace confighttp
 
