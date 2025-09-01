@@ -28,8 +28,8 @@
   #include <display_device/noop_settings_persistence.h>
   #include "platform/windows/impersonating_display_device.h"
   #include "platform/windows/misc.h"
-  #include "platform/windows/display_helper_integration.h"
 #endif
+#include "src/display_helper_integration.h"
 
 namespace display_device {
   namespace {
@@ -696,7 +696,11 @@ namespace display_device {
   std::unique_ptr<platf::deinit_t> init(const std::filesystem::path &persistence_filepath, const config::video_t &video_config) {
     std::lock_guard lock {DD_DATA.mutex};
     // We can support re-init without any issues, however we should make sure to clean up first!
-    revert_configuration_unlocked(revert_option_e::try_once);
+    if (display_helper_integration::suppress_fallback()) {
+      (void)display_helper_integration::revert();
+    } else {
+      revert_configuration_unlocked(revert_option_e::try_once);
+    }
     DD_DATA.config_revert_delay = video_config.dd.config_revert_delay;
     DD_DATA.sm_instance = nullptr;
 
@@ -711,9 +715,11 @@ namespace display_device {
       BOOST_LOG(info) << "Currently available display devices:\n"
                       << toJson(available_devices);
 
-      // In case we have failed to revert configuration before shutting down, we should
-      // do it now.
-      revert_configuration_unlocked(revert_option_e::try_indefinitely);
+      // If helper is not in use, schedule in-process revert attempts
+      if (!display_helper_integration::suppress_fallback()) {
+        // In case we have failed to revert configuration before shutting down, we should do it now.
+        revert_configuration_unlocked(revert_option_e::try_indefinitely);
+      }
     }
 
     class deinit_t: public platf::deinit_t {
@@ -725,7 +731,12 @@ namespace display_device {
           // in case some unforeseen changes are made that could raise an exception,
           // we definitely don't want this to happen in destructor. Especially in the
           // deinit_t where the outcome does not really matter.
-          revert_configuration_unlocked(revert_option_e::try_once);
+          // Use helper when active; otherwise perform a single in-process revert attempt
+          if (display_helper_integration::suppress_fallback()) {
+            (void)display_helper_integration::revert();
+          } else {
+            revert_configuration_unlocked(revert_option_e::try_once);
+          }
         } catch (std::exception &err) {
           BOOST_LOG(fatal) << err.what();
         }
@@ -750,12 +761,10 @@ namespace display_device {
   }
 
   void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-    // Prefer the Windows helper via IPC; fall back to in-process configuration
-#ifdef _WIN32
-    if (display_helper_integration::apply_from_session(video_config, session)) {
+    // Try helper first; if not active, fall back to in-process
+    if (display_helper_integration::apply_from_session(video_config, session) || display_helper_integration::suppress_fallback()) {
       return;
     }
-#endif
     const auto result {parse_configuration(video_config, session)};
     if (const auto *parsed_config {std::get_if<SingleDisplayConfiguration>(&result)}; parsed_config) {
       configure_display(*parsed_config);
@@ -773,6 +782,10 @@ namespace display_device {
 
   void configure_display(const SingleDisplayConfiguration &config) {
     std::lock_guard lock {DD_DATA.mutex};
+    if (display_helper_integration::suppress_fallback()) {
+      // Not used when helper exclusively manages display
+      return;
+    }
     if (!DD_DATA.sm_instance) {
       // Platform is not supported, nothing to do.
       return;
@@ -790,12 +803,10 @@ namespace display_device {
 
   void revert_configuration() {
     std::lock_guard lock {DD_DATA.mutex};
-    // Prefer the Windows helper via IPC; fall back to in-process revert
-#ifdef _WIN32
-    if (display_helper_integration::revert()) {
+    if (display_helper_integration::suppress_fallback()) {
+      (void)display_helper_integration::revert();
       return;
     }
-#endif
     revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);
   }
 

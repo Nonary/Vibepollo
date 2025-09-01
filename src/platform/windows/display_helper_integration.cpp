@@ -13,6 +13,8 @@
 // sunshine
 #include "display_helper_integration.h"
 #include "src/display_device.h"
+#include "src/logging.h"
+#include "src/platform/windows/misc.h"
 #include "src/platform/windows/ipc/display_settings_client.h"
 #include "src/platform/windows/ipc/process_handler.h"
 
@@ -28,18 +30,27 @@ namespace {
     if (helper_proc().get_process_handle() != nullptr) {
       return true;
     }
-    // Compute path to display-settings-helper.exe next to Sunshine.exe
+    // Compute path to display-settings-helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, module_path, _countof(module_path))) {
+      BOOST_LOG(error) << "Failed to resolve Sunshine module path; cannot launch display helper.";
       return false;
     }
     std::filesystem::path exe_path(module_path);
     std::filesystem::path dir = exe_path.parent_path();
-    std::filesystem::path helper = dir / L"display-settings-helper.exe";
+    std::filesystem::path helper = dir / L"tools" / L"display-settings-helper.exe";
+
     if (!std::filesystem::exists(helper)) {
+      BOOST_LOG(warning) << "Display helper not found at: " << platf::to_utf8(helper.wstring())
+                         << ". Ensure the tools subdirectory is present and contains display-settings-helper.exe.";
       return false;
     }
-    return helper_proc().start(helper.wstring(), L"");
+
+    const bool started = helper_proc().start(helper.wstring(), L"");
+    if (!started) {
+      BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
+    }
+    return started;
   }
 }
 
@@ -71,4 +82,3 @@ namespace display_helper_integration {
 }
 
 #endif
-
