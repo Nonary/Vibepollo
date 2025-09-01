@@ -28,6 +28,7 @@
   #include <display_device/noop_settings_persistence.h>
   #include "platform/windows/impersonating_display_device.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/display_helper_integration.h"
 #endif
 
 namespace display_device {
@@ -749,6 +750,12 @@ namespace display_device {
   }
 
   void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    // Prefer the Windows helper via IPC; fall back to in-process configuration
+#ifdef _WIN32
+    if (display_helper_integration::apply_from_session(video_config, session)) {
+      return;
+    }
+#endif
     const auto result {parse_configuration(video_config, session)};
     if (const auto *parsed_config {std::get_if<SingleDisplayConfiguration>(&result)}; parsed_config) {
       configure_display(*parsed_config);
@@ -783,6 +790,12 @@ namespace display_device {
 
   void revert_configuration() {
     std::lock_guard lock {DD_DATA.mutex};
+    // Prefer the Windows helper via IPC; fall back to in-process revert
+#ifdef _WIN32
+    if (display_helper_integration::revert()) {
+      return;
+    }
+#endif
     revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);
   }
 

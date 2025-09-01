@@ -28,3 +28,17 @@ target_link_libraries(sunshinesvc
         wtsapi32
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshinesvc PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
+add_executable(display-settings-helper
+        display_settings_helper.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp)
+set_target_properties(display-settings-helper PROPERTIES CXX_STANDARD 23)
+target_link_libraries(display-settings-helper
+        libdisplaydevice::display_device
+        nlohmann_json::nlohmann_json
+        ${Boost_LIBRARIES}
+        ${CMAKE_THREAD_LIBS_INIT}
+        ${PLATFORM_LIBRARIES}
+        wtsapi32)
+target_compile_options(display-settings-helper PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
