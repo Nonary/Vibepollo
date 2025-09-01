@@ -24,21 +24,11 @@
 #include <display_device/windows/win_display_device.h>
 
 // sunshine
-#include <boost/log/sources/severity_logger.hpp>
+#include "src/logging.h"
 #include "src/platform/windows/ipc/pipes.h"
 
 using namespace std::chrono_literals;
 namespace bl = boost::log;
-
-// Provide minimal global severity loggers to satisfy BOOST_LOG usage
-// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
-bl::sources::severity_logger<int> verbose(0);
-bl::sources::severity_logger<int> debug(1);
-bl::sources::severity_logger<int> info(2);
-bl::sources::severity_logger<int> warning(3);
-bl::sources::severity_logger<int> error(4);
-bl::sources::severity_logger<int> fatal(5);
-// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 namespace {
 
@@ -244,6 +234,23 @@ struct ServiceState {
 } // namespace
 
 int main() {
+  // Initialize logging to a temp file; also logs to stdout
+  auto init_log_path = []() -> std::string {
+    std::wstring temp_path(MAX_PATH, L'\0');
+    if (auto len = GetTempPathW(MAX_PATH, temp_path.data()); len == 0 || len > MAX_PATH) {
+      return "sunshine_display_helper.log";
+    }
+    temp_path.resize(wcslen(temp_path.data()));
+    std::wstring wlog = temp_path + L"sunshine_display_helper.log";
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wlog.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string log_file(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wlog.c_str(), -1, &log_file[0], size_needed, nullptr, nullptr);
+    if (!log_file.empty() && log_file.back() == '\0') {
+      log_file.pop_back();
+    }
+    return log_file;
+  }();
+  auto _log_guard = logging::init(2 /*info*/, init_log_path);
 
   BOOST_LOG(info) << "Display settings helper starting (detached IPC server)";
 
