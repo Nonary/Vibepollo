@@ -398,8 +398,9 @@ interface AppForm {
   exitTimeout: number;
   prepCmd: PrepCmd[];
   detached: string[];
-  playniteId?: string;
-  playniteManaged?: 'manual' | string;
+  // With exactOptionalPropertyTypes, allow explicit undefined when clearing selection
+  playniteId?: string | undefined;
+  playniteManaged?: 'manual' | string | undefined;
 }
 interface ServerApp {
   name?: string;
@@ -415,8 +416,8 @@ interface ServerApp {
   'exit-timeout'?: number;
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
-  'playnite-id'?: string;
-  'playnite-managed'?: 'manual' | string;
+  'playnite-id'?: string | undefined;
+  'playnite-managed'?: 'manual' | string | undefined;
 }
 
 interface AppEditModalProps {
@@ -483,6 +484,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 
 function toServerPayload(f: AppForm): Record<string, any> {
   const payload: Record<string, any> = {
+    // Index is required by the backend to determine add (-1) vs update (>= 0)
+    index: typeof f.index === 'number' ? f.index : -1,
     name: f.name,
     output: f.output,
     cmd: f.cmd,
