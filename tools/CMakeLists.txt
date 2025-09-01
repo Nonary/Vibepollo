@@ -29,16 +29,73 @@ target_link_libraries(sunshinesvc
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshinesvc PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
+# Display settings helper: detached helper that applies/reverts display settings via IPC
 add_executable(display-settings-helper
         display_settings_helper.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp)
 set_target_properties(display-settings-helper PROPERTIES CXX_STANDARD 23)
 target_link_libraries(display-settings-helper
-        libdisplaydevice::display_device
-        nlohmann_json::nlohmann_json
         ${Boost_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
-        ${PLATFORM_LIBRARIES}
-        wtsapi32)
+        libdisplaydevice::display_device
+        user32
+        wtsapi32
+        advapi32
+        ${PLATFORM_LIBRARIES})
 target_compile_options(display-settings-helper PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
+# Playnite launcher: per-launch helper that hosts a private IPC server
+# Optional helper tools from other branches: only build if sources are present
+if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/playnite_launcher.cpp)
+    add_executable(playnite-launcher playnite_launcher.cpp)
+    set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)
+    set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_sources(playnite-launcher PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/logging.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp)
+    target_compile_definitions(playnite-launcher PRIVATE SUNSHINE_PLAYNITE_LAUNCHER)
+    target_link_libraries(playnite-launcher
+            ${Boost_LIBRARIES}
+            ${CMAKE_THREAD_LIBS_INIT}
+            nlohmann_json::nlohmann_json
+            user32
+            Psapi
+            shell32
+            wtsapi32
+            ${PLATFORM_LIBRARIES})
+    target_compile_options(playnite-launcher PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+endif()
+
+if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/sunshine_wgc_capture.cpp)
+    # Add sunshine_wgc_capture executable
+    add_executable(sunshine_wgc_capture
+            sunshine_wgc_capture.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp
+            ${CMAKE_SOURCE_DIR}/src/logging.cpp)
+    set_target_properties(sunshine_wgc_capture PROPERTIES CXX_STANDARD 23)
+
+    # Define helper build flag to conditionally compile logging
+    target_compile_definitions(sunshine_wgc_capture PRIVATE
+            SUNSHINE_EXTERNAL_PROCESS=1
+    )
+
+    target_link_libraries(sunshine_wgc_capture
+            ${Boost_LIBRARIES}
+            ${CMAKE_THREAD_LIBS_INIT}
+            d3d11
+            dxgi
+            ole32
+            user32
+            gdi32
+            windowsapp
+            avrt
+            shcore
+            wtsapi32
+            ${PLATFORM_LIBRARIES})
+    target_compile_options(sunshine_wgc_capture PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+endif()
