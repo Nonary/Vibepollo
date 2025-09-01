@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { NSelect, NInput, NInputNumber, NButton } from 'naive-ui';
+import { useI18n } from 'vue-i18n';
 
 // Use centralized store for config and platform
 const store = useConfigStore();
@@ -121,6 +122,35 @@ function removeRemappingEntry(idx: number): void {
   }
   store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
 }
+
+// ----- i18n helpers -----
+const { t } = useI18n();
+
+// Build translated option lists as computeds so they react to locale changes
+const ddConfigurationOptions = computed(() => [
+  { label: t('_common.disabled_def') as string, value: 'disabled' },
+  { label: t('config.dd_config_verify_only') as string, value: 'verify_only' },
+  { label: t('config.dd_config_ensure_active') as string, value: 'ensure_active' },
+  { label: t('config.dd_config_ensure_primary') as string, value: 'ensure_primary' },
+  { label: t('config.dd_config_ensure_only_display') as string, value: 'ensure_only_display' },
+]);
+
+const ddResolutionOptions = computed(() => [
+  { label: t('config.dd_resolution_option_disabled') as string, value: 'disabled' },
+  { label: t('config.dd_resolution_option_auto') as string, value: 'auto' },
+  { label: t('config.dd_resolution_option_manual') as string, value: 'manual' },
+]);
+
+const ddRefreshRateOptions = computed(() => [
+  { label: t('config.dd_refresh_rate_option_disabled') as string, value: 'disabled' },
+  { label: t('config.dd_refresh_rate_option_auto') as string, value: 'auto' },
+  { label: t('config.dd_refresh_rate_option_manual') as string, value: 'manual' },
+]);
+
+const ddHdrOptions = computed(() => [
+  { label: t('config.dd_hdr_option_disabled') as string, value: 'disabled' },
+  { label: t('config.dd_hdr_option_auto') as string, value: 'auto' },
+]);
 </script>
 
 <template>
@@ -142,33 +172,12 @@ function removeRemappingEntry(idx: number): void {
               <n-select
                 id="dd_configuration_option"
                 v-model:value="config.dd_configuration_option"
-                :options="[
-                  { label: $t('_common.disabled_def'), value: 'disabled' },
-                  { label: $t('config.dd_config_verify_only'), value: 'verify_only' },
-                  { label: $t('config.dd_config_ensure_active'), value: 'ensure_active' },
-                  { label: $t('config.dd_config_ensure_primary'), value: 'ensure_primary' },
-                  {
-                    label: $t('config.dd_config_ensure_only_display'),
-                    value: 'ensure_only_display',
-                  },
-                ]"
+                :options="ddConfigurationOptions"
                 :data-search-options="
-                  [
-                    { label: $t('_common.disabled_def'), value: 'disabled' },
-                    { label: $t('config.dd_config_verify_only'), value: 'verify_only' },
-                    { label: $t('config.dd_config_ensure_active'), value: 'ensure_active' },
-                    { label: $t('config.dd_config_ensure_primary'), value: 'ensure_primary' },
-                    {
-                      label: $t('config.dd_config_ensure_only_display'),
-                      value: 'ensure_only_display',
-                    },
-                  ]
-                    .map((o) => `${o.label}::${o.value}`)
-                    .join('|')
+                  ddConfigurationOptions.map((o) => `${o.label}::${o.value}`).join('|')
                 "
               />
             </div>
-
 
             <!-- Resolution option -->
             <div v-if="config.dd_configuration_option !== 'disabled'">
@@ -178,19 +187,9 @@ function removeRemappingEntry(idx: number): void {
               <n-select
                 id="dd_resolution_option"
                 v-model:value="config.dd_resolution_option"
-                :options="[
-                  { label: $t('config.dd_resolution_option_disabled'), value: 'disabled' },
-                  { label: $t('config.dd_resolution_option_auto'), value: 'auto' },
-                  { label: $t('config.dd_resolution_option_manual'), value: 'manual' },
-                ]"
+                :options="ddResolutionOptions"
                 :data-search-options="
-                  [
-                    { label: $t('config.dd_resolution_option_disabled'), value: 'disabled' },
-                    { label: $t('config.dd_resolution_option_auto'), value: 'auto' },
-                    { label: $t('config.dd_resolution_option_manual'), value: 'manual' },
-                  ]
-                    .map((o) => `${o.label}::${o.value}`)
-                    .join('|')
+                  ddResolutionOptions.map((o) => `${o.label}::${o.value}`).join('|')
                 "
               />
               <p
@@ -214,7 +213,6 @@ function removeRemappingEntry(idx: number): void {
                   placeholder="2560x1440"
                 />
               </div>
-
             </div>
 
             <!-- Refresh rate option -->
@@ -225,22 +223,11 @@ function removeRemappingEntry(idx: number): void {
               <n-select
                 id="dd_refresh_rate_option"
                 v-model:value="config.dd_refresh_rate_option"
-                :options="[
-                  { label: $t('config.dd_refresh_rate_option_disabled'), value: 'disabled' },
-                  { label: $t('config.dd_refresh_rate_option_auto'), value: 'auto' },
-                  { label: $t('config.dd_refresh_rate_option_manual'), value: 'manual' },
-                ]"
+                :options="ddRefreshRateOptions"
                 :data-search-options="
-                  [
-                    { label: $t('config.dd_refresh_rate_option_disabled'), value: 'disabled' },
-                    { label: $t('config.dd_refresh_rate_option_auto'), value: 'auto' },
-                    { label: $t('config.dd_refresh_rate_option_manual'), value: 'manual' },
-                  ]
-                    .map((o) => `${o.label}::${o.value}`)
-                    .join('|')
+                  ddRefreshRateOptions.map((o) => `${o.label}::${o.value}`).join('|')
                 "
               />
-
 
               <div v-if="config.dd_refresh_rate_option === 'manual'" class="mt-2 pl-4">
                 <p class="text-[11px] opacity-60">
@@ -262,18 +249,8 @@ function removeRemappingEntry(idx: number): void {
               <n-select
                 id="dd_hdr_option"
                 v-model:value="config.dd_hdr_option"
-                :options="[
-                  { label: $t('config.dd_hdr_option_disabled'), value: 'disabled' },
-                  { label: $t('config.dd_hdr_option_auto'), value: 'auto' },
-                ]"
-                :data-search-options="
-                  [
-                    { label: $t('config.dd_hdr_option_disabled'), value: 'disabled' },
-                    { label: $t('config.dd_hdr_option_auto'), value: 'auto' },
-                  ]
-                    .map((o) => `${o.label}::${o.value}`)
-                    .join('|')
-                "
+                :options="ddHdrOptions"
+                :data-search-options="ddHdrOptions.map((o) => `${o.label}::${o.value}`).join('|')"
                 class="mb-2"
               />
 
@@ -365,9 +342,8 @@ function removeRemappingEntry(idx: number): void {
                       class="monospace"
                       :placeholder="'60'"
                     />
-
                   </div>
-                  
+
                   <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
                     <n-input
                       v-model:value="value.final_resolution"

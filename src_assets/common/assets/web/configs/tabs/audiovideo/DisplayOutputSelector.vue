@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { $tp } from '@/platform-i18n';
+import { useI18n } from 'vue-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
 import { NInput, NSelect } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
@@ -10,6 +11,8 @@ type DisplayDevice = {
   device_id?: string;
   display_name?: string; // e.g. \\ \\.\\DISPLAY1
   friendly_name?: string; // e.g. ROG PG279Q
+  // Present when device is currently active; shape mirrors libdisplaydevice types but we only check presence
+  info?: unknown;
 };
 
 const store = useConfigStore();
@@ -20,6 +23,28 @@ const platform = computed(() => (store.metadata && store.metadata.platform) || '
 const devices = ref<DisplayDevice[]>([]);
 const loading = ref(false);
 const loadError = ref('');
+const { t } = useI18n();
+
+function tFirst(keys: string[], fallback: string): string {
+  for (const k of keys) {
+    const m = t(k) as unknown as string;
+    if (m && m !== k) return m;
+  }
+  return fallback;
+}
+
+const outputNameLabel = computed(() =>
+  tFirst(['config.output_name', 'offline.output_name'], 'Display Id'),
+);
+const outputNameDefaultLabel = computed(() =>
+  tFirst(
+    ['offline.output_name_default', 'config.output_name_default'],
+    'Primary display (default)',
+  ),
+);
+const outputNameDesc = computed(() =>
+  $tp('config.output_name_desc', $tp('offline.output_name_desc', '')),
+);
 
 async function loadDisplayDevices() {
   loading.value = true;
@@ -70,9 +95,9 @@ function toOptions() {
     id?: string;
   }> = [
     {
-      label: $tp('config.output_name_default', 'Primary display (default)'),
+      label: outputNameDefaultLabel.value,
       value: '',
-      displayName: $tp('config.output_name_default', 'Primary display (default)'),
+      displayName: outputNameDefaultLabel.value,
       id: '',
     },
   ];
@@ -81,12 +106,23 @@ function toOptions() {
     // Prefer a human-friendly name for the first line, fall back to display_name
     const displayName = d.friendly_name || d.display_name || 'Display';
     // For the ID line prefer device_id, fall back to the raw display_name
-    const id = d.device_id || d.display_name || '';
-    // Keep label for filtering/searching behavior
-    const label = displayName;
+    const guid = d.device_id || '';
+    const dispName = d.display_name || '';
+    const id = guid || dispName;
+    // Compose label to include identifying info even if slots are not applied
+    const parts: string[] = [displayName];
+    if (guid) parts.push(guid);
+    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    const label = parts.join(' — ');
     // Only include entries that can be selected by config: prefer device_id, else display_name
     const value = d.device_id || d.display_name || '';
-    if (value) opts.push({ label, value, displayName, id });
+    if (value)
+      opts.push({
+        label,
+        value,
+        displayName,
+        id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
+      });
   }
 
   return opts;
@@ -95,7 +131,7 @@ function toOptions() {
 
 <template>
   <div class="mb-4">
-    <label for="output_name" class="form-label">{{ $tp('config.output_name') }}</label>
+    <label for="output_name" class="form-label">{{ outputNameLabel }}</label>
 
     <!-- Windows: dropdown of available displays from API -->
     <PlatformLayout>
@@ -105,16 +141,22 @@ function toOptions() {
           v-model:value="config.output_name"
           :options="toOptions()"
           :loading="loading"
-          @focus="() => { if (!loading && devices.length === 0) void loadDisplayDevices(); }"
+          @focus="
+            () => {
+              if (!loading && devices.length === 0) void loadDisplayDevices();
+            }
+          "
           clearable
           filterable
-          :placeholder="$tp('config.output_name')"
+          :placeholder="outputNameLabel"
         >
           <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
           <template #option="slot">
             <div class="leading-tight">
               <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
-              <div class="text-[12px] opacity-60 monospace">{{ slot.option?.id || slot.option?.value }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
+                {{ slot.option?.id || slot.option?.value }}
+              </div>
             </div>
           </template>
 
@@ -122,7 +164,9 @@ function toOptions() {
           <template #value="slot">
             <div class="leading-tight">
               <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
-              <div class="text-[12px] opacity-60 monospace">{{ slot.option?.id || slot.option?.value }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
+                {{ slot.option?.id || slot.option?.value }}
+              </div>
             </div>
           </template>
         </n-select>
@@ -145,9 +189,10 @@ function toOptions() {
       </template>
     </PlatformLayout>
     <div class="text-[11px] opacity-60">
-      {{ $tp('config.output_name_desc') }}<br />
+      {{ outputNameDesc }}<br />
       <template v-if="platform === 'windows' && loadError">
-        <span class="text-red-500">{{ loadError }}</span><br />
+        <span class="text-red-500">{{ loadError }}</span
+        ><br />
       </template>
       <PlatformLayout>
         <template #windows>
@@ -180,5 +225,4 @@ function toOptions() {
       </PlatformLayout>
     </div>
   </div>
-  
 </template>

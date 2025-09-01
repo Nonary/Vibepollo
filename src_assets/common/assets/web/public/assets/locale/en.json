@@ -200,6 +200,7 @@
     "dd_config_ensure_only_display": "Deactivate other displays and activate only the specified display",
     "dd_config_ensure_primary": "Activate the display automatically and make it a primary display",
     "dd_configuration_option": "Device configuration",
+    "dd_config_label": "Device configuration",
     "dd_config_revert_delay": "Config revert delay",
     "dd_config_revert_delay_desc": "Additional delay in milliseconds to wait before reverting configuration when the app has been closed or the last session terminated. Main purpose is to provide a smoother transition when quickly switching between apps.",
     "dd_config_revert_on_disconnect": "Config revert on disconnect",
