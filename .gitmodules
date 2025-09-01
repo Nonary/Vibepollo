@@ -24,8 +24,8 @@
 	branch = stable
 [submodule "third-party/libdisplaydevice"]
 	path = third-party/libdisplaydevice
-	url = https://github.com/LizardByte/libdisplaydevice.git
-	branch = master
+	url = https://github.com/Nonary/libdisplaydevice.git
+	branch = display_rework_v2
 [submodule "third-party/moonlight-common-c"]
 	path = third-party/moonlight-common-c
 	url = https://github.com/moonlight-stream/moonlight-common-c.git

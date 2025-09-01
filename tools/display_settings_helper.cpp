@@ -187,6 +187,7 @@ struct ServiceState {
   std::optional<display_device::SingleDisplayConfiguration> last_cfg;
   std::atomic<bool> exit_after_revert{false};
   std::atomic<bool>* running_flag{nullptr};
+  std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
 
   void on_topology_changed() {
     // Retry whichever hook is active
@@ -205,6 +206,38 @@ struct ServiceState {
         }
       }
     }
+  }
+
+  // Schedule a couple of delayed re-apply attempts to work around Windows
+  // sometimes forcing native resolution immediately after activating a display.
+  void schedule_delayed_reapply() {
+    // Stop any existing worker
+    if (delayed_reapply_thread.joinable()) {
+      delayed_reapply_thread.request_stop();
+      delayed_reapply_thread.join();
+    }
+    if (!last_cfg) {
+      return;
+    }
+    delayed_reapply_thread = std::jthread([this](std::stop_token st){
+      using namespace std::chrono_literals;
+      // Try a short delay then a longer one
+      const auto delays = {1s, 3s};
+      for (auto d : delays) {
+        if (st.stop_requested()) return;
+        std::this_thread::sleep_for(d);
+        if (st.stop_requested()) return;
+        try {
+          BOOST_LOG(info) << "Delayed re-apply attempt after activation";
+          // Best-effort; ignore result
+          if (last_cfg) {
+            (void)controller.apply(*last_cfg);
+          }
+        } catch (...) {
+          // ignore
+        }
+      }
+    });
   }
 };
 
@@ -251,6 +284,9 @@ int main() {
             state.exit_after_revert.store(false, std::memory_order_release);
             bool ok = state.controller.apply(cfg);
             state.retry_apply_on_topology.store(!ok, std::memory_order_release);
+            // Regardless of immediate result, schedule delayed re-apply to defeat
+            // post-activation native mode forcing by Windows/driver.
+            state.schedule_delayed_reapply();
             break;
           }
           case MsgType::Revert: {
