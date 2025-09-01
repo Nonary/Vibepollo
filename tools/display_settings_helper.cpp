@@ -185,6 +185,8 @@ struct ServiceState {
   std::atomic<bool> retry_apply_on_topology{false};
   std::atomic<bool> retry_revert_on_topology{false};
   std::optional<display_device::SingleDisplayConfiguration> last_cfg;
+  std::atomic<bool> exit_after_revert{false};
+  std::atomic<bool>* running_flag{nullptr};
 
   void on_topology_changed() {
     // Retry whichever hook is active
@@ -197,6 +199,10 @@ struct ServiceState {
       BOOST_LOG(info) << "Topology changed: reattempting revert";
       if (controller.revert()) {
         retry_revert_on_topology.store(false, std::memory_order_release);
+        if (exit_after_revert.load(std::memory_order_acquire) && running_flag) {
+          // Successful revert after retries — request process exit
+          running_flag->store(false, std::memory_order_release);
+        }
       }
     }
   }
@@ -222,6 +228,7 @@ int main() {
 
   FramedReader reader;
   std::atomic<bool> running{true};
+  state.running_flag = &running;
 
   auto on_message = [&](std::span<const uint8_t> bytes) {
     try {
@@ -241,6 +248,7 @@ int main() {
             state.last_cfg = cfg;
             // Cancel any pending revert retry
             state.retry_revert_on_topology.store(false, std::memory_order_release);
+            state.exit_after_revert.store(false, std::memory_order_release);
             bool ok = state.controller.apply(cfg);
             state.retry_apply_on_topology.store(!ok, std::memory_order_release);
             break;
@@ -250,6 +258,13 @@ int main() {
             state.retry_apply_on_topology.store(false, std::memory_order_release);
             bool ok = state.controller.revert();
             state.retry_revert_on_topology.store(!ok, std::memory_order_release);
+            if (ok) {
+              // Successful revert — helper can exit now
+              running.store(false, std::memory_order_release);
+            } else {
+              // Keep trying in background and exit once we succeed
+              state.exit_after_revert.store(true, std::memory_order_release);
+            }
             break;
           }
           case MsgType::Reset: {

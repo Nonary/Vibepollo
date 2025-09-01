@@ -23,7 +23,10 @@
 #ifdef __ANDROID__
   #include <android/log.h>
 #else
-  #include <display_device/logging.h>
+  // Only include libdisplaydevice logging when not building an external helper process
+  #if !defined(SUNSHINE_EXTERNAL_PROCESS)
+    #include <display_device/logging.h>
+  #endif
 #endif
 
 extern "C" {
@@ -46,7 +49,7 @@ bl::sources::severity_logger<int> fatal(5);  // Unrecoverable errors
 bl::sources::severity_logger<int> tests(10);  // Automatic tests output
 #endif
 
-BOOST_LOG_ATTRIBUTE_KEYWORD(severity, "Severity", int)
+// The severity keyword is now declared in logging.h for cross-TU usage
 
 namespace logging {
   deinit_t::~deinit_t() {
@@ -154,7 +157,9 @@ namespace logging {
 
 #ifndef __ANDROID__
     setup_av_logging(min_log_level);
-    setup_libdisplaydevice_logging(min_log_level);
+    #if !defined(SUNSHINE_EXTERNAL_PROCESS)
+      setup_libdisplaydevice_logging(min_log_level);
+    #endif
 #endif
 
     sink = boost::make_shared<text_sink>();

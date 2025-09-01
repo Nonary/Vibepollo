@@ -66,6 +66,9 @@ bool ProcessHandler::start(const std::wstring &application_path, std::wstring_vi
     cmd_line.append(arguments);
   }
 
+  BOOST_LOG(info) << "Launching process: " << platf::to_utf8(application_path)
+                  << (arguments.empty() ? "" : " with arguments") << " (hidden, detached)";
+
   STARTUPINFOEXW si = {};
   si.StartupInfo.cb = sizeof(si);
 
@@ -97,6 +100,10 @@ bool ProcessHandler::start(const std::wstring &application_path, std::wstring_vi
     auto winerr = GetLastError();
     BOOST_LOG(error) << "Failed to launch process: " << platf::to_utf8(application_path) << ", error: " << winerr;
     ZeroMemory(&pi_, sizeof(pi_));
+  }
+  if (running_) {
+    DWORD pid = pi_.dwProcessId;
+    BOOST_LOG(info) << "Process started successfully (pid=" << pid << ")";
   }
   return running_;
 }

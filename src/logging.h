@@ -20,6 +20,9 @@ extern boost::log::sources::severity_logger<int> fatal;
 extern boost::log::sources::severity_logger<int> tests;
 #endif
 
+// Expose the attribute keyword so other TUs (e.g., helper executables) can use the same filter
+BOOST_LOG_ATTRIBUTE_KEYWORD(severity, "Severity", int)
+
 #include "config.h"
 #include "stat_trackers.h"
 

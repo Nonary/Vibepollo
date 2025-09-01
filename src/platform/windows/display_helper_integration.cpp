@@ -28,13 +28,19 @@ namespace {
   bool ensure_helper_started() {
     // Already started? Verify liveness to avoid stale state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
+      BOOST_LOG(info) << "Display helper: checking existing process handle...";
       DWORD wait = WaitForSingleObject(h, 0);
       if (wait == WAIT_TIMEOUT) {
+        DWORD pid = GetProcessId(h);
+        BOOST_LOG(info) << "Display helper already running (pid=" << pid << ")";
         return true;  // still running
       }
       // else process exited; fall through to restart
+      DWORD exit_code = 0;
+      GetExitCodeProcess(h, &exit_code);
+      BOOST_LOG(info) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
     }
-    // Compute path to display-settings-helper.exe inside the tools subdirectory next to Sunshine.exe
+    // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, module_path, _countof(module_path))) {
       BOOST_LOG(error) << "Failed to resolve Sunshine module path; cannot launch display helper.";
@@ -42,17 +48,21 @@ namespace {
     }
     std::filesystem::path exe_path(module_path);
     std::filesystem::path dir = exe_path.parent_path();
-    std::filesystem::path helper = dir / L"tools" / L"display-settings-helper.exe";
+    std::filesystem::path helper = dir / L"tools" / L"sunshine_display_helper.exe";
 
     if (!std::filesystem::exists(helper)) {
       BOOST_LOG(warning) << "Display helper not found at: " << platf::to_utf8(helper.wstring())
-                         << ". Ensure the tools subdirectory is present and contains display-settings-helper.exe.";
+                         << ". Ensure the tools subdirectory is present and contains sunshine_display_helper.exe.";
       return false;
     }
 
+    BOOST_LOG(info) << "Starting display helper: " << platf::to_utf8(helper.wstring());
     const bool started = helper_proc().start(helper.wstring(), L"");
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
+    } else if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
+      DWORD pid = GetProcessId(h);
+      BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
     }
     return started;
   }
@@ -61,27 +71,39 @@ namespace {
 namespace display_helper_integration {
   bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     if (!ensure_helper_started()) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot send apply.";
       return false;
     }
 
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
       const std::string json = display_device::toJson(*cfg);
-      return platf::display_helper_client::send_apply_json(json);
+      BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n" << json;
+      const bool ok = platf::display_helper_client::send_apply_json(json);
+      BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+      return ok;
     }
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
       // If disabled, request revert so helper can restore
-      return platf::display_helper_client::send_revert();
+      BOOST_LOG(info) << "Display configuration disabled; requesting REVERT via helper.";
+      const bool ok = platf::display_helper_client::send_revert();
+      BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+      return ok;
     }
     // failed_to_parse -> let caller fallback
+    BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
     return false;
   }
 
   bool revert() {
     if (!ensure_helper_started()) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
     }
-    return platf::display_helper_client::send_revert();
+    BOOST_LOG(info) << "Display helper: sending REVERT request.";
+    const bool ok = platf::display_helper_client::send_revert();
+    BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+    return ok;
   }
 }
 

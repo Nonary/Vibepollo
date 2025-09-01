@@ -696,9 +696,7 @@ namespace display_device {
   std::unique_ptr<platf::deinit_t> init(const std::filesystem::path &persistence_filepath, const config::video_t &video_config) {
     std::lock_guard lock {DD_DATA.mutex};
     // We can support re-init without any issues, however we should make sure to clean up first!
-    if (display_helper_integration::suppress_fallback()) {
-      (void)display_helper_integration::revert();
-    } else {
+    if (!display_helper_integration::suppress_fallback()) {
       revert_configuration_unlocked(revert_option_e::try_once);
     }
     DD_DATA.config_revert_delay = video_config.dd.config_revert_delay;
@@ -733,6 +731,7 @@ namespace display_device {
           // deinit_t where the outcome does not really matter.
           // Use helper when active; otherwise perform a single in-process revert attempt
           if (display_helper_integration::suppress_fallback()) {
+            BOOST_LOG(info) << "Display helper active; requesting REVERT on deinit.";
             (void)display_helper_integration::revert();
           } else {
             revert_configuration_unlocked(revert_option_e::try_once);
@@ -762,7 +761,11 @@ namespace display_device {
 
   void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     // Try helper first; if not active, fall back to in-process
-    if (display_helper_integration::apply_from_session(video_config, session) || display_helper_integration::suppress_fallback()) {
+    BOOST_LOG(info) << "Display configuration requested; delegating to platform helper.";
+    const bool dispatched = display_helper_integration::apply_from_session(video_config, session);
+    BOOST_LOG(info) << "Display helper apply dispatched=" << (dispatched ? "true" : "false")
+                    << ", suppress_fallback=" << (display_helper_integration::suppress_fallback() ? "true" : "false");
+    if (dispatched || display_helper_integration::suppress_fallback()) {
       return;
     }
     const auto result {parse_configuration(video_config, session)};
@@ -804,6 +807,7 @@ namespace display_device {
   void revert_configuration() {
     std::lock_guard lock {DD_DATA.mutex};
     if (display_helper_integration::suppress_fallback()) {
+      BOOST_LOG(info) << "Display configuration revert requested; delegating to platform helper.";
       (void)display_helper_integration::revert();
       return;
     }
