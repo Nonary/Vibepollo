@@ -196,6 +196,9 @@ namespace config {
     bool ds4_back_as_touchpad_click;
     bool motion_as_ds4;
     bool touchpad_as_ds4;
+    // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC
+    // to avoid client-side config mixing when controllers are swapped.
+    bool ds5_inputtino_randomize_mac;
 
     bool keyboard;
     bool mouse;

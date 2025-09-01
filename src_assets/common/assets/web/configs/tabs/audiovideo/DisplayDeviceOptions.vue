@@ -169,6 +169,7 @@ function removeRemappingEntry(idx: number): void {
               />
             </div>
 
+
             <!-- Resolution option -->
             <div v-if="config.dd_configuration_option !== 'disabled'">
               <label for="dd_resolution_option" class="form-label">{{
@@ -213,6 +214,7 @@ function removeRemappingEntry(idx: number): void {
                   placeholder="2560x1440"
                 />
               </div>
+
             </div>
 
             <!-- Refresh rate option -->
@@ -238,6 +240,7 @@ function removeRemappingEntry(idx: number): void {
                     .join('|')
                 "
               />
+
 
               <div v-if="config.dd_refresh_rate_option === 'manual'" class="mt-2 pl-4">
                 <p class="text-[11px] opacity-60">
@@ -362,7 +365,9 @@ function removeRemappingEntry(idx: number): void {
                       class="monospace"
                       :placeholder="'60'"
                     />
+
                   </div>
+                  
                   <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
                     <n-input
                       v-model:value="value.final_resolution"
@@ -396,7 +401,7 @@ function removeRemappingEntry(idx: number): void {
         </div>
       </div>
     </template>
-    <template #linux />
-    <template #macos />
+    <template #linux></template>
+    <template #macos></template>
   </PlatformLayout>
 </template>

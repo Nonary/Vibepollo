@@ -34,6 +34,7 @@
 #include "confighttp.h"
 #include "crypto.h"
 #include "display_device.h"
+#include <display_device/json.h>
 #include "file_handler.h"
 #include "globals.h"
 #include "http_auth.h"
@@ -254,6 +255,8 @@ namespace confighttp {
     response->write(redirection_temporary_redirect, headers);
   }
 
+  
+
   /**
    * @brief Check authentication and authorization for an HTTP request.
    * @param request The HTTP request object.
@@ -292,6 +295,29 @@ namespace confighttp {
       return false;
     }
     return true;
+  }
+
+  /**
+   * @brief Get the list of available display devices.
+   * @api_examples{/api/display-devices| GET| [{"device_id":"{...}","display_name":"\\\\.\\DISPLAY1","friendly_name":"Monitor"}, ...]}
+   */
+  void getDisplayDevices(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    try {
+      const auto devices = display_device::enumerate_devices();
+      // Convert to JSON string using helper and parse to nlohmann::json for consistent response handling
+      const auto json_str = display_device::toJson(devices);
+      nlohmann::json tree = nlohmann::json::parse(json_str);
+      send_response(response, tree);
+    } catch (const std::exception &e) {
+      nlohmann::json tree;
+      tree["status"] = false;
+      tree["error"] = std::string{"Failed to enumerate display devices: "} + e.what();
+      send_response(response, tree);
+    }
   }
 
   /**
@@ -1861,6 +1887,7 @@ namespace confighttp {
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
     server.resource["^/api/password$"]["POST"] = savePassword;
+    server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;

@@ -24,9 +24,20 @@ install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
 # Mandatory tools
 install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
-# Playnite launcher helper used for Playnite-managed app launches
-install(TARGETS playnite-launcher RUNTIME DESTINATION "tools" COMPONENT application)
-install(TARGETS sunshine_wgc_capture RUNTIME DESTINATION "tools" COMPONENT application)
+
+# Helpers and tools
+# - Playnite launcher helper used for Playnite-managed app launches
+# - WGC capture helper used by the WGC display backend
+# - Display helper used for applying/reverting display settings
+if (TARGET playnite-launcher)
+    install(TARGETS playnite-launcher RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
+if (TARGET sunshine_wgc_capture)
+    install(TARGETS sunshine_wgc_capture RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
+if (TARGET sunshine_display_helper)
+    install(TARGETS sunshine_display_helper RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
 
 # Mandatory scripts
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/service/"

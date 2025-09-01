@@ -558,6 +558,7 @@ namespace config {
     true,  // back as touchpad click enabled (manual DS4 only)
     true,  // client gamepads with motion events are emulated as DS4
     true,  // client gamepads with touchpads are emulated as DS4
+    true,  // ds5_inputtino_randomize_mac
 
     true,  // keyboard enabled
     true,  // mouse enabled
@@ -1262,6 +1263,7 @@ namespace config {
                                                                    "en_US"sv,  // English (US)
                                                                    "es"sv,  // Spanish
                                                                    "fr"sv,  // French
+                                                                   "hu"sv,  // Hungarian
                                                                    "it"sv,  // Italian
                                                                    "ja"sv,  // Japanese
                                                                    "ko"sv,  // Korean
@@ -1272,6 +1274,7 @@ namespace config {
                                                                    "sv"sv,  // Swedish
                                                                    "tr"sv,  // Turkish
                                                                    "uk"sv,  // Ukrainian
+                                                                   "vi"sv,  // Vietnamese
                                                                    "zh"sv,  // Chinese
                                                                    "zh_TW"sv,  // Chinese (Traditional)
                                                                  });

@@ -34,6 +34,9 @@ extern "C" {
 #include "thread_safe.h"
 #include "update.h"
 #include "utility.h"
+#ifdef _WIN32
+#include "platform/windows/display_helper_integration.h"
+#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1

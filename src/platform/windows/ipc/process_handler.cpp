@@ -18,53 +18,93 @@
 // local includes
 #include "process_handler.h"
 #include "src/platform/windows/misc.h"
+#include "src/logging.h"
 #include "src/utility.h"
 
 ProcessHandler::ProcessHandler():
-    job_(create_kill_on_close_job()) {}
+    job_(create_kill_on_close_job()),
+    use_job_(true) {}
+
+ProcessHandler::ProcessHandler(bool use_job):
+    job_(use_job ? create_kill_on_close_job() : winrt::handle{}),
+    use_job_(use_job) {}
 
 bool ProcessHandler::start(const std::wstring &application_path, std::wstring_view arguments) {
   if (running_) {
-    return false;
-  }
+    // Check if the previously started process has already exited. If so, clear stale state.
+    if (pi_.hProcess != nullptr) {
+      DWORD wait_result = WaitForSingleObject(pi_.hProcess, 0);
+      if (wait_result == WAIT_TIMEOUT) {
+        // Still running, don't start a new one
+        return false;
+      }
 
-  std::error_code error_code;
-  HANDLE job_handle = job_ ? job_.get() : nullptr;
-  STARTUPINFOEXW startup_info = platf::create_startup_info(nullptr, &job_handle, error_code);
-  if (error_code) {
-    return false;
-  }
-
-  auto fail_guard = util::fail_guard([&]() {
-    if (startup_info.lpAttributeList) {
-      platf::free_proc_thread_attr_list(startup_info.lpAttributeList);
+      // Process either exited or handle is invalid, clean up and allow restart
+      if (pi_.hThread) {
+        CloseHandle(pi_.hThread);
+      }
+      if (pi_.hProcess) {
+        CloseHandle(pi_.hProcess);
+      }
+      ZeroMemory(&pi_, sizeof(pi_));
+      running_ = false;
+    } else {
+      // No process handle but marked running; reset state to allow restart
+      running_ = false;
     }
-  });
+  }
 
   ZeroMemory(&pi_, sizeof(pi_));
 
-  // Build command line: app path + space + arguments
-  auto command = std::wstring(application_path);
+  // Build command line: "app_path" [arguments]
+  std::wstring cmd_line;
+  cmd_line.reserve(application_path.size() + arguments.size() + 3);
+  cmd_line.push_back(L'"');
+  cmd_line += application_path;
+  cmd_line.push_back(L'"');
   if (!arguments.empty()) {
-    command += L" ";
-    command += std::wstring(arguments);
+    cmd_line.push_back(L' ');
+    cmd_line.append(arguments);
   }
 
-  DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+  BOOST_LOG(info) << "Launching process: " << platf::to_utf8(application_path)
+                  << (arguments.empty() ? "" : " with arguments") << " (hidden, detached)";
 
-  std::string command_str = platf::to_utf8(command);
-  std::wstring working_dir;  // Empty working directory
+  STARTUPINFOEXW si = {};
+  si.StartupInfo.cb = sizeof(si);
 
-  bool result;
+  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+  // When not using a job (keep-alive child), prefer to break away from any existing job to avoid kill-on-close
+  if (!use_job_) {
+    creation_flags |= CREATE_BREAKAWAY_FROM_JOB;
+  }
+  BOOL ret = FALSE;
+
   if (platf::is_running_as_system()) {
-    result = platf::launch_process_with_impersonation(false, command_str, working_dir, creation_flags, startup_info, pi_, error_code);
+    HANDLE user_token = platf::retrieve_users_token(true);
+    if (!user_token) {
+      BOOST_LOG(error) << "Failed to retrieve user token while launching: " << platf::to_utf8(application_path);
+      return false;
+    }
+    auto close_token = util::fail_guard([&]() { CloseHandle(user_token); });
+    ret = CreateProcessAsUserW(user_token, nullptr, (LPWSTR) cmd_line.c_str(), nullptr, nullptr, FALSE, creation_flags, nullptr, nullptr, (LPSTARTUPINFOW) &si, &pi_);
   } else {
-    result = platf::launch_process_without_impersonation(command_str, working_dir, creation_flags, startup_info, pi_, error_code);
+    ret = CreateProcessW(nullptr, (LPWSTR) cmd_line.c_str(), nullptr, nullptr, FALSE, creation_flags, nullptr, nullptr, (LPSTARTUPINFOW) &si, &pi_);
   }
 
-  running_ = result && !error_code;
+  if (ret && use_job_ && job_) {
+    AssignProcessToJobObject(job_.get(), pi_.hProcess);
+  }
+
+  running_ = ret;
   if (!running_) {
+    auto winerr = GetLastError();
+    BOOST_LOG(error) << "Failed to launch process: " << platf::to_utf8(application_path) << ", error: " << winerr;
     ZeroMemory(&pi_, sizeof(pi_));
+  }
+  if (running_) {
+    DWORD pid = pi_.dwProcessId;
+    BOOST_LOG(info) << "Process started successfully (pid=" << pid << ")";
   }
   return running_;
 }

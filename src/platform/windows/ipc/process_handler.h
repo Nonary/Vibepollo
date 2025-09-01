@@ -12,6 +12,7 @@
 
 // platform includes
 #include <windows.h>
+#include <winrt/base.h>
 
 /**
  * @brief RAII wrapper for launching and controlling a Windows helper process.
@@ -25,6 +26,12 @@ public:
    * @brief Construct an empty handler (no process started).
    */
   ProcessHandler();
+
+  /**
+   * @brief Construct a handler with explicit job control.
+   * @param use_job When true, launches child in a kill-on-close Job. When false, no job is used.
+   */
+  explicit ProcessHandler(bool use_job);
 
   /**
    * @brief Destroy the handler and release any process / job handles.
@@ -61,6 +68,7 @@ private:
   PROCESS_INFORMATION pi_ {};
   bool running_ = false;
   winrt::handle job_;
+  bool use_job_ = true;
 };
 
 /**

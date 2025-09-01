@@ -23,6 +23,7 @@ extern boost::log::sources::severity_logger<int> fatal;
 extern boost::log::sources::severity_logger<int> tests;
 #endif
 
+
 #include "config.h"
 #include "stat_trackers.h"
 

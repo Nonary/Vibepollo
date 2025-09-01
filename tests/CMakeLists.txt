@@ -52,9 +52,43 @@ add_executable(${PROJECT_NAME}
         ${TEST_SOURCES}
         ${SUNSHINE_SOURCES})
 
+# Copy files needed for config consistency tests to build directory
+# This ensures both CLI and CLion can access the same files relative to the test executable
+# Using configure_file ensures files are copied when they change between builds
+set(CONFIG_TEST_FILES
+    "src/config.cpp"
+    "src_assets/common/assets/web/config.html"
+    "docs/configuration.md"
+    "src_assets/common/assets/web/public/assets/locale/en.json"
+    "src_assets/common/assets/web/configs/tabs/General.vue"
+)
+
+foreach(file ${CONFIG_TEST_FILES})
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/${file}"
+        "${CMAKE_CURRENT_BINARY_DIR}/${file}"
+        COPYONLY
+    )
+endforeach()
+
+# Copy all locale files for locale consistency tests
+# Use a custom command to properly handle both adding and removing files
+set(LOCALE_SRC_DIR "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/assets/locale")
+set(LOCALE_DST_DIR "${CMAKE_CURRENT_BINARY_DIR}/src_assets/common/assets/web/public/assets/locale")
+add_custom_target(sync_locale_files ALL
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${LOCALE_DST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${LOCALE_DST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${LOCALE_SRC_DIR}" "${LOCALE_DST_DIR}"
+    COMMENT "Synchronizing locale files for tests"
+    VERBATIM
+)
+
 foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
     add_dependencies(${PROJECT_NAME} ${dep})  # compile these before sunshine
 endforeach()
+
+# Ensure locale files are synchronized before building the test executable
+add_dependencies(${PROJECT_NAME} sync_locale_files)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 target_link_libraries(${PROJECT_NAME}

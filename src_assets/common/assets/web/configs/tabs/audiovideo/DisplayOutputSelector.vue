@@ -1,29 +1,154 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
-import { NInput } from 'naive-ui';
-
+import { NInput, NSelect } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
-import { computed } from 'vue';
+import { http } from '@/http';
+
+type DisplayDevice = {
+  device_id?: string;
+  display_name?: string; // e.g. \\ \\.\\DISPLAY1
+  friendly_name?: string; // e.g. ROG PG279Q
+};
+
 const store = useConfigStore();
 const config = store.config;
-const outputNamePlaceholder = computed(() =>
-  config.value?.platform === 'windows' ? '{de9bb7e2-186e-505b-9e93-f48793333810}' : '0',
+// Read platform directly from store metadata to avoid timing/race on wrapper
+const platform = computed(() => (store.metadata && store.metadata.platform) || '');
+
+const devices = ref<DisplayDevice[]>([]);
+const loading = ref(false);
+const loadError = ref('');
+
+async function loadDisplayDevices() {
+  loading.value = true;
+  loadError.value = '';
+  try {
+    const res = await http.get<DisplayDevice[]>('/api/display-devices');
+    const arr = Array.isArray(res.data) ? res.data : [];
+    devices.value = arr;
+  } catch (e: any) {
+    // Non-fatal: keep manual entry available as fallback
+    loadError.value = e?.message || 'Failed to load display devices';
+    devices.value = [];
+  } finally {
+    loading.value = false;
+  }
+}
+
+onMounted(() => {
+  // Proactively load once on mount; backend gracefully handles non-Windows
+  if (!loading.value && devices.value.length === 0) void loadDisplayDevices();
+});
+
+// If platform metadata arrives after mount, load then
+const stopWatch = watch(
+  () => platform.value,
+  (p) => {
+    if (p === 'windows' && devices.value.length === 0 && !loading.value) {
+      void loadDisplayDevices();
+    }
+  },
+  { immediate: false },
 );
+
+onBeforeUnmount(() => {
+  stopWatch();
+});
+
+const outputNamePlaceholder = computed(() =>
+  platform.value === 'windows' ? '{de9bb7e2-186e-505b-9e93-f48793333810}' : '0',
+);
+
+function toOptions() {
+  // First option represents default behavior (primary display)
+  const opts: Array<{
+    label: string;
+    value: string;
+    displayName?: string;
+    id?: string;
+  }> = [
+    {
+      label: $tp('config.output_name_default', 'Primary display (default)'),
+      value: '',
+      displayName: $tp('config.output_name_default', 'Primary display (default)'),
+      id: '',
+    },
+  ];
+
+  for (const d of devices.value) {
+    // Prefer a human-friendly name for the first line, fall back to display_name
+    const displayName = d.friendly_name || d.display_name || 'Display';
+    // For the ID line prefer device_id, fall back to the raw display_name
+    const id = d.device_id || d.display_name || '';
+    // Keep label for filtering/searching behavior
+    const label = displayName;
+    // Only include entries that can be selected by config: prefer device_id, else display_name
+    const value = d.device_id || d.display_name || '';
+    if (value) opts.push({ label, value, displayName, id });
+  }
+
+  return opts;
+}
 </script>
 
 <template>
   <div class="mb-4">
     <label for="output_name" class="form-label">{{ $tp('config.output_name') }}</label>
-    <n-input
-      id="output_name"
-      v-model:value="config.output_name"
-      type="text"
-      :placeholder="outputNamePlaceholder"
-    />
+
+    <!-- Windows: dropdown of available displays from API -->
+    <PlatformLayout>
+      <template #windows>
+        <n-select
+          id="output_name"
+          v-model:value="config.output_name"
+          :options="toOptions()"
+          :loading="loading"
+          @focus="() => { if (!loading && devices.length === 0) void loadDisplayDevices(); }"
+          clearable
+          filterable
+          :placeholder="$tp('config.output_name')"
+        >
+          <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
+          <template #option="slot">
+            <div class="leading-tight">
+              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="text-[12px] opacity-60 monospace">{{ slot.option?.id || slot.option?.value }}</div>
+            </div>
+          </template>
+
+          <!-- Show the selected value similarly: name then id -->
+          <template #value="slot">
+            <div class="leading-tight">
+              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="text-[12px] opacity-60 monospace">{{ slot.option?.id || slot.option?.value }}</div>
+            </div>
+          </template>
+        </n-select>
+      </template>
+      <template #linux>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
+      </template>
+      <template #macos>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
+      </template>
+    </PlatformLayout>
     <div class="text-[11px] opacity-60">
       {{ $tp('config.output_name_desc') }}<br />
+      <template v-if="platform === 'windows' && loadError">
+        <span class="text-red-500">{{ loadError }}</span><br />
+      </template>
       <PlatformLayout>
         <template #windows>
           <pre style="white-space: pre-line">
@@ -55,4 +180,5 @@ const outputNamePlaceholder = computed(() =>
       </PlatformLayout>
     </div>
   </div>
+  
 </template>

@@ -69,6 +69,7 @@ function removeCmd(index: number) {
     <!-- Locale -->
     <div class="mb-6">
       <label for="locale" class="form-label">{{ $t('config.locale') }}</label>
+
       <n-select
         id="locale"
         v-model:value="config.locale"
@@ -78,6 +79,33 @@ function removeCmd(index: number) {
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.locale_desc') }}
       </div>
+
+      <select id="locale" class="form-select" v-model="config.locale">
+        <option value="bg">Български (Bulgarian)</option>
+        <option value="cs">Čeština (Czech)</option>
+        <option value="de">Deutsch (German)</option>
+        <option value="en">English</option>
+        <option value="en_GB">English, UK</option>
+        <option value="en_US">English, US</option>
+        <option value="es">Español (Spanish)</option>
+        <option value="fr">Français (French)</option>
+        <option value="hu">Magyar (Hungarian)</option>
+        <option value="it">Italiano (Italian)</option>
+        <option value="ja">日本語 (Japanese)</option>
+        <option value="ko">한국어 (Korean)</option>
+        <option value="pl">Polski (Polish)</option>
+        <option value="pt">Português (Portuguese)</option>
+        <option value="pt_BR">Português, Brasileiro (Portuguese, Brazilian)</option>
+        <option value="ru">Русский (Russian)</option>
+        <option value="sv">svenska (Swedish)</option>
+        <option value="tr">Türkçe (Turkish)</option>
+        <option value="uk">Українська (Ukranian)</option>
+        <option value="vi">Tiếng Việt (Vietnamese)</option>
+        <option value="zh">简体中文 (Chinese Simplified)</option>
+        <option value="zh_TW">繁體中文 (Chinese Traditional)</option>
+      </select>
+      <div class="form-text">{{ $t('config.locale_desc') }}</div>
+
     </div>
 
     <!-- Sunshine Name -->
@@ -100,11 +128,11 @@ function removeCmd(index: number) {
       <n-select
         id="min_log_level"
         v-model:value="config.min_log_level"
-        :options="logLevelOptions"
+        :options="logLevelOptions.map((o) => ({ ...o, label: $t(`config.min_log_level_${o.value}`) }))"
         :data-search-options="logLevelOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
       />
       <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.log_level_desc') }}
+        {{ $t('config.min_log_level_desc') }}
       </div>
     </div>
 
@@ -218,3 +246,4 @@ function removeCmd(index: number) {
 </template>
 
 <style scoped></style>
+

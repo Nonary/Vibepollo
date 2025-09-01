@@ -77,3 +77,19 @@ target_link_libraries(sunshine_wgc_capture
         wtsapi32
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshine_wgc_capture PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
+# Display settings helper: detached helper that applies/reverts display settings via IPC
+add_executable(sunshine_display_helper
+        display_settings_helper.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp)
+set_target_properties(sunshine_display_helper PROPERTIES CXX_STANDARD 23)
+target_link_libraries(sunshine_display_helper
+        ${Boost_LIBRARIES}
+        ${CMAKE_THREAD_LIBS_INIT}
+        libdisplaydevice::display_device
+        user32
+        wtsapi32
+        advapi32
+        ${PLATFORM_LIBRARIES})
+target_compile_options(sunshine_display_helper PRIVATE ${SUNSHINE_COMPILE_OPTIONS})

@@ -7,7 +7,6 @@
 // standard includes
 #include <chrono>
 #include <functional>
-#include <functional>
 #include <string_view>
 #include <system_error>
 
@@ -38,8 +37,7 @@ namespace platf {
   std::string to_utf8(const std::wstring &string);
 
   /**
-   * @brief Check if the current process is running with system-level privileges.
-   * @return `true` if the current process has system-level privileges, `false` otherwise.
+   * @brief Check if the current process is running under the SYSTEM account.
    */
   bool is_running_as_system();
 
@@ -84,8 +82,9 @@ namespace platf {
   void free_proc_thread_attr_list(LPPROC_THREAD_ATTRIBUTE_LIST list);
 
   /**
-   * @brief Obtain the current sessions user's primary token with elevated privileges.
-   * @return The user's token. If user has admin capability it will be elevated, otherwise it will be a limited token. On error, `nullptr`.
+   * @brief Obtain the current sessions user's primary token with elevated privileges if available.
+   * @param elevated Request an elevated token if the user has one.
+   * @return User token handle or nullptr on failure (caller must CloseHandle on success).
    */
   HANDLE retrieve_users_token(bool elevated);
 
@@ -103,9 +102,6 @@ namespace platf {
    */
   DWORD get_parent_process_id(DWORD process_id);
 
-  // Additional helpers used by configuration HTTP to safely access user resource
-  HANDLE retrieve_users_token(bool elevated);
-
   // Impersonate the given user token and invoke the callback while impersonating.
   // Returns an std::error_code describing any failure (empty on success).
   std::error_code impersonate_current_user(HANDLE user_token, std::function<void()> callback);
@@ -116,9 +112,4 @@ namespace platf {
    * @return true on success.
    */
   bool override_per_user_predefined_keys(HANDLE token);
-
-  // Additional helpers used by configuration HTTP to safely access user resources
-  bool is_running_as_system();
-  HANDLE retrieve_users_token(bool elevated);
-  std::error_code impersonate_current_user(HANDLE user_token, std::function<void()> callback);
 }  // namespace platf

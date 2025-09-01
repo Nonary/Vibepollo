@@ -23,14 +23,17 @@
 // conditional includes
 #ifdef __ANDROID__
   #include <android/log.h>
+#else
+  // Include libdisplaydevice logging when enabled for main target or tests
+  #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+    #include <display_device/logging.h>
+  #endif
 #endif
+
 #ifdef SETUP_AV_LOGGING
 extern "C" {
   #include <libavutil/log.h>
 }
-#endif
-#ifdef SETUP_LIBDISPLAYDEVICE_LOGGING
-  #include <display_device/logging.h>
 #endif
 
 using namespace std::literals;
@@ -157,7 +160,9 @@ namespace logging {
 
 #ifndef __ANDROID__
     setup_av_logging(min_log_level);
-    setup_libdisplaydevice_logging(min_log_level);
+    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+      setup_libdisplaydevice_logging(min_log_level);
+    #endif
 #endif
 
     sink = boost::make_shared<text_sink>();
@@ -199,7 +204,9 @@ namespace logging {
 
 #ifndef __ANDROID__
     setup_av_logging(min_log_level);
-    setup_libdisplaydevice_logging(min_log_level);
+    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+      setup_libdisplaydevice_logging(min_log_level);
+    #endif
 #endif
 
     sink = boost::make_shared<text_sink>();
@@ -311,7 +318,9 @@ namespace logging {
     // Reconfigure external logging subsystems first so their callbacks
     // respect the new level immediately.
     setup_av_logging(min_log_level);
-    setup_libdisplaydevice_logging(min_log_level);
+    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+      setup_libdisplaydevice_logging(min_log_level);
+    #endif
 
     // If we have an existing sink, update its filter to the new level.
     if (sink) {
