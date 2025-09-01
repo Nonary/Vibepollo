@@ -18,6 +18,7 @@
 // local includes
 #include "process_handler.h"
 #include "src/platform/windows/misc.h"
+#include "src/logging.h"
 #include "src/utility.h"
 
 ProcessHandler::ProcessHandler():
@@ -29,7 +30,27 @@ ProcessHandler::ProcessHandler(bool use_job):
 
 bool ProcessHandler::start(const std::wstring &application_path, std::wstring_view arguments) {
   if (running_) {
-    return false;
+    // Check if the previously started process has already exited. If so, clear stale state.
+    if (pi_.hProcess != nullptr) {
+      DWORD wait_result = WaitForSingleObject(pi_.hProcess, 0);
+      if (wait_result == WAIT_TIMEOUT) {
+        // Still running, don't start a new one
+        return false;
+      }
+
+      // Process either exited or handle is invalid, clean up and allow restart
+      if (pi_.hThread) {
+        CloseHandle(pi_.hThread);
+      }
+      if (pi_.hProcess) {
+        CloseHandle(pi_.hProcess);
+      }
+      ZeroMemory(&pi_, sizeof(pi_));
+      running_ = false;
+    } else {
+      // No process handle but marked running; reset state to allow restart
+      running_ = false;
+    }
   }
 
   ZeroMemory(&pi_, sizeof(pi_));
@@ -48,12 +69,17 @@ bool ProcessHandler::start(const std::wstring &application_path, std::wstring_vi
   STARTUPINFOEXW si = {};
   si.StartupInfo.cb = sizeof(si);
 
-  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+  // When not using a job (keep-alive child), prefer to break away from any existing job to avoid kill-on-close
+  if (!use_job_) {
+    creation_flags |= CREATE_BREAKAWAY_FROM_JOB;
+  }
   BOOL ret = FALSE;
 
   if (platf::is_running_as_system()) {
     HANDLE user_token = platf::retrieve_users_token(true);
     if (!user_token) {
+      BOOST_LOG(error) << "Failed to retrieve user token while launching: " << platf::to_utf8(application_path);
       return false;
     }
     auto close_token = util::fail_guard([&]() { CloseHandle(user_token); });
@@ -68,6 +94,8 @@ bool ProcessHandler::start(const std::wstring &application_path, std::wstring_vi
 
   running_ = ret;
   if (!running_) {
+    auto winerr = GetLastError();
+    BOOST_LOG(error) << "Failed to launch process: " << platf::to_utf8(application_path) << ", error: " << winerr;
     ZeroMemory(&pi_, sizeof(pi_));
   }
   return running_;

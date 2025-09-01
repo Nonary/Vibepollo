@@ -26,9 +26,13 @@ namespace {
   }
 
   bool ensure_helper_started() {
-    // Already started?
-    if (helper_proc().get_process_handle() != nullptr) {
-      return true;
+    // Already started? Verify liveness to avoid stale state
+    if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
+      DWORD wait = WaitForSingleObject(h, 0);
+      if (wait == WAIT_TIMEOUT) {
+        return true;  // still running
+      }
+      // else process exited; fall through to restart
     }
     // Compute path to display-settings-helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
