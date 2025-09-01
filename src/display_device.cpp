@@ -25,6 +25,9 @@
   #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
+  #include <display_device/noop_settings_persistence.h>
+  #include "platform/windows/impersonating_display_device.h"
+  #include "platform/windows/misc.h"
 #endif
 
 namespace display_device {
@@ -614,11 +617,18 @@ namespace display_device {
      */
     std::unique_ptr<SettingsManagerInterface> make_settings_manager([[maybe_unused]] const std::filesystem::path &persistence_filepath, [[maybe_unused]] const config::video_t &video_config) {
 #ifdef _WIN32
+      // Build the Windows display device API. When running as SYSTEM, wrap it with user impersonation
+      // to ensure per-user display settings (and DB restore) apply correctly.
+      std::shared_ptr<WinDisplayDeviceInterface> dd_iface = std::make_shared<WinDisplayDevice>(std::make_shared<WinApiLayer>());
+      // Always wrap with impersonation; wrapper decides at call-time whether to impersonate.
+      dd_iface = std::make_shared<ImpersonatingDisplayDevice>(dd_iface);
+
       return std::make_unique<SettingsManager>(
-        std::make_shared<WinDisplayDevice>(std::make_shared<WinApiLayer>()),
+        std::move(dd_iface),
         std::make_shared<sunshine_audio_context_t>(),
+        // Do not rely on file persistence; keep state in-memory only.
         std::make_unique<PersistentState>(
-          std::make_shared<FileSettingsPersistence>(persistence_filepath)
+          std::make_shared<NoopSettingsPersistence>()
         ),
         WinWorkarounds {
           .m_hdr_blank_delay = video_config.dd.wa.hdr_toggle_delay != std::chrono::milliseconds::zero() ? std::make_optional(video_config.dd.wa.hdr_toggle_delay) : std::nullopt
@@ -655,47 +665,28 @@ namespace display_device {
         scheduler_option.m_execution = SchedulerOptions::Execution::ScheduledOnly;
       }
 
-      DD_DATA.sm_instance->schedule([try_once = (option == revert_option_e::try_once), tried_out_devices = std::set<std::string> {}](auto &settings_iface, auto &stop_token) mutable {
-        if (try_once) {
-          std::ignore = settings_iface.revertSettings();
-          stop_token.requestStop();
-          return;
-        }
-
-        auto available_devices {[&settings_iface]() {
-          const auto devices {settings_iface.enumAvailableDevices()};
-          std::set<std::string> parsed_devices;
-
-          std::transform(
-            std::begin(devices),
-            std::end(devices),
-            std::inserter(parsed_devices, std::end(parsed_devices)),
-            [](const auto &device) {
-              return device.m_device_id + " - " + device.m_friendly_name;
-            }
-          );
-
-          return parsed_devices;
-        }()};
-        if (available_devices == tried_out_devices) {
-          BOOST_LOG(debug) << "Skipping reverting configuration, because no newly added/removed devices were detected since last check. Currently available devices:\n"
-                           << toJson(available_devices);
-          return;
-        }
-
+      DD_DATA.sm_instance->schedule([try_once = (option == revert_option_e::try_once)](auto &settings_iface, auto &stop_token) mutable {
         using enum SettingsManagerInterface::RevertResult;
-        if (const auto result {settings_iface.revertSettings()}; result == Ok) {
+
+        const auto result {settings_iface.revertSettings()};
+        if (try_once) {
           stop_token.requestStop();
-          return;
-        } else if (result == ApiTemporarilyUnavailable) {
-          // Do nothing and retry next time
           return;
         }
 
-        // If we have failed to revert settings then we will try to do it next time only if a device was added/removed
-        BOOST_LOG(warning) << "Failed to revert display device configuration (will retry once devices are added or removed). Enabling all of the available devices:\n"
-                           << toJson(available_devices);
-        tried_out_devices.swap(available_devices);
+        if (result == Ok) {
+          stop_token.requestStop();
+          return;
+        }
+
+        if (result == ApiTemporarilyUnavailable) {
+          // Transient; retry on next tick
+          BOOST_LOG(debug) << "RevertSettings: API temporarily unavailable; will retry.";
+          return;
+        }
+
+        // Non-transient failures: keep retrying at interval. This avoids getting stuck waiting for hotplug events.
+        BOOST_LOG(warning) << "RevertSettings did not complete (code: " << static_cast<int>(result) << "); will retry.";
       },
                                     scheduler_option);
     }
