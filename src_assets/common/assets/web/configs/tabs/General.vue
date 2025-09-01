@@ -36,7 +36,7 @@ const localeOptions = [
 
 const { t } = useI18n();
 const logLevelOptions = computed(() =>
-  [0, 1, 2, 3, 4, 5, 6].map((v) => ({ label: t(`config.log_level_${v}`), value: v })),
+  [0, 1, 2, 3, 4, 5, 6].map((v) => ({ label: t(`config.min_log_level_${v}`), value: v })),
 );
 
 function addCmd() {
@@ -105,7 +105,6 @@ function removeCmd(index: number) {
         <option value="zh_TW">繁體中文 (Chinese Traditional)</option>
       </select>
       <div class="form-text">{{ $t('config.locale_desc') }}</div>
-
     </div>
 
     <!-- Sunshine Name -->
@@ -124,11 +123,13 @@ function removeCmd(index: number) {
 
     <!-- Log Level -->
     <div class="mb-6">
-      <label for="min_log_level" class="form-label">{{ $t('config.log_level') }}</label>
+      <label for="min_log_level" class="form-label">{{ $t('config.min_log_level') }}</label>
       <n-select
         id="min_log_level"
         v-model:value="config.min_log_level"
-        :options="logLevelOptions.map((o) => ({ ...o, label: $t(`config.min_log_level_${o.value}`) }))"
+        :options="
+          logLevelOptions.map((o) => ({ ...o, label: $t(`config.min_log_level_${o.value}`) }))
+        "
         :data-search-options="logLevelOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
       />
       <div class="text-[11px] opacity-60 mt-1">
@@ -246,4 +247,3 @@ function removeCmd(index: number) {
 </template>
 
 <style scoped></style>
-

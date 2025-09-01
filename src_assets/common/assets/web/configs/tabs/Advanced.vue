@@ -130,7 +130,6 @@ const encoderOptions = computed(() => {
       <div class="form-text">{{ $t('config.encoder_desc') }}</div>
     </div>
   </div>
-
 </template>
 
 <style scoped></style>

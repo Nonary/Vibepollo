@@ -136,8 +136,6 @@
           </header>
         </section>
       </n-gi>
-
-      
     </n-grid>
 
     <!-- Logs -->

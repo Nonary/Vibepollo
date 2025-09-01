@@ -9,8 +9,8 @@
         <template v-if="isWindows">
           <template v-if="playniteStatusReady">
             <n-button v-if="playniteEnabled" size="small" secondary @click="purgeAutoSync">
-            <i class="fas fa-trash" />
-            {{ $t('playnite.delete_all_autosync') || 'Delete All Auto-Sync' }}
+              <i class="fas fa-trash" />
+              {{ $t('playnite.delete_all_autosync') || 'Delete All Auto-Sync' }}
             </n-button>
             <n-button
               v-if="playniteEnabled"
@@ -106,7 +106,13 @@
       v-model="showModal"
       :app="currentApp"
       :index="currentIndex"
-      :key="modalKey + '|' + (currentIndex ?? -1) + '|' + (currentApp?.uuid || currentApp?.name || 'new')"
+      :key="
+        modalKey +
+        '|' +
+        (currentIndex ?? -1) +
+        '|' +
+        (currentApp?.uuid || currentApp?.name || 'new')
+      "
       @saved="reload"
       @deleted="reload"
     />
@@ -140,7 +146,9 @@ const configStore = useConfigStore();
 const auth = useAuthStore();
 
 const syncBusy = ref(false);
-const isWindows = computed(() => (configStore.metadata?.platform || '').toLowerCase() === 'windows');
+const isWindows = computed(
+  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
+);
 
 const playniteInstalled = ref(false);
 const playniteStatusReady = ref(false);

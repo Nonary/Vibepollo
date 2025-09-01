@@ -119,7 +119,11 @@
                   <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-secondary btn-sm" @click="showPreNotes = !showPreNotes">
                       <i class="fas fa-bars-staggered" />
-                      <span>{{ showPreNotes ? $t('index.hide_notes') || 'Hide Notes' : $t('index.view_notes') || 'Release Notes' }}</span>
+                      <span>{{
+                        showPreNotes
+                          ? $t('index.hide_notes') || 'Hide Notes'
+                          : $t('index.view_notes') || 'Release Notes'
+                      }}</span>
                     </button>
                     <a
                       class="btn btn-primary btn-sm"
@@ -131,7 +135,10 @@
                     </a>
                   </div>
                 </div>
-                <div v-if="showPreNotes" class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs">
+                <div
+                  v-if="showPreNotes"
+                  class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs"
+                >
                   <p class="font-semibold mb-2">{{ preReleaseRelease?.name }}</p>
                   <pre class="font-mono whitespace-pre-wrap">{{ preReleaseRelease?.body }}</pre>
                 </div>
@@ -139,7 +146,12 @@
             </n-alert>
 
             <!-- Stable update available (modern banner) -->
-            <n-alert v-if="stableBuildAvailable" type="warning" :show-icon="true" class="rounded-xl">
+            <n-alert
+              v-if="stableBuildAvailable"
+              type="warning"
+              :show-icon="true"
+              class="rounded-xl"
+            >
               <div class="flex flex-col gap-3 w-full">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <div class="flex items-center gap-3">
@@ -156,17 +168,31 @@
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <button class="btn btn-secondary btn-sm" @click="showStableNotes = !showStableNotes">
+                    <button
+                      class="btn btn-secondary btn-sm"
+                      @click="showStableNotes = !showStableNotes"
+                    >
                       <i class="fas fa-bars-staggered" />
-                      <span>{{ showStableNotes ? $t('index.hide_notes') || 'Hide Notes' : $t('index.view_notes') || 'Release Notes' }}</span>
+                      <span>{{
+                        showStableNotes
+                          ? $t('index.hide_notes') || 'Hide Notes'
+                          : $t('index.view_notes') || 'Release Notes'
+                      }}</span>
                     </button>
-                    <a class="btn btn-primary btn-sm" :href="githubRelease?.html_url" target="_blank">
+                    <a
+                      class="btn btn-primary btn-sm"
+                      :href="githubRelease?.html_url"
+                      target="_blank"
+                    >
                       <i class="fas fa-download" />
                       <span>{{ $t('index.download') }}</span>
                     </a>
                   </div>
                 </div>
-                <div v-if="showStableNotes" class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs">
+                <div
+                  v-if="showStableNotes"
+                  class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs"
+                >
                   <p class="font-semibold mb-2">{{ githubRelease?.name }}</p>
                   <pre class="font-mono whitespace-pre-wrap">{{ githubRelease?.body }}</pre>
                 </div>

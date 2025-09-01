@@ -146,15 +146,13 @@
                   class="font-mono flex-1"
                   placeholder="/path/to/image.png"
                 />
-                <n-button
-                  tertiary
-                  :disabled="!form.name"
-                  @click="openCoverFinder"
-                >
+                <n-button tertiary :disabled="!form.name" @click="openCoverFinder">
                   <i class="fas fa-image" /> Find Cover
                 </n-button>
               </div>
-              <p class="text-[11px] opacity-60">Optional; stored only and not fetched by Sunshine.</p>
+              <p class="text-[11px] opacity-60">
+                Optional; stored only and not fetched by Sunshine.
+              </p>
             </div>
           </div>
 
@@ -165,8 +163,14 @@
             <n-checkbox v-if="!isPlaynite" v-model:checked="form.autoDetach" size="small">
               Auto Detach
             </n-checkbox>
-            <n-checkbox v-if="!isPlaynite" v-model:checked="form.waitAll" size="small">Wait All</n-checkbox>
-            <n-checkbox v-if="isWindows && !isPlaynite" v-model:checked="form.elevated" size="small">
+            <n-checkbox v-if="!isPlaynite" v-model:checked="form.waitAll" size="small"
+              >Wait All</n-checkbox
+            >
+            <n-checkbox
+              v-if="isWindows && !isPlaynite"
+              v-model:checked="form.elevated"
+              size="small"
+            >
               Elevated
             </n-checkbox>
           </div>
@@ -190,11 +194,7 @@
                 <div class="flex items-center justify-between gap-2 mb-2">
                   <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
                   <div class="flex items-center gap-2">
-                    <n-checkbox
-                      v-if="isWindows"
-                      v-model:checked="p.elevated"
-                      size="small"
-                    >
+                    <n-checkbox v-if="isWindows" v-model:checked="p.elevated" size="small">
                       {{ $t('_common.elevated') }}
                     </n-checkbox>
                     <n-button size="small" secondary @click="form.prepCmd.splice(i, 1)">
@@ -493,7 +493,11 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
-    'prep-cmd': f.prepCmd.map((p) => ({ do: p.do, undo: p.undo, ...(isWindows.value ? { elevated: !!p.elevated } : {}) })),
+    'prep-cmd': f.prepCmd.map((p) => ({
+      do: p.do,
+      undo: p.undo,
+      ...(isWindows.value ? { elevated: !!p.elevated } : {}),
+    })),
     detached: Array.isArray(f.detached) ? f.detached : [],
   };
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
@@ -516,7 +520,9 @@ const cmdText = computed<string>({
   },
 });
 const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
-const isPlayniteAuto = computed<boolean>(() => isPlaynite.value && form.value.playniteManaged !== 'manual');
+const isPlayniteAuto = computed<boolean>(
+  () => isPlaynite.value && form.value.playniteManaged !== 'manual',
+);
 // Unified name combobox state (supports Playnite suggestions + free-form)
 const nameSelectValue = ref<string>('');
 const nameOptions = ref<{ label: string; value: string }[]>([]);
@@ -689,7 +695,9 @@ async function useCover(cover: CoverCandidate) {
 
 // Platform + Playnite detection
 const configStore = useConfigStore();
-const isWindows = computed(() => (configStore.metadata?.platform || '').toLowerCase() === 'windows');
+const isWindows = computed(
+  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
+);
 const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
@@ -809,7 +817,9 @@ onBeforeUnmount(() => {
 // Update name options while user searches
 function onNameSearch(q: string) {
   nameSearchQuery.value = q || '';
-  const query = String(q || '').trim().toLowerCase();
+  const query = String(q || '')
+    .trim()
+    .toLowerCase();
   const list: { label: string; value: string }[] = [];
   if (query.length) {
     list.push({ label: `Custom: "${q}"`, value: `__custom__:${q}` });
@@ -818,9 +828,10 @@ function onNameSearch(q: string) {
     if (cur) list.push({ label: `Custom: "${cur}"`, value: `__custom__:${cur}` });
   }
   if (playniteOptions.value.length) {
-    const filtered = (query
-      ? playniteOptions.value.filter((o) => o.label.toLowerCase().includes(query))
-      : playniteOptions.value.slice(0, 100)
+    const filtered = (
+      query
+        ? playniteOptions.value.filter((o) => o.label.toLowerCase().includes(query))
+        : playniteOptions.value.slice(0, 100)
     ).slice(0, 100);
     list.push(...filtered);
   }
@@ -865,10 +876,10 @@ async function save() {
         playniteOptions.value.length &&
         typeof form.value.name === 'string'
       ) {
-        const target = String(form.value.name || '').trim().toLowerCase();
-        const exact = playniteOptions.value.find(
-          (o) => o.label.trim().toLowerCase() === target,
-        );
+        const target = String(form.value.name || '')
+          .trim()
+          .toLowerCase();
+        const exact = playniteOptions.value.find((o) => o.label.trim().toLowerCase() === target);
         if (exact) {
           form.value.playniteId = exact.value;
           form.value.playniteManaged = 'manual';
@@ -909,8 +920,7 @@ async function del() {
           ? ((configStore.config as any).playnite_exclude_games as any)
           : [];
         const map = new Map(current.map((e) => [String(e.id), String(e.name || '')] as const));
-        const name =
-          playniteOptions.value.find((o) => o.value === String(pid))?.label || '';
+        const name = playniteOptions.value.find((o) => o.value === String(pid))?.label || '';
         map.set(String(pid), name);
         const next = Array.from(map.entries()).map(([id, name]) => ({ id, name }));
         // Update local store (keeps UI in sync) and persist via store API

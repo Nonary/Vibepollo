@@ -180,6 +180,7 @@
     "dd_mode_remapping_requested_fps": "Requested FPS",
     "dd_mode_remapping_requested_resolution": "Requested resolution",
     "dd_options_header": "Advanced display device options",
+    "output_name_default": "Primary display (default)",
     "dd_refresh_rate_option": "Refresh rate",
     "dd_refresh_rate_option_auto": "Use FPS value provided by the client (default)",
     "dd_refresh_rate_option_disabled": "Do not change refresh rate",

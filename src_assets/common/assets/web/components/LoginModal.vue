@@ -64,12 +64,7 @@
         </div>
         <!-- Actions: keep inside the form so Enter triggers submit via native form semantics -->
         <div class="flex items-center justify-end w-full">
-          <n-button
-            type="primary"
-            attr-type="submit"
-            :disabled="submitting"
-            :loading="submitting"
-          >
+          <n-button type="primary" attr-type="submit" :disabled="submitting" :loading="submitting">
             <span v-if="!credentialsConfigured">{{
               submitting ? t('auth.creating_user') : t('auth.create_user')
             }}</span>
@@ -77,7 +72,6 @@
           </n-button>
         </div>
       </form>
-
     </n-card>
   </n-modal>
 </template>
