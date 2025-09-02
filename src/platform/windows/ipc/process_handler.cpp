@@ -180,8 +180,12 @@ void ProcessHandler::terminate() {
 }
 
 ProcessHandler::~ProcessHandler() {
-  // Terminate process first if it's still running
-  terminate();
+  // For helpers that should outlive the parent (use_job_ == false),
+  // do not terminate them on handler destruction. Only terminate
+  // processes that we explicitly manage via a kill-on-close Job.
+  if (use_job_) {
+    terminate();
+  }
 
   // Clean up handles
   if (pi_.hProcess) {

@@ -248,6 +248,13 @@ namespace {
         }
       });
     }
+
+    void cancel_delayed_reapply() {
+      if (delayed_reapply_thread.joinable()) {
+        delayed_reapply_thread.request_stop();
+        delayed_reapply_thread.join();
+      }
+    }
   };
 
 }  // namespace
@@ -408,14 +415,41 @@ int main() {
     }
   };
 
+  auto attempt_revert_after_disconnect = [&]() {
+    // Stop any future re-apply actions and cancel apply retries.
+    state.retry_apply_on_topology.store(false, std::memory_order_release);
+    state.cancel_delayed_reapply();
+
+    // If we have ever applied a config, or already are in a revert retry state,
+    // ensure we try reverting now and only exit once revert has succeeded.
+    const bool potentially_modified = state.last_cfg.has_value() ||
+                                      state.retry_revert_on_topology.load(std::memory_order_acquire) ||
+                                      state.exit_after_revert.load(std::memory_order_acquire);
+
+    if (potentially_modified) {
+      BOOST_LOG(info) << "Client disconnected; attempting immediate revert and will remain alive until success.";
+      const bool ok = state.controller.revert();
+      state.retry_revert_on_topology.store(!ok, std::memory_order_release);
+      state.exit_after_revert.store(true, std::memory_order_release);
+      if (ok) {
+        running.store(false, std::memory_order_release);
+      } else {
+        BOOST_LOG(warning) << "Revert not successful yet; will keep running and retry on topology changes.";
+      }
+    } else {
+      // Nothing to revert -> safe to exit.
+      running.store(false, std::memory_order_release);
+    }
+  };
+
   auto on_error = [&](const std::string &err) {
-    BOOST_LOG(error) << "Async pipe error: " << err << "; exiting to allow Sunshine to relaunch helper";
-    running.store(false, std::memory_order_release);
+    BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
+    attempt_revert_after_disconnect();
   };
 
   auto on_broken = [&]() {
-    BOOST_LOG(warning) << "Client disconnected; exiting to allow Sunshine to relaunch helper";
-    running.store(false, std::memory_order_release);
+    BOOST_LOG(warning) << "Client disconnected; applying revert policy and staying alive until successful.";
+    attempt_revert_after_disconnect();
   };
 
   // Wait for Sunshine to connect to the control pipe and transition to data pipe
