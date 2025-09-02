@@ -1706,7 +1706,8 @@ namespace confighttp {
     server.resource["^/api/playnite/categories$"]["GET"] = getPlayniteCategories;
     server.resource["^/api/playnite/force_sync$"]["POST"] = postPlayniteForceSync;
     server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
-    server.resource["^/api/playnite/logs/export$"]["GET"] = downloadPlayniteLogs;
+    // Export logs bundle (Windows only)
+    server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage;

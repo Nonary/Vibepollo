@@ -62,6 +62,12 @@ See below for details on token endpoints and usage examples.
 ## GET /api/logs
 @copydoc confighttp::getLogs()
 
+## GET /api/logs/export
+Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).
+
+- Includes: Sunshine log, Playnite logs (`playnite.log`, `extensions.log`, `launcher.log`), Sunshine Playnite plugin log (`sunshine_playnite.log`), launcher helper logs (`sunshine_playnite_launcher.log`/`sunshine_launcher.log`), and display helper log (`sunshine_display_helper.log`) when present.
+- Requires authentication.
+
 ## POST /api/password
 @copydoc confighttp::savePassword()
 

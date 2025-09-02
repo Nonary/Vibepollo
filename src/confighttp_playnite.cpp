@@ -11,6 +11,7 @@
   #include <sstream>
   #include <string>
   #include <string_view>
+  #include <unordered_set>
 
   // third-party includes
   #include <nlohmann/json.hpp>
@@ -510,7 +511,7 @@ namespace confighttp {
         } catch (...) {}
       }
 
-      // Launcher helper logs
+      // Launcher/helper logs
       try {
         // Prefer active user's Roaming/Local AppData
         try {
@@ -533,6 +534,14 @@ namespace confighttp {
                 std::string data;
                 if (read_file_if_exists(p, data)) {
                   entries.emplace_back("sunshine_launcher.log", std::move(data));
+                }
+              }
+              {
+                // Windows Display Helper (tools/sunshine_display_helper.exe)
+                std::filesystem::path p = base / L"sunshine_display_helper.log";
+                std::string data;
+                if (read_file_if_exists(p, data)) {
+                  entries.emplace_back("sunshine_display_helper.log", std::move(data));
                 }
               }
             }
@@ -562,6 +571,14 @@ namespace confighttp {
               entries.emplace_back("sunshine_launcher.log", std::move(data));
             }
           }
+          // Display helper log
+          {
+            std::filesystem::path p = base / L"sunshine_display_helper.log";
+            std::string data;
+            if (read_file_if_exists(p, data)) {
+              entries.emplace_back("sunshine_display_helper.log", std::move(data));
+            }
+          }
         };
         // Roaming AppData\Sunshine and LocalAppData\Sunshine
         try_add_sunshine_logs(CSIDL_APPDATA);
@@ -576,6 +593,19 @@ namespace confighttp {
           }
         } catch (...) {}
       } catch (...) {}
+
+      // Deduplicate by entry name to avoid duplicate playnite helper logs
+      {
+        std::vector<std::pair<std::string, std::string>> dedup;
+        std::unordered_set<std::string> seen;
+        dedup.reserve(entries.size());
+        for (auto &e : entries) {
+          if (seen.insert(e.first).second) {
+            dedup.emplace_back(std::move(e));
+          }
+        }
+        entries.swap(dedup);
+      }
 
       // Build ZIP (may be empty if nothing found)
       std::string zip = build_zip_from_entries(entries);

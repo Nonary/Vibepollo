@@ -1095,6 +1095,11 @@ namespace rtsp_stream {
       return;
     }
 
+    // Before starting a new session, apply any deferred config updates now
+    // (e.g., capture method changes like switching to WGC). This ensures
+    // the next session reflects the latest settings without requiring a restart.
+    config::maybe_apply_deferred();
+
     // Prevent interleaving with hot-apply while we allocate/start a session from RTSP
     auto _hot_apply_gate = config::acquire_apply_read_gate();
 

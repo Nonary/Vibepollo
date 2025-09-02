@@ -43,7 +43,13 @@ namespace config {
   static void parse_id_name_array(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::vector<config::id_name_t> &out, std::vector<std::string> *names_out = nullptr, bool treat_strings_as_ids = false) {
     std::string raw;
     erase_take(vars, name, raw);
+    // Always reset outputs before parsing to avoid stale/accumulated state
+    if (names_out) {
+      names_out->clear();
+    }
     if (raw.empty()) {
+      // No value present in config; leave 'out' as-is to allow caller to
+      // decide whether to preserve prior state or reset to defaults.
       return;
     }
     try {
@@ -192,6 +198,12 @@ namespace config {
     }
 
     // lists
+    // Reset lists to defaults first so removed keys clear runtime state on hot-apply
+    playnite.sync_categories_meta.clear();
+    playnite.sync_categories.clear();
+    playnite.exclude_games_meta.clear();
+    playnite.exclude_games.clear();
+
     // Categories: accept JSON array of {id,name} or strings (names). Maintain runtime names list.
     parse_id_name_array(vars, "playnite_sync_categories", playnite.sync_categories_meta, &playnite.sync_categories, /*treat_strings_as_ids=*/false);
     // Exclusions: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.

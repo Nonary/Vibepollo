@@ -350,6 +350,14 @@
     border: 1px solid rgba(var(--color-info), 0.2);
   }
 
+  /* Improve contrast for alerts in dark mode */
+  .dark .alert-success {
+    color: rgb(var(--color-on-dark));
+  }
+  .dark .alert-info {
+    color: rgb(var(--color-on-dark));
+  }
+
   /* spacing utilities like mb-3/mb-2 should use Tailwind classes directly in templates; do not @apply them here */
 
   /* Removed .w-100 and .ms-auto alias shims; use w-full and ml-auto directly in templates */

@@ -66,15 +66,9 @@ function canBeRemapped(): boolean {
 }
 
 function getRemappingType(): RemapType {
-  // If config isn't ready assume mixed (safe default)
-  if (!config.value) return MIXED;
-  // Assuming here that at least one setting is set to "auto" if other is not
-  if (config.value.dd_resolution_option !== 'auto') {
-    return REFRESH_RATE_ONLY;
-  }
-  if (config.value.dd_refresh_rate_option !== 'auto') {
-    return RESOLUTION_ONLY;
-  }
+  // Always expose resolution override fields regardless of selected options
+  // Design requirement: remapper shows both resolution and refresh rate inputs
+  // whenever display device configuration is enabled. Default to MIXED.
   return MIXED;
 }
 

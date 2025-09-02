@@ -113,7 +113,7 @@
         </section>
       </n-gi>
 
-      <!-- Export Playnite Logs (Windows only) -->
+      <!-- Export Logs (Windows only) -->
       <n-gi v-if="platform === 'windows'" :span="24" :lg="12">
         <section
           class="rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
@@ -121,17 +121,17 @@
           <header class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 id="collect_playnite_logs" class="text-xl font-medium text-dark dark:text-light">
-                {{ $t('troubleshooting.collect_playnite_logs') || 'Export Playnite Logs' }}
+                {{ $t('troubleshooting.collect_playnite_logs') || 'Export Logs' }}
               </h2>
               <p class="mt-2 text-sm opacity-70">
                 {{
                   $t('troubleshooting.collect_playnite_logs_desc') ||
-                  'Export Playnite and plugin logs for troubleshooting.'
+                  'Export Sunshine, Playnite, plugin, and display-helper logs.'
                 }}
               </p>
             </div>
             <n-button secondary @click="downloadPlayniteLogs">
-              {{ $t('troubleshooting.collect_playnite_logs') || 'Export Playnite Logs' }}
+              {{ $t('troubleshooting.collect_playnite_logs') || 'Export Logs' }}
             </n-button>
           </header>
         </section>
@@ -337,7 +337,7 @@ async function refreshLogs() {
 // ===== Playnite logs export =====
 function downloadPlayniteLogs() {
   try {
-    if (typeof window !== 'undefined') window.location.href = './api/playnite/logs/export';
+    if (typeof window !== 'undefined') window.location.href = './api/logs/export';
   } catch (_) {}
 }
 
