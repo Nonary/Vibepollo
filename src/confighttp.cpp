@@ -10,8 +10,6 @@
 #include <algorithm>
 #include <boost/regex.hpp>
 #include <chrono>
-#include <boost/regex.hpp>
-#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -34,7 +32,6 @@
 #include "confighttp.h"
 #include "crypto.h"
 #include "display_device.h"
-#include <display_device/json.h>
 #include "file_handler.h"
 #include "globals.h"
 #include "http_auth.h"
@@ -63,6 +60,8 @@
 #include "process.h"
 #include "utility.h"
 #include "uuid.h"
+
+#include <display_device/json.h>
 
 using namespace std::literals;
 namespace pt = boost::property_tree;
@@ -255,8 +254,6 @@ namespace confighttp {
     response->write(redirection_temporary_redirect, headers);
   }
 
-  
-
   /**
    * @brief Check authentication and authorization for an HTTP request.
    * @param request The HTTP request object.
@@ -315,7 +312,7 @@ namespace confighttp {
     } catch (const std::exception &e) {
       nlohmann::json tree;
       tree["status"] = false;
-      tree["error"] = std::string{"Failed to enumerate display devices: "} + e.what();
+      tree["error"] = std::string {"Failed to enumerate display devices: "} + e.what();
       send_response(response, tree);
     }
   }
@@ -938,8 +935,6 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
-  
-
   /**
    * @brief Get the locale setting. This endpoint does not require authentication.
    * @param response The HTTP response object.
@@ -1171,8 +1166,6 @@ namespace confighttp {
     output_tree["status"] = true;
     send_response(response, output_tree);
   }
-
-  
 
   /**
    * @brief Upload a cover image.

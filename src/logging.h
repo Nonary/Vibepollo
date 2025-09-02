@@ -8,6 +8,8 @@
 #include <boost/log/common.hpp>
 #include <boost/log/expressions.hpp>
 #include <boost/log/sinks.hpp>
+// std includes
+#include <filesystem>
 // Expose the severity attribute keyword to all translation units
 BOOST_LOG_ATTRIBUTE_KEYWORD(severity, "Severity", int)
 
@@ -22,7 +24,6 @@ extern boost::log::sources::severity_logger<int> fatal;
 #ifdef SUNSHINE_TESTS
 extern boost::log::sources::severity_logger<int> tests;
 #endif
-
 
 #include "config.h"
 #include "stat_trackers.h"
@@ -59,6 +60,13 @@ namespace logging {
    * @examples_end
    */
   [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const std::string &log_file);
+  [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const char *log_file);
+
+  /**
+   * @brief Initialize the logging system (filesystem path overload).
+   * @details Accepts a std::filesystem::path to correctly handle wide/UTF-8 paths on Windows.
+   */
+  [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const std::filesystem::path &log_file);
 
   /**
    * @brief Initialize the logging system in append mode.
@@ -69,6 +77,13 @@ namespace logging {
    *          processes write to the same log. Writes a UTF-8 BOM only if the file is empty.
    */
   [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const std::string &log_file);
+  [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const char *log_file);
+
+  /**
+   * @brief Initialize the logging system in append mode (filesystem path overload).
+   * @details Accepts a std::filesystem::path to correctly handle wide/UTF-8 paths on Windows.
+   */
+  [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const std::filesystem::path &log_file);
 
   /**
    * @brief Setup AV logging.

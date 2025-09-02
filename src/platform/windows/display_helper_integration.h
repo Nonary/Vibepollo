@@ -15,4 +15,4 @@ namespace display_helper_integration {
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();
-}
+}  // namespace display_helper_integration

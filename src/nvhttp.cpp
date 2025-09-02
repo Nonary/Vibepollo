@@ -1203,7 +1203,8 @@ namespace nvhttp {
     cert_chain.clear();
     save_state();
   }
-// (Windows-only) display_helper_integration is included above
+
+  // (Windows-only) display_helper_integration is included above
 
   bool unpair_client(const std::string_view uuid) {
     bool removed = false;

@@ -35,7 +35,7 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
-#include "platform/windows/display_helper_integration.h"
+  #include "platform/windows/display_helper_integration.h"
 #endif
 
 #define IDX_START_A 0

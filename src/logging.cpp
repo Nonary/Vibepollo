@@ -159,10 +159,12 @@ namespace logging {
     }
 
 #ifndef __ANDROID__
+  #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
     setup_av_logging(min_log_level);
-    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
-      setup_libdisplaydevice_logging(min_log_level);
-    #endif
+  #endif
+  #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
+    setup_libdisplaydevice_logging(min_log_level);
+  #endif
 #endif
 
     sink = boost::make_shared<text_sink>();
@@ -197,16 +199,27 @@ namespace logging {
     return std::make_unique<deinit_t>();
   }
 
+  [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const char *log_file) {
+    return init(min_log_level, std::string(log_file));
+  }
+
+  [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const std::filesystem::path &log_file) {
+    // Delegate to string overload; std::ofstream accepts narrow UTF-8 on Windows 10+ when using .string()
+    return init(min_log_level, log_file.string());
+  }
+
   [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const std::string &log_file) {
     if (sink) {
       deinit();
     }
 
 #ifndef __ANDROID__
+  #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
     setup_av_logging(min_log_level);
-    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
-      setup_libdisplaydevice_logging(min_log_level);
-    #endif
+  #endif
+  #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+    setup_libdisplaydevice_logging(min_log_level);
+  #endif
 #endif
 
     sink = boost::make_shared<text_sink>();
@@ -244,6 +257,16 @@ namespace logging {
     sink->locked_backend()->auto_flush(true);
     bl::core::get()->add_sink(sink);
     return std::make_unique<deinit_t>();
+  }
+
+  // Overloads delegating to string version to support const char* and std::filesystem::path
+  [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const char *log_file) {
+    return init_append(min_log_level, std::string(log_file));
+  }
+
+  [[nodiscard]] std::unique_ptr<deinit_t> init_append(int min_log_level, const std::filesystem::path &log_file) {
+    // Delegate to string overload; std::ofstream accepts narrow UTF-8 on Windows 10+ when using .string()
+    return init_append(min_log_level, log_file.string());
   }
 #ifdef SETUP_AV_LOGGING
   void setup_av_logging(int min_log_level) {
@@ -315,12 +338,14 @@ namespace logging {
 #endif
 
   void reconfigure_min_log_level(int min_log_level) {
-    // Reconfigure external logging subsystems first so their callbacks
-    // respect the new level immediately.
+// Reconfigure external logging subsystems first so their callbacks
+// respect the new level immediately.
+#if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
     setup_av_logging(min_log_level);
-    #if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
-      setup_libdisplaydevice_logging(min_log_level);
-    #endif
+#endif
+#if defined(SUNSHINE_USE_DISPLAYDEVICE_LOGGING) || defined(SETUP_LIBDISPLAYDEVICE_LOGGING)
+    setup_libdisplaydevice_logging(min_log_level);
+#endif
 
     // If we have an existing sink, update its filter to the new level.
     if (sink) {
@@ -333,8 +358,6 @@ namespace logging {
       sink->flush();
     }
   }
-
- 
 
   void print_help(const char *name) {
     std::cout

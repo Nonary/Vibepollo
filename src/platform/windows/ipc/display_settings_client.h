@@ -6,7 +6,7 @@
 
 #ifdef _WIN32
 
-#include <string>
+  #include <string>
 
 namespace platf::display_helper_client {
   // Send APPLY with JSON payload (SingleDisplayConfiguration)
@@ -14,7 +14,6 @@ namespace platf::display_helper_client {
 
   // Send REVERT (no payload)
   bool send_revert();
-}
+}  // namespace platf::display_helper_client
 
 #endif
-

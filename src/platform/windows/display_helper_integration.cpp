@@ -3,22 +3,28 @@
  */
 #ifdef _WIN32
 
-// standard
-#include <filesystem>
-#include <string>
+  // standard
+  #include <filesystem>
+  #include <string>
 
-// libdisplaydevice json
-#include <display_device/json.h>
+  // libdisplaydevice json
+  #include <display_device/json.h>
 
-// sunshine
-#include "display_helper_integration.h"
-#include "src/display_device.h"
-#include "src/logging.h"
-#include "src/platform/windows/misc.h"
-#include "src/platform/windows/ipc/display_settings_client.h"
-#include "src/platform/windows/ipc/process_handler.h"
+  // sunshine
+  #include "display_helper_integration.h"
+  #include "src/display_device.h"
+  #include "src/logging.h"
+  #include "src/platform/windows/ipc/display_settings_client.h"
+  #include "src/platform/windows/ipc/process_handler.h"
+  #include "src/platform/windows/misc.h"
 
 namespace {
+  // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
+  std::mutex &helper_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
   // Persistent process handler to keep helper alive while Sunshine runs
   ProcessHandler &helper_proc() {
     static ProcessHandler h(/*use_job=*/false);
@@ -26,6 +32,7 @@ namespace {
   }
 
   bool ensure_helper_started() {
+    std::lock_guard<std::mutex> lg(helper_mutex());
     // Already started? Verify liveness to avoid stale state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
       BOOST_LOG(info) << "Display helper: checking existing process handle...";
@@ -66,7 +73,7 @@ namespace {
     }
     return started;
   }
-}
+}  // namespace
 
 namespace display_helper_integration {
   bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
@@ -78,7 +85,8 @@ namespace display_helper_integration {
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
       const std::string json = display_device::toJson(*cfg);
-      BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n" << json;
+      BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
+                      << json;
       const bool ok = platf::display_helper_client::send_apply_json(json);
       BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
       return ok;
@@ -105,6 +113,6 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     return ok;
   }
-}
+}  // namespace display_helper_integration
 
 #endif

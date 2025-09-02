@@ -3,15 +3,15 @@
  */
 #ifdef _WIN32
 
-// standard
-#include <cstdint>
-#include <string>
-#include <vector>
+  // standard
+  #include <cstdint>
+  #include <string>
+  #include <vector>
 
-// local
-#include "display_settings_client.h"
-#include "src/platform/windows/ipc/pipes.h"
-#include "src/logging.h"
+  // local
+  #include "display_settings_client.h"
+  #include "src/logging.h"
+  #include "src/platform/windows/ipc/pipes.h"
 
 namespace platf::display_helper_client {
 
@@ -19,10 +19,10 @@ namespace platf::display_helper_client {
    * @brief IPC message types used by the display settings helper protocol.
    */
   enum class MsgType : uint8_t {
-    Apply = 1,   ///< Apply display settings from JSON payload.
+    Apply = 1,  ///< Apply display settings from JSON payload.
     Revert = 2,  ///< Revert display settings to the previous state.
-    Reset = 3,   ///< Reset helper persistence/state (if supported).
-    Ping = 0xFE, ///< Health check message; expects a response.
+    Reset = 3,  ///< Reset helper persistence/state (if supported).
+    Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
 
@@ -97,6 +97,6 @@ namespace platf::display_helper_client {
     }
     return pipe && send_frame(*pipe, MsgType::Revert, payload);
   }
-}
+}  // namespace platf::display_helper_client
 
 #endif

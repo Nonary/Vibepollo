@@ -8,6 +8,7 @@
  */
 
 // platform includes
+#include <UserEnv.h>
 #include <windows.h>
 
 // standard includes
@@ -17,8 +18,8 @@
 
 // local includes
 #include "process_handler.h"
-#include "src/platform/windows/misc.h"
 #include "src/logging.h"
+#include "src/platform/windows/misc.h"
 #include "src/utility.h"
 
 ProcessHandler::ProcessHandler():
@@ -26,7 +27,7 @@ ProcessHandler::ProcessHandler():
     use_job_(true) {}
 
 ProcessHandler::ProcessHandler(bool use_job):
-    job_(use_job ? create_kill_on_close_job() : winrt::handle{}),
+    job_(use_job ? create_kill_on_close_job() : winrt::handle {}),
     use_job_(use_job) {}
 
 bool ProcessHandler::start(const std::wstring &application_path, std::wstring_view arguments) {
@@ -78,18 +79,67 @@ bool ProcessHandler::start(const std::wstring &application_path, std::wstring_vi
   if (!use_job_) {
     creation_flags |= CREATE_BREAKAWAY_FROM_JOB;
   }
+  // Compute a sane working directory for the child: the directory of the target executable
+  std::wstring working_dir;
+  {
+    size_t pos = application_path.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+      working_dir = application_path.substr(0, pos);
+    }
+  }
+
   BOOL ret = FALSE;
 
   if (platf::is_running_as_system()) {
-    HANDLE user_token = platf::retrieve_users_token(true);
+    HANDLE user_token = platf::retrieve_users_token(false);
     if (!user_token) {
       BOOST_LOG(error) << "Failed to retrieve user token while launching: " << platf::to_utf8(application_path);
       return false;
     }
-    auto close_token = util::fail_guard([&]() { CloseHandle(user_token); });
-    ret = CreateProcessAsUserW(user_token, nullptr, (LPWSTR) cmd_line.c_str(), nullptr, nullptr, FALSE, creation_flags, nullptr, nullptr, (LPSTARTUPINFOW) &si, &pi_);
+    auto close_token = util::fail_guard([&]() {
+      CloseHandle(user_token);
+    });
+
+    // Build a user-specific environment block for the child process
+    void *env_block = nullptr;
+    if (!CreateEnvironmentBlock(&env_block, user_token, FALSE)) {
+      BOOST_LOG(error) << "CreateEnvironmentBlock failed, error: " << GetLastError();
+      env_block = nullptr;
+    }
+    auto destroy_env = util::fail_guard([&]() {
+      if (env_block) {
+        DestroyEnvironmentBlock(env_block);
+      }
+    });
+
+    // Launch in the user's context with their environment and an explicit working directory
+    ret = CreateProcessAsUserW(
+      user_token,
+      nullptr,
+      (LPWSTR) cmd_line.c_str(),
+      nullptr,
+      nullptr,
+      FALSE,
+      creation_flags,
+      env_block,
+      working_dir.empty() ? nullptr : working_dir.c_str(),
+      (LPSTARTUPINFOW) &si,
+      &pi_
+    );
   } else {
-    ret = CreateProcessW(nullptr, (LPWSTR) cmd_line.c_str(), nullptr, nullptr, FALSE, creation_flags, nullptr, nullptr, (LPSTARTUPINFOW) &si, &pi_);
+    // Non-SYSTEM: inherit our environment but still supply a sensible working directory
+    ret = CreateProcessW(
+      nullptr,
+      (LPWSTR) cmd_line.c_str(),
+      nullptr,
+      nullptr,
+      FALSE,
+      creation_flags,
+      nullptr,
+      working_dir.empty() ? nullptr : working_dir.c_str(),
+      (LPSTARTUPINFOW) &si,
+      &pi_
+    );
   }
 
   if (ret && use_job_ && job_) {

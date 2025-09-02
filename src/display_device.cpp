@@ -22,12 +22,13 @@
 
 // platform-specific includes
 #ifdef _WIN32
+  #include "platform/windows/impersonating_display_device.h"
+  #include "platform/windows/misc.h"
+
+  #include <display_device/noop_settings_persistence.h>
   #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
-  #include <display_device/noop_settings_persistence.h>
-  #include "platform/windows/impersonating_display_device.h"
-  #include "platform/windows/misc.h"
 #endif
 #include "src/display_helper_integration.h"
 
@@ -732,7 +733,7 @@ namespace display_device {
           // Use helper when active; otherwise perform a single in-process revert attempt
           if (display_helper_integration::suppress_fallback()) {
             BOOST_LOG(info) << "Display helper active; requesting REVERT on deinit.";
-            (void)display_helper_integration::revert();
+            (void) display_helper_integration::revert();
           } else {
             revert_configuration_unlocked(revert_option_e::try_once);
           }
@@ -808,7 +809,7 @@ namespace display_device {
     std::lock_guard lock {DD_DATA.mutex};
     if (display_helper_integration::suppress_fallback()) {
       BOOST_LOG(info) << "Display configuration revert requested; delegating to platform helper.";
-      (void)display_helper_integration::revert();
+      (void) display_helper_integration::revert();
       return;
     }
     revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);

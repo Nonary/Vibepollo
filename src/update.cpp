@@ -164,7 +164,9 @@ namespace update {
 
       // --- Tag-based (semver-like) comparison ----------------------------
       auto parse_semver = [](const std::string &ver) -> std::tuple<int, int, int> {
-        if (ver.empty()) return {0, 0, 0};
+        if (ver.empty()) {
+          return {0, 0, 0};
+        }
         std::string v = ver;
         // strip leading 'v' or 'V'
         if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
@@ -174,17 +176,29 @@ namespace update {
         auto dash = v.find('-');
         auto plus = v.find('+');
         size_t cut = std::string::npos;
-        if (dash != std::string::npos) cut = dash;
-        if (plus != std::string::npos) cut = (cut == std::string::npos) ? plus : std::min(cut, plus);
-        if (cut != std::string::npos) v = v.substr(0, cut);
+        if (dash != std::string::npos) {
+          cut = dash;
+        }
+        if (plus != std::string::npos) {
+          cut = (cut == std::string::npos) ? plus : std::min(cut, plus);
+        }
+        if (cut != std::string::npos) {
+          v = v.substr(0, cut);
+        }
 
         int a = 0, b = 0, c = 0;
         try {
           std::stringstream ss(v);
           std::string part;
-          if (std::getline(ss, part, '.')) a = std::stoi(part);
-          if (std::getline(ss, part, '.')) b = std::stoi(part);
-          if (std::getline(ss, part, '.')) c = std::stoi(part);
+          if (std::getline(ss, part, '.')) {
+            a = std::stoi(part);
+          }
+          if (std::getline(ss, part, '.')) {
+            b = std::stoi(part);
+          }
+          if (std::getline(ss, part, '.')) {
+            c = std::stoi(part);
+          }
         } catch (...) {
           // fall back to zeros
           a = b = c = 0;
@@ -195,9 +209,15 @@ namespace update {
       auto cmp_semver = [&](const std::string &lhs, const std::string &rhs) -> int {
         auto [a0, a1, a2] = parse_semver(lhs);
         auto [b0, b1, b2] = parse_semver(rhs);
-        if (a0 != b0) return (a0 < b0) ? -1 : 1;
-        if (a1 != b1) return (a1 < b1) ? -1 : 1;
-        if (a2 != b2) return (a2 < b2) ? -1 : 1;
+        if (a0 != b0) {
+          return (a0 < b0) ? -1 : 1;
+        }
+        if (a1 != b1) {
+          return (a1 < b1) ? -1 : 1;
+        }
+        if (a2 != b2) {
+          return (a2 < b2) ? -1 : 1;
+        }
         return 0;
       };
 

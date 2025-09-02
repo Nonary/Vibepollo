@@ -1204,9 +1204,7 @@ static int launcher_run(int argc, char **argv) {
   }
 
   if (!should_exit.load()) {
-    BOOST_LOG(warning) << (got_started.load() ?
-                           "Timeout after start unexpectedly; exiting" :
-                           "Timeout waiting for game start; exiting");
+    BOOST_LOG(warning) << (got_started.load() ? "Timeout after start unexpectedly; exiting" : "Timeout waiting for game start; exiting");
     // Best-effort cleanup: remove marker file
     // Discovery marker removal skipped (marker not created)
     // Fall through to schedule cleanup anyway

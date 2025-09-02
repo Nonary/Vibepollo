@@ -27,6 +27,8 @@ endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
+
+# Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
 set_target_properties(sunshine PROPERTIES CXX_STANDARD 23
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR})
