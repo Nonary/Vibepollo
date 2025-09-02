@@ -452,6 +452,19 @@ function fresh(): AppForm {
 }
 const form = ref<AppForm>(fresh());
 
+// Keep Playnite default exit-timeout logic centralized:
+// When a Playnite link is present and the timeout hasn't been customized
+// (i.e., still at the default 5 or unset), use 10 seconds by default.
+watch(
+  () => form.value.playniteId,
+  () => {
+    const et = form.value.exitTimeout as any;
+    if (form.value.playniteId && (typeof et !== 'number' || et === 5)) {
+      form.value.exitTimeout = 10;
+    }
+  },
+);
+
 function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const base = fresh();
   if (!src) return { ...base, index: idx };
@@ -463,6 +476,13 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
         elevated: !!p?.elevated,
       }))
     : [];
+  const isPlayniteLinked = !!src['playnite-id'];
+  const derivedExitTimeout =
+    typeof src['exit-timeout'] === 'number'
+      ? src['exit-timeout']
+      : isPlayniteLinked
+        ? 10
+        : base.exitTimeout;
   return {
     index: idx,
     name: String(src.name ?? ''),
@@ -474,7 +494,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
-    exitTimeout: typeof src['exit-timeout'] === 'number' ? src['exit-timeout'] : base.exitTimeout,
+    exitTimeout: derivedExitTimeout,
     prepCmd: prep,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     playniteId: src['playnite-id'] || undefined,
@@ -755,9 +775,6 @@ function onPickPlaynite(id: string) {
   lockPlaynite.value = true;
   // Reflect selection in unified combobox
   ensureNameSelectionFromForm();
-  // Default Exit Timeout for Playnite apps to 10s if unset or left at 5
-  const et = form.value.exitTimeout;
-  if (typeof et === 'undefined' || et === 5) form.value.exitTimeout = 10;
 }
 function unlockPlaynite() {
   lockPlaynite.value = false;
@@ -886,10 +903,6 @@ async function save() {
         if (exact) {
           form.value.playniteId = exact.value;
           form.value.playniteManaged = 'manual';
-          // Ensure default Exit Timeout of 10s for Playnite-linked apps
-          if (typeof form.value.exitTimeout === 'undefined' || form.value.exitTimeout === 5) {
-            form.value.exitTimeout = 10;
-          }
         }
       }
     } catch (_) {}
