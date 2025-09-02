@@ -61,12 +61,8 @@ function getRemapping(): DdModeRemapping | null {
 }
 
 function canBeRemapped(): boolean {
-  if (!config.value) return false;
-  return (
-    (config.value.dd_resolution_option === 'auto' ||
-      config.value.dd_refresh_rate_option === 'auto') &&
-    config.value.dd_configuration_option !== 'disabled'
-  );
+  // Always show remapper UI as long as the display device configuration isn't disabled
+  return !!config.value && config.value.dd_configuration_option !== 'disabled';
 }
 
 function getRemappingType(): RemapType {
