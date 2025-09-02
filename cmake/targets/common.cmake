@@ -66,19 +66,12 @@ else()
     set(NPM_INSTALL_FLAGS "")
 endif()
 
-# Control web UI build mode independent of C++ config.
-# Default to production assets unless explicitly asked for debug web UI.
-option(SUNSHINE_WEBUI_DEBUG "Build web UI in Vite debug mode" OFF)
-
-# Always invoke npm via "run"; choose script from option above.
+# Choose web UI build mode based on active CMake configuration.
+# In Debug config, build Vite in "debug" mode to enable Vue devtools.
+# In other configs, build production assets.
 set(NPM_BUILD_COMMAND_RUN "run")
-if(SUNSHINE_WEBUI_DEBUG)
-    set(NPM_BUILD_COMMAND_ARG "build:debug")
-    set(NPM_BUILD_ENV "NODE_ENV=development")
-else()
-    set(NPM_BUILD_COMMAND_ARG "build")
-    set(NPM_BUILD_ENV "")
-endif()
+set(NPM_BUILD_COMMAND_ARG "$<IF:$<CONFIG:Debug>,build:debug,build>")
+set(NPM_BUILD_ENV        "$<IF:$<CONFIG:Debug>,NODE_ENV=development,>")
 
 # Some Node versions support enabling source-map support; keep empty if not needed
 set(NPM_BUILD_NODE_OPTIONS "")

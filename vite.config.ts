@@ -49,6 +49,10 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { '@': resolve(assetsSrcPath) },
     },
+    // Ensure Vue devtools can attach in Debug bundles
+    define: {
+      __VUE_PROD_DEVTOOLS__: isDebug,
+    },
     plugins: [vue(), ViteEjsPlugin({ header })],
     css: {
       // Include CSS sources in sourcemaps during debug

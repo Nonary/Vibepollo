@@ -73,10 +73,12 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { '@': resolve(assetsSrcPath) },
     },
-    // Help Rollup/ESBuild drop unused Vue features for smaller bundles
+    // Compile-time Vue feature flags
+    // - Keep Options API off
+    // - Enable Vue devtools in production when building Debug bundles
     define: {
       __VUE_OPTIONS_API__: false,
-      __VUE_PROD_DEVTOOLS__: false,
+      __VUE_PROD_DEVTOOLS__: isDebug,
     },
     plugins: [
       vue(),

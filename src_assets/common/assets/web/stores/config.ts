@@ -210,7 +210,19 @@ export const useConfigStore = defineStore('config', () => {
   const config = ref<any>(null); // wrapper with getters/setters for UI binding
   const version = ref(0); // increments only on real user changes
   // Track keys that should require manual save (no autosave)
-  const manualSaveKeys = new Set<string>(['global_prep_cmd']);
+  const manualSaveKeys = new Set<string>([
+    'global_prep_cmd',
+    'dd_configuration_option',
+    'dd_resolution_option', 
+    'dd_manual_resolution',
+    'dd_refresh_rate_option',
+    'dd_manual_refresh_rate',
+    'dd_hdr_option',
+    'dd_wa_hdr_toggle_delay',
+    'dd_config_revert_delay',
+    'dd_config_revert_on_disconnect',
+    'dd_mode_remapping'
+  ]);
   const manualDirty = ref(false);
   const savingState = ref<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
   const loading = ref(false);

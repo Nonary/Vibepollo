@@ -21,8 +21,14 @@ import { ensureLocaleLoaded } from '@/locale-manager';
 // Core application instance & stores
 const app: VueApp<Element> = createApp(App);
 const pinia = createPinia();
-app.use(pinia);
 app.use(router);
+app.use(pinia);
+
+// Enable Vue devtools when building with Vite mode "debug"
+if (import.meta.env.MODE === 'debug') {
+  // Requires __VUE_PROD_DEVTOOLS__ to be true at build time
+  app.config.devtools = true;
+}
 
 // Expose platform ref early (updated after config load)
 const platformRef = ref('');
