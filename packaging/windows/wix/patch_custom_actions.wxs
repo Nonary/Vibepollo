@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CPackWiXPatch>
+  <CPackWiXFragment Id="#PRODUCT">
+
+    <!-- Binaries -->
+    <Binary Id="AskRemoveGamepadVbs" SourceFile="!(bindpath.MyScripts)ask_remove_gamepad.vbs"/>
+    <Binary Id="AskDeleteInstallDirVbs" SourceFile="!(bindpath.MyScripts)ask_delete_install_dir.vbs"/>
+
+    <!-- Install-time actions (deferred, elevated) -->
+    <CustomAction Id="ResetAcls"        BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="UpdatePathAdd"    BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="MigrateConfig"    BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="AddFirewallRule"  BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="InstallGamepad"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="InstallService"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="AutostartService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+
+    <!-- Uninstall-time actions (deferred, elevated) -->
+    <CustomAction Id="DeleteFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="UninstallService"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="UninstallGamepad"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="UpdatePathRemove"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
+    <CustomAction Id="DeleteInstallDir"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no"/>
+
+    <!-- Immediate setters -->
+    <CustomAction Id="SetResetAcls"        Property="ResetAcls"        Value="&quot;[SystemFolder]cmd.exe&quot; /C icacls &quot;[INSTALL_ROOT]&quot; /reset"/>
+    <CustomAction Id="SetUpdatePathAdd"    Property="UpdatePathAdd"    Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot;&quot; add&quot;"/>
+    <CustomAction Id="SetMigrateConfig"    Property="MigrateConfig"    Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\migrate-config.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetAddFirewallRule"  Property="AddFirewallRule"  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\add-firewall-rule.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetInstallGamepad"   Property="InstallGamepad"   Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;&quot;&quot;[INSTALL_ROOT]scripts\install-gamepad.ps1&quot;&quot;&quot;"/>
+    <CustomAction Id="SetInstallService"   Property="InstallService"   Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\install-service.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetAutostartService" Property="AutostartService" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\autostart-service.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetDeleteFirewallRule" Property="DeleteFirewallRule" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\delete-firewall-rule.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetUninstallService" Property="UninstallService" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\uninstall-service.bat&quot;&quot;&quot;"/>
+    <CustomAction Id="SetRestoreNvPrefsUndo" Property="RestoreNvPrefsUndo" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]sunshine.exe&quot;&quot; --restore-nvprefs-undo&quot;"/>
+    <CustomAction Id="SetUpdatePathRemove" Property="UpdatePathRemove" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot;&quot; remove&quot;"/>
+    <CustomAction Id="SetDeleteInstallDir" Property="DeleteInstallDir" Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT]&quot;"/>
+
+    <!-- Uninstall prompts -->
+    <CustomAction Id="AskRemoveGamepad"    BinaryKey="AskRemoveGamepadVbs"   VBScriptCall="AskRemoveGamepad"   Execute="immediate" Return="check"/>
+    <CustomAction Id="SetUninstallGamepad" Property="UninstallGamepad"       Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;&quot;&quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;&quot;&quot;"/>
+    <CustomAction Id="AskDeleteInstallDir" BinaryKey="AskDeleteInstallDirVbs" VBScriptCall="AskDeleteInstallDir" Execute="immediate" Return="check"/>
+
+    <!-- Schedule -->
+    <InstallExecuteSequence>
+      <!-- Install -->
+      <Custom Action="SetResetAcls"       After="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="ResetAcls"          After="SetResetAcls">NOT REMOVE</Custom>
+      <Custom Action="SetUpdatePathAdd"   After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="UpdatePathAdd"      After="SetUpdatePathAdd">NOT REMOVE</Custom>
+      <Custom Action="SetMigrateConfig"   After="UpdatePathAdd">NOT REMOVE</Custom>
+      <Custom Action="MigrateConfig"      After="SetMigrateConfig">NOT REMOVE</Custom>
+      <Custom Action="SetAddFirewallRule" After="MigrateConfig">NOT REMOVE</Custom>
+      <Custom Action="AddFirewallRule"    After="SetAddFirewallRule">NOT REMOVE</Custom>
+      <Custom Action="SetInstallGamepad"  After="AddFirewallRule">NOT REMOVE</Custom>
+      <Custom Action="InstallGamepad"     After="SetInstallGamepad">NOT REMOVE</Custom>
+      <Custom Action="SetInstallService"  After="InstallGamepad">NOT REMOVE</Custom>
+      <Custom Action="InstallService"     After="SetInstallService">NOT REMOVE</Custom>
+      <Custom Action="SetAutostartService" After="InstallService">NOT REMOVE</Custom>
+      <Custom Action="AutostartService"    After="SetAutostartService">NOT REMOVE</Custom>
+
+      <!-- Uninstall -->
+      <Custom Action="SetDeleteFirewallRule" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="DeleteFirewallRule"    After="SetDeleteFirewallRule">REMOVE="ALL"</Custom>
+      <Custom Action="SetUninstallService"   After="DeleteFirewallRule">REMOVE="ALL"</Custom>
+      <Custom Action="UninstallService"      After="SetUninstallService">REMOVE="ALL"</Custom>
+      <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RestoreNvPrefsUndo"    After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
+      <Custom Action="AskRemoveGamepad"      After="RestoreNvPrefsUndo">REMOVE="ALL"</Custom>
+      <Custom Action="SetUninstallGamepad"   After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="UninstallGamepad"      After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="SetUpdatePathRemove"   After="UninstallGamepad">REMOVE="ALL"</Custom>
+      <Custom Action="UpdatePathRemove"      After="SetUpdatePathRemove">REMOVE="ALL"</Custom>
+      <Custom Action="AskDeleteInstallDir"   After="UpdatePathRemove">REMOVE="ALL"</Custom>
+      <Custom Action="SetDeleteInstallDir"   After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+      <Custom Action="DeleteInstallDir"   After="SetDeleteInstallDir">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+    </InstallExecuteSequence>
+
+  </CPackWiXFragment>
+</CPackWiXPatch>

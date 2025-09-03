@@ -31,10 +31,13 @@ set(CPACK_WIX_LICENSE_RTF "${CMAKE_SOURCE_DIR}/packaging/windows/LICENSE.rtf")
 # Enable WiX Util extension for QuietExec custom actions
 set(CPACK_WIX_EXTENSIONS WixUtilExtension)
 
-# Extra WiX authoring to mirror NSIS install/uninstall actions
-set(CPACK_WIX_EXTRA_SOURCES
-    "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
+# Point WiX to your source folder so those VBS files can be resolved
+set(CPACK_WIX_LIGHT_EXTRA_FLAGS
+  "-b" "MyScripts=${CMAKE_SOURCE_DIR}/packaging/windows/wix"
 )
+
+# Merge our custom actions and sequencing directly into the generated Product
+set(CPACK_WIX_PATCH_FILE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/patch_custom_actions.wxs")
 
 # Optional: increase light diagnostics
 # set(CPACK_WIX_LIGHT_EXTRA_FLAGS "-dcl:high")

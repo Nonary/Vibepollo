@@ -16,11 +16,14 @@
   -->
 
   <Fragment>
+    <!-- Pull this fragment into the CPack-generated MSI -->
+    <FeatureRef Id="ProductFeature"/>
     <!-- Embedded VBScript to prompt the user on uninstall -->
     <Binary Id="AskRemoveGamepadVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_gamepad.vbs"/>
     <Binary Id="AskDeleteInstallDirVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_delete_install_dir.vbs"/>
     <!-- WiX standard custom action library providing WixQuietExec -->
-    <Binary Id="WixCA" SourceFile="$(env.WIX)\bin\WixCA.dll"/>
+    <!-- Use the extension bindpath provided by -ext WixUtilExtension -->
+    <Binary Id="WixCA" SourceFile="!(bindpath.WixUtilExtension)\WixCA.dll"/>
 
     <!-- Install-time actions (deferred, elevated) -->
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
