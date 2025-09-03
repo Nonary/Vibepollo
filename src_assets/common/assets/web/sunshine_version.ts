@@ -15,6 +15,7 @@ export default class SunshineVersion {
   public versionMajor: number;
   public versionMinor: number;
   public versionPatch: number;
+  public preRelease: (string | number)[]; // semver prerelease identifiers
 
   /**
    * Construct a SunshineVersion. Either pass a GitHubRelease or a version string.
@@ -26,6 +27,7 @@ export default class SunshineVersion {
     this.versionMajor = this.versionParts[0];
     this.versionMinor = this.versionParts[1];
     this.versionPatch = this.versionParts[2];
+    this.preRelease = this.parsePreRelease(this.version);
   }
 
   /** Create a SunshineVersion from a GitHubRelease */
@@ -52,15 +54,13 @@ export default class SunshineVersion {
     if (v.startsWith('v') || v.startsWith('V')) {
       v = v.slice(1);
     }
-    // Drop pre-release/build metadata (e.g., -rc.1, +build)
-    const dash = v.indexOf('-');
-    const plus = v.indexOf('+');
-    const cutIdx = [dash, plus].filter((i) => i >= 0).sort((a, b) => a - b)[0];
-    if (cutIdx !== undefined) {
-      v = v.slice(0, cutIdx);
-    }
+    // Split out build metadata and prerelease but keep prerelease for separate parsing
+    const plusIdx = v.indexOf('+');
+    if (plusIdx >= 0) v = v.slice(0, plusIdx);
+    const dashIdx = v.indexOf('-');
+    const core = dashIdx >= 0 ? v.slice(0, dashIdx) : v;
     // Extract numeric major.minor.patch via regex to avoid NaN on suffixed parts
-    const m = v.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
+    const m = core.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
     if (m) {
       const maj = parseInt(m[1]!, 10);
       const min = parseInt(m[2]!, 10);
@@ -77,25 +77,66 @@ export default class SunshineVersion {
     return tup;
   }
 
+  /** Parse prerelease identifiers (semver) as array of numbers/strings */
+  parsePreRelease(version: string): (string | number)[] {
+    if (!version) return [];
+    let v = version.trim();
+    if (v.startsWith('v') || v.startsWith('V')) v = v.slice(1);
+    const plusIdx = v.indexOf('+');
+    if (plusIdx >= 0) v = v.slice(0, plusIdx);
+    const dashIdx = v.indexOf('-');
+    if (dashIdx < 0) return [];
+    const pre = v.slice(dashIdx + 1);
+    if (!pre) return [];
+    return pre.split('.').map((id) => {
+      if (/^\d+$/.test(id)) {
+        // numeric identifiers are compared numerically
+        const n = Number(id);
+        return Number.isFinite(n) ? n : id;
+      }
+      return id;
+    });
+  }
+
   /**
    * Return true if this version is greater than the other.
    */
   isGreater(otherVersion: SunshineVersion | string): boolean {
-    let otherVersionParts: [number, number, number];
-    if (otherVersion instanceof SunshineVersion) {
-      otherVersionParts = otherVersion.versionParts;
-    } else if (typeof otherVersion === 'string') {
-      otherVersionParts = this.parseVersion(otherVersion);
-    } else {
-      throw new Error(
-        'Invalid argument: otherVersion must be a SunshineVersion object or a version string',
-      );
-    }
+    const cmp = (a: SunshineVersion, b: SunshineVersion): number => {
+      const [a0, a1, a2] = a.versionParts;
+      const [b0, b1, b2] = b.versionParts;
+      if (a0 !== b0) return a0 > b0 ? 1 : -1;
+      if (a1 !== b1) return a1 > b1 ? 1 : -1;
+      if (a2 !== b2) return a2 > b2 ? 1 : -1;
+      const aPre = a.preRelease;
+      const bPre = b.preRelease;
+      if (aPre.length === 0 && bPre.length === 0) return 0; // equal
+      if (aPre.length === 0) return 1; // release > prerelease
+      if (bPre.length === 0) return -1; // prerelease < release
+      const len = Math.max(aPre.length, bPre.length);
+      for (let i = 0; i < len; i++) {
+        const ai = aPre[i];
+        const bi = bPre[i];
+        if (ai === undefined) return -1; // shorter set has lower precedence
+        if (bi === undefined) return 1;
+        const aNum = typeof ai === 'number';
+        const bNum = typeof bi === 'number';
+        if (aNum && bNum) {
+          if (ai !== bi) return (ai as number) > (bi as number) ? 1 : -1;
+        } else if (aNum !== bNum) {
+          // numeric identifiers always have lower precedence than non-numeric
+          return aNum ? -1 : 1;
+        } else {
+          const as = String(ai);
+          const bs = String(bi);
+          if (as !== bs) return as > bs ? 1 : -1;
+        }
+      }
+      return 0;
+    };
 
-    const [a0, a1, a2] = this.versionParts;
-    const [b0, b1, b2] = otherVersionParts;
-    if (a0 !== b0) return a0 > b0;
-    if (a1 !== b1) return a1 > b1;
-    return a2 > b2;
+    const other =
+      otherVersion instanceof SunshineVersion ? otherVersion : new SunshineVersion(otherVersion);
+    return cmp(this, other) > 0;
   }
 }

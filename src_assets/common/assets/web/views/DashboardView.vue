@@ -285,8 +285,23 @@ async function runVersionChecks() {
       const releases = await fetch('https://api.github.com/repos/Nonary/vibeshine/releases').then(
         (r) => r.json(),
       );
-      const pre = Array.isArray(releases) ? releases.find((r) => r.prerelease) : null;
-      if (pre) preReleaseRelease.value = pre;
+      if (Array.isArray(releases)) {
+        // Pick the latest prerelease by semver (not just the first one)
+        const prereleases = releases.filter((r: any) => r && r.prerelease && !r.draft);
+        if (prereleases.length > 0) {
+          let best = prereleases[0];
+          let bestV = SunshineVersion.fromRelease(best);
+          for (let i = 1; i < prereleases.length; i++) {
+            const cand = prereleases[i];
+            const candV = SunshineVersion.fromRelease(cand);
+            if (candV.isGreater(bestV)) {
+              best = cand;
+              bestV = candV;
+            }
+          }
+          preReleaseRelease.value = best as GitHubRelease;
+        }
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[Dashboard] releases list fetch failed', e);
