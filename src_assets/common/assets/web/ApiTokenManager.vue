@@ -353,7 +353,6 @@ const ROUTE_OPTIONS: RouteDef[] = [
   { path: '/api/config', methods: ['GET', 'POST'] },
   { path: '/api/configLocale', methods: ['GET'] },
   { path: '/api/restart', methods: ['POST'] },
-  { path: '/api/reset-display-device-persistence', methods: ['POST'] },
   { path: '/api/password', methods: ['POST'] },
   { path: '/api/apps/([0-9]+)', methods: ['DELETE'] },
   { path: '/api/clients/unpair-all', methods: ['POST'] },

@@ -37,7 +37,6 @@
 
   // local includes
   #include "confighttp.h"
-  #include "display_device.h"
   #include "logging.h"
   #include "platform/common.h"
   #include "process.h"
@@ -56,12 +55,6 @@ namespace system_tray {
   }
 
   // Donation actions removed
-
-  void tray_reset_display_device_config_cb(struct tray_menu *item) {
-    BOOST_LOG(info) << "Resetting display device config from system tray"sv;
-
-    std::ignore = display_device::reset_persistence();
-  }
 
   void tray_restart_cb(struct tray_menu *item) {
     BOOST_LOG(info) << "Restarting from system tray"sv;
@@ -93,10 +86,6 @@ namespace system_tray {
         // todo - use boost/locale to translate menu strings
         {.text = "Open Sunshine", .cb = tray_open_ui_cb},
         {.text = "-"},
-  // Currently display device settings are only supported on Windows
-  #ifdef _WIN32
-        {.text = "Reset Display Device Config", .cb = tray_reset_display_device_config_cb},
-  #endif
         {.text = "Check for Update", .cb = [](tray_menu *) {
            BOOST_LOG(info) << "Manual update check requested from tray"sv;
            update::trigger_check(true);

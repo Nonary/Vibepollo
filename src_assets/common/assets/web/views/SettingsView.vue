@@ -68,8 +68,7 @@
           </transition>
         </div>
 
-        <div v-if="showSave" class="flex gap-2">
-          <n-button :disabled="saveState === 'saving'" @click="save">Save</n-button>
+        <div v-if="showSave" class="flex items-center gap-3">
           <n-button v-if="saveState === 'saved' && !restarted" tertiary @click="apply"
             >Apply</n-button
           >
@@ -140,10 +139,15 @@
         class="fixed bottom-4 right-6 z-30"
       >
         <div
-          class="bg-light/90 dark:bg-surface/90 backdrop-blur rounded-lg shadow border border-dark/10 dark:border-light/10 px-4 py-2 flex items-center gap-3"
+          class="bg-light/90 dark:bg-surface/90 backdrop-blur rounded-lg shadow border border-dark/10 dark:border-light/10 px-4 py-2"
         >
-          <span class="text-[11px] font-medium">Unsaved changes</span>
-          <n-button :disabled="saveState === 'saving'" @click="save">Save</n-button>
+          <div class="flex items-center gap-3">
+            <span class="text-[11px] font-medium">Unsaved changes</span>
+            <n-button :disabled="saveState === 'saving'" @click="save">Save</n-button>
+          </div>
+          <div v-if="saveState === 'error'" class="mt-1 text-[11px] text-danger leading-snug">
+            {{ store.validationError || 'Save failed. Check fields for errors.' }}
+          </div>
         </div>
       </div>
     </transition>
@@ -152,7 +156,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent } from 'vue';
-import { NInput, NButton } from 'naive-ui';
+import { NInput, NButton, useMessage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import General from '@/configs/tabs/General.vue';
 import Inputs from '@/configs/tabs/Inputs.vue';
@@ -169,6 +173,7 @@ import { storeToRefs } from 'pinia';
 
 const store = useConfigStore();
 const { config } = storeToRefs(store);
+const message = useMessage();
 // Auth store (top-level, single instance)
 const auth = useAuthStore();
 
@@ -257,7 +262,15 @@ async function save() {
   if (!config.value) return;
   restarted.value = false;
   const ok = await (store.save ? store.save() : Promise.resolve(false));
-  if (ok) dirty.value = false;
+  if (ok) {
+    dirty.value = false;
+  } else {
+    try {
+      message.error(store.validationError || 'Save failed. Check fields for errors.', {
+        duration: 5000,
+      });
+    } catch {}
+  }
 }
 
 async function apply() {

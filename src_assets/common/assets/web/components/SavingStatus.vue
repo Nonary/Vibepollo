@@ -18,12 +18,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
-import { NButton } from 'naive-ui';
+import { NButton, useMessage } from 'naive-ui';
 import { http } from '@/http';
 
 const route = useRoute();
 const store = useConfigStore();
-const { savingState, manualDirty } = storeToRefs(store);
+const { savingState, manualDirty, validationError } = storeToRefs(store);
+const message = useMessage();
 const hasPending = computed(() => store.hasPendingPatch());
 const restartRequired = computed(
   () => !!(store.lastSaveResult && store.lastSaveResult.restartRequired),
@@ -96,13 +97,14 @@ const iconClass = computed(() => {
   }
 });
 
-const tooltip = computed(() =>
-  hasPending.value
-    ? `Auto-save flushes every ${Math.round(intervalMs.value / 1000)}s. Tap to save now.`
-    : restartRequired.value
-      ? 'Saved; Restart required to apply runtime changes. Tap to apply now.'
-      : 'This page auto-saves most changes as you edit. Some fields may require clicking Save.',
-);
+const tooltip = computed(() => {
+  if (savingState.value === 'error' && validationError.value) return validationError.value;
+  if (hasPending.value)
+    return `Auto-save flushes every ${Math.round(intervalMs.value / 1000)}s. Tap to save now.`;
+  if (restartRequired.value)
+    return 'Saved; Restart required to apply runtime changes. Tap to apply now.';
+  return 'This page auto-saves most changes as you edit. Some fields may require clicking Save.';
+});
 
 async function onClick() {
   if (!canSave.value) return;
@@ -116,10 +118,24 @@ async function onClick() {
       return;
     }
     if (hasPending.value) {
-      await store.flushPatchQueue();
+      const ok = await store.flushPatchQueue();
+      if (!ok) {
+        try {
+          message.error(validationError.value || 'Save failed. Check fields for errors.', {
+            duration: 5000,
+          });
+        } catch {}
+      }
       return;
     }
-    await store.save();
+    const ok = await store.save();
+    if (!ok) {
+      try {
+        message.error(validationError.value || 'Save failed. Check fields for errors.', {
+          duration: 5000,
+        });
+      } catch {}
+    }
   } catch {}
 }
 </script>

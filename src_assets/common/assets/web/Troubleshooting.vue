@@ -74,45 +74,6 @@
         </section>
       </n-gi>
 
-      <!-- Reset persistent display device settings (Windows only) -->
-      <n-gi v-if="platform === 'windows'" :span="24">
-        <section
-          v-if="platform === 'windows'"
-          class="lg:col-span-2 rounded-2xl border border-dark/10 bg-white p-6 shadow-sm dark:border-light/10 dark:bg-surface"
-        >
-          <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 id="dd_reset" class="text-xl font-medium text-dark dark:text-light">
-                {{ $t('troubleshooting.dd_reset') }}
-              </h2>
-              <p class="mt-2 whitespace-pre-line text-sm opacity-70">
-                {{ $t('troubleshooting.dd_reset_desc') }}
-              </p>
-            </div>
-            <n-button secondary :disabled="ddResetPressed" @click="ddResetPersistence">
-              {{ $t('troubleshooting.dd_reset') }}
-            </n-button>
-          </header>
-
-          <transition name="fade">
-            <p
-              v-if="ddResetStatus === true"
-              class="mt-4 alert alert-success rounded-lg px-4 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_reset_success') }}
-            </p>
-          </transition>
-          <transition name="fade">
-            <p
-              v-if="ddResetStatus === false"
-              class="mt-4 alert alert-danger rounded-lg px-4 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_reset_error') }}
-            </p>
-          </transition>
-        </section>
-      </n-gi>
-
       <!-- Export Logs (Windows only) -->
       <n-gi v-if="platform === 'windows'" :span="24" :lg="12">
         <section
@@ -221,8 +182,6 @@ const platform = computed(() => store.metadata.platform);
 
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
-const ddResetPressed = ref(false);
-const ddResetStatus = ref(null as null | boolean);
 const restartPressed = ref(false);
 
 const logs = ref('Loading...');
@@ -376,23 +335,6 @@ function restart() {
   restartPressed.value = true;
   setTimeout(() => (restartPressed.value = false), 5000);
   http.post('./api/restart', {}, { validateStatus: () => true });
-}
-
-async function ddResetPersistence() {
-  ddResetPressed.value = true;
-  try {
-    const r = await http.post(
-      '/api/reset-display-device-persistence',
-      {},
-      { validateStatus: () => true },
-    );
-    ddResetStatus.value = r.data?.status === true;
-  } catch {
-    ddResetStatus.value = false;
-  } finally {
-    ddResetPressed.value = false;
-    setTimeout(() => (ddResetStatus.value = null), 5000);
-  }
 }
 
 // ==== Lifecycle ====

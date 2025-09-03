@@ -56,13 +56,13 @@ function isRemapping(obj: unknown): obj is DdModeRemapping {
 }
 
 function getRemapping(): DdModeRemapping | null {
-  const v = config.value?.dd_mode_remapping;
+  const v = (config as any)?.dd_mode_remapping;
   return isRemapping(v) ? v : null;
 }
 
 function canBeRemapped(): boolean {
   // Always show remapper UI as long as the display device configuration isn't disabled
-  return !!config.value && config.value.dd_configuration_option !== 'disabled';
+  return !!config && (config as any).dd_configuration_option !== 'disabled';
 }
 
 function getRemappingType(): RemapType {
@@ -74,7 +74,6 @@ function getRemappingType(): RemapType {
 
 function addRemappingEntry(): void {
   const type = getRemappingType();
-  if (!config.value) return;
   const remap = getRemapping();
   if (!remap) return;
 
@@ -96,11 +95,11 @@ function addRemappingEntry(): void {
 
   // reassign to trigger version bump
   store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
+  store.markManualDirty?.('dd_mode_remapping');
 }
 
 function removeRemappingEntry(idx: number): void {
   const type = getRemappingType();
-  if (!config.value) return;
   const remap = getRemapping();
   if (!remap) return;
   if (type === REFRESH_RATE_ONLY) {
@@ -111,6 +110,7 @@ function removeRemappingEntry(idx: number): void {
     remap.mixed.splice(idx, 1);
   }
   store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
+  store.markManualDirty?.('dd_mode_remapping');
 }
 
 // ----- i18n helpers -----
@@ -141,6 +141,34 @@ const ddHdrOptions = computed(() => [
   { label: t('config.dd_hdr_option_disabled') as string, value: 'disabled' },
   { label: t('config.dd_hdr_option_auto') as string, value: 'auto' },
 ]);
+
+// ----- Manual Resolution Validation -----
+// Validate formats like 1920x1080 (optionally allowing spaces around x)
+const manualResolutionPattern = /^(\s*\d{2,5}\s*[xX]\s*\d{2,5}\s*)$/;
+const manualResolutionValid = computed(() => {
+  if (!config || (config as any).dd_resolution_option !== 'manual') return true;
+  const v = String((config as any).dd_manual_resolution || '');
+  return manualResolutionPattern.test(v);
+});
+
+function isResolutionFieldValid(v: string | undefined | null): boolean {
+  if (!v) return true; // allow empty to support refresh-rate-only mappings
+  return manualResolutionPattern.test(String(v));
+}
+
+// ----- Refresh Rate Validation -----
+// Allow integers or decimals, must be > 0
+function isPositiveNumber(value: any): boolean {
+  if (value === undefined || value === null || String(value).trim() === '') return false;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+function isRefreshFieldValid(v: string | undefined | null): boolean {
+  if (!v) return true; // allow empty when not required
+  const s = String(v).trim();
+  if (s === '') return true; // empty allowed in some contexts
+  return /^\d+(?:\.\d+)?$/.test(s) && isPositiveNumber(s);
+}
 </script>
 
 <template>
@@ -201,7 +229,12 @@ const ddHdrOptions = computed(() => [
                   type="text"
                   class="monospace"
                   placeholder="2560x1440"
+                  @update:value="store.markManualDirty?.('dd_manual_resolution')"
+                  :status="manualResolutionValid ? undefined : 'error'"
                 />
+                <p v-if="!manualResolutionValid" class="text-[11px] text-red-500 mt-1">
+                  Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440.
+                </p>
               </div>
             </div>
 
@@ -229,7 +262,15 @@ const ddHdrOptions = computed(() => [
                   type="text"
                   class="monospace"
                   placeholder="59.9558"
+                  @update:value="store.markManualDirty?.('dd_manual_refresh_rate')"
+                  :status="isRefreshFieldValid(config.dd_manual_refresh_rate) ? undefined : 'error'"
                 />
+                <p
+                  v-if="!isRefreshFieldValid(config.dd_manual_refresh_rate)"
+                  class="text-[11px] text-red-500 mt-1"
+                >
+                  Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.
+                </p>
               </div>
             </div>
 
@@ -289,7 +330,10 @@ const ddHdrOptions = computed(() => [
 
             <!-- Display mode remapping -->
             <div v-if="canBeRemapped()">
-              <label for="dd_mode_remapping" class="block text-sm font-medium mb-1 text-dark">
+              <label
+                for="dd_mode_remapping"
+                class="block text-sm font-medium mb-1 text-dark dark:text-light"
+              >
                 {{ $t('config.dd_mode_remapping') }}
               </label>
               <p class="text-[11px] opacity-60">
@@ -315,7 +359,7 @@ const ddHdrOptions = computed(() => [
                 <div
                   v-for="(value, idx) in config.dd_mode_remapping[getRemappingType()]"
                   :key="idx"
-                  class="grid grid-cols-12 gap-2 items-center"
+                  class="grid grid-cols-12 gap-2 items-start"
                 >
                   <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
                     <n-input
@@ -323,6 +367,10 @@ const ddHdrOptions = computed(() => [
                       type="text"
                       class="monospace"
                       :placeholder="'1920x1080'"
+                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                      :status="
+                        isResolutionFieldValid(value.requested_resolution) ? undefined : 'error'
+                      "
                     />
                   </div>
                   <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
@@ -331,6 +379,8 @@ const ddHdrOptions = computed(() => [
                       type="text"
                       class="monospace"
                       :placeholder="'60'"
+                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                      :status="isRefreshFieldValid(value.requested_fps) ? undefined : 'error'"
                     />
                   </div>
 
@@ -340,6 +390,8 @@ const ddHdrOptions = computed(() => [
                       type="text"
                       class="monospace"
                       :placeholder="'2560x1440'"
+                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                      :status="isResolutionFieldValid(value.final_resolution) ? undefined : 'error'"
                     />
                   </div>
                   <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
@@ -348,12 +400,62 @@ const ddHdrOptions = computed(() => [
                       type="text"
                       class="monospace"
                       :placeholder="'119.95'"
+                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                      :status="isRefreshFieldValid(value.final_refresh_rate) ? undefined : 'error'"
                     />
                   </div>
-                  <div class="col-span-2 text-right">
+                  <div class="col-span-2 flex justify-end self-start">
                     <n-button size="small" secondary @click="removeRemappingEntry(idx)">
                       <i class="fas fa-trash" />
                     </n-button>
+                  </div>
+
+                  <!-- Second grid row for validation messages to preserve top alignment -->
+                  <div
+                    v-if="
+                      getRemappingType() !== REFRESH_RATE_ONLY &&
+                      !isResolutionFieldValid(value.requested_resolution)
+                    "
+                    class="col-span-3 text-[11px] text-red-500 mt-1"
+                  >
+                    Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
+                  </div>
+                  <div
+                    v-if="
+                      getRemappingType() !== RESOLUTION_ONLY &&
+                      !isRefreshFieldValid(value.requested_fps)
+                    "
+                    class="col-span-2 text-[11px] text-red-500 mt-1"
+                  >
+                    Invalid. Use a positive number or leave blank.
+                  </div>
+                  <div
+                    v-if="
+                      getRemappingType() !== REFRESH_RATE_ONLY &&
+                      !isResolutionFieldValid(value.final_resolution)
+                    "
+                    class="col-span-3 text-[11px] text-red-500 mt-1"
+                  >
+                    Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
+                  </div>
+                  <div
+                    v-if="
+                      getRemappingType() !== RESOLUTION_ONLY &&
+                      !isRefreshFieldValid(value.final_refresh_rate)
+                    "
+                    class="col-span-2 text-[11px] text-red-500 mt-1"
+                  >
+                    Invalid. Use a positive number or leave blank.
+                  </div>
+                  <div
+                    v-if="
+                      getRemappingType() === MIXED &&
+                      !value.final_resolution &&
+                      !value.final_refresh_rate
+                    "
+                    class="col-span-12 text-[11px] text-red-500"
+                  >
+                    For mixed mappings, specify at least one Final field.
                   </div>
                 </div>
               </div>

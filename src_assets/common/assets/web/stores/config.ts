@@ -213,7 +213,7 @@ export const useConfigStore = defineStore('config', () => {
   const manualSaveKeys = new Set<string>([
     'global_prep_cmd',
     'dd_configuration_option',
-    'dd_resolution_option', 
+    'dd_resolution_option',
     'dd_manual_resolution',
     'dd_refresh_rate_option',
     'dd_manual_refresh_rate',
@@ -221,12 +221,13 @@ export const useConfigStore = defineStore('config', () => {
     'dd_wa_hdr_toggle_delay',
     'dd_config_revert_delay',
     'dd_config_revert_on_disconnect',
-    'dd_mode_remapping'
+    'dd_mode_remapping',
   ]);
   const manualDirty = ref(false);
   const savingState = ref<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const validationError = ref<string | null>(null);
   // Single meta object kept completely separate from user config
   const metadata = ref<MetaInfo>({});
 
@@ -447,8 +448,129 @@ export const useConfigStore = defineStore('config', () => {
     manualDirty.value = false;
   }
 
+  function validateManualSave(): { ok: true } | { ok: false; message: string } {
+    // Only validate when manualDirty is set; otherwise no manual changes to gate
+    if (!manualDirty.value) return { ok: true };
+    const data = _data.value || {};
+    // Validate manual resolution override when enabled
+    const resOpt = Object.prototype.hasOwnProperty.call(data, 'dd_resolution_option')
+      ? data['dd_resolution_option']
+      : (defaultMap as any)['dd_resolution_option'];
+    if (resOpt === 'manual') {
+      const raw = String((data as any)['dd_manual_resolution'] || '').trim();
+      const pat = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
+      if (!pat.test(raw)) {
+        return {
+          ok: false,
+          message: 'Invalid manual resolution. Use WIDTHxHEIGHT (e.g., 2560x1440).',
+        };
+      }
+    }
+    // Validate manual refresh rate option
+    const rrOpt = Object.prototype.hasOwnProperty.call(data, 'dd_refresh_rate_option')
+      ? data['dd_refresh_rate_option']
+      : (defaultMap as any)['dd_refresh_rate_option'];
+    if (rrOpt === 'manual') {
+      const raw = String((data as any)['dd_manual_refresh_rate'] || '').trim();
+      const valid = /^\d+(?:\.\d+)?$/.test(raw) && Number(raw) > 0;
+      if (!valid) {
+        return {
+          ok: false,
+          message: 'Invalid manual refresh rate. Use a positive number, e.g., 60 or 59.94.',
+        };
+      }
+    }
+    // Validate display mode remapping resolution fields (allow empty, else WIDTHxHEIGHT)
+    const remap = (data as any)['dd_mode_remapping'];
+    if (remap && typeof remap === 'object') {
+      const pat = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
+      const check = (s: any) => !s || String(s).trim() === '' || pat.test(String(s));
+      const checkNum = (s: any) =>
+        !s || String(s).trim() === '' || (/^\d+(?:\.\d+)?$/.test(String(s)) && Number(s) > 0);
+      const buckets = ['mixed', 'resolution_only'] as const;
+      for (const b of buckets) {
+        const arr = Array.isArray(remap[b]) ? remap[b] : [];
+        for (let i = 0; i < arr.length; i++) {
+          const e = arr[i] || {};
+          if (!check((e as any).requested_resolution) || !check((e as any).final_resolution)) {
+            return {
+              ok: false,
+              message:
+                'Invalid resolution in Display mode remapping. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.',
+            };
+          }
+        }
+      }
+      // Validate refresh_rate_only bucket and numeric fields in mixed
+      if (Array.isArray(remap['refresh_rate_only'])) {
+        for (let i = 0; i < remap['refresh_rate_only'].length; i++) {
+          const e = remap['refresh_rate_only'][i] || {};
+          if (!checkNum((e as any).requested_fps) || !checkNum((e as any).final_refresh_rate)) {
+            return {
+              ok: false,
+              message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
+            };
+          }
+          // final refresh rate required for refresh_rate_only entries
+          if (
+            !((e as any).final_refresh_rate && String((e as any).final_refresh_rate).trim() !== '')
+          ) {
+            return {
+              ok: false,
+              message: 'For refresh-rate-only mappings, Final refresh rate is required.',
+            };
+          }
+        }
+      }
+      if (Array.isArray(remap['mixed'])) {
+        for (let i = 0; i < remap['mixed'].length; i++) {
+          const e = remap['mixed'][i] || {};
+          if (!checkNum((e as any).requested_fps) || !checkNum((e as any).final_refresh_rate)) {
+            return {
+              ok: false,
+              message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
+            };
+          }
+          // At least one final field required for mixed entries
+          const hasFinalRes = !!(
+            (e as any).final_resolution && String((e as any).final_resolution).trim() !== ''
+          );
+          const hasFinalFps = !!(
+            (e as any).final_refresh_rate && String((e as any).final_refresh_rate).trim() !== ''
+          );
+          if (!hasFinalRes && !hasFinalFps) {
+            return {
+              ok: false,
+              message: 'For mixed mappings, specify at least one Final field.',
+            };
+          }
+        }
+      }
+      if (Array.isArray(remap['resolution_only'])) {
+        for (let i = 0; i < remap['resolution_only'].length; i++) {
+          const e = remap['resolution_only'][i] || {};
+          // final resolution required for resolution_only entries
+          if (!((e as any).final_resolution && String((e as any).final_resolution).trim() !== '')) {
+            return {
+              ok: false,
+              message: 'For resolution-only mappings, Final resolution is required.',
+            };
+          }
+        }
+      }
+    }
+    return { ok: true };
+  }
+
   async function save(): Promise<boolean> {
     try {
+      // Validate manual-save fields before attempting to persist
+      const v = validateManualSave();
+      if (!v.ok) {
+        validationError.value = v.message || 'Validation failed for pending changes.';
+        savingState.value = 'error';
+        return false;
+      }
       // First flush any pending PATCH changes for auto-saved keys
       if (Object.keys(patchQueue.value).length) {
         const ok = await flushPatchQueue();
@@ -470,6 +592,7 @@ export const useConfigStore = defineStore('config', () => {
         } catch {}
         savingState.value = 'saved';
         manualDirty.value = false;
+        validationError.value = null;
         // Reset to idle after a short delay if no new changes
         setTimeout(() => {
           if (savingState.value === 'saved' && !manualDirty.value) {
@@ -627,6 +750,7 @@ export const useConfigStore = defineStore('config', () => {
     metadata,
     loading,
     error,
+    validationError,
     fetchConfig,
     setConfig,
     updateOption,

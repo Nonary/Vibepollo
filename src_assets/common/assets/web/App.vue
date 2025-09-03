@@ -50,6 +50,8 @@
                       <i class="fas fa-bars" />
                     </n-button>
                   </n-dropdown>
+                  <!-- Show save/status control on mobile app bar when on Settings -->
+                  <SavingStatus />
                   <ThemeToggle />
                 </div>
                 <!-- Desktop actions -->
