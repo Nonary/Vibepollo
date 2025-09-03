@@ -253,6 +253,11 @@ jobs:
           echo "python-path=${python_path}"
           echo "python-path=${python_path}" >> "${GITHUB_OUTPUT}"
 
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset -y
+
       - name: Build Windows
         shell: msys2 {0}
         env:
@@ -276,6 +281,8 @@ jobs:
           ninja -C build
           echo "::remove-matcher owner=gcc::"
 
+      # WiX already installed before configure so env:WIX is available
+
       - name: Package Windows
         shell: msys2 {0}
         run: |
@@ -283,11 +290,11 @@ jobs:
           cd build
 
           # package
-          cpack -G NSIS
+          cpack -G WIX
           cpack -G ZIP
 
           # move
-          mv ./cpack_artifacts/Sunshine.exe ../artifacts/Sunshine-${{ matrix.name }}-installer.exe
+          mv ./cpack_artifacts/Sunshine.msi ../artifacts/Sunshine-${{ matrix.name }}-installer.msi
           mv ./cpack_artifacts/Sunshine.zip ../artifacts/Sunshine-${{ matrix.name }}-portable.zip
 
       - name: Run tests

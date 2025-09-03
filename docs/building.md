@@ -102,7 +102,6 @@ dependencies=(
   "mingw-w64-ucrt-x86_64-MinHook"
   "mingw-w64-ucrt-x86_64-miniupnpc"
   "mingw-w64-ucrt-x86_64-nodejs"
-  "mingw-w64-ucrt-x86_64-nsis"
   "mingw-w64-ucrt-x86_64-onevpl"
   "mingw-w64-ucrt-x86_64-openssl"
   "mingw-w64-ucrt-x86_64-opus"
@@ -148,7 +147,8 @@ ninja -C build
   }}
   @tab{Windows | @tabs{
     @tab{Installer | ```bash
-      cpack -G NSIS --config ./build/CPackConfig.cmake
+      cpack -G WIX --config ./build/CPackConfig.cmake
+      # note: MSI packaging requires WiX Toolset v3 to be installed (e.g. `choco install wixtoolset`)
       ```}
     @tab{Portable | ```bash
       cpack -G ZIP --config ./build/CPackConfig.cmake

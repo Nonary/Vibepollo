@@ -129,6 +129,5 @@ set(CPACK_COMPONENT_GAMEPAD_DISPLAY_NAME "Virtual Gamepad")
 set(CPACK_COMPONENT_GAMEPAD_DESCRIPTION "Scripts to install and uninstall Virtual Gamepad.")
 set(CPACK_COMPONENT_GAMEPAD_GROUP "Scripts")
 
-# include specific packaging
-include(${CMAKE_MODULE_PATH}/packaging/windows_nsis.cmake)
+# include specific packaging (WiX only)
 include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)

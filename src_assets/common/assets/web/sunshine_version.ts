@@ -135,8 +135,7 @@ export default class SunshineVersion {
       return 0;
     };
 
-    const other =
-      otherVersion instanceof SunshineVersion ? otherVersion : new SunshineVersion(otherVersion);
+    const other = otherVersion instanceof SunshineVersion ? otherVersion : new SunshineVersion(otherVersion);
     return cmp(this, other) > 0;
   }
 }

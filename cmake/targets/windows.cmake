@@ -30,3 +30,10 @@ endif()
 
 # Enable libdisplaydevice logging in the main Sunshine binary only
 target_compile_definitions(sunshine PRIVATE SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
+
+# Convenience target to build MSI via CPack (WiX)
+add_custom_target(package_msi
+    COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
+    DEPENDS sunshine copy_playnite_plugin
+    COMMENT "Building MSI installer via CPack (WiX)"
+)

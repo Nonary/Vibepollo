@@ -6,12 +6,12 @@
 #include "update.h"
 
 // standard includes
-#include <algorithm>
 #include <cstdio>
 #include <future>
 #include <sstream>
 #include <thread>
 #include <variant>
+#include <algorithm>
 
 // lib includes
 #include <nlohmann/json.hpp>
@@ -118,19 +118,12 @@ namespace update {
           int patch {0};
           std::vector<std::variant<int, std::string>> pre;
         };
-
         auto parse_semver_full = [](const std::string &ver) -> semver_t {
           semver_t out;
-          if (ver.empty()) {
-            return out;
-          }
+          if (ver.empty()) return out;
           std::string v = ver;
-          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
-            v.erase(0, 1);
-          }
-          if (auto p = v.find('+'); p != std::string::npos) {
-            v = v.substr(0, p);
-          }
+          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(0, 1);
+          if (auto p = v.find('+'); p != std::string::npos) v = v.substr(0, p);
           std::string core = v;
           if (auto d = v.find('-'); d != std::string::npos) {
             core = v.substr(0, d);
@@ -138,9 +131,7 @@ namespace update {
             std::stringstream pss(pre);
             std::string pid;
             while (std::getline(pss, pid, '.')) {
-              if (pid.empty()) {
-                continue;
-              }
+              if (pid.empty()) continue;
               if (std::all_of(pid.begin(), pid.end(), ::isdigit)) {
                 try {
                   out.pre.emplace_back(std::stoi(pid));
@@ -155,15 +146,9 @@ namespace update {
           try {
             std::stringstream ss(core);
             std::string part;
-            if (std::getline(ss, part, '.')) {
-              out.major = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.minor = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.patch = std::stoi(part);
-            }
+            if (std::getline(ss, part, '.')) out.major = std::stoi(part);
+            if (std::getline(ss, part, '.')) out.minor = std::stoi(part);
+            if (std::getline(ss, part, '.')) out.patch = std::stoi(part);
           } catch (...) {
             out.major = out.minor = out.patch = 0;
           }
@@ -172,49 +157,29 @@ namespace update {
         auto cmp_semver_full = [&](const std::string &lhs, const std::string &rhs) -> int {
           auto a = parse_semver_full(lhs);
           auto b = parse_semver_full(rhs);
-          if (a.major != b.major) {
-            return (a.major < b.major) ? -1 : 1;
-          }
-          if (a.minor != b.minor) {
-            return (a.minor < b.minor) ? -1 : 1;
-          }
-          if (a.patch != b.patch) {
-            return (a.patch < b.patch) ? -1 : 1;
-          }
-          if (a.pre.empty() && b.pre.empty()) {
-            return 0;
-          }
-          if (a.pre.empty()) {
-            return 1;
-          }
-          if (b.pre.empty()) {
-            return -1;
-          }
+          if (a.major != b.major) return (a.major < b.major) ? -1 : 1;
+          if (a.minor != b.minor) return (a.minor < b.minor) ? -1 : 1;
+          if (a.patch != b.patch) return (a.patch < b.patch) ? -1 : 1;
+          if (a.pre.empty() && b.pre.empty()) return 0;
+          if (a.pre.empty()) return 1;
+          if (b.pre.empty()) return -1;
           const size_t len = std::max(a.pre.size(), b.pre.size());
           for (size_t i = 0; i < len; ++i) {
-            if (i >= a.pre.size()) {
-              return -1;
-            }
-            if (i >= b.pre.size()) {
-              return 1;
-            }
+            if (i >= a.pre.size()) return -1;
+            if (i >= b.pre.size()) return 1;
             const auto &ai = a.pre[i];
             const auto &bi = b.pre[i];
             const bool a_num = std::holds_alternative<int>(ai);
             const bool b_num = std::holds_alternative<int>(bi);
             if (a_num && b_num) {
               int av = std::get<int>(ai), bv = std::get<int>(bi);
-              if (av != bv) {
-                return (av < bv) ? -1 : 1;
-              }
+              if (av != bv) return (av < bv) ? -1 : 1;
             } else if (a_num != b_num) {
-              return a_num ? -1 : 1;  // numeric < non-numeric
+              return a_num ? -1 : 1; // numeric < non-numeric
             } else {
               const auto &as = std::get<std::string>(ai);
               const auto &bs = std::get<std::string>(bi);
-              if (as != bs) {
-                return (as < bs) ? -1 : 1;
-              }
+              if (as != bs) return (as < bs) ? -1 : 1;
             }
           }
           return 0;
@@ -227,9 +192,7 @@ namespace update {
         for (auto &rel : j) {
           const bool is_prerelease = rel.value("prerelease", false);
           const bool is_draft = rel.value("draft", false);
-          if (is_draft) {
-            continue;
-          }
+          if (is_draft) continue;
 
           // Parse assets for this release
           std::vector<asset_info_t> assets;
@@ -241,12 +204,8 @@ namespace update {
               ai.size = asset.value("size", 0);
               ai.content_type = asset.value("content_type", "");
               std::string digest = asset.value("digest", "");
-              if (digest.starts_with("sha256:")) {
-                ai.sha256 = digest.substr(7);
-              }
-              if (!ai.name.empty() && !ai.download_url.empty()) {
-                assets.push_back(ai);
-              }
+              if (digest.starts_with("sha256:")) ai.sha256 = digest.substr(7);
+              if (!ai.name.empty() && !ai.download_url.empty()) assets.push_back(ai);
             }
           }
 
@@ -288,21 +247,15 @@ namespace update {
       // --- Tag-based (semver with prerelease) comparison -----------------
       auto cmp_semver = [&](const std::string &lhs, const std::string &rhs) -> int {
         struct semver_t2 {
-          int major {0}, minor {0}, patch {0};
+          int major{0}, minor{0}, patch{0};
           std::vector<std::variant<int, std::string>> pre;
         };
         auto parse = [](const std::string &ver) -> semver_t2 {
           semver_t2 out;
-          if (ver.empty()) {
-            return out;
-          }
+          if (ver.empty()) return out;
           std::string v = ver;
-          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
-            v.erase(0, 1);
-          }
-          if (auto p = v.find('+'); p != std::string::npos) {
-            v = v.substr(0, p);
-          }
+          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(0, 1);
+          if (auto p = v.find('+'); p != std::string::npos) v = v.substr(0, p);
           std::string core = v;
           if (auto d = v.find('-'); d != std::string::npos) {
             core = v.substr(0, d);
@@ -310,15 +263,9 @@ namespace update {
             std::stringstream ss(pre);
             std::string pid;
             while (std::getline(ss, pid, '.')) {
-              if (pid.empty()) {
-                continue;
-              }
+              if (pid.empty()) continue;
               if (std::all_of(pid.begin(), pid.end(), ::isdigit)) {
-                try {
-                  out.pre.emplace_back(std::stoi(pid));
-                } catch (...) {
-                  out.pre.emplace_back(pid);
-                }
+                try { out.pre.emplace_back(std::stoi(pid)); } catch (...) { out.pre.emplace_back(pid); }
               } else {
                 out.pre.emplace_back(pid);
               }
@@ -327,64 +274,38 @@ namespace update {
           try {
             std::stringstream ss(core);
             std::string part;
-            if (std::getline(ss, part, '.')) {
-              out.major = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.minor = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.patch = std::stoi(part);
-            }
+            if (std::getline(ss, part, '.')) out.major = std::stoi(part);
+            if (std::getline(ss, part, '.')) out.minor = std::stoi(part);
+            if (std::getline(ss, part, '.')) out.patch = std::stoi(part);
           } catch (...) {
             out.major = out.minor = out.patch = 0;
           }
           return out;
         };
         auto a = parse(lhs), b = parse(rhs);
-        if (a.major != b.major) {
-          return (a.major < b.major) ? -1 : 1;
-        }
-        if (a.minor != b.minor) {
-          return (a.minor < b.minor) ? -1 : 1;
-        }
-        if (a.patch != b.patch) {
-          return (a.patch < b.patch) ? -1 : 1;
-        }
-        if (a.pre.empty() && b.pre.empty()) {
-          return 0;
-        }
-        if (a.pre.empty()) {
-          return 1;
-        }
-        if (b.pre.empty()) {
-          return -1;
-        }
+        if (a.major != b.major) return (a.major < b.major) ? -1 : 1;
+        if (a.minor != b.minor) return (a.minor < b.minor) ? -1 : 1;
+        if (a.patch != b.patch) return (a.patch < b.patch) ? -1 : 1;
+        if (a.pre.empty() && b.pre.empty()) return 0;
+        if (a.pre.empty()) return 1;
+        if (b.pre.empty()) return -1;
         const size_t len = std::max(a.pre.size(), b.pre.size());
         for (size_t i = 0; i < len; ++i) {
-          if (i >= a.pre.size()) {
-            return -1;
-          }
-          if (i >= b.pre.size()) {
-            return 1;
-          }
+          if (i >= a.pre.size()) return -1;
+          if (i >= b.pre.size()) return 1;
           const auto &ai = a.pre[i];
           const auto &bi = b.pre[i];
           const bool a_num = std::holds_alternative<int>(ai);
           const bool b_num = std::holds_alternative<int>(bi);
           if (a_num && b_num) {
             int av = std::get<int>(ai), bv = std::get<int>(bi);
-            if (av != bv) {
-              return (av < bv) ? -1 : 1;
-            }
+            if (av != bv) return (av < bv) ? -1 : 1;
           } else if (a_num != b_num) {
             return a_num ? -1 : 1;
           } else {
             const auto &as = std::get<std::string>(ai);
             const auto &bs = std::get<std::string>(bi);
-            if (as != bs) {
-              return (as < bs) ? -1 : 1;
-            }
+            if (as != bs) return (as < bs) ? -1 : 1;
           }
         }
         return 0;
