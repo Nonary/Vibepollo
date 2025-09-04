@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(Sunshine VERSION 0.0.0
         DESCRIPTION "Self-hosted game stream host for Moonlight"
-        HOMEPAGE_URL "https://app.lizardbyte.dev/Sunshine")
+        HOMEPAGE_URL "https://github.com/Nonary/vibeshine")
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 

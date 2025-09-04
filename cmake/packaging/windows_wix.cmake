@@ -6,7 +6,7 @@ set(CPACK_GENERATOR "WIX")
 
 # Product identity and visuals
 set(CPACK_WIX_PRODUCT_ICON "${CMAKE_SOURCE_DIR}/sunshine.ico")
-set(CPACK_WIX_PROGRAM_MENU_FOLDER "Sunshine")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "Vibeshine")
 
 # Stable Upgrade GUID to enable in-place upgrades
 # NOTE: Do not change once released, or upgrades will break.
@@ -14,7 +14,7 @@ set(CPACK_WIX_UPGRADE_GUID "{C2C36624-2D9C-4AFD-9C79-6B7861AE4A0D}")
 
 # Add a Start Menu shortcut and optional desktop link
 # Pair of <exe-name;friendly-name>
-set(CPACK_PACKAGE_EXECUTABLES "sunshine;Sunshine")
+set(CPACK_PACKAGE_EXECUTABLES "sunshine;Vibeshine")
 # Uncomment to also create a desktop shortcut
 # set(CPACK_CREATE_DESKTOP_LINKS "sunshine")
 
