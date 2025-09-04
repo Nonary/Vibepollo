@@ -32,10 +32,30 @@ if %ERRORLEVEL%==0 (
     echo !CONTENT!> "%SERVICE_CONFIG_FILE%"
 )
 
-rem Stop and delete the legacy SunshineSvc service
-net stop sunshinesvc
-sc delete sunshinesvc
+rem Stop and delete the legacy SunshineSvc service (best-effort)
+net stop sunshinesvc >nul 2>&1
+for /L %%i in (1,1,15) do (
+  sc query sunshinesvc | findstr /C:"STATE" | findstr /C:"STOPPED" >nul 2>&1 && goto :legacy_stopped
+  timeout /t 1 >nul
+)
+:legacy_stopped
+sc delete sunshinesvc >nul 2>&1
 
-rem Stop and delete the new SunshineService service
-net stop SunshineService
-sc delete SunshineService
+rem Stop SunshineService and wait for it to fully stop
+net stop SunshineService >nul 2>&1
+for /L %%i in (1,1,30) do (
+  sc query SunshineService | findstr /C:"STATE" | findstr /C:"STOPPED" >nul 2>&1 && goto :svc_stopped
+  timeout /t 1 >nul
+)
+
+rem As a fallback, terminate any process still holding the service (if any)
+taskkill /F /FI "SERVICES eq SunshineService" >nul 2>&1
+
+:svc_stopped
+rem Proactively terminate known Sunshine binaries that may still hold file locks
+taskkill /F /IM sunshine.exe >nul 2>&1
+taskkill /F /IM sunshinesvc.exe >nul 2>&1
+taskkill /F /IM sunshine_wgc_capture.exe >nul 2>&1
+
+rem Delete the service definition
+sc delete SunshineService >nul 2>&1

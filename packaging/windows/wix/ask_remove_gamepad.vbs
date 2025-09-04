@@ -1,8 +1,8 @@
 Function AskRemoveGamepad()
     Dim resp
-    resp = MsgBox("Do you want to remove Virtual Gamepad?", vbQuestion + vbYesNo + vbDefaultButton2, "Sunshine")
+    ' Ensure the prompt is foreground and top-most so users see it
+    resp = MsgBox("Do you want to remove Virtual Gamepad?", vbQuestion + vbYesNo + vbDefaultButton2 + vbSystemModal + vbMsgBoxSetForeground, "Sunshine")
     If resp = vbYes Then
         Session.Property("REMOVEGAMEPAD") = "1"
     End If
 End Function
-
