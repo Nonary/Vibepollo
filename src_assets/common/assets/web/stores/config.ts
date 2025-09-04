@@ -70,7 +70,7 @@ const defaultGroups = [
       dd_mode_remapping: { mixed: [], resolution_only: [], refresh_rate_only: [] },
       dd_wa_hdr_toggle_delay: 0,
       max_bitrate: 0,
-      minimum_fps_target: 0,
+      minimum_fps_target: 20,
     },
   },
   {

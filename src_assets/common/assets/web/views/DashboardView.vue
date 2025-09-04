@@ -330,7 +330,8 @@ const installedVersionNotStable = computed(() => {
   // treat non-main/master branches as pre-release builds automatically
   if (branch.value && !['master', 'main'].includes(branch.value)) return true;
   // treat any semantic prerelease (e.g., 0.0.0-beta.1) as not stable
-  if (installedVersion.value?.preRelease && installedVersion.value.preRelease.length > 0) return true;
+  if (installedVersion.value?.preRelease && installedVersion.value.preRelease.length > 0)
+    return true;
   // If installed tag is ahead of the latest stable tag, assume pre-release/dev build
   if (githubRelease.value) {
     return installedVersion.value.isGreater(githubVersion.value);

@@ -509,7 +509,7 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
-    0  // minimum_fps_target (0 = framerate)
+    20  // minimum_fps_target (0 = framerate)
   };
 
   audio_t audio {
