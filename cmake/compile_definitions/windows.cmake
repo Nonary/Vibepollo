@@ -81,6 +81,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"

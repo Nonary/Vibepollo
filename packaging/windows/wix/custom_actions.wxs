@@ -75,6 +75,9 @@
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
+    <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
+    <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
@@ -102,6 +105,11 @@
     <CustomAction Id="SetInstallGamepad"
                  Property="InstallGamepad"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\install-gamepad.ps1&quot;"/>
+
+    <!-- Immediate setter for pruning installed web assets directory before file copy -->
+    <CustomAction Id="SetPruneWebDir"
+                 Property="PruneWebDir"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$p='[INSTALL_ROOT]assets\web'; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }&quot;"/>
 
 
     <CustomAction Id="SetRestoreNvPrefsUndo"

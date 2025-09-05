@@ -36,6 +36,7 @@ extern "C" {
 #include "utility.h"
 #ifdef _WIN32
   #include "platform/windows/display_helper_integration.h"
+  #include "platform/windows/rtss_integration.h"
 #endif
 
 #define IDX_START_A 0
@@ -1940,6 +1941,10 @@ namespace stream {
           display_device::revert_configuration();
         }
 
+        // Restore any Windows-only integrations first
+#ifdef _WIN32
+        platf::rtss_streaming_stop();
+#endif
         platf::streaming_will_stop();
 
         // No active sessions now; apply any deferred config updates
@@ -1982,6 +1987,10 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+#ifdef _WIN32
+        // Apply RTSS frame limit if enabled (Windows-only)
+        platf::rtss_streaming_start(session.config.monitor.framerate);
+#endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         system_tray::update_tray_playing(proc::proc.get_last_run_app_name());

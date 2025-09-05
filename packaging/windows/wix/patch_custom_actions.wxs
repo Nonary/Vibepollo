@@ -15,6 +15,10 @@
     </Feature>
 
     <InstallExecuteSequence>
+      <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
+      <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
+
       <!-- Stop service proactively on repair or uninstall -->
       <Custom Action="SetStopSvcQuiet" After="InstallInitialize">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
       <Custom Action="StopSvcQuiet" After="SetStopSvcQuiet">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>

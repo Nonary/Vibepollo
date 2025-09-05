@@ -568,6 +568,13 @@ namespace config {
     true,  // native pen/touch support
   };
 
+  // Windows-only: RTSS defaults
+  rtss_t rtss {
+    false,  // enable_frame_limit
+    {},     // install_path
+    "async"      // frame_limit_type
+  };
+
   sunshine_t sunshine {
     "en",  // locale
     2,  // min_log_level
@@ -1155,6 +1162,11 @@ namespace config {
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
+
+    // Windows-only RTSS integration options (opt-in)
+    bool_f(vars, "rtss_enable_frame_limit", rtss.enable_frame_limit);
+    string_f(vars, "rtss_install_path", rtss.install_path);
+    string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

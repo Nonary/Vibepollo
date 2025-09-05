@@ -56,7 +56,9 @@ set(CPACK_WIX_EXTRA_SOURCES
 # Map semver pre-release like 0.0.9-beta.1 -> 0.0.9.1
 # If no pre-release, use .0
 # ----------------------------------------------------------------------------
-set(_RAW_VER "${CMAKE_PROJECT_VERSION}")
+# Prefer PROJECT_VERSION which our build logic guarantees is set from env/tags.
+# CMAKE_PROJECT_VERSION may be stale in cache depending on configure order.
+set(_RAW_VER "${PROJECT_VERSION}")
 set(_WIX_MAJ 0)
 set(_WIX_MIN 0)
 set(_WIX_PAT 0)
@@ -71,7 +73,7 @@ if(_RAW_VER MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)([-.][0-9A-Za-z.-]+)?$")
     # Extract first numeric identifier from suffix (e.g., -beta.1 -> 1). If none, default to 1.
     string(REGEX MATCH "([0-9]+)" _NUM_FROM_SUFFIX "${_SUFFIX}")
     if(NOT "${_NUM_FROM_SUFFIX}" STREQUAL "")
-      set(_WIX_REV "${CMAKE_MATCH_1}")
+      set(_WIX_REV "${_NUM_FROM_SUFFIX}")
     else()
       set(_WIX_REV 1)
     endif()
@@ -103,6 +105,9 @@ set(CPACK_WIX_PRODUCT_VERSION "${_WIX_MAJ}.${_WIX_MIN}.${_WIX_PAT}.${_WIX_REV}")
 
 # Ensure WiX template uses a valid version; some CPack templates reference CPACK_PACKAGE_VERSION
 set(CPACK_PACKAGE_VERSION "${CPACK_WIX_PRODUCT_VERSION}")
+
+# Helpful for diagnostics in CI/local logs
+message(STATUS "CPACK_WIX_PRODUCT_VERSION = ${CPACK_WIX_PRODUCT_VERSION} (from ${_RAW_VER})")
 
 
 # Merge our custom actions and sequencing directly into the generated Product

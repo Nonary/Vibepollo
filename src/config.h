@@ -210,6 +210,19 @@ namespace config {
     bool native_pen_touch;
   };
 
+  // Windows-only: RTSS integration settings
+  struct rtss_t {
+    // Enable applying an RTSS framerate limit on stream start and restoring it on end
+    bool enable_frame_limit {false};
+
+    // RTSS install path. If empty, defaults to "%PROGRAMFILES%/RivaTuner Statistics Server"
+    std::string install_path;
+
+    // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
+    // If empty or unrecognized, SyncLimiter is not modified.
+    std::string frame_limit_type;
+  };
+
   namespace flag {
     enum flag_e : std::size_t {
       PIN_STDIN = 0,  ///< Read PIN from stdin instead of http
@@ -272,6 +285,7 @@ namespace config {
   extern stream_t stream;
   extern nvhttp_t nvhttp;
   extern input_t input;
+  extern rtss_t rtss;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);

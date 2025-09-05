@@ -84,7 +84,7 @@
 
     <div v-if="isReady" class="space-y-4">
       <section
-        v-for="tab in tabs"
+        v-for="tab in tabsFiltered"
         :id="tab.id"
         :key="tab.id"
         :ref="(el) => setSectionRef(tab.id, el)"
@@ -166,13 +166,15 @@ import Advanced from '@/configs/tabs/Advanced.vue';
 import Playnite from '@/configs/tabs/Playnite.vue';
 import AudioVideo from '@/configs/tabs/AudioVideo.vue';
 import ContainerEncoders from '@/configs/tabs/ContainerEncoders.vue';
+import RTSS from '@/configs/tabs/RTSS.vue';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
 import { storeToRefs } from 'pinia';
 
 const store = useConfigStore();
-const { config } = storeToRefs(store);
+const { config, metadata } = storeToRefs(store);
+const platform = computed(() => (metadata.value?.platform || '').toLowerCase());
 const message = useMessage();
 // Auth store (top-level, single instance)
 const auth = useAuthStore();
@@ -208,8 +210,13 @@ const tabs = [
   { id: 'network', name: 'Network', component: markRaw(Network) },
   { id: 'files', name: 'Files', component: markRaw(Files) },
   { id: 'advanced', name: 'Advanced', component: markRaw(Advanced) },
+  { id: 'rtss', name: 'Frame Limiter', component: markRaw(RTSS) },
   { id: 'playnite', name: 'Playnite', component: markRaw(Playnite) },
 ];
+
+const tabsFiltered = computed(() =>
+  tabs.filter((t) => (t.id === 'rtss' ? platform.value === 'windows' : true)),
+);
 
 const openSections = ref(new Set(['general']));
 const isOpen = (id) => openSections.value.has(id);

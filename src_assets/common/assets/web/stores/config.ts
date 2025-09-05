@@ -131,6 +131,15 @@ const defaultGroups = [
     },
   },
   {
+    id: 'rtss',
+    name: 'Frame Limiter',
+    options: {
+      rtss_enable_frame_limit: false,
+      rtss_install_path: '',
+      rtss_frame_limit_type: 'async',
+    },
+  },
+  {
     id: 'nv',
     name: 'NVIDIA NVENC Encoder',
     options: {
@@ -358,6 +367,9 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_autosync_require_replacement',
       'playnite_focus_exit_on_first',
     ];
+    // Extend boolean normalization to cover RTSS enable flag
+    const otherBoolKeys = ['rtss_enable_frame_limit'];
+    const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;
       if (v === 1 || v === 0) return !!v;
@@ -369,7 +381,7 @@ export const useConfigStore = defineStore('config', () => {
       if (['false', 'no', 'disable', 'disabled', 'off', '0'].includes(s)) return false;
       return null;
     };
-    for (const k of playniteBoolKeys) {
+    for (const k of allBoolKeys) {
       if (!_data.value) break;
       if (Object.prototype.hasOwnProperty.call(_data.value, k)) {
         const b = toBool((_data.value as any)[k]);
