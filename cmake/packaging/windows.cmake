@@ -22,8 +22,6 @@ install(FILES ${VIGEMBUS_INSTALLER}
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
-# Mandatory tools
-install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
 
 # Helpers and tools
 # - Playnite launcher helper used for Playnite-managed app launches

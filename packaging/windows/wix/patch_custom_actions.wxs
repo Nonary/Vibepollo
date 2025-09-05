@@ -1,102 +1,59 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CPackWiXPatch>
   <CPackWiXFragment Id="#PRODUCT">
-    <!-- Suppress reboot prompts; we stop services ourselves -->
-    <Property Id="REBOOT" Value="ReallySuppress"/>
-    <Property Id="REBOOTPROMPT" Value="Suppress"/>
-    <!-- Use Restart Manager (default) so MSI can stop services even in basic/silent UI -->
-
-    <!-- Detect if ViGEm Bus service already exists to avoid re-running its installer -->
+    <Property Id="ALLUSERS" Value="1"/>
+    <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
-      <!-- 64-bit registry view -->
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
-      <!-- 32-bit registry view fallback -->
       <RegistrySearch Id="Search_ViGEmBus_Service32" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw"/>
     </Property>
+    <Feature Id="VibeshineExtras" Title="Vibeshine Components" Level="1" Absent="disallow">
+      <ComponentRef Id="CtlStopSunshine"/>
+      <ComponentRef Id="SunshineSvc"/>
+      <ComponentRef Id="Env_Path"/>
+      <ComponentRef Id="Fw_Exceptions"/>
+    </Feature>
 
-    <!-- Binaries -->
-    <Binary Id="AskRemoveGamepadVbs" SourceFile="!(bindpath.MyScripts)ask_remove_gamepad.vbs"/>
-    <Binary Id="AskDeleteInstallDirVbs" SourceFile="!(bindpath.MyScripts)ask_delete_install_dir.vbs"/>
-
-    <!-- Install-time actions (deferred, elevated) -->
-    <CustomAction Id="ResetAcls"        BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <!-- Proactively stop Sunshine service to avoid FilesInUse prompts on repair/uninstall -->
-    <CustomAction Id="StopService"      BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no"/>
-    <CustomAction Id="UpdatePathAdd"    BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="MigrateConfig"    BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="AddFirewallRule"  BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="InstallGamepad"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="InstallService"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="AutostartService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-
-    <!-- Uninstall-time actions (deferred, elevated) -->
-    <CustomAction Id="DeleteFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="UninstallService"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="UninstallGamepad"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="UpdatePathRemove"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check"  Impersonate="no"/>
-    <CustomAction Id="DeleteInstallDir"   BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no"/>
-
-    <!-- Immediate setters -->
-    <CustomAction Id="SetResetAcls"        Property="ResetAcls"        Value="&quot;[SystemFolder]icacls.exe&quot; &quot;[INSTALL_ROOT].&quot; /reset"/>
-    <CustomAction Id="SetStopService"      Property="StopService"      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$names = @('SunshineService','Sunshine'); foreach($n in $names){ $svc = Get-Service -Name $n -ErrorAction SilentlyContinue; if($svc){ try{ Stop-Service -Name $n -Force -ErrorAction SilentlyContinue }catch{} } }; $procs = @('sunshine','sunshinesvc','sunshine_service'); foreach($p in $procs){ Get-Process -Name $p -ErrorAction SilentlyContinue | ForEach-Object { try{ $_.Kill() }catch{} } }; $deadline = (Get-Date).AddSeconds(20); do{ Start-Sleep -Milliseconds 500; $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if(-not $svc){ $svc = Get-Service -Name 'Sunshine' -ErrorAction SilentlyContinue }; } while($svc -and $svc.Status -ne 'Stopped' -and (Get-Date) -lt $deadline); exit 0&quot;"/>
-    <CustomAction Id="SetUpdatePathAdd"    Property="UpdatePathAdd"    Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; add&quot;"/>
-    <CustomAction Id="SetMigrateConfig"    Property="MigrateConfig"    Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\migrate-config.bat&quot;&quot;"/>
-    <CustomAction Id="SetAddFirewallRule"  Property="AddFirewallRule"  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\add-firewall-rule.bat&quot;&quot;"/>
-    <CustomAction Id="SetInstallGamepad"   Property="InstallGamepad"   Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\install-gamepad.ps1&quot;"/>
-    <CustomAction Id="SetInstallService"   Property="InstallService"   Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\install-service.bat&quot;&quot;"/>
-    <CustomAction Id="SetAutostartService" Property="AutostartService" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\autostart-service.bat&quot;&quot;"/>
-    <CustomAction Id="SetDeleteFirewallRule" Property="DeleteFirewallRule" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\delete-firewall-rule.bat&quot;&quot;"/>
-    <CustomAction Id="SetUninstallService" Property="UninstallService" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\uninstall-service.bat&quot;&quot;"/>
-    <CustomAction Id="SetRestoreNvPrefsUndo" Property="RestoreNvPrefsUndo" Value="&quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo"/>
-    <CustomAction Id="SetUpdatePathRemove" Property="UpdatePathRemove" Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; remove&quot;"/>
-    <CustomAction Id="SetDeleteInstallDir" Property="DeleteInstallDir" Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT].&quot;"/>
-
-    <!-- Uninstall prompts -->
-    <CustomAction Id="AskRemoveGamepad"    BinaryKey="AskRemoveGamepadVbs"   VBScriptCall="AskRemoveGamepad"   Execute="immediate" Return="check"/>
-    <CustomAction Id="SetUninstallGamepad" Property="UninstallGamepad"       Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;"/>
-    <CustomAction Id="AskDeleteInstallDir" BinaryKey="AskDeleteInstallDirVbs" VBScriptCall="AskDeleteInstallDir" Execute="immediate" Return="check"/>
-
-    <!-- Schedule -->
     <InstallExecuteSequence>
-      <!-- Repairs/Uninstalls: stop service early in execute sequence -->
-      <!-- Let MSI StopServices run first, then script any extra cleanup if needed -->
-      <Custom Action="SetStopService"       After="StopServices">Installed</Custom>
-      <Custom Action="StopService"          After="SetStopService">Installed</Custom>
-      <!-- Install -->
-      <Custom Action="SetResetAcls"       After="InstallFiles">NOT REMOVE</Custom>
-      <Custom Action="ResetAcls"          After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetUpdatePathAdd"   After="ResetAcls">NOT REMOVE</Custom>
-      <Custom Action="UpdatePathAdd"      After="SetUpdatePathAdd">NOT REMOVE</Custom>
-      <Custom Action="SetMigrateConfig"   After="UpdatePathAdd">NOT REMOVE</Custom>
-      <Custom Action="MigrateConfig"      After="SetMigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="SetAddFirewallRule" After="MigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="AddFirewallRule"    After="SetAddFirewallRule">NOT REMOVE</Custom>
-      <!-- Only install ViGEm if not already present -->
-      <Custom Action="SetInstallGamepad"  After="AddFirewallRule">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
-      <Custom Action="InstallGamepad"     After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
-      <Custom Action="SetInstallService"  After="InstallGamepad">NOT REMOVE</Custom>
-      <Custom Action="InstallService"     After="SetInstallService">NOT REMOVE</Custom>
-      <Custom Action="SetAutostartService" After="InstallService">NOT REMOVE</Custom>
-      <Custom Action="AutostartService"    After="SetAutostartService">NOT REMOVE</Custom>
+      <!-- Stop service proactively on repair or uninstall -->
+      <Custom Action="SetStopSvcQuiet" After="InstallInitialize">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="StopSvcQuiet" After="SetStopSvcQuiet">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
 
-      <!-- Uninstall -->
-      <Custom Action="SetDeleteFirewallRule" Before="RemoveFiles">REMOVE="ALL"</Custom>
-      <Custom Action="DeleteFirewallRule"    After="SetDeleteFirewallRule">REMOVE="ALL"</Custom>
-      <Custom Action="SetUninstallService"   After="DeleteFirewallRule">REMOVE="ALL"</Custom>
-      <Custom Action="UninstallService"      After="SetUninstallService">REMOVE="ALL"</Custom>
+      <!-- Start quietly on repair with basic/silent UI -->
+      <Custom Action="SetStartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
+      <Custom Action="StartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
+
+      <!-- Manual uninstall: process/legacy service cleanup -->
+      <Custom Action="SetKillProcsQuiet" After="StopSvcQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="KillProcsQuiet" After="SetKillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetRemoveServiceQuiet" After="KillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveServiceQuiet" After="SetRemoveServiceQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+
+      <!-- Post-install chores -->
+      <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
+      <Custom Action="SetMigrateConfig" After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
+      <Custom Action="SetInstallGamepad" After="MigrateConfig">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+      <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+
+      <!-- Uninstall before file removal -->
       <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
-      <Custom Action="RestoreNvPrefsUndo"    After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
-      <Custom Action="AskRemoveGamepad"      After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="SetUninstallGamepad"   After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
-      <Custom Action="UninstallGamepad"      After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
-      <Custom Action="SetUpdatePathRemove"   After="UninstallGamepad">REMOVE="ALL"</Custom>
-      <Custom Action="UpdatePathRemove"      After="SetUpdatePathRemove">REMOVE="ALL"</Custom>
-      <Custom Action="AskDeleteInstallDir"   After="UpdatePathRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="SetDeleteInstallDir"   After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
-      <Custom Action="DeleteInstallDir"   After="SetDeleteInstallDir">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+      <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
+
+      <!-- Prompts (VBS) to remove ViGEm and optionally delete install dir; only on manual uninstalls -->
+      <Custom Action="AskRemoveGamepad" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetUninstallGamepad" After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="UninstallGamepad" After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="AskDeleteInstallDir" After="UninstallGamepad">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+
+      <!-- Execute delete/prune after MSI removes its files -->
+      <Custom Action="SetDeleteInstallDir" After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+      <Custom Action="DeleteInstallDir" After="SetDeleteInstallDir">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+
+      <!-- If not deleting whole dir, prune everything but config -->
+      <Custom Action="SetPruneButConfig" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
-
   </CPackWiXFragment>
-
 </CPackWiXPatch>

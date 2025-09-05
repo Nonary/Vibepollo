@@ -29,6 +29,11 @@ target_link_libraries(sunshinesvc
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshinesvc PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
+add_custom_command(TARGET sunshinesvc POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/wix_payload/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:sunshinesvc>" "${CMAKE_BINARY_DIR}/wix_payload/tools/sunshinesvc.exe"
+)
+
 # Playnite launcher: per-launch helper that hosts a private IPC server
 add_executable(playnite-launcher playnite_launcher.cpp)
 set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)

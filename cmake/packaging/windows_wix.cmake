@@ -36,12 +36,18 @@ set(CPACK_WIX_EXTENSIONS WixUtilExtension;WixFirewallExtension)
 # Point WiX to your source folder so those VBS files can be resolved
 set(CPACK_WIX_LIGHT_EXTRA_FLAGS
   "-b" "MyScripts=${CMAKE_SOURCE_DIR}/packaging/windows/wix"
+  "-b" "PayloadRoot=${CMAKE_BINARY_DIR}/wix_payload/"
 )
 
 # Define preprocessor variables for WiX sources
 # BinDir: directory containing built binaries (sunshine.exe) at packaging time
 set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dBinDir=${CMAKE_BINARY_DIR}"
+)
+
+
+set(CPACK_WIX_EXTRA_SOURCES
+  "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
 )
 
 
