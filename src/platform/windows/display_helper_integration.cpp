@@ -113,6 +113,17 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     return ok;
   }
+
+  bool export_golden_restore() {
+    if (!ensure_helper_started()) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot export golden snapshot.";
+      return false;
+    }
+    BOOST_LOG(info) << "Display helper: sending EXPORT_GOLDEN request.";
+    const bool ok = platf::display_helper_client::send_export_golden();
+    BOOST_LOG(info) << "Display helper: EXPORT_GOLDEN dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
 }  // namespace display_helper_integration
 
 #endif

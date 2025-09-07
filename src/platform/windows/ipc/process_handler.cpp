@@ -7,6 +7,9 @@
  * including support for attribute lists and impersonation as needed for the Sunshine project.
  */
 
+// local includes (include our header first to enforce correct include order)
+#include "process_handler.h"
+
 // platform includes
 #include <UserEnv.h>
 #include <windows.h>
@@ -15,9 +18,6 @@
 #include <algorithm>
 #include <system_error>
 #include <vector>
-
-// local includes
-#include "process_handler.h"
 #include "src/logging.h"
 #include "src/platform/windows/misc.h"
 #include "src/utility.h"

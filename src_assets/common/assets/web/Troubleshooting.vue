@@ -20,7 +20,7 @@
                 {{ $t('troubleshooting.force_close_desc') }}
               </p>
             </div>
-            <n-button secondary :disabled="closeAppPressed" @click="closeApp">
+            <n-button type="primary" strong :disabled="closeAppPressed" @click="closeApp">
               {{ $t('troubleshooting.force_close') }}
             </n-button>
           </header>
@@ -58,7 +58,7 @@
                 {{ $t('troubleshooting.restart_sunshine_desc') }}
               </p>
             </div>
-            <n-button secondary :disabled="restartPressed" @click="restart">
+            <n-button type="primary" strong :disabled="restartPressed" @click="restart">
               {{ $t('troubleshooting.restart_sunshine') }}
             </n-button>
           </header>
@@ -91,7 +91,7 @@
                 }}
               </p>
             </div>
-            <n-button secondary @click="downloadPlayniteLogs">
+            <n-button type="primary" strong @click="downloadPlayniteLogs">
               {{ $t('troubleshooting.collect_playnite_logs') || 'Export Logs' }}
             </n-button>
           </header>
@@ -119,7 +119,7 @@
             :placeholder="$t('troubleshooting.logs_find')"
             @input="handleFilterInput"
           />
-          <n-button secondary @click="toggleWrap">
+          <n-button type="default" strong @click="toggleWrap">
             <i :class="wrapLongLines ? 'fas fa-align-left' : 'fas fa-ellipsis-h'"></i>
             <span>{{
               wrapLongLines ? $t('troubleshooting.wrap') : $t('troubleshooting.no_wrap')

@@ -14,6 +14,9 @@ namespace platf::display_helper_client {
 
   // Send REVERT (no payload)
   bool send_revert();
+
+  // Export current OS display settings as a golden restore snapshot
+  bool send_export_golden();
 }  // namespace platf::display_helper_client
 
 #endif

@@ -46,7 +46,7 @@
                     :options="mobileMenuOptions"
                     @select="onMobileSelect"
                   >
-                    <n-button quaternary circle size="small" aria-label="Menu">
+                    <n-button type="primary" strong circle size="small" aria-label="Menu">
                       <i class="fas fa-bars" />
                     </n-button>
                   </n-dropdown>

@@ -10,13 +10,16 @@
   #include <atomic>
   #include <chrono>
   #include <cstdint>
+  #include <cstdio>
   #include <cstdlib>
   #include <cstring>
+  #include <cwchar>
   #include <filesystem>
   #include <functional>
   #include <memory>
   #include <optional>
   #include <span>
+  #include <set>
   #include <string>
   #include <thread>
   #include <vector>
@@ -42,11 +45,56 @@ namespace bl = boost::log;
 
 namespace {
 
+  // Trigger a more robust Explorer/shell refresh so that desktop/taskbar icons
+  // and other shell-controlled UI elements pick up DPI/metrics changes that
+  // can occur after monitor topology/primary swaps. Avoids wrong-sized icons
+  // without restarting Explorer.
+  inline void refresh_shell_after_display_change() {
+    // 1) Ask the shell to refresh associations/images and flush notifications.
+    //    SHCNF_FLUSHNOWAIT avoids blocking if the shell is busy.
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+
+    // 2) Force a reload of system icons. This does not change user settings
+    //    but prompts Explorer to re-query default icons and sizes.
+    SystemParametersInfoW(SPI_SETICONS, 0, nullptr, SPIF_SENDCHANGE);
+
+    // Helper to safely broadcast a message with a short timeout so we don't hang
+    // if any app stops responding.
+    auto broadcast = [](UINT msg, WPARAM wParam, LPARAM lParam) {
+      DWORD_PTR result = 0;
+      SendMessageTimeoutW(HWND_BROADCAST, msg, wParam, lParam,
+                          SMTO_ABORTIFHUNG | SMTO_NORMAL, 100, &result);
+    };
+
+    // 3) Broadcast targeted setting changes that commonly trigger Explorer to
+    //    refresh icon metrics and shell state.
+    static const wchar_t kShellState[] = L"ShellState";
+    static const wchar_t kIconMetrics[] = L"IconMetrics";
+    broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kShellState));
+    broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kIconMetrics));
+
+    // 4) Broadcast a display change with current depth and resolution to nudge
+    //    windows that cache DPI-dependent icon resources.
+    HDC hdc = GetDC(nullptr);
+    int bpp = 32;
+    if (hdc) {
+      const int planes = GetDeviceCaps(hdc, PLANES);
+      const int bits = GetDeviceCaps(hdc, BITSPIXEL);
+      if (planes > 0 && bits > 0) {
+        bpp = planes * bits;
+      }
+      ReleaseDC(nullptr, hdc);
+    }
+    const LPARAM res = MAKELPARAM(GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    broadcast(WM_DISPLAYCHANGE, static_cast<WPARAM>(bpp), res);
+  }
+
   // Simple framed protocol: [u32 length][u8 type][payload...]
   enum class MsgType : uint8_t {
     Apply = 1,  // payload: JSON SingleDisplayConfiguration
     Revert = 2,  // no payload
     Reset = 3,  // clear persistence (best-effort)
+    ExportGolden = 4, // no payload; export current settings snapshot as golden restore
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -90,12 +138,11 @@ namespace {
   public:
     DisplayController() {
       // Build the Windows display device API and wrap with impersonation if running as SYSTEM.
-      std::shared_ptr<display_device::WinDisplayDeviceInterface> dd_api =
-        std::make_shared<display_device::WinDisplayDevice>(std::make_shared<display_device::WinApiLayer>());
+      m_dd = std::make_shared<display_device::WinDisplayDevice>(std::make_shared<display_device::WinApiLayer>());
 
       // Use noop persistence and audio context here; Sunshine owns lifecycle across streams.
       m_sm = std::make_unique<display_device::SettingsManager>(
-        std::move(dd_api),
+        m_dd,
         std::make_shared<display_device::NoopAudioContext>(),
         std::make_unique<display_device::PersistentState>(std::make_shared<display_device::NoopSettingsPersistence>()),
         display_device::WinWorkarounds {}
@@ -123,24 +170,290 @@ namespace {
       return m_sm->resetPersistence();
     }
 
-    // Get a coarse signature representing current topology; compares device IDs only.
-    std::vector<std::string> current_topology_signature() const {
-      std::vector<std::string> sig;
+    // Capture a full snapshot of current settings.
+    display_device::DisplaySettingsSnapshot snapshot() const {
+      display_device::DisplaySettingsSnapshot snap;
       try {
-        auto devices = m_sm->enumAvailableDevices();
-        sig.reserve(devices.size());
-        for (auto &d : devices) {
-          sig.emplace_back(d.m_device_id);
+        // Topology
+        snap.m_topology = m_dd->getCurrentTopology();
+
+        // Flatten device ids present in topology
+        std::set<std::string> device_ids;
+        for (const auto &grp : snap.m_topology) {
+          for (const auto &id : grp) {
+            device_ids.insert(id);
+          }
         }
-        std::sort(sig.begin(), sig.end());
+        // If topology is empty, fall back to all enumerated devices
+        if (device_ids.empty()) {
+          for (const auto &d : m_sm->enumAvailableDevices()) {
+            device_ids.insert(d.m_device_id);
+          }
+        }
+
+        // Modes and HDR
+        snap.m_modes = m_dd->getCurrentDisplayModes(device_ids);
+        snap.m_hdr_states = m_dd->getCurrentHdrStates(device_ids);
+
+        // Primary device
+        for (const auto &id : device_ids) {
+          if (m_dd->isPrimary(id)) {
+            snap.m_primary_device = id;
+            break;
+          }
+        }
       } catch (...) {
-        // leave empty on error
+        // Leave whatever was collected; snapshot might be incomplete
       }
-      return sig;
+      return snap;
+    }
+
+    // Compute a simple signature string from snapshot for change detection.
+    std::string signature(const display_device::DisplaySettingsSnapshot &snap) const {
+      // Build a stable textual representation
+      std::string s;
+      s.reserve(1024);
+      // Topology
+      s += "T:";
+      for (auto grp : snap.m_topology) {
+        std::sort(grp.begin(), grp.end());
+        s += "[";
+        for (const auto &id : grp) {
+          s += id;
+          s += ",";
+        }
+        s += "]";
+      }
+      // Modes
+      s += ";M:";
+      for (const auto &kv : snap.m_modes) {
+        s += kv.first;
+        s += "=";
+        s += std::to_string(kv.second.m_resolution.m_width);
+        s += "x";
+        s += std::to_string(kv.second.m_resolution.m_height);
+        s += "@";
+        s += std::to_string(kv.second.m_refresh_rate.m_numerator);
+        s += "/";
+        s += std::to_string(kv.second.m_refresh_rate.m_denominator);
+        s += ";";
+      }
+      // HDR
+      s += ";H:";
+      for (const auto &kh : snap.m_hdr_states) {
+        s += kh.first;
+        s += "=";
+        if (!kh.second.has_value()) {
+          s += "null";
+        } else {
+          s += (*kh.second == display_device::HdrState::Enabled) ? "on" : "off";
+        }
+        s += ";";
+      }
+      // Primary
+      s += ";P:";
+      s += snap.m_primary_device;
+      return s;
+    }
+
+    // Convenience: current topology signature for change detection watchers.
+    std::string current_topology_signature() const {
+      return signature(snapshot());
+    }
+
+    // Save snapshot to file as JSON-like format.
+    bool save_golden(const std::filesystem::path &path) const {
+      auto snap = snapshot();
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+      FILE *f = _wfopen(path.wstring().c_str(), L"wb");
+      if (!f) {
+        return false;
+      }
+      auto guard = std::unique_ptr<FILE, int(*)(FILE*)>(f, fclose);
+      std::string out;
+      out += "{\n  \"topology\": [";
+      for (size_t i = 0; i < snap.m_topology.size(); ++i) {
+        const auto &grp = snap.m_topology[i];
+        out += "[";
+        for (size_t j = 0; j < grp.size(); ++j) {
+          out += "\"" + grp[j] + "\"";
+          if (j + 1 < grp.size()) out += ",";
+        }
+        out += "]";
+        if (i + 1 < snap.m_topology.size()) out += ",";
+      }
+      out += "],\n  \"modes\": {";
+      size_t k = 0;
+      for (const auto &kv : snap.m_modes) {
+        out += "\n    \"" + kv.first + "\": { \"w\": " + std::to_string(kv.second.m_resolution.m_width)
+               + ", \"h\": " + std::to_string(kv.second.m_resolution.m_height)
+               + ", \"num\": " + std::to_string(kv.second.m_refresh_rate.m_numerator)
+               + ", \"den\": " + std::to_string(kv.second.m_refresh_rate.m_denominator) + " }";
+        if (++k < snap.m_modes.size()) out += ",";
+      }
+      out += "\n  },\n  \"hdr\": {";
+      k = 0;
+      for (const auto &kh : snap.m_hdr_states) {
+        out += "\n    \"" + kh.first + "\": ";
+        if (!kh.second.has_value()) out += "null";
+        else out += (*kh.second == display_device::HdrState::Enabled) ? "\"on\"" : "\"off\"";
+        if (++k < snap.m_hdr_states.size()) out += ",";
+      }
+      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\"\n}";
+      const auto written = fwrite(out.data(), 1, out.size(), f);
+      return written == out.size();
+    }
+
+    // Load snapshot from file.
+    std::optional<display_device::DisplaySettingsSnapshot> load_golden(const std::filesystem::path &path) const {
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec)) {
+        return std::nullopt;
+      }
+      FILE *f = _wfopen(path.wstring().c_str(), L"rb");
+      if (!f) return std::nullopt;
+      auto guard = std::unique_ptr<FILE, int(*)(FILE*)>(f, fclose);
+      std::string data;
+      char buf[4096];
+      while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        data.append(buf, n);
+      }
+      // Extremely lightweight parser sufficient for our own format.
+      display_device::DisplaySettingsSnapshot snap;
+      auto find_str = [&](const std::string &key) -> std::string {
+        auto p = data.find("\"" + key + "\"");
+        if (p == std::string::npos) return {};
+        p = data.find(':', p);
+        if (p == std::string::npos) return {};
+        return data.substr(p + 1);
+      };
+      // Parse primary
+      {
+        auto prim = find_str("primary");
+        auto q1 = prim.find('"');
+        auto q2 = prim.find('"', q1 == std::string::npos ? 0 : q1 + 1);
+        if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1) {
+          snap.m_primary_device = prim.substr(q1 + 1, q2 - q1 - 1);
+        }
+      }
+      // Parse topology
+      {
+        auto topo_s = find_str("topology");
+        // Expect [["id1","id2"],["id3"]]
+        snap.m_topology.clear();
+        size_t i = topo_s.find('[');
+        if (i != std::string::npos) {
+          ++i; // skip [
+          while (i < topo_s.size() && topo_s[i] != ']') {
+            while (i < topo_s.size() && topo_s[i] != '[' && topo_s[i] != ']') ++i;
+            if (i >= topo_s.size() || topo_s[i] == ']') break;
+            ++i; // skip [
+            std::vector<std::string> grp;
+            while (i < topo_s.size() && topo_s[i] != ']') {
+              while (i < topo_s.size() && topo_s[i] != '"' && topo_s[i] != ']') ++i;
+              if (i >= topo_s.size() || topo_s[i] == ']') break;
+              auto q1 = i + 1;
+              auto q2 = topo_s.find('"', q1);
+              if (q2 == std::string::npos) break;
+              grp.emplace_back(topo_s.substr(q1, q2 - q1));
+              i = q2 + 1;
+            }
+            while (i < topo_s.size() && topo_s[i] != ']') ++i;
+            if (i < topo_s.size() && topo_s[i] == ']') ++i; // skip ]
+            snap.m_topology.emplace_back(std::move(grp));
+          }
+        }
+      }
+      // Parse modes
+      {
+        auto modes_s = find_str("modes");
+        size_t i = modes_s.find('{');
+        snap.m_modes.clear();
+        if (i != std::string::npos) {
+          ++i;
+          while (i < modes_s.size() && modes_s[i] != '}') {
+            while (i < modes_s.size() && modes_s[i] != '"' && modes_s[i] != '}') ++i;
+            if (i >= modes_s.size() || modes_s[i] == '}') break;
+            auto q1 = i + 1;
+            auto q2 = modes_s.find('"', q1);
+            if (q2 == std::string::npos) break;
+            std::string id = modes_s.substr(q1, q2 - q1);
+            i = modes_s.find('{', q2);
+            if (i == std::string::npos) break;
+            auto end = modes_s.find('}', i);
+            if (end == std::string::npos) break;
+            auto obj = modes_s.substr(i, end - i);
+            auto get_num = [&](const char *key) -> unsigned int {
+              auto p = obj.find(key);
+              if (p == std::string::npos) return 0;
+              p = obj.find(':', p);
+              if (p == std::string::npos) return 0;
+              return static_cast<unsigned int>(std::stoul(obj.substr(p + 1)));
+            };
+            display_device::DisplayMode dm;
+            dm.m_resolution.m_width = get_num("\"w\"");
+            dm.m_resolution.m_height = get_num("\"h\"");
+            dm.m_refresh_rate.m_numerator = get_num("\"num\"");
+            dm.m_refresh_rate.m_denominator = get_num("\"den\"");
+            snap.m_modes.emplace(id, dm);
+            i = end + 1;
+          }
+        }
+      }
+      // Parse HDR
+      {
+        auto hdr_s = find_str("hdr");
+        size_t i = hdr_s.find('{');
+        snap.m_hdr_states.clear();
+        if (i != std::string::npos) {
+          ++i;
+          while (i < hdr_s.size() && hdr_s[i] != '}') {
+            while (i < hdr_s.size() && hdr_s[i] != '"' && hdr_s[i] != '}') ++i;
+            if (i >= hdr_s.size() || hdr_s[i] == '}') break;
+            auto q1 = i + 1;
+            auto q2 = hdr_s.find('"', q1);
+            if (q2 == std::string::npos) break;
+            std::string id = hdr_s.substr(q1, q2 - q1);
+            i = hdr_s.find(':', q2);
+            if (i == std::string::npos) break;
+            ++i;
+            while (i < hdr_s.size() && (hdr_s[i] == ' ' || hdr_s[i] == '"')) ++i;
+            std::optional<display_device::HdrState> val;
+            if (hdr_s.compare(i, 2, "on") == 0) val = display_device::HdrState::Enabled;
+            else if (hdr_s.compare(i, 3, "off") == 0) val = display_device::HdrState::Disabled;
+            else val = std::nullopt;
+            snap.m_hdr_states.emplace(id, val);
+            while (i < hdr_s.size() && hdr_s[i] != ',' && hdr_s[i] != '}') ++i;
+            if (i < hdr_s.size() && hdr_s[i] == ',') ++i;
+          }
+        }
+      }
+      return snap;
+    }
+
+    // Apply snapshot best-effort.
+    bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snap) {
+      try {
+        // Set topology first
+        (void) m_dd->setTopology(snap.m_topology);
+        // Then set modes with fallback to closest supported
+        (void) m_dd->setDisplayModesWithFallback(snap.m_modes);
+        // Then HDR
+        (void) m_dd->setHdrStates(snap.m_hdr_states);
+        // Then primary
+        if (!snap.m_primary_device.empty()) {
+          (void) m_dd->setAsPrimary(snap.m_primary_device);
+        }
+        return true;
+      } catch (...) {
+        return false;
+      }
     }
 
   private:
     std::unique_ptr<display_device::SettingsManagerInterface> m_sm;
+    std::shared_ptr<display_device::WinDisplayDeviceInterface> m_dd;
   };
 
   class TopologyWatcher {
@@ -193,6 +506,11 @@ namespace {
     std::atomic<bool> exit_after_revert {false};
     std::atomic<bool> *running_flag {nullptr};
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
+    std::filesystem::path golden_path;  // file to store golden snapshot
+    // Track last APPLY to suppress revert-on-topology within a grace window
+    std::atomic<long long> last_apply_ms {0};
+    // If a REVERT was requested directly by Sunshine, bypass grace
+    std::atomic<bool> direct_revert_bypass_grace {false};
 
     void on_topology_changed() {
       // Retry whichever hook is active
@@ -200,13 +518,34 @@ namespace {
         BOOST_LOG(info) << "Topology changed: reattempting apply";
         if (controller.apply(*last_cfg)) {
           retry_apply_on_topology.store(false, std::memory_order_release);
+          refresh_shell_after_display_change();
         }
       } else if (retry_revert_on_topology.load(std::memory_order_acquire)) {
+        // If we recently received an APPLY, defer automatic revert triggered by
+        // topology changes for a short grace period to avoid flapping when
+        // resolution/HDR/other parameters settle.
+        constexpr auto kGraceMs = 10'000LL; // 10 seconds
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto last_ms = last_apply_ms.load(std::memory_order_acquire);
+        const bool within_grace = (last_ms != 0) && (now_ms - last_ms < kGraceMs);
+        const bool bypass = direct_revert_bypass_grace.load(std::memory_order_acquire);
+
+        if (within_grace && !bypass) {
+          BOOST_LOG(info) << "Topology changed: revert deferred due to recent APPLY (within 10s grace).";
+          return;
+        }
+
         BOOST_LOG(info) << "Topology changed: reattempting revert";
         if (controller.revert()) {
           retry_revert_on_topology.store(false, std::memory_order_release);
+          refresh_shell_after_display_change();
+          if (bypass) {
+            // Clear bypass flag once revert succeeds
+            direct_revert_bypass_grace.store(false, std::memory_order_release);
+          }
           if (exit_after_revert.load(std::memory_order_acquire) && running_flag) {
-            // Successful revert after retries — request process exit
+            // Successful revert after retries - request process exit
             running_flag->store(false, std::memory_order_release);
           }
         }
@@ -241,6 +580,7 @@ namespace {
             // Best-effort; ignore result
             if (last_cfg) {
               (void) controller.apply(*last_cfg);
+              refresh_shell_after_display_change();
             }
           } catch (...) {
             // ignore
@@ -320,6 +660,7 @@ int main() {
   std::error_code ec;
   std::filesystem::create_directories(logdir, ec);
   auto logfile = (logdir / L"sunshine_display_helper.log");
+  auto goldenfile = (logdir / L"display_golden_restore.json");
   // Use append-mode logging to avoid cross-process truncation races with the cleanup watcher
   auto _log_guard = logging::init_append(2 /*info*/, logfile);
 
@@ -333,6 +674,7 @@ int main() {
 
   platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
   ServiceState state;
+  state.golden_path = goldenfile;
   state.watcher.start([&]() {
     state.on_topology_changed();
   });
@@ -359,30 +701,69 @@ int main() {
                 BOOST_LOG(error) << "Failed to parse SingleDisplayConfiguration JSON: " << err;
                 break;
               }
+              // Record time of APPLY to gate revert-on-topology changes for a short grace window
+              state.last_apply_ms.store(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count(),
+                std::memory_order_release);
               state.last_cfg = cfg;
               // Cancel any pending revert retry
               state.retry_revert_on_topology.store(false, std::memory_order_release);
               state.exit_after_revert.store(false, std::memory_order_release);
+              // Capture signature before applying
+              const auto before_sig = state.controller.signature(state.controller.snapshot());
               bool ok = state.controller.apply(cfg);
-              state.retry_apply_on_topology.store(!ok, std::memory_order_release);
+              // Give the OS a brief moment to apply changes before checking
+              std::this_thread::sleep_for(300ms);
+              const auto after_sig = state.controller.signature(state.controller.snapshot());
+              bool changed = (after_sig != before_sig);
+              if (!changed) {
+                BOOST_LOG(info) << "No change detected after APPLY; attempting golden restore fallback.";
+                // Try golden restore if available
+                auto snap = state.controller.load_golden(state.golden_path);
+                if (snap) {
+                  (void) state.controller.apply_snapshot(*snap);
+                  std::this_thread::sleep_for(300ms);
+                  const auto gsig = state.controller.signature(state.controller.snapshot());
+                  changed = (gsig != before_sig);
+                } else {
+                  BOOST_LOG(warning) << "No golden restore snapshot available.";
+                }
+              }
+              if (!changed) {
+                BOOST_LOG(warning) << "No display changes detected; will retry on topology changes.";
+              }
+              state.retry_apply_on_topology.store(!changed, std::memory_order_release);
               // Regardless of immediate result, schedule delayed re-apply to defeat
               // post-activation native mode forcing by Windows/driver.
               state.schedule_delayed_reapply();
+              // Nudge Explorer/shell so desktop/taskbar icons refresh sizes/metrics.
+              refresh_shell_after_display_change();
               break;
             }
           case MsgType::Revert:
             {
               // Cancel any pending apply retry to avoid undoing recent apply accidentally
               state.retry_apply_on_topology.store(false, std::memory_order_release);
+              // This is an explicit REVERT request from Sunshine; bypass grace window
+              state.direct_revert_bypass_grace.store(true, std::memory_order_release);
               bool ok = state.controller.revert();
               state.retry_revert_on_topology.store(!ok, std::memory_order_release);
+              // Attempt to refresh shell regardless; revert often restores primary/topology.
+              refresh_shell_after_display_change();
               if (ok) {
-                // Successful revert — helper can exit now
+                // Successful revert - helper can exit now
                 running.store(false, std::memory_order_release);
               } else {
                 // Keep trying in background and exit once we succeed
                 state.exit_after_revert.store(true, std::memory_order_release);
               }
+              break;
+            }
+          case MsgType::ExportGolden:
+            {
+              const bool saved = state.controller.save_golden(state.golden_path);
+              BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");
               break;
             }
           case MsgType::Reset:

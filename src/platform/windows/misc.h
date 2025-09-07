@@ -112,4 +112,11 @@ namespace platf {
    * @return true on success.
    */
   bool override_per_user_predefined_keys(HANDLE token);
+
+  /**
+   * @brief Check if ViGEm (Virtual Gamepad Emulation Bus) driver is installed.
+   * @param version_out Optional pointer to receive a best-effort version string if available.
+   * @return true if the ViGEmBus driver file is present, false otherwise.
+   */
+  bool is_vigem_installed(std::string *version_out = nullptr);
 }  // namespace platf

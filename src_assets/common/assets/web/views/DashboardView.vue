@@ -14,13 +14,17 @@
           </p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <RouterLink to="/settings" class="btn btn-primary">
-            <i class="fas fa-sliders" />
-            <span>Settings</span>
+          <RouterLink to="/settings">
+            <n-button type="primary" strong>
+              <i class="fas fa-sliders" />
+              <span>Settings</span>
+            </n-button>
           </RouterLink>
-          <RouterLink to="/applications" class="btn btn-secondary">
-            <i class="fas fa-th" />
-            <span>Applications</span>
+          <RouterLink to="/applications">
+            <n-button type="default" strong>
+              <i class="fas fa-th" />
+              <span>Applications</span>
+            </n-button>
           </RouterLink>
         </div>
       </div>
@@ -53,9 +57,11 @@
                   </li>
                 </ul>
                 <div>
-                  <a class="btn btn-danger" href="./troubleshooting#logs">
-                    <i class="fas fa-file-lines" /> {{ $t('index.view_logs') || 'View Logs' }}
-                  </a>
+                  <RouterLink to="/troubleshooting#logs">
+                    <n-button type="error" strong>
+                      <i class="fas fa-file-lines" /> {{ $t('index.view_logs') || 'View Logs' }}
+                    </n-button>
+                  </RouterLink>
                 </div>
               </div>
             </n-alert>
@@ -84,11 +90,7 @@
             </n-alert>
             <!-- Git compare alerts removed; date-based update checks only -->
             <n-alert
-              v-else-if="
-                (!preReleaseBuildAvailable || !notifyPreReleases) &&
-                !stableBuildAvailable &&
-                !buildVersionIsDirty
-              "
+              v-else-if="!stableBuildAvailable && !buildVersionIsDirty"
               type="success"
             >
               {{ $t('index.version_latest') }}
@@ -117,22 +119,25 @@
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <button class="btn btn-secondary btn-sm" @click="showPreNotes = !showPreNotes">
+                    <n-button type="default" strong size="small" @click="showPreNotes = !showPreNotes">
                       <i class="fas fa-bars-staggered" />
                       <span>{{
                         showPreNotes
                           ? $t('index.hide_notes') || 'Hide Notes'
                           : $t('index.view_notes') || 'Release Notes'
                       }}</span>
-                    </button>
-                    <a
-                      class="btn btn-primary btn-sm"
+                    </n-button>
+                    <n-button
+                      tag="a"
+                      size="small"
+                      type="primary"
+                      strong
                       :href="preReleaseRelease?.html_url"
                       target="_blank"
                     >
                       <i class="fas fa-download" />
                       <span>{{ $t('index.download') }}</span>
-                    </a>
+                    </n-button>
                   </div>
                 </div>
                 <div
@@ -168,25 +173,25 @@
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <button
-                      class="btn btn-secondary btn-sm"
-                      @click="showStableNotes = !showStableNotes"
-                    >
+                    <n-button type="default" strong size="small" @click="showStableNotes = !showStableNotes">
                       <i class="fas fa-bars-staggered" />
                       <span>{{
                         showStableNotes
                           ? $t('index.hide_notes') || 'Hide Notes'
                           : $t('index.view_notes') || 'Release Notes'
                       }}</span>
-                    </button>
-                    <a
-                      class="btn btn-primary btn-sm"
+                    </n-button>
+                    <n-button
+                      tag="a"
+                      size="small"
+                      type="primary"
+                      strong
                       :href="githubRelease?.html_url"
                       target="_blank"
                     >
                       <i class="fas fa-download" />
                       <span>{{ $t('index.download') }}</span>
-                    </a>
+                    </n-button>
                   </div>
                 </div>
                 <div
@@ -246,6 +251,7 @@ const loading = ref(true);
 const logs = ref('');
 const branch = ref('');
 const commit = ref('');
+const installedIsPrerelease = ref(false);
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
@@ -281,6 +287,7 @@ async function runVersionChecks() {
       // eslint-disable-next-line no-console
       console.warn('[Dashboard] latest release fetch failed', e);
     }
+    // Fetch list of releases to locate prereleases and determine installed stability
     try {
       const releases = await fetch('https://api.github.com/repos/Nonary/vibeshine/releases').then(
         (r) => r.json(),
@@ -301,6 +308,16 @@ async function runVersionChecks() {
           }
           preReleaseRelease.value = best as GitHubRelease;
         }
+        // Determine if installed tag corresponds to a prerelease on GitHub
+        const installedTag = installedVersion.value?.version || '';
+        const installedTagV = installedTag.toLowerCase().startsWith('v')
+          ? installedTag
+          : 'v' + installedTag;
+        const match = releases.find(
+          (r: any) => r && !r.draft && typeof r.tag_name === 'string' &&
+            (r.tag_name === installedTag || r.tag_name === installedTagV),
+        );
+        installedIsPrerelease.value = !!(match && match.prerelease === true);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -327,15 +344,10 @@ onMounted(async () => {
 });
 
 const installedVersionNotStable = computed(() => {
-  // treat non-main/master branches as pre-release builds automatically
+  // Consider non-main/master branches as non-stable
   if (branch.value && !['master', 'main'].includes(branch.value)) return true;
-  // treat any semantic prerelease (e.g., 0.0.0-beta.1) as not stable
-  if (installedVersion.value?.preRelease && installedVersion.value.preRelease.length > 0)
-    return true;
-  // If installed tag is ahead of the latest stable tag, assume pre-release/dev build
-  if (githubRelease.value) {
-    return installedVersion.value.isGreater(githubVersion.value);
-  }
+  // If GitHub flags the installed tag as a prerelease, consider it non-stable
+  if (installedIsPrerelease.value) return true;
   return false;
 });
 // If build is untagged (e.g., 0.0.0), display the current pre-release tag instead (when available)
@@ -353,7 +365,6 @@ const stableBuildAvailable = computed(() => {
 });
 const preReleaseBuildAvailable = computed(() => {
   if (!preReleaseRelease.value || !githubRelease.value) return false;
-  // Only show pre-release if it's enabled and the pre tag is newer than both installed and stable
   return (
     preReleaseVersion.value.isGreater(installedVersion.value) &&
     preReleaseVersion.value.isGreater(githubVersion.value)

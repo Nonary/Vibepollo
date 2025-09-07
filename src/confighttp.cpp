@@ -49,6 +49,8 @@
 #include <nlohmann/json.hpp>
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
+  #include "src/platform/windows/ipc/misc_utils.h"
+  #include "platform/windows/display_helper_integration.h"
 
   #include <windows.h>
 #endif
@@ -56,6 +58,8 @@
   #include "platform/windows/misc.h"
 
   #include <windows.h>
+  #include <KnownFolders.h>
+  #include <ShlObj.h>
 #endif
 #include "process.h"
 #include "utility.h"
@@ -125,6 +129,9 @@ namespace confighttp {
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
 
+  // Forward declaration for error helper implemented later
+  void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
+
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
     void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -141,6 +148,8 @@ namespace confighttp {
   // RTSS status endpoint (Windows-only)
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  // Display helper: export current OS state as golden restore snapshot
+  void postExportGoldenDisplay(resp_https_t response, req_https_t request);
 #endif
 
   enum class op_e {
@@ -319,6 +328,30 @@ namespace confighttp {
       send_response(response, tree);
     }
   }
+
+#ifdef _WIN32
+  /**
+   * @brief Health check for ViGEm (Virtual Gamepad) installation on Windows.
+   * @api_examples{/api/health/vigem| GET| {"installed":true,"version":"<hint>"}}
+   */
+  void getVigemHealth(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      std::string version;
+      bool installed = platf::is_vigem_installed(&version);
+      nlohmann::json out;
+      out["installed"] = installed;
+      if (!version.empty()) {
+        out["version"] = version;
+      }
+      send_response(response, out);
+    } catch (...) {
+      bad_request(response, request, "Failed to evaluate ViGEm health");
+    }
+  }
+#endif
 
   /**
    * @brief Send a 404 Not Found response.
@@ -1531,6 +1564,129 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+#ifdef _WIN32
+  /**
+   * @brief Export the current Windows display settings as a golden restore snapshot.
+   * @api_examples{/api/display/export_golden| POST| {"status":true}}
+   */
+  void postExportGoldenDisplay(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    try {
+      const bool ok = display_helper_integration::export_golden_restore();
+      out["status"] = ok;
+    } catch (...) {
+      out["status"] = false;
+    }
+    send_response(response, out);
+  }
+#endif
+
+#ifdef _WIN32
+  // --- Golden snapshot helpers (Windows-only) ---
+  static bool file_exists_nofail(const std::filesystem::path &p) {
+    try {
+      std::error_code ec;
+      return std::filesystem::exists(p, ec);
+    } catch (...) {
+      return false;
+    }
+  }
+
+  // Return candidate paths where the helper writes the golden snapshot.
+  // We probe both the active user's Roaming/Local AppData and the current
+  // process's CSIDL paths, mirroring the log bundle collection logic.
+  static std::vector<std::filesystem::path> golden_snapshot_candidates() {
+    std::vector<std::filesystem::path> out;
+    auto add_if = [&](const std::filesystem::path &base) {
+      if (!base.empty()) {
+        out.emplace_back(base / L"Sunshine" / L"display_golden_restore.json");
+      }
+    };
+
+    try {
+      // Prefer the active user's known folders (impersonated) when available
+      try {
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+        auto add_known = [&](REFKNOWNFOLDERID id) {
+          PWSTR baseW = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
+            add_if(std::filesystem::path(baseW));
+            CoTaskMemFree(baseW);
+          }
+        };
+        add_known(FOLDERID_RoamingAppData);
+        add_known(FOLDERID_LocalAppData);
+      } catch (...) {
+        // ignore
+      }
+
+      // Also probe the current process's CSIDL APPDATA and LOCAL_APPDATA
+      auto add_csidl = [&](int csidl) {
+        wchar_t baseW[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
+          add_if(std::filesystem::path(baseW));
+        }
+      };
+      add_csidl(CSIDL_APPDATA);
+      add_csidl(CSIDL_LOCAL_APPDATA);
+    } catch (...) {
+      // best-effort
+    }
+    return out;
+  }
+
+  void getGoldenStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    bool exists = false;
+    try {
+      for (const auto &p : golden_snapshot_candidates()) {
+        if (file_exists_nofail(p)) {
+          exists = true;
+          break;
+        }
+      }
+    } catch (...) {
+    }
+    out["exists"] = exists;
+    send_response(response, out);
+  }
+
+  void deleteGolden(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    bool any_deleted = false;
+    try {
+      for (const auto &p : golden_snapshot_candidates()) {
+        if (file_exists_nofail(p)) {
+          std::error_code ec;
+          std::filesystem::remove(p, ec);
+          if (!ec) {
+            any_deleted = true;
+          }
+        }
+      }
+    } catch (...) {
+    }
+    out["deleted"] = any_deleted;
+    send_response(response, out);
+  }
+#endif
+
   /**
    * @brief Restart Sunshine.
    * @param response The HTTP response object.
@@ -1690,8 +1846,16 @@ namespace confighttp {
     server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
+  #if defined(_WIN32)
+    server.resource["^/api/display/export_golden$"]["POST"] = postExportGoldenDisplay;
+    server.resource["^/api/display/golden_status$"]["GET"] = getGoldenStatus;
+    server.resource["^/api/display/golden$"]["DELETE"] = deleteGolden;
+  #endif
     server.resource["^/api/password$"]["POST"] = savePassword;
     server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
+#ifdef _WIN32
+    server.resource["^/api/health/vigem$"]["GET"] = getVigemHealth;
+#endif
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;

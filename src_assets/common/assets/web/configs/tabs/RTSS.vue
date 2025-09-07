@@ -73,7 +73,7 @@ async function refreshStatus() {
             <span v-if="status && !limiterEnabled" class="opacity-70">(limiter disabled in settings)</span>
           </div>
         </div>
-        <n-button size="tiny" tertiary @click="refreshStatus">
+        <n-button size="tiny" type="default" strong @click="refreshStatus">
           <i class="fas fa-sync" />
           <span class="ml-1">Refresh</span>
         </n-button>

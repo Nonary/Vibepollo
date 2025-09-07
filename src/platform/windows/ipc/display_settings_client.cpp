@@ -22,6 +22,7 @@ namespace platf::display_helper_client {
     Apply = 1,  ///< Apply display settings from JSON payload.
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
+    ExportGolden = 4, ///< Export current OS settings as golden snapshot
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
@@ -96,6 +97,25 @@ namespace platf::display_helper_client {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::Revert, payload);
+  }
+
+  bool send_export_golden() {
+    BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN request queued";
+    if (!ensure_connected_once()) {
+      BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_frame(*pipe, MsgType::ExportGolden, payload)) {
+      return true;
+    }
+    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
+    pipe.reset();
+    if (!ensure_connected_once()) {
+      return false;
+    }
+    return pipe && send_frame(*pipe, MsgType::ExportGolden, payload);
   }
 }  // namespace platf::display_helper_client
 

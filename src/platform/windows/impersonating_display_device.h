@@ -89,6 +89,13 @@ namespace display_device {
                        /*mutating=*/true);
     }
 
+    [[nodiscard]] bool setDisplayModesWithFallback(const DeviceDisplayModeMap &modes) override {
+      return run<bool>([&] {
+        return m_inner->setDisplayModesWithFallback(modes);
+      },
+                       /*mutating=*/true);
+    }
+
     [[nodiscard]] bool isPrimary(const std::string &device_id) const override {
       return run<bool>([&] {
         return m_inner->isPrimary(device_id);

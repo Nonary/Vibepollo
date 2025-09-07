@@ -393,7 +393,6 @@ namespace update {
       const std::string installed_version_tag = PROJECT_VERSION;
       const std::string latest_stable_tag = state.latest_release.version;
       const std::string latest_pre_tag = state.latest_prerelease.version;
-
       bool stable_available = !latest_stable_tag.empty() && (cmp_semver(installed_version_tag, latest_stable_tag) < 0);
       bool prerelease_available = config::sunshine.notify_pre_releases &&
                                   !latest_pre_tag.empty() &&

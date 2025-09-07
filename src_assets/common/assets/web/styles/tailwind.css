@@ -4,118 +4,13 @@
 
 /* Theme CSS variables (semantic tokens) */
 @layer base {
-  :root {
-    /* Sunshine Light — orange-focused with strong contrast */
-    --color-primary: 194 65 12; /* #C2410C burnt orange */
-    --color-secondary: 120 53 15; /* #78350F deep umber */
-    --color-success: 76 175 80; /* #4CAF50 */
-    --color-warning: 245 124 0; /* #F57C00 (needs black text) */
-    --color-danger: 220 38 38; /* #DC2626 */
-    --color-info: 2 136 209; /* #0288D1 */
-
-    /* Warm paper background + surface */
-    --color-light: 255 250 244; /* #FFFAF4 */
-    --color-dark: 33 33 33; /* #212121 */
-    --color-surface: 255 241 230; /* #FFF1E6 */
-
-    /* Accent tuned darker so white text works */
-    --color-accent: 204 76 0; /* #CC4C00 */
-
-    /* On-colors */
-    --color-on-primary: 255 255 255;
-    --color-on-secondary: 255 255 255;
-    --color-on-accent: 255 255 255;
-    --color-on-light: 33 33 33;
-    --color-on-dark: 255 255 255;
-
-    /* Brand (e.g., nav/headings) */
-    --color-brand: 120 53 15; /* #78350F */
-  }
-
-  .dark {
-    /* Dark (former lunar) */
-    --color-primary: 77 163 255;
-    --color-secondary: 18 34 77;
-    /* Keep structural secondary */
-    --color-success: 129 199 132;
-    --color-warning: 255 183 77;
-    /* Danger: distinct rosy hue in dark mode for clear contrast and unique character */
-    --color-danger: 244 63 94; /* ~Tailwind rose-500 */
-    --color-info: 140 203 255;
-    --color-light: 245 249 255;
-    --color-dark: 5 11 30;
-    --color-surface: 11 20 50;
-    --color-accent: 140 203 255;
-    --color-on-primary: 5 11 30;
-    --color-on-secondary: 245 249 255;
-    --color-on-accent: 5 11 30;
-    --color-on-light: 5 11 30;
-    --color-on-dark: 245 249 255;
-    --color-brand: 245 249 255;
-    /* brand token switches for readability */
-  }
-
   body {
     @apply text-dark dark:text-light bg-light dark:bg-dark antialiased;
   }
 }
 
-/* Legacy class shims (Bootstrap -> Tailwind) for incremental migration */
+/* Naive UI button overrides to ensure solid variants across the app */
 @layer components {
-  /*
-   * Unified Button System
-   * - Solid buttons only. No outlines/ghost by default.
-   * - Variants: primary, secondary, tertiary (alias of secondary), success, warning, danger, info.
-   * - Sizes: .btn-sm, .btn-md (default), .btn-lg
-   */
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium px-3 py-1.5
-      transition-colors shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2
-      disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-
-  .btn-primary {
-    @apply bg-primary text-onPrimary hover:bg-primary/90 focus-visible:ring-primary/60;
-  }
-  .btn-secondary {
-    @apply bg-secondary text-onSecondary hover:bg-secondary/90 focus-visible:ring-secondary/60;
-  }
-  .btn-tertiary {
-    @apply btn-secondary;
-  }
-  .btn-success {
-    @apply bg-success text-onLight hover:bg-success/90 focus-visible:ring-success/60;
-  }
-  .btn-warning {
-    @apply bg-warning text-onLight hover:bg-warning/90 focus-visible:ring-warning/60;
-  }
-  .btn-danger {
-    @apply bg-danger text-onDark hover:bg-danger/90 focus-visible:ring-danger/60;
-  }
-  .btn-info {
-    @apply bg-info text-onLight hover:bg-info/90 focus-visible:ring-info/60;
-  }
-
-  .btn-sm {
-    @apply text-xs px-2.5 py-1 rounded-md;
-  }
-  .btn-lg {
-    @apply text-base px-4 py-2 rounded-lg;
-  }
-
-  /* Align icons inside any button */
-  .btn > .fa,
-  .btn > .fas,
-  .btn > .far,
-  .btn > .fal,
-  .btn > .fab,
-  .btn > .icon {
-    line-height: 1;
-  }
-
-  /*
-   * Naive UI button overrides to ensure solid variants across the app
-   */
   :root .n-button {
     @apply shadow-sm;
   }
@@ -123,7 +18,17 @@
     @apply inline-flex items-center gap-2;
   }
   :root .n-button--type-default {
+    /* Neutral button surfaces align with our Tailwind tokens */
     @apply bg-dark/10 dark:bg-light/10 text-dark dark:text-light hover:bg-dark/15 dark:hover:bg-light/15;
+  }
+  /* Link-like button variant to match navbar links */
+  :root .n-button.n-button--linkish {
+    @apply bg-transparent text-brand hover:bg-primary/10 shadow-none border-0 px-3 py-1 rounded-md;
+  }
+
+  /* Preserve scrollbar gutter to avoid content overlap in scrollable dropdowns */
+  .scroll-stable {
+    scrollbar-gutter: stable;
   }
   :root .n-button--type-primary {
     @apply bg-primary text-onPrimary hover:bg-primary/90;
@@ -210,42 +115,8 @@
     @apply flex items-center gap-3 mb-4;
   }
 
-  .btn {
-    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-primary text-onPrimary shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90;
-  }
-
-  .btn-primary {
-    @apply bg-primary text-onPrimary hover:bg-primary/90;
-  }
-
-  .btn-secondary {
-    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
-  }
-
-  .btn-success {
-    @apply bg-success text-onLight hover:bg-success/90;
-  }
-
-  .btn-danger {
-    @apply bg-danger text-onDark hover:bg-danger/90;
-  }
-
-  .btn-warning {
-    @apply bg-warning text-onLight hover:bg-warning/90; /* black text for warning */
-  }
-
-  .btn-info {
-    @apply bg-info text-onLight hover:bg-info/90;
-  }
-
-  .btn.ghost,
-  .btn-ghost {
-    @apply bg-transparent shadow-none text-brand hover:bg-brand/10;
-  }
-
-  .btn.apply {
-    @apply btn-primary;
-  }
+  
+  
 
   .form-control {
     @apply w-full px-3 py-2 text-sm rounded-md 

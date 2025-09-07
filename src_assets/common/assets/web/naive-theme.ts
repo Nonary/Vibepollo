@@ -38,14 +38,51 @@ function cssVarRgbComma(name: string, fallback: string): string {
 
 export function useNaiveThemeOverrides() {
   const overrides = ref<GlobalThemeOverrides>({});
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const parse = (rgb: string): [number, number, number] => {
+    const m = rgb.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+    const mm = rgb.match(/(\d+)\s+(\d+)\s+(\d+)/);
+    if (mm) return [Number(mm[1]), Number(mm[2]), Number(mm[3])];
+    return [0, 0, 0];
+  };
+  const toCss = (r: number, g: number, b: number) => `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
+  const lighten = (rgb: string, amt: number) => {
+    const [r, g, b] = parse(rgb);
+    return toCss(r + (255 - r) * amt, g + (255 - g) * amt, b + (255 - b) * amt);
+  };
+  const darken = (rgb: string, amt: number) => {
+    const [r, g, b] = parse(rgb);
+    return toCss(r * (1 - amt), g * (1 - amt), b * (1 - amt));
+  };
   const compute = () => {
+    const primary = cssVarRgb('--color-primary', '77, 163, 255');
+    const info = cssVarRgb('--color-info', '2, 136, 209');
+    const success = cssVarRgb('--color-success', '76, 175, 80');
+    const warning = cssVarRgb('--color-warning', '245, 124, 0');
+    const danger = cssVarRgb('--color-danger', '220, 38, 38');
     overrides.value = {
       common: {
-        primaryColor: cssVarRgb('--color-primary', '#18a058'),
-        infoColor: cssVarRgb('--color-info', '#2080f0'),
-        successColor: cssVarRgb('--color-success', '#18a058'),
-        warningColor: cssVarRgb('--color-warning', '#f0a020'),
-        errorColor: cssVarRgb('--color-danger', '#d03050'),
+        primaryColor: primary,
+        primaryColorHover: darken(primary, 0.08),
+        primaryColorPressed: darken(primary, 0.16),
+        primaryColorSuppl: lighten(primary, 0.12),
+        infoColor: info,
+        infoColorHover: darken(info, 0.08),
+        infoColorPressed: darken(info, 0.16),
+        infoColorSuppl: lighten(info, 0.12),
+        successColor: success,
+        successColorHover: darken(success, 0.08),
+        successColorPressed: darken(success, 0.16),
+        successColorSuppl: lighten(success, 0.12),
+        warningColor: warning,
+        warningColorHover: darken(warning, 0.08),
+        warningColorPressed: darken(warning, 0.16),
+        warningColorSuppl: lighten(warning, 0.12),
+        errorColor: danger,
+        errorColorHover: darken(danger, 0.08),
+        errorColorPressed: darken(danger, 0.16),
+        errorColorSuppl: lighten(danger, 0.12),
 
         baseColor: cssVarRgb('--color-light', '#ffffff'),
         bodyColor: cssVarRgb('--color-light', '#ffffff'),

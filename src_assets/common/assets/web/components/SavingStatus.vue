@@ -1,9 +1,10 @@
 <template>
   <n-button
     v-if="visible"
-    tertiary
+    type="default"
+    strong
     size="small"
-    class="flex items-center gap-2 text-xs select-none"
+    class="flex items-center gap-2 text-xs select-none n-button--linkish"
     :class="{ 'cursor-pointer': canSave }"
     :title="tooltip"
     @click="onClick"
@@ -88,7 +89,7 @@ const iconClass = computed(() => {
       return base + ' fa-circle-exclamation text-warning';
     case 'saved':
       return restartRequired.value
-        ? base + ' fa-power-off text-primary'
+        ? base + ' fa-power-off text-secondary'
         : base + ' fa-check text-success';
     case 'error':
       return base + ' fa-triangle-exclamation text-danger';

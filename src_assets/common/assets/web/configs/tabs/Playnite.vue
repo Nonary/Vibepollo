@@ -39,14 +39,15 @@
           <n-button
             v-if="canLaunch"
             size="small"
-            tertiary
+            type="primary"
+            strong
             :loading="launching"
             @click="launchPlaynite"
           >
             <i class="fas fa-rocket" />
             <span class="ml-2">{{ $t('playnite.launch_button') || 'Launch Playnite' }}</span>
           </n-button>
-          <n-button size="small" secondary @click="refreshStatus">
+          <n-button size="small" type="primary" strong @click="refreshStatus">
             <i class="fas fa-sync" />
             <span class="ml-2">{{ $t('playnite.refresh_status') || 'Refresh Status' }}</span>
           </n-button>
@@ -59,7 +60,7 @@
             class="text-xs whitespace-nowrap overflow-x-auto px-1 rounded bg-black/5 dark:bg-white/5"
             >{{ status.extensions_dir }}</code
           >
-          <n-button size="tiny" tertiary @click="copyExtensionsPath">
+          <n-button size="tiny" type="default" strong @click="copyExtensionsPath">
             <i class="fas fa-copy" />
             <span class="ml-1">{{ $t('playnite.copy_path') || 'Copy' }}</span>
           </n-button>
@@ -99,7 +100,8 @@
             <n-button
               v-if="status.extensions_dir && status.installed"
               size="small"
-              tertiary
+              type="error"
+              strong
               :loading="uninstalling"
               @click="openUninstallConfirm"
             >
@@ -123,7 +125,7 @@
           <h4 class="text-sm font-semibold">
             {{ $t('playnite.section_auto_sync') || 'Auto-sync' }}
           </h4>
-          <n-button size="tiny" tertiary @click="resetAutoSyncSection">
+          <n-button size="tiny" type="default" strong @click="resetAutoSyncSection">
             <i class="fas fa-undo" />
             <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
           </n-button>
@@ -278,7 +280,7 @@
           <h4 class="text-sm font-semibold">
             {{ $t('playnite.section_launch_behavior') || 'Launch Behavior' }}
           </h4>
-          <n-button size="tiny" tertiary @click="resetLaunchSection">
+          <n-button size="tiny" type="default" strong @click="resetLaunchSection">
             <i class="fas fa-undo" />
             <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
           </n-button>
@@ -345,7 +347,7 @@
           <h4 class="text-sm font-semibold">
             {{ $t('playnite.section_exclusions_filters') || 'Exclusions & Filters' }}
           </h4>
-          <n-button size="tiny" tertiary @click="resetFiltersSection">
+          <n-button size="tiny" type="default" strong @click="resetFiltersSection">
             <i class="fas fa-undo" />
             <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
           </n-button>
@@ -379,7 +381,8 @@
                     <div class="flex items-center gap-2">
                       <n-button
                         size="small"
-                        tertiary
+                        type="default"
+                        strong
                         @click="openAddExclusions"
                         :disabled="disablePlayniteSelection"
                       >
@@ -388,7 +391,8 @@
                       </n-button>
                       <n-button
                         size="small"
-                        tertiary
+                        type="default"
+                        strong
                         @click="clearAllExclusions"
                         :disabled="!excludedIds.length"
                       >
@@ -464,7 +468,7 @@
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
-          <n-button tertiary @click="showInstallConfirm = false">{{
+          <n-button type="default" strong @click="showInstallConfirm = false">{{
             $t('_common.cancel')
           }}</n-button>
           <n-button type="primary" :loading="installing" @click="confirmInstall">{{
@@ -491,10 +495,10 @@
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
-          <n-button tertiary @click="showUninstallConfirm = false">{{
+          <n-button type="default" strong @click="showUninstallConfirm = false">{{
             $t('_common.cancel')
           }}</n-button>
-          <n-button secondary :loading="uninstalling" @click="confirmUninstall">{{
+          <n-button type="error" strong :loading="uninstalling" @click="confirmUninstall">{{
             $t('_common.continue') || 'Continue'
           }}</n-button>
         </div>
@@ -536,7 +540,7 @@
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
-          <n-button tertiary @click="showAddModal = false">{{ $t('_common.cancel') }}</n-button>
+          <n-button type="default" strong @click="showAddModal = false">{{ $t('_common.cancel') }}</n-button>
           <n-button type="primary" :disabled="!addSelection.length" @click="confirmAddExclusions">{{
             $t('_common.add') || 'Add'
           }}</n-button>
@@ -1107,7 +1111,7 @@ const exclusionsColumns = computed(() => [
       h('div', { class: 'flex items-center gap-2 justify-end' }, [
         h(
           NButton as any,
-          { type: 'error', size: 'tiny', tertiary: true, onClick: () => removeExclusion(row.id) },
+          { type: 'error', size: 'tiny', strong: true, onClick: () => removeExclusion(row.id) },
           {
             default: () => [
               h('i', { class: 'fas fa-trash' }),

@@ -27,51 +27,54 @@
           <transition name="fade">
             <div
               v-if="searchOpen"
-              class="absolute mt-2 w-full z-20 bg-light/95 dark:bg-surface/95 backdrop-blur rounded-md shadow-lg border border-dark/10 dark:border-light/10 max-h-80 overflow-auto"
+              class="absolute mt-2 w-full max-w-full z-30 bg-light/95 dark:bg-surface/95 backdrop-blur rounded-md shadow-lg border border-dark/10 dark:border-light/10 max-h-80 overflow-auto overflow-x-hidden overscroll-contain scroll-stable pr-2 py-1"
             >
               <div v-if="searchResults.length === 0" class="px-3 py-2 text-[12px] opacity-60">
                 No results
               </div>
-              <button
+              <n-button
                 v-for="(r, idx) in searchResults"
                 :key="idx"
-                class="w-full text-left px-3 py-2 hover:bg-dark/10 dark:hover:bg-light/10 text-[13px] flex items-start gap-2"
+                type="default"
+                strong
+                block
+                class="justify-start !px-3 !py-2.5 !h-auto text-left leading-5 text-[13px] whitespace-normal"
                 @click="goTo(r)"
               >
-                <span class="shrink-0 mt-0.5">
-                  <i class="fas fa-compass text-primary text-[11px]" />
-                </span>
-                <span class="min-w-0">
-                  <span class="block font-medium truncate">{{ r.label }}</span>
-                  <span class="block text-[11px] opacity-60 truncate">{{ r.path }}</span>
-                  <span
-                    v-if="r.desc"
-                    class="block text-[11px] opacity-70 line-clamp-2 break-words"
-                    >{{ r.desc }}</span
-                  >
-                  <span
-                    v-if="r.options && r.options.length"
-                    class="block text-[11px] opacity-60 mt-1 break-words"
-                    >Options:
-                    {{
-                      r.options
-                        .map((o) =>
-                          o.text && o.value ? `${o.text} (${o.value})` : o.text || o.value,
-                        )
-                        .filter(Boolean)
-                        .join(', ')
-                    }}</span
-                  >
-                </span>
-              </button>
+                <div class="w-full max-w-full text-left flex items-start gap-2 py-0.5">
+                  <span class="shrink-0 mt-0.5">
+                    <i class="fas fa-compass text-primary text-[11px]" />
+                  </span>
+                  <span class="min-w-0">
+                    <span class="block font-medium break-words whitespace-normal">{{ r.label }}</span>
+                    <span class="block text-[11px] opacity-60 leading-5 break-words whitespace-normal">{{ r.path }}</span>
+                    <span
+                      v-if="r.desc"
+                      class="block text-[11px] opacity-70 break-words whitespace-normal leading-5"
+                      >{{ r.desc }}</span
+                    >
+                    <span
+                      v-if="r.options && r.options.length"
+                      class="block text-[11px] opacity-60 mt-1 break-words whitespace-normal leading-5"
+                      >Options:
+                      {{
+                        r.options
+                          .map((o) =>
+                            o.text && o.value ? `${o.text} (${o.value})` : o.text || o.value,
+                          )
+                          .filter(Boolean)
+                          .join(', ')
+                      }}</span
+                    >
+                  </span>
+                </div>
+              </n-button>
             </div>
           </transition>
         </div>
 
         <div v-if="showSave" class="flex items-center gap-3">
-          <n-button v-if="saveState === 'saved' && !restarted" tertiary @click="apply"
-            >Apply</n-button
-          >
+          <n-button v-if="saveState === 'saved' && !restarted" type="primary" strong @click="apply">Apply</n-button>
         </div>
         <div v-else class="text-[11px] font-medium min-h-[1rem] flex items-center gap-2">
           <transition name="fade"><span v-if="saveState === 'saving'">Saving…</span></transition>
@@ -90,19 +93,23 @@
         :ref="(el) => setSectionRef(tab.id, el)"
         class="scroll-mt-24"
       >
-        <button
-          type="button"
-          class="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-dark/5 dark:bg-light/10 hover:bg-dark/10 dark:hover:bg-light/15 transition text-left"
+        <n-button
+          block
+          type="default"
+          strong
+          class="justify-between !px-3 !py-2 bg-light/80 dark:bg-surface/70 backdrop-blur border border-dark/10 dark:border-light/10 rounded-xl"
           @click="toggle(tab.id)"
         >
-          <span class="font-semibold">{{ tab.name }}</span>
-          <i
-            :class="[
-              'fas text-xs transition-transform',
-              isOpen(tab.id) ? 'fa-chevron-up' : 'fa-chevron-down',
-            ]"
-          />
-        </button>
+          <div class="w-full flex items-center justify-between">
+            <span class="font-semibold">{{ tab.name }}</span>
+            <i
+              :class="[
+                'fas text-xs transition-transform',
+                isOpen(tab.id) ? 'fa-chevron-up' : 'fa-chevron-down',
+              ]"
+            />
+          </div>
+        </n-button>
         <transition name="fade">
           <div
             v-show="isOpen(tab.id)"
@@ -118,7 +125,7 @@
       <div v-if="isLoading">Loading...</div>
       <div v-else-if="isError" class="text-danger space-y-2">
         <div>Failed to load configuration.</div>
-        <n-button :disabled="isLoading" @click="store.reloadConfig?.()">Retry</n-button>
+        <n-button type="primary" strong :disabled="isLoading" @click="store.reloadConfig?.()">Retry</n-button>
       </div>
       <div v-else class="opacity-60">No configuration loaded.</div>
     </div>
@@ -143,7 +150,7 @@
         >
           <div class="flex items-center gap-3">
             <span class="text-[11px] font-medium">Unsaved changes</span>
-            <n-button :disabled="saveState === 'saving'" @click="save">Save</n-button>
+            <n-button type="primary" strong :disabled="saveState === 'saving'" @click="save">Save</n-button>
           </div>
           <div v-if="saveState === 'error'" class="mt-1 text-[11px] text-danger leading-snug">
             {{ store.validationError || 'Save failed. Check fields for errors.' }}
@@ -562,11 +569,11 @@ function onSearchBlur() {
 
 /* Make highlight global so it applies to controls inside child tab components */
 :global(.flash-highlight) {
-  /* Use theme tokens so it works in light and dark */
+  /* Stronger contrast in light mode using secondary token */
   box-shadow:
-    0 0 0 3px rgb(var(--color-primary) / 0.45),
-    0 0 0 6px rgb(var(--color-primary) / 0.2);
-  outline: 2px solid rgb(var(--color-primary) / 0.6);
+    0 0 0 3px rgb(var(--color-secondary) / 0.55),
+    0 0 0 6px rgb(var(--color-secondary) / 0.28);
+  outline: 2px solid rgb(var(--color-secondary) / 0.65);
   outline-offset: 2px;
   border-radius: 6px;
   transition:
@@ -576,24 +583,32 @@ function onSearchBlur() {
   will-change: box-shadow, outline-color;
 }
 
+.dark :global(.flash-highlight) {
+  /* In dark mode, keep a softer ring to avoid glare */
+  box-shadow:
+    0 0 0 3px rgb(var(--color-primary) / 0.45),
+    0 0 0 6px rgb(var(--color-primary) / 0.18);
+  outline-color: rgb(var(--color-primary) / 0.5);
+}
+
 @keyframes flash-ring-fade {
   0% {
     box-shadow:
-      0 0 0 3px rgb(var(--color-primary) / 0.45),
-      0 0 0 6px rgb(var(--color-primary) / 0.2);
-    outline-color: rgb(var(--color-primary) / 0.6);
+      0 0 0 3px rgb(var(--color-secondary) / 0.55),
+      0 0 0 6px rgb(var(--color-secondary) / 0.28);
+    outline-color: rgb(var(--color-secondary) / 0.65);
   }
   60% {
     box-shadow:
-      0 0 0 3px rgb(var(--color-primary) / 0.25),
-      0 0 0 6px rgb(var(--color-primary) / 0.12);
-    outline-color: rgb(var(--color-primary) / 0.35);
+      0 0 0 3px rgb(var(--color-secondary) / 0.35),
+      0 0 0 6px rgb(var(--color-secondary) / 0.16);
+    outline-color: rgb(var(--color-secondary) / 0.45);
   }
   100% {
     box-shadow:
-      0 0 0 3px rgb(var(--color-primary) / 0),
-      0 0 0 6px rgb(var(--color-primary) / 0);
-    outline-color: rgb(var(--color-primary) / 0);
+      0 0 0 3px rgb(var(--color-secondary) / 0),
+      0 0 0 6px rgb(var(--color-secondary) / 0);
+    outline-color: rgb(var(--color-secondary) / 0);
   }
 }
 </style>

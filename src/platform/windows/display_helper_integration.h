@@ -15,4 +15,7 @@ namespace display_helper_integration {
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();
+
+  // Request the helper to export current OS settings as golden restore snapshot.
+  bool export_golden_restore();
 }  // namespace display_helper_integration

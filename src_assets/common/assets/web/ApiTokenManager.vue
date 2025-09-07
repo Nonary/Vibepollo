@@ -79,7 +79,7 @@
                   >
                 </span>
               </div>
-              <n-button tertiary size="small" title="Remove" @click="removeScope(idx)">
+              <n-button type="error" strong size="small" title="Remove" @click="removeScope(idx)">
                 <i class="fas fa-times icon"></i>
               </n-button>
             </div>
@@ -148,8 +148,8 @@
         </h2>
         <n-button
           class="ml-auto"
-          type="default"
-          tertiary
+          type="primary"
+          strong
           size="small"
           :loading="tokensLoading"
           aria-label="Refresh tokens"
@@ -312,8 +312,8 @@
         </div>
         <template #footer>
           <div class="w-full flex items-center justify-center gap-3">
-            <n-button tertiary @click="showRevoke = false">{{ $t('cancel') }}</n-button>
-            <n-button secondary @click="confirmRevoke">{{ $t('auth.revoke') }}</n-button>
+            <n-button type="default" strong @click="showRevoke = false">{{ $t('cancel') }}</n-button>
+            <n-button type="error" strong @click="confirmRevoke">{{ $t('auth.revoke') }}</n-button>
           </div>
         </template>
       </n-card>

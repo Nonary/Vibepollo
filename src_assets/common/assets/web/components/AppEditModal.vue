@@ -96,7 +96,7 @@
                     @focus="loadPlayniteGames"
                     @update:value="onPickPlaynite"
                   />
-                  <n-button v-if="lockPlaynite" size="small" tertiary @click="unlockPlaynite">
+                  <n-button v-if="lockPlaynite" size="small" type="default" strong @click="unlockPlaynite">
                     Change
                   </n-button>
                 </div>
@@ -146,7 +146,7 @@
                   class="font-mono flex-1"
                   placeholder="/path/to/image.png"
                 />
-                <n-button tertiary :disabled="!form.name" @click="openCoverFinder">
+                <n-button type="default" strong :disabled="!form.name" @click="openCoverFinder">
                   <i class="fas fa-image" /> Find Cover
                 </n-button>
               </div>
@@ -197,7 +197,7 @@
                     <n-checkbox v-if="isWindows" v-model:checked="p.elevated" size="small">
                       {{ $t('_common.elevated') }}
                     </n-checkbox>
-                    <n-button size="small" secondary @click="form.prepCmd.splice(i, 1)">
+                    <n-button size="small" type="error" strong @click="form.prepCmd.splice(i, 1)">
                       <i class="fas fa-trash" />
                     </n-button>
                   </div>
@@ -241,7 +241,7 @@
             <div v-else class="space-y-2">
               <div v-for="(d, i) in form.detached" :key="i" class="flex gap-2 items-center">
                 <n-input v-model:value="form.detached[i]" class="font-mono flex-1" />
-                <n-button secondary @click="form.detached.splice(i, 1)">
+                <n-button type="error" strong @click="form.detached.splice(i, 1)">
                   <i class="fas fa-times" />
                 </n-button>
               </div>
@@ -258,7 +258,7 @@
         <div
           class="flex items-center justify-end w-full gap-2 border-t border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur px-2 py-2"
         >
-          <n-button tertiary @click="close">{{ $t('_common.cancel') }}</n-button>
+          <n-button type="default" strong @click="close">{{ $t('_common.cancel') }}</n-button>
           <n-button
             v-if="form.index !== -1"
             type="error"
@@ -283,7 +283,7 @@
           <template #header>
             <div class="flex items-center justify-between w-full">
               <span class="font-semibold">Covers Found</span>
-              <n-button quaternary size="small" @click="showCoverModal = false"> Close </n-button>
+              <n-button type="default" strong size="small" @click="showCoverModal = false"> Close </n-button>
             </div>
           </template>
           <div class="min-h-[160px]">
@@ -360,10 +360,10 @@
           </div>
           <template #footer>
             <div class="w-full flex items-center justify-center gap-3">
-              <n-button tertiary @click="showDeleteConfirm = false">{{
+              <n-button type="default" strong @click="showDeleteConfirm = false">{{
                 $t('_common.cancel')
               }}</n-button>
-              <n-button secondary @click="del">{{ $t('apps.delete') }}</n-button>
+              <n-button type="error" strong @click="del">{{ $t('apps.delete') }}</n-button>
             </div>
           </template>
         </n-card>

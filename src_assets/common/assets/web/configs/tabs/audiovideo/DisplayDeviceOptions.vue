@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { NSelect, NInput, NInputNumber, NButton } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
+import { http } from '@/http';
 
 // Use centralized store for config and platform
 const store = useConfigStore();
@@ -115,6 +116,57 @@ function removeRemappingEntry(idx: number): void {
 
 // ----- i18n helpers -----
 const { t } = useI18n();
+
+// ----- Golden Restore (Windows) -----
+const goldenBusy = ref(false);
+const exportStatus = ref<null | boolean>(null);
+const deleteStatus = ref<null | boolean>(null);
+const goldenExists = ref<null | boolean>(null);
+
+async function loadGoldenStatus(): Promise<void> {
+  try {
+    const r = await http.get('/api/display/golden_status', { validateStatus: () => true });
+    goldenExists.value = r?.data?.exists === true;
+  } catch {
+    goldenExists.value = false;
+  }
+}
+
+const createOrRecreateLabel = computed(() =>
+  goldenExists.value ? t('troubleshooting.dd_golden_recreate') : t('troubleshooting.dd_golden_create'),
+);
+
+async function exportGolden(): Promise<void> {
+  goldenBusy.value = true;
+  exportStatus.value = null;
+  try {
+    const r = await http.post('/api/display/export_golden', {}, { validateStatus: () => true });
+    exportStatus.value = r?.data?.status === true;
+    await loadGoldenStatus();
+  } catch {
+    exportStatus.value = false;
+  } finally {
+    setTimeout(() => (goldenBusy.value = false), 600);
+  }
+}
+
+async function deleteGolden(): Promise<void> {
+  goldenBusy.value = true;
+  deleteStatus.value = null;
+  try {
+    const r = await http.delete('/api/display/golden', { validateStatus: () => true });
+    deleteStatus.value = r?.data?.deleted === true;
+    await loadGoldenStatus();
+  } catch {
+    deleteStatus.value = false;
+  } finally {
+    setTimeout(() => (goldenBusy.value = false), 600);
+  }
+}
+
+onMounted(() => {
+  loadGoldenStatus();
+});
 
 // Build translated option lists as computeds so they react to locale changes
 const ddConfigurationOptions = computed(() => [
@@ -405,7 +457,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                     />
                   </div>
                   <div class="col-span-2 flex justify-end self-start">
-                    <n-button size="small" secondary @click="removeRemappingEntry(idx)">
+                    <n-button size="small" type="error" strong @click="removeRemappingEntry(idx)">
                       <i class="fas fa-trash" />
                     </n-button>
                   </div>
@@ -460,13 +512,64 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                 </div>
               </div>
               <div class="mt-2">
-                <n-button primary size="small" @click="addRemappingEntry()">
+                <n-button type="primary" strong size="small" @click="addRemappingEntry()">
                   &plus; {{ $t('config.dd_mode_remapping_add') }}
+                </n-button>
+          </div>
+          
+          <!-- Golden Restore (Windows only) -->
+          <div class="pt-2 border-t border-dark/5 dark:border-light/5">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div class="max-w-[700px]">
+                <h4 class="text-sm font-medium">{{ $t('troubleshooting.dd_golden_title') }}</h4>
+                <p class="text-[11px] opacity-60 mt-1">
+                  {{ $t('troubleshooting.dd_golden_help') }}
+                </p>
+                <div class="mt-2 text-xs">
+                  <span v-if="goldenExists === true" class="inline-block rounded bg-green-600/10 text-green-700 dark:text-green-300 border border-green-600/30 px-2 py-1">
+                    {{ $t('troubleshooting.dd_golden_status_present') }}
+                  </span>
+                  <span v-else-if="goldenExists === false" class="inline-block rounded bg-yellow-600/10 text-yellow-700 dark:text-yellow-300 border border-yellow-600/30 px-2 py-1">
+                    {{ $t('troubleshooting.dd_golden_status_missing') }}
+                  </span>
+                </div>
+              </div>
+              <div class="flex gap-2 mt-1 sm:mt-0">
+                <n-button type="primary" strong :disabled="goldenBusy" @click="exportGolden">
+                  {{ createOrRecreateLabel }}
+                </n-button>
+                <n-button type="error" strong :disabled="goldenBusy || goldenExists !== true" @click="deleteGolden">
+                  {{ $t('troubleshooting.dd_golden_delete') }}
                 </n-button>
               </div>
             </div>
+            <div class="flex items-center gap-3 mt-2">
+              <n-button type="default" strong size="small" @click="loadGoldenStatus">{{ $t('troubleshooting.dd_golden_refresh') }}</n-button>
+            </div>
+            <transition name="fade">
+              <p v-if="exportStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
+                {{ $t('troubleshooting.dd_export_golden_success') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p v-if="exportStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
+                {{ $t('troubleshooting.dd_export_golden_error') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p v-if="deleteStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
+                {{ $t('troubleshooting.dd_golden_deleted') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p v-if="deleteStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
+                {{ $t('troubleshooting.dd_golden_delete_error') }}
+              </p>
+            </transition>
           </div>
         </div>
+      </div>
+    </div>
       </div>
     </template>
     <template #linux></template>
