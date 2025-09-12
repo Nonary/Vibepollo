@@ -17,6 +17,16 @@ namespace platf::display_helper_client {
 
   // Export current OS display settings as a golden restore snapshot
   bool send_export_golden();
+
+  // Reset helper-side persistence/state (best-effort)
+  bool send_reset();
+
+  // Lightweight liveness probe; returns true if a Ping frame was sent.
+  // This does not wait for a reply; it only validates a healthy send path.
+  bool send_ping();
+
+  // Reset the cached connection so the next send will reconnect.
+  void reset_connection();
 }  // namespace platf::display_helper_client
 
 #endif

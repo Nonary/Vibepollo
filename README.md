@@ -24,49 +24,19 @@ No. Vibeshine is intended as a **complementary fork**, not a replacement. It als
 
 ---
 
-## Will Vibeshine's Features Merge Back Into Sunshine?
+## Will Vibeshine's Features Merge Back Into Sunshine or Apollo?
 
-**Short Answer:** Not currently planned.
+Short answer: Unlikely to be backported.
 
-Active contributions to Sunshine are paused due to unresolved governance issues within the original project.
+Vibeshine is largely AI-generated. While it works well, it carries a kind of surface-level technical debt that many upstream projects want resolved before taking big changes. This includes inconsistent styling, thin or missing documentation, and some over-engineering. I personally see this type of debt as unimportant today. Modern AI tools make it easy to ask questions like “why does this function exist?”, “what does this parameter do?”, or “how do these classes interact?” and get immediate, accurate answers. Soon, AI will even be able to auto-fix these issues—re-style entire trees, write docstrings, and remove unused layers—without human effort.
 
+So this “mess” is only cosmetic. It doesn’t break the code, create security risks, or block future maintenance. The only debt that truly matters is architectural decisions: API design, threading models, modularity, and performance. These are the parts that create long-term problems, and are much harder to fix even with AI tools. That’s why I focus on making those decisions up front, guiding the AI on how to build the code.
+
+Because I define the architecture, I know how everything works. Whether the code looks polished or not doesn’t matter to me. 
+
+Bringing Vibeshine fully in line with upstream style and documentation standards would take a lot of engineering time for very little practical gain. For now, backporting is unlikely. The fork will continue to move quickly here, and over time, targeted refactors or added documentation may make selective upstreaming possible.
 ---
 
-## Reasons for Pausing Contributions
-
-1. **Inconsistent Merge Practices:**  
-   The project owner frequently merges their own breaking changes without proper reviews or reversions, insisting on a "fix-forward" approach while holding others to higher standards.
-
-2. **Restricted Access:**  
-   My access to the Sunshine repository is banned, preventing participation in pull requests or discussions.
-
-3. **Centralized Control:**  
-   The project owner emphasizes complete personal control, despite Sunshine's community-driven intent.
-
-4. **Unannounced Repository Changes:**  
-   Major changes to the repository organization structure have occurred without prior notification such as abruptly revoking permissions from existing contributors.
-
-5. **Policy Changes Without Community Input:**  
-   Contribution guidelines and codes of conduct have been modified without open community discussion or consensus.
-
-6. **Delayed Code Reviews:**  
-   Pull requests are reviewed slowly by a limited group, restricting broader community participation.
-
-7. **Suppression of Dissent:**  
-   Comments critical of the project owner are regularly deleted, flagged as off-topic, or marked as spam, suppressing open debate.
-
-8. **Limited Access to Repository Tools:**  
-   Contributors lack basic tools like issue labeling, which are restricted to one or two individuals.
-
-9. **Retaliation Against Dissent:**  
-   Contributors challenging decisions have been banned or had their contributions halted, with the owner unwilling to reconsider once decisions are made.
----
-
-## What About Apollo?
-
-Yes, select Vibeshine features will eventually be integrated into *Apollo*. However, Apollo has significantly diverged from Sunshine, and integrating its features into Vibeshine will require considerable effort.
-
----
 
 ## Origin of the Name "Vibeshine"
 
@@ -78,13 +48,12 @@ The name arose as a playful suggestion from another developer who joked about th
 
 AI significantly accelerates development by offloading much of the routine implementation work. Instead of spending hours writing boilerplate, wiring dependencies, or handling repetitive edge cases, I can focus on high-level architecture, long-term design decisions, and system direction. This shift doesn’t just speed things up—it fundamentally changes the role of the engineer, pushing us toward oversight, orchestration, and design rather than rote code production.
 
-What stands out most is that AI code works on the first try around 90% of the time. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. Even if I need to correct style inconsistencies afterward, the productivity gain is enormous. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
+What stands out most is that AI code works on the first try around 90% of the time. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
 
-I’m not overly concerned about technical debt in this workflow, because the debt that truly matters stems from bad architecture and poor design choices, not from the code itself. As long as I guide the AI with clear structure and intent, the generated code ends up being structured and maintainable. Problems like inconsistent naming, redundant code, or unused helpers are minor forms of debt—easily identified, cleaned up, or ignored. By contrast, deep architectural flaws, poor layering, or mismatched abstractions create lasting problems.
+I’m not overly concerned about technical debt in this workflow, because the debt that truly matters stems from bad architecture and poor design choices, not from the code itself. As long as I guide the AI with clear structure and intent, the generated code ends up being maintainable. Problems like inconsistent naming, redundant code, or unused helpers are minor forms of debt—easily identified, cleaned up, or ignored. By contrast, deep architectural flaws, poor layering, or mismatched abstractions create lasting problems.
 
-In practice, most of the issues I encounter with AI-generated code are related to coding style, naming, or structure rather than deep architectural mistakes. Those are relatively minor concerns—easy to clean up later, and far less damaging than large-scale design flaws baked into a system from the start.
 
-In fact, compared to many traditional enterprise codebases I’ve maintained, AI-assisted code often comes out cleaner and easier to manage. Legacy systems are usually burdened with years of ad-hoc patches, inconsistent styles, and undocumented hacks. AI-generated code doesn’t necessarily carry fewer design flaws than human code, but it does avoid accumulating those scars—especially when paired with an intentional architectural vision.
+In fact, compared to many traditional enterprise codebases I’ve maintained, AI-assisted code often comes out cleaner and easier to manage. Legacy systems are usually burdened with years of ad-hoc patches, inconsistent styles, and various bad practices due to knowledge level of contributor. AI-generated code doesn’t necessarily carry fewer design flaws than human code, but it does avoid accumulating those scars—especially when paired with an intentional architectural vision and it is less likely to do seriously bad practices that you typically find in enterprise codebases.
 
 Broadly speaking, AI-assisted development represents the future of software engineering. Just as compilers and IDEs once transformed programming, AI is now transforming how we design, implement, and maintain systems. Instead of fearing it, I view it as a force multiplier that complements professional judgment. Vibeshine is an example of what happens when you embrace that shift: rapid iteration, a massive expansion of features, and code that remains maintainable because the architecture is intentionally guided.
 

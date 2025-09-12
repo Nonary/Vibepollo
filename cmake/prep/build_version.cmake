@@ -112,6 +112,14 @@ else()
     endif()
 endif()
 
+# Enforce numeric Major.Minor.Patch versioning for this build by stripping any
+# prerelease (e.g., -beta.1) or build metadata (e.g., +20240101) suffixes that
+# may appear on tags or CI-provided versions.
+if(DEFINED PROJECT_VERSION)
+    string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION "${PROJECT_VERSION}")
+    set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
+endif()
+
 # Propagate branch information as a compile definition if available.
 # CI builds define BRANCH env var; local builds derive GIT_DESCRIBE_BRANCH above.
 if(DEFINED GIT_DESCRIBE_BRANCH AND NOT GIT_DESCRIBE_BRANCH STREQUAL "")

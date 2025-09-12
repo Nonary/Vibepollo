@@ -46,28 +46,8 @@ namespace video {
      * @return True if there should be no issues with the probing, false if we should prevent it.
      */
     bool allow_encoder_probing() {
-      const auto devices {display_device::enumerate_devices()};
-
-      // If there are no devices, then either the API is not working correctly or OS does not support the lib.
-      // Either way we should not block the probing in this case as we can't tell what's wrong.
-      if (devices.empty()) {
-        return true;
-      }
-
-      // Since Windows 11 24H2, it is possible that there will be no active devices present
-      // for some reason (probably a bug). Trying to probe encoders in such a state locks/breaks the DXGI
-      // and also the display device for Windows. So we must have at least 1 active device.
-      const bool at_least_one_device_is_active = std::any_of(std::begin(devices), std::end(devices), [](const auto &device) {
-        // If device has additional info, it is active.
-        return static_cast<bool>(device.m_info);
-      });
-
-      if (at_least_one_device_is_active) {
-        return true;
-      }
-
-      BOOST_LOG(error) << "No display devices are active at the moment! Cannot probe the encoders.";
-      return false;
+      // Always allow probing; previous in-process display checks removed.
+      return true;
     }
   }  // namespace
 
@@ -1070,7 +1050,7 @@ namespace video {
    */
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    const auto output_name = display_device::map_output_name(config::video.output_name);
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -2446,7 +2426,10 @@ namespace video {
   }
 
   bool validate_encoder(encoder_t &encoder, bool expect_failure) {
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    // During encoder probing, always use the current active display and do not
+    // attempt to select/swap displays based on configured output_name. Display
+    // swaps are now handled externally when a stream starts.
+    const std::string probe_display_name;  // empty selects the current active display
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -2466,7 +2449,7 @@ namespace video {
     config_t config_autoselect {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 0};
 
     // If the encoder isn't supported at all (not even H.264), bail early
-    reset_display(disp, encoder.platform_formats->dev_type, output_name, config_autoselect);
+    reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
     if (!disp) {
       return false;
     }
@@ -2567,8 +2550,9 @@ namespace video {
 
       const config_t generic_hdr_config = {1920, 1080, 60, 1000, 1, 0, 3, 1, 1, 0};
 
-      // Reset the display since we're switching from SDR to HDR
-      reset_display(disp, encoder.platform_formats->dev_type, output_name, generic_hdr_config);
+      // Reset the display since we're switching from SDR to HDR. Keep probing on the
+      // current active display without attempting a display swap.
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
       if (!disp) {
         return false;
       }
@@ -2751,7 +2735,7 @@ namespace video {
     }
 
     if (chosen_encoder == nullptr) {
-      const auto output_name {display_device::map_output_name(config::video.output_name)};
+      const auto output_name = display_device::map_output_name(config::video.output_name);
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
       if (!config::video.adapter_name.empty() || !output_name.empty()) {
         BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;

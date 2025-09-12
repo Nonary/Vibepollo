@@ -22,6 +22,7 @@
 // local includes
 #include "config.h"
 #include "config_playnite.h"
+#include "display_helper_integration.h"
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "httpcommon.h"
@@ -571,8 +572,8 @@ namespace config {
   // Windows-only: RTSS defaults
   rtss_t rtss {
     false,  // enable_frame_limit
-    {},     // install_path
-    "async"      // frame_limit_type
+    {},  // install_path
+    "async"  // frame_limit_type
   };
 
   sunshine_t sunshine {
@@ -1154,10 +1155,15 @@ namespace config {
     }
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
+    // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
+    bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
     {
-      int value = 0;
-      int_between_f(vars, "dd_wa_hdr_toggle_delay", value, {0, 3000});
-      video.dd.wa.hdr_toggle_delay = std::chrono::milliseconds {value};
+      int legacy_delay_ms = 0;
+      int_between_f(vars, "dd_wa_hdr_toggle_delay", legacy_delay_ms, {0, 3000});
+      if (!video.dd.wa.hdr_toggle) {
+        // If not explicitly set by new flag, treat legacy value > 0 as enabled
+        video.dd.wa.hdr_toggle = (legacy_delay_ms > 0);
+      }
     }
 
     int_f(vars, "max_bitrate", video.max_bitrate);
@@ -1511,6 +1517,9 @@ namespace config {
     std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
     std::unique_lock<std::mutex> apply_once(g_apply_mutex);
     try {
+      // Capture previous DD configuration state to detect transitions to disabled
+      const auto prev_dd_config_opt = video.dd.configuration_option;
+
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       // Track old logging params to adjust sinks if needed
       const int old_min_level = sunshine.min_log_level;
@@ -1521,6 +1530,16 @@ namespace config {
       // If only the log level changed, we can reconfigure sinks in place.
       if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
         logging::reconfigure_min_log_level(sunshine.min_log_level);
+      }
+
+      // If DD configuration option was changed to disabled and there are no active sessions,
+      // proactively revert any previously applied display configuration now (hot-apply behavior).
+      using dd_cfg_e = config::video_t::dd_t::config_option_e;
+      const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
+      const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
+      if (dd_was_enabled && dd_disabled_now && rtsp_stream::session_count() == 0) {
+        BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled with no active sessions; reverting display configuration.";
+        display_helper_integration::revert();
       }
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();

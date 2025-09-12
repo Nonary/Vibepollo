@@ -121,6 +121,7 @@ import { storeToRefs } from 'pinia';
 import { NButton, NSpace, NTag } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
+import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import type { App } from '@/stores/apps';
 
@@ -131,6 +132,7 @@ const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
 const auth = useAuthStore();
+const router = useRouter();
 
 const syncBusy = ref(false);
 const isWindows = computed(
@@ -180,9 +182,9 @@ async function forceSync(): Promise<void> {
 
 function gotoPlaynite(): void {
   try {
-    if (typeof window !== 'undefined') window.location.href = '/settings#playnite';
+    router.push({ path: '/settings', query: { sec: 'playnite' } });
   } catch {
-    
+    // ignore navigation errors
   }
 }
 

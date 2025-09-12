@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <format>
@@ -113,8 +114,13 @@ namespace platf::dxgi {
       return false;
     }
 
-    auto tokenBuffer = std::make_unique<uint8_t[]>(len);
-    tokenUser.reset(reinterpret_cast<TOKEN_USER *>(tokenBuffer.release()));
+    // Allocate with malloc to match util::c_ptr<T>::c_free (free) deleter semantics.
+    void *buf = std::malloc(len);
+    if (!buf) {
+      BOOST_LOG(error) << "malloc failed in extract_user_sid_from_token";
+      return false;
+    }
+    tokenUser.reset(reinterpret_cast<TOKEN_USER *>(buf));
 
     if (!tokenUser || !GetTokenInformation(tokenHandle, TokenUser, tokenUser.get(), len, &len)) {
       BOOST_LOG(error) << "GetTokenInformation (fetch) failed in create_security_descriptor, error=" << GetLastError();
@@ -330,8 +336,8 @@ namespace platf::dxgi {
       sizeof(message)
     );
 
-    // Wait for control client to connect
-    pipe->wait_for_client_connection(3000);
+    // Wait for control client to connect (be generous to accommodate process startup jitter)
+    pipe->wait_for_client_connection(8000);
 
     if (!pipe->is_connected()) {
       BOOST_LOG(error) << "Client did not connect to pipe instance within the specified timeout. Disconnecting server pipe.";
@@ -355,7 +361,7 @@ namespace platf::dxgi {
     bool ack_ok = false;
     auto t0 = std::chrono::steady_clock::now();
 
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3) && !ack_ok) {
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(8) && !ack_ok) {
       size_t bytes_read = 0;
       if (PipeResult result = pipe->receive(ack_buffer, bytes_read, 1000); result == Success) {
         if (bytes_read == 1 && ack_buffer[0] == ACK_MSG) {
@@ -407,7 +413,7 @@ namespace platf::dxgi {
     bool error_occurred = false;
     size_t bytes_read = 0;
 
-    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(3) && !received && !error_occurred) {
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(8) && !received && !error_occurred) {
       if (PipeResult result = pipe->receive(buffer, bytes_read, 500); result == Success) {
         if (bytes_read > 0) {
           received = true;

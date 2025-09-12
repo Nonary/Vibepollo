@@ -200,6 +200,10 @@ namespace system_tray {
     return 0;
   }
 
+  // Persistent storage for tooltip/notification strings to avoid dangling pointers
+  static std::string s_tooltip;
+  static std::string s_notification_text;
+
   void update_tray_playing(std::string app_name) {
     if (!tray_initialized) {
       return;
@@ -213,10 +217,10 @@ namespace system_tray {
     tray_update(&tray);
     tray.icon = TRAY_ICON_PLAYING;
     tray.notification_title = "Stream Started";
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming started for %s", app_name.c_str());
-    tray.notification_text = msg;
-    tray.tooltip = msg;
+    s_notification_text = "Streaming started for " + app_name;
+    s_tooltip = s_notification_text;
+    tray.notification_text = s_notification_text.c_str();
+    tray.tooltip = s_tooltip.c_str();
     tray.notification_icon = TRAY_ICON_PLAYING;
     tray_update(&tray);
   }
@@ -232,12 +236,11 @@ namespace system_tray {
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON_PAUSING;
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
+    s_notification_text = "Streaming paused for " + app_name;
     tray.icon = TRAY_ICON_PAUSING;
     tray.notification_title = "Stream Paused";
-    tray.notification_text = msg;
-    tray.tooltip = msg;
+    tray.notification_text = s_notification_text.c_str();
+    tray.tooltip = s_notification_text.c_str();
     tray.notification_icon = TRAY_ICON_PAUSING;
     tray_update(&tray);
   }
@@ -253,12 +256,11 @@ namespace system_tray {
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Application %s successfully stopped", app_name.c_str());
+    s_notification_text = "Application " + app_name + " successfully stopped";
     tray.icon = TRAY_ICON;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Application Stopped";
-    tray.notification_text = msg;
+    tray.notification_text = s_notification_text.c_str();
     tray.tooltip = PROJECT_NAME;
     tray_update(&tray);
   }
@@ -285,6 +287,30 @@ namespace system_tray {
     tray_update(&tray);
   }
 
+  void update_tray_vigem_missing() {
+    if (!tray_initialized) {
+      return;
+    }
+
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+    tray.icon = TRAY_ICON;
+    tray_update(&tray);
+
+    tray.icon = TRAY_ICON;
+    tray.notification_title = "Gamepad Input Unavailable";
+    tray.notification_text = "ViGEm is not installed. Click for setup info";
+    tray.notification_icon = TRAY_ICON;
+    tray.tooltip = PROJECT_NAME;
+    tray.notification_cb = []() {
+      // Open Dashboard for more information
+      launch_ui("/");
+    };
+    tray_update(&tray);
+  }
+
   void tray_notify(const char *title, const char *text, void (*cb)()) {
     if (!tray_initialized) {
       return;
@@ -299,7 +325,8 @@ namespace system_tray {
 
     tray.icon = TRAY_ICON;
     tray.notification_title = title;
-    tray.notification_text = text;
+    s_notification_text = text ? std::string {text} : std::string {};
+    tray.notification_text = s_notification_text.c_str();
     tray.notification_icon = TRAY_ICON;
     tray.tooltip = PROJECT_NAME;
     tray.notification_cb = cb;

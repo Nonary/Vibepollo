@@ -22,7 +22,7 @@ namespace platf::display_helper_client {
     Apply = 1,  ///< Apply display settings from JSON payload.
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
-    ExportGolden = 4, ///< Export current OS settings as golden snapshot
+    ExportGolden = 4,  ///< Export current OS settings as golden snapshot
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
@@ -58,6 +58,14 @@ namespace platf::display_helper_client {
     pipe = f.create_client("sunshine_display_helper");
     BOOST_LOG(info) << "Display helper IPC: connection " << (pipe ? "succeeded" : "failed");
     return pipe != nullptr;
+  }
+
+  void reset_connection() {
+    auto &pipe = pipe_singleton();
+    if (pipe) {
+      BOOST_LOG(info) << "Display helper IPC: resetting cached connection";
+    }
+    pipe.reset();
   }
 
   bool send_apply_json(const std::string &json) {
@@ -116,6 +124,44 @@ namespace platf::display_helper_client {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::ExportGolden, payload);
+  }
+
+  bool send_reset() {
+    BOOST_LOG(info) << "Display helper IPC: RESET request queued";
+    if (!ensure_connected_once()) {
+      BOOST_LOG(info) << "Display helper IPC: RESET aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_frame(*pipe, MsgType::Reset, payload)) {
+      return true;
+    }
+    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
+    pipe.reset();
+    if (!ensure_connected_once()) {
+      return false;
+    }
+    return pipe && send_frame(*pipe, MsgType::Reset, payload);
+  }
+
+  bool send_ping() {
+    BOOST_LOG(info) << "Display helper IPC: PING request queued";
+    if (!ensure_connected_once()) {
+      BOOST_LOG(info) << "Display helper IPC: PING aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_frame(*pipe, MsgType::Ping, payload)) {
+      return true;
+    }
+    BOOST_LOG(warning) << "Display helper IPC: PING send failed; attempting reconnect";
+    pipe.reset();
+    if (!ensure_connected_once()) {
+      return false;
+    }
+    return pipe && send_frame(*pipe, MsgType::Ping, payload);
   }
 }  // namespace platf::display_helper_client
 

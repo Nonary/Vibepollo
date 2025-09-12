@@ -68,7 +68,7 @@ const defaultGroups = [
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
       dd_mode_remapping: { mixed: [], resolution_only: [], refresh_rate_only: [] },
-      dd_wa_hdr_toggle_delay: 0,
+      dd_wa_hdr_toggle: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
     },
@@ -227,7 +227,7 @@ export const useConfigStore = defineStore('config', () => {
     'dd_refresh_rate_option',
     'dd_manual_refresh_rate',
     'dd_hdr_option',
-    'dd_wa_hdr_toggle_delay',
+    'dd_wa_hdr_toggle',
     'dd_config_revert_delay',
     'dd_config_revert_on_disconnect',
     'dd_mode_remapping',
@@ -360,6 +360,18 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
+    // Migrate legacy HDR workaround delay -> boolean toggle (enabled if delay>0)
+    if (_data.value) {
+      const hasNew = Object.prototype.hasOwnProperty.call(_data.value, 'dd_wa_hdr_toggle');
+      const hasLegacy = Object.prototype.hasOwnProperty.call(_data.value, 'dd_wa_hdr_toggle_delay');
+      if (!hasNew && hasLegacy) {
+        const v = Number((_data.value as any)['dd_wa_hdr_toggle_delay']);
+        if (Number.isFinite(v) && v > 0) {
+          (_data.value as any)['dd_wa_hdr_toggle'] = true;
+        }
+      }
+    }
+
     // Normalize Playnite boolean-like fields to real booleans so toggles
     // persist as true/false instead of enabled/disabled strings.
     const playniteBoolKeys = [
@@ -368,7 +380,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_focus_exit_on_first',
     ];
     // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = ['rtss_enable_frame_limit'];
+    const otherBoolKeys = ['rtss_enable_frame_limit', 'dd_wa_hdr_toggle'];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;

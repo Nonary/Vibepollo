@@ -40,6 +40,7 @@
 // local includes
 #include "misc.h"
 #include "nvprefs/nvprefs_interface.h"
+#include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
 #include "src/logging.h"
@@ -1182,6 +1183,9 @@ namespace platf {
     // Promote ourselves to high priority class
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
+    // Start display helper watchdog to self-heal helper crashes during active stream
+    display_helper_integration::start_watchdog();
+
     // Modify NVIDIA control panel settings again, in case they have been changed externally since sunshine launch
     if (nvprefs_instance.load()) {
       if (!nvprefs_instance.owning_undo_file()) {
@@ -1252,6 +1256,8 @@ namespace platf {
   }
 
   void streaming_will_stop() {
+    // Stop display helper watchdog when streams stop
+    display_helper_integration::stop_watchdog();
     // Demote ourselves back to normal priority class
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 

@@ -15,8 +15,8 @@
 
   // local includes
   #include "confighttp.h"
-  #include "src/platform/windows/rtss_integration.h"
   #include "src/logging.h"
+  #include "src/platform/windows/rtss_integration.h"
 
 namespace confighttp {
 
@@ -62,7 +62,6 @@ namespace confighttp {
     send_response(response, out);
   }
 
-} // namespace confighttp
+}  // namespace confighttp
 
-#endif // _WIN32
-
+#endif  // _WIN32

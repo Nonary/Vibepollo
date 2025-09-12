@@ -4,19 +4,7 @@ install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 
-# ViGEmBus installer
-set(VIGEMBUS_INSTALLER "${CMAKE_BINARY_DIR}/vigembus_installer.exe")
-file(DOWNLOAD
-        "https://github.com/nefarius/ViGEmBus/releases/download/v1.21.442.0/ViGEmBus_1.21.442_x64_x86_arm64.exe"
-        ${VIGEMBUS_INSTALLER}
-        SHOW_PROGRESS
-        EXPECTED_HASH SHA256=155c50f1eec07bdc28d2f61a3e3c2c6c132fee7328412de224695f89143316bc
-        TIMEOUT 60
-)
-install(FILES ${VIGEMBUS_INSTALLER}
-        DESTINATION "scripts"
-        RENAME "vigembus_installer.exe"
-        COMPONENT gamepad)
+# ViGEmBus installer is no longer bundled or managed by the installer
 
 # Adding tools
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
@@ -59,7 +47,7 @@ install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/firewall/"
         COMPONENT firewall)
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/gamepad/"
         DESTINATION "scripts"
-        COMPONENT gamepad)
+        COMPONENT assets)
 
 # Sunshine assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
@@ -123,10 +111,7 @@ set(CPACK_COMPONENT_FIREWALL_DISPLAY_NAME "Add Firewall Exclusions")
 set(CPACK_COMPONENT_FIREWALL_DESCRIPTION "Scripts to enable or disable firewall rules.")
 set(CPACK_COMPONENT_FIREWALL_GROUP "Scripts")
 
-# gamepad scripts
-set(CPACK_COMPONENT_GAMEPAD_DISPLAY_NAME "Virtual Gamepad")
-set(CPACK_COMPONENT_GAMEPAD_DESCRIPTION "Scripts to install and uninstall Virtual Gamepad.")
-set(CPACK_COMPONENT_GAMEPAD_GROUP "Scripts")
+# gamepad scripts are bundled under assets and not exposed as a separate component
 
 # include specific packaging (WiX only)
 include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)

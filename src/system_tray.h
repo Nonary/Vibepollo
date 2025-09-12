@@ -80,4 +80,10 @@ namespace system_tray {
    * @brief Spawns a notification for PIN Pairing. Clicking it opens the PIN Web UI Page
    */
   void update_tray_require_pin();
+
+  /**
+   * @brief Spawns a notification when ViGEm is missing.
+   * Clicking it opens the Web UI Dashboard for more information.
+   */
+  void update_tray_vigem_missing();
 }  // namespace system_tray

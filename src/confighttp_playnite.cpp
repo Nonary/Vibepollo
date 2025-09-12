@@ -419,7 +419,7 @@ namespace confighttp {
           std::filesystem::path p = std::filesystem::path(extDir) / "sunshine_playnite.log";
           std::string data;
           if (read_file_if_exists(p, data)) {
-            entries.emplace_back("sunshine_playnite.log", std::move(data));
+            entries.emplace_back(p.filename().string(), std::move(data));
           }
         }
       } catch (...) {}
@@ -435,7 +435,7 @@ namespace confighttp {
           CoTaskMemFree(localW);
           std::string data;
           if (read_file_if_exists(p, data)) {
-            entries.emplace_back("sunshine_playnite.log", std::move(data));
+            entries.emplace_back(p.filename().string(), std::move(data));
           }
         }
       } catch (...) {}
@@ -447,7 +447,7 @@ namespace confighttp {
           std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
           std::string data;
           if (read_file_if_exists(p, data)) {
-            entries.emplace_back("sunshine_playnite.log", std::move(data));
+            entries.emplace_back(p.filename().string(), std::move(data));
           }
         }
       } catch (...) {}
@@ -457,22 +457,25 @@ namespace confighttp {
         bool any = false;
         {
           std::string data;
-          if (read_file_if_exists(base / L"playnite.log", data)) {
-            entries.emplace_back("playnite.log", std::move(data));
+          auto p = base / L"playnite.log";
+          if (read_file_if_exists(p, data)) {
+            entries.emplace_back(p.filename().string(), std::move(data));
             any = true;
           }
         }
         {
           std::string data;
-          if (read_file_if_exists(base / L"extensions.log", data)) {
-            entries.emplace_back("extensions.log", std::move(data));
+          auto p = base / L"extensions.log";
+          if (read_file_if_exists(p, data)) {
+            entries.emplace_back(p.filename().string(), std::move(data));
             any = true;
           }
         }
         {
           std::string data;
-          if (read_file_if_exists(base / L"launcher.log", data)) {
-            entries.emplace_back("launcher.log", std::move(data));
+          auto p = base / L"launcher.log";
+          if (read_file_if_exists(p, data)) {
+            entries.emplace_back(p.filename().string(), std::move(data));
             any = true;
           }
         }
@@ -526,14 +529,14 @@ namespace confighttp {
                 std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
                 std::string data;
                 if (read_file_if_exists(p, data)) {
-                  entries.emplace_back("sunshine_playnite_launcher.log", std::move(data));
+                  entries.emplace_back(p.filename().string(), std::move(data));
                 }
               }
               {
                 std::filesystem::path p = base / L"sunshine_launcher.log";
                 std::string data;
                 if (read_file_if_exists(p, data)) {
-                  entries.emplace_back("sunshine_launcher.log", std::move(data));
+                  entries.emplace_back(p.filename().string(), std::move(data));
                 }
               }
               {
@@ -541,7 +544,7 @@ namespace confighttp {
                 std::filesystem::path p = base / L"sunshine_display_helper.log";
                 std::string data;
                 if (read_file_if_exists(p, data)) {
-                  entries.emplace_back("sunshine_display_helper.log", std::move(data));
+                  entries.emplace_back(p.filename().string(), std::move(data));
                 }
               }
             }
@@ -560,7 +563,7 @@ namespace confighttp {
             std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
             std::string data;
             if (read_file_if_exists(p, data)) {
-              entries.emplace_back("sunshine_playnite_launcher.log", std::move(data));
+              entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
           // Legacy/alternate name
@@ -568,7 +571,7 @@ namespace confighttp {
             std::filesystem::path p = base / L"sunshine_launcher.log";
             std::string data;
             if (read_file_if_exists(p, data)) {
-              entries.emplace_back("sunshine_launcher.log", std::move(data));
+              entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
           // Display helper log
@@ -576,7 +579,7 @@ namespace confighttp {
             std::filesystem::path p = base / L"sunshine_display_helper.log";
             std::string data;
             if (read_file_if_exists(p, data)) {
-              entries.emplace_back("sunshine_display_helper.log", std::move(data));
+              entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
         };
@@ -589,7 +592,7 @@ namespace confighttp {
           std::filesystem::path p = cfg / "sunshine_launcher.log";
           std::string data;
           if (read_file_if_exists(p, data)) {
-            entries.emplace_back("sunshine_launcher.log", std::move(data));
+            entries.emplace_back(p.filename().string(), std::move(data));
           }
         } catch (...) {}
       } catch (...) {}
@@ -615,7 +618,7 @@ namespace confighttp {
       std::time_t tt = std::time(nullptr);
       std::tm tm {};
       localtime_s(&tm, &tt);
-      std::snprintf(fname, sizeof(fname), "playnite-logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+      std::snprintf(fname, sizeof(fname), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
       SimpleWeb::CaseInsensitiveMultimap headers;
       headers.emplace("Content-Type", "application/zip");

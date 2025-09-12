@@ -21,7 +21,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
-#include "display_device.h"
+#include "display_helper_integration.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -35,7 +35,7 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
-  #include "platform/windows/display_helper_integration.h"
+  #include "platform/windows/misc.h"
   #include "platform/windows/rtss_integration.h"
 #endif
 
@@ -1938,7 +1938,7 @@ namespace stream {
         }
 
         if (revert_display_config) {
-          display_device::revert_configuration();
+          display_helper_integration::revert();
         }
 
         // Restore any Windows-only integrations first
@@ -1995,6 +1995,16 @@ namespace stream {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
         update::on_stream_started();
+  #if defined(_WIN32)
+        // If ViGEm is not installed, notify the user that gamepad input won't work
+        try {
+          if (!platf::is_vigem_installed(nullptr)) {
+            system_tray::update_tray_vigem_missing();
+          }
+        } catch (...) {
+          // best-effort: ignore any unexpected errors while checking
+        }
+  #endif
 #endif
       }
 

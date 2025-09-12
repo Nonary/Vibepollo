@@ -23,7 +23,7 @@
 // local includes
 #include "config.h"
 #include "crypto.h"
-#include "display_device.h"
+#include "display_helper_integration.h"
 #include "logging.h"
 #include "platform/common.h"
 #ifdef _WIN32
@@ -459,7 +459,7 @@ namespace proc {
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif
 
-      display_device::revert_configuration();
+      display_helper_integration::revert();
     }
 
     _app_id = -1;

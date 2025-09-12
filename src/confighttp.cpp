@@ -31,7 +31,6 @@
 #include "config.h"
 #include "confighttp.h"
 #include "crypto.h"
-#include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "http_auth.h"
@@ -50,22 +49,22 @@
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
   #include "src/platform/windows/ipc/misc_utils.h"
-  #include "platform/windows/display_helper_integration.h"
 
   #include <windows.h>
 #endif
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
 
-  #include <windows.h>
   #include <KnownFolders.h>
   #include <ShlObj.h>
+  #include <windows.h>
 #endif
+#include "display_helper_integration.h"
 #include "process.h"
 #include "utility.h"
 #include "uuid.h"
 
-#include <display_device/json.h>
+// libdisplaydevice JSON usage is encapsulated in display_helper_integration
 
 using namespace std::literals;
 namespace pt = boost::property_tree;
@@ -134,17 +133,17 @@ namespace confighttp {
 
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
-    void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void installPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void uninstallPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-    // Helper to keep confighttp.cpp free of Playnite details
-    void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
-    // New: download Playnite-related logs as a ZIP
-    
+  void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void installPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void uninstallPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  // Helper to keep confighttp.cpp free of Playnite details
+  void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
+  // New: download Playnite-related logs as a ZIP
+
   // RTSS status endpoint (Windows-only)
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -316,9 +315,7 @@ namespace confighttp {
     }
 
     try {
-      const auto devices = display_device::enumerate_devices();
-      // Convert to JSON string using helper and parse to nlohmann::json for consistent response handling
-      const auto json_str = display_device::toJson(devices);
+      const auto json_str = display_helper_integration::enumerate_devices_json();
       nlohmann::json tree = nlohmann::json::parse(json_str);
       send_response(response, tree);
     } catch (const std::exception &e) {
@@ -1560,7 +1557,7 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    output_tree["status"] = display_device::reset_persistence();
+    output_tree["status"] = display_helper_integration::reset_persistence();
     send_response(response, output_tree);
   }
 
@@ -1846,11 +1843,11 @@ namespace confighttp {
     server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
-  #if defined(_WIN32)
+#if defined(_WIN32)
     server.resource["^/api/display/export_golden$"]["POST"] = postExportGoldenDisplay;
     server.resource["^/api/display/golden_status$"]["GET"] = getGoldenStatus;
     server.resource["^/api/display/golden$"]["DELETE"] = deleteGolden;
-  #endif
+#endif
     server.resource["^/api/password$"]["POST"] = savePassword;
     server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
 #ifdef _WIN32

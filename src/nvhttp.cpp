@@ -21,7 +21,7 @@
 
 // local includes
 #include "config.h"
-#include "display_device.h"
+#include "display_helper_integration.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -826,7 +826,7 @@ namespace nvhttp {
       response->close_connection_after_response = true;
 
       if (revert_display_configuration) {
-        display_device::revert_configuration();
+        display_helper_integration::revert();
       }
     });
 
@@ -867,7 +867,7 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      display_helper_integration::apply_from_session(config::video, *launch_session);
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -970,7 +970,7 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      display_helper_integration::apply_from_session(config::video, *launch_session);
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1033,7 +1033,7 @@ namespace nvhttp {
     }
 
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-    display_device::revert_configuration();
+    display_helper_integration::revert();
   }
 
   void appasset(resp_https_t response, req_https_t request) {

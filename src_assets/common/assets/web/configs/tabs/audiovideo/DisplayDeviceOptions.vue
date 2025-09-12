@@ -3,9 +3,13 @@ import { ref, computed, onMounted } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
-import { NSelect, NInput, NInputNumber, NButton } from 'naive-ui';
+import { NSelect, NInput, NInputNumber, NButton, NRadioGroup, NRadio } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import { http } from '@/http';
+
+// Props
+const props = defineProps<{ section?: 'pre' | 'options' }>();
+const section = computed(() => props.section ?? 'pre');
 
 // Use centralized store for config and platform
 const store = useConfigStore();
@@ -113,6 +117,14 @@ function removeRemappingEntry(idx: number): void {
   store.updateOption('dd_mode_remapping', JSON.parse(JSON.stringify(remap)));
   store.markManualDirty?.('dd_mode_remapping');
 }
+
+// Safe accessor for the currently selected remapping list
+const remappingArray = computed(() => {
+  const type = getRemappingType();
+  const dd = (config as any)?.dd_mode_remapping as any;
+  const arr = dd?.[type];
+  return Array.isArray(arr) ? arr : [];
+});
 
 // ----- i18n helpers -----
 const { t } = useI18n();
@@ -226,31 +238,224 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 <template>
   <PlatformLayout v-if="config">
     <template #windows>
-      <div class="mb-6">
-        <div class="rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
-          <div class="bg-surface/40 px-4 py-3">
-            <h3 class="text-sm font-medium">
-              {{ $t('config.dd_options_header') }}
-            </h3>
-          </div>
-          <div class="p-4 space-y-4">
-            <!-- Configuration option -->
-            <div>
-              <label for="dd_configuration_option" class="form-label">{{
-                $t('config.dd_config_label')
-              }}</label>
-              <n-select
-                id="dd_configuration_option"
-                v-model:value="config.dd_configuration_option"
-                :options="ddConfigurationOptions"
-                :data-search-options="
-                  ddConfigurationOptions.map((o) => `${o.label}::${o.value}`).join('|')
-                "
-              />
-            </div>
+      <div class="space-y-4">
+            <!-- Step 2 content combined: configuration + snapshot (single card) -->
+            <fieldset v-if="section === 'pre'" class="border border-dark/35 dark:border-light/25 rounded-xl p-4">
+              <legend class="px-2 text-sm font-medium">{{ $t('config.dd_step_2') }}: {{ $t('config.dd_pre_stream_setup') }}</legend>
+              <!-- Configuration option -->
+              <div class="text-sm font-medium mb-2">{{ $t('config.dd_config_label') }}</div>
+              <n-radio-group v-model:value="config.dd_configuration_option">
+                <div class="grid gap-2">
+                  <n-radio
+                    v-for="opt in ddConfigurationOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </div>
+              </n-radio-group>
+              <div class="text-[11px] opacity-60 mt-1">
+                {{ $t('config.dd_config_hint') }}
+              </div>
 
-            <!-- Resolution option -->
-            <div v-if="config.dd_configuration_option !== 'disabled'">
+              <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+
+              <!-- Snapshot for recovery -->
+              <div class="px-0 text-sm font-medium">Save a display snapshot (improves stability)</div>
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div class="max-w-[700px]">
+                  <p class="text-[11px] opacity-60 mt-1">
+                    {{ $t('troubleshooting.dd_golden_help') }}
+                    Saving a snapshot of your ideal monitor setup helps Sunshine recover when Windows fails to restore displays after streaming.
+                  </p>
+                  <div class="mt-2 text-xs">
+                    <span v-if="goldenExists === true" class="inline-block rounded bg-green-600/10 text-green-700 dark:text-green-300 border border-green-600/30 px-2 py-1">
+                      {{ $t('troubleshooting.dd_golden_status_present') }}
+                    </span>
+                    <span v-else-if="goldenExists === false" class="inline-block rounded bg-yellow-600/10 text-yellow-700 dark:text-yellow-300 border border-yellow-600/30 px-2 py-1">
+                      {{ $t('troubleshooting.dd_golden_status_missing') }}
+                    </span>
+                  </div>
+                </div>
+                <div class="flex gap-2 mt-1 sm:mt-0">
+                  <n-button type="primary" strong :disabled="goldenBusy" @click="exportGolden">
+                    {{ createOrRecreateLabel }}
+                  </n-button>
+                  <n-button type="error" strong :disabled="goldenBusy || goldenExists !== true" @click="deleteGolden">
+                    {{ $t('troubleshooting.dd_golden_delete') }}
+                  </n-button>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 mt-2">
+                <n-button type="default" strong size="small" @click="loadGoldenStatus">{{ $t('troubleshooting.dd_golden_refresh') }}</n-button>
+              </div>
+              <transition name="fade">
+                <p v-if="exportStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
+                  {{ $t('troubleshooting.dd_export_golden_success') }}
+                </p>
+              </transition>
+              <transition name="fade">
+                <p v-if="exportStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
+                  {{ $t('troubleshooting.dd_export_golden_error') }}
+                </p>
+              </transition>
+              <transition name="fade">
+                <p v-if="deleteStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
+                  {{ $t('troubleshooting.dd_golden_deleted') }}
+                </p>
+              </transition>
+              <transition name="fade">
+                <p v-if="deleteStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
+                  {{ $t('troubleshooting.dd_golden_delete_error') }}
+                </p>
+              </transition>
+            </fieldset>
+
+            <!-- Optional adjustments (belongs to Step 3 in parent) -->
+            <fieldset
+              v-if="section === 'options' && config.dd_configuration_option !== 'disabled'"
+              class="border border-dark/35 dark:border-light/25 rounded-xl p-4"
+            >
+              <legend class="px-2 text-sm font-medium">{{ $t('config.dd_step_3') }}: {{ $t('config.dd_optional_adjustments') }}</legend>
+              <!-- Display overrides (formerly Display mode remapping) -->
+              <div v-if="canBeRemapped()" class="mb-4">
+                <label
+                  for="dd_mode_remapping"
+                  class="block text-sm font-medium mb-1 text-dark dark:text-light"
+                >
+                  {{ $t('config.dd_display_overrides') }}
+                </label>
+                <p class="text-[11px] opacity-60">
+                  {{ $t('config.dd_mode_remapping_desc_1') }}<br />
+                  {{ $t('config.dd_mode_remapping_desc_2') }}<br />
+                  {{ $t('config.dd_mode_remapping_desc_3') }}<br />
+                  {{
+                    $t(
+                      getRemappingType() === MIXED
+                        ? 'config.dd_mode_remapping_desc_4_final_values_mixed'
+                        : 'config.dd_mode_remapping_desc_4_final_values_non_mixed',
+                    )
+                  }}<br />
+                  <template v-if="getRemappingType() === MIXED">
+                    {{ $t('config.dd_mode_remapping_desc_5_sops_mixed_only') }}<br />
+                  </template>
+                  <template v-if="getRemappingType() === RESOLUTION_ONLY">
+                    {{ $t('config.dd_mode_remapping_desc_5_sops_resolution_only') }}<br />
+                  </template>
+                </p>
+
+                <div v-if="remappingArray.length > 0" class="space-y-2">
+                  <div
+                    v-for="(value, idx) in remappingArray"
+                    :key="idx"
+                    class="grid grid-cols-12 gap-2 items-start"
+                  >
+                    <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
+                      <n-input
+                        v-model:value="value.requested_resolution"
+                        type="text"
+                        class="monospace"
+                        :placeholder="'1920x1080'"
+                        @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                        :status="
+                          isResolutionFieldValid(value.requested_resolution) ? undefined : 'error'
+                        "
+                      />
+                    </div>
+                    <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
+                      <n-input
+                        v-model:value="value.requested_fps"
+                        type="text"
+                        class="monospace"
+                        :placeholder="'60'"
+                        @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                        :status="isRefreshFieldValid(value.requested_fps) ? undefined : 'error'"
+                      />
+                    </div>
+
+                    <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
+                      <n-input
+                        v-model:value="value.final_resolution"
+                        type="text"
+                        class="monospace"
+                        :placeholder="'2560x1440'"
+                        @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                        :status="isResolutionFieldValid(value.final_resolution) ? undefined : 'error'"
+                      />
+                    </div>
+                    <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
+                      <n-input
+                        v-model:value="value.final_refresh_rate"
+                        type="text"
+                        class="monospace"
+                        :placeholder="'119.95'"
+                        @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                        :status="isRefreshFieldValid(value.final_refresh_rate) ? undefined : 'error'"
+                      />
+                    </div>
+                    <div class="col-span-2 flex justify-end self-start">
+                      <n-button size="small" type="error" strong @click="removeRemappingEntry(idx)">
+                        <i class="fas fa-trash" />
+                      </n-button>
+                    </div>
+
+                    <!-- Second grid row for validation messages to preserve top alignment -->
+                    <div
+                      v-if="
+                        getRemappingType() !== REFRESH_RATE_ONLY &&
+                        !isResolutionFieldValid(value.requested_resolution)
+                      "
+                      class="col-span-3 text-[11px] text-red-500 mt-1"
+                    >
+                      Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
+                    </div>
+                    <div
+                      v-if="
+                        getRemappingType() !== RESOLUTION_ONLY &&
+                        !isRefreshFieldValid(value.requested_fps)
+                      "
+                      class="col-span-2 text-[11px] text-red-500 mt-1"
+                    >
+                      Invalid. Use a positive number or leave blank.
+                    </div>
+                    <div
+                      v-if="
+                        getRemappingType() !== REFRESH_RATE_ONLY &&
+                        !isResolutionFieldValid(value.final_resolution)
+                      "
+                      class="col-span-3 text-[11px] text-red-500 mt-1"
+                    >
+                      Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
+                    </div>
+                    <div
+                      v-if="
+                        getRemappingType() !== RESOLUTION_ONLY &&
+                        !isRefreshFieldValid(value.final_refresh_rate)
+                      "
+                      class="col-span-2 text-[11px] text-red-500 mt-1"
+                    >
+                      Invalid. Use a positive number or leave blank.
+                    </div>
+                    <div
+                      v-if="
+                        getRemappingType() === MIXED &&
+                        !value.final_resolution &&
+                        !value.final_refresh_rate
+                      "
+                      class="col-span-12 text-[11px] text-red-500"
+                    >
+                      For mixed mappings, specify at least one Final field.
+                    </div>
+                  </div>
+                </div>
+                <div class="mt-2">
+                  <n-button type="primary" strong size="small" @click="addRemappingEntry()">
+                    &plus; {{ $t('config.dd_mode_remapping_add') }}
+                  </n-button>
+                </div>
+              </div>
+              <!-- Resolution option -->
+              <div>
               <label for="dd_resolution_option" class="form-label">{{
                 $t('config.dd_resolution_option')
               }}</label>
@@ -288,10 +493,10 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                   Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440.
                 </p>
               </div>
-            </div>
+              </div>
 
-            <!-- Refresh rate option -->
-            <div v-if="config.dd_configuration_option !== 'disabled'">
+              <!-- Refresh rate option -->
+              <div class="mt-4">
               <label for="dd_refresh_rate_option" class="form-label">{{
                 $t('config.dd_refresh_rate_option')
               }}</label>
@@ -324,10 +529,10 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                   Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.
                 </p>
               </div>
-            </div>
+              </div>
 
-            <!-- HDR option -->
-            <div v-if="config.dd_configuration_option !== 'disabled'">
+              <!-- HDR option -->
+              <div class="mt-4">
               <label for="dd_hdr_option" class="form-label">{{ $t('config.dd_hdr_option') }}</label>
               <n-select
                 id="dd_hdr_option"
@@ -337,239 +542,39 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                 class="mb-2"
               />
 
-              <label for="dd_wa_hdr_toggle_delay" class="form-label">{{
-                $t('config.dd_wa_hdr_toggle_delay')
-              }}</label>
-              <n-input-number
-                id="dd_wa_hdr_toggle_delay"
-                v-model:value="config.dd_wa_hdr_toggle_delay"
-                placeholder="0"
-                :min="0"
-                :max="3000"
-              />
-              <p class="text-[11px] opacity-60 mt-1">
-                {{ $t('config.dd_wa_hdr_toggle_delay_desc_1') }}<br />
-                {{ $t('config.dd_wa_hdr_toggle_delay_desc_2') }}<br />
-                {{ $t('config.dd_wa_hdr_toggle_delay_desc_3') }}
-              </p>
-            </div>
-
-            <!-- Config revert delay -->
-            <div v-if="config.dd_configuration_option !== 'disabled'">
-              <label for="dd_config_revert_delay" class="form-label">{{
-                $t('config.dd_config_revert_delay')
-              }}</label>
-              <n-input-number
-                id="dd_config_revert_delay"
-                v-model:value="config.dd_config_revert_delay"
-                placeholder="3000"
-                :min="0"
-              />
-              <p class="text-[11px] opacity-60 mt-1">
-                {{ $t('config.dd_config_revert_delay_desc') }}
-              </p>
-            </div>
-
-            <!-- Config revert on disconnect -->
-            <div>
               <Checkbox
-                id="dd_config_revert_on_disconnect"
-                v-model="config.dd_config_revert_on_disconnect"
+                id="dd_wa_hdr_toggle"
+                v-model="config.dd_wa_hdr_toggle"
                 locale-prefix="config"
                 default="false"
               />
-            </div>
-
-            <!-- Display mode remapping -->
-            <div v-if="canBeRemapped()">
-              <label
-                for="dd_mode_remapping"
-                class="block text-sm font-medium mb-1 text-dark dark:text-light"
-              >
-                {{ $t('config.dd_mode_remapping') }}
-              </label>
-              <p class="text-[11px] opacity-60">
-                {{ $t('config.dd_mode_remapping_desc_1') }}<br />
-                {{ $t('config.dd_mode_remapping_desc_2') }}<br />
-                {{ $t('config.dd_mode_remapping_desc_3') }}<br />
-                {{
-                  $t(
-                    getRemappingType() === MIXED
-                      ? 'config.dd_mode_remapping_desc_4_final_values_mixed'
-                      : 'config.dd_mode_remapping_desc_4_final_values_non_mixed',
-                  )
-                }}<br />
-                <template v-if="getRemappingType() === MIXED">
-                  {{ $t('config.dd_mode_remapping_desc_5_sops_mixed_only') }}<br />
-                </template>
-                <template v-if="getRemappingType() === RESOLUTION_ONLY">
-                  {{ $t('config.dd_mode_remapping_desc_5_sops_resolution_only') }}<br />
-                </template>
-              </p>
-
-              <div v-if="config.dd_mode_remapping[getRemappingType()].length > 0" class="space-y-2">
-                <div
-                  v-for="(value, idx) in config.dd_mode_remapping[getRemappingType()]"
-                  :key="idx"
-                  class="grid grid-cols-12 gap-2 items-start"
-                >
-                  <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
-                    <n-input
-                      v-model:value="value.requested_resolution"
-                      type="text"
-                      class="monospace"
-                      :placeholder="'1920x1080'"
-                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                      :status="
-                        isResolutionFieldValid(value.requested_resolution) ? undefined : 'error'
-                      "
-                    />
-                  </div>
-                  <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
-                    <n-input
-                      v-model:value="value.requested_fps"
-                      type="text"
-                      class="monospace"
-                      :placeholder="'60'"
-                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                      :status="isRefreshFieldValid(value.requested_fps) ? undefined : 'error'"
-                    />
-                  </div>
-
-                  <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
-                    <n-input
-                      v-model:value="value.final_resolution"
-                      type="text"
-                      class="monospace"
-                      :placeholder="'2560x1440'"
-                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                      :status="isResolutionFieldValid(value.final_resolution) ? undefined : 'error'"
-                    />
-                  </div>
-                  <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
-                    <n-input
-                      v-model:value="value.final_refresh_rate"
-                      type="text"
-                      class="monospace"
-                      :placeholder="'119.95'"
-                      @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                      :status="isRefreshFieldValid(value.final_refresh_rate) ? undefined : 'error'"
-                    />
-                  </div>
-                  <div class="col-span-2 flex justify-end self-start">
-                    <n-button size="small" type="error" strong @click="removeRemappingEntry(idx)">
-                      <i class="fas fa-trash" />
-                    </n-button>
-                  </div>
-
-                  <!-- Second grid row for validation messages to preserve top alignment -->
-                  <div
-                    v-if="
-                      getRemappingType() !== REFRESH_RATE_ONLY &&
-                      !isResolutionFieldValid(value.requested_resolution)
-                    "
-                    class="col-span-3 text-[11px] text-red-500 mt-1"
-                  >
-                    Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
-                  </div>
-                  <div
-                    v-if="
-                      getRemappingType() !== RESOLUTION_ONLY &&
-                      !isRefreshFieldValid(value.requested_fps)
-                    "
-                    class="col-span-2 text-[11px] text-red-500 mt-1"
-                  >
-                    Invalid. Use a positive number or leave blank.
-                  </div>
-                  <div
-                    v-if="
-                      getRemappingType() !== REFRESH_RATE_ONLY &&
-                      !isResolutionFieldValid(value.final_resolution)
-                    "
-                    class="col-span-3 text-[11px] text-red-500 mt-1"
-                  >
-                    Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
-                  </div>
-                  <div
-                    v-if="
-                      getRemappingType() !== RESOLUTION_ONLY &&
-                      !isRefreshFieldValid(value.final_refresh_rate)
-                    "
-                    class="col-span-2 text-[11px] text-red-500 mt-1"
-                  >
-                    Invalid. Use a positive number or leave blank.
-                  </div>
-                  <div
-                    v-if="
-                      getRemappingType() === MIXED &&
-                      !value.final_resolution &&
-                      !value.final_refresh_rate
-                    "
-                    class="col-span-12 text-[11px] text-red-500"
-                  >
-                    For mixed mappings, specify at least one Final field.
-                  </div>
-                </div>
+              </div>
+              <!-- Revert behavior (merged into this card) -->
+              <div class="mt-4">
+                <label for="dd_config_revert_delay" class="form-label">{{
+                  $t('config.dd_config_revert_delay')
+                }}</label>
+                <n-input-number
+                  id="dd_config_revert_delay"
+                  v-model:value="config.dd_config_revert_delay"
+                  placeholder="3000"
+                  :min="0"
+                />
+                <p class="text-[11px] opacity-60 mt-1">
+                  {{ $t('config.dd_config_revert_delay_desc') }}
+                </p>
               </div>
               <div class="mt-2">
-                <n-button type="primary" strong size="small" @click="addRemappingEntry()">
-                  &plus; {{ $t('config.dd_mode_remapping_add') }}
-                </n-button>
-          </div>
+                <Checkbox
+                  id="dd_config_revert_on_disconnect"
+                  v-model="config.dd_config_revert_on_disconnect"
+                  locale-prefix="config"
+                  default="false"
+                />
+              </div>
+            </fieldset>
+
           
-          <!-- Golden Restore (Windows only) -->
-          <div class="pt-2 border-t border-dark/5 dark:border-light/5">
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div class="max-w-[700px]">
-                <h4 class="text-sm font-medium">{{ $t('troubleshooting.dd_golden_title') }}</h4>
-                <p class="text-[11px] opacity-60 mt-1">
-                  {{ $t('troubleshooting.dd_golden_help') }}
-                </p>
-                <div class="mt-2 text-xs">
-                  <span v-if="goldenExists === true" class="inline-block rounded bg-green-600/10 text-green-700 dark:text-green-300 border border-green-600/30 px-2 py-1">
-                    {{ $t('troubleshooting.dd_golden_status_present') }}
-                  </span>
-                  <span v-else-if="goldenExists === false" class="inline-block rounded bg-yellow-600/10 text-yellow-700 dark:text-yellow-300 border border-yellow-600/30 px-2 py-1">
-                    {{ $t('troubleshooting.dd_golden_status_missing') }}
-                  </span>
-                </div>
-              </div>
-              <div class="flex gap-2 mt-1 sm:mt-0">
-                <n-button type="primary" strong :disabled="goldenBusy" @click="exportGolden">
-                  {{ createOrRecreateLabel }}
-                </n-button>
-                <n-button type="error" strong :disabled="goldenBusy || goldenExists !== true" @click="deleteGolden">
-                  {{ $t('troubleshooting.dd_golden_delete') }}
-                </n-button>
-              </div>
-            </div>
-            <div class="flex items-center gap-3 mt-2">
-              <n-button type="default" strong size="small" @click="loadGoldenStatus">{{ $t('troubleshooting.dd_golden_refresh') }}</n-button>
-            </div>
-            <transition name="fade">
-              <p v-if="exportStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
-                {{ $t('troubleshooting.dd_export_golden_success') }}
-              </p>
-            </transition>
-            <transition name="fade">
-              <p v-if="exportStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
-                {{ $t('troubleshooting.dd_export_golden_error') }}
-              </p>
-            </transition>
-            <transition name="fade">
-              <p v-if="deleteStatus === true" class="mt-2 alert alert-success rounded px-3 py-2 text-sm">
-                {{ $t('troubleshooting.dd_golden_deleted') }}
-              </p>
-            </transition>
-            <transition name="fade">
-              <p v-if="deleteStatus === false" class="mt-2 alert alert-danger rounded px-3 py-2 text-sm">
-                {{ $t('troubleshooting.dd_golden_delete_error') }}
-              </p>
-            </transition>
-          </div>
-        </div>
-      </div>
-    </div>
       </div>
     </template>
     <template #linux></template>

@@ -90,7 +90,7 @@ namespace config {
 
     struct dd_t {
       struct workarounds_t {
-        std::chrono::milliseconds hdr_toggle_delay;  ///< Specify whether to apply HDR high-contrast color workaround and what delay to use.
+        bool hdr_toggle;  ///< Enable HDR high-contrast color workaround (async; fixed 1s delay).
       };
 
       enum class config_option_e {

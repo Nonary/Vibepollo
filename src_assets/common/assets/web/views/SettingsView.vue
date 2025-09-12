@@ -161,8 +161,8 @@
   </main>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent } from 'vue';
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent, nextTick } from 'vue';
 import { NInput, NButton, useMessage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import General from '@/configs/tabs/General.vue';
@@ -250,9 +250,24 @@ onMounted(async () => {
   await store.fetchConfig();
   if (config.value) queueBuildIndex();
 
-  // If a target section is in the URL, scroll to it after initial render
+  // If a target section is in the URL, scroll once ready/rendered
   if (typeof route.query.sec === 'string') {
-    setTimeout(() => scrollToOpen(route.query.sec), 0);
+    if (isReady.value) {
+      await nextTick();
+      setTimeout(() => scrollToOpen(route.query.sec as string), 0);
+    } else {
+      const stop = watch(
+        () => isReady.value,
+        async (ready) => {
+          if (ready) {
+            stop();
+            await nextTick();
+            setTimeout(() => scrollToOpen(route.query.sec as string), 0);
+          }
+        },
+        { immediate: false },
+      );
+    }
   }
 });
 
@@ -327,15 +342,35 @@ const goSection = (id) => {
   route.path === '/settings' ? router.replace(dest) : router.push(dest);
 };
 
-function scrollToOpen(id) {
+async function scrollToOpen(id) {
   if (!id) return;
   if (!isOpen(id)) toggle(id);
-  const el = sectionRefs.get(id);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Wait for DOM to reflect expansion before scrolling
+  await nextTick();
+  requestAnimationFrame(() => {
+    const el = sectionRefs.get(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 watch(
   () => route.query.sec,
-  (id) => typeof id === 'string' && scrollToOpen(id),
+  (id) => {
+    if (typeof id !== 'string') return;
+    if (isReady.value) {
+      scrollToOpen(id);
+    } else {
+      const stop = watch(
+        () => isReady.value,
+        (ready) => {
+          if (ready) {
+            stop();
+            scrollToOpen(id);
+          }
+        },
+        { immediate: false },
+      );
+    }
+  },
 );
 
 function buildSearchIndex() {

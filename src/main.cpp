@@ -10,7 +10,6 @@
 
 // local includes
 #include "confighttp.h"
-#include "display_device.h"
 #include "entry_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -164,13 +163,7 @@ int main(int argc, char *argv[]) {
     return fn->second(argv[0], config::sunshine.cmd.argc, config::sunshine.cmd.argv);
   }
 
-  // Adding guard here first as it also performs recovery after crash,
-  // otherwise people could theoretically end up without display output.
-  // It also should be destroyed before forced shutdown to expedite the cleanup.
-  auto display_device_deinit_guard = display_device::init(platf::appdata() / "display_device.state", config::video);
-  if (!display_device_deinit_guard) {
-    BOOST_LOG(error) << "Display device session failed to initialize"sv;
-  }
+  // Display configuration is managed by the external Windows helper; no in-process init.
 
 #ifdef WIN32
   // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
@@ -283,7 +276,7 @@ int main(int argc, char *argv[]) {
 
   // Create signal handler after logging has been initialized
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  on_signal(SIGINT, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
+  on_signal(SIGINT, [&force_shutdown, shutdown_event]() {
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
     auto task = []() {
@@ -294,10 +287,9 @@ int main(int argc, char *argv[]) {
     force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
     shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
   });
 
-  on_signal(SIGTERM, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
+  on_signal(SIGTERM, [&force_shutdown, shutdown_event]() {
     BOOST_LOG(info) << "Terminate handler called"sv;
 
     auto task = []() {
@@ -308,7 +300,6 @@ int main(int argc, char *argv[]) {
     force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
     shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
   });
 
 #ifdef _WIN32

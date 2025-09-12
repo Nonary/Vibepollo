@@ -29,8 +29,8 @@
   #define WIN32_LEAN_AND_MEAN
 #endif
 // winsock2.h must be included before windows.h
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 
 namespace platf::dxgi {
 

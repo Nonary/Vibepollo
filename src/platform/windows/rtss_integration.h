@@ -8,13 +8,13 @@
 
 namespace platf {
   struct rtss_status_t {
-    bool enabled;              // config::rtss.enable_frame_limit
-    bool path_configured;      // install_path not empty
-    std::string configured_path; // raw config value (may be relative)
-    std::string resolved_path; // absolute resolved path we will use
-    bool path_exists;          // resolved path exists on disk
-    bool hooks_found;          // RTSSHooks64.dll or RTSSHooks.dll exists
-    bool profile_found;        // Profiles/Global exists
+    bool enabled;  // config::rtss.enable_frame_limit
+    bool path_configured;  // install_path not empty
+    std::string configured_path;  // raw config value (may be relative)
+    std::string resolved_path;  // absolute resolved path we will use
+    bool path_exists;  // resolved path exists on disk
+    bool hooks_found;  // RTSSHooks64.dll or RTSSHooks.dll exists
+    bool profile_found;  // Profiles/Global exists
   };
 
   // Apply RTSS frame limit and related settings at stream start.
@@ -26,6 +26,6 @@ namespace platf {
 
   // Query RTSS availability and installation status (no side effects).
   rtss_status_t rtss_get_status();
-}
+}  // namespace platf
 
-#endif // _WIN32
+#endif  // _WIN32

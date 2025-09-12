@@ -5,18 +5,18 @@
 
 #ifdef _WIN32
 
-// standard includes
-#include <windows.h>
-#include <string>
-#include <fstream>
-#include <filesystem>
-#include <optional>
-#include <cstdio>
+  // standard includes
+  #include <cstdio>
+  #include <filesystem>
+  #include <fstream>
+  #include <optional>
+  #include <string>
+  #include <windows.h>
 
-// local includes
-#include "src/platform/windows/rtss_integration.h"
-#include "src/config.h"
-#include "src/logging.h"
+  // local includes
+  #include "src/config.h"
+  #include "src/logging.h"
+  #include "src/platform/windows/rtss_integration.h"
 
 using namespace std::literals;
 namespace fs = std::filesystem;
@@ -25,11 +25,11 @@ namespace platf {
 
   namespace {
     // RTSSHooks function pointer types
-    using fn_LoadProfile = BOOL (__cdecl *)(LPCSTR profileName);
-    using fn_SaveProfile = BOOL (__cdecl *)(LPCSTR profileName);
-    using fn_GetProfileProperty = BOOL (__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
-    using fn_SetProfileProperty = BOOL (__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
-    using fn_UpdateProfiles = VOID (__cdecl *)();
+    using fn_LoadProfile = BOOL(__cdecl *)(LPCSTR profileName);
+    using fn_SaveProfile = BOOL(__cdecl *)(LPCSTR profileName);
+    using fn_GetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
+    using fn_SetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
+    using fn_UpdateProfiles = VOID(__cdecl *)();
 
     struct hooks_t {
       HMODULE module = nullptr;
@@ -57,23 +57,37 @@ namespace platf {
     // Map config string to SyncLimiter integer
     std::optional<int> map_sync_limiter(const std::string &type) {
       std::string t = type;
-      for (auto &c : t) c = (char) ::tolower(c);
+      for (auto &c : t) {
+        c = (char) ::tolower(c);
+      }
 
-      if (t == "async") return 0;
-      if (t == "front edge sync" || t == "front_edge_sync") return 1;
-      if (t == "back edge sync" || t == "back_edge_sync") return 2;
-      if (t == "nvidia reflex" || t == "nvidia_reflex" || t == "reflex") return 3;
+      if (t == "async") {
+        return 0;
+      }
+      if (t == "front edge sync" || t == "front_edge_sync") {
+        return 1;
+      }
+      if (t == "back edge sync" || t == "back_edge_sync") {
+        return 2;
+      }
+      if (t == "nvidia reflex" || t == "nvidia_reflex" || t == "reflex") {
+        return 3;
+      }
       return std::nullopt;
     }
 
     // Load RTSSHooks DLL from the RTSS root
     bool load_hooks(const fs::path &root) {
-      if (g_hooks) return true;
+      if (g_hooks) {
+        return true;
+      }
 
       auto try_load = [&](const wchar_t *dll_name) -> bool {
         fs::path p = root / dll_name;
         HMODULE m = LoadLibraryW(p.c_str());
-        if (!m) return false;
+        if (!m) {
+          return false;
+        }
         g_hooks.module = m;
         g_hooks.LoadProfile = (fn_LoadProfile) GetProcAddress(m, "LoadProfile");
         g_hooks.SaveProfile = (fn_SaveProfile) GetProcAddress(m, "SaveProfile");
@@ -156,7 +170,9 @@ namespace platf {
 
     // Helper: read integer profile property, returns value if present
     std::optional<int> get_profile_property_int(const char *name) {
-      if (!g_hooks) return std::nullopt;
+      if (!g_hooks) {
+        return std::nullopt;
+      }
       int value = 0;
       g_hooks.LoadProfile("");
       if (g_hooks.GetProfileProperty(name, &value, sizeof(value))) {
@@ -167,7 +183,9 @@ namespace platf {
 
     // Helper: set integer profile property and return previous value if present
     std::optional<int> set_profile_property_int(const char *name, int new_value) {
-      if (!g_hooks) return std::nullopt;
+      if (!g_hooks) {
+        return std::nullopt;
+      }
 
       int old_value = 0;
       BOOL had_old = FALSE;
@@ -229,7 +247,7 @@ namespace platf {
       }
       return base / fs::path(std::wstring(sub.begin(), sub.end()));
     }
-  } // namespace
+  }  // namespace
 
   void rtss_streaming_start(int fps) {
     if (!config::rtss.enable_frame_limit) {
@@ -339,6 +357,6 @@ namespace platf {
     }
     return st;
   }
-} // namespace platf
+}  // namespace platf
 
-#endif // _WIN32
+#endif  // _WIN32

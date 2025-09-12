@@ -114,9 +114,10 @@
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$p='[INSTALL_ROOT]assets\web'; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }&quot;"/>
 
 
+    <!-- Guard NV prefs restore on uninstall: only run if sunshine.exe still exists -->
     <CustomAction Id="SetRestoreNvPrefsUndo"
                  Property="RestoreNvPrefsUndo"
-                 Value="&quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo"/>
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C if exist &quot;[INSTALL_ROOT]sunshine.exe&quot; ( &quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo ) else ( exit /b 0 )"/>
 
 
     <CustomAction Id="AskRemoveGamepad" BinaryKey="AskRmGamepadVbs" VBScriptCall="AskRemoveGamepad" Execute="immediate" Return="check" />

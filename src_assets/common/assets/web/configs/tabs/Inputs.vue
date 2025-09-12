@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
-import { computed } from 'vue';
 import { NSelect, NInputNumber } from 'naive-ui';
 
 const store = useConfigStore();
 const config = store.config;
 const platform = computed(() => config.value?.platform || '');
+
+ 
 
 const gamepadOptions = computed(() => {
   const opts = [{ label: '_common.auto', value: 'auto' }];
@@ -27,10 +28,13 @@ const gamepadOptions = computed(() => {
   }
   return opts;
 });
+
+//
 </script>
 
 <template>
   <div id="input" class="config-page">
+    
     <!-- Enable Gamepad Input -->
     <Checkbox
       id="controller"

@@ -16,6 +16,10 @@ namespace display_helper_integration {
   inline bool suppress_fallback() {
     return true;
   }
+
+  // Enumerate display devices as a JSON string suitable for API responses.
+  // Implemented in the Windows backend.
+  std::string enumerate_devices_json();
 }  // namespace display_helper_integration
 
 #else
@@ -30,8 +34,20 @@ namespace display_helper_integration {
     return false;
   }
 
+  inline bool export_golden_restore() {
+    return false;
+  }
+
+  inline bool reset_persistence() {
+    return false;
+  }
+
   inline bool suppress_fallback() {
     return false;
+  }
+
+  inline std::string enumerate_devices_json() {
+    return "[]";
   }
 }  // namespace display_helper_integration
 

@@ -18,4 +18,17 @@ namespace display_helper_integration {
 
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
+
+  // Request the helper to reset its persistence/state.
+  bool reset_persistence();
+
+  // Enumerate display devices and return JSON payload for API.
+  std::string enumerate_devices_json();
+
+  // Start a lightweight watchdog during active streams that pings the helper periodically
+  // and restarts/re-handshakes if it crashes. No-ops if already running.
+  void start_watchdog();
+
+  // Stop the helper watchdog when no streams are active.
+  void stop_watchdog();
 }  // namespace display_helper_integration

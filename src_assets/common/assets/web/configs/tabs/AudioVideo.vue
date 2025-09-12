@@ -125,9 +125,39 @@ const streamAudio = boolProxy('stream_audio', 'true');
 
     <AdapterNameSelector />
 
-    <DisplayOutputSelector />
+    <!-- Display configuration: clear, guided, pre-stream focused -->
+    <section class="mb-8">
+      <div class="rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
+        <div class="bg-surface/40 px-4 py-3">
+          <h3 class="text-sm font-medium">{{ $t('config.dd_display_setup_title') }}</h3>
+          <p class="text-[11px] opacity-70 mt-1">
+            {{ $t('config.dd_display_setup_intro') }}
+          </p>
+        </div>
 
-    <DisplayDeviceOptions />
+        <div class="p-4">
+          <!-- Step 1: Which display to capture -->
+          <fieldset class="mb-4 border border-dark/35 dark:border-light/25 rounded-xl p-4">
+            <legend class="px-2 text-sm font-medium">{{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}</legend>
+            <DisplayOutputSelector />
+          </fieldset>
+
+          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+
+          <!-- Step 2: What to do before the stream starts -->
+          <div>
+            <DisplayDeviceOptions section="pre" />
+          </div>
+
+          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+
+          <!-- Step 3: Optional adjustments -->
+          <div>
+            <DisplayDeviceOptions section="options" />
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- Display Modes -->
     <DisplayModesSettings />

@@ -7,118 +7,21 @@
 
 // lib includes
 #include <boost/algorithm/string.hpp>
-#include <display_device/audio_context_interface.h>
-#include <display_device/file_settings_persistence.h>
 #include <display_device/json.h>
-#include <display_device/retry_scheduler.h>
-#include <display_device/settings_manager_interface.h>
-#include <mutex>
 #include <regex>
 
 // local includes
-#include "audio.h"
 #include "platform/common.h"
 #include "rtsp.h"
 
-// platform-specific includes
+// No direct helper calls here; this unit now focuses on parsing and small conveniences.
 #ifdef _WIN32
-  #include "platform/windows/impersonating_display_device.h"
-  #include "platform/windows/misc.h"
-
-  #include <display_device/noop_settings_persistence.h>
-  #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
 #endif
-#include "src/display_helper_integration.h"
 
 namespace display_device {
   namespace {
-    constexpr std::chrono::milliseconds DEFAULT_RETRY_INTERVAL {5000};
-
-    /**
-     * @brief A global for the settings manager interface and other settings whose lifetime is managed by `display_device::init(...)`.
-     */
-    struct {
-      std::mutex mutex {};
-      std::chrono::milliseconds config_revert_delay {0};
-      std::unique_ptr<RetryScheduler<SettingsManagerInterface>> sm_instance {nullptr};
-    } DD_DATA;
-
-    /**
-     * @brief Helper class for capturing audio context when the API demands it.
-     *
-     * The capture is needed to be done in case some of the displays are going
-     * to be deactivated before the stream starts. In this case the audio context
-     * will be captured for this display and can be restored once it is turned back.
-     */
-    class sunshine_audio_context_t: public AudioContextInterface {
-    public:
-      [[nodiscard]] bool capture() override {
-        return context_scheduler.execute([](auto &audio_context) {
-          // Explicitly releasing the context first in case it was not release yet so that it can be potentially cleaned up.
-          audio_context = boost::none;
-          audio_context = audio_context_t {};
-
-          // Always say that we have captured it successfully as otherwise the settings change procedure will be aborted.
-          return true;
-        });
-      }
-
-      [[nodiscard]] bool isCaptured() const override {
-        return context_scheduler.execute([](const auto &audio_context) {
-          if (audio_context) {
-            // In case we still have context we need to check whether it was released or not.
-            // If it was released we can pretend that we no longer have it as it will be immediately cleaned up in `capture` method before we acquire new context.
-            return !audio_context->released;
-          }
-
-          return false;
-        });
-      }
-
-      void release() override {
-        context_scheduler.schedule([](auto &audio_context, auto &stop_token) {
-          if (audio_context) {
-            audio_context->released = true;
-
-            const auto *audio_ctx_ptr = audio_context->audio_ctx_ref.get();
-            if (audio_ctx_ptr && !audio::is_audio_ctx_sink_available(*audio_ctx_ptr) && audio_context->retry_counter > 0) {
-              // It is possible that the audio sink is not immediately available after the display is turned on.
-              // Therefore, we will hold on to the audio context a little longer, until it is either available
-              // or we time out.
-              --audio_context->retry_counter;
-              return;
-            }
-          }
-
-          audio_context = boost::none;
-          stop_token.requestStop();
-        },
-                                   SchedulerOptions {.m_sleep_durations = {2s}});
-      }
-
-    private:
-      struct audio_context_t {
-        /**
-         * @brief A reference to the audio context that will automatically extend the audio session.
-         * @note It is auto-initialized here for convenience.
-         */
-        decltype(audio::get_audio_ctx_ref()) audio_ctx_ref {audio::get_audio_ctx_ref()};
-
-        /**
-         * @brief Will be set to true if the capture was released, but we still have to keep the context around, because the device is not available.
-         */
-        bool released {false};
-
-        /**
-         * @brief How many times to check if the audio sink is available before giving up.
-         */
-        int retry_counter {15};
-      };
-
-      RetryScheduler<boost::optional<audio_context_t>> context_scheduler {std::make_unique<boost::optional<audio_context_t>>(boost::none)};
-    };
 
     /**
      * @brief Convert string to unsigned int.
@@ -611,235 +514,92 @@ namespace display_device {
       return true;
     }
 
-    /**
-     * @brief Construct a settings manager interface to manage display device settings.
-     * @param persistence_filepath File location for saving persistent state.
-     * @param video_config User's video related configuration.
-     * @return An interface or nullptr if the OS does not support the interface.
-     */
-    std::unique_ptr<SettingsManagerInterface> make_settings_manager([[maybe_unused]] const std::filesystem::path &persistence_filepath, [[maybe_unused]] const config::video_t &video_config) {
-#ifdef _WIN32
-      // Build the Windows display device API. When running as SYSTEM, wrap it with user impersonation
-      // to ensure per-user display settings (and DB restore) apply correctly.
-      std::shared_ptr<WinDisplayDeviceInterface> dd_iface = std::make_shared<WinDisplayDevice>(std::make_shared<WinApiLayer>());
-      // Always wrap with impersonation; wrapper decides at call-time whether to impersonate.
-      dd_iface = std::make_shared<ImpersonatingDisplayDevice>(dd_iface);
-
-      return std::make_unique<SettingsManager>(
-        std::move(dd_iface),
-        std::make_shared<sunshine_audio_context_t>(),
-        // Do not rely on file persistence; keep state in-memory only.
-        std::make_unique<PersistentState>(
-          std::make_shared<NoopSettingsPersistence>()
-        ),
-        WinWorkarounds {
-          .m_hdr_blank_delay = video_config.dd.wa.hdr_toggle_delay != std::chrono::milliseconds::zero() ? std::make_optional(video_config.dd.wa.hdr_toggle_delay) : std::nullopt
-        }
-      );
-#else
-      return nullptr;
-#endif
-    }
-
-    /**
-     * @brief Defines the "revert config" algorithms.
-     */
-    enum class revert_option_e {
-      try_once,  ///< Try reverting once and then abort.
-      try_indefinitely,  ///< Keep trying to revert indefinitely.
-      try_indefinitely_with_delay  ///< Keep trying to revert indefinitely, but delay the first try by some amount of time.
-    };
-
-    /**
-     * @brief Reverts the configuration based on the provided option.
-     * @note This is function does not lock mutex.
-     */
-    void revert_configuration_unlocked(const revert_option_e option) {
-      if (!DD_DATA.sm_instance) {
-        // Platform is not supported, nothing to do.
-        return;
-      }
-
-      // Note: by default the executor function is immediately executed in the calling thread. With delay, we want to avoid that.
-      SchedulerOptions scheduler_option {.m_sleep_durations = {DEFAULT_RETRY_INTERVAL}};
-      if (option == revert_option_e::try_indefinitely_with_delay && DD_DATA.config_revert_delay > std::chrono::milliseconds::zero()) {
-        scheduler_option.m_sleep_durations = {DD_DATA.config_revert_delay, DEFAULT_RETRY_INTERVAL};
-        scheduler_option.m_execution = SchedulerOptions::Execution::ScheduledOnly;
-      }
-
-      DD_DATA.sm_instance->schedule([try_once = (option == revert_option_e::try_once)](auto &settings_iface, auto &stop_token) mutable {
-        using enum SettingsManagerInterface::RevertResult;
-
-        const auto result {settings_iface.revertSettings()};
-        if (try_once) {
-          stop_token.requestStop();
-          return;
-        }
-
-        if (result == Ok) {
-          stop_token.requestStop();
-          return;
-        }
-
-        if (result == ApiTemporarilyUnavailable) {
-          // Transient; retry on next tick
-          BOOST_LOG(debug) << "RevertSettings: API temporarily unavailable; will retry.";
-          return;
-        }
-
-        // Non-transient failures: keep retrying at interval. This avoids getting stuck waiting for hotplug events.
-        BOOST_LOG(warning) << "RevertSettings did not complete (code: " << static_cast<int>(result) << "); will retry.";
-      },
-                                    scheduler_option);
-    }
+    // All non-helper scheduling and platform display APIs are removed. We route exclusively
+    // through the Windows display helper (no-ops on other platforms).
   }  // namespace
 
-  std::unique_ptr<platf::deinit_t> init(const std::filesystem::path &persistence_filepath, const config::video_t &video_config) {
-    std::lock_guard lock {DD_DATA.mutex};
-    // We can support re-init without any issues, however we should make sure to clean up first!
-    if (!display_helper_integration::suppress_fallback()) {
-      revert_configuration_unlocked(revert_option_e::try_once);
+  // Old in-process API removed: no init/apply/revert/enumeration here.
+
+#ifdef _WIN32
+  static bool iequals(const std::string &a, const std::string &b) {
+    if (a.size() != b.size()) {
+      return false;
     }
-    DD_DATA.config_revert_delay = video_config.dd.config_revert_delay;
-    DD_DATA.sm_instance = nullptr;
-
-    // If we fail to create settings manager, this means platform is not supported, and
-    // we will need to provided error-free pass-trough in other methods
-    if (auto settings_manager {make_settings_manager(persistence_filepath, video_config)}) {
-      DD_DATA.sm_instance = std::make_unique<RetryScheduler<SettingsManagerInterface>>(std::move(settings_manager));
-
-      const auto available_devices {DD_DATA.sm_instance->execute([](auto &settings_iface) {
-        return settings_iface.enumAvailableDevices();
-      })};
-      BOOST_LOG(info) << "Currently available display devices:\n"
-                      << toJson(available_devices);
-
-      // If helper is not in use, schedule in-process revert attempts
-      if (!display_helper_integration::suppress_fallback()) {
-        // In case we have failed to revert configuration before shutting down, we should do it now.
-        revert_configuration_unlocked(revert_option_e::try_indefinitely);
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower((unsigned char) a[i]) != std::tolower((unsigned char) b[i])) {
+        return false;
       }
     }
-
-    class deinit_t: public platf::deinit_t {
-    public:
-      ~deinit_t() override {
-        std::lock_guard lock {DD_DATA.mutex};
-        try {
-          // This may throw if used incorrectly. At the moment this will not happen, however
-          // in case some unforeseen changes are made that could raise an exception,
-          // we definitely don't want this to happen in destructor. Especially in the
-          // deinit_t where the outcome does not really matter.
-          // Use helper when active; otherwise perform a single in-process revert attempt
-          if (display_helper_integration::suppress_fallback()) {
-            BOOST_LOG(info) << "Display helper active; requesting REVERT on deinit.";
-            (void) display_helper_integration::revert();
-          } else {
-            revert_configuration_unlocked(revert_option_e::try_once);
-          }
-        } catch (std::exception &err) {
-          BOOST_LOG(fatal) << err.what();
-        }
-
-        DD_DATA.sm_instance = nullptr;
-      }
-    };
-
-    return std::make_unique<deinit_t>();
+    return true;
   }
+#endif
 
   std::string map_output_name(const std::string &output_name) {
-    std::lock_guard lock {DD_DATA.mutex};
-    if (!DD_DATA.sm_instance) {
-      // Fallback to giving back the output name if the platform is not supported.
+#ifdef _WIN32
+    try {
+      if (output_name.empty()) {
+        return output_name;
+      }
+
+      // If caller already provided a Windows logical display name, return it.
+      // These are of the form "\\.\\DISPLAY#".
+      const auto is_win_display_name = [&]() -> bool {
+        // Minimal check: begins with \\.\DISPLAY (case-insensitive)
+        static const std::string prefix = "\\\\.\\DISPLAY";
+        if (output_name.size() < prefix.size()) {
+          return false;
+        }
+        for (size_t i = 0; i < prefix.size(); ++i) {
+          if (std::tolower((unsigned char) output_name[i]) != std::tolower((unsigned char) prefix[i])) {
+            return false;
+          }
+        }
+        return true;
+      }();
+      if (is_win_display_name) {
+        return output_name;
+      }
+
+      // Otherwise try to map any provided identifier (device_id, friendly name, or display name)
+      // to the Windows logical display name using libdisplaydevice enumeration.
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices();
+
+      auto equals_ci = [](const std::string &a, const std::string &b) {
+        if (a.size() != b.size()) {
+          return false;
+        }
+        for (size_t i = 0; i < a.size(); ++i) {
+          if (std::tolower((unsigned char) a[i]) != std::tolower((unsigned char) b[i])) {
+            return false;
+          }
+        }
+        return true;
+      };
+
+      for (const auto &d : devices) {
+        // Match against device_id (preferred), display_name, or friendly_name
+        if ((!d.m_device_id.empty() && equals_ci(d.m_device_id, output_name)) ||
+            (!d.m_display_name.empty() && equals_ci(d.m_display_name, output_name)) ||
+            (!d.m_friendly_name.empty() && equals_ci(d.m_friendly_name, output_name))) {
+          if (!d.m_display_name.empty()) {
+            return d.m_display_name;  // Return logical name consumable by DXGI
+          }
+          break;
+        }
+      }
+
+      // Fallback to original if not found
+      return output_name;
+    } catch (...) {
+      // If enumeration fails for any reason, fall back to the provided value.
       return output_name;
     }
-
-    return DD_DATA.sm_instance->execute([&output_name](auto &settings_iface) {
-      return settings_iface.getDisplayName(output_name);
-    });
-  }
-
-  void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-    // Try helper first; if not active, fall back to in-process
-    BOOST_LOG(info) << "Display configuration requested; delegating to platform helper.";
-    const bool dispatched = display_helper_integration::apply_from_session(video_config, session);
-    BOOST_LOG(info) << "Display helper apply dispatched=" << (dispatched ? "true" : "false")
-                    << ", suppress_fallback=" << (display_helper_integration::suppress_fallback() ? "true" : "false");
-    if (dispatched || display_helper_integration::suppress_fallback()) {
-      return;
-    }
-    const auto result {parse_configuration(video_config, session)};
-    if (const auto *parsed_config {std::get_if<SingleDisplayConfiguration>(&result)}; parsed_config) {
-      configure_display(*parsed_config);
-      return;
-    }
-
-    if (const auto *disabled {std::get_if<configuration_disabled_tag_t>(&result)}; disabled) {
-      revert_configuration();
-      return;
-    }
-
-    // Error already logged for failed_to_parse_tag_t case, and we also don't
-    // want to revert active configuration in case we have any
-  }
-
-  void configure_display(const SingleDisplayConfiguration &config) {
-    std::lock_guard lock {DD_DATA.mutex};
-    if (display_helper_integration::suppress_fallback()) {
-      // Not used when helper exclusively manages display
-      return;
-    }
-    if (!DD_DATA.sm_instance) {
-      // Platform is not supported, nothing to do.
-      return;
-    }
-
-    DD_DATA.sm_instance->schedule([config](auto &settings_iface, auto &stop_token) {
-      // We only want to keep retrying in case of a transient errors.
-      // In other cases, when we either fail or succeed we just want to stop...
-      if (settings_iface.applySettings(config) != SettingsManagerInterface::ApplyResult::ApiTemporarilyUnavailable) {
-        stop_token.requestStop();
-      }
-    },
-                                  {.m_sleep_durations = {DEFAULT_RETRY_INTERVAL}});
-  }
-
-  void revert_configuration() {
-    std::lock_guard lock {DD_DATA.mutex};
-    if (display_helper_integration::suppress_fallback()) {
-      BOOST_LOG(info) << "Display configuration revert requested; delegating to platform helper.";
-      (void) display_helper_integration::revert();
-      return;
-    }
-    revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);
-  }
-
-  bool reset_persistence() {
-    std::lock_guard lock {DD_DATA.mutex};
-    if (!DD_DATA.sm_instance) {
-      // Platform is not supported, assume success.
-      return true;
-    }
-
-    return DD_DATA.sm_instance->execute([](auto &settings_iface, auto &stop_token) {
-      // Whatever the outcome is we want to stop interfering with the user,
-      // so any schedulers need to be stopped.
-      stop_token.requestStop();
-      return settings_iface.resetPersistence();
-    });
-  }
-
-  EnumeratedDeviceList enumerate_devices() {
-    std::lock_guard lock {DD_DATA.mutex};
-    if (!DD_DATA.sm_instance) {
-      // Platform is not supported.
-      return {};
-    }
-
-    return DD_DATA.sm_instance->execute([](auto &settings_iface) {
-      return settings_iface.enumAvailableDevices();
-    });
+#else
+    // Non-Windows: no mapping needed
+    return output_name;
+#endif
   }
 
   std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {

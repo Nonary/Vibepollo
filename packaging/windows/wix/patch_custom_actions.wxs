@@ -60,9 +60,10 @@
       <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
-    <!-- We can't remove the reboot required message on repairs, but we can tell users its not needed -->
+    <!-- We can't remove the reboot required message on repairs, but we can tell users it's not needed.
+         Restrict strictly to repair by requiring REINSTALL to be set, so it won't fire on uninstall or upgrade. -->
     <InstallUISequence>
-      <Custom Action="RepairCompletePrompt" After="ExecuteAction">Installed AND NOT REMOVE AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+      <Custom Action="RepairCompletePrompt" After="ExecuteAction">REINSTALL AND NOT REMOVE AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
     </InstallUISequence>
   </CPackWiXFragment>
 </CPackWiXPatch>

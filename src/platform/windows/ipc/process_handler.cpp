@@ -15,12 +15,13 @@
 #include <windows.h>
 
 // standard includes
-#include <algorithm>
-#include <system_error>
-#include <vector>
 #include "src/logging.h"
 #include "src/platform/windows/misc.h"
 #include "src/utility.h"
+
+#include <algorithm>
+#include <system_error>
+#include <vector>
 
 ProcessHandler::ProcessHandler():
     job_(create_kill_on_close_job()),

@@ -6,13 +6,17 @@
   // standard
   #include <filesystem>
   #include <string>
+  #include <thread>
 
-  // libdisplaydevice json
+  // libdisplaydevice
   #include <display_device/json.h>
+  #include <display_device/windows/win_api_layer.h>
+  #include <display_device/windows/win_display_device.h>
+  #include <nlohmann/json.hpp>
 
   // sunshine
   #include "display_helper_integration.h"
-  #include "src/display_device.h"
+  #include "src/display_device.h"  // For configuration parsing only
   #include "src/logging.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
@@ -73,6 +77,37 @@ namespace {
     }
     return started;
   }
+
+  // Watchdog state for helper liveness during active streams
+  static std::atomic<bool> g_watchdog_running {false};
+  static std::jthread g_watchdog_thread;
+
+  static void watchdog_proc(std::stop_token st) {
+    using namespace std::chrono_literals;
+    // Attempt initial bring-up and handshake
+    (void) ensure_helper_started();
+    // Don't reset the existing pipe here; a reset would break the live connection
+    // and cause the helper to think Sunshine crashed, triggering a revert.
+    (void) platf::display_helper_client::send_ping();
+
+    const auto interval = 5s;
+    while (!st.stop_requested()) {
+      for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
+        std::this_thread::sleep_for(100ms);
+      }
+      if (st.stop_requested()) {
+        break;
+      }
+
+      if (!platf::display_helper_client::send_ping()) {
+        BOOST_LOG(warning) << "Display helper watchdog: ping failed; restarting helper and retrying.";
+        platf::display_helper_client::reset_connection();
+        (void) ensure_helper_started();
+        (void) platf::display_helper_client::send_ping();
+      }
+    }
+  }
+
 }  // namespace
 
 namespace display_helper_integration {
@@ -82,9 +117,27 @@ namespace display_helper_integration {
       return false;
     }
 
+    // Best-effort liveness probe: if ping fails, reset and try once more
+    if (!platf::display_helper_client::send_ping()) {
+      BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
+      platf::display_helper_client::reset_connection();
+      (void) platf::display_helper_client::send_ping();
+    }
+
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
-      const std::string json = display_device::toJson(*cfg);
+      std::string json = display_device::toJson(*cfg);
+      // Embed helper-only flag for HDR workaround (async; fixed 1s delay)
+      try {
+        if (video_config.dd.wa.hdr_toggle) {
+          // Parse, attach flag, and dump back. Unknown fields are ignored by the helper's typed parser.
+          nlohmann::json j = nlohmann::json::parse(json);
+          j["wa_hdr_toggle"] = true;
+          json = j.dump();
+        }
+      } catch (...) {
+        // Non-fatal: fall back to raw JSON without the extra flag
+      }
       BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
                       << json;
       const bool ok = platf::display_helper_client::send_apply_json(json);
@@ -123,6 +176,47 @@ namespace display_helper_integration {
     const bool ok = platf::display_helper_client::send_export_golden();
     BOOST_LOG(info) << "Display helper: EXPORT_GOLDEN dispatch result=" << (ok ? "true" : "false");
     return ok;
+  }
+
+  bool reset_persistence() {
+    if (!ensure_helper_started()) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot reset persistence.";
+      return false;
+    }
+    BOOST_LOG(info) << "Display helper: sending RESET request.";
+    const bool ok = platf::display_helper_client::send_reset();
+    BOOST_LOG(info) << "Display helper: RESET dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
+
+  std::string enumerate_devices_json() {
+    try {
+      // Enumerate devices directly via libdisplaydevice
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices();
+      return display_device::toJson(devices);
+    } catch (...) {
+      return "[]";  // Fail-safe: empty list
+    }
+  }
+
+  void start_watchdog() {
+    if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
+      return;  // already running
+    }
+    g_watchdog_thread = std::jthread(watchdog_proc);
+  }
+
+  void stop_watchdog() {
+    if (!g_watchdog_running.exchange(false, std::memory_order_acq_rel)) {
+      return;  // not running
+    }
+    if (g_watchdog_thread.joinable()) {
+      g_watchdog_thread.request_stop();
+      g_watchdog_thread.join();
+    }
+    platf::display_helper_client::reset_connection();
   }
 }  // namespace display_helper_integration
 

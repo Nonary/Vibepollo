@@ -14,17 +14,21 @@
           </p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <RouterLink to="/settings">
-            <n-button type="primary" strong>
-              <i class="fas fa-sliders" />
-              <span>Settings</span>
-            </n-button>
+          <RouterLink to="/settings" custom v-slot="{ navigate, href }">
+            <a :href="href" @click="navigate">
+              <n-button tag="span" type="primary" strong>
+                <i class="fas fa-sliders" />
+                <span>Settings</span>
+              </n-button>
+            </a>
           </RouterLink>
-          <RouterLink to="/applications">
-            <n-button type="default" strong>
-              <i class="fas fa-th" />
-              <span>Applications</span>
-            </n-button>
+          <RouterLink to="/applications" custom v-slot="{ navigate, href }">
+            <a :href="href" @click="navigate">
+              <n-button tag="span" type="default" strong>
+                <i class="fas fa-th" />
+                <span>Applications</span>
+              </n-button>
+            </a>
           </RouterLink>
         </div>
       </div>
@@ -43,6 +47,38 @@
             </h2>
           </template>
           <div class="space-y-4 text-sm">
+            <!-- ViGEm (Virtual Gamepad) missing warning on Windows -->
+            <n-alert v-if="showVigemBanner" type="warning" :show-icon="true" class="rounded-xl">
+              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full">
+                <div class="min-w-0">
+                  <p class="text-sm m-0 font-medium">
+                    {{ $t('config.vigem_missing_title') || 'Virtual Gamepad Driver (ViGEm) not installed' }}
+                  </p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{
+                      $t('config.vigem_missing_desc') ||
+                      'Sunshine requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:'
+                    }}
+                    <span v-if="vigemVersion" class="ml-2 opacity-60">
+                      ({{ $t('config.vigem_detected_version') || 'Detected' }}: {{ vigemVersion }})
+                    </span>
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <n-button
+                    tag="a"
+                    type="primary"
+                    strong
+                    href="https://github.com/nefarius/ViGEmBus/releases/latest"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <i class="fas fa-download" />
+                    <span>{{ $t('config.vigem_install') || 'Download ViGEmBus' }}</span>
+                  </n-button>
+                </div>
+              </div>
+            </n-alert>
             <!-- Fatal Errors (embedded) -->
             <n-alert
               v-if="fancyLogs.some((l) => l.level === 'Fatal')"
@@ -229,6 +265,7 @@ import ResourceCard from '@/ResourceCard.vue';
 import SunshineVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
+import { http } from '@/http';
 
 const installedVersion = ref<SunshineVersion>(new SunshineVersion('0.0.0'));
 const githubRelease = ref<GitHubRelease | null>(null);
@@ -252,6 +289,9 @@ const logs = ref('');
 const branch = ref('');
 const commit = ref('');
 const installedIsPrerelease = ref(false);
+// ViGEm health
+const vigemInstalled = ref<boolean | null>(null);
+const vigemVersion = ref('');
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
@@ -324,6 +364,25 @@ async function runVersionChecks() {
       console.warn('[Dashboard] releases list fetch failed', e);
     }
     // Tag-based comparison handled below via SunshineVersion
+
+    // ViGEm health (Windows only)
+    try {
+      const plat = (configStore.metadata?.platform || '').toLowerCase();
+      const controllerEnabled = cfg.controller === 'enabled';
+      if (plat === 'windows' && controllerEnabled) {
+        const r = await http.get('/api/health/vigem', { validateStatus: () => true });
+        if (r.status === 200 && r.data) {
+          vigemInstalled.value = !!r.data.installed;
+          vigemVersion.value = r.data.version || '';
+        } else {
+          vigemInstalled.value = null;
+        }
+      } else {
+        vigemInstalled.value = null;
+      }
+    } catch (e) {
+      vigemInstalled.value = null;
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[Dashboard] version checks failed', e);
@@ -391,6 +450,12 @@ const fancyLogs = computed(() => {
     });
   }
   return logLines;
+});
+
+const showVigemBanner = computed(() => {
+  const plat = (configStore.metadata?.platform || '').toLowerCase();
+  const controllerEnabled = (configStore.config as any)?.controller === 'enabled';
+  return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
 });
 </script>
 

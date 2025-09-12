@@ -15,8 +15,6 @@ SET(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\update-path.bat\\\" add'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\migrate-config.bat\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\add-firewall-rule.bat\\\"'
-        nsExec::ExecToLog \
-          'powershell.exe -ExecutionPolicy Bypass -File \\\"$INSTDIR\\\\scripts\\\\install-gamepad.ps1\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\install-service.bat\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\autostart-service.bat\\\"'
         NoController:
@@ -29,13 +27,6 @@ set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\delete-firewall-rule.bat\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\uninstall-service.bat\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\${CMAKE_PROJECT_NAME}.exe\\\" --restore-nvprefs-undo'
-        MessageBox MB_YESNO|MB_ICONQUESTION \
-            'Do you want to remove Virtual Gamepad?' \
-            /SD IDNO IDNO NoGamepad
-            nsExec::ExecToLog \
-              'powershell.exe -ExecutionPolicy Bypass -File \\\"$INSTDIR\\\\scripts\\\\uninstall-gamepad.ps1\\\"'; \
-              skipped if no
-        NoGamepad:
         MessageBox MB_YESNO|MB_ICONQUESTION \
             'Do you want to remove $INSTDIR (this includes the configuration, cover images, and settings)?' \
             /SD IDNO IDNO NoDelete
@@ -54,6 +45,9 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA
         SetOutPath '\$INSTDIR'
         CreateShortCut '\$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\${CMAKE_PROJECT_NAME}.lnk' \
             '\$INSTDIR\\\\${CMAKE_PROJECT_NAME}.exe' '--shortcut'
+        ; Convenience link in install directory to uninstall ViGEm (Virtual Gamepad)
+        CreateShortCut '\$INSTDIR\\\\Uninstall Virtual Gamepad.lnk' \
+            'powershell.exe' '-ExecutionPolicy Bypass -File \"\$INSTDIR\\\\scripts\\\\uninstall-gamepad.ps1\"'
         ")
 set(CPACK_NSIS_DELETE_ICONS_EXTRA
         "${CPACK_NSIS_DELETE_ICONS_EXTRA}
