@@ -611,6 +611,8 @@ namespace platf::dxgi {
       return handle_pending_receive_operation(ctx, timeout_ms, dst, bytesRead);
     } else if (err == ERROR_BROKEN_PIPE) {
       BOOST_LOG(warning) << "Pipe broken during ReadFile (ERROR_BROKEN_PIPE)";
+      // Reflect disconnected state immediately so higher layers don't think we're still connected
+      _connected.store(false, std::memory_order_release);
       return PipeResult::BrokenPipe;
     } else {
       BOOST_LOG(error) << "ReadFile failed in receive, error=" << err;
@@ -631,6 +633,7 @@ namespace platf::dxgi {
         DWORD overlappedErr = GetLastError();
         if (overlappedErr == ERROR_BROKEN_PIPE) {
           BOOST_LOG(warning) << "IPC between Sunshine was severed, did the capture process crash?";
+          _connected.store(false, std::memory_order_release);
           return BrokenPipe;
         }
         if (overlappedErr == ERROR_OPERATION_ABORTED) {
@@ -913,6 +916,10 @@ namespace platf::dxgi {
         case Success:
           {
             if (bytesRead == 0) {  // remote closed
+              // Ensure connection state reflects closure so outer loops can exit
+              if (_pipe) {
+                _pipe->disconnect();
+              }
               return;
             }
             // Create span from only the valid portion of the buffer
@@ -925,12 +932,19 @@ namespace platf::dxgi {
           break;  // nothing to do
 
         case BrokenPipe:
+          // Mark pipe as disconnected so the helper's outer loop can accept a new client
+          if (_pipe) {
+            _pipe->disconnect();
+          }
           safe_execute_operation("brokenPipe callback", _onBrokenPipe);
           return;  // terminate
 
         case Error:
         case Disconnected:
         default:
+          if (_pipe) {
+            _pipe->disconnect();
+          }
           return;  // terminate
       }
     }

@@ -7,6 +7,8 @@
   #include <filesystem>
   #include <string>
   #include <thread>
+  #include <mutex>
+  #include <optional>
 
   // libdisplaydevice
   #include <display_device/json.h>
@@ -18,6 +20,11 @@
   #include "display_helper_integration.h"
   #include "src/display_device.h"  // For configuration parsing only
   #include "src/logging.h"
+  // Ensure winsock2.h is included before windows.h via transitive includes
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <winsock2.h>
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
@@ -82,6 +89,42 @@ namespace {
   static std::atomic<bool> g_watchdog_running {false};
   static std::jthread g_watchdog_thread;
 
+  // Active session display parameters snapshot for re-apply on reconnect.
+  // We do NOT cache serialized JSON, only the subset of session fields that
+  // affect display configuration. On reconnect, we rebuild the full
+  // SingleDisplayConfiguration from current Sunshine config + these fields.
+  struct session_dd_fields_t {
+    int width = -1;
+    int height = -1;
+    int fps = -1;
+    bool enable_hdr = false;
+    bool enable_sops = false;
+  };
+
+  static std::mutex g_session_mutex;
+  static std::optional<session_dd_fields_t> g_active_session_dd;
+
+  static void set_active_session(const rtsp_stream::launch_session_t &session) {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    g_active_session_dd = session_dd_fields_t {
+      .width = session.width,
+      .height = session.height,
+      .fps = session.fps,
+      .enable_hdr = session.enable_hdr,
+      .enable_sops = session.enable_sops,
+    };
+  }
+
+  static std::optional<session_dd_fields_t> get_active_session_copy() {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    return g_active_session_dd;
+  }
+
+  static void clear_active_session() {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    g_active_session_dd.reset();
+  }
+
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
     // Attempt initial bring-up and handshake
@@ -100,10 +143,29 @@ namespace {
       }
 
       if (!platf::display_helper_client::send_ping()) {
-        BOOST_LOG(warning) << "Display helper watchdog: ping failed; restarting helper and retrying.";
+        // Avoid logging ping failures to reduce log spam; proceed to reconnect
         platf::display_helper_client::reset_connection();
         (void) ensure_helper_started();
-        (void) platf::display_helper_client::send_ping();
+        // Attempt to re-derive and apply the desired configuration from
+        // current Sunshine state if a session is active.
+        auto session_opt = get_active_session_copy();
+        if (session_opt) {
+          auto _hot_apply_gate = config::acquire_apply_read_gate();
+          // Rebuild a minimal launch_session_t carrying display-related fields
+          rtsp_stream::launch_session_t tmp_session {};
+          tmp_session.width = session_opt->width;
+          tmp_session.height = session_opt->height;
+          tmp_session.fps = session_opt->fps;
+          tmp_session.enable_hdr = session_opt->enable_hdr;
+          tmp_session.enable_sops = session_opt->enable_sops;
+          bool reapplied = display_helper_integration::apply_from_session(config::video, tmp_session);
+          BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
+          if (!reapplied) {
+            (void) platf::display_helper_client::send_ping();
+          }
+        } else {
+          (void) platf::display_helper_client::send_ping();
+        }
       }
     }
   }
@@ -142,6 +204,9 @@ namespace display_helper_integration {
                       << json;
       const bool ok = platf::display_helper_client::send_apply_json(json);
       BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+      if (ok) {
+        set_active_session(session);
+      }
       return ok;
     }
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
@@ -164,6 +229,7 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: sending REVERT request.";
     const bool ok = platf::display_helper_client::send_revert();
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+    clear_active_session();
     return ok;
   }
 
@@ -217,6 +283,7 @@ namespace display_helper_integration {
       g_watchdog_thread.join();
     }
     platf::display_helper_client::reset_connection();
+    clear_active_session();
   }
 }  // namespace display_helper_integration
 

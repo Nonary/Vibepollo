@@ -7,6 +7,7 @@
   #include <cstdint>
   #include <string>
   #include <vector>
+  #include <mutex>
 
   // local
   #include "display_settings_client.h"
@@ -28,8 +29,12 @@ namespace platf::display_helper_client {
   };
 
   static bool send_frame(platf::dxgi::INamedPipe &pipe, MsgType type, const std::vector<uint8_t> &payload) {
-    BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
-                    << ", payload_len=" << payload.size();
+    // Suppress logging for Ping to avoid log spam
+    const bool is_ping = (type == MsgType::Ping);
+    if (!is_ping) {
+      BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
+                      << ", payload_len=" << payload.size();
+    }
     uint32_t len = static_cast<uint32_t>(1 + payload.size());
     std::vector<uint8_t> out;
     out.reserve(4 + len);
@@ -37,7 +42,9 @@ namespace platf::display_helper_client {
     out.push_back(static_cast<uint8_t>(type));
     out.insert(out.end(), payload.begin(), payload.end());
     const bool ok = pipe.send(out, 5000);
-    BOOST_LOG(info) << "Display helper IPC: send result=" << (ok ? "true" : "false");
+    if (!is_ping) {
+      BOOST_LOG(info) << "Display helper IPC: send result=" << (ok ? "true" : "false");
+    }
     return ok;
   }
 
@@ -48,7 +55,15 @@ namespace platf::display_helper_client {
     return s_pipe;
   }
 
-  static bool ensure_connected_once() {
+  // Global mutex to serialize all access to the pipe (connect, reset, send)
+  // and prevent interleaved writes on a BYTE-mode pipe.
+  static std::mutex &pipe_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  // Ensure connected while holding the pipe mutex. Returns true on success.
+  static bool ensure_connected_locked() {
     auto &pipe = pipe_singleton();
     if (pipe && pipe->is_connected()) {
       return true;
@@ -61,6 +76,7 @@ namespace platf::display_helper_client {
   }
 
   void reset_connection() {
+    std::lock_guard<std::mutex> lg(pipe_mutex());
     auto &pipe = pipe_singleton();
     if (pipe) {
       BOOST_LOG(info) << "Display helper IPC: resetting cached connection";
@@ -70,7 +86,8 @@ namespace platf::display_helper_client {
 
   bool send_apply_json(const std::string &json) {
     BOOST_LOG(info) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
-    if (!ensure_connected_once()) {
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
       BOOST_LOG(info) << "Display helper IPC: APPLY aborted - no connection";
       return false;
     }
@@ -82,7 +99,7 @@ namespace platf::display_helper_client {
     // Retry once: reconnect + resend
     BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
     pipe.reset();
-    if (!ensure_connected_once()) {
+    if (!ensure_connected_locked()) {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::Apply, payload);
@@ -90,7 +107,8 @@ namespace platf::display_helper_client {
 
   bool send_revert() {
     BOOST_LOG(info) << "Display helper IPC: REVERT request queued";
-    if (!ensure_connected_once()) {
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
       BOOST_LOG(info) << "Display helper IPC: REVERT aborted - no connection";
       return false;
     }
@@ -101,7 +119,7 @@ namespace platf::display_helper_client {
     }
     BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
     pipe.reset();
-    if (!ensure_connected_once()) {
+    if (!ensure_connected_locked()) {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::Revert, payload);
@@ -109,7 +127,8 @@ namespace platf::display_helper_client {
 
   bool send_export_golden() {
     BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN request queued";
-    if (!ensure_connected_once()) {
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
       BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN aborted - no connection";
       return false;
     }
@@ -120,7 +139,7 @@ namespace platf::display_helper_client {
     }
     BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
     pipe.reset();
-    if (!ensure_connected_once()) {
+    if (!ensure_connected_locked()) {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::ExportGolden, payload);
@@ -128,7 +147,8 @@ namespace platf::display_helper_client {
 
   bool send_reset() {
     BOOST_LOG(info) << "Display helper IPC: RESET request queued";
-    if (!ensure_connected_once()) {
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
       BOOST_LOG(info) << "Display helper IPC: RESET aborted - no connection";
       return false;
     }
@@ -139,16 +159,16 @@ namespace platf::display_helper_client {
     }
     BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
     pipe.reset();
-    if (!ensure_connected_once()) {
+    if (!ensure_connected_locked()) {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::Reset, payload);
   }
 
   bool send_ping() {
-    BOOST_LOG(info) << "Display helper IPC: PING request queued";
-    if (!ensure_connected_once()) {
-      BOOST_LOG(info) << "Display helper IPC: PING aborted - no connection";
+    // No logging for ping path to reduce log spam
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
       return false;
     }
     std::vector<uint8_t> payload;
@@ -156,9 +176,8 @@ namespace platf::display_helper_client {
     if (pipe && send_frame(*pipe, MsgType::Ping, payload)) {
       return true;
     }
-    BOOST_LOG(warning) << "Display helper IPC: PING send failed; attempting reconnect";
     pipe.reset();
-    if (!ensure_connected_once()) {
+    if (!ensure_connected_locked()) {
       return false;
     }
     return pipe && send_frame(*pipe, MsgType::Ping, payload);

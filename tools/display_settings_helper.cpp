@@ -1256,13 +1256,19 @@ int main() {
       }
     };
 
+    // Track broken/disconnect events from the async worker thread without
+    // attempting to stop/join from within the callback (which would deadlock).
+    std::atomic<bool> broken {false};
+
     auto on_error = [&](const std::string &err) {
       BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
+      broken.store(true, std::memory_order_release);
       attempt_revert_after_disconnect(state, running);
     };
 
     auto on_broken = [&]() {
       BOOST_LOG(warning) << "Client disconnected; applying revert policy and staying alive until successful.";
+      broken.store(true, std::memory_order_release);
       attempt_revert_after_disconnect(state, running);
     };
 
@@ -1270,9 +1276,13 @@ int main() {
     async_pipe.start(on_message, on_error, on_broken);
 
     // Stay in this inner loop until the client disconnects or service told to exit
-    while (running.load(std::memory_order_acquire) && async_pipe.is_connected()) {
+    while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(200ms);
     }
+
+    // Ensure the worker thread is stopped and the server handle is
+    // disconnected before looping to accept a new session.
+    async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop
     if (!running.load(std::memory_order_acquire)) {
