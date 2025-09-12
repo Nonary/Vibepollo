@@ -540,7 +540,9 @@
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
-          <n-button type="default" strong @click="showAddModal = false">{{ $t('_common.cancel') }}</n-button>
+          <n-button type="default" strong @click="showAddModal = false">{{
+            $t('_common.cancel')
+          }}</n-button>
           <n-button type="primary" :disabled="!addSelection.length" @click="confirmAddExclusions">{{
             $t('_common.add') || 'Add'
           }}</n-button>

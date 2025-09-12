@@ -1168,7 +1168,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="4">Choices</td>
         <td>disabled</td>
         <td>Perform no additional configuration.</td>
     </tr>
@@ -1179,6 +1179,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>manual</td>
         <td>Change refresh rate to the user specified one (set via [dd_manual_refresh_rate](#dd_manual_refresh_rate)).</td>
+    </tr>
+    <tr>
+        <td>prefer_highest</td>
+        <td>Prefer the highest available refresh rate for the selected resolution. Recommended when using a virtual display + RTSS to minimize VSYNC engagement on hosts with global VSYNC enabled and G-SYNC with ULLM.</td>
     </tr>
 </table>
 
@@ -2129,6 +2133,46 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>software</td>
         <td>Encoding occurs on the CPU</td>
+    </tr>
+</table>
+
+## Frame Limiter (Windows)
+
+These options integrate with Windows tooling to manage frame pacing and related behavior during a stream.
+They appear in the Frame Limiter section of the settings UI.
+
+### rtss_disable_vsync_ullm
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Attempt to prevent driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM) from engaging during a stream by configuring the display to use the highest available refresh rate for the targeted resolution.<br>
+            This works because VSYNC/ULLM only apply when VSYNC is engaged. By running the display at a refresh rate higher than the stream FPS, the driver avoids applying VSYNC and ULLM to the stream.
+            <br><br>
+            This option is primarily intended for users following Blur Busters guidance to force VSYNC and enable ULLM globally in the NVIDIA profile. It helps avoid unintended latency and pacing effects while streaming.
+            <br><br>
+            When enabled, Sunshine asks the Windows Display Helper to switch the active display mode to the highest refresh rate available for the stream's resolution. If no resolution is selected by other display settings, the stream's requested resolution is used when the client has Optimize Game Settings enabled.
+            <br><br>
+            A virtual display is highly recommended for this option.
+            <br>
+            <b>Notes</b>:
+            <ul>
+                <li>Windows only; requires the Display Helper (tools/sunshine_display_helper.exe).</li>
+                <li>Does not change encoder FPS; pair with a frame cap if desired.</li>
+                <li>If Display Device configuration is disabled, this option still applies the minimal refresh-rate-only change.</li>
+            </ul>
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            rtss_disable_vsync_ullm = enabled
+            @endcode</td>
     </tr>
 </table>
 

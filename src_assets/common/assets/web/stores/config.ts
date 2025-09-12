@@ -137,6 +137,7 @@ const defaultGroups = [
       rtss_enable_frame_limit: false,
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
+      rtss_disable_vsync_ullm: false,
     },
   },
   {
@@ -380,7 +381,11 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_focus_exit_on_first',
     ];
     // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = ['rtss_enable_frame_limit', 'dd_wa_hdr_toggle'];
+    const otherBoolKeys = [
+      'rtss_enable_frame_limit',
+      'rtss_disable_vsync_ullm',
+      'dd_wa_hdr_toggle',
+    ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;

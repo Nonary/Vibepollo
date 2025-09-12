@@ -394,6 +394,7 @@ namespace config {
       _CONVERT_(disabled);
       _CONVERT_2_ARG_(auto, automatic);
       _CONVERT_(manual);
+      _CONVERT_(prefer_highest);
 #undef _CONVERT_
 #undef _CONVERT_2_ARG_
       return video_t::dd_t::refresh_rate_option_e::disabled;  // Default to this if value is invalid
@@ -573,7 +574,8 @@ namespace config {
   rtss_t rtss {
     false,  // enable_frame_limit
     {},  // install_path
-    "async"  // frame_limit_type
+    "async",  // frame_limit_type
+    false  // disable_vsync_ullm
   };
 
   sunshine_t sunshine {
@@ -1173,6 +1175,7 @@ namespace config {
     bool_f(vars, "rtss_enable_frame_limit", rtss.enable_frame_limit);
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
+    bool_f(vars, "rtss_disable_vsync_ullm", rtss.disable_vsync_ullm);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

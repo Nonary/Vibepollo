@@ -5,9 +5,9 @@
 
   // standard
   #include <cstdint>
+  #include <mutex>
   #include <string>
   #include <vector>
-  #include <mutex>
 
   // local
   #include "display_settings_client.h"

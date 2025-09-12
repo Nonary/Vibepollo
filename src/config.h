@@ -110,7 +110,8 @@ namespace config {
       enum class refresh_rate_option_e {
         disabled,  ///< Do not change refresh rate.
         automatic,  ///< Change refresh rate and use the one received from Moonlight.
-        manual  ///< Change refresh rate and use the manually provided one.
+        manual,  ///< Change refresh rate and use the manually provided one.
+        prefer_highest  ///< Prefer the highest available refresh rate for the selected resolution.
       };
 
       enum class hdr_option_e {
@@ -221,6 +222,11 @@ namespace config {
     // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
     // If empty or unrecognized, SyncLimiter is not modified.
     std::string frame_limit_type;
+
+    // When enabled, attempt to avoid driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM)
+    // engagement by forcing the display to run at the highest available refresh rate for the
+    // targeted resolution during the stream. Implemented via the Windows display helper.
+    bool disable_vsync_ullm {false};
   };
 
   namespace flag {

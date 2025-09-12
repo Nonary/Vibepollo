@@ -18,18 +18,43 @@
             @click="forceSync"
             aria-label="Force sync now"
           >
-            <svg class="w-4 h-4 mr-2 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"
-                    d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6" />
+            <svg
+              class="w-4 h-4 mr-2 inline-block"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+                d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6"
+              />
             </svg>
             {{ $t('playnite.force_sync') || 'Force Sync' }}
           </n-button>
 
           <!-- Setup Playnite when disabled -->
-          <n-button v-else size="small" type="default" strong @click="gotoPlaynite" class="h-10 px-3">
-            <svg class="w-4 h-4 mr-2 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"
-                    d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95" />
+          <n-button
+            v-else
+            size="small"
+            type="default"
+            strong
+            @click="gotoPlaynite"
+            class="h-10 px-3"
+          >
+            <svg
+              class="w-4 h-4 mr-2 inline-block"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+                d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95"
+              />
             </svg>
             {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
           </n-button>
@@ -37,8 +62,18 @@
 
         <!-- Primary: Add -->
         <n-button type="primary" size="small" strong class="h-10 px-4 rounded-md" @click="openAdd">
-          <svg class="w-4 h-4 mr-2 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M12 5v14M5 12h14" />
+          <svg
+            class="w-4 h-4 mr-2 inline-block"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.6"
+              d="M12 5v14M5 12h14"
+            />
           </svg>
           Add
         </n-button>
@@ -67,15 +102,37 @@
                 <span class="truncate">{{ app.name || '(untitled)' }}</span>
                 <!-- Playnite or Custom badges -->
                 <template v-if="app['playnite-id']">
-                  <n-tag size="small" class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200">Playnite</n-tag>
-                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70">manual</span>
-                  <span v-else-if="(app['playnite-source'] || '') === 'recent'" class="text-[10px] opacity-70">recent</span>
-                  <span v-else-if="(app['playnite-source'] || '') === 'category'" class="text-[10px] opacity-70">category</span>
-                  <span v-else-if="(app['playnite-source'] || '') === 'recent+category'" class="text-[10px] opacity-70">recent+category</span>
+                  <n-tag
+                    size="small"
+                    class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200"
+                    >Playnite</n-tag
+                  >
+                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
+                    >manual</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'recent'"
+                    class="text-[10px] opacity-70"
+                    >recent</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'category'"
+                    class="text-[10px] opacity-70"
+                    >category</span
+                  >
+                  <span
+                    v-else-if="(app['playnite-source'] || '') === 'recent+category'"
+                    class="text-[10px] opacity-70"
+                    >recent+category</span
+                  >
                   <span v-else class="text-[10px] opacity-70">managed</span>
                 </template>
                 <template v-else>
-                  <n-tag size="small" class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200">Custom</n-tag>
+                  <n-tag
+                    size="small"
+                    class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200"
+                    >Custom</n-tag
+                  >
                 </template>
               </div>
               <div class="mt-0.5 text-[11px] opacity-60 truncate" v-if="app['working-dir']">
@@ -83,8 +140,19 @@
               </div>
             </div>
             <div class="shrink-0 text-dark/50 dark:text-light/70">
-              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M9 6l6 6-6 6" />
+              <svg
+                class="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                aria-hidden
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.6"
+                  d="M9 6l6 6-6 6"
+                />
               </svg>
             </div>
           </div>
@@ -174,7 +242,6 @@ async function forceSync(): Promise<void> {
     await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
     await reload();
   } catch {
-    
   } finally {
     syncBusy.value = false;
   }
@@ -214,9 +281,7 @@ onMounted(async () => {
   // Ensure metadata/config present for platform + playnite detection
   try {
     await configStore.fetchConfig?.();
-  } catch {
-    
-  }
+  } catch {}
   // Defer Playnite status until authenticated to avoid 401/canceled requests
   if (auth.isAuthenticated) {
     void fetchPlayniteStatus();
@@ -226,9 +291,7 @@ onMounted(async () => {
   // Also load apps list (safe if already loaded by bootstrap)
   try {
     await appsStore.loadApps(true);
-  } catch {
-    
-  }
+  } catch {}
 });
 
 // When user logs in while this view is mounted, refresh Playnite status

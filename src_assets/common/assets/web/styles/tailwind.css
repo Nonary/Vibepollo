@@ -52,8 +52,8 @@
     @apply bg-secondary text-onSecondary hover:bg-secondary/90;
   }
   :root .n-button--disabled,
-  :root .n-button[disabled="true"],
-  :root .n-button[aria-disabled="true"] {
+  :root .n-button[disabled='true'],
+  :root .n-button[aria-disabled='true'] {
     @apply opacity-50 cursor-not-allowed;
   }
 
@@ -115,9 +115,6 @@
   .card-header {
     @apply flex items-center gap-3 mb-4;
   }
-
-  
-  
 
   .form-control {
     @apply w-full px-3 py-2 text-sm rounded-md 

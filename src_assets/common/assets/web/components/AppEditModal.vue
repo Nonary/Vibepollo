@@ -96,7 +96,13 @@
                     @focus="loadPlayniteGames"
                     @update:value="onPickPlaynite"
                   />
-                  <n-button v-if="lockPlaynite" size="small" type="default" strong @click="unlockPlaynite">
+                  <n-button
+                    v-if="lockPlaynite"
+                    size="small"
+                    type="default"
+                    strong
+                    @click="unlockPlaynite"
+                  >
                     Change
                   </n-button>
                 </div>
@@ -283,7 +289,9 @@
           <template #header>
             <div class="flex items-center justify-between w-full">
               <span class="font-semibold">Covers Found</span>
-              <n-button type="default" strong size="small" @click="showCoverModal = false"> Close </n-button>
+              <n-button type="default" strong size="small" @click="showCoverModal = false">
+                Close
+              </n-button>
             </div>
           </template>
           <div class="min-h-[160px]">

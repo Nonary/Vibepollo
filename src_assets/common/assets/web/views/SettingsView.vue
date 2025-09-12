@@ -46,8 +46,13 @@
                     <i class="fas fa-compass text-primary text-[11px]" />
                   </span>
                   <span class="min-w-0">
-                    <span class="block font-medium break-words whitespace-normal">{{ r.label }}</span>
-                    <span class="block text-[11px] opacity-60 leading-5 break-words whitespace-normal">{{ r.path }}</span>
+                    <span class="block font-medium break-words whitespace-normal">{{
+                      r.label
+                    }}</span>
+                    <span
+                      class="block text-[11px] opacity-60 leading-5 break-words whitespace-normal"
+                      >{{ r.path }}</span
+                    >
                     <span
                       v-if="r.desc"
                       class="block text-[11px] opacity-70 break-words whitespace-normal leading-5"
@@ -74,7 +79,9 @@
         </div>
 
         <div v-if="showSave" class="flex items-center gap-3">
-          <n-button v-if="saveState === 'saved' && !restarted" type="primary" strong @click="apply">Apply</n-button>
+          <n-button v-if="saveState === 'saved' && !restarted" type="primary" strong @click="apply"
+            >Apply</n-button
+          >
         </div>
         <div v-else class="text-[11px] font-medium min-h-[1rem] flex items-center gap-2">
           <transition name="fade"><span v-if="saveState === 'saving'">Saving…</span></transition>
@@ -101,7 +108,7 @@
           @click="toggle(tab.id)"
         >
           <div class="w-full flex items-center justify-between">
-            <span class="font-semibold">{{ tab.name }}</span>
+            <span class="font-semibold">{{ $t(tab.name) }}</span>
             <i
               :class="[
                 'fas text-xs transition-transform',
@@ -125,7 +132,9 @@
       <div v-if="isLoading">Loading...</div>
       <div v-else-if="isError" class="text-danger space-y-2">
         <div>Failed to load configuration.</div>
-        <n-button type="primary" strong :disabled="isLoading" @click="store.reloadConfig?.()">Retry</n-button>
+        <n-button type="primary" strong :disabled="isLoading" @click="store.reloadConfig?.()"
+          >Retry</n-button
+        >
       </div>
       <div v-else class="opacity-60">No configuration loaded.</div>
     </div>
@@ -150,7 +159,9 @@
         >
           <div class="flex items-center gap-3">
             <span class="text-[11px] font-medium">Unsaved changes</span>
-            <n-button type="primary" strong :disabled="saveState === 'saving'" @click="save">Save</n-button>
+            <n-button type="primary" strong :disabled="saveState === 'saving'" @click="save"
+              >Save</n-button
+            >
           </div>
           <div v-if="saveState === 'error'" class="mt-1 text-[11px] text-danger leading-snug">
             {{ store.validationError || 'Save failed. Check fields for errors.' }}
@@ -162,7 +173,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, markRaw, defineAsyncComponent, nextTick } from 'vue';
+import {
+  ref,
+  computed,
+  onMounted,
+  onUnmounted,
+  watch,
+  markRaw,
+  defineAsyncComponent,
+  nextTick,
+} from 'vue';
 import { NInput, NButton, useMessage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import General from '@/configs/tabs/General.vue';
@@ -217,7 +237,7 @@ const tabs = [
   { id: 'network', name: 'Network', component: markRaw(Network) },
   { id: 'files', name: 'Files', component: markRaw(Files) },
   { id: 'advanced', name: 'Advanced', component: markRaw(Advanced) },
-  { id: 'rtss', name: 'Frame Limiter', component: markRaw(RTSS) },
+  { id: 'rtss', name: 'rtss.tab', component: markRaw(RTSS) },
   { id: 'playnite', name: 'Playnite', component: markRaw(Playnite) },
 ];
 

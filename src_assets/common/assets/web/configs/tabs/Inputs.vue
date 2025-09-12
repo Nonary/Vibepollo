@@ -9,8 +9,6 @@ const store = useConfigStore();
 const config = store.config;
 const platform = computed(() => config.value?.platform || '');
 
- 
-
 const gamepadOptions = computed(() => {
   const opts = [{ label: '_common.auto', value: 'auto' }];
   if (platform.value === 'linux') {
@@ -34,7 +32,6 @@ const gamepadOptions = computed(() => {
 
 <template>
   <div id="input" class="config-page">
-    
     <!-- Enable Gamepad Input -->
     <Checkbox
       id="controller"

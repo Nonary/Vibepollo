@@ -4,19 +4,22 @@ import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { NSwitch, NSelect, NInput, NButton } from 'naive-ui';
 import { http } from '@/http';
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
 
 const store = useConfigStore();
 const { metadata } = storeToRefs(store);
 const config = store.config;
 const platform = computed(() => metadata.value?.platform || '');
 
-const syncLimiterOptions = [
-  { label: 'Do not change', value: '' },
-  { label: 'Async', value: 'async' },
-  { label: 'Front edge sync', value: 'front edge sync' },
-  { label: 'Back edge sync', value: 'back edge sync' },
-  { label: 'NVIDIA Reflex', value: 'nvidia reflex' },
-];
+const syncLimiterOptions = computed(() => [
+  { label: t('rtss.sync_limiter_do_not_change'), value: '' },
+  { label: t('rtss.sync_limiter_async'), value: 'async' },
+  { label: t('rtss.sync_limiter_front_edge'), value: 'front edge sync' },
+  { label: t('rtss.sync_limiter_back_edge'), value: 'back edge sync' },
+  { label: t('rtss.sync_limiter_reflex'), value: 'nvidia reflex' },
+]);
 
 const status = ref<any>(null);
 const statusError = ref<string | null>(null);
@@ -32,7 +35,7 @@ onMounted(async () => {
     const res = await http.get('/api/rtss/status', { params: { _ts: Date.now() } });
     status.value = res?.data || null;
   } catch (e: any) {
-    statusError.value = e?.message || 'Failed to query RTSS status';
+    statusError.value = e?.message || t('rtss.error_query_status');
   }
 });
 
@@ -42,7 +45,7 @@ async function refreshStatus() {
     const res = await http.get('/api/rtss/status', { params: { _ts: Date.now() } });
     status.value = res?.data || null;
   } catch (e: any) {
-    statusError.value = e?.message || 'Failed to query RTSS status';
+    statusError.value = e?.message || t('rtss.error_query_status');
   }
 }
 </script>
@@ -50,7 +53,7 @@ async function refreshStatus() {
 <template>
   <div class="config-page">
     <div class="mb-2 text-[12px] opacity-70">
-      Frame limiter integration via RTSS. Applies a frame limit at stream start and restores it when streaming stops.
+      {{ $t('rtss.desc') }}
     </div>
 
     <!-- Inline status row with refresh -->
@@ -64,29 +67,45 @@ async function refreshStatus() {
         <div class="flex items-center gap-2">
           <i :class="detected ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle'" />
           <div class="flex items-center gap-2 flex-wrap">
-            <span class="font-medium">{{ detected ? 'RTSS detected' : 'RTSS not detected' }}</span>
+            <span class="font-medium">{{
+              detected ? $t('rtss.status_detected') : $t('rtss.status_not_detected')
+            }}</span>
             <span v-if="!detected && status" class="opacity-80">
-              <template v-if="!status.path_exists">Install not found at <code>{{ status.resolved_path || '(none)' }}</code></template>
-              <template v-else-if="!status.hooks_found">Hooks DLL missing</template>
-              <template v-else-if="!status.profile_found">Global profile missing</template>
+              <template v-if="!status.path_exists">{{
+                $t('rtss.status_install_not_found', { path: status.resolved_path || '(none)' })
+              }}</template>
+              <template v-else-if="!status.hooks_found">{{
+                $t('rtss.status_hooks_missing')
+              }}</template>
+              <template v-else-if="!status.profile_found">{{
+                $t('rtss.status_profile_missing')
+              }}</template>
             </span>
-            <span v-if="status && !limiterEnabled" class="opacity-70">(limiter disabled in settings)</span>
+            <span v-if="status && !limiterEnabled" class="opacity-70">{{
+              $t('rtss.status_limiter_disabled')
+            }}</span>
           </div>
         </div>
         <n-button size="tiny" type="default" strong @click="refreshStatus">
           <i class="fas fa-sync" />
-          <span class="ml-1">Refresh</span>
+          <span class="ml-1">{{ $t('rtss.refresh') }}</span>
         </n-button>
       </div>
       <div v-if="statusError" class="mt-2 text-[12px] text-warning">{{ statusError }}</div>
     </div>
 
-    <div v-if="isWindows && status && detected && status.resolved_path" class="-mt-2 mb-4 text-[12px] opacity-60">
-      Resolved path: <code>{{ status.resolved_path }}</code>
+    <div
+      v-if="isWindows && status && detected && status.resolved_path"
+      class="-mt-2 mb-4 text-[12px] opacity-60"
+    >
+      {{ $t('rtss.resolved_path') }} <code>{{ status.resolved_path }}</code>
     </div>
 
-    <div v-else-if="isWindows && status && !detected && status.resolved_path" class="-mt-2 mb-4 text-[12px] opacity-60">
-      Attempted path: <code>{{ status.resolved_path }}</code>
+    <div
+      v-else-if="isWindows && status && !detected && status.resolved_path"
+      class="-mt-2 mb-4 text-[12px] opacity-60"
+    >
+      {{ $t('rtss.attempted_path') }} <code>{{ status.resolved_path }}</code>
     </div>
 
     <div v-else-if="statusError && !status" class="mb-4 text-[12px] text-warning">
@@ -95,43 +114,51 @@ async function refreshStatus() {
 
     <!-- Install Path: only show when not detected -->
     <div v-if="!detected" class="mb-6">
-      <label for="rtss_install_path" class="form-label">RTSS install path</label>
+      <label for="rtss_install_path" class="form-label">{{ $t('rtss.install_path') }}</label>
       <n-input
         id="rtss_install_path"
         v-model:value="config.rtss_install_path"
-        placeholder="C:\Program Files (x86)\RivaTuner Statistics Server"
+        :placeholder="$t('rtss.install_path_placeholder')"
       />
-      <div class="form-text">
-        Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).
-      </div>
+      <div class="form-text">{{ $t('rtss.install_path_desc') }}</div>
     </div>
 
     <!-- Enable Frame Limiter: only when RTSS detected -->
     <div v-if="detected" class="mb-6">
-      <label for="rtss_enable_frame_limit" class="form-label">Enable frame limiter</label>
+      <label for="rtss_enable_frame_limit" class="form-label">{{
+        $t('rtss.enable_frame_limiter')
+      }}</label>
       <div class="flex items-center gap-3">
         <n-switch id="rtss_enable_frame_limit" v-model:value="config.rtss_enable_frame_limit" />
       </div>
-      <div class="form-text">
-        When enabled, Sunshine will set RTSS Global profile to limit framerate to the client FPS during a session, then restore previous values at the end.
-      </div>
+      <div class="form-text">{{ $t('rtss.enable_frame_limiter_desc') }}</div>
     </div>
 
     <!-- SyncLimiter Type: only when RTSS detected -->
     <div v-if="detected" class="mb-6">
-      <label for="rtss_frame_limit_type" class="form-label">SyncLimiter mode</label>
+      <label for="rtss_frame_limit_type" class="form-label">{{
+        $t('rtss.sync_limiter_mode')
+      }}</label>
       <n-select
         id="rtss_frame_limit_type"
         v-model:value="config.rtss_frame_limit_type"
         :options="syncLimiterOptions"
-        :data-search-options="syncLimiterOptions.map(o => `${o.label}::${o.value}`).join('|')"
+        :data-search-options="syncLimiterOptions.map((o) => `${o.label}::${o.value}`).join('|')"
       />
-      <div class="form-text">
-        Advanced users only. Async is recommended for best performance; other modes may cause microstuttering. If set, Sunshine will also adjust RTSS SyncLimiter for the Global profile.
+      <div class="form-text">{{ $t('rtss.sync_limiter_desc') }}</div>
+    </div>
+
+    <!-- Disable VSYNC/ULLM by preferring highest refresh rate -->
+    <div class="mb-6">
+      <label for="rtss_disable_vsync_ullm" class="form-label">{{
+        $t('rtss.rtss_disable_vsync_ullm')
+      }}</label>
+      <div class="flex items-center gap-3">
+        <n-switch id="rtss_disable_vsync_ullm" v-model:value="config.rtss_disable_vsync_ullm" />
       </div>
+      <div class="form-text">{{ $t('rtss.rtss_disable_vsync_ullm_desc') }}</div>
     </div>
   </div>
-  
 </template>
 
 <style scoped></style>

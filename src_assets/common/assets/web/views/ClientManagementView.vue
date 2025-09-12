@@ -40,12 +40,12 @@
             />
           </n-form-item>
           <n-form-item class="flex flex-col md:items-end">
-          <n-button
-            :disabled="pairing"
-            class="w-full md:w-auto"
-            type="primary"
-            attr-type="submit"
-          >
+            <n-button
+              :disabled="pairing"
+              class="w-full md:w-auto"
+              type="primary"
+              attr-type="submit"
+            >
               <span v-if="!pairing">{{ $t('pin.send') }}</span>
               <span v-else>{{ $t('clients.pairing') }}</span>
             </n-button>
@@ -135,7 +135,9 @@
         </div>
         <template #footer>
           <div class="w-full flex items-center justify-center gap-3">
-            <n-button type="default" strong @click="showConfirmRemove = false">{{ $t('cancel') }}</n-button>
+            <n-button type="default" strong @click="showConfirmRemove = false">{{
+              $t('cancel')
+            }}</n-button>
             <n-button secondary @click="confirmRemove">{{ $t('clients.remove') }}</n-button>
           </div>
         </template>
@@ -154,7 +156,9 @@
         </div>
         <template #footer>
           <div class="w-full flex items-center justify-center gap-3">
-            <n-button type="default" strong @click="showConfirmUnpairAll = false">{{ $t('cancel') }}</n-button>
+            <n-button type="default" strong @click="showConfirmUnpairAll = false">{{
+              $t('cancel')
+            }}</n-button>
             <n-button secondary @click="confirmUnpairAll">{{
               $t('troubleshooting.unpair_all')
             }}</n-button>

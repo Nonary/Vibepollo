@@ -296,6 +296,15 @@ namespace display_device {
             }
             break;
           }
+        case refresh_rate_option_e::prefer_highest:
+          {
+            // Hint to Windows to pick the highest available refresh rate for the mode.
+            // Strategy: request an unrealistically high refresh rate (e.g. 10000 Hz),
+            // and with SDC_ALLOW_CHANGES the OS will clamp to the closest supported value,
+            // which for an oversized request resolves to the maximum available.
+            config.m_refresh_rate = Rational {10000u, 1u};
+            break;
+          }
         case refresh_rate_option_e::disabled:
           break;
       }

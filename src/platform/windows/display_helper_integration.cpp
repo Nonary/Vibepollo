@@ -5,10 +5,10 @@
 
   // standard
   #include <filesystem>
-  #include <string>
-  #include <thread>
   #include <mutex>
   #include <optional>
+  #include <string>
+  #include <thread>
 
   // libdisplaydevice
   #include <display_device/json.h>
@@ -24,10 +24,11 @@
   #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN
   #endif
-  #include <winsock2.h>
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
+
+  #include <winsock2.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -188,7 +189,23 @@ namespace display_helper_integration {
 
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
-      std::string json = display_device::toJson(*cfg);
+      // Copy parsed config so we can optionally override refresh when VSYNC/ULLM suppression is enabled
+      auto cfg_effective = *cfg;
+
+      if (config::rtss.disable_vsync_ullm) {
+        // Prefer the highest available refresh rate for the targeted resolution to avoid
+        // VSYNC and ULLM engagement when the display refresh exceeds stream FPS.
+        cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
+        // If no resolution was selected by DD settings, use the session's requested resolution when SOPS is enabled
+        if (!cfg_effective.m_resolution && session.enable_sops && session.width >= 0 && session.height >= 0) {
+          cfg_effective.m_resolution = display_device::Resolution {
+            static_cast<unsigned int>(session.width),
+            static_cast<unsigned int>(session.height)
+          };
+        }
+      }
+
+      std::string json = display_device::toJson(cfg_effective);
       // Embed helper-only flag for HDR workaround (async; fixed 1s delay)
       try {
         if (video_config.dd.wa.hdr_toggle) {
@@ -210,7 +227,42 @@ namespace display_helper_integration {
       return ok;
     }
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
-      // If disabled, request revert so helper can restore
+      // If DD config is disabled but VSYNC/ULLM suppression is enabled, apply a minimal config
+      // to force the highest available refresh rate for the targeted resolution.
+      if (config::rtss.disable_vsync_ullm) {
+        display_device::SingleDisplayConfiguration cfg_override;
+        cfg_override.m_device_id = video_config.output_name;  // optional
+        // Don't force device prep; verify-only is safest and avoids primary/only changes
+        cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
+        // Target session resolution if the client opted-in to Optimize Game Settings
+        if (session.enable_sops && session.width >= 0 && session.height >= 0) {
+          cfg_override.m_resolution = display_device::Resolution {
+            static_cast<unsigned int>(session.width),
+            static_cast<unsigned int>(session.height)
+          };
+        }
+        cfg_override.m_refresh_rate = display_device::Rational {10000u, 1u};  // prefer highest
+
+        std::string json = display_device::toJson(cfg_override);
+        try {
+          if (video_config.dd.wa.hdr_toggle) {
+            nlohmann::json j = nlohmann::json::parse(json);
+            j["wa_hdr_toggle"] = true;
+            json = j.dump();
+          }
+        } catch (...) {
+        }
+        BOOST_LOG(info) << "Display helper: sending APPLY (VSYNC/ULLM suppression) with configuration:\n"
+                        << json;
+        const bool ok = platf::display_helper_client::send_apply_json(json);
+        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        if (ok) {
+          set_active_session(session);
+        }
+        return ok;
+      }
+
+      // Otherwise, if disabled and no override, request revert so helper can restore
       BOOST_LOG(info) << "Display configuration disabled; requesting REVERT via helper.";
       const bool ok = platf::display_helper_client::send_revert();
       BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");

@@ -138,7 +138,9 @@ const streamAudio = boolProxy('stream_audio', 'true');
         <div class="p-4">
           <!-- Step 1: Which display to capture -->
           <fieldset class="mb-4 border border-dark/35 dark:border-light/25 rounded-xl p-4">
-            <legend class="px-2 text-sm font-medium">{{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}</legend>
+            <legend class="px-2 text-sm font-medium">
+              {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
+            </legend>
             <DisplayOutputSelector />
           </fieldset>
 

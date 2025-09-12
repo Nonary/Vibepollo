@@ -49,10 +49,15 @@
           <div class="space-y-4 text-sm">
             <!-- ViGEm (Virtual Gamepad) missing warning on Windows -->
             <n-alert v-if="showVigemBanner" type="warning" :show-icon="true" class="rounded-xl">
-              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full">
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
                 <div class="min-w-0">
                   <p class="text-sm m-0 font-medium">
-                    {{ $t('config.vigem_missing_title') || 'Virtual Gamepad Driver (ViGEm) not installed' }}
+                    {{
+                      $t('config.vigem_missing_title') ||
+                      'Virtual Gamepad Driver (ViGEm) not installed'
+                    }}
                   </p>
                   <p class="text-xs opacity-80 m-0">
                     {{
@@ -125,10 +130,7 @@
               {{ $t('index.installed_version_not_stable') }}
             </n-alert>
             <!-- Git compare alerts removed; date-based update checks only -->
-            <n-alert
-              v-else-if="!stableBuildAvailable && !buildVersionIsDirty"
-              type="success"
-            >
+            <n-alert v-else-if="!stableBuildAvailable && !buildVersionIsDirty" type="success">
               {{ $t('index.version_latest') }}
             </n-alert>
 
@@ -155,7 +157,12 @@
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <n-button type="default" strong size="small" @click="showPreNotes = !showPreNotes">
+                    <n-button
+                      type="default"
+                      strong
+                      size="small"
+                      @click="showPreNotes = !showPreNotes"
+                    >
                       <i class="fas fa-bars-staggered" />
                       <span>{{
                         showPreNotes
@@ -209,7 +216,12 @@
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <n-button type="default" strong size="small" @click="showStableNotes = !showStableNotes">
+                    <n-button
+                      type="default"
+                      strong
+                      size="small"
+                      @click="showStableNotes = !showStableNotes"
+                    >
                       <i class="fas fa-bars-staggered" />
                       <span>{{
                         showStableNotes
@@ -354,7 +366,10 @@ async function runVersionChecks() {
           ? installedTag
           : 'v' + installedTag;
         const match = releases.find(
-          (r: any) => r && !r.draft && typeof r.tag_name === 'string' &&
+          (r: any) =>
+            r &&
+            !r.draft &&
+            typeof r.tag_name === 'string' &&
             (r.tag_name === installedTag || r.tag_name === installedTagV),
         );
         installedIsPrerelease.value = !!(match && match.prerelease === true);
