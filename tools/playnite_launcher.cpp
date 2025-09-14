@@ -929,8 +929,8 @@ static int launcher_run(int argc, char **argv) {
           HANDLE hp = OpenProcess(SYNCHRONIZE, FALSE, wpid);
           if (hp) {
             BOOST_LOG(info) << "Cleanup mode: waiting for PID=" << wpid << " to exit";
-            // Wait up to 30 minutes for the process to exit; early-exit if handle signals sooner
-            DWORD wr = WaitForSingleObject(hp, 30 * 60 * 1000);
+            // Wait indefinitely for the process to exit
+            DWORD wr = WaitForSingleObject(hp, INFINITE);
             CloseHandle(hp);
             BOOST_LOG(info) << "Cleanup mode: wait result=" << wr;
           } else {
