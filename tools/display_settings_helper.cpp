@@ -34,6 +34,7 @@
   #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/settings_utils.h>
   #include <display_device/windows/win_api_layer.h>
+  #include <display_device/windows/win_api_utils.h>
   #include <display_device/windows/win_display_device.h>
   #include <nlohmann/json.hpp>
 
@@ -138,8 +139,9 @@ namespace {
   class DisplayController {
   public:
     DisplayController() {
-      // Build the Windows display device API and wrap with impersonation if running as SYSTEM.
-      m_dd = std::make_shared<display_device::WinDisplayDevice>(std::make_shared<display_device::WinApiLayer>());
+      // Build the Windows display device API and keep a direct WinApiLayer handle as well.
+      m_wapi = std::make_shared<display_device::WinApiLayer>();
+      m_dd = std::make_shared<display_device::WinDisplayDevice>(m_wapi);
 
       // Use noop persistence and audio context here; Sunshine owns lifecycle across streams.
       m_sm = std::make_unique<display_device::SettingsManager>(
@@ -210,6 +212,98 @@ namespace {
         // best-effort snapshot
       }
       return snap;
+    }
+
+    // Validate whether a proposed topology is acceptable by the OS using SDC_VALIDATE.
+    bool validate_topology_with_os(const display_device::ActiveTopology &topo) const {
+      try {
+        if (!m_dd->isTopologyValid(topo)) {
+          return false;
+        }
+        const auto original_data = m_wapi->queryDisplayConfig(display_device::QueryType::All);
+        if (!original_data) {
+          return false;
+        }
+        const auto path_data = display_device::win_utils::collectSourceDataForMatchingPaths(*m_wapi, original_data->m_paths);
+        if (path_data.empty()) {
+          return false;
+        }
+        auto paths = display_device::win_utils::makePathsForNewTopology(topo, path_data, original_data->m_paths);
+        if (paths.empty()) {
+          return false;
+        }
+        UINT32 flags = SDC_VALIDATE | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES | SDC_VIRTUAL_MODE_AWARE;
+        LONG result = m_wapi->setDisplayConfig(paths, {}, flags);
+        if (result == ERROR_GEN_FAILURE) {
+          flags = SDC_VALIDATE | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE;
+          result = m_wapi->setDisplayConfig(paths, {}, flags);
+        }
+        if (result != ERROR_SUCCESS) {
+          BOOST_LOG(warning) << "Topology validation failed: " << result;
+          return false;
+        }
+        return true;
+      } catch (...) {
+        return false;
+      }
+    }
+
+    // Build and validate the topology implied by a SingleDisplayConfiguration without applying it.
+    bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+      try {
+        const auto topo_before = m_dd->getCurrentTopology();
+        if (!m_dd->isTopologyValid(topo_before)) {
+          return false;
+        }
+        const auto devices = m_sm->enumAvailableDevices();
+        auto initial = display_device::win_utils::computeInitialState(std::nullopt, topo_before, devices);
+        if (!initial) {
+          return false;
+        }
+        const auto [new_topology, device_to_configure, additional_devices] = display_device::win_utils::computeNewTopologyAndMetadata(
+          cfg.m_device_prep,
+          cfg.m_device_id,
+          *initial
+        );
+
+        if (m_dd->isTopologyTheSame(topo_before, new_topology)) {
+          return true;
+        }
+        return validate_topology_with_os(new_topology);
+      } catch (...) {
+        return false;
+      }
+    }
+
+    // Compute the topology that would be requested by cfg based on the current initial state.
+    std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+      try {
+        const auto topo_before = m_dd->getCurrentTopology();
+        if (!m_dd->isTopologyValid(topo_before)) {
+          return std::nullopt;
+        }
+        const auto devices = m_sm->enumAvailableDevices();
+        auto initial = display_device::win_utils::computeInitialState(std::nullopt, topo_before, devices);
+        if (!initial) {
+          return std::nullopt;
+        }
+        const auto [new_topology, device_to_configure, additional_devices] = display_device::win_utils::computeNewTopologyAndMetadata(
+          cfg.m_device_prep,
+          cfg.m_device_id,
+          *initial
+        );
+        return new_topology;
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    bool is_topology_the_same(const display_device::ActiveTopology &a, const display_device::ActiveTopology &b) const {
+      try {
+        return m_dd->isTopologyTheSame(a, b);
+      } catch (...) {
+        return false;
+      }
     }
 
     // Apply the HDR blank workaround synchronously (call from a background thread)
@@ -361,8 +455,8 @@ namespace {
       try {
         // Set topology first
         (void) m_dd->setTopology(snap.m_topology);
-        // Then set modes with fallback to closest supported
-        (void) m_dd->setDisplayModesWithFallback(snap.m_modes);
+        // Then set modes temporarily (no DB persistence) with internal relaxed/strict strategy
+        (void) m_dd->setDisplayModesTemporary(snap.m_modes);
         // Then HDR
         (void) m_dd->setHdrStates(snap.m_hdr_states);
         // Then primary
@@ -376,6 +470,8 @@ namespace {
     }
 
   private:
+    std::shared_ptr<display_device::WinApiLayer> m_wapi;
+
     // Collect devices from full enumeration
     void collect_all_device_ids(std::set<std::string> &out) const {
       for (const auto &d : m_sm->enumAvailableDevices()) {
@@ -610,10 +706,12 @@ namespace {
     std::optional<display_device::SingleDisplayConfiguration> last_cfg;
     std::atomic<bool> exit_after_revert {false};
     std::atomic<bool> *running_flag {nullptr};
+    std::atomic<bool> should_exit {false};
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
     std::filesystem::path golden_path;  // file to store golden snapshot
     std::filesystem::path session_path;  // file to store session baseline snapshot (first apply)
+    std::filesystem::path session_prev_path;  // file holding previous session snapshot
     std::atomic<bool> session_saved {false};
     // Track last APPLY to suppress revert-on-topology within a grace window
     std::atomic<long long> last_apply_ms {0};
@@ -626,12 +724,67 @@ namespace {
     std::jthread restore_poll_thread;
     std::atomic<bool> restore_poll_active {false};
 
+    void prepare_session_topology() {
+      if (session_saved.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::error_code ec_exist;
+      const bool exists = std::filesystem::exists(session_path, ec_exist);
+      if (exists && !ec_exist) {
+        session_saved.store(true, std::memory_order_release);
+        BOOST_LOG(info) << "Session baseline already exists; preserving existing snapshot: "
+                        << session_path.string();
+        return;
+      }
+      const bool saved = controller.save_display_settings_snapshot_to_file(session_path);
+      session_saved.store(saved, std::memory_order_release);
+      BOOST_LOG(info) << "Saved session baseline snapshot to file: "
+                      << (saved ? "true" : "false");
+    }
+
+    void ensure_session_state(const display_device::ActiveTopology &expected_topology) {
+      if (session_saved.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::error_code ec_exist;
+      if (std::filesystem::exists(session_path, ec_exist) && !ec_exist) {
+        session_saved.store(true, std::memory_order_release);
+        return;
+      }
+
+      const auto actual = controller.snapshot().m_topology;
+      const bool matches_expected = controller.is_topology_the_same(actual, expected_topology);
+
+      std::error_code ec_prev;
+      const bool has_prev = std::filesystem::exists(session_prev_path, ec_prev) && !ec_prev;
+      if (has_prev && matches_expected) {
+        auto prev = controller.load_display_settings_snapshot(session_prev_path);
+        if (prev && !controller.is_topology_the_same(prev->m_topology, expected_topology)) {
+          std::error_code ec_copy;
+          std::filesystem::copy_file(session_prev_path, session_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+          if (!ec_copy) {
+            BOOST_LOG(info) << "Promoted previous session snapshot to current.";
+            session_saved.store(true, std::memory_order_release);
+            return;
+          }
+          BOOST_LOG(warning) << "Failed to promote previous → current (copy error); will snapshot current instead.";
+        }
+      }
+
+      const bool saved = controller.save_display_settings_snapshot_to_file(session_path);
+      session_saved.store(saved, std::memory_order_release);
+      BOOST_LOG(info) << "Saved session baseline snapshot (fresh) to file: " << (saved ? "true" : "false");
+    }
+
     // Read a stable snapshot: two identical consecutive reads within the deadline
     bool read_stable_snapshot(display_device::DisplaySettingsSnapshot &out, std::chrono::milliseconds deadline = 2000ms, std::chrono::milliseconds interval = 150ms) {
       auto t0 = std::chrono::steady_clock::now();
       auto have_last = false;
       display_device::DisplaySettingsSnapshot last;
       while (std::chrono::steady_clock::now() - t0 < deadline) {
+        if ((running_flag && !running_flag->load(std::memory_order_acquire)) || should_exit.load(std::memory_order_acquire)) {
+          return false;
+        }
         auto cur = controller.snapshot();
         // Heuristic: treat completely empty topology+modes as transient
         const bool emptyish = cur.m_topology.empty() && cur.m_modes.empty();
@@ -641,7 +794,14 @@ namespace {
         }
         last = std::move(cur);
         have_last = true;
-        std::this_thread::sleep_for(interval);
+        auto slept = 0ms;
+        while (slept < interval) {
+          if ((running_flag && !running_flag->load(std::memory_order_acquire)) || should_exit.load(std::memory_order_acquire)) {
+            return false;
+          }
+          std::this_thread::sleep_for(25ms);
+          slept += 25ms;
+        }
       }
       return false;
     }
@@ -663,11 +823,14 @@ namespace {
 
     static void hdr_blank_proc(std::stop_token st, ServiceState *self) {
       using namespace std::chrono_literals;
-      // Fire soon after apply; delay is baked into blank_hdr_states
+      auto waited = 0ms;
+      while (waited < 1000ms && !st.stop_requested()) {
+        std::this_thread::sleep_for(50ms);
+        waited += 50ms;
+      }
       if (st.stop_requested()) {
         return;
       }
-      // Use fixed 1 second delay per requirements
       self->controller.blank_hdr_states(1000ms);
     }
 
@@ -769,6 +932,7 @@ namespace {
 
       // Attempt 1
       (void) controller.apply_snapshot(*golden);
+      std::this_thread::sleep_for(250ms);
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur);
       bool ok = got_stable && equal_snapshots_strict(cur, *golden) && quiet_period();
@@ -777,18 +941,32 @@ namespace {
                       << ", golden_sig=" << controller.signature(*golden)
                       << ", match=" << (ok ? "true" : "false");
       if (ok) {
+        // Golden won: copy golden snapshot to previous
+        std::error_code ec_prev_rm;
+        (void) std::filesystem::remove(session_prev_path, ec_prev_rm);
+        std::error_code ec_copy;
+        std::filesystem::copy_file(golden_path, session_prev_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+        BOOST_LOG(info) << "Golden restore confirmed; copied golden snapshot to previous. copy_ok=" << (!ec_copy ? "true" : "false");
         return true;
       }
 
       // Attempt 2 (double-check) after a short delay
       std::this_thread::sleep_for(700ms);
       (void) controller.apply_snapshot(*golden);
+      std::this_thread::sleep_for(250ms);
       display_device::DisplaySettingsSnapshot cur2;
       const bool got_stable2 = read_stable_snapshot(cur2);
       ok = got_stable2 && equal_snapshots_strict(cur2, *golden) && quiet_period();
       BOOST_LOG(info) << "Golden restore attempt #2: current_sig=" << controller.signature(cur2)
                       << ", golden_sig=" << controller.signature(*golden)
                       << ", match=" << (ok ? "true" : "false");
+      if (ok) {
+        std::error_code ec_prev_rm;
+        (void) std::filesystem::remove(session_prev_path, ec_prev_rm);
+        std::error_code ec_copy2;
+        std::filesystem::copy_file(golden_path, session_prev_path, std::filesystem::copy_options::overwrite_existing, ec_copy2);
+        BOOST_LOG(info) << "Golden restore confirmed (retry); copied golden snapshot to previous. copy_ok=" << (!ec_copy2 ? "true" : "false");
+      }
       return ok;
     }
 
@@ -802,6 +980,7 @@ namespace {
       const auto before_sig = controller.signature(controller.snapshot());
 
       (void) controller.apply_snapshot(*base);
+      std::this_thread::sleep_for(250ms);
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur);
       bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period();
@@ -812,6 +991,7 @@ namespace {
       if (!ok) {
         std::this_thread::sleep_for(700ms);
         (void) controller.apply_snapshot(*base);
+        std::this_thread::sleep_for(250ms);
         display_device::DisplaySettingsSnapshot cur2;
         const bool got_stable2 = read_stable_snapshot(cur2);
         ok = got_stable2 && equal_snapshots_strict(cur2, *base) && quiet_period();
@@ -820,11 +1000,22 @@ namespace {
       }
 
       if (ok) {
-        // Successful restore: delete session snapshot and set guard timestamp
+        // Successful restore: move current session snapshot to previous
         std::error_code ec_rm;
-        bool removed = std::filesystem::remove(session_path, ec_rm);
-        BOOST_LOG(info) << "Session restore confirmed; delete session snapshot path='"
-                        << session_path.string() << "' result=" << (removed && !ec_rm ? "true" : "false");
+        (void) std::filesystem::remove(session_prev_path, ec_rm);
+        ec_rm.clear();
+        std::error_code ec_mv;
+        std::filesystem::rename(session_path, session_prev_path, ec_mv);
+        if (ec_mv) {
+          std::error_code ec_copy;
+          std::filesystem::copy_file(session_path, session_prev_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+          if (!ec_copy) {
+            std::error_code ec_del;
+            (void) std::filesystem::remove(session_path, ec_del);
+          }
+        }
+        BOOST_LOG(info) << "Session restore confirmed; moved current session snapshot to previous.";
+        session_saved.store(false, std::memory_order_release);
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()
         )
@@ -837,17 +1028,15 @@ namespace {
     // Attempt a restore once if a valid topology is present. Returns true on
     // confirmed success, false otherwise. Prefers session baseline, then golden.
     bool try_restore_once_if_valid() {
-      // Session snapshot first
       if (auto base = controller.load_display_settings_snapshot(session_path)) {
-        if (controller.is_topology_valid(*base)) {
+        if (controller.validate_topology_with_os(base->m_topology)) {
           if (apply_session_and_confirm()) {
             return true;
           }
         }
       }
-      // Golden snapshot fallback
       if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
-        if (controller.is_topology_valid(*golden)) {
+        if (controller.validate_topology_with_os(golden->m_topology)) {
           if (apply_golden_and_confirm()) {
             return true;
           }
@@ -891,6 +1080,7 @@ namespace {
           if (self->running_flag) {
             self->running_flag->store(false, std::memory_order_release);
           }
+          self->should_exit.store(true, std::memory_order_release);
           self->restore_poll_active.store(false, std::memory_order_release);
           return;
         }
@@ -909,6 +1099,7 @@ namespace {
             BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
             self->running_flag->store(false, std::memory_order_release);
           }
+          self->should_exit.store(true, std::memory_order_release);
           self->restore_poll_active.store(false, std::memory_order_release);
           return;
         }
@@ -923,6 +1114,7 @@ namespace {
             BOOST_LOG(info) << "Restore confirmed; exiting helper.";
             self->running_flag->store(false, std::memory_order_release);
           }
+          self->should_exit.store(true, std::memory_order_release);
           self->restore_poll_active.store(false, std::memory_order_release);
           return;
         }
@@ -980,11 +1172,12 @@ namespace {
     static void delayed_reapply_proc(std::stop_token st, ServiceState *self) {
       using namespace std::chrono_literals;
       const auto delays = {1s, 3s};
-      for (auto d : delays) {
-        if (st.stop_requested()) {
-          return;
+      for (auto total : delays) {
+        auto slept = 0ms;
+        while (slept < total && !st.stop_requested()) {
+          std::this_thread::sleep_for(50ms);
+          slept += 50ms;
         }
-        std::this_thread::sleep_for(d);
         if (st.stop_requested()) {
           return;
         }
@@ -1109,39 +1302,34 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
-    if (!state.session_saved.load(std::memory_order_acquire)) {
-      std::error_code ec_exist;
-      const bool exists = std::filesystem::exists(state.session_path, ec_exist);
-      if (exists && !ec_exist) {
-        state.session_saved.store(true, std::memory_order_release);
-        BOOST_LOG(info) << "Session baseline already exists; preserving existing snapshot: "
-                        << state.session_path.string();
-      } else {
-        const bool saved = state.controller.save_display_settings_snapshot_to_file(state.session_path);
-        state.session_saved.store(saved, std::memory_order_release);
-        BOOST_LOG(info) << "Saved session baseline snapshot to file: "
-                        << (saved ? "true" : "false");
-      }
+    if (auto expected = state.controller.compute_expected_topology(cfg)) {
+      state.ensure_session_state(*expected);
+    } else {
+      state.prepare_session_topology();
     }
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
-    const auto before_sig = state.controller.signature(state.controller.snapshot());
-    (void) state.controller.apply(cfg);
-    display_device::DisplaySettingsSnapshot cur;
-    const bool got_stable = state.read_stable_snapshot(cur);
-    const bool changed = got_stable ? (state.controller.signature(cur) != before_sig) : false;
-    if (!changed) {
-      // No topology-driven retries anymore; rely on short delayed re-apply attempts only.
+    if (state.controller.soft_test_display_settings(cfg)) {
+      const auto before_sig = state.controller.signature(state.controller.snapshot());
+      (void) state.controller.apply(cfg);
+      std::this_thread::sleep_for(250ms);
+      display_device::DisplaySettingsSnapshot cur;
+      const bool got_stable = state.read_stable_snapshot(cur);
+      const bool changed = got_stable ? (state.controller.signature(cur) != before_sig) : false;
+      if (!changed) {
+      }
+      state.retry_apply_on_topology.store(false, std::memory_order_release);
+      state.schedule_delayed_reapply();
+      refresh_shell_after_display_change();
+      state.schedule_hdr_blank_if_needed(wa_hdr_toggle);
+    } else {
+      BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
     }
-    state.retry_apply_on_topology.store(false, std::memory_order_release);
-    state.schedule_delayed_reapply();
-    refresh_shell_after_display_change();
-    // Schedule HDR workaround asynchronously if requested
-    state.schedule_hdr_blank_if_needed(wa_hdr_toggle);
   }
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
     state.retry_apply_on_topology.store(false, std::memory_order_release);
+    state.cancel_delayed_reapply();
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
     // Begin polling every ~3s until restore confirmed successful.
@@ -1212,12 +1400,14 @@ int main() {
   const auto logfile = (logdir / L"sunshine_display_helper.log");
   const auto goldenfile = (logdir / L"display_golden_restore.json");
   const auto sessionfile = (logdir / L"display_session_restore.json");
+  const auto sessionprevfile = (logdir / L"display_session_restore_prev.json");
   auto _log_guard = logging::init_append(2 /*info*/, logfile);
 
   platf::dxgi::AnonymousPipeFactory pipe_factory;
   ServiceState state;
   state.golden_path = goldenfile;
   state.session_path = sessionfile;
+  state.session_prev_path = sessionprevfile;
   {
     std::error_code ec;
     const bool exists = std::filesystem::exists(state.session_path, ec);
@@ -1243,8 +1433,22 @@ int main() {
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
 
-    // For anonymous-pipe server, give the client ample time to connect to the data pipe
-    async_pipe.wait_for_client_connection(60000);  // 60s window after handshake
+    // Poll for client connection with short waits so we can exit promptly if told to stop
+    {
+      int waited_ms = 0;
+      const int step = 200;
+      while (running.load(std::memory_order_acquire) && !state.should_exit.load(std::memory_order_acquire) && waited_ms < 60000 && !async_pipe.is_connected()) {
+        async_pipe.wait_for_client_connection(step);
+        waited_ms += step;
+      }
+      if (!running.load(std::memory_order_acquire) || state.should_exit.load(std::memory_order_acquire)) {
+        async_pipe.stop();
+        state.cancel_delayed_reapply();
+        state.cancel_hdr_blank();
+        state.stop_restore_polling();
+        break;
+      }
+    }
 
     FramedReader reader;
 
@@ -1276,7 +1480,7 @@ int main() {
     async_pipe.start(on_message, on_error, on_broken);
 
     // Stay in this inner loop until the client disconnects or service told to exit
-    while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
+    while (running.load(std::memory_order_acquire) && !state.should_exit.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(200ms);
     }
 
@@ -1285,7 +1489,10 @@ int main() {
     async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop
-    if (!running.load(std::memory_order_acquire)) {
+    if (!running.load(std::memory_order_acquire) || state.should_exit.load(std::memory_order_acquire)) {
+      state.cancel_delayed_reapply();
+      state.cancel_hdr_blank();
+      state.stop_restore_polling();
       break;
     }
 

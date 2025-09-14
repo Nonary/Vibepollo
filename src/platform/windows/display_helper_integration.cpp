@@ -334,7 +334,9 @@ namespace display_helper_integration {
       g_watchdog_thread.request_stop();
       g_watchdog_thread.join();
     }
-    platf::display_helper_client::reset_connection();
+    if (config::video.dd.config_revert_on_disconnect) {
+      platf::display_helper_client::reset_connection();
+    }
     clear_active_session();
   }
 }  // namespace display_helper_integration

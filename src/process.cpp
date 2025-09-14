@@ -459,7 +459,9 @@ namespace proc {
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif
 
-      display_helper_integration::revert();
+      if (config::video.dd.config_revert_on_disconnect) {
+        display_helper_integration::revert();
+      }
     }
 
     _app_id = -1;

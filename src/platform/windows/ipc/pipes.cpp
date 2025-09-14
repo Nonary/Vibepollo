@@ -657,8 +657,6 @@ namespace platf::dxgi {
     if (_pipe) {
       CancelIoEx(_pipe.get(), nullptr);
       if (_is_server) {
-        // Ensure any final writes are delivered before closing (rare edge-case)
-        FlushFileBuffers(_pipe.get());
         DisconnectNamedPipe(_pipe.get());
       }
       _pipe.close();
