@@ -111,6 +111,7 @@ const defaultGroups = [
       playnite_focus_attempts: 3,
       playnite_focus_timeout_secs: 15,
       playnite_focus_exit_on_first: false,
+      playnite_fullscreen_entry_enabled: false,
       playnite_sync_categories: [],
       playnite_exclude_games: [],
       playnite_install_dir: '',
@@ -379,6 +380,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_auto_sync',
       'playnite_autosync_require_replacement',
       'playnite_focus_exit_on_first',
+      'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [

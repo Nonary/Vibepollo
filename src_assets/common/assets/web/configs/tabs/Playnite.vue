@@ -77,26 +77,22 @@
         </div>
         <div class="pt-2 border-t border-dark/10 dark:border-light/10 mt-2">
           <div class="flex items-center justify-end gap-2 playnite-actions">
-            <n-button
+            <PlayniteReinstallButton
               v-if="status.extensions_dir"
-              type="primary"
               size="small"
-              :loading="installing"
-              @click="openInstallConfirm"
-            >
-              <i class="fas fa-plug" />
-              <span class="ml-2">
-                {{
-                  status.installed
-                    ? pluginOutdated
-                      ? $t('playnite.upgrade_button') || 'Upgrade Plugin'
-                      : $t('playnite.reinstall_button') ||
-                        $t('playnite.repair_button') ||
-                        'Reinstall Plugin'
-                    : $t('playnite.install_button') || 'Install Plugin'
-                }}
-              </span>
-            </n-button>
+              :strong="true"
+              :restart="true"
+              :label="
+                status.installed
+                  ? pluginOutdated
+                    ? ($t('playnite.upgrade_button') as any) || 'Upgrade Plugin'
+                    : ($t('playnite.reinstall_button') as any) ||
+                      ($t('playnite.repair_button') as any) ||
+                      'Reinstall Plugin'
+                  : ($t('playnite.install_button') as any) || 'Install Plugin'
+              "
+              @done="onReinstallDone"
+            />
             <n-button
               v-if="status.extensions_dir && status.installed"
               size="small"
@@ -287,6 +283,16 @@
         </div>
         <div class="px-4 pb-4 section-body">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 items-start">
+            <div class="md:col-span-2">
+              <Checkbox
+                v-model="config.playnite_fullscreen_entry_enabled"
+                id="playnite_fullscreen_entry_enabled"
+                :default="store.defaults.playnite_fullscreen_entry_enabled"
+                :localePrefix="'playnite'"
+                label="Add 'Playnite (Fullscreen)' to Applications"
+                desc="When enabled, Sunshine adds a launcher entry that opens Playnite in fullscreen desktop mode."
+              />
+            </div>
             <div>
               <label for="playnite_focus_attempts" class="form-label">{{
                 $t('playnite.focus_attempts') || 'Auto-focus attempts'
@@ -441,43 +447,6 @@
       </div>
     </section>
   </div>
-  <!-- Install/Upgrade confirmation -->
-  <n-modal :show="showInstallConfirm" @update:show="(v) => (showInstallConfirm = v)">
-    <n-card :bordered="false" style="max-width: 32rem; width: 100%">
-      <template #header>
-        <div class="flex items-center gap-2">
-          <i class="fas fa-plug" />
-          <span>
-            {{
-              status.installed
-                ? pluginOutdated
-                  ? $t('playnite.upgrade_button') || 'Upgrade Plugin'
-                  : $t('playnite.reinstall_button') ||
-                    $t('playnite.repair_button') ||
-                    'Reinstall Plugin'
-                : $t('playnite.install_button') || 'Install Plugin'
-            }}
-          </span>
-        </div>
-      </template>
-      <div class="text-sm">
-        {{
-          $t('playnite.install_requires_restart') ||
-          'This action will restart Playnite to complete plugin (re)installation. Continue?'
-        }}
-      </div>
-      <template #footer>
-        <div class="w-full flex items-center justify-center gap-3">
-          <n-button type="default" strong @click="showInstallConfirm = false">{{
-            $t('_common.cancel')
-          }}</n-button>
-          <n-button type="primary" :loading="installing" @click="confirmInstall">{{
-            $t('_common.continue') || 'Continue'
-          }}</n-button>
-        </div>
-      </template>
-    </n-card>
-  </n-modal>
   <!-- Uninstall confirmation -->
   <n-modal :show="showUninstallConfirm" @update:show="(v) => (showUninstallConfirm = v)">
     <n-card :bordered="false" style="max-width: 32rem; width: 100%">
@@ -573,6 +542,7 @@ import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { http } from '@/http';
+import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 
 const store = useConfigStore();
 const { config, metadata } = storeToRefs(store);
@@ -591,9 +561,7 @@ const status = reactive<{
   plugin_version?: string;
   plugin_latest?: string;
 }>({ installed: false, active: false, extensions_dir: '' });
-const installing = ref(false);
 const launching = ref(false);
-const showInstallConfirm = ref(false);
 const uninstalling = ref(false);
 const showUninstallConfirm = ref(false);
 // Naive UI notifications for transient messages
@@ -680,8 +648,10 @@ async function refreshStatus() {
       // 'enabled' is no longer a config; presence is indicated by 'installed'
       if (typeof d.playnite_running === 'boolean') status.playnite_running = !!d.playnite_running;
       status.extensions_dir = d.extensions_dir || '';
-      status.plugin_version = d.plugin_version || d.version || status.plugin_version;
-      status.plugin_latest = d.plugin_latest || d.latest_version || status.plugin_latest;
+      status.plugin_version =
+        d.installed_version || d.plugin_version || d.version || status.plugin_version;
+      status.plugin_latest =
+        d.packaged_version || d.plugin_latest || d.latest_version || status.plugin_latest;
     }
   } catch (_) {}
 }
@@ -823,41 +793,16 @@ async function loadGames(useCacheFirst = true) {
   gamesLoading.value = false;
 }
 
-function openInstallConfirm() {
-  showInstallConfirm.value = true;
-}
-
-async function confirmInstall() {
-  installing.value = true;
-  showInstallConfirm.value = false;
-  try {
-    const r = await http.post(
-      '/api/playnite/install',
-      { restart: true },
-      { validateStatus: () => true },
-    );
-    let ok = false;
-    let body: any = null;
-    try {
-      body = r.data;
-    } catch {}
-    ok = r.status >= 200 && r.status < 300 && body && body.status === true;
-    if (ok) {
-      notify('success', (t('playnite.install_success') as any) || 'Plugin installed successfully.');
-      await refreshStatus();
-    } else {
-      const msg =
-        ((t('playnite.install_error') as any) || 'Failed to install plugin.') +
-        (body && body.error ? `: ${body.error}` : '');
-      notify('error', msg);
-    }
-  } catch (e: any) {
+async function onReinstallDone(res: { ok: boolean; error?: string }) {
+  if (res.ok) {
+    notify('success', (t('playnite.install_success') as any) || 'Plugin installed successfully.');
+    await refreshStatus();
+  } else {
     const msg =
       ((t('playnite.install_error') as any) || 'Failed to install plugin.') +
-      (e?.message ? `: ${e.message}` : '');
+      (res.error ? `: ${res.error}` : '');
     notify('error', msg);
   }
-  installing.value = false;
 }
 
 function openUninstallConfirm() {

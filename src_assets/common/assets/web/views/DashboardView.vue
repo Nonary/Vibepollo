@@ -47,6 +47,37 @@
             </h2>
           </template>
           <div class="space-y-4 text-sm">
+            <!-- Playnite extension update available -->
+            <n-alert
+              v-if="playniteUpdateAvailable"
+              type="warning"
+              :show-icon="true"
+              class="rounded-xl"
+            >
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
+                <div class="min-w-0">
+                  <p class="text-sm m-0 font-medium">Playnite Extension update available</p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{
+                      (playnite?.installed_version || 'unknown') +
+                      ' → ' +
+                      (playnite?.packaged_version || 'unknown')
+                    }}
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <PlayniteReinstallButton
+                    size="small"
+                    :strong="true"
+                    :restart="true"
+                    :label="'Update Playnite Extension'"
+                    @done="onPlayniteReinstallDone"
+                  />
+                </div>
+              </div>
+            </n-alert>
             <!-- ViGEm (Virtual Gamepad) missing warning on Windows -->
             <n-alert v-if="showVigemBanner" type="warning" :show-icon="true" class="rounded-xl">
               <div
@@ -272,8 +303,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { NCard, NAlert, NGrid, NGi } from 'naive-ui';
+import { NCard, NAlert, NGrid, NGi, useMessage } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
+import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import SunshineVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
@@ -304,10 +336,22 @@ const installedIsPrerelease = ref(false);
 // ViGEm health
 const vigemInstalled = ref<boolean | null>(null);
 const vigemVersion = ref('');
+// Playnite extension status
+type PlayniteStatus = {
+  installed: boolean;
+  active: boolean;
+  extensions_dir?: string;
+  installed_version?: string;
+  packaged_version?: string;
+  update_available?: boolean;
+};
+const playnite = ref<PlayniteStatus | null>(null);
+const updatingPlaynite = ref(false);
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
 let started = false; // prevent duplicate concurrent checks
+const message = useMessage();
 
 async function runVersionChecks() {
   if (started) return; // guard
@@ -398,6 +442,17 @@ async function runVersionChecks() {
     } catch (e) {
       vigemInstalled.value = null;
     }
+    // Playnite status for extension version/update check
+    try {
+      const r = await http.get('/api/playnite/status', { validateStatus: () => true });
+      if (r.status === 200 && r.data) {
+        playnite.value = r.data as PlayniteStatus;
+      } else {
+        playnite.value = null;
+      }
+    } catch (e) {
+      playnite.value = null;
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[Dashboard] version checks failed', e);
@@ -472,6 +527,22 @@ const showVigemBanner = computed(() => {
   const controllerEnabled = (configStore.config as any)?.controller === 'enabled';
   return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
 });
+
+const playniteUpdateAvailable = computed(() => {
+  return !!(playnite.value && playnite.value.installed && playnite.value.update_available);
+});
+
+async function onPlayniteReinstallDone(res: { ok: boolean; error?: string }) {
+  if (res.ok) {
+    message.success('Playnite Extension updated');
+  } else {
+    message.error('Update failed' + (res.error ? `: ${res.error}` : ''));
+  }
+  try {
+    const s = await http.get('/api/playnite/status', { validateStatus: () => true });
+    if (s.status === 200 && s.data) playnite.value = s.data as PlayniteStatus;
+  } catch {}
+}
 </script>
 
 <style scoped></style>

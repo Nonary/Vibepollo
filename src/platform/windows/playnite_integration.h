@@ -114,4 +114,18 @@ namespace platf::playnite {
 
   // Note: explicit launch helper removed; use restart_playnite() for both cases.
 
+  /**
+   * @brief Read the Version from the packaged Playnite extension.yaml next to sunshine.exe.
+   * @param[out] out Receives the version string on success.
+   * @return true if the version was read successfully, false otherwise.
+   */
+  bool get_packaged_plugin_version(std::string &out);
+
+  /**
+   * @brief Read the Version from the installed Playnite extension.yaml under the user's Extensions directory.
+   * @param[out] out Receives the version string on success.
+   * @return true if the version was read successfully, false otherwise.
+   */
+  bool get_installed_plugin_version(std::string &out);
+
 }  // namespace platf::playnite

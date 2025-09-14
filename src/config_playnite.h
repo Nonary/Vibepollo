@@ -49,6 +49,10 @@ namespace config {
     bool autosync_require_replacement = true;
 
     // Installation/paths (overrides removed)
+
+    // When enabled, Sunshine maintains a "Playnite (Fullscreen)" entry in apps.json
+    // that launches Playnite in fullscreen/desktop mode via the helper.
+    bool fullscreen_entry_enabled = false;
   };
 
   extern playnite_t playnite;

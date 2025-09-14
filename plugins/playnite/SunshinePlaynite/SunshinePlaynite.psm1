@@ -31,15 +31,55 @@ if (-not $lcVar -or -not ($lcVar.Value -is [System.Collections.Concurrent.Concur
   $global:LauncherConns = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
 }
 $script:Outbox = $null
+$script:GameEventSubs = @()
+$script:GameEventsRegistered = $false
+$script:SnapshotTimer = $null
+$script:SnapshotTimerSub = $null
+$script:SnapshotIntervalMs = 3000
+
+function Ensure-SnapshotDebounceTimer {
+  try {
+    if (-not $script:SnapshotTimer) {
+      $t = New-Object System.Timers.Timer
+      $t.Interval = [double]$script:SnapshotIntervalMs
+      $t.AutoReset = $false
+      $script:SnapshotTimer = $t
+      try {
+        $script:SnapshotTimerSub = Register-ObjectEvent -InputObject $t -EventName Elapsed -Action {
+          try { Write-Log "SnapshotDebounce: firing Send-InitialSnapshot"; Send-InitialSnapshot } catch { Write-Log "SnapshotDebounce: error: $($_.Exception.Message)" }
+        } -ErrorAction SilentlyContinue
+      } catch { Write-Log "Ensure-SnapshotDebounceTimer: failed to register timer event: $($_.Exception.Message)" }
+      Write-Log "Ensure-SnapshotDebounceTimer: timer created"
+    }
+  } catch { Write-Log "Ensure-SnapshotDebounceTimer: error: $($_.Exception.Message)" }
+}
+
+function Kick-SnapshotDebounce {
+  try {
+    Ensure-SnapshotDebounceTimer
+    if ($script:SnapshotTimer) {
+      try { $script:SnapshotTimer.Stop() } catch {}
+      try { $script:SnapshotTimer.Interval = [double]$script:SnapshotIntervalMs } catch {}
+      try { $script:SnapshotTimer.Start() } catch {}
+      Write-Log "SnapshotDebounce: kicked"
+    }
+  } catch { Write-Log "Kick-SnapshotDebounce: error: $($_.Exception.Message)" }
+}
 
 function Resolve-LogPath {
+  try {
+    $appData = $env:APPDATA
+    if ($appData) {
+      $dir = Join-Path $appData 'Sunshine'
+      try { if (-not (Test-Path $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) } } catch {}
+      return (Join-Path $dir 'sunshine_playnite.log')
+    }
+  } catch {}
   try {
     if ($PSScriptRoot) {
       return (Join-Path $PSScriptRoot 'sunshine_playnite.log')
     }
-  }
-  catch {}
-  # Last resort: temp folder
+  } catch {}
   return (Join-Path $env:TEMP 'sunshine_playnite.log')
 }
 
@@ -414,20 +454,24 @@ public static class ShutdownBridge
 }
 catch { Write-Log "Failed to load ShutdownBridge: $($_.Exception.Message)" }
 
-# Outbox shared between UI and background runspace (ensure defined under StrictMode)
+# Outbox shared between UI and background runspaces (global singleton)
 try {
-  if (-not (Get-Variable -Name 'Outbox' -Scope Script -ErrorAction SilentlyContinue) -or -not $script:Outbox) {
-    $script:Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
-    $Outbox = $script:Outbox
-    Write-Log "Outbox initialized"
+  $haveGlobal = $null
+  try { $haveGlobal = Get-Variable -Name 'Outbox' -Scope Global -ErrorAction SilentlyContinue } catch {}
+  if (-not $haveGlobal -or -not ($global:Outbox -is [System.Collections.Concurrent.BlockingCollection[string]])) {
+    $global:Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
+    Write-Log "Outbox initialized (global singleton)"
+  } else {
+    Write-Log "Outbox bound to existing global singleton"
   }
-  elseif (-not $Outbox) {
-    $Outbox = $script:Outbox
-  }
+  $script:Outbox = $global:Outbox
+  $Outbox = $script:Outbox
 }
 catch {
-  $script:Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
+  $global:Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
+  $script:Outbox = $global:Outbox
   $Outbox = $script:Outbox
+  Write-Log "Outbox reinitialized due to error: $($_.Exception.Message)"
 }
 
 function Get-FullPipeName {
@@ -869,7 +913,7 @@ function Start-ConnectorLoop {
         $global:SunConn = Connect-SunshinePipe -TimeoutMs 2000 -Token $Token
         Write-Log "Connector loop: connected"
         # Start writer pump bound to this connection
-        try { [OutboxPump]::Start($global:SunConn.Writer, $Outbox); Write-DebugLog "Connector loop: OutboxPump started" } catch { Write-Log "Failed to start OutboxPump: $($_.Exception.Message)" }
+        try { [OutboxPump]::Start($global:SunConn.Writer, $global:Outbox); Write-DebugLog "Connector loop: OutboxPump started" } catch { Write-Log "Failed to start OutboxPump: $($_.Exception.Message)" }
         # Send initial snapshot on (re)connect
         Send-InitialSnapshot
       }
@@ -941,9 +985,9 @@ function Start-LauncherWatcherLoop {
 # Removed legacy Try-ConnectOnce path; background loop owns connection + snapshot
 
 function OnApplicationStarted() {
-    try {
-      Initialize-Logging
-      Write-Log "OnApplicationStarted invoked"
+  try {
+    Initialize-Logging
+    Write-Log "OnApplicationStarted invoked"
       if (-not $script:Cts) { $script:Cts = New-Object System.Threading.CancellationTokenSource }
       # Initialize UI bridge with Playnite's Dispatcher and API
       try {
@@ -1008,6 +1052,8 @@ function OnApplicationStarted() {
       $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
       Write-Log "OnApplicationStarted: launcher watcher runspace started"
       try { Write-DebugLog ("OnApplicationStarted: RS2={0}" -f $rs2.InstanceId) } catch {}
+      try { Register-GameCollectionEvents } catch { Write-Log "OnApplicationStarted: event registration failed: $($_.Exception.Message)" }
+      try { Ensure-SnapshotDebounceTimer } catch {}
     }
     catch {
       Write-Log "OnApplicationStarted: failed to start background runspace: $($_.Exception.Message)"
@@ -1024,7 +1070,49 @@ function OnApplicationStarted() {
 
 function Send-StatusMessage {
   param([string]$Name, [object]$Game)
-  $payload = @{ type = 'status'; status = @{ name = $Name; id = $Game.Id.ToString(); installDir = $Game.InstallDirectory; exe = (Get-GameActionInfo -Game $Game).exe } } | ConvertTo-Json -Depth 5 -Compress
+  $instDir = ''
+  try { if ($Game.InstallDirectory) { $instDir = $Game.InstallDirectory } } catch {}
+  try {
+    $actions = $null
+    try { $actions = $Game.GameActions } catch {}
+    if ($actions -and $actions.Count -gt 0) {
+      $play = $actions | Where-Object { $_.IsPlayAction } | Select-Object -First 1
+      if (-not $play) { $play = $actions[0] }
+      if ($play) {
+        $isEmu = $false
+        try {
+          $t = $play.Type
+          if ($t) {
+            $tStr = try { $t.ToString() } catch { [string]$t }
+            if ($tStr -and ($tStr -match 'Emulator')) { $isEmu = $true }
+          }
+        } catch {}
+        $emuIdStr = ''
+        try { $emuIdStr = [string]$play.EmulatorId } catch {}
+        if (-not $isEmu -and $emuIdStr -and ($emuIdStr -notmatch '(?i)^0{8}-0{4}-0{4}-0{4}-0{12}$')) { $isEmu = $true }
+        if ($isEmu -and $PlayniteApi) {
+          try {
+            $db = $null
+            try { $db = $PlayniteApi.Database } catch {}
+            if ($db -and $db.Emulators -and $emuIdStr) {
+              foreach ($emu in $db.Emulators) {
+                try {
+                  $eid = [string]$emu.Id
+                  if ($eid -and ($eid.ToLowerInvariant() -eq $emuIdStr.ToLowerInvariant())) {
+                    $edir = ''
+                    try { $edir = $emu.InstallDir } catch {}
+                    if ($edir) { $instDir = $edir }
+                    break
+                  }
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  $payload = @{ type = 'status'; status = @{ name = $Name; id = $Game.Id.ToString(); installDir = $instDir; exe = (Get-GameActionInfo -Game $Game).exe } } | ConvertTo-Json -Depth 5 -Compress
   Send-JsonMessage -Json $payload
   try {
     $keys = @()
@@ -1114,6 +1202,57 @@ function OnGameStopped() {
   Send-StatusMessage -Name 'gameStopped' -Game $game
 }
 
+function Register-GameCollectionEvents {
+  try {
+    if (-not $PlayniteApi) { Write-Log "Register-GameCollectionEvents: no PlayniteApi"; return }
+    $db = $null
+    try { $db = $PlayniteApi.Database } catch {}
+    if (-not $db) { Write-Log "Register-GameCollectionEvents: no Database"; return }
+    $games = $null
+    try { $games = $db.Games } catch {}
+    if (-not $games) { Write-Log "Register-GameCollectionEvents: no Games collection"; return }
+    if ($script:GameEventsRegistered) { Write-Log "Register-GameCollectionEvents: already registered"; return }
+    $modulePath = try { Join-Path $PSScriptRoot 'SunshinePlaynite.psm1' } catch { $null }
+    $msg = @{ Module = $modulePath; Outbox = $global:Outbox }
+    try {
+      $sub1 = Register-ObjectEvent -InputObject $games -EventName 'ItemCollectionChanged' -Action {
+        try {
+          $ob = $null
+          try { $ob = $Event.MessageData.Outbox } catch {}
+          if ($ob) { $script:Outbox = $ob; $global:Outbox = $ob }
+        } catch {}
+        try { Write-Log "ItemCollectionChanged: debounce snapshot"; Kick-SnapshotDebounce } catch {}
+      } -MessageData $msg -ErrorAction SilentlyContinue
+      if ($sub1) { $script:GameEventSubs += ,$sub1 }
+    } catch { Write-Log "Register-GameCollectionEvents: ItemCollectionChanged registration failed: $($_.Exception.Message)" }
+    try {
+      $sub2 = Register-ObjectEvent -InputObject $games -EventName 'ItemUpdated' -Action {
+        try {
+          $ob = $null
+          try { $ob = $Event.MessageData.Outbox } catch {}
+          if ($ob) { $script:Outbox = $ob; $global:Outbox = $ob }
+        } catch {}
+        try { Write-Log "ItemUpdated: debounce snapshot"; Kick-SnapshotDebounce } catch {}
+      } -MessageData $msg -ErrorAction SilentlyContinue
+      if ($sub2) { $script:GameEventSubs += ,$sub2 }
+    } catch { Write-Log "Register-GameCollectionEvents: ItemUpdated registration failed: $($_.Exception.Message)" }
+    $script:GameEventsRegistered = ($script:GameEventSubs.Count -gt 0)
+    Write-Log ("Register-GameCollectionEvents: registered={0} subs={1}" -f $script:GameEventsRegistered, $script:GameEventSubs.Count)
+  } catch { Write-Log "Register-GameCollectionEvents: error: $($_.Exception.Message)" }
+}
+
+function Unregister-GameCollectionEvents {
+  try {
+    foreach ($sub in @($script:GameEventSubs)) {
+      try { if ($sub -and $sub.SubscriptionId) { Unregister-Event -SubscriptionId $sub.SubscriptionId -ErrorAction SilentlyContinue } } catch {}
+      try { if ($sub -and $sub.Id) { Remove-Job -Id $sub.Id -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+    $script:GameEventSubs = @()
+    $script:GameEventsRegistered = $false
+    Write-Log "Unregister-GameCollectionEvents: done"
+  } catch { Write-Log "Unregister-GameCollectionEvents: error: $($_.Exception.Message)" }
+}
+
 # Helper: bounded, non-blocking runspace/PS teardown
 function Close-RunspaceFast {
   param(
@@ -1176,6 +1315,18 @@ function OnApplicationStopped() {
 
     # 5) Shut down the two background runspaces
     try {
+      try { Unregister-GameCollectionEvents } catch {}
+      try {
+        if ($script:SnapshotTimerSub) {
+          try { Unregister-Event -SourceIdentifier $script:SnapshotTimerSub.SourceIdentifier -ErrorAction SilentlyContinue } catch {}
+          $script:SnapshotTimerSub = $null
+        }
+        if ($script:SnapshotTimer) {
+          try { $script:SnapshotTimer.Stop() } catch {}
+          try { $script:SnapshotTimer.Dispose() } catch {}
+          $script:SnapshotTimer = $null
+        }
+      } catch {}
       if ($script:Bg)  { Close-RunspaceFast -Bag $script:Bg  -TimeoutMs 500; $script:Bg  = $null }
       if ($script:Bg2) { Close-RunspaceFast -Bag $script:Bg2 -TimeoutMs 500; $script:Bg2 = $null }
     } catch {}

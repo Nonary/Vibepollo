@@ -49,6 +49,7 @@
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
   #include "src/platform/windows/ipc/misc_utils.h"
+  #include "src/platform/windows/playnite_integration.h"
 
   #include <windows.h>
 #endif
@@ -566,6 +567,10 @@ namespace confighttp {
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
 
+#ifdef _WIN32
+      // No auto-insert here; controlled by config 'playnite_fullscreen_entry_enabled'.
+#endif
+
       // Legacy versions of Sunshine used strings for boolean and integers, let's convert them
       // List of keys to convert to boolean
       std::vector<std::string> boolean_keys = {
@@ -804,9 +809,47 @@ namespace confighttp {
         return;
       }
 
+      // Detect if the app being removed is the Playnite fullscreen launcher
+      auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
+        try {
+          if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+            return true;
+          }
+          if (app.contains("cmd") && app["cmd"].is_string()) {
+            auto s = app["cmd"].get<std::string>();
+            if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
+              return true;
+            }
+          }
+          if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
+            return true;
+          }
+        } catch (...) {}
+        return false;
+      };
+
+      bool disabled_fullscreen_flag = false;
       for (size_t i = 0; i < apps_node.size(); ++i) {
         if (i != index) {
           new_apps.push_back(apps_node[i]);
+        } else {
+          // If user deletes the Playnite fullscreen app, turn off the config flag
+#ifdef _WIN32
+          try {
+            if (is_playnite_fullscreen(apps_node[i])) {
+              auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+              current_cfg["playnite_fullscreen_entry_enabled"] = "false";
+              std::stringstream config_stream;
+              for (const auto &kv : current_cfg) {
+                config_stream << kv.first << " = " << kv.second << std::endl;
+              }
+              file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+              config::apply_config_now();
+              disabled_fullscreen_flag = true;
+            }
+          } catch (...) {
+          }
+#endif
         }
       }
       file_tree["apps"] = new_apps;
@@ -816,6 +859,9 @@ namespace confighttp {
 
       output_tree["status"] = true;
       output_tree["result"] = std::format("application {} deleted", index);
+      if (disabled_fullscreen_flag) {
+        output_tree["playniteFullscreenDisabled"] = true;
+      }
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "DeleteApp: "sv << e.what();

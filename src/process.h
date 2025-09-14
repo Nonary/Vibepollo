@@ -64,6 +64,8 @@ namespace proc {
     std::string id;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
+    // When true, launch Playnite in fullscreen mode via the helper.
+    bool playnite_fullscreen;
     bool elevated;
     bool auto_detach;
     bool wait_all;

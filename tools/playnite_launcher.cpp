@@ -203,6 +203,86 @@ namespace {
     return false;
   }
 
+  static std::wstring query_playnite_executable_from_assoc() {
+    std::array<wchar_t, 4096> buf {};
+    DWORD sz = static_cast<DWORD>(buf.size());
+    std::wstring exe;
+    HRESULT hr = AssocQueryStringW(ASSOCF_NOTRUNCATE, ASSOCSTR_EXECUTABLE, L"playnite", nullptr, buf.data(), &sz);
+    if (hr == S_OK && buf[0] != L'\0') {
+      exe.assign(buf.data());
+      return exe;
+    }
+    // Fallback to COMMAND and parse out executable
+    sz = static_cast<DWORD>(buf.size());
+    hr = AssocQueryStringW(ASSOCF_NOTRUNCATE, ASSOCSTR_COMMAND, L"playnite", L"open", buf.data(), &sz);
+    if (hr == S_OK && buf[0] != L'\0') {
+      int argc = 0;
+      auto argv = CommandLineToArgvW(buf.data(), &argc);
+      if (argv && argc >= 1) {
+        exe.assign(argv[0]);
+        LocalFree(argv);
+        return exe;
+      }
+      std::wstring s(buf.data());
+      if (!s.empty() && s.front() == L'"') {
+        auto p = s.find(L'"', 1);
+        if (p != std::wstring::npos) {
+          exe = s.substr(1, p - 1);
+          return exe;
+        }
+      }
+      auto p = s.find(L' ');
+      exe = (p == std::wstring::npos) ? s : s.substr(0, p);
+    }
+    return exe;
+  }
+
+  static bool launch_executable_detached_parented(const std::wstring &exe_full_path) {
+    auto parent = open_explorer_parent_handle();
+    STARTUPINFOEXW si {};
+    si.StartupInfo.cb = sizeof(si);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(nullptr, parent ? 1 : 0, 0, &size);
+    if (parent) {
+      attrList = (LPPROC_THREAD_ATTRIBUTE_LIST) HeapAlloc(GetProcessHeap(), 0, size);
+      if (attrList && InitializeProcThreadAttributeList(attrList, 1, 0, &size)) {
+        if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &parent, sizeof(parent), nullptr, nullptr)) {
+          DeleteProcThreadAttributeList(attrList);
+          HeapFree(GetProcessHeap(), 0, attrList);
+          attrList = nullptr;
+        } else {
+          si.lpAttributeList = attrList;
+        }
+      }
+    }
+
+    std::wstring cmd = L"\"" + exe_full_path + L"\"";
+    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
+                  CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
+    PROCESS_INFORMATION pi {};
+    BOOL ok = CreateProcessW(exe_full_path.c_str(), cmd.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si.StartupInfo, &pi);
+
+    if (attrList) {
+      DeleteProcThreadAttributeList(attrList);
+      HeapFree(GetProcessHeap(), 0, attrList);
+    }
+    if (parent) {
+      CloseHandle(parent);
+    }
+    if (ok) {
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+      }
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+      }
+      return true;
+    }
+    BOOST_LOG(warning) << "CreateProcessW(executable) failed: " << GetLastError();
+    return false;
+  }
+
   bool parse_arg(std::span<char *> args, std::string_view name, std::string &out) {
     for (size_t i = 0; i + 1 < args.size(); ++i) {
       if (name == args[i]) {
@@ -954,10 +1034,25 @@ static int launcher_run(int argc, char **argv) {
 
   // Fullscreen mode: start Playnite.FullscreenApp and apply focus attempts, then schedule cleanup and exit
   if (fullscreen) {
-    BOOST_LOG(info) << "Fullscreen mode requested; ensuring Playnite is running via playnite://";
-    ensure_playnite_open();
+    BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
+    bool started = false;
+    try {
+      std::wstring assocExe = query_playnite_executable_from_assoc();
+      if (!assocExe.empty()) {
+        std::filesystem::path base = std::filesystem::path(assocExe).parent_path();
+        std::filesystem::path fs = base / L"Playnite.FullscreenApp.exe";
+        if (std::filesystem::exists(fs)) {
+          BOOST_LOG(info) << "Launching FullscreenApp from: " << platf::dxgi::wide_to_utf8(fs.wstring());
+          started = launch_executable_detached_parented(fs.wstring());
+        }
+      }
+    } catch (...) {}
+    if (!started) {
+      BOOST_LOG(info) << "Fullscreen exe not resolved; falling back to playnite://";
+      ensure_playnite_open();
+    }
     // Wait briefly for process to appear then try to focus
-    auto deadline = std::chrono::steady_clock::now() + 5s;
+    auto deadline = std::chrono::steady_clock::now() + 10s;
     while (std::chrono::steady_clock::now() < deadline) {
       auto pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
       if (!pids.empty()) {
@@ -967,7 +1062,56 @@ static int launcher_run(int argc, char **argv) {
     }
     bool focused = focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", focus_attempts, focus_timeout_secs, focus_exit_on_first_flag);
     BOOST_LOG(info) << (focused ? "Fullscreen focus applied" : "Fullscreen focus not confirmed");
-    // Do not spawn cleanup here; fullscreen UI should remain active until user exits
+
+    // Keep the helper alive while Playnite is running. This ensures Sunshine treats
+    // the fullscreen entry as active until the user exits Playnite.
+    int consecutive_missing = 0;
+    auto next_focus_check = std::chrono::steady_clock::now();
+    int successes_left = std::max(0, focus_attempts);
+    auto focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(0, focus_timeout_secs));
+    bool focus_budget_active = successes_left > 0 && focus_timeout_secs > 0;
+    while (true) {
+      bool fs_running = false;
+      std::vector<DWORD> fs_pids;
+      try {
+        fs_pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
+        fs_running = !fs_pids.empty();
+      } catch (...) {}
+
+      if (fs_running) {
+        consecutive_missing = 0;
+        auto now = std::chrono::steady_clock::now();
+        if (focus_budget_active && now >= next_focus_check) {
+          bool already_fg = false;
+          for (auto pid : fs_pids) {
+            if (confirm_foreground_pid(pid)) {
+              already_fg = true;
+              break;
+            }
+          }
+          if (!already_fg) {
+            int remaining_secs = (int) std::chrono::duration_cast<std::chrono::seconds>(focus_deadline - now).count();
+            if (remaining_secs > 0 && successes_left > 0) {
+              bool ok = focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", 1, std::min(2, remaining_secs), true);
+              if (ok) {
+                successes_left--;
+              }
+            }
+            if (successes_left <= 0 || std::chrono::steady_clock::now() >= focus_deadline) {
+              focus_budget_active = false;
+            }
+          }
+          next_focus_check = now + 2s;
+        }
+      } else {
+        consecutive_missing++;
+        if (consecutive_missing >= 6) {
+          break;
+        }
+      }
+      std::this_thread::sleep_for(500ms);
+    }
+    BOOST_LOG(info) << "Playnite appears closed; exiting launcher";
     return 0;
   }
 

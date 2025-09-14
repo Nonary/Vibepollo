@@ -99,12 +99,78 @@ namespace confighttp {
       out["installed"] = false;
       out["extensions_dir"] = std::string();
     }
+    // Version info and update flag
+    auto normalize_ver = [](std::string s) {
+      // strip leading 'v' and whitespace
+      while (!s.empty() && (s[0] == ' ' || s[0] == '\t')) {
+        s.erase(s.begin());
+      }
+      if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) {
+        s.erase(s.begin());
+      }
+      return s;
+    };
+    auto semver_cmp = [&](const std::string &a, const std::string &b) {
+      auto to_parts = [](const std::string &s) {
+        std::vector<int> parts;
+        int cur = 0;
+        bool have = false;
+        for (size_t i = 0; i <= s.size(); ++i) {
+          if (i == s.size() || s[i] == '.') {
+            parts.push_back(have ? cur : 0);
+            cur = 0;
+            have = false;
+          } else if (s[i] >= '0' && s[i] <= '9') {
+            have = true;
+            cur = cur * 10 + (s[i] - '0');
+          } else {
+            // stop at first non-digit/non-dot
+            break;
+          }
+        }
+        while (!parts.empty() && parts.back() == 0) {
+          parts.pop_back();
+        }
+        return parts;
+      };
+      auto pa = to_parts(normalize_ver(a));
+      auto pb = to_parts(normalize_ver(b));
+      size_t n = std::max(pa.size(), pb.size());
+      pa.resize(n, 0);
+      pb.resize(n, 0);
+      for (size_t i = 0; i < n; ++i) {
+        if (pa[i] < pb[i]) {
+          return -1;
+        }
+        if (pa[i] > pb[i]) {
+          return 1;
+        }
+      }
+      return 0;
+    };
+    std::string installed_ver, packaged_ver;
+    bool have_installed = platf::playnite::get_installed_plugin_version(installed_ver);
+    bool have_packaged = platf::playnite::get_packaged_plugin_version(packaged_ver);
+    if (have_installed) {
+      out["installed_version"] = installed_ver;
+    }
+    if (have_packaged) {
+      out["packaged_version"] = packaged_ver;
+    }
+    bool update_available = false;
+    if (out["installed"].get<bool>() && have_installed && have_packaged) {
+      update_available = semver_cmp(installed_ver, packaged_ver) < 0;
+    }
+    out["update_available"] = update_available;
     // No session readiness flag; IPC works through RDP/lock. Frontend derives readiness from installed/active.
     // Reduce verbosity: this endpoint can be polled frequently by the UI.
     // Log at debug level instead of info to avoid log spam while still
     // keeping the line available when debugging.
     BOOST_LOG(debug) << "Playnite status: active=" << out["active"]
-                     << ", dir=" << (dest.empty() ? std::string("(unknown)") : dest.string());
+                     << ", dir=" << (dest.empty() ? std::string("(unknown)") : dest.string())
+                     << ", installed_version=" << (have_installed ? installed_ver : std::string(""))
+                     << ", packaged_version=" << (have_packaged ? packaged_ver : std::string(""))
+                     << ", update_available=" << (update_available ? "true" : "false");
     send_response(response, out);
   }
 
@@ -412,11 +478,14 @@ namespace confighttp {
         }
       } catch (...) {}
 
-      // Playnite plugin log (Extensions\SunshinePlaynite\sunshine_playnite.log)
+      // Playnite plugin log (Roaming\Sunshine\sunshine_playnite.log)
       try {
-        std::string extDir;
-        if (platf::playnite::get_extension_target_dir(extDir)) {
-          std::filesystem::path p = std::filesystem::path(extDir) / "sunshine_playnite.log";
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+        PWSTR roamingW = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token.get(), &roamingW)) && roamingW) {
+          std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
+          CoTaskMemFree(roamingW);
           std::string data;
           if (read_file_if_exists(p, data)) {
             entries.emplace_back(p.filename().string(), std::move(data));

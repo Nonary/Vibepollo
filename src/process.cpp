@@ -341,6 +341,47 @@ namespace proc {
       placebo = false;
     } else
 #endif
+#ifdef _WIN32
+      if (_app.playnite_fullscreen) {
+      BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
+      bool launched = false;
+      try {
+        WCHAR exePathW[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exePathW, ARRAYSIZE(exePathW));
+        std::filesystem::path exeDir = std::filesystem::path(exePathW).parent_path();
+        std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
+        std::string lpath = launcher.string();
+        std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
+        try {
+          if (config::playnite.focus_attempts > 0) {
+            cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
+          }
+          if (config::playnite.focus_timeout_secs > 0) {
+            cmd += std::string(" --focus-timeout ") + std::to_string(config::playnite.focus_timeout_secs);
+          }
+          if (config::playnite.focus_exit_on_first) {
+            cmd += std::string(" --focus-exit-on-first");
+          }
+        } catch (...) {}
+        std::error_code fec;
+        boost::filesystem::path wd;  // empty wd
+        _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        if (fec) {
+          BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
+        } else {
+          BOOST_LOG(info) << "Playnite fullscreen helper launched";
+          launched = true;
+        }
+      } catch (...) {
+        launched = false;
+      }
+      if (!launched) {
+        BOOST_LOG(error) << "Failed to launch Playnite fullscreen."sv;
+        return -1;
+      }
+      placebo = false;
+    } else
+#endif
       if (_app.cmd.empty()) {
       BOOST_LOG(info) << "Executing [Desktop]"sv;
       BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
@@ -786,6 +827,13 @@ namespace proc {
 
         if (playnite_id) {
           ctx.playnite_id = parse_env_val(this_env, *playnite_id);
+        }
+        // Optional Playnite fullscreen launcher flag
+        try {
+          auto pfs = app_node.get_optional<bool>("playnite-fullscreen"s);
+          ctx.playnite_fullscreen = pfs.value_or(false);
+        } catch (...) {
+          ctx.playnite_fullscreen = false;
         }
 
         ctx.elevated = elevated.value_or(false);

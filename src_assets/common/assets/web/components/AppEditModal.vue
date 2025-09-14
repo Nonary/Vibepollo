@@ -382,6 +382,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
+import { useMessage } from 'naive-ui';
 import { http } from '@/http';
 import { NModal, NCard, NButton, NInput, NInputNumber, NCheckbox, NSelect, NSpin } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
@@ -925,6 +926,8 @@ async function save() {
     saving.value = false;
   }
 }
+const message = useMessage();
+
 async function del() {
   saving.value = true;
   try {
@@ -955,7 +958,19 @@ async function del() {
       }
     }
 
-    await http.delete(`./api/apps/${form.value.index}`, { validateStatus: () => true });
+    const r = await http.delete(`./api/apps/${form.value.index}`, { validateStatus: () => true });
+    try {
+      if (r && (r as any).data && (r as any).data.playniteFullscreenDisabled) {
+        try {
+          configStore.updateOption('playnite_fullscreen_entry_enabled', false);
+        } catch {}
+        try {
+          message?.info(
+            'Playnite Fullscreen entry removed. The Playnite Desktop option was turned off in Settings → Playnite.',
+          );
+        } catch {}
+      }
+    } catch {}
     // Best-effort force sync on Windows environments
     try {
       await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });

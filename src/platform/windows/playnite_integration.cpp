@@ -1111,4 +1111,115 @@ namespace platf::playnite {
     return do_uninstall_plugin_impl(error);
   }
 
+  // --- Version helpers ---
+  static bool parse_yaml_version_from_file(const std::filesystem::path &p, std::string &out) {
+    try {
+      if (!std::filesystem::exists(p)) {
+        return false;
+      }
+      std::ifstream ifs(p, std::ios::in | std::ios::binary);
+      if (!ifs) {
+        return false;
+      }
+      std::string line;
+      while (std::getline(ifs, line)) {
+        // Trim leading spaces
+        size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+          i++;
+        }
+        // Case-insensitive startswith("Version:")
+        const char *needle = "version:";
+        if (line.size() >= i + 8) {
+          bool match = true;
+          for (size_t k = 0; k < 8; ++k) {
+            char c = line[i + k];
+            if (c >= 'A' && c <= 'Z') {
+              c = char(c - 'A' + 'a');
+            }
+            if (c != needle[k]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            size_t pos = i + 8;
+            while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+              pos++;
+            }
+            if (pos < line.size() && line[pos] == ' ') {
+              pos++;
+            }
+            // Optional whitespace after colon handled above
+            // Extract remainder and trim
+            std::string val = line.substr(pos);
+            // Trim potential quotes and whitespace
+            auto ltrim = [](std::string &s) {
+              size_t j = 0;
+              while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) {
+                j++;
+              }
+              s.erase(0, j);
+            };
+            auto rtrim = [](std::string &s) {
+              size_t j = s.size();
+              while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t' || s[j - 1] == '\r')) {
+                j--;
+              }
+              s.erase(j);
+            };
+            ltrim(val);
+            rtrim(val);
+            if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
+              val.erase(val.begin());
+            }
+            if (!val.empty() && (val.back() == '"' || val.back() == '\'')) {
+              val.pop_back();
+            }
+            out = val;
+            return !out.empty();
+          }
+        }
+      }
+    } catch (...) {}
+    return false;
+  }
+
+  bool get_packaged_plugin_version(std::string &out) {
+    try {
+      std::wstring exePath;
+      exePath.resize(MAX_PATH);
+      GetModuleFileNameW(nullptr, exePath.data(), (DWORD) exePath.size());
+      exePath.resize(wcslen(exePath.c_str()));
+      std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+      std::filesystem::path src = exeDir / L"plugins" / L"playnite" / L"SunshinePlaynite" / L"extension.yaml";
+      std::string ver;
+      if (!parse_yaml_version_from_file(src, ver)) {
+        return false;
+      }
+      out = ver;
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  bool get_installed_plugin_version(std::string &out) {
+    try {
+      std::string dir;
+      if (!get_extension_target_dir(dir)) {
+        return false;
+      }
+      std::filesystem::path p = std::filesystem::path(dir) / "extension.yaml";
+      std::string ver;
+      if (!parse_yaml_version_from_file(p, ver)) {
+        return false;
+      }
+      out = ver;
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
 }  // namespace platf::playnite

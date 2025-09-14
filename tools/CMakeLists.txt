@@ -52,6 +52,7 @@ target_link_libraries(playnite-launcher
         user32
         Psapi
         shell32
+        shlwapi
         wtsapi32
         ${PLATFORM_LIBRARIES})
 target_compile_options(playnite-launcher PRIVATE ${SUNSHINE_COMPILE_OPTIONS})

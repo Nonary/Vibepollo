@@ -1,7 +1,7 @@
 Id: Sunshine.Playnite.PowerShell
 Name: Sunshine Playnite Connector
-Author: LizardByte
-Version: 0.1.0
+Author: Nonary
+Version: 0.2.0
 Module: SunshinePlaynite.psm1
 Type: Script
 Description: Sends Playnite categories and game metadata to Sunshine over a secure named pipe.
