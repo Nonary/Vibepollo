@@ -1025,24 +1025,61 @@ namespace {
       return ok;
     }
 
-    // Attempt a restore once if a valid topology is present. Returns true on
-    // confirmed success, false otherwise. Prefers session baseline, then golden.
-    bool try_restore_once_if_valid() {
+    enum class Attempt {
+      Succeeded,
+      NotReady,
+      Failed
+    };
+
+    bool devices_present_for(const display_device::DisplaySettingsSnapshot &snap) {
+      std::set<std::string> need;
+      for (const auto &grp : snap.m_topology) {
+        for (const auto &id : grp) {
+          need.insert(id);
+        }
+      }
+      if (need.empty()) {
+        return false;
+      }
+      std::set<std::string> present;
+      for (const auto &id : modes_and_devices_proxy()) {
+        present.insert(id);
+      }
+      for (const auto &id : need) {
+        if (!present.contains(id)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    Attempt try_restore_once_if_valid() {
+      const auto cur = controller.snapshot();
+      if (cur.m_topology.empty() && cur.m_modes.empty()) {
+        return Attempt::NotReady;
+      }
+
+      bool not_ready = false;
+
       if (auto base = controller.load_display_settings_snapshot(session_path)) {
-        if (controller.validate_topology_with_os(base->m_topology)) {
+        if (!devices_present_for(*base)) {
+          not_ready = true;
+        } else if (controller.validate_topology_with_os(base->m_topology)) {
           if (apply_session_and_confirm()) {
-            return true;
+            return Attempt::Succeeded;
           }
         }
       }
       if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
-        if (controller.validate_topology_with_os(golden->m_topology)) {
+        if (should_skip_golden(*golden) || !devices_present_for(*golden)) {
+          not_ready = true;
+        } else if (controller.validate_topology_with_os(golden->m_topology)) {
           if (apply_golden_and_confirm()) {
-            return true;
+            return Attempt::Succeeded;
           }
         }
       }
-      return false;
+      return not_ready ? Attempt::NotReady : Attempt::Failed;
     }
 
     // Start a background polling loop that checks every ~3s whether the
@@ -1090,33 +1127,40 @@ namespace {
 
       // Initial one-shot attempt before entering the loop
       try {
-        if (!st.stop_requested() && self->try_restore_once_if_valid()) {
-          self->retry_revert_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
-          // Exit the helper after a successful restore.
-          // We always exit here because the helper is no longer necessary.
-          if (self->running_flag) {
-            BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-            self->running_flag->store(false, std::memory_order_release);
+        if (!st.stop_requested()) {
+          switch (self->try_restore_once_if_valid()) {
+            case Attempt::Succeeded:
+              self->retry_revert_on_topology.store(false, std::memory_order_release);
+              refresh_shell_after_display_change();
+              if (self->running_flag) {
+                BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+                self->running_flag->store(false, std::memory_order_release);
+              }
+              self->should_exit.store(true, std::memory_order_release);
+              self->restore_poll_active.store(false, std::memory_order_release);
+              return;
+            case Attempt::NotReady:
+            case Attempt::Failed:
+              break;
           }
-          self->should_exit.store(true, std::memory_order_release);
-          self->restore_poll_active.store(false, std::memory_order_release);
-          return;
         }
       } catch (...) {}
 
       while (!st.stop_requested()) {
-        if (self->try_restore_once_if_valid()) {
-          self->retry_revert_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
-          // Exit the helper after a successful restore.
-          if (self->running_flag) {
-            BOOST_LOG(info) << "Restore confirmed; exiting helper.";
-            self->running_flag->store(false, std::memory_order_release);
-          }
-          self->should_exit.store(true, std::memory_order_release);
-          self->restore_poll_active.store(false, std::memory_order_release);
-          return;
+        switch (self->try_restore_once_if_valid()) {
+          case Attempt::Succeeded:
+            self->retry_revert_on_topology.store(false, std::memory_order_release);
+            refresh_shell_after_display_change();
+            if (self->running_flag) {
+              BOOST_LOG(info) << "Restore confirmed; exiting helper.";
+              self->running_flag->store(false, std::memory_order_release);
+            }
+            self->should_exit.store(true, std::memory_order_release);
+            self->restore_poll_active.store(false, std::memory_order_release);
+            return;
+          case Attempt::NotReady:
+          case Attempt::Failed:
+            break;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1367,6 +1411,16 @@ namespace {
     // Pipe broken -> Sunshine might have crashed. Begin autonomous restore.
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.cancel_delayed_reapply();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()
+    )
+                          .count();
+    constexpr long long kGraceMs = 10'000;
+    const auto last_apply = state.last_apply_ms.load(std::memory_order_acquire);
+    if (!state.direct_revert_bypass_grace.load(std::memory_order_acquire) && last_apply != 0 && (now_ms - last_apply) < kGraceMs) {
+      BOOST_LOG(info) << "Disconnect within APPLY grace window; skipping autonomous restore this time.";
+      return;
+    }
     const bool potentially_modified = state.last_cfg.has_value() ||
                                       state.exit_after_revert.load(std::memory_order_acquire);
     if (!potentially_modified) {
