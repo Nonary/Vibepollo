@@ -50,6 +50,8 @@ target_link_libraries(playnite-launcher
         ${CMAKE_THREAD_LIBS_INIT}
         nlohmann_json::nlohmann_json
         user32
+        ole32
+        oleaut32
         Psapi
         shell32
         shlwapi

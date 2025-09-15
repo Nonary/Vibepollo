@@ -41,19 +41,34 @@ namespace {
 
   bool ensure_helper_started() {
     std::lock_guard<std::mutex> lg(helper_mutex());
-    // Already started? Verify liveness to avoid stale state
+    // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
       BOOST_LOG(info) << "Display helper: checking existing process handle...";
       DWORD wait = WaitForSingleObject(h, 0);
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
         BOOST_LOG(info) << "Display helper already running (pid=" << pid << ")";
-        return true;  // still running
+        // Check IPC liveness with a lightweight ping; if unresponsive, restart the helper
+        bool ping_ok = false;
+        for (int i = 0; i < 2 && !ping_ok; ++i) {
+          ping_ok = platf::display_helper_client::send_ping();
+          if (!ping_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          }
+        }
+        if (ping_ok) {
+          return true;
+        }
+        BOOST_LOG(warning) << "Display helper process is running but IPC ping failed; restarting helper.";
+        helper_proc().terminate();
+        // Allow a brief moment for termination to complete
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      } else {
+        // Process exited; fall through to restart
+        DWORD exit_code = 0;
+        GetExitCodeProcess(h, &exit_code);
+        BOOST_LOG(info) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
-      // else process exited; fall through to restart
-      DWORD exit_code = 0;
-      GetExitCodeProcess(h, &exit_code);
-      BOOST_LOG(info) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
     }
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};

@@ -255,7 +255,7 @@ namespace platf::dxgi {
   }
 
   winrt::file_handle NamedPipeFactory::create_client_pipe(const std::wstring &fullPipeName) const {
-    const ULONGLONG deadline = GetTickCount64() + 2000;  // 2s
+    const ULONGLONG deadline = GetTickCount64() + 15000;  // 15s
 
     while (GetTickCount64() < deadline) {
       winrt::file_handle pipe {

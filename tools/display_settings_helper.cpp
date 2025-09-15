@@ -20,6 +20,7 @@
   #include <optional>
   #include <set>
   #include <span>
+  #include <stop_token>
   #include <string>
   #include <thread>
   #include <vector>
@@ -764,11 +765,19 @@ namespace {
     }
 
     // Read a stable snapshot: two identical consecutive reads within the deadline
-    bool read_stable_snapshot(display_device::DisplaySettingsSnapshot &out, std::chrono::milliseconds deadline = 2000ms, std::chrono::milliseconds interval = 150ms) {
+    bool read_stable_snapshot(
+      display_device::DisplaySettingsSnapshot &out,
+      std::chrono::milliseconds deadline = 2000ms,
+      std::chrono::milliseconds interval = 150ms,
+      std::stop_token st = {}
+    ) {
       auto t0 = std::chrono::steady_clock::now();
       auto have_last = false;
       display_device::DisplaySettingsSnapshot last;
       while (std::chrono::steady_clock::now() - t0 < deadline) {
+        if (st.stop_possible() && st.stop_requested()) {
+          return false;
+        }
         auto cur = controller.snapshot();
         // Heuristic: treat completely empty topology+modes as transient
         const bool emptyish = cur.m_topology.empty() && cur.m_modes.empty();
@@ -778,6 +787,9 @@ namespace {
         }
         last = std::move(cur);
         have_last = true;
+        if (st.stop_possible() && st.stop_requested()) {
+          return false;
+        }
         std::this_thread::sleep_for(interval);
       }
       return false;
@@ -828,24 +840,74 @@ namespace {
       return out;
     }
 
+    static std::set<std::string> topology_device_set(const display_device::ActiveTopology &topology) {
+      std::set<std::string> out;
+      for (const auto &grp : topology) {
+        out.insert(grp.begin(), grp.end());
+      }
+      return out;
+    }
+
+    bool should_skip_session_snapshot(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const display_device::DisplaySettingsSnapshot &snap
+    ) {
+      using Prep = display_device::SingleDisplayConfiguration::DevicePreparation;
+      if (cfg.m_device_prep != Prep::EnsureOnlyDisplay) {
+        return false;
+      }
+      auto expected_topology = controller.compute_expected_topology(cfg);
+      if (!expected_topology) {
+        return false;
+      }
+      if (!controller.is_topology_the_same(snap.m_topology, *expected_topology)) {
+        return false;
+      }
+      const auto expected_devices = topology_device_set(*expected_topology);
+      if (expected_devices.empty()) {
+        return false;
+      }
+      const auto snap_devices = snapshot_device_set(snap);
+      if (snap_devices != expected_devices) {
+        return false;
+      }
+      const auto all_devices = controller.enum_all_device_ids();
+      for (const auto &id : all_devices) {
+        if (!expected_devices.contains(id)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     static bool equal_monitors_only(const display_device::DisplaySettingsSnapshot &a, const display_device::DisplaySettingsSnapshot &b) {
       return snapshot_device_set(a) == snapshot_device_set(b);
     }
 
     // Quiet period: ensure no changes for the specified duration
-    bool quiet_period(std::chrono::milliseconds duration = 750ms, std::chrono::milliseconds interval = 150ms) {
+    bool quiet_period(
+      std::chrono::milliseconds duration = 750ms,
+      std::chrono::milliseconds interval = 150ms,
+      std::stop_token st = {}
+    ) {
       display_device::DisplaySettingsSnapshot base;
-      if (!read_stable_snapshot(base)) {
+      if (!read_stable_snapshot(base, 2000ms, 150ms, st)) {
         return false;
       }
       auto t0 = std::chrono::steady_clock::now();
       while (std::chrono::steady_clock::now() - t0 < duration) {
+        if (st.stop_possible() && st.stop_requested()) {
+          return false;
+        }
         display_device::DisplaySettingsSnapshot cur;
-        if (!read_stable_snapshot(cur)) {
+        if (!read_stable_snapshot(cur, 2000ms, 150ms, st)) {
           return false;
         }
         if (!(cur == base)) {
           // topology changed during quiet period
+          return false;
+        }
+        if (st.stop_possible() && st.stop_requested()) {
           return false;
         }
         std::this_thread::sleep_for(interval);
@@ -912,7 +974,7 @@ namespace {
     // Performs up to two attempts (initial + one retry) with short pauses to allow
     // Windows to settle. Returns true only if the post-apply signature exactly
     // matches the golden snapshot signature.
-    bool apply_golden_and_confirm() {
+    bool apply_golden_and_confirm(std::stop_token st = {}) {
       auto golden = controller.load_display_settings_snapshot(golden_path);
       if (!golden) {
         BOOST_LOG(warning) << "Golden restore snapshot not found; cannot perform revert.";
@@ -924,11 +986,21 @@ namespace {
 
       const auto before_sig = controller.signature(controller.snapshot());
 
+      const auto should_cancel = [&]() {
+        return st.stop_possible() && st.stop_requested();
+      };
+
       // Attempt 1
+      if (should_cancel()) {
+        return false;
+      }
       (void) controller.apply_snapshot(*golden);
       display_device::DisplaySettingsSnapshot cur;
-      const bool got_stable = read_stable_snapshot(cur);
-      bool ok = got_stable && equal_snapshots_strict(cur, *golden) && quiet_period();
+      const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+      if (should_cancel()) {
+        return false;
+      }
+      bool ok = got_stable && equal_snapshots_strict(cur, *golden) && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Golden restore attempt #1: before_sig=" << before_sig
                       << ", current_sig=" << controller.signature(cur)
                       << ", golden_sig=" << controller.signature(*golden)
@@ -944,11 +1016,20 @@ namespace {
       }
 
       // Attempt 2 (double-check) after a short delay
+      if (should_cancel()) {
+        return false;
+      }
       std::this_thread::sleep_for(700ms);
+      if (should_cancel()) {
+        return false;
+      }
       (void) controller.apply_snapshot(*golden);
       display_device::DisplaySettingsSnapshot cur2;
-      const bool got_stable2 = read_stable_snapshot(cur2);
-      ok = got_stable2 && equal_snapshots_strict(cur2, *golden) && quiet_period();
+      const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
+      if (should_cancel()) {
+        return false;
+      }
+      ok = got_stable2 && equal_snapshots_strict(cur2, *golden) && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Golden restore attempt #2: current_sig=" << controller.signature(cur2)
                       << ", golden_sig=" << controller.signature(*golden)
                       << ", match=" << (ok ? "true" : "false");
@@ -963,7 +1044,7 @@ namespace {
     }
 
     // Apply the session baseline snapshot (if available) and verify the system now matches it.
-    bool apply_session_and_confirm() {
+    bool apply_session_and_confirm(std::stop_token st = {}) {
       auto base = controller.load_display_settings_snapshot(session_current_path);
       if (!base) {
         BOOST_LOG(info) << "Session baseline snapshot not available.";
@@ -971,20 +1052,39 @@ namespace {
       }
       const auto before_sig = controller.signature(controller.snapshot());
 
+      const auto should_cancel = [&]() {
+        return st.stop_possible() && st.stop_requested();
+      };
+
+      if (should_cancel()) {
+        return false;
+      }
       (void) controller.apply_snapshot(*base);
       display_device::DisplaySettingsSnapshot cur;
-      const bool got_stable = read_stable_snapshot(cur);
-      bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period();
+      const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+      if (should_cancel()) {
+        return false;
+      }
+      bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Session restore attempt #1: before_sig=" << before_sig
                       << ", current_sig=" << controller.signature(cur)
                       << ", baseline_sig=" << controller.signature(*base)
                       << ", match=" << (ok ? "true" : "false");
       if (!ok) {
+        if (should_cancel()) {
+          return false;
+        }
         std::this_thread::sleep_for(700ms);
+        if (should_cancel()) {
+          return false;
+        }
         (void) controller.apply_snapshot(*base);
         display_device::DisplaySettingsSnapshot cur2;
-        const bool got_stable2 = read_stable_snapshot(cur2);
-        ok = got_stable2 && equal_snapshots_strict(cur2, *base) && quiet_period();
+        const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
+        if (should_cancel()) {
+          return false;
+        }
+        ok = got_stable2 && equal_snapshots_strict(cur2, *base) && quiet_period(750ms, 150ms, st);
         BOOST_LOG(info) << "Session restore attempt #2: current_sig=" << controller.signature(cur2)
                         << ", baseline_sig=" << controller.signature(*base) << ", match=" << (ok ? "true" : "false");
       }
@@ -1006,18 +1106,27 @@ namespace {
 
     // Attempt a restore once if a valid topology is present. Returns true on
     // confirmed success, false otherwise. Prefers session baseline, then golden.
-    bool try_restore_once_if_valid() {
+    bool try_restore_once_if_valid(std::stop_token st) {
+      if (st.stop_possible() && st.stop_requested()) {
+        return false;
+      }
       // Session snapshot first
       if (auto base = controller.load_display_settings_snapshot(session_current_path)) {
+        if (st.stop_possible() && st.stop_requested()) {
+          return false;
+        }
         if (controller.is_topology_valid(*base)) {
-          if (apply_session_and_confirm()) {
+          if (apply_session_and_confirm(st)) {
             return true;
           }
         }
       }
       if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
+        if (st.stop_possible() && st.stop_requested()) {
+          return false;
+        }
         if (controller.validate_topology_with_os(golden->m_topology)) {
-          if (apply_golden_and_confirm()) {
+          if (apply_golden_and_confirm(st)) {
             return true;
           }
         }
@@ -1069,7 +1178,7 @@ namespace {
 
       // Initial one-shot attempt before entering the loop
       try {
-        if (!st.stop_requested() && self->try_restore_once_if_valid()) {
+        if (!st.stop_requested() && self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
           // Exit the helper after a successful restore.
@@ -1084,7 +1193,7 @@ namespace {
       } catch (...) {}
 
       while (!st.stop_requested()) {
-        if (self->try_restore_once_if_valid()) {
+        if (self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
           // Exit the helper after a successful restore.
@@ -1290,6 +1399,7 @@ namespace {
       } else {
         auto pre_snap = state.controller.snapshot();
         const auto pre_devices = ServiceState::snapshot_device_set(pre_snap);
+        const bool skip_snapshot = state.should_skip_session_snapshot(cfg, pre_snap);
 
         auto copy_prev_to_current = [&]() -> bool {
           if (!prev_exists || ec_exist_prev) {
@@ -1309,18 +1419,22 @@ namespace {
         bool used_previous = false;
 
         if (prev_exists && !ec_exist_prev) {
-          if (auto prev_snap = state.controller.load_display_settings_snapshot(state.session_previous_path)) {
-            const auto prev_devices = ServiceState::snapshot_device_set(*prev_snap);
-            if (prev_devices != pre_devices) {
-              if (copy_prev_to_current()) {
-                saved = true;
-                used_previous = true;
+          bool should_copy_prev = skip_snapshot;
+          if (!should_copy_prev) {
+            if (auto prev_snap = state.controller.load_display_settings_snapshot(state.session_previous_path)) {
+              const auto prev_devices = ServiceState::snapshot_device_set(*prev_snap);
+              if (prev_devices != pre_devices) {
+                should_copy_prev = true;
               }
             }
           }
+          if (should_copy_prev && copy_prev_to_current()) {
+            saved = true;
+            used_previous = true;
+          }
         }
 
-        if (!saved) {
+        if (!saved && !skip_snapshot) {
           saved = state.controller.save_display_settings_snapshot_to_file(state.session_current_path);
         }
 
@@ -1328,7 +1442,11 @@ namespace {
         if (used_previous) {
           BOOST_LOG(info) << "Initialized current session baseline from previous.";
         }
-        BOOST_LOG(info) << "Established current session baseline: " << (saved ? "true" : "false");
+        if (skip_snapshot && !saved) {
+          BOOST_LOG(info) << "Skipped session baseline snapshot; current layout matches requested single-display configuration.";
+        } else {
+          BOOST_LOG(info) << "Established current session baseline: " << (saved ? "true" : "false");
+        }
       }
     }
     state.retry_revert_on_topology.store(false, std::memory_order_release);
