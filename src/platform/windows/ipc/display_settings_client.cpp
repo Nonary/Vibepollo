@@ -28,17 +28,14 @@ namespace platf::display_helper_client {
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
 
-  static bool send_frame(platf::dxgi::INamedPipe &pipe, MsgType type, const std::vector<uint8_t> &payload) {
-    // Suppress logging for Ping to avoid log spam
+  static bool send_message(platf::dxgi::INamedPipe &pipe, MsgType type, const std::vector<uint8_t> &payload) {
     const bool is_ping = (type == MsgType::Ping);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
                       << ", payload_len=" << payload.size();
     }
-    uint32_t len = static_cast<uint32_t>(1 + payload.size());
     std::vector<uint8_t> out;
-    out.reserve(4 + len);
-    out.insert(out.end(), reinterpret_cast<const uint8_t *>(&len), reinterpret_cast<const uint8_t *>(&len) + 4);
+    out.reserve(1 + payload.size());
     out.push_back(static_cast<uint8_t>(type));
     out.insert(out.end(), payload.begin(), payload.end());
     const bool ok = pipe.send(out, 5000);
@@ -68,11 +65,33 @@ namespace platf::display_helper_client {
     if (pipe && pipe->is_connected()) {
       return true;
     }
-    platf::dxgi::AnonymousPipeFactory f;
     BOOST_LOG(info) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
-    pipe = f.create_client("sunshine_display_helper");
-    BOOST_LOG(info) << "Display helper IPC: connection " << (pipe ? "succeeded" : "failed");
-    return pipe != nullptr;
+    auto creator_anon = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+      platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
+      return ff.create_client("sunshine_display_helper");
+    };
+    pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_anon);
+    bool ok = false;
+    if (pipe) {
+      pipe->wait_for_client_connection(8000);
+      ok = pipe->is_connected();
+    }
+    if (!ok) {
+      BOOST_LOG(info) << "Display helper IPC: anonymous connect failed; trying named fallback";
+      auto creator_named = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+        platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::NamedPipeFactory>());
+        return ff.create_client("sunshine_display_helper");
+      };
+      pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_named);
+      if (pipe) {
+        pipe->wait_for_client_connection(8000);
+        ok = pipe->is_connected();
+      } else {
+        ok = false;
+      }
+    }
+    BOOST_LOG(info) << "Display helper IPC: connection " << (ok ? "succeeded" : "failed");
+    return ok;
   }
 
   void reset_connection() {
@@ -93,16 +112,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload(json.begin(), json.end());
     auto &pipe = pipe_singleton();
-    if (pipe && send_frame(*pipe, MsgType::Apply, payload)) {
+    if (pipe && send_message(*pipe, MsgType::Apply, payload)) {
       return true;
     }
-    // Retry once: reconnect + resend
-    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
-    pipe.reset();
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    return pipe && send_frame(*pipe, MsgType::Apply, payload);
+    return false;
   }
 
   bool send_revert() {
@@ -114,15 +127,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
-    if (pipe && send_frame(*pipe, MsgType::Revert, payload)) {
+    if (pipe && send_message(*pipe, MsgType::Revert, payload)) {
       return true;
     }
-    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
-    pipe.reset();
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    return pipe && send_frame(*pipe, MsgType::Revert, payload);
+    return false;
   }
 
   bool send_export_golden() {
@@ -134,15 +142,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
-    if (pipe && send_frame(*pipe, MsgType::ExportGolden, payload)) {
+    if (pipe && send_message(*pipe, MsgType::ExportGolden, payload)) {
       return true;
     }
-    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
-    pipe.reset();
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    return pipe && send_frame(*pipe, MsgType::ExportGolden, payload);
+    return false;
   }
 
   bool send_reset() {
@@ -154,15 +157,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
-    if (pipe && send_frame(*pipe, MsgType::Reset, payload)) {
+    if (pipe && send_message(*pipe, MsgType::Reset, payload)) {
       return true;
     }
-    BOOST_LOG(warning) << "Display helper IPC: send failed; attempting reconnect";
-    pipe.reset();
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    return pipe && send_frame(*pipe, MsgType::Reset, payload);
+    return false;
   }
 
   bool send_ping() {
@@ -173,14 +171,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
-    if (pipe && send_frame(*pipe, MsgType::Ping, payload)) {
+    if (pipe && send_message(*pipe, MsgType::Ping, payload)) {
       return true;
     }
-    pipe.reset();
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    return pipe && send_frame(*pipe, MsgType::Ping, payload);
+    return false;
   }
 }  // namespace platf::display_helper_client
 

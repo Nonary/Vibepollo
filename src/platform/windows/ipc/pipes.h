@@ -139,6 +139,26 @@ namespace platf::dxgi {
     virtual bool is_connected() = 0;
   };
 
+  class FramedPipe: public INamedPipe {
+  public:
+    explicit FramedPipe(std::unique_ptr<INamedPipe> inner);
+
+    ~FramedPipe() override = default;
+
+    bool send(std::span<const uint8_t> bytes, int timeout_ms) override;
+    PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override;
+    PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override;
+    void wait_for_client_connection(int milliseconds) override;
+    void disconnect() override;
+    bool is_connected() override;
+
+  private:
+    bool try_decode_one_frame(std::span<uint8_t> dst, size_t &bytesRead);
+
+    std::unique_ptr<INamedPipe> _inner;
+    std::vector<uint8_t> _rxbuf;
+  };
+
   class AsyncNamedPipe {
   public:
     using MessageCallback = std::function<void(std::span<const uint8_t>)>;  ///< Callback for received messages
@@ -377,6 +397,31 @@ namespace platf::dxgi {
     virtual std::unique_ptr<INamedPipe> create_server(const std::string &pipe_name) = 0;
   };
 
+  class FramedPipeFactory: public IAsyncPipeFactory {
+  public:
+    explicit FramedPipeFactory(std::unique_ptr<IAsyncPipeFactory> inner):
+        _inner(std::move(inner)) {}
+
+    std::unique_ptr<INamedPipe> create_client(const std::string &pipe_name) override {
+      auto base = _inner ? _inner->create_client(pipe_name) : nullptr;
+      if (!base) {
+        return nullptr;
+      }
+      return std::make_unique<FramedPipe>(std::move(base));
+    }
+
+    std::unique_ptr<INamedPipe> create_server(const std::string &pipe_name) override {
+      auto base = _inner ? _inner->create_server(pipe_name) : nullptr;
+      if (!base) {
+        return nullptr;
+      }
+      return std::make_unique<FramedPipe>(std::move(base));
+    }
+
+  private:
+    std::unique_ptr<IAsyncPipeFactory> _inner;
+  };
+
   /**
    * @brief Message structure for anonymous pipe connection handshake.
    * @param pipe_name Wide character pipe name for connection (max 40 chars).
@@ -495,5 +540,28 @@ namespace platf::dxgi {
     std::unique_ptr<INamedPipe> connect_to_data_pipe(const std::string &pipeNameStr);
 
     NamedPipeFactory _pipe_factory;
+  };
+
+  class SelfHealingPipe: public INamedPipe {
+  public:
+    using Creator = std::function<std::unique_ptr<INamedPipe>()>;
+
+    explicit SelfHealingPipe(Creator creator);
+
+    ~SelfHealingPipe() override = default;
+
+    bool send(std::span<const uint8_t> bytes, int timeout_ms) override;
+    PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override;
+    PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override;
+    void wait_for_client_connection(int milliseconds) override;
+    void disconnect() override;
+    bool is_connected() override;
+
+  private:
+    bool ensure_connected();
+    void reconnect();
+
+    Creator _creator;
+    std::unique_ptr<INamedPipe> _inner;
   };
 }  // namespace platf::dxgi

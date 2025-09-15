@@ -976,4 +976,194 @@ namespace platf::dxgi {
       _onMessage(bytes);
     });
   }
+
+  FramedPipe::FramedPipe(std::unique_ptr<INamedPipe> inner):
+      _inner(std::move(inner)) {}
+
+  bool FramedPipe::send(std::span<const uint8_t> bytes, int timeout_ms) {
+    const uint32_t len = static_cast<uint32_t>(bytes.size());
+    std::array<uint8_t, 4> hdr {};
+    std::memcpy(hdr.data(), &len, sizeof(len));
+    std::vector<uint8_t> out;
+    out.reserve(4 + bytes.size());
+    out.insert(out.end(), hdr.begin(), hdr.end());
+    out.insert(out.end(), bytes.begin(), bytes.end());
+    return _inner && _inner->send(out, timeout_ms);
+  }
+
+  bool FramedPipe::try_decode_one_frame(std::span<uint8_t> dst, size_t &bytesRead) {
+    bytesRead = 0;
+    if (_rxbuf.size() < 4) {
+      return false;
+    }
+    uint32_t len = 0;
+    std::memcpy(&len, _rxbuf.data(), 4);
+    if (len > 2 * 1024 * 1024) {
+      return false;
+    }
+    if (_rxbuf.size() < 4u + len) {
+      return false;
+    }
+    if (dst.size() < len) {
+      return false;
+    }
+    std::memcpy(dst.data(), _rxbuf.data() + 4, len);
+    bytesRead = len;
+    _rxbuf.erase(_rxbuf.begin(), _rxbuf.begin() + 4 + len);
+    return true;
+  }
+
+  PipeResult FramedPipe::receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
+    bytesRead = 0;
+    if (!_inner) {
+      return PipeResult::Disconnected;
+    }
+    if (try_decode_one_frame(dst, bytesRead)) {
+      return PipeResult::Success;
+    }
+
+    while (true) {
+      std::array<uint8_t, 65536> tmp {};
+      size_t n = 0;
+      auto res = _inner->receive(tmp, n, timeout_ms);
+      if (res == PipeResult::Success) {
+        if (n == 0) {
+          return PipeResult::Disconnected;
+        }
+        _rxbuf.insert(_rxbuf.end(), tmp.begin(), tmp.begin() + static_cast<long>(n));
+        if (try_decode_one_frame(dst, bytesRead)) {
+          return PipeResult::Success;
+        }
+        timeout_ms = 0;
+        continue;
+      }
+      if (res == PipeResult::Timeout) {
+        if (try_decode_one_frame(dst, bytesRead)) {
+          return PipeResult::Success;
+        }
+        return PipeResult::Timeout;
+      }
+      return res;
+    }
+  }
+
+  PipeResult FramedPipe::receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
+    size_t lastBytes = 0;
+    PipeResult last = receive(dst, lastBytes, timeout_ms);
+    if (last != PipeResult::Success) {
+      bytesRead = 0;
+      return last;
+    }
+    for (;;) {
+      size_t n = 0;
+      auto res = receive(dst, n, 0);
+      if (res == PipeResult::Success) {
+        lastBytes = n;
+        continue;
+      }
+      if (res == PipeResult::Timeout) {
+        break;
+      }
+      bytesRead = lastBytes;
+      return res;
+    }
+    bytesRead = lastBytes;
+    return PipeResult::Success;
+  }
+
+  void FramedPipe::wait_for_client_connection(int milliseconds) {
+    if (_inner) {
+      _inner->wait_for_client_connection(milliseconds);
+    }
+  }
+
+  void FramedPipe::disconnect() {
+    if (_inner) {
+      _inner->disconnect();
+    }
+    _rxbuf.clear();
+  }
+
+  bool FramedPipe::is_connected() {
+    return _inner && _inner->is_connected();
+  }
+
+  SelfHealingPipe::SelfHealingPipe(Creator creator):
+      _creator(std::move(creator)) {}
+
+  bool SelfHealingPipe::ensure_connected() {
+    if (_inner && _inner->is_connected()) {
+      return true;
+    }
+    reconnect();
+    return _inner && _inner->is_connected();
+  }
+
+  void SelfHealingPipe::reconnect() {
+    try {
+      _inner = _creator ? _creator() : nullptr;
+    } catch (...) {
+      _inner.reset();
+    }
+  }
+
+  bool SelfHealingPipe::send(std::span<const uint8_t> bytes, int timeout_ms) {
+    if (!ensure_connected()) {
+      return false;
+    }
+    if (_inner->send(bytes, timeout_ms)) {
+      return true;
+    }
+    reconnect();
+    return _inner && _inner->send(bytes, timeout_ms);
+  }
+
+  PipeResult SelfHealingPipe::receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
+    bytesRead = 0;
+    if (!ensure_connected()) {
+      return PipeResult::Disconnected;
+    }
+    auto r = _inner->receive(dst, bytesRead, timeout_ms);
+    if (r == PipeResult::BrokenPipe || r == PipeResult::Disconnected || r == PipeResult::Error) {
+      reconnect();
+      if (!_inner) {
+        return r;
+      }
+      return _inner->receive(dst, bytesRead, timeout_ms);
+    }
+    return r;
+  }
+
+  PipeResult SelfHealingPipe::receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
+    bytesRead = 0;
+    if (!ensure_connected()) {
+      return PipeResult::Disconnected;
+    }
+    auto r = _inner->receive_latest(dst, bytesRead, timeout_ms);
+    if (r == PipeResult::BrokenPipe || r == PipeResult::Disconnected || r == PipeResult::Error) {
+      reconnect();
+      if (!_inner) {
+        return r;
+      }
+      return _inner->receive_latest(dst, bytesRead, timeout_ms);
+    }
+    return r;
+  }
+
+  void SelfHealingPipe::wait_for_client_connection(int milliseconds) {
+    if (!ensure_connected()) {
+      return;
+    }
+    _inner->wait_for_client_connection(milliseconds);
+  }
+
+  void SelfHealingPipe::disconnect() {
+    if (_inner) {
+      _inner->disconnect();
+    }
+  }
+
+  bool SelfHealingPipe::is_connected() {
+    return _inner && _inner->is_connected();
+  }
 }  // namespace platf::dxgi

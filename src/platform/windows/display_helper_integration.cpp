@@ -3,6 +3,8 @@
  */
 #ifdef _WIN32
 
+  #include <winsock2.h>
+
   // standard
   #include <filesystem>
   #include <mutex>
@@ -20,15 +22,9 @@
   #include "display_helper_integration.h"
   #include "src/display_device.h"  // For configuration parsing only
   #include "src/logging.h"
-  // Ensure winsock2.h is included before windows.h via transitive includes
-  #ifndef WIN32_LEAN_AND_MEAN
-    #define WIN32_LEAN_AND_MEAN
-  #endif
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
-
-  #include <winsock2.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers

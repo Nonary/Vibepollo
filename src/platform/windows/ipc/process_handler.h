@@ -11,7 +11,6 @@
 #include "src/platform/windows/ipc/misc_utils.h"
 
 // platform includes
-#include <windows.h>
 #include <winrt/base.h>
 
 /**
