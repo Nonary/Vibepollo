@@ -31,11 +31,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <psapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -283,6 +285,55 @@ namespace {
     return false;
   }
 
+  static bool spawn_cleanup_watchdog_process(const std::wstring &self_path, const std::string &install_dir_utf8, int exit_timeout_secs, bool fullscreen_flag, std::optional<DWORD> wait_for_pid) {
+    try {
+      std::wstring wcmd = L"\"" + self_path + L"\" --do-cleanup";
+      if (!install_dir_utf8.empty()) {
+        wcmd += L" --install-dir \"" + platf::dxgi::utf8_to_wide(install_dir_utf8) + L"\"";
+      }
+      if (exit_timeout_secs > 0) {
+        wcmd += L" --exit-timeout " + std::to_wstring(exit_timeout_secs);
+      }
+      if (fullscreen_flag) {
+        wcmd += L" --fullscreen";
+      }
+      if (wait_for_pid) {
+        wcmd += L" --wait-for-pid " + std::to_wstring(*wait_for_pid);
+      }
+
+      BOOST_LOG(info) << "Spawning cleanup watcher (fullscreen=" << fullscreen_flag << ", installDir='" << install_dir_utf8 << "' waitPid="
+                      << (wait_for_pid ? std::to_string(*wait_for_pid) : std::string("none")) << ")";
+
+      STARTUPINFOW si {};
+      si.cb = sizeof(si);
+      si.dwFlags |= STARTF_USESHOWWINDOW;
+      si.wShowWindow = SW_HIDE;
+      PROCESS_INFORMATION pi {};
+      std::wstring cmdline = wcmd;
+      DWORD flags_base = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
+      DWORD flags_try = flags_base | CREATE_BREAKAWAY_FROM_JOB;
+      BOOL ok = CreateProcessW(self_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_try, nullptr, nullptr, &si, &pi);
+      if (!ok) {
+        ok = CreateProcessW(self_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_base, nullptr, nullptr, &si, &pi);
+      }
+      if (!ok) {
+        BOOST_LOG(warning) << "Cleanup watcher spawn failed (fullscreen=" << fullscreen_flag << ") error=" << GetLastError();
+        return false;
+      }
+      BOOST_LOG(info) << "Cleanup watcher spawned (fullscreen=" << fullscreen_flag << ", pid=" << pi.dwProcessId << ")";
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+      }
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+      }
+      return true;
+    } catch (...) {
+      BOOST_LOG(warning) << "Exception launching cleanup watcher";
+      return false;
+    }
+  }
+
   bool parse_arg(std::span<char *> args, std::string_view name, std::string &out) {
     for (size_t i = 0; i + 1 < args.size(); ++i) {
       if (name == args[i]) {
@@ -502,6 +553,147 @@ namespace {
     }
   }
 
+  static bool ensure_window_minimized(HWND hwnd, std::chrono::milliseconds timeout) {
+    if (!hwnd) {
+      return false;
+    }
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      send_message_timeout(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+      ShowWindow(hwnd, SW_RESTORE);
+      send_message_timeout(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+      ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+      if (IsIconic(hwnd)) {
+        return true;
+      }
+      std::this_thread::sleep_for(100ms);
+    }
+    return IsIconic(hwnd) != FALSE;
+  }
+
+  static void cleanup_fullscreen_via_desktop(int exit_timeout_secs) {
+    BOOST_LOG(info) << "Cleanup fullscreen: launching DesktopApp to close fullscreen";
+    std::wstring desktop_path;
+    try {
+      std::wstring assocExe = query_playnite_executable_from_assoc();
+      if (!assocExe.empty()) {
+        std::filesystem::path assoc_path(assocExe);
+        if (_wcsicmp(assoc_path.filename().c_str(), L"Playnite.DesktopApp.exe") == 0) {
+          desktop_path = assocExe;
+        } else {
+          std::filesystem::path candidate = assoc_path.parent_path() / L"Playnite.DesktopApp.exe";
+          if (std::filesystem::exists(candidate)) {
+            desktop_path = candidate.wstring();
+          } else {
+            desktop_path = assocExe;  // last resort
+          }
+        }
+      }
+    } catch (...) {
+      desktop_path.clear();
+    }
+
+    bool launch_success = false;
+    if (!desktop_path.empty() && std::filesystem::exists(desktop_path)) {
+      std::wstring cmd = L"\"" + desktop_path + L"\" --startdesktop";
+      STARTUPINFOW si {};
+      si.cb = sizeof(si);
+      si.dwFlags |= STARTF_USESHOWWINDOW;
+      si.wShowWindow = SW_HIDE;
+      PROCESS_INFORMATION pi {};
+      std::wstring cmdline = cmd;
+      DWORD flags_base = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
+      DWORD flags_try = flags_base | CREATE_BREAKAWAY_FROM_JOB;
+      launch_success = CreateProcessW(desktop_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_try, nullptr, nullptr, &si, &pi);
+      if (!launch_success) {
+        launch_success = CreateProcessW(desktop_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_base, nullptr, nullptr, &si, &pi);
+      }
+      if (launch_success) {
+        if (pi.hThread) {
+          CloseHandle(pi.hThread);
+        }
+        if (pi.hProcess) {
+          CloseHandle(pi.hProcess);
+        }
+      }
+      BOOST_LOG(info) << "Cleanup fullscreen: launch DesktopApp attempt result=" << (launch_success ? "ok" : "fail");
+    } else {
+      BOOST_LOG(warning) << "Cleanup fullscreen: unable to resolve Playnite.DesktopApp path";
+    }
+
+    auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(3, exit_timeout_secs));
+    std::vector<DWORD> desktop_pids;
+    while (std::chrono::steady_clock::now() < wait_deadline) {
+      try {
+        desktop_pids = platf::dxgi::find_process_ids_by_name(L"Playnite.DesktopApp.exe");
+      } catch (...) {
+        desktop_pids.clear();
+      }
+      if (!desktop_pids.empty()) {
+        break;
+      }
+      std::this_thread::sleep_for(200ms);
+    }
+    if (desktop_pids.empty()) {
+      BOOST_LOG(warning) << "Cleanup fullscreen: DesktopApp did not appear after launch";
+    }
+
+    auto monitor_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool minimized_once = false;
+    while (std::chrono::steady_clock::now() < monitor_deadline) {
+      HWND desktop_hwnd = nullptr;
+      for (auto pid : desktop_pids) {
+        desktop_hwnd = find_main_window_for_pid(pid);
+        if (desktop_hwnd) {
+          break;
+        }
+      }
+      if (!desktop_hwnd) {
+        std::this_thread::sleep_for(300ms);
+        continue;
+      }
+      if (!IsWindow(desktop_hwnd)) {
+        BOOST_LOG(info) << "Cleanup fullscreen: DesktopApp window closed before minimize";
+        break;
+      }
+      if (IsWindowVisible(desktop_hwnd) && !IsIconic(desktop_hwnd)) {
+        BOOST_LOG(info) << "Cleanup fullscreen: DesktopApp visible; minimizing";
+        if (ensure_window_minimized(desktop_hwnd, std::chrono::seconds(5))) {
+          BOOST_LOG(info) << "Cleanup fullscreen: DesktopApp minimized";
+        } else {
+          BOOST_LOG(warning) << "Cleanup fullscreen: failed to confirm DesktopApp minimized";
+        }
+        minimized_once = true;
+        break;
+      }
+      std::this_thread::sleep_for(300ms);
+    }
+    if (!minimized_once) {
+      BOOST_LOG(info) << "Cleanup fullscreen: DesktopApp window never reported visible before timeout";
+    }
+
+    auto fullscreen_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(3, exit_timeout_secs));
+    bool fullscreen_gone = false;
+    std::vector<DWORD> fullscreen_pids;
+    while (std::chrono::steady_clock::now() < fullscreen_deadline) {
+      try {
+        fullscreen_pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
+      } catch (...) {
+        fullscreen_pids.clear();
+      }
+      if (fullscreen_pids.empty()) {
+        fullscreen_gone = true;
+        break;
+      }
+      std::this_thread::sleep_for(250ms);
+    }
+    if (fullscreen_gone) {
+      BOOST_LOG(info) << "Cleanup fullscreen: FullscreenApp exited after desktop launch";
+    }
+
+    // No further minimize attempts after the first detection; exit watcher.
+  }
+
   static bool confirm_foreground_pid(DWORD pid) {
     HWND fg = GetForegroundWindow();
     DWORD fpid = 0;
@@ -565,7 +757,6 @@ namespace {
   // Forward declarations for helpers defined later in this file
   static bool get_process_image_path(DWORD pid, std::wstring &out);
   static bool path_starts_with(const std::wstring &path, const std::wstring &dir);
-  static bool pid_alive(DWORD pid);
 
   // Enumerate all running processes whose image path begins with install_dir,
   // return sorted by working set (descending)
@@ -759,31 +950,6 @@ namespace {
   }
 
   // Enumerate top-level windows of a PID and send WM_CLOSE
-  static void send_wm_close_to_pid(DWORD pid) {
-    struct Ctx {
-      DWORD pid;
-    } ctx {pid};
-
-    auto enum_proc = [](HWND hwnd, LPARAM lp) -> BOOL {
-      auto *c = reinterpret_cast<Ctx *>(lp);
-      DWORD wpid = 0;
-      GetWindowThreadProcessId(hwnd, &wpid);
-      if (wpid != c->pid) {
-        return TRUE;
-      }
-      // Only target visible top-level windows (no owners)
-      if (!IsWindowVisible(hwnd)) {
-        return TRUE;
-      }
-      if (GetWindow(hwnd, GW_OWNER) != nullptr) {
-        return TRUE;
-      }
-      SendNotifyMessageW(hwnd, WM_CLOSE, 0, 0);
-      return TRUE;
-    };
-    EnumWindows(enum_proc, reinterpret_cast<LPARAM>(&ctx));
-  }
-
   // Graceful-then-forceful cleanup of processes whose image path is under install_dir
   static void cleanup_graceful_then_forceful_in_dir(const std::wstring &install_dir, int exit_timeout_secs) {
     if (install_dir.empty()) {
@@ -799,11 +965,10 @@ namespace {
     auto t_total = std::max(1, exit_timeout_secs);
     auto t_start = std::chrono::steady_clock::now();
     bool sent_close = false, sent_endsession = false, sent_quit = false;
+    bool logged_initial = false;
     while (true) {
       auto remaining = collect();
-      static bool logged_initial = false;
       if (!logged_initial) {
-        // Log discovered PIDs and their image paths
         BOOST_LOG(info) << "Cleanup: initial candidates count=" << remaining.size();
         for (auto pid : remaining) {
           std::wstring img;
@@ -856,57 +1021,12 @@ namespace {
     }
   }
 
-  static void graceful_shutdown_playnite(bool fullscreen, int exit_timeout_secs) {
-    std::vector<DWORD> pids;
-    try {
-      if (fullscreen) {
-        pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
-      } else {
-        pids = platf::dxgi::find_process_ids_by_name(L"Playnite.DesktopApp.exe");
-      }
-    } catch (...) {}
-    if (pids.empty()) {
-      return;
-    }
-    for (DWORD pid : pids) {
-      send_wm_close_to_pid(pid);
-    }
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, exit_timeout_secs));
-    while (std::chrono::steady_clock::now() < deadline) {
-      bool any = false;
-      for (DWORD pid : pids) {
-        if (pid_alive(pid)) {
-          any = true;
-          break;
-        }
-      }
-      if (!any) {
-        return;
-      }
-      std::this_thread::sleep_for(250ms);
-    }
-    for (DWORD pid : pids) {
-      if (pid_alive(pid)) {
-        terminate_pid(pid);
-      }
-    }
-  }
-
   struct ProcSnapshot {
     std::unordered_map<DWORD, std::vector<DWORD>> children;
     std::unordered_map<DWORD, std::wstring> exe_basename;
     std::unordered_map<DWORD, std::wstring> img_path;
   };
 
-  static bool pid_alive(DWORD pid) {
-    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    if (!h) {
-      return false;
-    }
-    DWORD wr = WaitForSingleObject(h, 0);
-    CloseHandle(h);
-    return wr == WAIT_TIMEOUT;
-  }
 }  // namespace
 
 // Shared launcher logic; invoked by both main and WinMain wrappers
@@ -1000,7 +1120,7 @@ static int launcher_run(int argc, char **argv) {
 
   // Cleanup-only mode: optionally wait for a specific PID to exit, then run cleanup
   if (do_cleanup) {
-    BOOST_LOG(info) << "Cleanup mode: starting";
+    BOOST_LOG(info) << "Cleanup mode: starting (installDir='" << install_dir_arg << "' fullscreen=" << (fullscreen ? 1 : 0) << ")";
     // Optional: wait for a specific PID (typically parent launcher) to exit
     if (!wait_for_pid_s.empty()) {
       try {
@@ -1022,11 +1142,11 @@ static int launcher_run(int argc, char **argv) {
       }
     }
     std::wstring install_dir_w = platf::dxgi::utf8_to_wide(install_dir_arg);
-    if (!install_dir_w.empty()) {
+    if (!fullscreen && !install_dir_w.empty()) {
       cleanup_graceful_then_forceful_in_dir(install_dir_w, exit_timeout_secs);
     }
     if (fullscreen) {
-      graceful_shutdown_playnite(true, std::max(3, exit_timeout_secs));
+      cleanup_fullscreen_via_desktop(std::max(3, exit_timeout_secs));
     }
     BOOST_LOG(info) << "Cleanup mode: done";
     return 0;
@@ -1036,10 +1156,12 @@ static int launcher_run(int argc, char **argv) {
   if (fullscreen) {
     BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
     bool started = false;
+    std::string fullscreen_install_dir_utf8;
     try {
       std::wstring assocExe = query_playnite_executable_from_assoc();
       if (!assocExe.empty()) {
         std::filesystem::path base = std::filesystem::path(assocExe).parent_path();
+        fullscreen_install_dir_utf8 = platf::dxgi::wide_to_utf8(base.wstring());
         std::filesystem::path fs = base / L"Playnite.FullscreenApp.exe";
         if (std::filesystem::exists(fs)) {
           BOOST_LOG(info) << "Launching FullscreenApp from: " << platf::dxgi::wide_to_utf8(fs.wstring());
@@ -1050,6 +1172,11 @@ static int launcher_run(int argc, char **argv) {
     if (!started) {
       BOOST_LOG(info) << "Fullscreen exe not resolved; falling back to playnite://";
       ensure_playnite_open();
+    }
+    WCHAR selfPath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
+    if (!spawn_cleanup_watchdog_process(selfPath, fullscreen_install_dir_utf8, exit_timeout_secs, true, GetCurrentProcessId())) {
+      BOOST_LOG(warning) << "Fullscreen mode: failed to spawn cleanup watchdog";
     }
     // Wait briefly for process to appear then try to focus
     auto deadline = std::chrono::steady_clock::now() + 10s;
@@ -1161,49 +1288,13 @@ static int launcher_run(int argc, char **argv) {
   std::atomic<bool> watcher_spawned {false};
 
   auto spawn_cleanup_watcher = [&](const std::string &install_dir_utf8) {
-    if (install_dir_utf8.empty()) {
-      return;
-    }
     bool expected = false;
     if (!watcher_spawned.compare_exchange_strong(expected, true)) {
-      return;  // spawn once
+      return;
     }
-    try {
-      WCHAR selfPath[MAX_PATH] = {};
-      GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
-      std::wstring wexe(selfPath);
-      std::wstring wcmd = L"\"" + wexe + L"\" --do-cleanup --install-dir \"" + platf::dxgi::utf8_to_wide(install_dir_utf8) + L"\" --wait-for-pid " + std::to_wstring(GetCurrentProcessId());
-      if (exit_timeout_secs > 0) {
-        wcmd += L" --exit-timeout " + std::to_wstring(exit_timeout_secs);
-      }
-      STARTUPINFOW si {};
-      si.cb = sizeof(si);
-      si.dwFlags |= STARTF_USESHOWWINDOW;
-      si.wShowWindow = SW_HIDE;
-      PROCESS_INFORMATION pi {};
-      std::wstring cmd2 = wcmd;
-      DWORD flags_base = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
-      // Best-effort: attempt to break away from a potential job object so cleanup can survive group termination
-      DWORD flags_try = flags_base | CREATE_BREAKAWAY_FROM_JOB;
-      BOOL ok = CreateProcessW(selfPath, cmd2.data(), nullptr, nullptr, FALSE, flags_try, nullptr, nullptr, &si, &pi);
-      if (!ok) {
-        // Fallback: try without breakaway flag
-        ok = CreateProcessW(selfPath, cmd2.data(), nullptr, nullptr, FALSE, flags_base, nullptr, nullptr, &si, &pi);
-      }
-      if (ok) {
-        BOOST_LOG(info) << "Spawned cleanup watcher for installDir; pid=" << pi.dwProcessId;
-        if (pi.hThread) {
-          CloseHandle(pi.hThread);
-        }
-        if (pi.hProcess) {
-          CloseHandle(pi.hProcess);
-        }
-      } else {
-        BOOST_LOG(warning) << "Failed to spawn cleanup watcher";
-        watcher_spawned.store(false);
-      }
-    } catch (...) {
-      BOOST_LOG(warning) << "Exception while spawning cleanup watcher";
+    WCHAR selfPath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
+    if (!spawn_cleanup_watchdog_process(selfPath, install_dir_utf8, exit_timeout_secs, false, GetCurrentProcessId())) {
       watcher_spawned.store(false);
     }
   };
@@ -1359,24 +1450,7 @@ static int launcher_run(int argc, char **argv) {
   if (!last_install_dir.empty()) {
     WCHAR selfPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
-    std::wstring wexe(selfPath);
-    std::wstring wcmd = L"\"" + wexe + L"\" --do-cleanup --install-dir \"" + platf::dxgi::utf8_to_wide(last_install_dir) + L"\"";
-    if (exit_timeout_secs > 0) {
-      wcmd += L" --exit-timeout " + std::to_wstring(exit_timeout_secs);
-    }
-    STARTUPINFOW si2 {};
-    si2.cb = sizeof(si2);
-    si2.dwFlags |= STARTF_USESHOWWINDOW;
-    si2.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi2 {};
-    std::wstring cmd2 = wcmd;
-    CreateProcessW(selfPath, cmd2.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr, &si2, &pi2);
-    if (pi2.hThread) {
-      CloseHandle(pi2.hThread);
-    }
-    if (pi2.hProcess) {
-      CloseHandle(pi2.hProcess);
-    }
+    static_cast<void>(spawn_cleanup_watchdog_process(selfPath, last_install_dir, exit_timeout_secs, false, std::nullopt));
   }
   return should_exit.load() ? 0 : 4;
 }
