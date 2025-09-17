@@ -8,6 +8,7 @@
   // standard
   #include <algorithm>
   #include <atomic>
+  #include <condition_variable>
   #include <chrono>
   #include <cstdint>
   #include <cstdio>
@@ -16,6 +17,7 @@
   #include <cwchar>
   #include <filesystem>
   #include <functional>
+  #include <mutex>
   #include <memory>
   #include <optional>
   #include <set>
@@ -43,6 +45,13 @@
   #include <shlobj.h>
   #include <windows.h>
   #include <winerror.h>
+  #include <dbt.h>
+  #include <devguid.h>
+  #include <powrprof.h>
+
+  namespace {
+    static const GUID kMonitorInterfaceGuid = {0xe6f07b5f, 0xee97, 0x4a90, {0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7}};
+  }
 
 using namespace std::chrono_literals;
 namespace bl = boost::log;
@@ -640,55 +649,158 @@ namespace {
     std::shared_ptr<display_device::WinDisplayDeviceInterface> m_dd;
   };
 
-  class TopologyWatcher {
+  class DisplayEventPump {
   public:
-    using Callback = std::function<void()>;
+    using Callback = std::function<void(const char *)>;
 
     void start(Callback cb) {
       stop();
-      _stop = false;
-      _worker = std::jthread(&TopologyWatcher::thread_run, this, std::move(cb));
+      callback_ = std::move(cb);
+      worker_ = std::jthread(&DisplayEventPump::thread_proc, this);
     }
 
     void stop() {
-      _stop.store(true, std::memory_order_release);
-      if (_worker.joinable()) {
-        _worker.request_stop();
-        _worker.join();
+      if (worker_.joinable()) {
+        if (HWND hwnd = hwnd_.load(std::memory_order_acquire)) {
+          PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        worker_.request_stop();
+        worker_.join();
       }
+      callback_ = nullptr;
+      hwnd_.store(nullptr, std::memory_order_release);
     }
 
-    ~TopologyWatcher() {
+    ~DisplayEventPump() {
       stop();
     }
 
   private:
-    static void thread_run(std::stop_token, TopologyWatcher *self, Callback cb) {
-      DisplayController ctrl;
-      auto last = ctrl.current_topology_signature();
-      while (!self->_stop.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(1000ms);
-        auto now = ctrl.current_topology_signature();
-        if (now != last) {
-          last = std::move(now);
-          invoke_cb_safely(cb);
-        }
+    static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+      if (msg == WM_NCCREATE) {
+        auto *create = reinterpret_cast<CREATESTRUCTW *>(lParam);
+        auto *self = static_cast<DisplayEventPump *>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->hwnd_.store(hwnd, std::memory_order_release);
+        return TRUE;
+      }
+
+      auto *self = reinterpret_cast<DisplayEventPump *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+      if (!self) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+      }
+
+      switch (msg) {
+        case WM_DISPLAYCHANGE:
+          self->signal("wm_displaychange");
+          break;
+        case WM_DEVICECHANGE:
+          if (wParam == DBT_DEVNODES_CHANGED || wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE) {
+            self->signal("wm_devicechange");
+          }
+          break;
+        case WM_POWERBROADCAST:
+          if (wParam == PBT_POWERSETTINGCHANGE) {
+            const auto *ps = reinterpret_cast<const POWERBROADCAST_SETTING *>(lParam);
+            if (ps && ps->PowerSetting == GUID_MONITOR_POWER_ON) {
+              if (ps->DataLength == sizeof(DWORD)) {
+                const DWORD state = *reinterpret_cast<const DWORD *>(ps->Data);
+                if (state != 0) {
+                  self->signal("power_monitor_on");
+                }
+              }
+            }
+          }
+          break;
+        case WM_DESTROY:
+          self->cleanup_notifications();
+          PostQuitMessage(0);
+          break;
+        default:
+          break;
+      }
+      return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    void signal(const char *reason) {
+      auto cb = callback_;
+      if (cb) {
+        try {
+          cb(reason);
+        } catch (...) {}
       }
     }
 
-    static void invoke_cb_safely(const Callback &cb) {
-      try {
-        cb();
-      } catch (...) {}
+    void cleanup_notifications() {
+      if (power_cookie_) {
+        UnregisterPowerSettingNotification(power_cookie_);
+        power_cookie_ = nullptr;
+      }
+      if (device_cookie_) {
+        UnregisterDeviceNotification(device_cookie_);
+        device_cookie_ = nullptr;
+      }
     }
 
-    std::atomic<bool> _stop {false};
-    std::jthread _worker;
+    void thread_proc(std::stop_token st) {
+      const auto hinst = GetModuleHandleW(nullptr);
+      const wchar_t *klass = L"SunshineDisplayEventWindow";
+
+      WNDCLASSEXW wc = {};
+      wc.cbSize = sizeof(wc);
+      wc.lpfnWndProc = &DisplayEventPump::wnd_proc;
+      wc.hInstance = hinst;
+      wc.lpszClassName = klass;
+      RegisterClassExW(&wc);
+
+      HWND hwnd = CreateWindowExW(0, klass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hinst, this);
+      if (!hwnd) {
+        return;
+      }
+
+      power_cookie_ = RegisterPowerSettingNotification(hwnd, &GUID_MONITOR_POWER_ON, DEVICE_NOTIFY_WINDOW_HANDLE);
+
+      DEV_BROADCAST_DEVICEINTERFACE_W dbi = {};
+      dbi.dbcc_size = sizeof(dbi);
+      dbi.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+      dbi.dbcc_classguid = kMonitorInterfaceGuid;
+      device_cookie_ = RegisterDeviceNotificationW(hwnd, &dbi, DEVICE_NOTIFY_WINDOW_HANDLE);
+
+      MSG msg;
+      while (!st.stop_requested()) {
+        const BOOL res = GetMessageW(&msg, nullptr, 0, 0);
+        if (res == -1) {
+          break;
+        }
+        if (res == 0) {
+          break;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+
+      cleanup_notifications();
+      if (hwnd) {
+        DestroyWindow(hwnd);
+      }
+      hwnd_.store(nullptr, std::memory_order_release);
+      UnregisterClassW(klass, hinst);
+    }
+
+    std::jthread worker_;
+    Callback callback_;
+    std::atomic<HWND> hwnd_ {nullptr};
+    HPOWERNOTIFY power_cookie_ {nullptr};
+    HDEVNOTIFY device_cookie_ {nullptr};
   };
 
   struct ServiceState {
     DisplayController controller;
-    TopologyWatcher watcher;
+    DisplayEventPump event_pump;
+    std::mutex restore_event_mutex;
+    std::condition_variable restore_event_cv;
+    bool restore_event_flag {false};
+    std::atomic<long long> restore_event_expiry_ms {0};
     std::atomic<bool> retry_apply_on_topology {false};
     std::atomic<bool> retry_revert_on_topology {false};
     std::optional<display_device::SingleDisplayConfiguration> last_cfg;
@@ -913,6 +1025,38 @@ namespace {
         std::this_thread::sleep_for(interval);
       }
       return true;
+    }
+
+    void signal_restore_event(const char *reason = nullptr) {
+      const auto now = std::chrono::steady_clock::now();
+      if (reason) {
+        const auto expiry = now + std::chrono::minutes(2);
+        const auto expiry_ms = std::chrono::duration_cast<std::chrono::milliseconds>(expiry.time_since_epoch()).count();
+        restore_event_expiry_ms.store(expiry_ms, std::memory_order_release);
+        BOOST_LOG(info) << "Restore event signalled: " << reason;
+      } else {
+        restore_event_expiry_ms.store(0, std::memory_order_release);
+      }
+      {
+        std::lock_guard lk(restore_event_mutex);
+        restore_event_flag = true;
+      }
+      restore_event_cv.notify_all();
+    }
+
+    bool wait_for_restore_event(std::stop_token st, std::chrono::milliseconds fallback) {
+      std::unique_lock lk(restore_event_mutex);
+      auto pred = [&]() {
+        return restore_event_flag || st.stop_requested();
+      };
+      if (!restore_event_flag) {
+        restore_event_cv.wait_for(lk, fallback, pred);
+      }
+      if (restore_event_flag) {
+        restore_event_flag = false;
+        return true;
+      }
+      return false;
     }
 
     // Helper to access known-present devices: union of active (modes keys)
@@ -1141,12 +1285,19 @@ namespace {
       if (restore_poll_active.load(std::memory_order_acquire)) {
         return;
       }
+      event_pump.start([this](const char *reason) {
+        signal_restore_event(reason);
+      });
+      signal_restore_event("initial");
       restore_poll_active.store(true, std::memory_order_release);
       restore_poll_thread = std::jthread(&ServiceState::restore_poll_proc, this);
     }
 
     void stop_restore_polling() {
       restore_poll_active.store(false, std::memory_order_release);
+      event_pump.stop();
+      signal_restore_event(nullptr);
+      restore_event_expiry_ms.store(0, std::memory_order_release);
       if (restore_poll_thread.joinable()) {
         restore_poll_thread.request_stop();
         restore_poll_thread.join();
@@ -1169,6 +1320,7 @@ namespace {
           if (self->running_flag) {
             self->running_flag->store(false, std::memory_order_release);
           }
+          self->event_pump.stop();
           self->restore_poll_active.store(false, std::memory_order_release);
           return;
         }
@@ -1187,12 +1339,29 @@ namespace {
             BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
             self->running_flag->store(false, std::memory_order_release);
           }
+          self->event_pump.stop();
           self->restore_poll_active.store(false, std::memory_order_release);
+          self->restore_event_expiry_ms.store(0, std::memory_order_release);
           return;
         }
       } catch (...) {}
 
       while (!st.stop_requested()) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        const auto expiry_ms = self->restore_event_expiry_ms.load(std::memory_order_acquire);
+        const bool in_burst = (expiry_ms != 0 && now_ms <= expiry_ms);
+
+        bool triggered = false;
+        try {
+          triggered = self->wait_for_restore_event(st, in_burst ? 500ms : kPoll);
+        } catch (...) {}
+        if (!triggered && in_burst) {
+          triggered = true;  // keep trying aggressively during burst window
+        }
+        if (st.stop_requested()) {
+          break;
+        }
         if (self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
@@ -1202,22 +1371,20 @@ namespace {
             self->running_flag->store(false, std::memory_order_release);
           }
           self->restore_poll_active.store(false, std::memory_order_release);
+          self->event_pump.stop();
+          self->restore_event_expiry_ms.store(0, std::memory_order_release);
           return;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_log >= kLogThrottle) {
-          last_log = now;
+        const auto now2 = std::chrono::steady_clock::now();
+        if (!triggered && now2 - last_log >= kLogThrottle) {
+          last_log = now2;
           BOOST_LOG(info) << "Restore polling: waiting for a valid topology to apply session/golden snapshot.";
         }
-        // Sleep in short slices to react quickly to stop requests
-        auto slept = 0ms;
-        while (slept < kPoll && !st.stop_requested()) {
-          std::this_thread::sleep_for(100ms);
-          slept += 100ms;
-        }
       }
+      self->event_pump.stop();
       self->restore_poll_active.store(false, std::memory_order_release);
+      self->restore_event_expiry_ms.store(0, std::memory_order_release);
     }
 
     void on_topology_changed() {
