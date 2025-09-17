@@ -5,7 +5,12 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <optional>
+#include <string>
 #include <utility>
 
 // lib includes
@@ -32,6 +37,164 @@
 #include "utility.h"
 #include "uuid.h"
 
+#ifdef _WIN32
+  #include <wincrypt.h>
+  #include <Windows.h>
+#endif
+
+namespace {
+  std::once_flag curl_global_once;
+
+  void ensure_curl_global_init() {
+    std::call_once(curl_global_once, []() {
+      curl_global_init(CURL_GLOBAL_DEFAULT);
+      std::atexit(curl_global_cleanup);
+    });
+  }
+
+#ifdef _WIN32
+  std::once_flag windows_ca_once;
+  std::string windows_ca_bundle;
+  bool windows_ca_loaded = false;
+  std::size_t windows_ca_count = 0;
+
+  void append_pem_chunk(const char *data, DWORD length) {
+    if (!data || length == 0) {
+      return;
+    }
+    std::string chunk(data, data + length);
+    if (!chunk.empty() && chunk.back() == '\0') {
+      chunk.pop_back();
+    }
+    if (chunk.empty()) {
+      return;
+    }
+    windows_ca_bundle.append(chunk);
+    if (!windows_ca_bundle.empty() && windows_ca_bundle.back() != '\n') {
+      windows_ca_bundle.push_back('\n');
+    }
+  }
+
+  bool populate_from_store(DWORD flags) {
+    HCERTSTORE store = CertOpenStore(
+      CERT_STORE_PROV_SYSTEM_W,
+      0,
+      static_cast<HCRYPTPROV_LEGACY>(0),
+      flags | CERT_STORE_READONLY_FLAG,
+      L"ROOT"
+    );
+    if (!store) {
+      BOOST_LOG(error) << "CertOpenStore failed for flags " << flags << " error " << GetLastError();
+      return false;
+    }
+
+    std::size_t added = 0;
+    PCCERT_CONTEXT ctx = nullptr;
+    while ((ctx = CertEnumCertificatesInStore(store, ctx)) != nullptr) {
+      DWORD out_len = 0;
+      if (!CryptBinaryToStringA(ctx->pbCertEncoded, ctx->cbCertEncoded, CRYPT_STRING_BASE64HEADER, nullptr, &out_len)) {
+        continue;
+      }
+      std::string buffer(out_len, '\0');
+      if (!CryptBinaryToStringA(ctx->pbCertEncoded, ctx->cbCertEncoded, CRYPT_STRING_BASE64HEADER, buffer.data(), &out_len)) {
+        continue;
+      }
+      append_pem_chunk(buffer.data(), out_len);
+      ++added;
+    }
+    CertCloseStore(store, 0);
+    if (added > 0) {
+      windows_ca_count += added;
+      BOOST_LOG(debug) << "Loaded " << added << " certificates from Windows store flags " << flags;
+    }
+    return added > 0;
+  }
+
+  void load_windows_root_store() {
+    windows_ca_bundle.clear();
+    windows_ca_count = 0;
+    bool loaded_machine = populate_from_store(CERT_SYSTEM_STORE_LOCAL_MACHINE);
+    bool loaded_user = populate_from_store(CERT_SYSTEM_STORE_CURRENT_USER);
+    windows_ca_loaded = loaded_machine || loaded_user;
+
+    if (windows_ca_loaded) {
+      BOOST_LOG(info) << "Loaded " << windows_ca_count << " Windows root certificates (machine="
+                      << (loaded_machine ? "yes" : "no") << ", user=" << (loaded_user ? "yes" : "no") << ')';
+    } else {
+      BOOST_LOG(error) << "Unable to load certificates from any Windows ROOT store. Last error " << GetLastError();
+    }
+  }
+
+  std::optional<std::string> windows_ca_file_path() {
+    static std::once_flag write_once;
+    static std::optional<std::string> path;
+    std::call_once(write_once, []() {
+      if (!windows_ca_loaded) {
+        return;
+      }
+      try {
+        auto temp = std::filesystem::temp_directory_path() / "sunshine-ca-bundle.pem";
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        out.write(windows_ca_bundle.data(), static_cast<std::streamsize>(windows_ca_bundle.size()));
+        if (out && out.good()) {
+          path = temp.string();
+          BOOST_LOG(debug) << "Persisted Windows CA bundle to " << *path;
+        }
+      } catch (const std::exception &ex) {
+        BOOST_LOG(error) << "Failed to persist Windows CA bundle: " << ex.what();
+      }
+    });
+    return path;
+  }
+#endif
+
+  bool apply_default_ca_store(CURL *curl) {
+    if (!curl) {
+      return false;
+    }
+#if defined(_WIN32)
+    std::call_once(windows_ca_once, load_windows_root_store);
+
+  #if defined(CURLOPT_SSL_OPTIONS) && defined(CURLSSLOPT_NATIVE_CA)
+    CURLcode native_res = curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+    if (native_res == CURLE_OK) {
+      return true;
+    }
+  #endif
+
+    if (!windows_ca_loaded) {
+      BOOST_LOG(warning) << "Windows root certificate bundle not available for HTTPS requests";
+      return false;
+    }
+
+  #if defined(CURLOPT_CAINFO_BLOB)
+    curl_blob blob;
+    blob.data = const_cast<char *>(windows_ca_bundle.data());
+    blob.len = windows_ca_bundle.size();
+    blob.flags = CURL_BLOB_COPY;
+    CURLcode blob_res = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
+    if (blob_res == CURLE_OK) {
+      return true;
+    }
+    BOOST_LOG(error) << "CURLOPT_CAINFO_BLOB failed, code " << blob_res;
+  #endif
+
+    if (auto file_path = windows_ca_file_path()) {
+      CURLcode file_res = curl_easy_setopt(curl, CURLOPT_CAINFO, file_path->c_str());
+      if (file_res == CURLE_OK) {
+        return true;
+      }
+      BOOST_LOG(error) << "CURLOPT_CAINFO failed for " << *file_path << ", code " << file_res;
+    }
+    BOOST_LOG(error) << "Failed to supply CA bundle to libcurl for HTTPS";
+    return false;
+#else
+    (void) curl;
+    return true;
+#endif
+  }
+}  // namespace
+
 namespace http {
   using namespace std::literals;
   namespace fs = std::filesystem;
@@ -44,6 +207,7 @@ namespace http {
   net::net_e origin_web_ui_allowed;
 
   int init() {
+    ensure_curl_global_init();
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
     origin_web_ui_allowed = net::from_enum_string(config::nvhttp.origin_web_ui_allowed);
 
@@ -203,6 +367,7 @@ namespace http {
 
     // Perform the download
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, ssl_version);  // NOSONAR
+    configure_curl_tls(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
@@ -215,6 +380,20 @@ namespace http {
     curl_easy_cleanup(curl);
     fclose(fp);
     return result == CURLE_OK;
+  }
+
+  bool configure_curl_tls(CURL *curl) {
+    if (!curl) {
+      return false;
+    }
+    ensure_curl_global_init();
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    bool applied = apply_default_ca_store(curl);
+    if (!applied) {
+      BOOST_LOG(warning) << "Proceeding with libcurl default CA configuration";
+    }
+    return applied;
   }
 
   std::string url_escape(const std::string &url) {

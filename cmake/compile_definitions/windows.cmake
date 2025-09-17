@@ -113,6 +113,7 @@ list(PREPEND PLATFORM_LIBRARIES
         setupapi
         shlwapi
         shell32
+        crypt32
         synchronization.lib
         Windowscodecs
         userenv

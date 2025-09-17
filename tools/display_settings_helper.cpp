@@ -8,8 +8,8 @@
   // standard
   #include <algorithm>
   #include <atomic>
-  #include <condition_variable>
   #include <chrono>
+  #include <condition_variable>
   #include <cstdint>
   #include <cstdio>
   #include <cstdlib>
@@ -17,8 +17,8 @@
   #include <cwchar>
   #include <filesystem>
   #include <functional>
-  #include <mutex>
   #include <memory>
+  #include <mutex>
   #include <optional>
   #include <set>
   #include <span>
@@ -42,16 +42,16 @@
   #include <nlohmann/json.hpp>
 
   // platform
-  #include <shlobj.h>
-  #include <windows.h>
-  #include <winerror.h>
   #include <dbt.h>
   #include <devguid.h>
   #include <powrprof.h>
+  #include <shlobj.h>
+  #include <windows.h>
+  #include <winerror.h>
 
-  namespace {
-    static const GUID kMonitorInterfaceGuid = {0xe6f07b5f, 0xee97, 0x4a90, {0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7}};
-  }
+namespace {
+  static const GUID kMonitorInterfaceGuid = {0xe6f07b5f, 0xee97, 0x4a90, {0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7}};
+}
 
 using namespace std::chrono_literals;
 namespace bl = boost::log;

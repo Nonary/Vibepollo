@@ -54,12 +54,31 @@ namespace update {
     headers = curl_slist_append(headers, "User-Agent: Sunshine-Updater/1.0");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    bool tls_configured = http::configure_curl_tls(curl);
+    if (!tls_configured) {
+      BOOST_LOG(warning) << "GitHub release check is using libcurl defaults for TLS";
+    }
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out_json);
+    char errbuf[CURL_ERROR_SIZE] = {0};
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
       BOOST_LOG(error) << "GitHub API request failed: "sv << curl_easy_strerror(res);
+      if (errbuf[0] != '\0') {
+        BOOST_LOG(error) << "GitHub API error detail: "sv << errbuf;
+      }
+      long verify_result = 0;
+      if (curl_easy_getinfo(curl, CURLINFO_SSL_VERIFYRESULT, &verify_result) == CURLE_OK && verify_result != 0) {
+        BOOST_LOG(error) << "TLS verification result code: "sv << verify_result;
+      }
+#ifdef CURLINFO_OS_ERRNO
+      long os_err = 0;
+      if (curl_easy_getinfo(curl, CURLINFO_OS_ERRNO, &os_err) == CURLE_OK && os_err != 0) {
+        BOOST_LOG(error) << "OS-level error code: "sv << os_err;
+      }
+#endif
       curl_slist_free_all(headers);
       curl_easy_cleanup(curl);
       return false;

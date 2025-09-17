@@ -24,6 +24,7 @@ namespace http {
 
   int reload_user_creds(const std::string &file);
   bool download_file(const std::string &url, const std::string &file, long ssl_version = CURL_SSLVERSION_TLSv1_2);
+  bool configure_curl_tls(CURL *curl);
   std::string url_escape(const std::string &url);
   std::string url_get_host(const std::string &url);
   std::string cookie_escape(const std::string &value);
