@@ -13,7 +13,7 @@ const presetOptions = [
   { label: () => `P1 ${t('config.nvenc_preset_1')}`, value: 1 },
   { label: 'P2', value: 2 },
   { label: 'P3', value: 3 },
-  { label: 'P4', value: 4 },
+  { label: () => `P4 ${t('config.nvenc_preset_4')}`, value: 4 },
   { label: 'P5', value: 5 },
   { label: 'P6', value: 6 },
   { label: () => `P7 ${t('config.nvenc_preset_7')}`, value: 7 },
@@ -27,6 +27,17 @@ const twopassOptions = [
 
 <template>
   <div id="nvidia-nvenc-encoder" class="config-page">
+    <header class="section-header">
+      <h3 class="text-sm font-medium">
+        {{ $t('config.nvenc_section_title') || 'NVIDIA NVENC Encoder' }}
+      </h3>
+      <p
+        class="text-xs opacity-70 mt-1"
+        v-if="$t('config.nvenc_section_desc') !== 'config.nvenc_section_desc'"
+      >
+        {{ $t('config.nvenc_section_desc') }}
+      </p>
+    </header>
     <!-- Performance preset -->
     <div class="mb-4">
       <label for="nvenc_preset" class="form-label">{{ $t('config.nvenc_preset') }}</label>
@@ -149,4 +160,8 @@ const twopassOptions = [
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.section-header {
+  @apply mb-4;
+}
+</style>

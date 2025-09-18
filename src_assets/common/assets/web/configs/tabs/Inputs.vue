@@ -1,29 +1,52 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { storeToRefs } from 'pinia';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { NSelect, NInputNumber } from 'naive-ui';
 
 const store = useConfigStore();
-const config = store.config;
-const platform = computed(() => config.value?.platform || '');
+const { config, metadata } = storeToRefs(store);
+
+const platform = computed(() =>
+  (metadata.value?.platform || config.value?.platform || '').toLowerCase(),
+);
+
+const labelMap: Record<string, string> = {
+  auto: '_common.auto',
+  ds4: 'config.gamepad_ds4',
+  ds5: 'config.gamepad_ds5',
+  switch: 'config.gamepad_switch',
+  x360: 'config.gamepad_x360',
+  xone: 'config.gamepad_xone',
+};
+
+const prioritizedByPlatform: Record<string, string[]> = {
+  linux: ['ds5', 'xone', 'switch', 'x360'],
+  windows: ['x360', 'ds4'],
+};
+
+const fallbackOrder = ['x360', 'ds5', 'ds4'];
 
 const gamepadOptions = computed(() => {
   const opts = [{ label: '_common.auto', value: 'auto' }];
-  if (platform.value === 'linux') {
-    opts.push(
-      { label: 'config.gamepad_ds5', value: 'ds5' },
-      { label: 'config.gamepad_switch', value: 'switch' },
-      { label: 'config.gamepad_xone', value: 'xone' },
-    );
-  }
-  if (platform.value === 'windows') {
-    opts.push(
-      { label: 'config.gamepad_ds4', value: 'ds4' },
-      { label: 'config.gamepad_x360', value: 'x360' },
-    );
-  }
+  const seen = new Set<string>(opts.map((o) => o.value));
+
+  const addOption = (value: string | undefined) => {
+    if (!value || seen.has(value)) return;
+    const label = labelMap[value] || `config.gamepad_${value}`;
+    opts.push({ label, value });
+    seen.add(value);
+  };
+
+  const plat = platform.value;
+  const platformOrder = prioritizedByPlatform[plat] ?? fallbackOrder;
+  platformOrder.forEach(addOption);
+
+  const current = config.value?.gamepad;
+  if (current && current !== 'auto') addOption(current);
+
   return opts;
 });
 

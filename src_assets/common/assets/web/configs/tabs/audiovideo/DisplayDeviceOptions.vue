@@ -268,80 +268,108 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />
 
           <!-- Snapshot for recovery -->
-          <div class="px-0 text-sm font-medium">Save a display snapshot (improves stability)</div>
-          <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div class="max-w-[700px]">
-              <p class="text-[11px] opacity-60 mt-1">
-                {{ $t('troubleshooting.dd_golden_help') }}
-                Saving a snapshot of your ideal monitor setup helps Sunshine recover when Windows
-                fails to restore displays after streaming.
-              </p>
-              <div class="mt-2 text-xs">
-                <span
-                  v-if="goldenExists === true"
-                  class="inline-block rounded bg-green-600/10 text-green-700 dark:text-green-300 border border-green-600/30 px-2 py-1"
-                >
-                  {{ $t('troubleshooting.dd_golden_status_present') }}
-                </span>
-                <span
-                  v-else-if="goldenExists === false"
-                  class="inline-block rounded bg-yellow-600/10 text-yellow-700 dark:text-yellow-300 border border-yellow-600/30 px-2 py-1"
-                >
-                  {{ $t('troubleshooting.dd_golden_status_missing') }}
+          <template v-if="config.dd_configuration_option !== 'disabled'">
+            <div class="px-0 text-sm font-medium">Save a display snapshot (improves stability)</div>
+            <p class="text-[11px] opacity-60 mt-1">
+              {{ $t('troubleshooting.dd_golden_help') }}
+              Saving a snapshot of your ideal monitor setup helps Sunshine recover when Windows
+              fails to restore displays after streaming.
+            </p>
+
+            <div
+              :class="[
+                'mt-3 flex flex-wrap items-center gap-2 rounded px-3 py-2 text-[12px]',
+                goldenExists === true
+                  ? 'bg-success/10 text-success'
+                  : goldenExists === false
+                    ? 'bg-warning/10 text-warning'
+                    : 'bg-light/80 dark:bg-dark/60 text-dark dark:text-light',
+              ]"
+            >
+              <div class="flex items-center gap-2">
+                <i
+                  :class="[
+                    'text-sm',
+                    goldenExists === true
+                      ? 'fas fa-check-circle'
+                      : goldenExists === false
+                        ? 'fas fa-exclamation-triangle'
+                        : 'fas fa-spinner animate-spin',
+                  ]"
+                />
+                <span class="font-semibold">
+                  {{
+                    goldenExists === true
+                      ? $t('troubleshooting.dd_golden_status_present')
+                      : goldenExists === false
+                        ? $t('troubleshooting.dd_golden_status_missing')
+                        : 'Checking…'
+                  }}
                 </span>
               </div>
+
+              <div class="flex items-center gap-2 ml-auto">
+                <n-button size="tiny" type="default" strong @click="loadGoldenStatus">
+                  <i class="fas fa-sync" />
+                  <span class="ml-1">{{ $t('troubleshooting.dd_golden_refresh') }}</span>
+                </n-button>
+                <div class="hidden sm:block h-4 w-px bg-current/25" />
+                <n-button
+                  size="tiny"
+                  type="primary"
+                  strong
+                  :disabled="goldenBusy"
+                  :loading="goldenBusy && exportStatus === null && deleteStatus === null"
+                  @click="exportGolden"
+                >
+                  <span>{{ createOrRecreateLabel }}</span>
+                </n-button>
+                <n-button
+                  size="tiny"
+                  type="error"
+                  strong
+                  :disabled="goldenBusy || goldenExists !== true"
+                  :loading="goldenBusy && deleteStatus === null"
+                  @click="deleteGolden"
+                >
+                  {{ $t('troubleshooting.dd_golden_delete') }}
+                </n-button>
+              </div>
             </div>
-            <div class="flex gap-2 mt-1 sm:mt-0">
-              <n-button type="primary" strong :disabled="goldenBusy" @click="exportGolden">
-                {{ createOrRecreateLabel }}
-              </n-button>
-              <n-button
-                type="error"
-                strong
-                :disabled="goldenBusy || goldenExists !== true"
-                @click="deleteGolden"
+
+            <transition name="fade">
+              <p
+                v-if="exportStatus === true"
+                class="mt-2 alert alert-success rounded px-3 py-2 text-sm"
               >
-                {{ $t('troubleshooting.dd_golden_delete') }}
-              </n-button>
-            </div>
-          </div>
-          <div class="flex items-center gap-3 mt-2">
-            <n-button type="default" strong size="small" @click="loadGoldenStatus">{{
-              $t('troubleshooting.dd_golden_refresh')
-            }}</n-button>
-          </div>
-          <transition name="fade">
-            <p
-              v-if="exportStatus === true"
-              class="mt-2 alert alert-success rounded px-3 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_export_golden_success') }}
-            </p>
-          </transition>
-          <transition name="fade">
-            <p
-              v-if="exportStatus === false"
-              class="mt-2 alert alert-danger rounded px-3 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_export_golden_error') }}
-            </p>
-          </transition>
-          <transition name="fade">
-            <p
-              v-if="deleteStatus === true"
-              class="mt-2 alert alert-success rounded px-3 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_golden_deleted') }}
-            </p>
-          </transition>
-          <transition name="fade">
-            <p
-              v-if="deleteStatus === false"
-              class="mt-2 alert alert-danger rounded px-3 py-2 text-sm"
-            >
-              {{ $t('troubleshooting.dd_golden_delete_error') }}
-            </p>
-          </transition>
+                {{ $t('troubleshooting.dd_export_golden_success') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p
+                v-if="exportStatus === false"
+                class="mt-2 alert alert-danger rounded px-3 py-2 text-sm"
+              >
+                {{ $t('troubleshooting.dd_export_golden_error') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p
+                v-if="deleteStatus === true"
+                class="mt-2 alert alert-success rounded px-3 py-2 text-sm"
+              >
+                {{ $t('troubleshooting.dd_golden_deleted') }}
+              </p>
+            </transition>
+            <transition name="fade">
+              <p
+                v-if="deleteStatus === false"
+                class="mt-2 alert alert-danger rounded px-3 py-2 text-sm"
+              >
+                {{ $t('troubleshooting.dd_golden_delete_error') }}
+              </p>
+            </transition>
+          </template>
         </fieldset>
 
         <!-- Optional adjustments (belongs to Step 3 in parent) -->

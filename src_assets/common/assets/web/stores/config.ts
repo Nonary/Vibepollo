@@ -10,6 +10,22 @@ export interface MetaInfo {
   commit?: string;
   branch?: string;
   release_date?: string; // ISO 8601 when available
+  gpus?: Array<{
+    description?: string;
+    vendor_id?: number | string;
+    device_id?: number | string;
+    dedicated_video_memory?: number | string;
+  }>;
+  has_nvidia_gpu?: boolean;
+  has_amd_gpu?: boolean;
+  has_intel_gpu?: boolean;
+  windows_display_version?: string;
+  windows_release_id?: string;
+  windows_product_name?: string;
+  windows_current_build?: string;
+  windows_build_number?: number;
+  windows_major_version?: number;
+  windows_minor_version?: number;
 }
 
 // --- Defaults (flat) -------------------------------------------------------
@@ -145,7 +161,7 @@ const defaultGroups = [
     id: 'nv',
     name: 'NVIDIA NVENC Encoder',
     options: {
-      nvenc_preset: 1,
+      nvenc_preset: 4,
       nvenc_twopass: 'quarter_res',
       nvenc_spatial_aq: 'disabled',
       nvenc_vbv_increase: 0,

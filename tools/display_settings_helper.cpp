@@ -25,6 +25,7 @@
   #include <stop_token>
   #include <string>
   #include <thread>
+  #include <unordered_map>
   #include <vector>
 
 // third-party (libdisplaydevice)
@@ -32,6 +33,7 @@
   #include "src/platform/windows/ipc/pipes.h"
 
   #include <display_device/json.h>
+  #include <display_device/logging.h>
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
   #include <display_device/windows/settings_manager.h>
@@ -649,6 +651,91 @@ namespace {
     std::shared_ptr<display_device::WinDisplayDeviceInterface> m_dd;
   };
 
+  constexpr std::chrono::milliseconds kApplyDisconnectGrace {5000};
+
+  class DisplayDeviceLogBridge {
+  public:
+    DisplayDeviceLogBridge() = default;
+
+    void install() {
+      display_device::Logger::get().setCustomCallback(
+        [this](display_device::Logger::LogLevel level, std::string message) {
+          handle_log(level, std::move(message));
+        }
+      );
+    }
+
+  private:
+    void handle_log(display_device::Logger::LogLevel level, std::string message) {
+      const auto now = std::chrono::steady_clock::now();
+      const std::string key = std::to_string(static_cast<int>(level)) + "|" + message;
+
+      {
+        std::lock_guard lk(mutex_);
+        auto it = last_emit_.find(key);
+        if (it != last_emit_.end()) {
+          if ((now - it->second) < throttle_window_) {
+            return;
+          }
+          it->second = now;
+        } else {
+          if (last_emit_.size() >= max_entries_) {
+            prune(now);
+          }
+          last_emit_.emplace(key, now);
+        }
+      }
+
+      forward(level, message);
+    }
+
+    void prune(std::chrono::steady_clock::time_point now) {
+      for (auto it = last_emit_.begin(); it != last_emit_.end();) {
+        if ((now - it->second) > prune_window_) {
+          it = last_emit_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (last_emit_.size() >= max_entries_) {
+        last_emit_.clear();
+      }
+    }
+
+    void forward(display_device::Logger::LogLevel level, const std::string &message) {
+      const auto prefixed = std::string("display_device: ") + message;
+      switch (level) {
+        case display_device::Logger::LogLevel::verbose:
+        case display_device::Logger::LogLevel::debug:
+          BOOST_LOG(debug) << prefixed;
+          break;
+        case display_device::Logger::LogLevel::info:
+          BOOST_LOG(info) << prefixed;
+          break;
+        case display_device::Logger::LogLevel::warning:
+          BOOST_LOG(warning) << prefixed;
+          break;
+        case display_device::Logger::LogLevel::error:
+          BOOST_LOG(error) << prefixed;
+          break;
+        case display_device::Logger::LogLevel::fatal:
+          BOOST_LOG(fatal) << prefixed;
+          break;
+      }
+    }
+
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_emit_;
+    static constexpr std::chrono::seconds throttle_window_ {15};
+    static constexpr std::chrono::seconds prune_window_ {60};
+    static constexpr size_t max_entries_ {256};
+  };
+
+  DisplayDeviceLogBridge &dd_log_bridge() {
+    static DisplayDeviceLogBridge bridge;
+    return bridge;
+  }
+
   class DisplayEventPump {
   public:
     using Callback = std::function<void(const char *)>;
@@ -817,12 +904,17 @@ namespace {
     std::atomic<long long> last_apply_ms {0};
     // If a REVERT was requested directly by Sunshine, bypass grace
     std::atomic<bool> direct_revert_bypass_grace {false};
+    // Track whether a revert/restore is currently pending
+    std::atomic<bool> restore_requested {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
 
     // Polling-based restore loop state (replaces topology-change-triggered retries)
     std::jthread restore_poll_thread;
     std::atomic<bool> restore_poll_active {false};
+    std::atomic<uint64_t> next_connection_epoch {1};
+    std::atomic<uint64_t> active_connection_epoch {0};
+    std::atomic<uint64_t> restore_origin_epoch {0};
 
     void prepare_session_topology() {
       if (session_saved.load(std::memory_order_acquire)) {
@@ -1028,6 +1120,9 @@ namespace {
     }
 
     void signal_restore_event(const char *reason = nullptr) {
+      if (!restore_requested.load(std::memory_order_acquire)) {
+        return;
+      }
       const auto now = std::chrono::steady_clock::now();
       if (reason) {
         const auto expiry = now + std::chrono::minutes(2);
@@ -1282,6 +1377,9 @@ namespace {
     // requested restore topology is valid; if so, perform the restore and
     // confirm success. Logging is throttled (~15 minutes) to avoid noise.
     void ensure_restore_polling() {
+      if (!restore_requested.load(std::memory_order_acquire)) {
+        return;
+      }
       if (restore_poll_active.load(std::memory_order_acquire)) {
         return;
       }
@@ -1302,6 +1400,34 @@ namespace {
         restore_poll_thread.request_stop();
         restore_poll_thread.join();
       }
+      restore_requested.store(false, std::memory_order_release);
+      restore_origin_epoch.store(0, std::memory_order_release);
+    }
+
+    uint64_t begin_connection_epoch() {
+      const auto epoch = next_connection_epoch.fetch_add(1, std::memory_order_acq_rel);
+      active_connection_epoch.store(epoch, std::memory_order_release);
+      return epoch;
+    }
+
+    uint64_t current_connection_epoch() const {
+      return active_connection_epoch.load(std::memory_order_acquire);
+    }
+
+    bool is_connection_epoch_current(uint64_t epoch) const {
+      return current_connection_epoch() == epoch;
+    }
+
+    void clear_restore_origin() {
+      restore_origin_epoch.store(0, std::memory_order_release);
+    }
+
+    bool should_exit_after_restore() const {
+      const auto origin = restore_origin_epoch.load(std::memory_order_acquire);
+      if (origin == 0) {
+        return true;
+      }
+      return origin == current_connection_epoch();
     }
 
     static void restore_poll_proc(std::stop_token st, ServiceState *self) {
@@ -1322,6 +1448,8 @@ namespace {
           }
           self->event_pump.stop();
           self->restore_poll_active.store(false, std::memory_order_release);
+          self->restore_requested.store(false, std::memory_order_release);
+          self->clear_restore_origin();
           return;
         }
       } catch (...) {
@@ -1333,15 +1461,18 @@ namespace {
         if (!st.stop_requested() && self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
-          // Exit the helper after a successful restore.
-          // We always exit here because the helper is no longer necessary.
-          if (self->running_flag) {
+          const bool exit_helper = self->should_exit_after_restore();
+          if (exit_helper && self->running_flag) {
             BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
             self->running_flag->store(false, std::memory_order_release);
+          } else if (!exit_helper) {
+            BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
           }
           self->event_pump.stop();
           self->restore_poll_active.store(false, std::memory_order_release);
           self->restore_event_expiry_ms.store(0, std::memory_order_release);
+          self->restore_requested.store(false, std::memory_order_release);
+          self->clear_restore_origin();
           return;
         }
       } catch (...) {}
@@ -1365,14 +1496,18 @@ namespace {
         if (self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
-          // Exit the helper after a successful restore.
-          if (self->running_flag) {
+          const bool exit_helper = self->should_exit_after_restore();
+          if (exit_helper && self->running_flag) {
             BOOST_LOG(info) << "Restore confirmed; exiting helper.";
             self->running_flag->store(false, std::memory_order_release);
+          } else if (!exit_helper) {
+            BOOST_LOG(info) << "Restore confirmed while newer connection active; helper remains running.";
           }
           self->restore_poll_active.store(false, std::memory_order_release);
           self->event_pump.stop();
           self->restore_event_expiry_ms.store(0, std::memory_order_release);
+          self->restore_requested.store(false, std::memory_order_release);
+          self->clear_restore_origin();
           return;
         }
 
@@ -1385,6 +1520,8 @@ namespace {
       self->event_pump.stop();
       self->restore_poll_active.store(false, std::memory_order_release);
       self->restore_event_expiry_ms.store(0, std::memory_order_release);
+      self->restore_requested.store(false, std::memory_order_release);
+      self->clear_restore_origin();
     }
 
     void on_topology_changed() {
@@ -1639,6 +1776,8 @@ namespace {
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
+    state.restore_requested.store(true, std::memory_order_release);
+    state.restore_origin_epoch.store(state.current_connection_epoch(), std::memory_order_release);
     // Begin polling every ~3s until restore confirmed successful.
     state.ensure_restore_polling();
   }
@@ -1670,18 +1809,55 @@ namespace {
     }
   }
 
-  void attempt_revert_after_disconnect(ServiceState &state, std::atomic<bool> &running) {
+  void attempt_revert_after_disconnect(ServiceState &state, std::atomic<bool> &running, uint64_t connection_epoch) {
+    if (!state.is_connection_epoch_current(connection_epoch)) {
+      BOOST_LOG(info) << "Ignoring disconnect event from stale connection (epoch=" << connection_epoch
+                      << ", current=" << state.current_connection_epoch() << ")";
+      return;
+    }
+    auto still_current = [&]() {
+      return state.is_connection_epoch_current(connection_epoch);
+    };
     // Pipe broken -> Sunshine might have crashed. Begin autonomous restore.
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.cancel_delayed_reapply();
     const bool potentially_modified = state.last_cfg.has_value() ||
                                       state.exit_after_revert.load(std::memory_order_acquire);
     if (!potentially_modified) {
+      state.restore_requested.store(false, std::memory_order_release);
       running.store(false, std::memory_order_release);
       return;
     }
+
+    if (!state.direct_revert_bypass_grace.load(std::memory_order_acquire)) {
+      const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()
+      )
+                            .count();
+      const auto last_apply = state.last_apply_ms.load(std::memory_order_acquire);
+      if (last_apply > 0 && now_ms >= last_apply) {
+        const auto delta_ms = now_ms - last_apply;
+        if (delta_ms <= kApplyDisconnectGrace.count()) {
+          BOOST_LOG(info)
+            << "Client disconnected " << delta_ms
+            << "ms after APPLY; deferring restore to avoid thrash.";
+          state.schedule_delayed_reapply();
+          state.restore_requested.store(false, std::memory_order_release);
+          return;
+        }
+      }
+    }
+
+    if (!still_current()) {
+      BOOST_LOG(info) << "Skipping restore after disconnect because a newer connection is active (epoch="
+                      << connection_epoch << ", current=" << state.current_connection_epoch() << ")";
+      return;
+    }
+
     BOOST_LOG(info) << "Client disconnected; entering restore polling loop (3s interval) until successful.";
     state.exit_after_revert.store(true, std::memory_order_release);
+    state.restore_requested.store(true, std::memory_order_release);
+    state.restore_origin_epoch.store(connection_epoch, std::memory_order_release);
     state.ensure_restore_polling();
   }
 
@@ -1728,6 +1904,7 @@ int main() {
   auto _log_guard = logging::init_append(2 /*info*/, logfile);
 
   platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
+  dd_log_bridge().install();
   ServiceState state;
   state.golden_path = goldenfile;
   state.session_path = sessionfile;  // legacy
@@ -1777,7 +1954,19 @@ int main() {
     // For anonymous-pipe server, give the client ample time to connect to the data pipe
     async_pipe.wait_for_client_connection(60000);  // 60s window after handshake
 
-    auto on_message = [&](std::span<const uint8_t> bytes) {
+    if (!async_pipe.is_connected()) {
+      BOOST_LOG(warning) << "Display helper: client connection not established within 60s window; retrying.";
+      std::this_thread::sleep_for(500ms);
+      continue;
+    }
+
+    const auto connection_epoch = state.begin_connection_epoch();
+    state.stop_restore_polling();
+
+    auto on_message = [&, connection_epoch](std::span<const uint8_t> bytes) {
+      if (!state.is_connection_epoch_current(connection_epoch)) {
+        return;
+      }
       try {
         process_incoming_frame(state, async_pipe, bytes, running);
       } catch (const std::exception &ex) {
@@ -1789,16 +1978,26 @@ int main() {
     // attempting to stop/join from within the callback (which would deadlock).
     std::atomic<bool> broken {false};
 
-    auto on_error = [&](const std::string &err) {
+    auto on_error = [&, connection_epoch](const std::string &err) {
+      if (!state.is_connection_epoch_current(connection_epoch)) {
+        BOOST_LOG(info) << "Ignoring async pipe error from stale connection (epoch=" << connection_epoch
+                        << ", current=" << state.current_connection_epoch() << ")";
+        return;
+      }
       BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
       broken.store(true, std::memory_order_release);
-      attempt_revert_after_disconnect(state, running);
+      attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
-    auto on_broken = [&]() {
+    auto on_broken = [&, connection_epoch]() {
+      if (!state.is_connection_epoch_current(connection_epoch)) {
+        BOOST_LOG(info) << "Ignoring disconnect notification from stale connection (epoch=" << connection_epoch
+                        << ", current=" << state.current_connection_epoch() << ")";
+        return;
+      }
       BOOST_LOG(warning) << "Client disconnected; applying revert policy and staying alive until successful.";
       broken.store(true, std::memory_order_release);
-      attempt_revert_after_disconnect(state, running);
+      attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
     // Start async message loop (establish_connection is a no-op if already connected)

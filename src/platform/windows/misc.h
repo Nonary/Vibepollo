@@ -6,9 +6,13 @@
 
 // standard includes
 #include <chrono>
+#include <cstdint>
 #include <functional>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 // platform includes
 #include <Windows.h>
@@ -119,4 +123,24 @@ namespace platf {
    * @return true if the ViGEmBus driver file is present, false otherwise.
    */
   bool is_vigem_installed(std::string *version_out = nullptr);
+
+  struct gpu_info_t {
+    std::string description;
+    std::uint32_t vendor_id = 0;
+    std::uint32_t device_id = 0;
+    std::uint64_t dedicated_video_memory = 0;
+  };
+
+  struct windows_version_info_t {
+    std::string display_version;
+    std::string release_id;
+    std::string product_name;
+    std::string current_build;
+    std::optional<std::uint32_t> build_number;
+    std::optional<std::uint32_t> major_version;
+    std::optional<std::uint32_t> minor_version;
+  };
+
+  std::vector<gpu_info_t> enumerate_gpus();
+  windows_version_info_t query_windows_version();
 }  // namespace platf

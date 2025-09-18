@@ -1,92 +1,81 @@
 <template>
-  <div class="max-w-6xl mx-auto px-4 py-6 space-y-8">
-    <header class="flex items-center justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-semibold tracking-tight">API Token Management</h1>
-        <p class="text-sm opacity-70">Create scoped tokens, manage active ones, and test safely.</p>
-      </div>
-      <div class="text-xs opacity-75">
-        <span class="inline-flex items-center gap-2">
-          <i class="fas fa-shield-halved"></i>
-          Least-privilege scopes for better security
-        </span>
-      </div>
-    </header>
-
-    <!-- Create Token -->
-    <section
-      class="p-5 mb-8 rounded-md border border-dark/10 dark:border-light/10 bg-white dark:bg-surface shadow-sm"
+  <n-space vertical size="large" class="max-w-6xl mx-auto px-4 py-6">
+    <n-page-header
+      title="API Token Management"
+      subtitle="Create scoped tokens, manage active ones, and test safely."
     >
-      <header class="flex items-center gap-3 mb-4">
-        <h2 class="text-lg font-medium flex items-center gap-2">
-          <i class="fas fa-key icon" /> Create Token
-        </h2>
-      </header>
-      <div class="space-y-5">
-        <div class="text-sm opacity-75">
+      <template #extra>
+        <n-tag round type="info" size="small" class="inline-flex items-center gap-2">
+          <n-icon size="14"><i class="fas fa-shield-halved" /></n-icon>
+          Least-privilege scopes for better security
+        </n-tag>
+      </template>
+    </n-page-header>
+
+    <n-card size="large">
+      <template #header>
+        <n-space align="center" size="small">
+          <n-icon size="18"><i class="fas fa-key" /></n-icon>
+          <n-text strong>Create Token</n-text>
+        </n-space>
+      </template>
+      <n-space vertical size="large">
+        <n-text depth="3">
           Choose one or more route scopes. Each scope grants specific HTTP methods for a path.
-        </div>
+        </n-text>
 
-        <!-- Add scope row -->
-        <n-grid cols="24" x-gap="12" y-gap="8" responsive="screen" class="items-start">
-          <n-gi :span="24" :s="12">
-            <label class="form-label">Route</label>
-            <n-select
-              v-model:value="draft.path"
-              :options="routeSelectOptions"
-              placeholder="Select a route…"
-            />
-          </n-gi>
-          <n-gi :span="24" :s="8">
-            <label class="form-label">Methods</label>
-            <n-checkbox-group v-model:value="draft.selectedMethods">
-              <n-space wrap>
-                <n-checkbox v-for="m in draftMethods" :key="m" :value="m">
-                  <span class="uppercase text-[11px] tracking-wide font-semibold">{{ m }}</span>
-                </n-checkbox>
-              </n-space>
-            </n-checkbox-group>
-            <div v-if="draft.path && draftMethods.length === 0" class="form-text">
-              No methods available for this route.
-            </div>
-          </n-gi>
-          <n-gi :span="24" :s="4" class="flex items-center">
-            <n-button type="primary" size="medium" :disabled="!canAddScope" @click="addScope">
-              <i class="fas fa-plus icon" /> Add Scope
-            </n-button>
-          </n-gi>
-        </n-grid>
-
-        <!-- Current scopes summary -->
-        <div v-if="scopes.length" class="space-y-2">
-          <div class="text-xs uppercase tracking-wider opacity-70">Scopes</div>
-          <div class="flex flex-col gap-2">
-            <div
-              v-for="(s, idx) in scopes"
-              :key="idx + ':' + s.path"
-              class="flex items-start gap-2"
-            >
-              <div
-                class="flex flex-wrap items-center gap-1 bg-dark/5 dark:bg-light/10 rounded px-2 py-1"
-              >
-                <span class="font-semibold">{{ s.path }}</span>
-                <span class="flex gap-1 flex-wrap">
-                  <span
-                    v-for="m in s.methods"
-                    :key="m"
-                    class="uppercase text-[11px] tracking-wide bg-primary/20 text-brand rounded px-1 py-0.5"
-                    >{{ m }}</span
-                  >
-                </span>
-              </div>
-              <n-button type="error" strong size="small" title="Remove" @click="removeScope(idx)">
-                <i class="fas fa-times icon"></i>
+        <n-form :model="draft" label-placement="top" size="medium">
+          <n-grid cols="24" x-gap="12" y-gap="12" responsive="screen">
+            <n-form-item-gi :span="24" :s="12" label="Route" path="path">
+              <n-select
+                v-model:value="draft.path"
+                :options="routeSelectOptions"
+                placeholder="Select a route…"
+              />
+            </n-form-item-gi>
+            <n-form-item-gi :span="24" :s="8" label="Methods" path="selectedMethods">
+              <n-checkbox-group v-model:value="draft.selectedMethods">
+                <n-space wrap>
+                  <n-checkbox v-for="m in draftMethods" :key="m" :value="m">
+                    <n-text code>{{ m }}</n-text>
+                  </n-checkbox>
+                </n-space>
+              </n-checkbox-group>
+              <n-text v-if="draft.path && draftMethods.length === 0" size="small" depth="3">
+                No methods available for this route.
+              </n-text>
+            </n-form-item-gi>
+            <n-form-item-gi :span="24" :s="4" label=" " :show-feedback="false">
+              <n-button type="primary" size="medium" :disabled="!canAddScope" @click="addScope">
+                <n-icon class="mr-1" size="16"><i class="fas fa-plus" /></n-icon>
+                Add Scope
               </n-button>
-            </div>
-          </div>
-        </div>
+            </n-form-item-gi>
+          </n-grid>
+        </n-form>
 
-        <div class="flex items-center gap-3">
+        <n-space v-if="scopes.length" vertical size="small">
+          <n-text depth="3" strong>Scopes</n-text>
+          <n-space vertical size="small">
+            <n-thing v-for="(s, idx) in scopes" :key="idx + ':' + s.path" :title="s.path">
+              <template #header-extra>
+                <n-button type="error" strong size="small" text @click="removeScope(idx)">
+                  <n-icon size="14"><i class="fas fa-times" /></n-icon>
+                  Remove
+                </n-button>
+              </template>
+              <template #description>
+                <n-space wrap size="small">
+                  <n-tag v-for="m in s.methods" :key="m" type="info" size="small" round>
+                    {{ m }}
+                  </n-tag>
+                </n-space>
+              </template>
+            </n-thing>
+          </n-space>
+        </n-space>
+
+        <n-space align="center" size="small">
           <n-button
             type="success"
             size="medium"
@@ -94,87 +83,86 @@
             :loading="creating"
             @click="createToken"
           >
-            <i class="fas fa-key icon" /> Generate Token
+            <n-icon class="mr-1" size="16"><i class="fas fa-key" /></n-icon>
+            Generate Token
           </n-button>
-          <span v-if="creating" class="text-xs opacity-70">Creating…</span>
-        </div>
-
-        <!-- Created token output moved to modal -->
+          <n-text v-if="creating" size="small" depth="3">Creating…</n-text>
+        </n-space>
 
         <n-alert v-if="createError" type="error" closable @close="createError = ''">
           {{ createError }}
         </n-alert>
-      </div>
-    </section>
+      </n-space>
+    </n-card>
 
-    <!-- Token Modal -->
     <n-modal :show="showTokenModal" @update:show="(v) => (showTokenModal = v)">
       <n-card title="API Token Created" :bordered="false" style="max-width: 40rem; width: 100%">
-        <div class="space-y-3">
+        <n-space vertical size="large">
           <n-alert type="warning" :show-icon="true">
-            <i class="fas fa-triangle-exclamation" /> This token is shown only once. Save or copy it
-            now. You cannot retrieve it later.
+            <n-icon class="mr-2" size="16"><i class="fas fa-triangle-exclamation" /></n-icon>
+            This token is shown only once. Save or copy it now. You cannot retrieve it later.
           </n-alert>
-          <div
-            class="rounded-md border border-dark/10 dark:border-light/10 p-3 bg-dark/5 dark:bg-light/10"
-          >
-            <div class="text-xs opacity-80">Token</div>
-            <code class="block text-sm font-mono break-words my-1">{{ createdToken }}</code>
-            <div class="flex items-center gap-3">
+          <n-space vertical size="small">
+            <n-text depth="3" strong>Token</n-text>
+            <n-code :code="createdToken" language="bash" word-wrap />
+            <n-space align="center" size="small">
               <n-button size="small" type="primary" @click="copy(createdToken)">
-                <i class="fas fa-copy icon" /> Copy
+                <n-icon class="mr-1" size="14"><i class="fas fa-copy" /></n-icon>
+                Copy
               </n-button>
-              <span v-if="copied" class="text-xs text-success">Copied!</span>
-            </div>
-          </div>
-        </div>
+              <n-tag v-if="copied" type="success" size="small" round>Copied!</n-tag>
+            </n-space>
+          </n-space>
+        </n-space>
         <template #footer>
-          <div class="flex items-center justify-end">
+          <n-space justify="end">
             <n-button type="primary" @click="showTokenModal = false">{{
               $t('_common.dismiss')
             }}</n-button>
-          </div>
+          </n-space>
         </template>
       </n-card>
     </n-modal>
 
-    <!-- Active Tokens -->
-    <section
-      class="p-5 mb-8 rounded-md border border-dark/10 dark:border-light/10 bg-white dark:bg-surface shadow-sm"
-    >
-      <div class="flex items-center gap-3 mb-4">
-        <h2 class="text-lg font-medium flex items-center gap-2">
-          <i class="fas fa-lock icon" /> Active Tokens
-        </h2>
-        <n-button
-          class="ml-auto"
-          type="primary"
-          strong
-          size="small"
-          :loading="tokensLoading"
-          aria-label="Refresh tokens"
-          @click="loadTokens"
-        >
-          <i class="fas fa-rotate icon" />
-          <span class="hidden sm:inline">Refresh</span>
-        </n-button>
-      </div>
-      <div class="space-y-3">
-        <n-grid cols="24" x-gap="12" y-gap="8" responsive="screen" class="items-end">
-          <n-gi :span="24" :s="18">
-            <n-input v-model:value="filter" placeholder="Filter by hash or path…" />
-          </n-gi>
-          <n-gi :span="24" :s="6">
-            <label class="opacity-70 text-xs block mb-1">Sort</label>
-            <n-select v-model:value="sortBy" :options="sortOptions" />
-          </n-gi>
-        </n-grid>
+    <n-card size="large">
+      <template #header>
+        <n-space align="center" justify="space-between">
+          <n-space align="center" size="small">
+            <n-icon size="18"><i class="fas fa-lock" /></n-icon>
+            <n-text strong>Active Tokens</n-text>
+          </n-space>
+          <n-button
+            type="primary"
+            strong
+            size="small"
+            :loading="tokensLoading"
+            aria-label="Refresh tokens"
+            @click="loadTokens"
+          >
+            <n-icon class="mr-1" size="14"><i class="fas fa-rotate" /></n-icon>
+            Refresh
+          </n-button>
+        </n-space>
+      </template>
 
-        <div v-if="tokensError" class="text-sm text-danger">{{ tokensError }}</div>
+      <n-space vertical size="large">
+        <n-form :model="tableControls" inline label-placement="top" class="flex flex-wrap gap-4">
+          <n-form-item label="Filter" path="filter">
+            <n-input v-model:value="tableControls.filter" placeholder="Filter by hash or path…" />
+          </n-form-item>
+          <n-form-item label="Sort" path="sortBy">
+            <n-select v-model:value="tableControls.sortBy" :options="sortOptions" />
+          </n-form-item>
+        </n-form>
 
-        <div v-if="filteredTokens.length === 0 && !tokensLoading" class="text-sm opacity-70">
-          No active tokens.
-        </div>
+        <n-alert v-if="tokensError" type="error" closable @close="tokensError = ''">
+          {{ tokensError }}
+        </n-alert>
+
+        <n-empty
+          v-if="filteredTokens.length === 0 && !tokensLoading"
+          description="No active tokens."
+        />
 
         <div v-else class="overflow-auto">
           <n-table :bordered="false" :single-line="false" class="min-w-[640px]">
@@ -189,34 +177,34 @@
             <tbody>
               <tr v-for="t in filteredTokens" :key="t.hash">
                 <td class="align-middle">
-                  <span
+                  <n-text
                     class="font-mono text-xs inline-block min-w-[70px] cursor-pointer"
-                    tabindex="0"
-                    title="Click to copy"
                     @click="copy(t.hash)"
                     @keydown.enter.prevent="copy(t.hash)"
+                    tabindex="0"
                   >
                     {{ shortHash(t.hash) }}
-                  </span>
+                  </n-text>
                 </td>
                 <td class="align-middle">
-                  <div class="flex flex-wrap gap-1">
-                    <div
+                  <n-space wrap size="small">
+                    <n-card
                       v-for="(s, idx) in t.scopes"
                       :key="idx"
-                      class="rounded bg-dark/5 dark:bg-light/10 px-2 py-1"
+                      size="small"
+                      bordered
+                      class="bg-transparent min-w-[160px]"
                     >
-                      <span class="font-semibold">{{ s.path }}</span>
-                      <span class="ml-1 space-x-1">
-                        <span
-                          v-for="m in s.methods"
-                          :key="m"
-                          class="uppercase text-[11px] tracking-wide bg-primary/20 text-brand rounded px-1 py-0.5"
-                          >{{ m }}</span
-                        >
-                      </span>
-                    </div>
-                  </div>
+                      <n-space vertical size="xsmall">
+                        <n-text strong>{{ s.path }}</n-text>
+                        <n-space wrap size="small">
+                          <n-tag v-for="m in s.methods" :key="m" size="small" type="info" round>
+                            {{ m }}
+                          </n-tag>
+                        </n-space>
+                      </n-space>
+                    </n-card>
+                  </n-space>
                 </td>
                 <td class="text-xs opacity-70 align-middle">
                   {{ t.createdAt ? formatTime(t.createdAt) : '—' }}
@@ -228,116 +216,127 @@
                     :loading="revoking === t.hash"
                     @click="promptRevoke(t)"
                   >
-                    <i class="fas fa-ban icon" /> Revoke
+                    <n-icon class="mr-1" size="14"><i class="fas fa-ban" /></n-icon>
+                    Revoke
                   </n-button>
                 </td>
               </tr>
             </tbody>
           </n-table>
         </div>
-      </div>
-    </section>
+      </n-space>
+    </n-card>
 
-    <!-- Tester (GET only) -->
-    <section
-      class="p-5 mb-8 rounded-md border border-dark/10 dark:border-light/10 bg-white dark:bg-surface shadow-sm"
-    >
-      <header class="flex items-center gap-3 mb-4">
-        <h2 class="text-lg font-medium flex items-center gap-2">
-          <i class="fas fa-vial icon" /> Test Token
-        </h2>
-      </header>
-      <div class="space-y-4">
-        <n-alert type="info">
-          <span class="text-xs">
-            Tester performs only safe GET requests. Select a route and send a request with your
-            token.
-          </span>
+    <n-card size="large">
+      <template #header>
+        <n-space align="center" size="small">
+          <n-icon size="18"><i class="fas fa-vial" /></n-icon>
+          <n-text strong>Test Token</n-text>
+        </n-space>
+      </template>
+      <n-space vertical size="large">
+        <n-alert type="info" secondary>
+          Tester performs only safe GET requests. Select a route and send a request with your token.
         </n-alert>
-        <n-grid cols="24" x-gap="12" y-gap="12" responsive="screen">
-          <n-gi :span="24" :s="12">
-            <label class="form-label">Token</label>
-            <n-input v-model:value="test.token" placeholder="Paste token" type="password" />
-          </n-gi>
-          <n-gi :span="24" :s="12">
-            <label class="form-label">Route (GET only)</label>
-            <n-select
-              v-model:value="test.path"
-              :options="getRouteOptions"
-              placeholder="Select a GET route…"
-            />
-          </n-gi>
-          <n-gi :span="24" :s="12">
-            <label class="form-label">Header Scheme</label>
-            <n-select v-model:value="test.scheme" :options="schemeOptions" />
-          </n-gi>
-          <n-gi :span="24" :s="12">
-            <label class="form-label">Query String (optional)</label>
-            <n-input v-model:value="test.query" placeholder="e.g. limit=50&tail=true" />
-          </n-gi>
-        </n-grid>
-        <n-alert v-if="test.scheme === 'query'" type="warning" :show-icon="true" class="text-xs">
-          Using query param (e.g., ?token=...) may expose the token in logs and referers. Prefer
+
+        <n-form :model="test" label-placement="top" size="medium">
+          <n-grid cols="24" x-gap="12" y-gap="12" responsive="screen">
+            <n-form-item-gi :span="24" :s="12" label="Token" path="token">
+              <n-input v-model:value="test.token" placeholder="Paste token" type="password" />
+            </n-form-item-gi>
+            <n-form-item-gi :span="24" :s="12" label="Route (GET only)" path="path">
+              <n-select
+                v-model:value="test.path"
+                :options="getRouteOptions"
+                placeholder="Select a GET route…"
+              />
+            </n-form-item-gi>
+            <n-form-item-gi :span="24" :s="12" label="Header Scheme" path="scheme">
+              <n-select v-model:value="test.scheme" :options="schemeOptions" />
+            </n-form-item-gi>
+            <n-form-item-gi :span="24" :s="12" label="Query String (optional)" path="query">
+              <n-input v-model:value="test.query" placeholder="e.g. limit=50&tail=true" />
+            </n-form-item-gi>
+          </n-grid>
+        </n-form>
+
+        <n-alert v-if="test.scheme === 'query'" type="warning" :show-icon="true">
+          Using query param (e.g., ?token=...) may expose the token in logs and referrers. Prefer
           header schemes.
         </n-alert>
-        <div class="flex items-center gap-3">
+
+        <n-space align="center" size="small">
           <n-button type="primary" :disabled="!canSendTest" :loading="testing" @click="sendTest">
-            <i class="fas fa-paper-plane icon" /> Test Token
+            <n-icon class="mr-1" size="16"><i class="fas fa-paper-plane" /></n-icon>
+            Test Token
           </n-button>
-          <span v-if="testing" class="text-xs opacity-70">Sending…</span>
-        </div>
+          <n-text v-if="testing" size="small" depth="3">Sending…</n-text>
+        </n-space>
 
-        <div v-if="testError" class="alert alert-danger text-sm">{{ testError }}</div>
+        <n-alert v-if="testError" type="error" closable @close="testError = ''">
+          {{ testError }}
+        </n-alert>
 
-        <div v-if="testResponse" class="space-y-2">
-          <div class="text-xs opacity-70">Response</div>
-          <pre
-            class="p-3 rounded-md bg-dark/5 dark:bg-light/10 text-dark dark:text-light text-xs overflow-auto max-h-[60vh]"
-          ><code class="whitespace-pre-wrap">{{ testResponse }}</code></pre>
-        </div>
-      </div>
-    </section>
+        <n-space v-if="testResponse" vertical size="small">
+          <n-text depth="3" strong>Response</n-text>
+          <n-scrollbar style="max-height: 60vh">
+            <n-code :code="testResponse" language="json" word-wrap />
+          </n-scrollbar>
+        </n-space>
+      </n-space>
+    </n-card>
 
-    <!-- Revoke confirm modal -->
     <n-modal :show="showRevoke" @update:show="(v) => (showRevoke = v)">
       <n-card
         :title="$t('auth.confirm_revoke_title')"
         :bordered="false"
         style="max-width: 32rem; width: 100%"
       >
-        <div class="text-sm text-center">
-          {{
-            $t('auth.confirm_revoke_message_hash', { hash: shortHash(pendingRevoke?.hash || '') })
-          }}
-        </div>
+        <n-space vertical align="center" size="medium">
+          <n-text>
+            {{
+              $t('auth.confirm_revoke_message_hash', { hash: shortHash(pendingRevoke?.hash || '') })
+            }}
+          </n-text>
+        </n-space>
         <template #footer>
-          <div class="w-full flex items-center justify-center gap-3">
+          <n-space justify="end" size="small">
             <n-button type="default" strong @click="showRevoke = false">{{
               $t('cancel')
             }}</n-button>
             <n-button type="error" strong @click="confirmRevoke">{{ $t('auth.revoke') }}</n-button>
-          </div>
+          </n-space>
         </template>
       </n-card>
     </n-modal>
-  </div>
+  </n-space>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import {
-  NButton,
   NAlert,
-  NModal,
+  NButton,
   NCard,
-  NGrid,
-  NGi,
-  NSelect,
-  NInput,
-  NCheckboxGroup,
   NCheckbox,
-  NTable,
+  NCheckboxGroup,
+  NCode,
+  NEmpty,
+  NForm,
+  NFormItem,
+  NFormItemGi,
+  NGrid,
+  NIcon,
+  NInput,
+  NModal,
+  NPageHeader,
+  NScrollbar,
+  NSelect,
   NSpace,
+  NTable,
+  NTag,
+  NText,
+  NThing,
   useMessage,
 } from 'naive-ui';
 import { http } from '@/http';
@@ -523,8 +522,10 @@ async function copy(text: string): Promise<void> {
 const tokens = ref<TokenRecord[]>([]);
 const tokensLoading = ref(false);
 const tokensError = ref('');
-const filter = ref('');
-const sortBy = ref<'created' | 'path'>('created');
+const tableControls = reactive<{ filter: string; sortBy: 'created' | 'path' }>({
+  filter: '',
+  sortBy: 'created',
+});
 const revoking = ref('');
 const showRevoke = ref(false);
 const pendingRevoke = ref<TokenRecord | null>(null);
@@ -604,19 +605,19 @@ async function confirmRevoke(): Promise<void> {
 }
 
 const filteredTokens = computed<TokenRecord[]>(() => {
-  const q = (filter.value || '').toLowerCase();
+  const q = (tableControls.filter || '').toLowerCase();
   let out = tokens.value.filter((t) => {
     if (!q) return true;
     if (t.hash.toLowerCase().includes(q)) return true;
     return t.scopes.some((s) => s.path.toLowerCase().includes(q));
   });
-  if (sortBy.value === 'created') {
+  if (tableControls.sortBy === 'created') {
     out = out.slice().sort((a, b) => {
       const ta = a.createdAt ? Date.parse(String(a.createdAt)) : 0;
       const tb = b.createdAt ? Date.parse(String(b.createdAt)) : 0;
       return tb - ta; // newest first
     });
-  } else if (sortBy.value === 'path') {
+  } else if (tableControls.sortBy === 'path') {
     const firstPath = (t: TokenRecord) => t.scopes.map((s) => s.path).sort()[0] || '';
     out = out.slice().sort((a, b) => firstPath(a).localeCompare(firstPath(b)));
   }
@@ -757,19 +758,3 @@ watch(
   },
 );
 </script>
-
-<style scoped>
-.icon {
-  font-size: 0.95em;
-  line-height: 1;
-}
-
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>

@@ -192,7 +192,7 @@ import Files from '@/configs/tabs/Files.vue';
 import Advanced from '@/configs/tabs/Advanced.vue';
 import Playnite from '@/configs/tabs/Playnite.vue';
 import AudioVideo from '@/configs/tabs/AudioVideo.vue';
-import ContainerEncoders from '@/configs/tabs/ContainerEncoders.vue';
+import Capture from '@/configs/tabs/Capture.vue';
 import RTSS from '@/configs/tabs/RTSS.vue';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
@@ -233,7 +233,7 @@ const tabs = [
   { id: 'general', name: 'General', component: markRaw(General) },
   { id: 'input', name: 'Input', component: markRaw(Inputs) },
   { id: 'av', name: 'Audio / Video', component: markRaw(AudioVideo) },
-  { id: 'encoders', name: 'Encoders', component: markRaw(ContainerEncoders) },
+  { id: 'capture', name: 'Capture', component: markRaw(Capture) },
   { id: 'network', name: 'Network', component: markRaw(Network) },
   { id: 'files', name: 'Files', component: markRaw(Files) },
   { id: 'advanced', name: 'Advanced', component: markRaw(Advanced) },

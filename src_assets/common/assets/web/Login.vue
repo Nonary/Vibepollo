@@ -1,63 +1,77 @@
 <template>
-  <div class="login-container">
-    <div class="login-form">
-      <div class="text-center mb-4">
-        <img src="/images/logo-sunshine-45.png" height="45" alt="Sunshine" />
-        <h1 class="h3 mb-3 fw-normal">
-          {{ $t('auth.login_title') }}
-        </h1>
-      </div>
+  <div
+    class="min-h-screen bg-gradient-to-br from-light/40 via-surface/40 to-light/60 dark:from-dark/50 dark:via-dark/60 dark:to-dark/80 flex items-center justify-center px-4 py-12"
+  >
+    <n-card class="w-full max-w-md" :bordered="false">
+      <n-space vertical size="large" class="w-full">
+        <n-space vertical align="center" size="small">
+          <n-image src="/images/logo-sunshine-45.png" width="45" preview-disabled alt="Sunshine" />
+          <n-h2>{{ $t('auth.login_title') }}</n-h2>
+        </n-space>
 
-      <div v-if="!isLoggedIn">
-        <div class="mb-3">
-          <label for="username" class="form-label">{{ $t('_common.username') }}</label>
-          <n-input
-            id="username"
-            v-model:value="credentials.username"
-            type="text"
-            name="username"
-            autocomplete="username"
-            placeholder="Username"
-          />
-        </div>
-        <div class="mb-3">
-          <label for="password" class="form-label">{{ $t('_common.password') }}</label>
-          <n-input
-            id="password"
-            v-model:value="credentials.password"
-            type="password"
-            name="password"
-            autocomplete="current-password"
-            show-password-on="mousedown"
-            placeholder="••••••••"
-          />
-        </div>
-        <n-button type="primary" class="w-full" :loading="loading" @click="login">
-          {{ $t('auth.login_sign_in') }}
-        </n-button>
-        <n-alert v-if="error" type="error" class="mt-3" closable @close="error = ''">
-          {{ error }}
-        </n-alert>
-      </div>
-      <div v-else class="text-center space-y-3">
-        <n-alert type="success">{{ $t('auth.login_success') }}</n-alert>
-        <n-spin :show="true">
-          <span class="sr-only">{{ $t('auth.login_loading') }}</span>
-        </n-spin>
-      </div>
-    </div>
+        <template v-if="!isLoggedIn">
+          <n-form :model="credentials" label-placement="top" size="large" class="w-full">
+            <n-form-item :label="$t('_common.username')" path="username">
+              <n-input
+                id="username"
+                v-model:value="credentials.username"
+                type="text"
+                name="username"
+                autocomplete="username"
+                placeholder="Username"
+              />
+            </n-form-item>
+            <n-form-item :label="$t('_common.password')" path="password">
+              <n-input
+                id="password"
+                v-model:value="credentials.password"
+                type="password"
+                name="password"
+                autocomplete="current-password"
+                show-password-on="mousedown"
+                placeholder="••••••••"
+              />
+            </n-form-item>
+          </n-form>
+          <n-button type="primary" size="large" block :loading="loading" @click="login">
+            {{ $t('auth.login_sign_in') }}
+          </n-button>
+          <n-alert v-if="error" type="error" closable @close="error = ''">
+            {{ error }}
+          </n-alert>
+        </template>
+
+        <n-space v-else vertical align="center" size="medium">
+          <n-alert type="success" :show-icon="true">{{ $t('auth.login_success') }}</n-alert>
+          <n-spin :show="true">
+            <span class="sr-only">{{ $t('auth.login_loading') }}</span>
+          </n-spin>
+        </n-space>
+      </n-space>
+    </n-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { reactive, ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
-import { NInput, NButton, NAlert, NSpin } from 'naive-ui';
+import {
+  NForm,
+  NFormItem,
+  NInput,
+  NButton,
+  NAlert,
+  NSpin,
+  NCard,
+  NSpace,
+  NH2,
+  NImage,
+} from 'naive-ui';
 
 const auth = useAuthStore();
-const credentials = ref({ username: '', password: '' });
+const credentials = reactive({ username: '', password: '' });
 const loading = ref(false);
 const error = ref('');
 const isLoggedIn = ref(false);
@@ -129,8 +143,8 @@ async function login() {
     const response = await http.post(
       '/api/auth/login',
       {
-        username: credentials.value.username,
-        password: credentials.value.password,
+        username: credentials.username,
+        password: credentials.password,
         redirect: requestedRedirect.value,
       },
       { validateStatus: () => true },
@@ -164,18 +178,3 @@ function redirectToApp() {
   window.location.replace(safeRedirect.value);
 }
 </script>
-
-<style scoped>
-.login-container {
-  max-width: 400px;
-  margin: 2rem auto;
-  padding: 2rem;
-}
-
-.login-form {
-  background: var(--bs-body-bg);
-  border: 1px solid var(--bs-border-color);
-  border-radius: 0.375rem;
-  padding: 2rem;
-}
-</style>

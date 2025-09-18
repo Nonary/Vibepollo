@@ -3,12 +3,14 @@
  * @brief Miscellaneous definitions for Windows.
  */
 // standard includes
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
 #include <set>
 #include <sstream>
+#include <vector>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -19,6 +21,7 @@
 // prevent clang format from "optimizing" the header include order
 // clang-format off
 #include <dwmapi.h>
+#include <dxgi1_6.h>
 #include <iphlpapi.h>
 #include <iterator>
 #include <timeapi.h>
@@ -30,6 +33,7 @@
 #include <WS2tcpip.h>
 #include <WtsApi32.h>
 #include <sddl.h>
+#include <wrl/client.h>
 // clang-format on
 
 // Boost overrides NTDDI_VERSION, so we re-override it here
@@ -66,6 +70,7 @@
 #include <winternl.h>
 extern "C" {
   NTSTATUS NTAPI NtSetTimerResolution(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+  NTSTATUS NTAPI RtlGetVersion(PRTL_OSVERSIONINFOW lpVersionInformation);
 }
 
 namespace {
@@ -1102,7 +1107,9 @@ namespace platf {
     auto working_dir = boost::filesystem::path();
     std::error_code ec;
 
-    auto child = run_command(false, false, url, working_dir, _env, nullptr, ec, nullptr);
+    const std::string explorer_cmd = "explorer.exe \"" + url + "\"";
+
+    auto child = run_command(false, false, explorer_cmd, working_dir, _env, nullptr, ec, nullptr);
     if (ec) {
       BOOST_LOG(warning) << "Couldn't open url ["sv << url << "]: System: "sv << ec.message();
     } else {
@@ -1841,6 +1848,113 @@ namespace platf {
       return "Sunshine"s;
     }
     return to_utf8(hostname);
+  }
+
+  std::vector<gpu_info_t> enumerate_gpus() {
+    std::vector<gpu_info_t> result;
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+      return result;
+    }
+
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+
+      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      gpu_info_t info {};
+      info.description = to_utf8(desc.Description);
+      info.vendor_id = desc.VendorId;
+      info.device_id = desc.DeviceId;
+      info.dedicated_video_memory = desc.DedicatedVideoMemory;
+      result.emplace_back(std::move(info));
+    }
+
+    return result;
+  }
+
+  windows_version_info_t query_windows_version() {
+    windows_version_info_t info {};
+
+    HKEY key = nullptr;
+    const auto close_key = util::fail_guard([&]() {
+      if (key) {
+        RegCloseKey(key);
+        key = nullptr;
+      }
+    });
+
+    if (RegOpenKeyExW(
+          HKEY_LOCAL_MACHINE,
+          L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+          0,
+          KEY_READ | KEY_WOW64_64KEY,
+          &key
+        ) == ERROR_SUCCESS) {
+      auto read_string = [&](const wchar_t *value_name) -> std::string {
+        if (!key) {
+          return {};
+        }
+        DWORD type = 0;
+        DWORD size = 0;
+        LONG status = RegGetValueW(key, nullptr, value_name, RRF_RT_REG_SZ, &type, nullptr, &size);
+        if (status != ERROR_SUCCESS || size == 0) {
+          return {};
+        }
+        std::vector<wchar_t> buffer(size / sizeof(wchar_t));
+        status = RegGetValueW(key, nullptr, value_name, RRF_RT_REG_SZ, &type, buffer.data(), &size);
+        if (status != ERROR_SUCCESS || buffer.empty()) {
+          return {};
+        }
+        if (buffer.back() == L'\0') {
+          buffer.pop_back();
+        }
+        return to_utf8(std::wstring(buffer.begin(), buffer.end()));
+      };
+
+      info.display_version = read_string(L"DisplayVersion");
+      info.release_id = read_string(L"ReleaseId");
+      info.product_name = read_string(L"ProductName");
+      info.current_build = read_string(L"CurrentBuild");
+      if (info.current_build.empty()) {
+        info.current_build = read_string(L"CurrentBuildNumber");
+      }
+
+      auto build_number_str = read_string(L"CurrentBuildNumber");
+      if (!build_number_str.empty()) {
+        try {
+          info.build_number = static_cast<std::uint32_t>(std::stoul(build_number_str));
+        } catch (...) {
+          info.build_number.reset();
+        }
+      }
+    }
+
+    RTL_OSVERSIONINFOW version_info {};
+    version_info.dwOSVersionInfoSize = sizeof(version_info);
+    if (NT_SUCCESS(RtlGetVersion(&version_info))) {
+      info.major_version = version_info.dwMajorVersion;
+      info.minor_version = version_info.dwMinorVersion;
+      if (!info.build_number) {
+        info.build_number = version_info.dwBuildNumber;
+      }
+      if (info.current_build.empty() && info.build_number) {
+        info.current_build = std::to_string(*info.build_number);
+      }
+    }
+
+    return info;
   }
 
   class win32_high_precision_timer: public high_precision_timer {

@@ -1011,6 +1011,71 @@ namespace confighttp {
 #endif
     // Build/release date provided by CMake (ISO 8601 when available)
     output_tree["release_date"] = PROJECT_RELEASE_DATE;
+#if defined(_WIN32)
+    try {
+      const auto gpus = platf::enumerate_gpus();
+      if (!gpus.empty()) {
+        nlohmann::json gpu_array = nlohmann::json::array();
+        bool has_nvidia = false;
+        bool has_amd = false;
+        bool has_intel = false;
+
+        for (const auto &gpu : gpus) {
+          nlohmann::json gpu_entry;
+          gpu_entry["description"] = gpu.description;
+          gpu_entry["vendor_id"] = gpu.vendor_id;
+          gpu_entry["device_id"] = gpu.device_id;
+          gpu_entry["dedicated_video_memory"] = gpu.dedicated_video_memory;
+          gpu_array.push_back(std::move(gpu_entry));
+
+          switch (gpu.vendor_id) {
+            case 0x10DE:  // NVIDIA
+              has_nvidia = true;
+              break;
+            case 0x1002:  // AMD/ATI
+            case 0x1022:  // AMD alternative PCI vendor ID (APUs)
+              has_amd = true;
+              break;
+            case 0x8086:  // Intel
+              has_intel = true;
+              break;
+            default:
+              break;
+          }
+        }
+
+        output_tree["gpus"] = std::move(gpu_array);
+        output_tree["has_nvidia_gpu"] = has_nvidia;
+        output_tree["has_amd_gpu"] = has_amd;
+        output_tree["has_intel_gpu"] = has_intel;
+      }
+
+      const auto version = platf::query_windows_version();
+      if (!version.display_version.empty()) {
+        output_tree["windows_display_version"] = version.display_version;
+      }
+      if (!version.release_id.empty()) {
+        output_tree["windows_release_id"] = version.release_id;
+      }
+      if (!version.product_name.empty()) {
+        output_tree["windows_product_name"] = version.product_name;
+      }
+      if (!version.current_build.empty()) {
+        output_tree["windows_current_build"] = version.current_build;
+      }
+      if (version.build_number.has_value()) {
+        output_tree["windows_build_number"] = version.build_number.value();
+      }
+      if (version.major_version.has_value()) {
+        output_tree["windows_major_version"] = version.major_version.value();
+      }
+      if (version.minor_version.has_value()) {
+        output_tree["windows_minor_version"] = version.minor_version.value();
+      }
+    } catch (...) {
+      // Non-fatal; keep metadata response minimal if enumeration fails.
+    }
+#endif
     send_response(response, output_tree);
   }
 
