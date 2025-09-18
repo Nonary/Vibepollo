@@ -204,6 +204,7 @@ namespace display_helper_integration {
       auto cfg_effective = *cfg;
 
       if (config::rtss.disable_vsync_ullm) {
+        BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         // Prefer the highest available refresh rate for the targeted resolution to avoid
         // VSYNC and ULLM engagement when the display refresh exceeds stream FPS.
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
@@ -241,6 +242,7 @@ namespace display_helper_integration {
       // If DD config is disabled but VSYNC/ULLM suppression is enabled, apply a minimal config
       // to force the highest available refresh rate for the targeted resolution.
       if (config::rtss.disable_vsync_ullm) {
+        BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
         // Don't force device prep; verify-only is safest and avoids primary/only changes
