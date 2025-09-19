@@ -387,7 +387,8 @@
     "wan_encryption_mode": "WAN Encryption Mode",
     "wan_encryption_mode_1": "Enabled for supported clients (default)",
     "wan_encryption_mode_2": "Required for all clients",
-    "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients."
+    "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients.",
+    "dd_step_4": "Step 4"
   },
   "index": {
     "description": "Sunshine is a self-hosted game stream host for Moonlight.",
@@ -523,5 +524,44 @@
     "sync_limiter_front_edge": "Front edge sync",
     "sync_limiter_back_edge": "Back edge sync",
     "sync_limiter_reflex": "NVIDIA Reflex"
+  },
+  "frameLimiter": {
+    "stepTitle": "Frame pacing and limiter",
+    "enable": "Enable frame limiter",
+    "enableHint": "Sunshine applies the selected limiter provider at stream start and restores the previous driver setting when the stream ends.",
+    "providerLabel": "Limiter provider",
+    "providerHint": "Auto prefers NVIDIA Control Panel when available and falls back to RTSS otherwise.",
+    "provider": {
+      "auto": "Auto (prefer NVIDIA)",
+      "nvcp": "NVIDIA Control Panel",
+      "rtss": "RTSS",
+      "none": "None"
+    },
+    "syncLimiter": {
+      "keep": "Do not change",
+      "async": "Async",
+      "front": "Front edge sync",
+      "back": "Back edge sync",
+      "reflex": "NVIDIA Reflex"
+    },
+    "vsyncUllmLabel": "Disable VSYNC / Low Latency overrides",
+    "vsyncUllmHintNv": "On NVIDIA GPUs, Sunshine forces Vertical Sync Off and Low Latency Mode Off during the stream. Settings are restored when streaming stops.",
+    "vsyncUllmHintGeneric": "When NVIDIA-specific overrides are unavailable, Sunshine prefers the highest refresh rate to avoid VSYNC and Low Latency Mode engagement.",
+    "rtssPath": "RTSS install path",
+    "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+    "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
+    "syncLimiterLabel": "RTSS SyncLimiter mode",
+    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Sunshine uses RTSS to limit framerate.",
+    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "status": {
+      "unknown": "Frame limiter status unavailable.",
+      "error": "Failed to query frame limiter status.",
+      "configured": "Configured provider: {provider}",
+      "active": "Active provider: {provider}",
+      "none": "None"
+    },
+    "actions": {
+      "refresh": "Refresh"
+    }
   }
 }

@@ -25,6 +25,7 @@
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/frame_limiter_nvcp.h"
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -203,7 +204,9 @@ namespace display_helper_integration {
       // Copy parsed config so we can optionally override refresh when VSYNC/ULLM suppression is enabled
       auto cfg_effective = *cfg;
 
-      if (config::rtss.disable_vsync_ullm) {
+      const bool should_force_refresh = config::rtss.disable_vsync_ullm &&
+                                        (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+      if (should_force_refresh) {
         BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         // Prefer the highest available refresh rate for the targeted resolution to avoid
         // VSYNC and ULLM engagement when the display refresh exceeds stream FPS.
@@ -241,7 +244,9 @@ namespace display_helper_integration {
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
       // If DD config is disabled but VSYNC/ULLM suppression is enabled, apply a minimal config
       // to force the highest available refresh rate for the targeted resolution.
-      if (config::rtss.disable_vsync_ullm) {
+      const bool should_force_refresh = config::rtss.disable_vsync_ullm &&
+                                        (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+      if (should_force_refresh) {
         BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional

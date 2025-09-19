@@ -9,7 +9,7 @@
 namespace platf::frame_limiter_nvcp {
 
   bool is_available();
-  bool streaming_start(int fps);
+  bool streaming_start(int fps, bool apply_frame_limit, bool force_vsync_off, bool force_low_latency_off);
   void streaming_stop();
 
 }  // namespace platf::frame_limiter_nvcp

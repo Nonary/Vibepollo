@@ -1884,6 +1884,16 @@ namespace platf {
     return result;
   }
 
+  bool has_nvidia_gpu() {
+    constexpr std::uint32_t NVIDIA_VENDOR_ID = 0x10DE;
+    for (const auto &gpu : enumerate_gpus()) {
+      if (gpu.vendor_id == NVIDIA_VENDOR_ID) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   windows_version_info_t query_windows_version() {
     windows_version_info_t info {};
 

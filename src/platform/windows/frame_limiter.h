@@ -6,9 +6,9 @@
 
 #ifdef _WIN32
 
-  #include "src/platform/windows/rtss_integration.h"
-
   #include <string>
+
+  #include "src/platform/windows/rtss_integration.h"
 
 namespace platf {
 
@@ -28,6 +28,8 @@ namespace platf {
     bool nvidia_available;
     bool nvcp_ready;
     bool rtss_available;
+    bool disable_vsync_ullm;
+    bool nv_overrides_supported;
     rtss_status_t rtss;
   };
 

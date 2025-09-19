@@ -507,6 +507,18 @@ namespace platf::dxgi {
 
   class AnonymousPipeFactory: public IAsyncPipeFactory {
   public:
+    enum class HandshakeAckResult {
+      Acked,
+      Fallback,
+      Failed
+    };
+
+    enum class HandshakeMessageResult {
+      Message,
+      Inline,
+      Failed
+    };
+
     /**
      * @brief Constructs an AnonymousPipeFactory instance.
      */
@@ -534,8 +546,8 @@ namespace platf::dxgi {
     std::unique_ptr<INamedPipe> handshake_client(std::unique_ptr<INamedPipe> pipe);
 
     bool send_handshake_message(std::unique_ptr<INamedPipe> &pipe, const std::string &pipe_name) const;
-    bool wait_for_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const;
-    bool receive_handshake_message(std::unique_ptr<INamedPipe> &pipe, AnonConnectMsg &msg) const;
+    HandshakeAckResult wait_for_handshake_ack(std::unique_ptr<INamedPipe> &pipe, std::vector<uint8_t> &buffered) const;
+    HandshakeMessageResult receive_handshake_message(std::unique_ptr<INamedPipe> &pipe, AnonConnectMsg &msg, std::vector<uint8_t> &prefetched) const;
     bool send_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const;
     std::unique_ptr<INamedPipe> connect_to_data_pipe(const std::string &pipeNameStr);
 

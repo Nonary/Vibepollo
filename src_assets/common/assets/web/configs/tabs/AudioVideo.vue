@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
 import AdapterNameSelector from '@/configs/tabs/audiovideo/AdapterNameSelector.vue';
 import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelector.vue';
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
+import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
 import { NCheckbox, NInput } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
-import { computed } from 'vue';
 
+const { t } = useI18n();
 const store = useConfigStore();
 const config = store.config;
-const platform = computed(() => config.value?.platform || '');
+const platform = computed(() => (config as any)?.platform || '');
+const ddConfigDisabled = computed(() => (config as any)?.dd_configuration_option === 'disabled');
+const frameLimiterStepLabel = computed(() =>
+  ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
+);
 
 // Replace custom Checkbox with Naive UI using compatibility mapping
 function mapToBoolRepresentation(value: any) {
@@ -157,6 +163,10 @@ const streamAudio = boolProxy('stream_audio', 'true');
           <div>
             <DisplayDeviceOptions section="options" />
           </div>
+
+          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+
+          <FrameLimiterStep :step-label="frameLimiterStepLabel" />
         </div>
       </div>
     </section>

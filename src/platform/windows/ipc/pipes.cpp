@@ -9,8 +9,10 @@
  */
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +21,8 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <iomanip>
+#include <sstream>
 #include <span>
 #include <string>
 #include <thread>
@@ -305,6 +309,77 @@ namespace platf::dxgi {
     _pipe_factory.set_security_descriptor_builder(std::move(builder));
   }
 
+  class PrefetchedPipe: public INamedPipe {
+  public:
+    PrefetchedPipe(std::unique_ptr<INamedPipe> inner, std::vector<uint8_t> prebuffer):
+        _inner(std::move(inner)),
+        _buffer(std::move(prebuffer)) {}
+
+    bool send(std::span<const uint8_t> bytes, int timeout_ms) override {
+      return _inner && _inner->send(bytes, timeout_ms);
+    }
+
+    PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
+      if (!_inner) {
+        bytesRead = 0;
+        return PipeResult::Disconnected;
+      }
+
+      if (_cursor < _buffer.size()) {
+        const size_t remaining = _buffer.size() - _cursor;
+        const size_t to_copy = std::min(remaining, dst.size());
+        std::memcpy(dst.data(), _buffer.data() + _cursor, to_copy);
+        _cursor += to_copy;
+        bytesRead = to_copy;
+        if (_cursor < _buffer.size() || to_copy > 0) {
+          return PipeResult::Success;
+        }
+      }
+
+      return _inner->receive(dst, bytesRead, timeout_ms);
+    }
+
+    PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
+      if (!_inner) {
+        bytesRead = 0;
+        return PipeResult::Disconnected;
+      }
+
+      if (_cursor < _buffer.size()) {
+        const size_t remaining = _buffer.size() - _cursor;
+        const size_t to_copy = std::min(remaining, dst.size());
+        const size_t start = _buffer.size() - to_copy;
+        std::memcpy(dst.data(), _buffer.data() + start, to_copy);
+        _cursor = _buffer.size();
+        bytesRead = to_copy;
+        return PipeResult::Success;
+      }
+
+      return _inner->receive_latest(dst, bytesRead, timeout_ms);
+    }
+
+    void wait_for_client_connection(int milliseconds) override {
+      if (_inner) {
+        _inner->wait_for_client_connection(milliseconds);
+      }
+    }
+
+    void disconnect() override {
+      if (_inner) {
+        _inner->disconnect();
+      }
+    }
+
+    bool is_connected() override {
+      return _inner && _inner->is_connected();
+    }
+
+  private:
+    std::unique_ptr<INamedPipe> _inner;
+    std::vector<uint8_t> _buffer;
+    size_t _cursor {0};
+  };
+
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::handshake_server(std::unique_ptr<INamedPipe> pipe) {
     std::string pipe_name = generate_guid();
 
@@ -312,13 +387,27 @@ namespace platf::dxgi {
       return nullptr;
     }
 
-    if (!wait_for_handshake_ack(pipe)) {
+    std::vector<uint8_t> buffered;
+    const auto ack_result = wait_for_handshake_ack(pipe, buffered);
+
+    if (ack_result == HandshakeAckResult::Failed) {
       return nullptr;
+    }
+
+    if (ack_result == HandshakeAckResult::Fallback) {
+      BOOST_LOG(warning)
+        << "Anonymous handshake: ACK not received; falling back to legacy named pipe communication.";
+      return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(buffered));
     }
 
     auto dataPipe = _pipe_factory.create_server(pipe_name);
     if (dataPipe) {
       dataPipe->wait_for_client_connection(0);
+    }
+
+    if (!buffered.empty()) {
+      BOOST_LOG(warning) << "Discarding " << buffered.size()
+                         << " byte(s) received alongside handshake ACK.";
     }
 
     pipe->disconnect();
@@ -355,43 +444,80 @@ namespace platf::dxgi {
     return true;
   }
 
-  bool AnonymousPipeFactory::wait_for_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const {
+  AnonymousPipeFactory::HandshakeAckResult AnonymousPipeFactory::wait_for_handshake_ack(
+    std::unique_ptr<INamedPipe> &pipe,
+    std::vector<uint8_t> &buffered
+  ) const {
     using enum platf::dxgi::PipeResult;
-    std::array<uint8_t, 16> ack_buffer;  // Small buffer for ACK message
-    bool ack_ok = false;
-    auto t0 = std::chrono::steady_clock::now();
+    buffered.clear();
 
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(8) && !ack_ok) {
+    std::array<uint8_t, 64> chunk {};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+
+    while (std::chrono::steady_clock::now() < deadline) {
       size_t bytes_read = 0;
-      if (PipeResult result = pipe->receive(ack_buffer, bytes_read, 1000); result == Success) {
-        if (bytes_read == 1 && ack_buffer[0] == ACK_MSG) {
-          ack_ok = true;
-        } else if (bytes_read > 0) {
-          BOOST_LOG(warning) << "Received unexpected data during ACK wait, size=" << bytes_read;
+      const PipeResult result = pipe->receive(chunk, bytes_read, 1000);
+
+      if (result == Success) {
+        if (bytes_read == 0) {
+          continue;
         }
-      } else if (result == BrokenPipe || result == Error || result == Disconnected) {
+        buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(bytes_read));
+        auto it = std::find(buffered.begin(), buffered.end(), ACK_MSG);
+        if (it != buffered.end()) {
+          const auto offset = static_cast<size_t>(std::distance(buffered.begin(), it));
+          BOOST_LOG(info) << "Handshake ACK received (offset=" << offset
+                          << ", buffered=" << buffered.size() << ')';
+          buffered.erase(buffered.begin(), it + 1);
+          return HandshakeAckResult::Acked;
+        }
+
+        if (buffered.size() >= sizeof(uint32_t)) {
+          uint32_t framed_len = 0;
+          std::memcpy(&framed_len, buffered.data(), sizeof(framed_len));
+          constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;  // matches FramedPipe guard
+          if (framed_len > 0 && framed_len <= kMaxFrameLen) {
+            BOOST_LOG(info) << "Handshake ACK missing; framed payload detected (len=" << framed_len
+                            << "). Falling back to control pipe.";
+            return HandshakeAckResult::Fallback;
+          }
+        }
+
+        if (buffered.size() > 65536) {
+          BOOST_LOG(warning) << "Handshake ACK wait buffer exceeded 64KiB; assuming legacy fallback.";
+          return HandshakeAckResult::Fallback;
+        }
+        continue;
+      }
+
+      if (result == BrokenPipe || result == Error || result == Disconnected) {
         BOOST_LOG(error) << "Pipe error during handshake ACK wait";
-        break;
-      }
-      if (!ack_ok) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return HandshakeAckResult::Failed;
       }
     }
 
-    if (!ack_ok) {
-      BOOST_LOG(error) << "Handshake ACK not received within timeout - aborting";
-      pipe->disconnect();
-      return false;
+    if (!buffered.empty()) {
+      BOOST_LOG(warning) << "Handshake ACK not observed; treating " << buffered.size()
+                         << " buffered byte(s) as legacy pipeline data.";
+      return HandshakeAckResult::Fallback;
     }
 
-    return true;
+    BOOST_LOG(info) << "Handshake ACK not observed within deadline; using control pipe directly.";
+    return HandshakeAckResult::Fallback;
   }
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::handshake_client(std::unique_ptr<INamedPipe> pipe) {
     AnonConnectMsg msg {};
+    std::vector<uint8_t> prefetched;
 
-    if (!receive_handshake_message(pipe, msg)) {
+    const auto msg_result = receive_handshake_message(pipe, msg, prefetched);
+    if (msg_result == HandshakeMessageResult::Failed) {
       return nullptr;
+    }
+
+    if (msg_result == HandshakeMessageResult::Inline) {
+      BOOST_LOG(info) << "Anonymous handshake: falling back to control pipe";
+      return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(prefetched));
     }
 
     if (!send_handshake_ack(pipe)) {
@@ -405,46 +531,73 @@ namespace platf::dxgi {
     return connect_to_data_pipe(pipeNameStr);
   }
 
-  bool AnonymousPipeFactory::receive_handshake_message(std::unique_ptr<INamedPipe> &pipe, AnonConnectMsg &msg) const {
+  AnonymousPipeFactory::HandshakeMessageResult AnonymousPipeFactory::receive_handshake_message(
+    std::unique_ptr<INamedPipe> &pipe,
+    AnonConnectMsg &msg,
+    std::vector<uint8_t> &prefetched
+  ) const {
     using enum platf::dxgi::PipeResult;
-    std::array<uint8_t, 256> buffer;  // Buffer for handshake message
-    auto start = std::chrono::steady_clock::now();
-    bool received = false;
-    bool error_occurred = false;
-    size_t bytes_read = 0;
+    prefetched.clear();
 
-    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(8) && !received && !error_occurred) {
-      if (PipeResult result = pipe->receive(buffer, bytes_read, 500); result == Success) {
-        if (bytes_read > 0) {
-          received = true;
-        }
-      } else if (result == BrokenPipe || result == Error || result == Disconnected) {
-        BOOST_LOG(error) << "Pipe error during handshake message receive";
-        error_occurred = true;
-      }
-      if (!received && !error_occurred) {
+    std::array<uint8_t, 256> chunk {};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    int zero_reads = 0;
+
+    constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+      size_t bytes_read = 0;
+      const PipeResult result = pipe->receive(chunk, bytes_read, 200);
+
+      if (result == Success) {
         if (bytes_read == 0) {
-          BOOST_LOG(warning) << "Received 0 bytes during handshake - server may have closed pipe";
+          ++zero_reads;
+          if (zero_reads >= 5) {  // ~1s of empty reads at 200ms interval
+            BOOST_LOG(info) << "Handshake message missing; assuming inline control pipe.";
+            return HandshakeMessageResult::Inline;
+          }
+          continue;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        zero_reads = 0;
+        prefetched.insert(prefetched.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(bytes_read));
+
+        if (prefetched.size() >= sizeof(AnonConnectMsg)) {
+          std::memcpy(&msg, prefetched.data(), sizeof(AnonConnectMsg));
+          prefetched.erase(prefetched.begin(), prefetched.begin() + static_cast<std::ptrdiff_t>(sizeof(AnonConnectMsg)));
+          return HandshakeMessageResult::Message;
+        }
+
+        if (prefetched.size() >= sizeof(uint32_t)) {
+          uint32_t framed_len = 0;
+          std::memcpy(&framed_len, prefetched.data(), sizeof(framed_len));
+          if (framed_len > 0 && framed_len <= kMaxFrameLen) {
+            BOOST_LOG(info) << "Handshake message absent; detected framed payload len=" << framed_len << '.';
+            return HandshakeMessageResult::Inline;
+          }
+        }
+        continue;
+      }
+
+      if (result == Timeout) {
+        continue;
+      }
+
+      if (result == BrokenPipe || result == Error || result == Disconnected) {
+        BOOST_LOG(error) << "Pipe error during handshake message receive";
+        return HandshakeMessageResult::Failed;
       }
     }
 
-    if (!received) {
-      BOOST_LOG(error) << "Did not receive handshake message in time. Disconnecting client.";
-      pipe->disconnect();
-      return false;
+    if (!prefetched.empty()) {
+      BOOST_LOG(info) << "Handshake message timed out with " << prefetched.size()
+                      << " buffered byte(s); using inline control pipe.";
+      return HandshakeMessageResult::Inline;
     }
 
-    if (bytes_read < sizeof(AnonConnectMsg)) {
-      BOOST_LOG(error) << "Received incomplete handshake message (size=" << bytes_read
-                       << ", expected=" << sizeof(AnonConnectMsg) << "). Disconnecting client.";
-      pipe->disconnect();
-      return false;
-    }
-
-    std::memcpy(&msg, buffer.data(), sizeof(AnonConnectMsg));
-    return true;
+    BOOST_LOG(error) << "Did not receive handshake message in time.";
+    pipe->disconnect();
+    return HandshakeMessageResult::Failed;
   }
 
   bool AnonymousPipeFactory::send_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const {
@@ -454,6 +607,7 @@ namespace platf::dxgi {
       pipe->disconnect();
       return false;
     }
+    BOOST_LOG(info) << "Anonymous handshake: client sent ACK";
 
     return true;
   }
@@ -979,6 +1133,7 @@ namespace platf::dxgi {
 
   FramedPipe::FramedPipe(std::unique_ptr<INamedPipe> inner):
       _inner(std::move(inner)) {}
+
 
   bool FramedPipe::send(std::span<const uint8_t> bytes, int timeout_ms) {
     const uint32_t len = static_cast<uint32_t>(bytes.size());

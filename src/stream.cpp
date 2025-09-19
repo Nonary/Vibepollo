@@ -35,8 +35,8 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
-  #include "platform/windows/frame_limiter.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/frame_limiter.h"
 #endif
 
 #define IDX_START_A 0
