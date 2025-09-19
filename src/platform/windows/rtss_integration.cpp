@@ -45,6 +45,7 @@ namespace platf {
     };
 
     hooks_t g_hooks;
+    bool g_limit_active = false;
 
     // Remember original values so we can restore on stream end
     std::optional<int> g_original_limit;
@@ -249,15 +250,17 @@ namespace platf {
     }
   }  // namespace
 
-  void rtss_streaming_start(int fps) {
-    if (!config::rtss.enable_frame_limit) {
-      return;
+  bool rtss_streaming_start(int fps) {
+    g_limit_active = false;
+
+    if (!config::frame_limiter.enable) {
+      return false;
     }
 
     g_rtss_root = resolve_rtss_root();
     if (!fs::exists(g_rtss_root)) {
       BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
-      return;
+      return false;
     }
 
     if (!load_hooks(g_rtss_root)) {
@@ -281,6 +284,9 @@ namespace platf {
 
     // Update LimitDenominator in Global profile and remember previous value
     g_original_denominator = set_limit_denominator(g_rtss_root, current_denominator);
+    if (g_original_denominator.has_value()) {
+      g_limit_active = true;
+    }
     if (g_hooks) {
       // Nudge RTSS to reload profiles after file change
       g_hooks.UpdateProfiles();
@@ -297,10 +303,21 @@ namespace platf {
     if (g_hooks) {
       set_profile_property_int("FramerateLimit", scaled_limit);
       BOOST_LOG(info) << "RTSS applied framerate limit=" << scaled_limit << " (denominator=" << current_denominator << ")";
+      g_limit_active = true;
     }
+    return g_limit_active;
   }
 
   void rtss_streaming_stop() {
+    if (!g_limit_active && !g_original_denominator && !g_original_limit && !g_original_sync_limiter) {
+      if (g_hooks.module) {
+        FreeLibrary(g_hooks.module);
+        g_hooks = {};
+      }
+      g_limit_active = false;
+      return;
+    }
+
     // Always attempt to restore if we previously applied any changes,
     // regardless of current config state. Users may toggle the setting
     // during a stream; we still need to revert to the original values.
@@ -330,6 +347,7 @@ namespace platf {
     g_original_limit.reset();
     g_original_sync_limiter.reset();
     g_original_denominator.reset();
+    g_limit_active = false;
 
     if (g_hooks.module) {
       FreeLibrary(g_hooks.module);
@@ -337,9 +355,14 @@ namespace platf {
     }
   }
 
+  bool rtss_is_configured() {
+    auto st = rtss_get_status();
+    return st.path_exists && st.hooks_found && st.profile_found;
+  }
+
   rtss_status_t rtss_get_status() {
     rtss_status_t st {};
-    st.enabled = config::rtss.enable_frame_limit;
+    st.enabled = config::frame_limiter.enable;
     st.configured_path = config::rtss.install_path;
     st.path_configured = !config::rtss.install_path.empty();
 

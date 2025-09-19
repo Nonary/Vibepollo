@@ -151,7 +151,8 @@ const defaultGroups = [
     id: 'rtss',
     name: 'Frame Limiter',
     options: {
-      rtss_enable_frame_limit: false,
+      frame_limiter_enable: false,
+      frame_limiter_provider: 'auto',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
       rtss_disable_vsync_ullm: false,
@@ -390,6 +391,16 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
+    // Keep frame limiter legacy and new flags in sync so toggles work across versions.
+    if (_data.value) {
+      if (!Object.prototype.hasOwnProperty.call(_data.value, 'frame_limiter_enable')) {
+        (_data.value as any)['frame_limiter_enable'] = false;
+      }
+      if (!Object.prototype.hasOwnProperty.call(_data.value, 'frame_limiter_provider')) {
+        (_data.value as any)['frame_limiter_provider'] = 'auto';
+      }
+    }
+
     // Normalize Playnite boolean-like fields to real booleans so toggles
     // persist as true/false instead of enabled/disabled strings.
     const playniteBoolKeys = [
@@ -399,11 +410,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = [
-      'rtss_enable_frame_limit',
-      'rtss_disable_vsync_ullm',
-      'dd_wa_hdr_toggle',
-    ];
+    const otherBoolKeys = ['frame_limiter_enable', 'rtss_disable_vsync_ullm', 'dd_wa_hdr_toggle'];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;

@@ -21,15 +21,110 @@ const syncLimiterOptions = computed(() => [
   { label: t('rtss.sync_limiter_reflex'), value: 'nvidia reflex' },
 ]);
 
+const providerOptions = computed(() => [
+  { label: t('rtss.provider_auto'), value: 'auto' },
+  { label: t('rtss.provider_nvcp'), value: 'nvidia-control-panel' },
+  { label: t('rtss.provider_rtss'), value: 'rtss' },
+]);
+
 const status = ref<any>(null);
 const statusError = ref<string | null>(null);
 
 const isWindows = computed(() => platform.value === 'windows');
-const detected = computed(() => {
+
+const frameLimiterEnabled = computed({
+  get: () => !!config.frame_limiter_enable,
+  set: (value: boolean) => {
+    config.frame_limiter_enable = value;
+  },
+});
+
+const frameLimiterProvider = computed({
+  get: () => config.frame_limiter_provider || 'auto',
+  set: (value: string) => {
+    config.frame_limiter_provider = value;
+  },
+});
+
+const rtssDetected = computed(() => {
   const s = status.value;
   return !!(s && s.path_exists && s.hooks_found && s.profile_found);
 });
-const limiterEnabled = computed(() => !!status.value?.enabled);
+
+const nvidiaDetected = computed(() => !!status.value?.nvidia_available);
+const nvcpReady = computed(() => !!status.value?.nvcp_ready);
+const activeProvider = computed(() => status.value?.active_provider || '');
+const configuredProvider = computed(
+  () => status.value?.configured_provider || frameLimiterProvider.value,
+);
+
+const preferRtss = computed(() => {
+  const provider = frameLimiterProvider.value;
+  if (provider === 'rtss') {
+    return true;
+  }
+  if (provider === 'auto') {
+    return !nvcpReady.value;
+  }
+  return false;
+});
+
+const shouldShowRtssConfig = computed(() => preferRtss.value);
+
+const statusHealthy = computed(() => {
+  if (!status.value || !status.value.enabled || !frameLimiterEnabled.value) {
+    return false;
+  }
+  if (activeProvider.value === 'nvidia-control-panel') {
+    return true;
+  }
+  const provider = configuredProvider.value;
+
+  if (provider === 'nvidia-control-panel') {
+    return nvcpReady.value && nvidiaDetected.value;
+  }
+  if (provider === 'auto') {
+    if (nvcpReady.value && nvidiaDetected.value) {
+      return true;
+    }
+    if (preferRtss.value) {
+      return rtssDetected.value;
+    }
+  }
+  if (provider === 'rtss' || preferRtss.value) {
+    return rtssDetected.value;
+  }
+  return false;
+});
+
+const statusIcon = computed(() =>
+  statusHealthy.value ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle',
+);
+const statusBadgeClass = computed(() =>
+  statusHealthy.value ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning',
+);
+const statusMessage = computed(() => status.value?.message || t('rtss.status_unknown'));
+
+const providerLabel = (id: string): string => {
+  switch (id) {
+    case 'auto':
+      return t('rtss.provider_auto');
+    case 'rtss':
+      return t('rtss.provider_rtss');
+    case 'nvidia-control-panel':
+      return t('rtss.provider_nvcp');
+    case 'none':
+      return t('rtss.provider_none');
+    default:
+      return id || t('rtss.provider_unknown');
+  }
+};
+
+const activeProviderLabel = computed(() => providerLabel(activeProvider.value));
+const configuredProviderLabel = computed(() => providerLabel(configuredProvider.value));
+
+const showRtssPath = computed(() => shouldShowRtssConfig.value && status.value?.resolved_path);
+
 onMounted(async () => {
   try {
     const res = await http.get('/api/rtss/status', { params: { _ts: Date.now() } });
@@ -60,30 +155,20 @@ async function refreshStatus() {
     <div v-if="status || statusError" class="mb-4">
       <div
         :class="[
-          'flex items-center justify-between gap-3 text-[12px] rounded px-3 py-2',
-          detected ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning',
+          'flex items-start justify-between gap-3 text-[12px] rounded px-3 py-2',
+          statusBadgeClass,
         ]"
       >
-        <div class="flex items-center gap-2">
-          <i :class="detected ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle'" />
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="font-medium">{{
-              detected ? $t('rtss.status_detected') : $t('rtss.status_not_detected')
+        <div class="flex flex-col gap-1 flex-1">
+          <div class="flex items-center gap-2">
+            <i :class="statusIcon" />
+            <span class="font-medium">{{ statusMessage }}</span>
+          </div>
+          <div v-if="status" class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] opacity-80">
+            <span>{{
+              $t('rtss.status_configured_provider', { provider: configuredProviderLabel })
             }}</span>
-            <span v-if="!detected && status" class="opacity-80">
-              <template v-if="!status.path_exists">{{
-                $t('rtss.status_install_not_found', { path: status.resolved_path || '(none)' })
-              }}</template>
-              <template v-else-if="!status.hooks_found">{{
-                $t('rtss.status_hooks_missing')
-              }}</template>
-              <template v-else-if="!status.profile_found">{{
-                $t('rtss.status_profile_missing')
-              }}</template>
-            </span>
-            <span v-if="status && !limiterEnabled" class="opacity-70">{{
-              $t('rtss.status_limiter_disabled')
-            }}</span>
+            <span>{{ $t('rtss.status_active_provider', { provider: activeProviderLabel }) }}</span>
           </div>
         </div>
         <n-button size="tiny" type="default" strong @click="refreshStatus">
@@ -94,26 +179,39 @@ async function refreshStatus() {
       <div v-if="statusError" class="mt-2 text-[12px] text-warning">{{ statusError }}</div>
     </div>
 
-    <div
-      v-if="isWindows && status && detected && status.resolved_path"
-      class="-mt-2 mb-4 text-[12px] opacity-60"
-    >
-      {{ $t('rtss.resolved_path') }} <code>{{ status.resolved_path }}</code>
-    </div>
-
-    <div
-      v-else-if="isWindows && status && !detected && status.resolved_path"
-      class="-mt-2 mb-4 text-[12px] opacity-60"
-    >
-      {{ $t('rtss.attempted_path') }} <code>{{ status.resolved_path }}</code>
+    <div v-if="showRtssPath" class="-mt-2 mb-4 text-[12px] opacity-60">
+      <template v-if="rtssDetected">{{ $t('rtss.resolved_path') }}</template>
+      <template v-else>{{ $t('rtss.attempted_path') }}</template>
+      <code class="ml-1">{{ status.resolved_path }}</code>
     </div>
 
     <div v-else-if="statusError && !status" class="mb-4 text-[12px] text-warning">
       {{ statusError }}
     </div>
 
-    <!-- Install Path: only show when not detected -->
-    <div v-if="!detected" class="mb-6">
+    <div v-if="isWindows" class="mb-6">
+      <label for="frame_limiter_provider" class="form-label">{{ $t('rtss.provider_label') }}</label>
+      <n-select
+        id="frame_limiter_provider"
+        v-model:value="frameLimiterProvider"
+        :options="providerOptions"
+        :data-search-options="providerOptions.map((o) => `${o.label}::${o.value}`).join('|')"
+      />
+      <div class="form-text">{{ $t('rtss.provider_desc') }}</div>
+    </div>
+
+    <div class="mb-6">
+      <label for="frame_limiter_enable" class="form-label">{{
+        $t('rtss.enable_frame_limiter')
+      }}</label>
+      <div class="flex items-center gap-3">
+        <n-switch id="frame_limiter_enable" v-model:value="frameLimiterEnabled" />
+      </div>
+      <div class="form-text">{{ $t('rtss.enable_frame_limiter_desc') }}</div>
+    </div>
+
+    <!-- Install Path: only show when RTSS is the active provider -->
+    <div v-if="shouldShowRtssConfig" class="mb-6">
       <label for="rtss_install_path" class="form-label">{{ $t('rtss.install_path') }}</label>
       <n-input
         id="rtss_install_path"
@@ -123,19 +221,8 @@ async function refreshStatus() {
       <div class="form-text">{{ $t('rtss.install_path_desc') }}</div>
     </div>
 
-    <!-- Enable Frame Limiter: only when RTSS detected -->
-    <div v-if="detected" class="mb-6">
-      <label for="rtss_enable_frame_limit" class="form-label">{{
-        $t('rtss.enable_frame_limiter')
-      }}</label>
-      <div class="flex items-center gap-3">
-        <n-switch id="rtss_enable_frame_limit" v-model:value="config.rtss_enable_frame_limit" />
-      </div>
-      <div class="form-text">{{ $t('rtss.enable_frame_limiter_desc') }}</div>
-    </div>
-
-    <!-- SyncLimiter Type: only when RTSS detected -->
-    <div v-if="detected" class="mb-6">
+    <!-- SyncLimiter Type: only when RTSS is active -->
+    <div v-if="shouldShowRtssConfig" class="mb-6">
       <label for="rtss_frame_limit_type" class="form-label">{{
         $t('rtss.sync_limiter_mode')
       }}</label>

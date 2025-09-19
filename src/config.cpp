@@ -570,9 +570,13 @@ namespace config {
     true,  // native pen/touch support
   };
 
+  frame_limiter_t frame_limiter {
+    false,  // enable
+    "auto"  // provider
+  };
+
   // Windows-only: RTSS defaults
   rtss_t rtss {
-    false,  // enable_frame_limit
     {},  // install_path
     "async",  // frame_limit_type
     false  // disable_vsync_ullm
@@ -1171,8 +1175,12 @@ namespace config {
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 
-    // Windows-only RTSS integration options (opt-in)
-    bool_f(vars, "rtss_enable_frame_limit", rtss.enable_frame_limit);
+    // Windows-only frame limiter options
+    bool_f(vars, "frame_limiter_enable", frame_limiter.enable);
+    string_f(vars, "frame_limiter_provider", frame_limiter.provider);
+    if (frame_limiter.provider.empty()) {
+      frame_limiter.provider = "auto";
+    }
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
     bool_f(vars, "rtss_disable_vsync_ullm", rtss.disable_vsync_ullm);

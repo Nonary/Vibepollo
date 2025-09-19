@@ -211,11 +211,15 @@ namespace config {
     bool native_pen_touch;
   };
 
+  struct frame_limiter_t {
+    bool enable {false};
+
+    // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
+    std::string provider;
+  };
+
   // Windows-only: RTSS integration settings
   struct rtss_t {
-    // Enable applying an RTSS framerate limit on stream start and restoring it on end
-    bool enable_frame_limit {false};
-
     // RTSS install path. If empty, defaults to "%PROGRAMFILES%/RivaTuner Statistics Server"
     std::string install_path;
 
@@ -291,6 +295,7 @@ namespace config {
   extern stream_t stream;
   extern nvhttp_t nvhttp;
   extern input_t input;
+  extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
   extern sunshine_t sunshine;
 

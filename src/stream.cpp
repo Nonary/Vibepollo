@@ -35,8 +35,8 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
+  #include "platform/windows/frame_limiter.h"
   #include "platform/windows/misc.h"
-  #include "platform/windows/rtss_integration.h"
 #endif
 
 #define IDX_START_A 0
@@ -1942,7 +1942,7 @@ namespace stream {
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32
-        platf::rtss_streaming_stop();
+        platf::frame_limiter_streaming_stop();
 #endif
         platf::streaming_will_stop();
 
@@ -1988,7 +1988,7 @@ namespace stream {
       if (++running_sessions == 1) {
 #ifdef _WIN32
         // Apply RTSS frame limit if enabled (Windows-only)
-        platf::rtss_streaming_start(session.config.monitor.framerate);
+        platf::frame_limiter_streaming_start(session.config.monitor.framerate);
 #endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
