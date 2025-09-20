@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { NSwitch, NSelect, NInput, NButton } from 'naive-ui';
 import { http } from '@/http';
@@ -60,9 +60,6 @@ const syncLimiterOptions = computed(() => [
 const nvidiaDetected = computed(() => !!status.value?.nvidia_available);
 const nvcpReady = computed(() => !!status.value?.nvcp_ready);
 const nvOverridesSupported = computed(() => !!status.value?.nv_overrides_supported);
-const configuredProviderLabel = computed(() => status.value?.configured_provider || frameLimiterProvider.value);
-const activeProviderLabel = computed(() => status.value?.active_provider || '');
-
 const rtssDetected = computed(() => {
   const s = status.value?.rtss;
   return !!(s && s.path_exists && s.hooks_found && s.profile_found);
@@ -90,6 +87,14 @@ const statusIcon = computed(() =>
 );
 
 const statusMessage = computed(() => status.value?.message || t('frameLimiter.status.unknown'));
+
+watch(frameLimiterProvider, () => {
+  refreshStatus();
+});
+
+watch(frameLimiterEnabled, () => {
+  refreshStatus();
+});
 
 async function refreshStatus() {
   if (loading.value) return;
@@ -123,36 +128,18 @@ onMounted(() => {
     </legend>
 
     <div class="space-y-4">
-      <div v-if="status || statusError" :class="['rounded px-3 py-2 text-[12px]', statusBadgeClass]">
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex-1 space-y-1">
-            <div class="flex items-center gap-2">
-              <i :class="statusIcon" />
-              <span class="font-medium">{{ statusMessage }}</span>
-            </div>
-            <div v-if="status" class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] opacity-80">
-              <span>
-                {{
-                  t('frameLimiter.status.configured', {
-                    provider: providerLabelFor(configuredProviderLabel),
-                  })
-                }}
-              </span>
-              <span>
-                {{
-                  activeProviderLabel
-                    ? t('frameLimiter.status.active', { provider: providerLabelFor(activeProviderLabel) })
-                    : t('frameLimiter.status.active', { provider: t('frameLimiter.status.none') })
-                }}
-              </span>
-            </div>
-            <div v-if="statusError" class="text-warning text-[11px]">{{ statusError }}</div>
+      <div v-if="status || statusError" :class="['rounded-lg px-4 py-3 text-[12px]', statusBadgeClass]">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <i :class="statusIcon" />
+            <span class="font-medium leading-tight">{{ statusMessage }}</span>
           </div>
           <n-button size="tiny" type="default" strong :loading="loading" @click="refreshStatus">
             <i class="fas fa-sync" />
             <span class="ml-1">{{ t('frameLimiter.actions.refresh') }}</span>
           </n-button>
         </div>
+        <p v-if="statusError" class="mt-2 text-xs text-warning">{{ statusError }}</p>
       </div>
 
       <div class="grid gap-4 md:grid-cols-2">

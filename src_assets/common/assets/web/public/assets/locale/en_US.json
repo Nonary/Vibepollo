@@ -563,6 +563,8 @@
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
+      "configuredLabel": "Configured provider",
+      "activeLabel": "Active provider",
       "configured": "Configured provider: {provider}",
       "active": "Active provider: {provider}",
       "none": "None"

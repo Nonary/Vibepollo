@@ -507,7 +507,7 @@ namespace platf::frame_limiter_nvcp {
         setting.settingId = PRERENDERLIMIT_ID;
         setting.settingType = NVDRS_DWORD_TYPE;
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
-        setting.u32CurrentValue = PRERENDERLIMIT_APP_CONTROLLED;
+        setting.u32CurrentValue = 1u;
 
         status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
         if (status != NVAPI_OK) {
@@ -515,7 +515,7 @@ namespace platf::frame_limiter_nvcp {
         } else {
           g_state.llm_applied = true;
           dirty = true;
-          BOOST_LOG(info) << "NVIDIA Control Panel low latency mode forced to Off for stream";
+          BOOST_LOG(info) << "NVIDIA Control Panel pre-rendered frames forced to 1 for stream";
         }
       }
     }
