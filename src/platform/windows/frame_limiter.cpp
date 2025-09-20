@@ -7,16 +7,16 @@
 
   #include "frame_limiter.h"
 
+  #include "src/config.h"
+  #include "src/logging.h"
+  #include "src/platform/windows/frame_limiter_nvcp.h"
+  #include "src/platform/windows/misc.h"
+
   #include <algorithm>
   #include <array>
   #include <cctype>
   #include <string>
   #include <vector>
-
-  #include "src/config.h"
-  #include "src/logging.h"
-  #include "src/platform/windows/frame_limiter_nvcp.h"
-  #include "src/platform/windows/misc.h"
 
 namespace platf {
 
@@ -116,7 +116,11 @@ namespace platf {
 
         if (provider == frame_limiter_provider::nvidia_control_panel) {
           bool ok = frame_limiter_nvcp::streaming_start(
-              fps, true, want_nv_overrides, want_nv_overrides);
+            fps,
+            true,
+            want_nv_overrides,
+            want_nv_overrides
+          );
           if (ok) {
             g_active_provider = frame_limiter_provider::nvidia_control_panel;
             applied = true;
@@ -190,4 +194,3 @@ namespace platf {
 }  // namespace platf
 
 #endif  // _WIN32
-

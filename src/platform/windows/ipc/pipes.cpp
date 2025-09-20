@@ -20,10 +20,10 @@
 #include <cwchar>
 #include <format>
 #include <functional>
-#include <memory>
 #include <iomanip>
-#include <sstream>
+#include <memory>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1133,7 +1133,6 @@ namespace platf::dxgi {
 
   FramedPipe::FramedPipe(std::unique_ptr<INamedPipe> inner):
       _inner(std::move(inner)) {}
-
 
   bool FramedPipe::send(std::span<const uint8_t> bytes, int timeout_ms) {
     const uint32_t len = static_cast<uint32_t>(bytes.size());

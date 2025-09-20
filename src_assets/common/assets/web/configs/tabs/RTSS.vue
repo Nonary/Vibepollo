@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { NSwitch, NSelect, NInput, NButton } from 'naive-ui';
@@ -71,27 +71,25 @@ const preferRtss = computed(() => {
 
 const shouldShowRtssConfig = computed(() => preferRtss.value);
 
+const effectiveProvider = computed(() => {
+  const provider = frameLimiterProvider.value;
+  if (provider === 'auto') {
+    if (nvcpReady.value && nvidiaDetected.value) {
+      return 'nvidia-control-panel';
+    }
+    return 'rtss';
+  }
+  return provider;
+});
+
 const statusHealthy = computed(() => {
   if (!status.value || !status.value.enabled || !frameLimiterEnabled.value) {
     return false;
   }
-  if (activeProvider.value === 'nvidia-control-panel') {
-    return true;
+  if (effectiveProvider.value === 'nvidia-control-panel') {
+    return nvidiaDetected.value && nvcpReady.value;
   }
-  const provider = configuredProvider.value;
-
-  if (provider === 'nvidia-control-panel') {
-    return nvcpReady.value && nvidiaDetected.value;
-  }
-  if (provider === 'auto') {
-    if (nvcpReady.value && nvidiaDetected.value) {
-      return true;
-    }
-    if (preferRtss.value) {
-      return rtssDetected.value;
-    }
-  }
-  if (provider === 'rtss' || preferRtss.value) {
+  if (effectiveProvider.value === 'rtss') {
     return rtssDetected.value;
   }
   return false;
@@ -103,7 +101,27 @@ const statusIcon = computed(() =>
 const statusBadgeClass = computed(() =>
   statusHealthy.value ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning',
 );
-const statusMessage = computed(() => status.value?.message || t('rtss.status_unknown'));
+const statusMessage = computed(() => {
+  if (!status.value) {
+    return t('rtss.status_unknown');
+  }
+  if (!frameLimiterEnabled.value) {
+    return t('rtss.status_limiter_disabled');
+  }
+  if (effectiveProvider.value === 'nvidia-control-panel') {
+    if (!nvidiaDetected.value) {
+      return t('rtss.status_nvcp_not_detected');
+    }
+    if (!nvcpReady.value) {
+      return t('rtss.status_nvcp_unavailable');
+    }
+    return t('rtss.status_nvcp_detected');
+  }
+  if (effectiveProvider.value === 'rtss') {
+    return rtssDetected.value ? t('rtss.status_detected') : t('rtss.status_not_detected');
+  }
+  return t('rtss.status_unknown');
+});
 
 const providerLabel = (id: string): string => {
   switch (id) {
@@ -124,6 +142,15 @@ const activeProviderLabel = computed(() => providerLabel(activeProvider.value));
 const configuredProviderLabel = computed(() => providerLabel(configuredProvider.value));
 
 const showRtssPath = computed(() => shouldShowRtssConfig.value && status.value?.resolved_path);
+const showRtssInstallInput = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
+
+watch(frameLimiterProvider, () => {
+  refreshStatus();
+});
+
+watch(frameLimiterEnabled, () => {
+  refreshStatus();
+});
 
 onMounted(async () => {
   try {
@@ -211,7 +238,7 @@ async function refreshStatus() {
     </div>
 
     <!-- Install Path: only show when RTSS is the active provider -->
-    <div v-if="shouldShowRtssConfig" class="mb-6">
+    <div v-if="showRtssInstallInput" class="mb-6">
       <label for="rtss_install_path" class="form-label">{{ $t('rtss.install_path') }}</label>
       <n-input
         id="rtss_install_path"

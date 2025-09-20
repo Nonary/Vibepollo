@@ -22,10 +22,10 @@
   #include "display_helper_integration.h"
   #include "src/display_device.h"  // For configuration parsing only
   #include "src/logging.h"
+  #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
-  #include "src/platform/windows/frame_limiter_nvcp.h"
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -40,7 +40,15 @@ namespace {
     return h;
   }
 
+  bool dd_feature_enabled() {
+    using config_option_e = config::video_t::dd_t::config_option_e;
+    return config::video.dd.configuration_option != config_option_e::disabled;
+  }
+
   bool ensure_helper_started() {
+    if (!dd_feature_enabled()) {
+      return false;
+    }
     std::lock_guard<std::mutex> lg(helper_mutex());
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
@@ -140,14 +148,32 @@ namespace {
 
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
-    // Attempt initial bring-up and handshake
-    (void) ensure_helper_started();
-    // Don't reset the existing pipe here; a reset would break the live connection
-    // and cause the helper to think Sunshine crashed, triggering a revert.
-    (void) platf::display_helper_client::send_ping();
-
     const auto interval = 5s;
+    bool helper_ready = false;
+
     while (!st.stop_requested()) {
+      if (!dd_feature_enabled()) {
+        if (helper_ready) {
+          platf::display_helper_client::reset_connection();
+          helper_ready = false;
+        }
+        for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
+          std::this_thread::sleep_for(100ms);
+        }
+        continue;
+      }
+
+      if (!helper_ready) {
+        helper_ready = ensure_helper_started();
+        if (!helper_ready) {
+          for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
+            std::this_thread::sleep_for(100ms);
+          }
+          continue;
+        }
+        (void) platf::display_helper_client::send_ping();
+      }
+
       for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
         std::this_thread::sleep_for(100ms);
       }
@@ -158,7 +184,10 @@ namespace {
       if (!platf::display_helper_client::send_ping()) {
         // Avoid logging ping failures to reduce log spam; proceed to reconnect
         platf::display_helper_client::reset_connection();
-        (void) ensure_helper_started();
+        helper_ready = ensure_helper_started();
+        if (!helper_ready) {
+          continue;
+        }
         // Attempt to re-derive and apply the desired configuration from
         // current Sunshine state if a session is active.
         auto session_opt = get_active_session_copy();
@@ -174,10 +203,10 @@ namespace {
           bool reapplied = display_helper_integration::apply_from_session(config::video, tmp_session);
           BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
           if (!reapplied) {
-            (void) platf::display_helper_client::send_ping();
+            helper_ready = platf::display_helper_client::send_ping();
           }
         } else {
-          (void) platf::display_helper_client::send_ping();
+          helper_ready = platf::display_helper_client::send_ping();
         }
       }
     }
@@ -338,6 +367,9 @@ namespace display_helper_integration {
   }
 
   void start_watchdog() {
+    if (!dd_feature_enabled()) {
+      return;
+    }
     if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
       return;  // already running
     }

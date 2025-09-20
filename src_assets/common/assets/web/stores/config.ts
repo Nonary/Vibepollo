@@ -410,11 +410,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = [
-      'frame_limiter_enable',
-      'rtss_disable_vsync_ullm',
-      'dd_wa_hdr_toggle',
-    ];
+    const otherBoolKeys = ['frame_limiter_enable', 'rtss_disable_vsync_ullm', 'dd_wa_hdr_toggle'];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;

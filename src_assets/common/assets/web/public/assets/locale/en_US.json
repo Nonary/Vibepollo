@@ -514,6 +514,9 @@
     "status_limiter_disabled": "(limiter disabled in settings)",
     "status_configured_provider": "Configured provider: {provider}",
     "status_active_provider": "Active provider: {provider}",
+    "status_nvcp_detected": "NVIDIA Control Panel detected",
+    "status_nvcp_not_detected": "NVIDIA Control Panel not detected",
+    "status_nvcp_unavailable": "NVIDIA Control Panel integration unavailable",
     "status_unknown": "Unable to determine frame limiter status",
     "refresh": "Refresh",
     "resolved_path": "Resolved path:",
@@ -567,6 +570,12 @@
       "activeLabel": "Active provider",
       "configured": "Configured provider: {provider}",
       "active": "Active provider: {provider}",
+      "limiterDisabled": "Frame limiter disabled.",
+      "nvcpDetected": "NVIDIA Control Panel detected.",
+      "nvcpNotDetected": "NVIDIA Control Panel not detected.",
+      "nvcpUnavailable": "NVIDIA Control Panel integration unavailable.",
+      "rtssDetected": "RTSS detected.",
+      "rtssNotDetected": "RTSS not detected.",
       "none": "None"
     },
     "actions": {

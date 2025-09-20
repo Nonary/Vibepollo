@@ -6,6 +6,8 @@
 
 #ifdef _WIN32
 
+  #include <string>
+
 namespace platf {
   struct rtss_status_t {
     bool enabled;  // frame limiter toggle

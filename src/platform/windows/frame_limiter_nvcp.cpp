@@ -7,20 +7,18 @@
 
   #include "frame_limiter_nvcp.h"
 
+  #include "src/logging.h"
+
   #include <algorithm>
   #include <cstdint>
   #include <filesystem>
   #include <fstream>
-  #include <optional>
-  #include <system_error>
-
-  #include <windows.h>
+  #include <nlohmann/json.hpp>
   #include <nvapi.h>
   #include <NvApiDriverSettings.h>
-
-  #include <nlohmann/json.hpp>
-
-  #include "src/logging.h"
+  #include <optional>
+  #include <system_error>
+  #include <windows.h>
 
 namespace platf::frame_limiter_nvcp {
 
@@ -335,8 +333,7 @@ namespace platf::frame_limiter_nvcp {
           break;
         }
 
-        auto restore_setting = [&](NvU32 setting_id, std::optional<NvU32> value,
-                                   const char *label) -> bool {
+        auto restore_setting = [&](NvU32 setting_id, std::optional<NvU32> value, const char *label) -> bool {
           NVDRS_SETTING setting = {};
           setting.version = NVDRS_SETTING_VER1;
           setting.settingId = setting_id;

@@ -6,9 +6,9 @@
 
 #ifdef _WIN32
 
-  #include <string>
-
   #include "src/platform/windows/rtss_integration.h"
+
+  #include <string>
 
 namespace platf {
 

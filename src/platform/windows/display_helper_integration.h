@@ -31,4 +31,5 @@ namespace display_helper_integration {
 
   // Stop the helper watchdog when no streams are active.
   void stop_watchdog();
+
 }  // namespace display_helper_integration

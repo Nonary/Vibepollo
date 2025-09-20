@@ -61,7 +61,7 @@ const nvidiaDetected = computed(() => !!status.value?.nvidia_available);
 const nvcpReady = computed(() => !!status.value?.nvcp_ready);
 const nvOverridesSupported = computed(() => !!status.value?.nv_overrides_supported);
 const rtssDetected = computed(() => {
-  const s = status.value?.rtss;
+  const s = status.value;
   return !!(s && s.path_exists && s.hooks_found && s.profile_found);
 });
 
@@ -78,15 +78,63 @@ const shouldShowRtssConfig = computed(() => {
 
 const showRtssInstallHint = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
 
-const statusBadgeClass = computed(() =>
-  nvOverridesSupported.value || rtssDetected.value ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning',
-);
+const showRtssInstallInput = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
+
+const effectiveProvider = computed(() => {
+  const provider = frameLimiterProvider.value;
+  if (provider === 'auto') {
+    if (nvcpReady.value && nvidiaDetected.value) {
+      return 'nvidia-control-panel';
+    }
+    return 'rtss';
+  }
+  return provider;
+});
+
+const statusBadgeClass = computed(() => {
+  if (!status.value || !frameLimiterEnabled.value) {
+    return 'bg-warning/10 text-warning';
+  }
+  if (effectiveProvider.value === 'nvidia-control-panel') {
+    return nvidiaDetected.value && nvcpReady.value
+      ? 'bg-success/10 text-success'
+      : 'bg-warning/10 text-warning';
+  }
+  if (effectiveProvider.value === 'rtss') {
+    return rtssDetected.value ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning';
+  }
+  return 'bg-warning/10 text-warning';
+});
 
 const statusIcon = computed(() =>
-  nvOverridesSupported.value || rtssDetected.value ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle',
+  statusBadgeClass.value.includes('bg-success')
+    ? 'fas fa-check-circle'
+    : 'fas fa-exclamation-triangle',
 );
 
-const statusMessage = computed(() => status.value?.message || t('frameLimiter.status.unknown'));
+const statusMessage = computed(() => {
+  if (!status.value) {
+    return t('frameLimiter.status.unknown');
+  }
+  if (!frameLimiterEnabled.value) {
+    return t('frameLimiter.status.limiterDisabled');
+  }
+  if (effectiveProvider.value === 'nvidia-control-panel') {
+    if (!nvidiaDetected.value) {
+      return t('frameLimiter.status.nvcpNotDetected');
+    }
+    if (!nvcpReady.value) {
+      return t('frameLimiter.status.nvcpUnavailable');
+    }
+    return t('frameLimiter.status.nvcpDetected');
+  }
+  if (effectiveProvider.value === 'rtss') {
+    return rtssDetected.value
+      ? t('frameLimiter.status.rtssDetected')
+      : t('frameLimiter.status.rtssNotDetected');
+  }
+  return t('frameLimiter.status.unknown');
+});
 
 watch(frameLimiterProvider, () => {
   refreshStatus();
@@ -128,7 +176,10 @@ onMounted(() => {
     </legend>
 
     <div class="space-y-4">
-      <div v-if="status || statusError" :class="['rounded-lg px-4 py-3 text-[12px]', statusBadgeClass]">
+      <div
+        v-if="status || statusError"
+        :class="['rounded-lg px-4 py-3 text-[12px]', statusBadgeClass]"
+      >
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2">
             <i :class="statusIcon" />
@@ -144,13 +195,17 @@ onMounted(() => {
 
       <div class="grid gap-4 md:grid-cols-2">
         <div class="space-y-2">
-          <label class="form-label" for="frame_limiter_enable">{{ t('frameLimiter.enable') }}</label>
+          <label class="form-label" for="frame_limiter_enable">{{
+            t('frameLimiter.enable')
+          }}</label>
           <n-switch id="frame_limiter_enable" v-model:value="frameLimiterEnabled" />
           <p class="form-text">{{ t('frameLimiter.enableHint') }}</p>
         </div>
 
         <div class="space-y-2">
-          <label class="form-label" for="frame_limiter_provider">{{ t('frameLimiter.providerLabel') }}</label>
+          <label class="form-label" for="frame_limiter_provider">{{
+            t('frameLimiter.providerLabel')
+          }}</label>
           <n-select
             id="frame_limiter_provider"
             v-model:value="frameLimiterProvider"
@@ -163,7 +218,9 @@ onMounted(() => {
       </div>
 
       <div class="space-y-2">
-        <label class="form-label" for="disable_vsync_ullm">{{ t('frameLimiter.vsyncUllmLabel') }}</label>
+        <label class="form-label" for="disable_vsync_ullm">{{
+          t('frameLimiter.vsyncUllmLabel')
+        }}</label>
         <n-switch id="disable_vsync_ullm" v-model:value="config.rtss_disable_vsync_ullm" />
         <p class="form-text">
           {{
@@ -176,8 +233,10 @@ onMounted(() => {
 
       <div v-if="shouldShowRtssConfig" class="space-y-4">
         <div class="grid gap-4 md:grid-cols-2">
-          <div>
-            <label class="form-label" for="rtss_install_path">{{ t('frameLimiter.rtssPath') }}</label>
+          <div v-if="showRtssInstallInput">
+            <label class="form-label" for="rtss_install_path">{{
+              t('frameLimiter.rtssPath')
+            }}</label>
             <n-input
               id="rtss_install_path"
               v-model:value="config.rtss_install_path"
@@ -186,7 +245,9 @@ onMounted(() => {
             <p class="form-text">{{ t('frameLimiter.rtssPathHint') }}</p>
           </div>
           <div>
-            <label class="form-label" for="rtss_frame_limit_type">{{ t('frameLimiter.syncLimiterLabel') }}</label>
+            <label class="form-label" for="rtss_frame_limit_type">{{
+              t('frameLimiter.syncLimiterLabel')
+            }}</label>
             <n-select
               id="rtss_frame_limit_type"
               v-model:value="config.rtss_frame_limit_type"

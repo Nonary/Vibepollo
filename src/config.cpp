@@ -1528,8 +1528,16 @@ namespace config {
     std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
     std::unique_lock<std::mutex> apply_once(g_apply_mutex);
     try {
-      // Capture previous DD configuration state to detect transitions to disabled
+      // Capture previous DD configuration state to detect any changes
       const auto prev_dd_config_opt = video.dd.configuration_option;
+      const auto prev_dd_resolution_opt = video.dd.resolution_option;
+      const auto prev_dd_refresh_rate_opt = video.dd.refresh_rate_option;
+      const auto prev_dd_hdr_opt = video.dd.hdr_option;
+      const auto prev_dd_manual_resolution = video.dd.manual_resolution;
+      const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
+      const auto prev_dd_revert_delay = video.dd.config_revert_delay;
+      const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
+      const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       // Track old logging params to adjust sinks if needed
@@ -1543,14 +1551,32 @@ namespace config {
         logging::reconfigure_min_log_level(sunshine.min_log_level);
       }
 
-      // If DD configuration option was changed to disabled and there are no active sessions,
-      // proactively revert any previously applied display configuration now (hot-apply behavior).
+      // Check if any DD configuration changed and handle hot-apply when no active sessions
       using dd_cfg_e = config::video_t::dd_t::config_option_e;
       const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
       const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
-      if (dd_was_enabled && dd_disabled_now && rtsp_stream::session_count() == 0) {
-        BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled with no active sessions; reverting display configuration.";
+
+      // Detect if any DD settings changed
+      const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
+                                     (prev_dd_resolution_opt != video.dd.resolution_option) ||
+                                     (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
+                                     (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                     (prev_dd_manual_resolution != video.dd.manual_resolution) ||
+                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                     (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle);
+
+      // If any DD settings changed and there are no active sessions, revert to clear cached state
+      if (dd_config_changed && rtsp_stream::session_count() == 0) {
+        BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
         display_helper_integration::revert();
+
+        if (dd_was_enabled && dd_disabled_now) {
+          BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";
+        } else if (!dd_disabled_now) {
+          BOOST_LOG(info) << "Hot-apply: DD configuration updated. New settings will take effect on next stream.";
+        }
       }
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
