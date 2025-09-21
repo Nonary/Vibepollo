@@ -54,7 +54,7 @@ function initAuthHandling(): void {
     if (typeof window === 'undefined') return;
     try {
       // Show login overlay; no redirect path tracking needed
-      auth.requireLogin();
+      auth.requireLogin({ bypassLogoutGuard: true });
     } catch {
       /* noop */
     }

@@ -9,6 +9,9 @@ interface AuthStatusResponse {
 }
 
 type AuthListener = () => void;
+interface RequireLoginOptions {
+  bypassLogoutGuard?: boolean;
+}
 
 // Auth store now driven by axios/http interceptor layer instead of polling.
 // Provides subscription for login events and a setter used by http.js.
@@ -26,6 +29,7 @@ export const useAuthStore = defineStore('auth', () => {
     const becameAuthed = !isAuthenticated.value && v;
     isAuthenticated.value = v;
     if (becameAuthed) {
+      logoutInitiated.value = false;
       for (const cb of _listeners) {
         try {
           cb();
@@ -85,9 +89,10 @@ export const useAuthStore = defineStore('auth', () => {
     };
   }
 
-  function requireLogin(): void {
-    // If user intentionally logged out, do not show the login modal
-    if (logoutInitiated.value) return;
+  function requireLogin(options?: RequireLoginOptions): void {
+    const bypassGuard = options?.bypassLogoutGuard === true;
+    if (logoutInitiated.value && !bypassGuard) return;
+    if (bypassGuard) logoutInitiated.value = false;
     showLoginModal.value = true;
   }
 

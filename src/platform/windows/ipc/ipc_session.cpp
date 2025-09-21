@@ -91,7 +91,7 @@ namespace platf::dxgi {
     if (!_process_helper->start(exe_path.wstring(), arguments)) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to start sunshine_wgc_capture executable at: " << exe_path.wstring()
-                       << " with pipe GUID: " << pipe_guid << ", frame queue pipe GUID: " << frame_queue_pipe_guid << " (error code: " << err << ")";
+                       << " (error code: " << err << ")";
       return;
     }
 
@@ -123,7 +123,7 @@ namespace platf::dxgi {
     auto raw_pipe = anon_connector->create_server(pipe_guid);
     auto frame_queue_pipe = anon_connector->create_server(frame_queue_pipe_guid);
     if (!raw_pipe || !frame_queue_pipe) {
-      BOOST_LOG(error) << "IPC pipe setup failed with GUID: " << pipe_guid << " or frame queue pipe GUID: " << frame_queue_pipe_guid << " - aborting WGC session";
+      BOOST_LOG(error) << "IPC pipe setup failed for WGC session; aborting";
       return;
     }
     _pipe = std::make_unique<AsyncNamedPipe>(std::move(raw_pipe));

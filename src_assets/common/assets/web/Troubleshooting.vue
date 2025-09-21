@@ -140,6 +140,7 @@ import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
 
 const store = useConfigStore();
+const authStore = useAuthStore();
 const platform = computed(() => store.metadata.platform);
 
 const closeAppPressed = ref(false);
@@ -156,7 +157,7 @@ const newLogsAvailable = ref(false);
 const unseenLines = ref(0);
 
 let logInterval: number | null = null;
-let lastLineCount = 0;
+let loginDisposer: (() => void) | null = null;
 
 const filteredLines = computed(() => {
   if (!logFilter.value) return logs.value;
@@ -209,8 +210,8 @@ function scrollToBottom() {
 }
 
 async function refreshLogs() {
-  const authStore = useAuthStore();
   if (!authStore.isAuthenticated) return;
+  if (authStore.loggingIn && authStore.loggingIn.value) return;
 
   try {
     const r = await http.get('./api/logs', {
@@ -218,30 +219,27 @@ async function refreshLogs() {
       transformResponse: [(v) => v],
       validateStatus: () => true,
     });
-    if (typeof r.data === 'string') {
-      const prev = logs.value || '';
-      const prevCount = prev ? prev.split('\n').length : 0;
-      const nextText = r.data;
-      const nextCount = nextText ? nextText.split('\n').length : 0;
+    if (r.status !== 200 || typeof r.data !== 'string') return;
+    const prev = logs.value || '';
+    const prevCount = prev ? prev.split('\n').length : 0;
+    const nextText = r.data;
+    const nextCount = nextText ? nextText.split('\n').length : 0;
 
-      logs.value = nextText;
+    logs.value = nextText;
 
-      if (!autoScrollEnabled.value) {
-        const delta = Math.max(nextCount - prevCount, 0);
-        if (delta > 0) {
-          unseenLines.value += delta;
-          newLogsAvailable.value = true;
-        }
+    if (!autoScrollEnabled.value) {
+      const delta = Math.max(nextCount - prevCount, 0);
+      if (delta > 0) {
+        unseenLines.value += delta;
+        newLogsAvailable.value = true;
       }
+    }
 
-      await nextTick();
-      if (autoScrollEnabled.value) {
-        scrollToBottom();
-        newLogsAvailable.value = false;
-        unseenLines.value = 0;
-      }
-
-      lastLineCount = nextCount;
+    await nextTick();
+    if (autoScrollEnabled.value) {
+      scrollToBottom();
+      newLogsAvailable.value = false;
+      unseenLines.value = 0;
     }
   } catch {
     // ignore errors
@@ -287,7 +285,10 @@ function restart() {
 }
 
 onMounted(async () => {
-  const authStore = useAuthStore();
+  loginDisposer = authStore.onLogin(() => {
+    void refreshLogs();
+  });
+
   await authStore.waitForAuthentication();
 
   nextTick(() => {
@@ -300,6 +301,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (logInterval) window.clearInterval(logInterval);
+  if (loginDisposer) loginDisposer();
 });
 </script>
 

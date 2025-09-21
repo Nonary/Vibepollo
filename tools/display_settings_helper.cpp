@@ -889,6 +889,7 @@ namespace {
 
     DisplayController controller;
     DisplayEventPump event_pump;
+    std::atomic<bool> event_pump_running {false};
     std::mutex restore_event_mutex;
     std::condition_variable restore_event_cv;
     bool restore_event_flag {false};
@@ -1425,26 +1426,48 @@ namespace {
     // Start a background polling loop that checks every ~3s whether the
     // requested restore topology is valid; if so, perform the restore and
     // confirm success. Logging is throttled (~15 minutes) to avoid noise.
-    void ensure_restore_polling(RestoreWindow window = RestoreWindow::Primary) {
+    void ensure_restore_polling(
+      RestoreWindow window = RestoreWindow::Primary,
+      const char *reason = "initial",
+      bool force_start = true
+    ) {
       if (!restore_requested.load(std::memory_order_acquire)) {
         return;
       }
+
+      bool pump_expected = false;
+      if (event_pump_running.compare_exchange_strong(pump_expected, true, std::memory_order_acq_rel)) {
+        event_pump.start([this](const char *event_reason) {
+          if (!restore_requested.load(std::memory_order_acquire)) {
+            return;
+          }
+          const char *why = event_reason ? event_reason : "event";
+          if (!restore_poll_active.load(std::memory_order_acquire)) {
+            ensure_restore_polling(RestoreWindow::Event, why, true);
+          } else {
+            signal_restore_event(why, RestoreWindow::Event);
+          }
+        });
+      }
+
       bool expected = false;
       if (!restore_poll_active.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        signal_restore_event("initial", window, true);
-        BOOST_LOG(debug) << "Restore loop already active; ignoring additional trigger.";
+        const char *label = reason ? reason : ((window == RestoreWindow::Primary) ? "initial" : "event");
+        signal_restore_event(label, window, force_start);
+        BOOST_LOG(debug) << "Restore loop already active; window updated to "
+                         << ((window == RestoreWindow::Primary) ? "primary" : "event");
         return;
       }
-      event_pump.start([this](const char *reason) {
-        signal_restore_event(reason, RestoreWindow::Event);
-      });
-      signal_restore_event("initial", window, true);
+
+      const char *label = reason ? reason : ((window == RestoreWindow::Primary) ? "initial" : "event");
+      signal_restore_event(label, window, force_start);
       restore_poll_thread = std::jthread(&ServiceState::restore_poll_proc, this);
     }
 
     void stop_restore_polling() {
       restore_poll_active.store(false, std::memory_order_release);
       event_pump.stop();
+      event_pump_running.store(false, std::memory_order_release);
       signal_restore_event(nullptr);
       restore_active_until_ms.store(0, std::memory_order_release);
       last_restore_event_ms.store(0, std::memory_order_release);
@@ -1501,6 +1524,7 @@ namespace {
             self->running_flag->store(false, std::memory_order_release);
           }
           self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
           self->restore_poll_active.store(false, std::memory_order_release);
           self->restore_requested.store(false, std::memory_order_release);
           self->clear_restore_origin();
@@ -1523,6 +1547,7 @@ namespace {
             BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
           }
           self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
           self->restore_poll_active.store(false, std::memory_order_release);
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
@@ -1533,13 +1558,16 @@ namespace {
         }
       } catch (...) {}
 
+      bool exit_due_to_timeout = false;
       while (!st.stop_requested()) {
         const auto now = std::chrono::steady_clock::now();
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
         auto active_until_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
         const auto active_window_kind = self->restore_active_window.load(std::memory_order_acquire);
         bool active_window = (active_until_ms != 0 && now_ms <= active_until_ms);
+        bool window_expired = false;
         if (!active_window && active_until_ms != 0 && now_ms > active_until_ms) {
+          window_expired = true;
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
           active_until_ms = 0;
@@ -1558,6 +1586,13 @@ namespace {
           break;
         }
         if (!triggered) {
+          if (window_expired) {
+            const char *window_label = (active_window_kind == RestoreWindow::Primary) ? "primary" : "event";
+            BOOST_LOG(info) << "Restore polling: " << window_label
+                            << " window exhausted; pausing attempts until next event.";
+            exit_due_to_timeout = true;
+            break;
+          }
           const auto now2 = std::chrono::steady_clock::now();
           if (now2 - last_log >= kLogThrottle) {
             last_log = now2;
@@ -1599,6 +1634,7 @@ namespace {
           }
           self->restore_poll_active.store(false, std::memory_order_release);
           self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
           self->last_restore_event_ms.store(0, std::memory_order_release);
@@ -1622,11 +1658,17 @@ namespace {
         }
       }
       self->restore_stage_running.store(false, std::memory_order_release);
-      self->event_pump.stop();
       self->restore_poll_active.store(false, std::memory_order_release);
       self->restore_active_until_ms.store(0, std::memory_order_release);
       self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
       self->last_restore_event_ms.store(0, std::memory_order_release);
+
+      if (exit_due_to_timeout) {
+        return;
+      }
+
+      self->event_pump.stop();
+      self->event_pump_running.store(false, std::memory_order_release);
       self->restore_requested.store(false, std::memory_order_release);
       self->clear_restore_origin();
     }
@@ -2042,6 +2084,8 @@ int main() {
 
   std::atomic<bool> running {true};
   state.running_flag = &running;
+  auto last_connect_wait_log = std::chrono::steady_clock::time_point::min();
+  constexpr auto kReconnectLogInterval = std::chrono::hours(1);
 
   // Outer service loop: keep accepting new client sessions while running
   while (running.load(std::memory_order_acquire)) {
@@ -2062,10 +2106,17 @@ int main() {
     async_pipe.wait_for_client_connection(60000);  // 60s window after handshake
 
     if (!async_pipe.is_connected()) {
-      BOOST_LOG(warning) << "Display helper: client connection not established within 60s window; retrying.";
+      const auto now = std::chrono::steady_clock::now();
+      if (last_connect_wait_log == std::chrono::steady_clock::time_point::min() ||
+          now - last_connect_wait_log >= kReconnectLogInterval) {
+        last_connect_wait_log = now;
+        BOOST_LOG(info) << "Waiting for Sunshine to reconnect... (this message only shows up once per hour).";
+      }
       std::this_thread::sleep_for(500ms);
       continue;
     }
+
+    last_connect_wait_log = std::chrono::steady_clock::time_point::min();
 
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
