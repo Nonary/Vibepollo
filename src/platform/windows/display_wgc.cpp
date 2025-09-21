@@ -109,7 +109,7 @@ namespace platf::dxgi {
       d3d_img->blank = false;  // image is always ready for capture
 
       // Assign the shared texture from the session to the img_d3d_t
-      d3d_img->capture_texture.reset(src.get());  // no need to AddRef() because acquire on ipc uses copy_to
+      d3d_img->capture_texture.reset(src.release());
 
       // Get the keyed mutex from the shared texture
       HRESULT status = d3d_img->capture_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &d3d_img->capture_mutex);

@@ -1,6 +1,6 @@
 /**
  * @file src/platform/windows/rtss_integration.h
- * @brief Windows-only RTSS frame limit integration via RTSSHooks.dll and Global profile.
+ * @brief Windows-only RTSS frame limit integration via RTSSHooks.dll and Sunshine-managed profile.
  */
 #pragma once
 
@@ -16,7 +16,9 @@ namespace platf {
     std::string resolved_path;  // absolute resolved path we will use
     bool path_exists;  // resolved path exists on disk
     bool hooks_found;  // RTSSHooks64.dll or RTSSHooks.dll exists
-    bool profile_found;  // Profiles/Global exists
+    bool profile_found;  // Sunshine-managed profile exists
+    bool can_bootstrap_profile;  // Sunshine can create its profile automatically
+    bool process_running;  // RTSS process currently running
   };
 
   // Apply RTSS frame limit and related settings at stream start.

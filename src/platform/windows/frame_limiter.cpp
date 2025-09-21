@@ -96,7 +96,7 @@ namespace platf {
         case frame_limiter_provider::none:
           break;
         case frame_limiter_provider::auto_detect:
-          order = {frame_limiter_provider::nvidia_control_panel, frame_limiter_provider::rtss};
+          order = {frame_limiter_provider::rtss, frame_limiter_provider::nvidia_control_panel};
           break;
         default:
           order = {configured};

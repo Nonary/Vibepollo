@@ -52,6 +52,8 @@ namespace confighttp {
     out["path_exists"] = rtss.path_exists;
     out["hooks_found"] = rtss.hooks_found;
     out["profile_found"] = rtss.profile_found;
+    out["can_bootstrap_profile"] = rtss.can_bootstrap_profile;
+    out["process_running"] = rtss.process_running;
 
     // A user-friendly message hinting required action
     std::string message;
@@ -82,38 +84,62 @@ namespace confighttp {
       return "None";
     };
 
+    const auto add_segment = [](std::string &dest, const std::string &segment) {
+      if (segment.empty()) {
+        return;
+      }
+      if (!dest.empty()) {
+        dest.push_back(' ');
+      }
+      dest += segment;
+    };
+
+    const std::string configured_id = provider_to_string(fl.configured_provider);
+    const bool prefer_rtss = fl.configured_provider == platf::frame_limiter_provider::rtss || fl.configured_provider == platf::frame_limiter_provider::auto_detect;
+    const bool rtss_ready = rtss.path_exists && rtss.hooks_found;
+    const bool rtss_bootstrap_pending = rtss_ready && !rtss.profile_found && rtss.can_bootstrap_profile;
+
     std::string provider_message;
     if (fl.enabled) {
       if (fl.active_provider == platf::frame_limiter_provider::nvidia_control_panel) {
-        provider_message = "NVIDIA Control Panel frame limiter active.";
+        add_segment(provider_message, "NVIDIA Control Panel frame limiter active (not recommended; it cannot guarantee perfect frame pacing).");
       } else if (fl.active_provider == platf::frame_limiter_provider::rtss) {
-        provider_message = "RTSS frame limiter active.";
+        add_segment(provider_message, "RTSS frame limiter active for this stream.");
       } else {
-        std::string configured = provider_to_string(fl.configured_provider);
         if (fl.configured_provider == platf::frame_limiter_provider::nvidia_control_panel) {
           if (!fl.nvidia_available) {
-            provider_message = "No NVIDIA GPU detected. Switch to RTSS or install NVIDIA drivers.";
+            add_segment(provider_message, "No NVIDIA GPU detected. Switch to RTSS or install NVIDIA drivers.");
           } else if (!fl.nvcp_ready) {
-            provider_message = "NVIDIA Control Panel integration unavailable (NvAPI not ready).";
+            add_segment(provider_message, "NVIDIA Control Panel integration unavailable (NvAPI not ready).");
           } else {
-            provider_message = "NVIDIA Control Panel detected; limiter will engage when streaming.";
+            add_segment(provider_message, "NVIDIA Control Panel limiter selected (not recommended). Sunshine recommends RTSS for smoother pacing.");
           }
-        } else if (fl.configured_provider == platf::frame_limiter_provider::rtss || fl.configured_provider == platf::frame_limiter_provider::auto_detect) {
+        } else if (prefer_rtss) {
           if (!rtss.path_exists) {
-            provider_message = "RTSS not found at resolved path. Install RTSS or adjust install path.";
+            add_segment(provider_message, "RTSS not found at the resolved path. Install RTSS for the smoothest streaming experience.");
           } else if (!rtss.hooks_found) {
-            provider_message = "RTSSHooks DLL not found. Install RTSS or correct path.";
-          } else if (!rtss.profile_found) {
-            provider_message = "RTSS Global profile not found (Profiles/Global). Launch RTSS once or correct path.";
+            add_segment(provider_message, "RTSSHooks DLL not found. Reinstall RTSS to restore frame limiter support.");
           } else {
-            provider_message = std::string("Frame limiter configured for ") + describe_provider(configured) + "; awaiting next stream.";
+            add_segment(provider_message, std::string("Frame limiter configured for ") + describe_provider(configured_id) + "; awaiting next stream.");
+            if (!rtss.process_running) {
+              add_segment(provider_message, "Sunshine will launch RTSS automatically when streaming starts.");
+            }
+            if (rtss_bootstrap_pending) {
+              add_segment(provider_message, "Sunshine will refresh RTSS configuration automatically on the next stream.");
+            }
           }
         } else {
-          provider_message = "Frame limiter enabled but no provider active.";
+          add_segment(provider_message, "Frame limiter enabled but no provider applied.");
         }
       }
     } else {
-      provider_message = "Frame limiter disabled; enable in settings to activate.";
+      add_segment(provider_message, "Frame limiter disabled; enable in settings to activate.");
+    }
+
+    if (prefer_rtss) {
+      add_segment(provider_message, "RTSS provides the smoothest pacing; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.");
+    } else if (fl.configured_provider == platf::frame_limiter_provider::nvidia_control_panel) {
+      add_segment(provider_message, "Sunshine recommends installing RTSS for the smoothest streaming experience; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.");
     }
 
     std::string override_message;

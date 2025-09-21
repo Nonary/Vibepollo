@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useConfigStore } from '@/stores/config';
-import { NSwitch, NSelect, NInput, NButton } from 'naive-ui';
+import { NSwitch, NSelect, NInput, NButton, NTable } from 'naive-ui';
 import { http } from '@/http';
 import { useI18n } from 'vue-i18n';
 
@@ -45,8 +45,8 @@ const providerLabelFor = (id: string) => {
 
 const providerOptions = computed(() => [
   { label: providerLabelFor('auto'), value: 'auto' },
-  { label: providerLabelFor('nvidia-control-panel'), value: 'nvidia-control-panel' },
   { label: providerLabelFor('rtss'), value: 'rtss' },
+  { label: providerLabelFor('nvidia-control-panel'), value: 'nvidia-control-panel' },
 ]);
 
 const syncLimiterOptions = computed(() => [
@@ -57,32 +57,50 @@ const syncLimiterOptions = computed(() => [
   { label: t('frameLimiter.syncLimiter.reflex'), value: 'nvidia reflex' },
 ]);
 
+const syncLimiterHelpRows = computed(() => [
+  {
+    id: 'async',
+    label: t('rtss.sync_limiter_async_short'),
+    latency: t('rtss.sync_limiter_async_latency'),
+    stutter: t('rtss.sync_limiter_async_stutter'),
+    use: t('rtss.sync_limiter_async_use'),
+  },
+  {
+    id: 'front',
+    label: t('rtss.sync_limiter_front_short'),
+    latency: t('rtss.sync_limiter_front_latency'),
+    stutter: t('rtss.sync_limiter_front_stutter'),
+    use: t('rtss.sync_limiter_front_use'),
+  },
+  {
+    id: 'back',
+    label: t('rtss.sync_limiter_back_short'),
+    latency: t('rtss.sync_limiter_back_latency'),
+    stutter: t('rtss.sync_limiter_back_stutter'),
+    use: t('rtss.sync_limiter_back_use'),
+  },
+  {
+    id: 'reflex',
+    label: t('rtss.sync_limiter_reflex_short'),
+    latency: t('rtss.sync_limiter_reflex_latency'),
+    stutter: t('rtss.sync_limiter_reflex_stutter'),
+    use: t('rtss.sync_limiter_reflex_use'),
+  },
+]);
+
 const nvidiaDetected = computed(() => !!status.value?.nvidia_available);
 const nvcpReady = computed(() => !!status.value?.nvcp_ready);
-const nvOverridesSupported = computed(() => !!status.value?.nv_overrides_supported);
 const rtssDetected = computed(() => {
   const s = status.value;
-  return !!(s && s.path_exists && s.hooks_found && s.profile_found);
+  return !!(s && s.path_exists && s.hooks_found);
 });
-
-const shouldShowRtssConfig = computed(() => {
-  const provider = frameLimiterProvider.value;
-  if (provider === 'rtss') {
-    return true;
-  }
-  if (provider === 'auto' && !nvOverridesSupported.value) {
-    return true;
-  }
-  return false;
-});
-
-const showRtssInstallHint = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
-
-const showRtssInstallInput = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
 
 const effectiveProvider = computed(() => {
   const provider = frameLimiterProvider.value;
   if (provider === 'auto') {
+    if (rtssDetected.value) {
+      return 'rtss';
+    }
     if (nvcpReady.value && nvidiaDetected.value) {
       return 'nvidia-control-panel';
     }
@@ -90,6 +108,38 @@ const effectiveProvider = computed(() => {
   }
   return provider;
 });
+
+const rtssBootstrapPending = computed(() => {
+  const s = status.value;
+  return !!(s && s.can_bootstrap_profile && !s.profile_found);
+});
+
+const rtssAutoLaunchPlanned = computed(() => {
+  const s = status.value;
+  return !!(s && s.path_exists && s.hooks_found && !s.process_running);
+});
+
+const shouldShowRtssConfig = computed(() => {
+  const provider = frameLimiterProvider.value;
+  return provider === 'rtss' || provider === 'auto';
+});
+
+const showRtssInstallHint = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
+
+const showRtssInstallInput = computed(() => shouldShowRtssConfig.value && !rtssDetected.value);
+
+const showSyncLimiterSelect = computed(() => {
+  const provider = frameLimiterProvider.value;
+  if (provider === 'rtss') {
+    return true;
+  }
+  if (provider === 'auto') {
+    return effectiveProvider.value === 'rtss';
+  }
+  return false;
+});
+
+const showSyncLimiterHelp = computed(() => showSyncLimiterSelect.value);
 
 const statusBadgeClass = computed(() => {
   if (!status.value || !frameLimiterEnabled.value) {
@@ -101,7 +151,9 @@ const statusBadgeClass = computed(() => {
       : 'bg-warning/10 text-warning';
   }
   if (effectiveProvider.value === 'rtss') {
-    return rtssDetected.value ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning';
+    return rtssDetected.value || rtssBootstrapPending.value
+      ? 'bg-success/10 text-success'
+      : 'bg-warning/10 text-warning';
   }
   return 'bg-warning/10 text-warning';
 });
@@ -129,9 +181,13 @@ const statusMessage = computed(() => {
     return t('frameLimiter.status.nvcpDetected');
   }
   if (effectiveProvider.value === 'rtss') {
-    return rtssDetected.value
-      ? t('frameLimiter.status.rtssDetected')
-      : t('frameLimiter.status.rtssNotDetected');
+    if (rtssDetected.value) {
+      return t('frameLimiter.status.rtssDetected');
+    }
+    if (rtssBootstrapPending.value) {
+      return t('frameLimiter.status.rtssBootstrap');
+    }
+    return t('frameLimiter.status.rtssNotDetected');
   }
   return t('frameLimiter.status.unknown');
 });
@@ -175,6 +231,23 @@ onMounted(() => {
       {{ stepLabel }}: {{ t('frameLimiter.stepTitle') }}
     </legend>
 
+    <div class="mb-4 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-[12px]">
+      <div class="font-medium">{{ t('frameLimiter.noticeTitle') }}</div>
+      <div class="mt-1 opacity-80">{{ t('frameLimiter.noticeCopy') }}</div>
+    </div>
+
+    <div v-if="showSyncLimiterSelect" class="mb-4 space-y-2">
+      <label class="form-label" for="rtss_frame_limit_type">{{
+        t('frameLimiter.syncLimiterLabel')
+      }}</label>
+      <n-select
+        id="rtss_frame_limit_type"
+        v-model:value="config.rtss_frame_limit_type"
+        :options="syncLimiterOptions"
+      />
+      <p class="form-text">{{ t('frameLimiter.syncLimiterHint') }}</p>
+    </div>
+
     <div class="space-y-4">
       <div
         v-if="status || statusError"
@@ -190,6 +263,19 @@ onMounted(() => {
             <span class="ml-1">{{ t('frameLimiter.actions.refresh') }}</span>
           </n-button>
         </div>
+        <p
+          v-if="
+            status &&
+            effectiveProvider === 'rtss' &&
+            (rtssBootstrapPending || rtssAutoLaunchPlanned)
+          "
+          class="mt-2 text-xs opacity-80"
+        >
+          <span v-if="rtssBootstrapPending">{{ t('frameLimiter.status.rtssBootstrapHint') }}</span>
+          <span v-else-if="rtssAutoLaunchPlanned">{{
+            t('frameLimiter.status.rtssAutolaunchHint')
+          }}</span>
+        </p>
         <p v-if="statusError" class="mt-2 text-xs text-warning">{{ statusError }}</p>
       </div>
 
@@ -232,33 +318,60 @@ onMounted(() => {
       </div>
 
       <div v-if="shouldShowRtssConfig" class="space-y-4">
-        <div class="grid gap-4 md:grid-cols-2">
-          <div v-if="showRtssInstallInput">
-            <label class="form-label" for="rtss_install_path">{{
-              t('frameLimiter.rtssPath')
-            }}</label>
-            <n-input
-              id="rtss_install_path"
-              v-model:value="config.rtss_install_path"
-              :placeholder="t('frameLimiter.rtssPathPlaceholder')"
-            />
-            <p class="form-text">{{ t('frameLimiter.rtssPathHint') }}</p>
-          </div>
-          <div>
-            <label class="form-label" for="rtss_frame_limit_type">{{
-              t('frameLimiter.syncLimiterLabel')
-            }}</label>
-            <n-select
-              id="rtss_frame_limit_type"
-              v-model:value="config.rtss_frame_limit_type"
-              :options="syncLimiterOptions"
-            />
-            <p class="form-text">{{ t('frameLimiter.syncLimiterHint') }}</p>
-          </div>
+        <div v-if="showRtssInstallInput" class="space-y-2">
+          <label class="form-label" for="rtss_install_path">{{ t('frameLimiter.rtssPath') }}</label>
+          <n-input
+            id="rtss_install_path"
+            v-model:value="config.rtss_install_path"
+            :placeholder="t('frameLimiter.rtssPathPlaceholder')"
+          />
+          <p class="form-text">{{ t('frameLimiter.rtssPathHint') }}</p>
         </div>
         <p v-if="showRtssInstallHint" class="text-[11px] text-warning">
           {{ t('frameLimiter.rtssMissing') }}
         </p>
+      </div>
+
+      <div
+        v-if="showSyncLimiterHelp"
+        class="rounded-lg border border-primary/30 bg-primary/5 p-4 text-[12px]"
+      >
+        <div class="text-[13px] font-medium">{{ t('rtss.sync_limiter_help_heading') }}</div>
+        <div class="mt-1 opacity-80">{{ t('rtss.sync_limiter_help_blurb') }}</div>
+        <div class="mt-3 overflow-x-auto">
+          <n-table size="small" :single-line="false" :bordered="false" class="min-w-full text-left">
+            <thead>
+              <tr class="border-b border-primary/30 text-[11px] uppercase tracking-wide opacity-70">
+                <th scope="col" class="pb-2 pr-4 font-medium">
+                  {{ t('rtss.sync_limiter_help_mode') }}
+                </th>
+                <th scope="col" class="pb-2 pr-4 font-medium">
+                  {{ t('rtss.sync_limiter_help_latency') }}
+                </th>
+                <th scope="col" class="pb-2 pr-4 font-medium">
+                  {{ t('rtss.sync_limiter_help_stutter') }}
+                </th>
+                <th scope="col" class="pb-2 font-medium">
+                  {{ t('rtss.sync_limiter_help_usage') }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in syncLimiterHelpRows"
+                :key="row.id"
+                class="border-b border-primary/20 last:border-0"
+              >
+                <th scope="row" class="py-3 pr-4 text-[12px] font-medium align-top">
+                  {{ row.label }}
+                </th>
+                <td class="py-3 pr-4 align-top text-[12px]">{{ row.latency }}</td>
+                <td class="py-3 pr-4 align-top text-[12px]">{{ row.stutter }}</td>
+                <td class="py-3 align-top text-[12px]">{{ row.use }}</td>
+              </tr>
+            </tbody>
+          </n-table>
+        </div>
       </div>
     </div>
   </fieldset>
