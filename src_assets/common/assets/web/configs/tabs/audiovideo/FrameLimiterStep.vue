@@ -10,6 +10,17 @@ const props = defineProps<{ stepLabel: string }>();
 const { t } = useI18n();
 const store = useConfigStore();
 const config = store.config;
+const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
+
+watch(
+  () => config.dd_wa_dummy_plug_hdr10,
+  (value) => {
+    if (value && !config.rtss_disable_vsync_ullm) {
+      config.rtss_disable_vsync_ullm = true;
+    }
+  },
+  { immediate: true },
+);
 
 const status = ref<any>(null);
 const statusError = ref<string | null>(null);
@@ -63,6 +74,8 @@ const syncLimiterHelpRows = computed(() => [
     label: t('rtss.sync_limiter_async_short'),
     latency: t('rtss.sync_limiter_async_latency'),
     stutter: t('rtss.sync_limiter_async_stutter'),
+    advantages: t('rtss.sync_limiter_async_advantages'),
+    disadvantages: t('rtss.sync_limiter_async_disadvantages'),
     use: t('rtss.sync_limiter_async_use'),
   },
   {
@@ -70,6 +83,8 @@ const syncLimiterHelpRows = computed(() => [
     label: t('rtss.sync_limiter_front_short'),
     latency: t('rtss.sync_limiter_front_latency'),
     stutter: t('rtss.sync_limiter_front_stutter'),
+    advantages: t('rtss.sync_limiter_front_advantages'),
+    disadvantages: t('rtss.sync_limiter_front_disadvantages'),
     use: t('rtss.sync_limiter_front_use'),
   },
   {
@@ -77,6 +92,8 @@ const syncLimiterHelpRows = computed(() => [
     label: t('rtss.sync_limiter_back_short'),
     latency: t('rtss.sync_limiter_back_latency'),
     stutter: t('rtss.sync_limiter_back_stutter'),
+    advantages: t('rtss.sync_limiter_back_advantages'),
+    disadvantages: t('rtss.sync_limiter_back_disadvantages'),
     use: t('rtss.sync_limiter_back_use'),
   },
   {
@@ -84,6 +101,8 @@ const syncLimiterHelpRows = computed(() => [
     label: t('rtss.sync_limiter_reflex_short'),
     latency: t('rtss.sync_limiter_reflex_latency'),
     stutter: t('rtss.sync_limiter_reflex_stutter'),
+    advantages: t('rtss.sync_limiter_reflex_advantages'),
+    disadvantages: t('rtss.sync_limiter_reflex_disadvantages'),
     use: t('rtss.sync_limiter_reflex_use'),
   },
 ]);
@@ -96,9 +115,14 @@ const rtssDetected = computed(() => {
 });
 
 const effectiveProvider = computed(() => {
+  const active = status.value?.active_provider;
+  if (active && active !== 'none' && active !== 'auto') {
+    return active;
+  }
+
   const provider = frameLimiterProvider.value;
   if (provider === 'auto') {
-    if (rtssDetected.value) {
+    if (status.value?.rtss_available || rtssDetected.value) {
       return 'rtss';
     }
     if (nvcpReady.value && nvidiaDetected.value) {
@@ -236,18 +260,6 @@ onMounted(() => {
       <div class="mt-1 opacity-80">{{ t('frameLimiter.noticeCopy') }}</div>
     </div>
 
-    <div v-if="showSyncLimiterSelect" class="mb-4 space-y-2">
-      <label class="form-label" for="rtss_frame_limit_type">{{
-        t('frameLimiter.syncLimiterLabel')
-      }}</label>
-      <n-select
-        id="rtss_frame_limit_type"
-        v-model:value="config.rtss_frame_limit_type"
-        :options="syncLimiterOptions"
-      />
-      <p class="form-text">{{ t('frameLimiter.syncLimiterHint') }}</p>
-    </div>
-
     <div class="space-y-4">
       <div
         v-if="status || statusError"
@@ -307,12 +319,18 @@ onMounted(() => {
         <label class="form-label" for="disable_vsync_ullm">{{
           t('frameLimiter.vsyncUllmLabel')
         }}</label>
-        <n-switch id="disable_vsync_ullm" v-model:value="config.rtss_disable_vsync_ullm" />
+        <n-switch
+          id="disable_vsync_ullm"
+          v-model:value="config.rtss_disable_vsync_ullm"
+          :disabled="dummyPlugHdrActive"
+        />
         <p class="form-text">
           {{
-            nvidiaDetected && nvcpReady
-              ? t('frameLimiter.vsyncUllmHintNv')
-              : t('frameLimiter.vsyncUllmHintGeneric')
+            dummyPlugHdrActive
+              ? t('frameLimiter.vsyncUllmForcedByDummyPlug')
+              : nvidiaDetected && nvcpReady
+                ? t('frameLimiter.vsyncUllmHintNv')
+                : t('frameLimiter.vsyncUllmHintGeneric')
           }}
         </p>
       </div>
@@ -351,6 +369,12 @@ onMounted(() => {
                 <th scope="col" class="pb-2 pr-4 font-medium">
                   {{ t('rtss.sync_limiter_help_stutter') }}
                 </th>
+                <th scope="col" class="pb-2 pr-4 font-medium">
+                  {{ t('rtss.sync_limiter_help_advantages') }}
+                </th>
+                <th scope="col" class="pb-2 pr-4 font-medium">
+                  {{ t('rtss.sync_limiter_help_disadvantages') }}
+                </th>
                 <th scope="col" class="pb-2 font-medium">
                   {{ t('rtss.sync_limiter_help_usage') }}
                 </th>
@@ -363,14 +387,27 @@ onMounted(() => {
                 class="border-b border-primary/20 last:border-0"
               >
                 <th scope="row" class="py-3 pr-4 text-[12px] font-medium align-top">
-                  {{ row.label }}
+                  <span class="font-semibold">{{ row.label }}</span>
                 </th>
                 <td class="py-3 pr-4 align-top text-[12px]">{{ row.latency }}</td>
                 <td class="py-3 pr-4 align-top text-[12px]">{{ row.stutter }}</td>
+                <td class="py-3 pr-4 align-top text-[12px]">{{ row.advantages }}</td>
+                <td class="py-3 pr-4 align-top text-[12px]">{{ row.disadvantages }}</td>
                 <td class="py-3 align-top text-[12px]">{{ row.use }}</td>
               </tr>
             </tbody>
           </n-table>
+        </div>
+        <div v-if="showSyncLimiterSelect" class="mt-4 space-y-2">
+          <label class="form-label" for="rtss_frame_limit_type">{{
+            t('frameLimiter.syncLimiterLabel')
+          }}</label>
+          <n-select
+            id="rtss_frame_limit_type"
+            v-model:value="config.rtss_frame_limit_type"
+            :options="syncLimiterOptions"
+          />
+          <p class="form-text">{{ t('frameLimiter.syncLimiterHint') }}</p>
         </div>
       </div>
     </div>

@@ -1268,6 +1268,36 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_wa_dummy_plug_hdr10
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Forces Windows to run the capture output at 30&nbsp;Hz with HDR enabled so physical HDMI dummy plugs expose 10-bit colour.<br>
+            Sunshine also keeps the "Disable VSYNC/ULLM" option engaged to ensure the driver profile disables VSYNC and Ultra-Low Latency Mode.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_wa_dummy_plug_hdr10 = true
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Notes</td>
+        <td colspan="2">
+            Only enable this when using a physical dummy plug that needs the 10-bit HDR workaround.<br>
+            The workaround applies to directly launched applications only; Desktop streams keep their normal refresh rate so everyday use remains smooth.<br>
+            See the @hyperlink{https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions}{Dummy Plugs guide} for full setup details.
+        </td>
+    </tr>
+</table>
+
 ### dd_config_revert_delay
 
 <table>

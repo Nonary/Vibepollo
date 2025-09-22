@@ -168,6 +168,9 @@
     "dd_hdr_option": "HDR",
     "dd_hdr_option_auto": "Switch on/off the HDR mode as requested by the client (default)",
     "dd_hdr_option_disabled": "Do not change HDR settings",
+    "dd_wa_dummy_plug_hdr10": "HDR 10-bit workaround for physical dummy plugs",
+    "dd_wa_dummy_plug_hdr10_desc": "Locks physical dummy plugs to 30 Hz and keeps VSYNC/ULLM overrides active so HDR10 is recognised. Only enable this when you are using a hardware dummy plug. Applied to game launches only (Desktop streams keep their normal refresh rate).",
+    "dd_wa_dummy_plug_hdr10_link": "Dummy Plugs setup guide",
     "dd_mode_remapping": "Display mode remapping",
     "dd_mode_remapping_add": "Add remapping entry",
     "dd_mode_remapping_desc_1": "Specify remapping entries to change the requested resolution and/or refresh rate to other values.",
@@ -570,6 +573,7 @@
       "reflex": "NVIDIA Reflex"
     },
     "vsyncUllmLabel": "Disable VSYNC / Low Latency overrides",
+    "vsyncUllmForcedByDummyPlug": "Forced on because the dummy plug HDR workaround requires VSYNC and Ultra-Low Latency Mode overrides for 10-bit output.",
     "vsyncUllmHintNv": "On NVIDIA GPUs, Sunshine forces Vertical Sync Off and Low Latency Mode Off during the stream. Settings are restored when streaming stops.",
     "vsyncUllmHintGeneric": "When NVIDIA-specific overrides are unavailable, Sunshine prefers the highest refresh rate to avoid VSYNC and Low Latency Mode engagement.",
     "rtssPath": "RTSS install path",

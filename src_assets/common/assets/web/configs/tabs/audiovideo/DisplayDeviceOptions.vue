@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
@@ -14,6 +14,18 @@ const section = computed(() => props.section ?? 'pre');
 // Use centralized store for config and platform
 const store = useConfigStore();
 const config = store.config;
+watch(
+  () => (config as any)?.dd_wa_dummy_plug_hdr10,
+  (value) => {
+    if (value && !config.rtss_disable_vsync_ullm) {
+      config.rtss_disable_vsync_ullm = true;
+    }
+  },
+  { immediate: true },
+);
+
+const dummyPlugWikiUrl =
+  'https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions';
 
 // ----- Types -----
 type RefreshRateOnly = {
@@ -604,13 +616,28 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
               :data-search-options="ddHdrOptions.map((o) => `${o.label}::${o.value}`).join('|')"
               class="mb-2"
             />
-
             <Checkbox
               id="dd_wa_hdr_toggle"
               v-model="config.dd_wa_hdr_toggle"
               locale-prefix="config"
               default="false"
             />
+            <div class="mt-3">
+              <Checkbox
+                id="dd_wa_dummy_plug_hdr10"
+                v-model="(config as any).dd_wa_dummy_plug_hdr10"
+                locale-prefix="config"
+                :default="false"
+              >
+                <template #default>
+                  <span class="block">
+                    <a :href="dummyPlugWikiUrl" class="underline" rel="noopener" target="_blank">
+                      {{ $t('config.dd_wa_dummy_plug_hdr10_link') }}
+                    </a>
+                  </span>
+                </template>
+              </Checkbox>
+            </div>
           </div>
           <!-- Revert behavior (merged into this card) -->
           <div class="mt-4">

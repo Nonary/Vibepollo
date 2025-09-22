@@ -166,7 +166,7 @@ namespace platf::keyboard {
       auto utf32_str = boost::locale::conv::utf_to_utf<char32_t>(utf8_str);
       /* To HEX string */
       auto hex_unicode = to_hex(utf32_str);
-      BOOST_LOG(debug) << "Unicode, typing U+"sv << hex_unicode;
+      BOOST_LOG(verbose) << "Unicode, typing U+"sv << hex_unicode;
 
       /* pressing <CTRL> + <SHIFT> + U */
       (*raw->keyboard).press(0xA2);  // LEFTCTRL

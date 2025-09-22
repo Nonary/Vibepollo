@@ -504,7 +504,7 @@ function Connect-SunshinePipe {
 
   try {
     if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
-    Write-Log "Handshake: connecting control pipe '$PublicName' (timeout=${TimeoutMs}ms)"
+    Write-Log "Handshake: connecting control pipe (timeout=${TimeoutMs}ms)"
     $control = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PublicName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
     $control.Connect([Math]::Max(1000, [int]$TimeoutMs))
     Write-Log "Handshake: control connected (IsConnected=$($control.IsConnected))"
@@ -524,7 +524,7 @@ function Connect-SunshinePipe {
     $pipeName = [System.Text.Encoding]::Unicode.GetString($buf)
     $pipeName = $pipeName.Trim([char]0)
     if (-not $pipeName) { throw "Handshake received empty data pipe name" }
-    Write-Log "Handshake: received data pipe name '$pipeName'"
+    Write-Log "Handshake: received data pipe name"
 
     # Send ACK (single byte 0x02)
     $ackBuf = [byte[]]@([byte]$ACK)
@@ -659,7 +659,7 @@ function Ensure-LauncherConnections {
     } catch {}
     try {
       $pipe = "sunshine_playnite_ctl_$guid"
-      Write-Log "LauncherWatcher: connecting to pipe '$pipe' for pid=$($it.Pid)"
+      Write-Log "LauncherWatcher: connecting to pipe for pid=$($it.Pid)"
       # Pass cancellation token so Connect can be interrupted on shutdown
       $conn = Connect-SunshinePipe -PublicName $pipe -TimeoutMs 10000 -Token $Cts.Token
       if (-not $conn) { continue }
@@ -712,7 +712,7 @@ function Ensure-LauncherConnections {
       $ps.AddScript('Start-LauncherConnReader -Guid $ConnGuid -Conn $Conn -Token $Cts.Token') | Out-Null
       $h = $ps.BeginInvoke()
       $connInfo.Runspace = $rs; $connInfo.PowerShell = $ps; $connInfo.Handle = $h
-      Write-Log "LauncherWatcher: connected to $pipe"
+      Write-Log "LauncherWatcher: connected to launcher pipe"
     }
     catch { Write-Log "LauncherWatcher: failed to connect to ${guid}: $($_.Exception.Message)" }
   }

@@ -65,7 +65,7 @@ namespace platf::display_helper_client {
     if (pipe && pipe->is_connected()) {
       return true;
     }
-    BOOST_LOG(info) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
+    BOOST_LOG(debug) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
     auto creator_anon = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
       platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
       return ff.create_client("sunshine_display_helper");
@@ -77,7 +77,7 @@ namespace platf::display_helper_client {
       ok = pipe->is_connected();
     }
     if (!ok) {
-      BOOST_LOG(info) << "Display helper IPC: anonymous connect failed; trying named fallback";
+      BOOST_LOG(debug) << "Display helper IPC: anonymous connect failed; trying named fallback";
       auto creator_named = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
         platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::NamedPipeFactory>());
         return ff.create_client("sunshine_display_helper");
@@ -90,7 +90,7 @@ namespace platf::display_helper_client {
         ok = false;
       }
     }
-    BOOST_LOG(info) << "Display helper IPC: connection " << (ok ? "succeeded" : "failed");
+    BOOST_LOG(ok ? debug : warning) << "Display helper IPC: connection " << (ok ? "succeeded" : "failed");
     return ok;
   }
 
@@ -98,16 +98,16 @@ namespace platf::display_helper_client {
     std::lock_guard<std::mutex> lg(pipe_mutex());
     auto &pipe = pipe_singleton();
     if (pipe) {
-      BOOST_LOG(info) << "Display helper IPC: resetting cached connection";
+      BOOST_LOG(debug) << "Display helper IPC: resetting cached connection";
     }
     pipe.reset();
   }
 
   bool send_apply_json(const std::string &json) {
-    BOOST_LOG(info) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
+    BOOST_LOG(debug) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
-      BOOST_LOG(info) << "Display helper IPC: APPLY aborted - no connection";
+      BOOST_LOG(warning) << "Display helper IPC: APPLY aborted - no connection";
       return false;
     }
     std::vector<uint8_t> payload(json.begin(), json.end());
@@ -119,10 +119,10 @@ namespace platf::display_helper_client {
   }
 
   bool send_revert() {
-    BOOST_LOG(info) << "Display helper IPC: REVERT request queued";
+    BOOST_LOG(debug) << "Display helper IPC: REVERT request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
-      BOOST_LOG(info) << "Display helper IPC: REVERT aborted - no connection";
+      BOOST_LOG(warning) << "Display helper IPC: REVERT aborted - no connection";
       return false;
     }
     std::vector<uint8_t> payload;
@@ -134,10 +134,10 @@ namespace platf::display_helper_client {
   }
 
   bool send_export_golden() {
-    BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN request queued";
+    BOOST_LOG(debug) << "Display helper IPC: EXPORT_GOLDEN request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
-      BOOST_LOG(info) << "Display helper IPC: EXPORT_GOLDEN aborted - no connection";
+      BOOST_LOG(warning) << "Display helper IPC: EXPORT_GOLDEN aborted - no connection";
       return false;
     }
     std::vector<uint8_t> payload;
@@ -149,10 +149,10 @@ namespace platf::display_helper_client {
   }
 
   bool send_reset() {
-    BOOST_LOG(info) << "Display helper IPC: RESET request queued";
+    BOOST_LOG(debug) << "Display helper IPC: RESET request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
-      BOOST_LOG(info) << "Display helper IPC: RESET aborted - no connection";
+      BOOST_LOG(warning) << "Display helper IPC: RESET aborted - no connection";
       return false;
     }
     std::vector<uint8_t> payload;

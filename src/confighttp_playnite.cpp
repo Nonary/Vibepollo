@@ -264,7 +264,16 @@ namespace confighttp {
     } else {
       ok = platf::playnite::install_plugin(err);
     }
-    BOOST_LOG(info) << "Playnite install: status=" << (ok ? "true" : "false") << (ok ? "" : std::string(", error=") + err);
+    std::ostringstream log_msg;
+    log_msg << "Playnite install: " << (ok ? "success" : "failed");
+    if (have_target) {
+      log_msg << " target=" << target;
+    }
+    log_msg << " restart=" << (request_restart ? "true" : "false");
+    if (!ok && !err.empty()) {
+      log_msg << " error=" << err;
+    }
+    BOOST_LOG(info) << log_msg.str();
     out["status"] = ok;
     if (!ok) {
       out["error"] = err;
@@ -299,7 +308,15 @@ namespace confighttp {
       // ignore body parse errors; treat as no-restart
     }
     bool ok = platf::playnite::uninstall_plugin(err);
-    BOOST_LOG(info) << "Playnite uninstall: status=" << (ok ? "true" : "false") << (ok ? "" : std::string(", error=") + err);
+    {
+      std::ostringstream log_msg;
+      log_msg << "Playnite uninstall: " << (ok ? "success" : "failed")
+              << " restart=" << (request_restart ? "true" : "false");
+      if (!ok && !err.empty()) {
+        log_msg << " error=" << err;
+      }
+      BOOST_LOG(info) << log_msg.str();
+    }
     out["status"] = ok;
     if (!ok) {
       out["error"] = err;

@@ -466,8 +466,8 @@ namespace platf::dxgi {
         auto it = std::find(buffered.begin(), buffered.end(), ACK_MSG);
         if (it != buffered.end()) {
           const auto offset = static_cast<size_t>(std::distance(buffered.begin(), it));
-          BOOST_LOG(info) << "Handshake ACK received (offset=" << offset
-                          << ", buffered=" << buffered.size() << ')';
+          BOOST_LOG(debug) << "Handshake ACK received (offset=" << offset
+                           << ", buffered=" << buffered.size() << ')';
           buffered.erase(buffered.begin(), it + 1);
           return HandshakeAckResult::Acked;
         }
@@ -477,8 +477,8 @@ namespace platf::dxgi {
           std::memcpy(&framed_len, buffered.data(), sizeof(framed_len));
           constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;  // matches FramedPipe guard
           if (framed_len > 0 && framed_len <= kMaxFrameLen) {
-            BOOST_LOG(info) << "Handshake ACK missing; framed payload detected (len=" << framed_len
-                            << "). Falling back to control pipe.";
+            BOOST_LOG(debug) << "Handshake ACK missing; framed payload detected (len=" << framed_len
+                             << "). Falling back to control pipe.";
             return HandshakeAckResult::Fallback;
           }
         }
@@ -502,7 +502,7 @@ namespace platf::dxgi {
       return HandshakeAckResult::Fallback;
     }
 
-    BOOST_LOG(info) << "Handshake ACK not observed within deadline; using control pipe directly.";
+    BOOST_LOG(debug) << "Handshake ACK not observed within deadline; using control pipe directly.";
     return HandshakeAckResult::Fallback;
   }
 
@@ -516,7 +516,7 @@ namespace platf::dxgi {
     }
 
     if (msg_result == HandshakeMessageResult::Inline) {
-      BOOST_LOG(info) << "Anonymous handshake: falling back to control pipe";
+      BOOST_LOG(debug) << "Anonymous handshake: falling back to control pipe";
       return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(prefetched));
     }
 
@@ -607,7 +607,7 @@ namespace platf::dxgi {
       pipe->disconnect();
       return false;
     }
-    BOOST_LOG(info) << "Anonymous handshake: client sent ACK";
+    BOOST_LOG(debug) << "Anonymous handshake: client sent ACK";
 
     return true;
   }

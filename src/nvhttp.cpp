@@ -512,22 +512,22 @@ namespace nvhttp {
 
   template<class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
-    BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
+    BOOST_LOG(verbose) << "HTTP "sv << request->method << ' ' << request->path << " tunnel="sv << tunnel<T>::to_string;
 
-    BOOST_LOG(debug) << "METHOD :: "sv << request->method;
-    BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
-
-    for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << val;
+    if (!request->header.empty()) {
+      BOOST_LOG(verbose) << "Headers:"sv;
+      for (auto &[name, val] : request->header) {
+        BOOST_LOG(verbose) << name << " -- " << val;
+      }
     }
 
-    BOOST_LOG(debug) << " [--] "sv;
-
-    for (auto &[name, val] : request->parse_query_string()) {
-      BOOST_LOG(debug) << name << " -- " << val;
+    auto query = request->parse_query_string();
+    if (!query.empty()) {
+      BOOST_LOG(verbose) << "Query Params:"sv;
+      for (auto &[name, val] : query) {
+        BOOST_LOG(verbose) << name << " -- " << val;
+      }
     }
-
-    BOOST_LOG(debug) << " [--] "sv;
   }
 
   template<class T>
@@ -581,7 +581,7 @@ namespace nvhttp {
         sess.client.uniqueID = std::move(uniqID);
         sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
 
-        BOOST_LOG(debug) << sess.client.cert;
+        BOOST_LOG(verbose) << sess.client.cert;
         auto ptr = map_id_sess.emplace(sess.client.uniqueID, std::move(sess)).first;
 
         ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
@@ -1101,7 +1101,7 @@ namespace nvhttp {
 
         X509_NAME_oneline(X509_get_subject_name(x509.get()), subject_name, sizeof(subject_name));
 
-        BOOST_LOG(debug) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
+        BOOST_LOG(verbose) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
       });
 
       while (add_cert->peek()) {
@@ -1110,7 +1110,7 @@ namespace nvhttp {
         auto cert = add_cert->pop();
         X509_NAME_oneline(X509_get_subject_name(cert.get()), subject_name, sizeof(subject_name));
 
-        BOOST_LOG(debug) << "Added cert ["sv << subject_name << ']';
+        BOOST_LOG(verbose) << "Added cert ["sv << subject_name << ']';
         cert_chain.add(std::move(cert));
       }
 

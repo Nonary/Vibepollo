@@ -85,6 +85,7 @@ const defaultGroups = [
       dd_config_revert_on_disconnect: 'disabled',
       dd_mode_remapping: { mixed: [], resolution_only: [], refresh_rate_only: [] },
       dd_wa_hdr_toggle: false,
+      dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
     },
@@ -410,7 +411,12 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = ['frame_limiter_enable', 'rtss_disable_vsync_ullm', 'dd_wa_hdr_toggle'];
+    const otherBoolKeys = [
+      'frame_limiter_enable',
+      'rtss_disable_vsync_ullm',
+      'dd_wa_hdr_toggle',
+      'dd_wa_dummy_plug_hdr10',
+    ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;
@@ -431,6 +437,10 @@ export const useConfigStore = defineStore('config', () => {
           (_data.value as any)[k] = b;
         }
       }
+    }
+
+    if (_data.value && (_data.value as any).dd_wa_dummy_plug_hdr10) {
+      (_data.value as any).rtss_disable_vsync_ullm = true;
     }
 
     // Normalize Playnite category/exclusion lists to arrays of {id,name}

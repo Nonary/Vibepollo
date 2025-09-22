@@ -1266,13 +1266,13 @@ static int launcher_run(int argc, char **argv) {
     if (ok) {
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
-      BOOST_LOG(info) << "Spawned child with public GUID: " << public_guid;
+      BOOST_LOG(info) << "Spawned child with generated public GUID";
       return 0;  // Parent exits; child continues with server
     } else {
       BOOST_LOG(error) << "Failed to spawn child process with GUID; continuing in current process";
     }
   }
-  BOOST_LOG(info) << "Using public GUID: " << public_guid;
+  BOOST_LOG(info) << "Using public GUID for launcher pipes";
 
   // Build dynamic control pipe name
   std::string control_name = std::string("sunshine_playnite_ctl_") + public_guid;

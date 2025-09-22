@@ -6,6 +6,7 @@
   #include <winsock2.h>
 
   // standard
+  #include <algorithm>
   #include <filesystem>
   #include <mutex>
   #include <optional>
@@ -26,6 +27,7 @@
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
+  #include "src/process.h"
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -40,6 +42,24 @@ namespace {
     return h;
   }
 
+  bool session_targets_desktop(const rtsp_stream::launch_session_t &session) {
+    const auto apps = proc::proc.get_apps();
+    if (apps.empty()) {
+      return false;
+    }
+
+    const auto app_id = std::to_string(session.appid);
+    const auto it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
+      return app.id == app_id;
+    });
+
+    if (it == apps.end()) {
+      return session.appid <= 0;
+    }
+
+    return it->cmd.empty() && it->playnite_id.empty();
+  }
+
   bool dd_feature_enabled() {
     using config_option_e = config::video_t::dd_t::config_option_e;
     return config::video.dd.configuration_option != config_option_e::disabled;
@@ -52,11 +72,11 @@ namespace {
     std::lock_guard<std::mutex> lg(helper_mutex());
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
-      BOOST_LOG(info) << "Display helper: checking existing process handle...";
+      BOOST_LOG(debug) << "Display helper: checking existing process handle...";
       DWORD wait = WaitForSingleObject(h, 0);
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
-        BOOST_LOG(info) << "Display helper already running (pid=" << pid << ")";
+        BOOST_LOG(debug) << "Display helper already running (pid=" << pid << ")";
         // Check IPC liveness with a lightweight ping; if unresponsive, restart the helper
         bool ping_ok = false;
         for (int i = 0; i < 2 && !ping_ok; ++i) {
@@ -76,7 +96,7 @@ namespace {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
         GetExitCodeProcess(h, &exit_code);
-        BOOST_LOG(info) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
+        BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
     }
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
@@ -95,7 +115,7 @@ namespace {
       return false;
     }
 
-    BOOST_LOG(info) << "Starting display helper: " << platf::to_utf8(helper.wstring());
+    BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
     const bool started = helper_proc().start(helper.wstring(), L"");
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
@@ -228,13 +248,24 @@ namespace display_helper_integration {
       (void) platf::display_helper_client::send_ping();
     }
 
+    const bool dummy_plug_mode = video_config.dd.wa.dummy_plug_hdr10;
+    const bool desktop_session = session_targets_desktop(session);
+    bool should_force_refresh = config::rtss.disable_vsync_ullm &&
+                                (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+    if (dummy_plug_mode) {
+      should_force_refresh = false;
+    }
+
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
       // Copy parsed config so we can optionally override refresh when VSYNC/ULLM suppression is enabled
       auto cfg_effective = *cfg;
 
-      const bool should_force_refresh = config::rtss.disable_vsync_ullm &&
-                                        (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+      if (dummy_plug_mode && !desktop_session) {
+        BOOST_LOG(info) << "Display helper: dummy plug HDR10 mode forcing 30 Hz for non-desktop session.";
+        cfg_effective.m_refresh_rate = display_device::Rational {30u, 1u};
+        cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
+      }
       if (should_force_refresh) {
         BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         // Prefer the highest available refresh rate for the targeted resolution to avoid
@@ -271,10 +302,38 @@ namespace display_helper_integration {
       return ok;
     }
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
-      // If DD config is disabled but VSYNC/ULLM suppression is enabled, apply a minimal config
-      // to force the highest available refresh rate for the targeted resolution.
-      const bool should_force_refresh = config::rtss.disable_vsync_ullm &&
-                                        (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+      if (dummy_plug_mode && !desktop_session) {
+        display_device::SingleDisplayConfiguration cfg_override;
+        cfg_override.m_device_id = video_config.output_name;  // optional
+        cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
+        if (session.enable_sops && session.width >= 0 && session.height >= 0) {
+          cfg_override.m_resolution = display_device::Resolution {
+            static_cast<unsigned int>(session.width),
+            static_cast<unsigned int>(session.height)
+          };
+        }
+        cfg_override.m_refresh_rate = display_device::Rational {30u, 1u};
+        cfg_override.m_hdr_state = display_device::HdrState::Enabled;
+
+        std::string json = display_device::toJson(cfg_override);
+        try {
+          if (video_config.dd.wa.hdr_toggle) {
+            nlohmann::json j = nlohmann::json::parse(json);
+            j["wa_hdr_toggle"] = true;
+            json = j.dump();
+          }
+        } catch (...) {
+        }
+        BOOST_LOG(info) << "Display helper: sending APPLY (dummy plug HDR10) with configuration:\n"
+                        << json;
+        const bool ok = platf::display_helper_client::send_apply_json(json);
+        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        if (ok) {
+          set_active_session(session);
+        }
+        return ok;
+      }
+
       if (should_force_refresh) {
         BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         display_device::SingleDisplayConfiguration cfg_override;

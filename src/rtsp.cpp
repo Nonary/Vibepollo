@@ -14,6 +14,7 @@ extern "C" {
 #include <cctype>
 #include <format>
 #include <set>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -680,7 +681,17 @@ namespace rtsp_stream {
 
     int serialized_len;
     util::c_ptr<char> raw_resp {serializeRtspMessage(resp.get(), &serialized_len)};
-    BOOST_LOG(debug)
+
+    std::ostringstream summary;
+    summary << "RTSP RESPONSE seq=" << resp->sequenceNumber;
+    if (resp->type == TYPE_RESPONSE) {
+      summary << " status=" << resp->message.response.statusString
+              << " code=" << resp->message.response.statusCode;
+    }
+    summary << " payload_len=" << payload.second;
+
+    BOOST_LOG(debug) << summary.str();
+    BOOST_LOG(verbose)
       << "---Begin Response---"sv << std::endl
       << std::string_view {raw_resp.get(), (std::size_t) serialized_len} << std::endl
       << std::string_view {payload.first, (std::size_t) payload.second} << std::endl
@@ -1179,10 +1190,9 @@ namespace rtsp_stream {
     auto seqnm = msg->sequenceNumber;
     std::string_view messageBuffer {msg->messageBuffer};
 
-    BOOST_LOG(debug) << "type ["sv << type << ']';
-    BOOST_LOG(debug) << "sequence number ["sv << seqnm << ']';
-    BOOST_LOG(debug) << "protocol :: "sv << protocol;
-    BOOST_LOG(debug) << "payload :: "sv << payload;
+    std::ostringstream summary;
+    summary << "RTSP " << type << " seq=" << seqnm << " protocol=" << protocol;
+    BOOST_LOG(verbose) << "payload :: "sv << payload;
 
     if (msg->type == TYPE_RESPONSE) {
       auto &resp = msg->message.response;
@@ -1190,27 +1200,31 @@ namespace rtsp_stream {
       auto statuscode = resp.statusCode;
       std::string_view status {resp.statusString};
 
-      BOOST_LOG(debug) << "statuscode :: "sv << statuscode;
-      BOOST_LOG(debug) << "status :: "sv << status;
+      summary << " status=" << status << " code=" << statuscode;
+      BOOST_LOG(verbose) << "statuscode :: "sv << statuscode;
+      BOOST_LOG(verbose) << "status :: "sv << status;
     } else {
       auto &req = msg->message.request;
 
       std::string_view command {req.command};
       std::string_view target {req.target};
 
-      BOOST_LOG(debug) << "command :: "sv << command;
-      BOOST_LOG(debug) << "target :: "sv << target;
+      summary << " command=" << command << " target=" << target;
+      BOOST_LOG(verbose) << "command :: "sv << command;
+      BOOST_LOG(verbose) << "target :: "sv << target;
     }
 
     for (auto option = msg->options; option != nullptr; option = option->next) {
       std::string_view content {option->content};
       std::string_view name {option->option};
 
-      BOOST_LOG(debug) << name << " :: "sv << content;
+      BOOST_LOG(verbose) << name << " :: "sv << content;
     }
 
-    BOOST_LOG(debug) << "---Begin MessageBuffer---"sv << std::endl
-                     << messageBuffer << std::endl
-                     << "---End MessageBuffer---"sv << std::endl;
+    BOOST_LOG(debug) << summary.str();
+
+    BOOST_LOG(verbose) << "---Begin MessageBuffer---"sv << std::endl
+                       << messageBuffer << std::endl
+                       << "---End MessageBuffer---"sv << std::endl;
   }
 }  // namespace rtsp_stream

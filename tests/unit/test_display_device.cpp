@@ -122,6 +122,21 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state, expected_value);
 }
 
+TEST(DisplayDeviceConfig, DummyPlugHdrWorkaroundForcesHdrEnabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::disabled;
+  video_config.dd.wa.dummy_plug_hdr10 = true;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = false;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
+}
+
 using ParseResolutionOption = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_option_e, sops_enabled_t, std::variant<client_resolution_t, std::string>>, std::variant<failed_to_parse_resolution_tag_t, no_resolution_tag_t, resolution_t>>>;
 INSTANTIATE_TEST_SUITE_P(
   DisplayDeviceConfigTest,

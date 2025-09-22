@@ -228,7 +228,8 @@ namespace platf::playnite {
     }
 
     void trigger_sync() {
-      (void) sync_apps_metadata();
+      auto stats = sync_apps_metadata();
+      BOOST_LOG(info) << "Playnite: manual library sync " << sync_summary(stats);
     }
 
     void snapshot_games(std::vector<platf::playnite::Game> &out) {
@@ -257,6 +258,10 @@ namespace platf::playnite {
           last_categories_.clear();
           new_snapshot_ = true;
         } catch (...) {}
+        {
+          std::scoped_lock lk(progress_mutex_);
+          snapshot_progress_ = {};
+        }
       } catch (...) {}
     }
 
@@ -274,6 +279,10 @@ namespace platf::playnite {
       });
       server_->start();
       new_snapshot_ = true;
+      {
+        std::scoped_lock lk(progress_mutex_);
+        snapshot_progress_ = {};
+      }
     }
 
     void manager_loop() {
@@ -286,17 +295,46 @@ namespace platf::playnite {
         } else {
           stop_server();
         }
+        emit_snapshot_summary_if_ready();
         std::this_thread::sleep_for(1500ms);
       }
     }
 
   private:
+    struct SyncStats {
+      bool success = false;
+      bool changed = false;
+      std::size_t matched = 0;
+      std::size_t file_size = 0;
+      std::string error;
+    };
+
+    static std::string sync_summary(const SyncStats &stats) {
+      std::ostringstream os;
+      os << "status=" << (stats.success ? (stats.changed ? "updated" : "unchanged") : "failed");
+      if (stats.success) {
+        os << " matched=" << stats.matched;
+        if (stats.file_size != 0) {
+          os << " apps_bytes=" << stats.file_size;
+        }
+      } else if (!stats.error.empty()) {
+        std::string sanitized = stats.error;
+        for (auto &ch : sanitized) {
+          if (ch == '\n' || ch == '\r') {
+            ch = ' ';
+          }
+        }
+        os << " error=" << sanitized;
+      }
+      return os.str();
+    }
+
     void handle_message(std::span<const uint8_t> bytes) {
       BOOST_LOG(debug) << "Playnite: handling message, bytes=" << bytes.size();
       auto msg = platf::playnite::parse(bytes);
       using MT = platf::playnite::MessageType;
       if (msg.type == MT::Categories) {
-        BOOST_LOG(info) << "Playnite: received " << msg.categories.size() << " categories";
+        BOOST_LOG(debug) << "Playnite: received " << msg.categories.size() << " categories";
         // Cache distinct categories (by id when available) and treat as the start of a new snapshot for games
         {
           std::scoped_lock lk(mutex_);
@@ -325,8 +363,11 @@ namespace platf::playnite {
           }
           refresh_config_id_name_fields(cats_copy, games_copy);
         }
+        {
+          std::scoped_lock lk(progress_mutex_);
+          snapshot_progress_ = {};
+        }
       } else if (msg.type == MT::Games) {
-        BOOST_LOG(info) << "Playnite: received " << msg.games.size() << " games";
         size_t added = 0;
         size_t skipped = 0;
         size_t before = 0;
@@ -353,8 +394,8 @@ namespace platf::playnite {
             added++;
           }
         }
-        BOOST_LOG(info) << "Playnite: games batch processed added=" << added << " skipped=" << skipped
-                        << " cumulative=" << (before + added) << " (unique IDs)";
+        SyncStats sync_stats;
+        bool attempted_sync = false;
         // Best-effort: refresh persisted names (games) using latest snapshot so UI has names offline
         {
           std::vector<platf::playnite::Category> cats_copy;
@@ -367,16 +408,41 @@ namespace platf::playnite {
           refresh_config_id_name_fields(cats_copy, games_copy);
         }
         if (config::playnite.auto_sync) {
-          BOOST_LOG(info) << "Playnite: auto_sync enabled; syncing apps metadata";
-          (void) sync_apps_metadata();
+          sync_stats = sync_apps_metadata();
+          attempted_sync = true;
+        }
+        std::ostringstream line;
+        line << "Playnite: library update games=" << msg.games.size()
+             << " added=" << added
+             << " skipped=" << skipped
+             << " total=" << (before + added);
+        if (attempted_sync) {
+          line << " auto_sync " << sync_summary(sync_stats);
+        } else {
+          line << " auto_sync disabled";
+        }
+        BOOST_LOG(debug) << line.str();
+        {
+          std::scoped_lock lk(progress_mutex_);
+          snapshot_progress_.batches += 1;
+          snapshot_progress_.received += msg.games.size();
+          snapshot_progress_.added += added;
+          snapshot_progress_.skipped += skipped;
+          snapshot_progress_.total_unique = before + added;
+          if (attempted_sync) {
+            snapshot_progress_.has_sync = true;
+            snapshot_progress_.last_sync = sync_stats;
+          }
+          snapshot_progress_.pending_info = true;
+          snapshot_progress_.last_update = std::chrono::steady_clock::now();
         }
       } else if (msg.type == MT::Status) {
-        BOOST_LOG(info) << "Playnite: status '" << msg.status_name
-                        << "' id='" << msg.status_game_id
-                        << "' exe='" << msg.status_exe
-                        << "' installDir='" << msg.status_install_dir << "'";
+        BOOST_LOG(debug) << "Playnite: status '" << msg.status_name
+                         << "' id='" << msg.status_game_id
+                         << "' exe='" << msg.status_exe
+                         << "' installDir='" << msg.status_install_dir << "'";
         if (msg.status_name == "gameStopped") {
-          BOOST_LOG(info) << "Playnite: received gameStopped; terminating active process";
+          BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
           proc::proc.terminate();
         }
       } else {
@@ -392,16 +458,17 @@ namespace platf::playnite {
       }
     }
 
-    bool sync_apps_metadata() try {
+    SyncStats sync_apps_metadata() try {
       using nlohmann::json;
       const std::string path = config::stream.file_apps;
-      BOOST_LOG(info) << "Playnite sync: reading apps file '" << path << "'";
+      SyncStats stats;
       std::string content = file_handler::read_file(path.c_str());
-      BOOST_LOG(info) << "Playnite sync: apps file size=" << content.size() << " bytes";
+      stats.file_size = content.size();
       json root = json::parse(content);
       if (!root.contains("apps") || !root["apps"].is_array()) {
         BOOST_LOG(warning) << "apps.json has no 'apps' array";
-        return false;
+        stats.error = "missing apps array";
+        return stats;
       }
 
       // Build all games snapshot and reconcile with apps.json via helper
@@ -418,22 +485,68 @@ namespace platf::playnite {
       platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_categories, config::playnite.exclude_games, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
-        BOOST_LOG(info) << "Playnite sync: apps.json updated";
-        BOOST_LOG(info) << "Playnite sync: matched apps updated count=" << matched;
-      } else {
-        BOOST_LOG(info) << "Playnite sync: no changes to apps.json (matched=" << matched << ")";
       }
-      return true;
+      stats.success = true;
+      stats.changed = changed;
+      stats.matched = matched;
+      return stats;
     } catch (const std::exception &e) {
       BOOST_LOG(error) << "Playnite sync failed for '" << config::stream.file_apps << "': " << e.what();
-      return false;
+      SyncStats stats;
+      stats.error = e.what();
+      return stats;
     } catch (...) {
       BOOST_LOG(error) << "Playnite sync failed: unknown error reading/parsing '" << config::stream.file_apps << "'";
-      return false;
+      SyncStats stats;
+      stats.error = "unknown error";
+      return stats;
     }
 
     std::vector<platf::playnite::Game> last_games_;
     std::mutex mutex_;
+
+    struct SnapshotProgress {
+      std::size_t batches = 0;
+      std::size_t received = 0;
+      std::size_t added = 0;
+      std::size_t skipped = 0;
+      std::size_t total_unique = 0;
+      bool has_sync = false;
+      SyncStats last_sync;
+      bool pending_info = false;
+      std::chrono::steady_clock::time_point last_update {};
+    };
+
+    void emit_snapshot_summary_if_ready() {
+      SnapshotProgress snapshot;
+      bool should_log = false;
+      {
+        std::scoped_lock lk(progress_mutex_);
+        if (snapshot_progress_.pending_info && snapshot_progress_.last_update.time_since_epoch().count() != 0) {
+          auto now = std::chrono::steady_clock::now();
+          if (now - snapshot_progress_.last_update > std::chrono::seconds(2)) {
+            snapshot = snapshot_progress_;
+            snapshot_progress_.pending_info = false;
+            should_log = true;
+          }
+        }
+      }
+      if (!should_log) {
+        return;
+      }
+      std::ostringstream line;
+      line << "Playnite: library snapshot completed batches=" << snapshot.batches
+           << " received=" << snapshot.received
+           << " added=" << snapshot.added
+           << " skipped=" << snapshot.skipped
+           << " total=" << snapshot.total_unique;
+      if (snapshot.has_sync) {
+        line << " auto_sync " << sync_summary(snapshot.last_sync);
+      } else {
+        line << " auto_sync disabled";
+      }
+      BOOST_LOG(info) << line.str();
+    }
 
     std::unique_ptr<platf::playnite::IpcServer> server_;
     std::atomic<bool> stop_flag_ {false};
@@ -441,6 +554,8 @@ namespace platf::playnite {
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
+    SnapshotProgress snapshot_progress_;
+    std::mutex progress_mutex_;
   };
 
   std::unique_ptr<::platf::deinit_t> start() {
@@ -902,7 +1017,7 @@ namespace platf::playnite {
     } catch (...) {}
 
     if (!ctx.pids.empty()) {
-      BOOST_LOG(info) << "Playnite: posting WM_CLOSE to " << ctx.pids.size() << " window(s) for '" << platf::to_utf8(std::wstring(exeName)) << "'";
+      BOOST_LOG(debug) << "Playnite: posting WM_CLOSE to " << ctx.pids.size() << " window(s) for '" << platf::to_utf8(std::wstring(exeName)) << "'";
       EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
         auto *c = reinterpret_cast<Ctx *>(lparam);
         DWORD pid = 0;
@@ -927,7 +1042,7 @@ namespace platf::playnite {
     try {
       auto ids = platf::dxgi::find_process_ids_by_name(exeName);
       if (!ids.empty()) {
-        BOOST_LOG(info) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
+        BOOST_LOG(debug) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
       }
       for (DWORD pid : ids) {
         HANDLE hp = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -1003,7 +1118,7 @@ namespace platf::playnite {
 
   // explicit launch-only helper removed; use restart_playnite()
 
-  static bool do_install_plugin_impl(const std::string &dest_override, std::string &error) {
+  static bool do_install_plugin_impl(const std::string &dest_override, std::string &error_out) {
     try {
       // Determine source directory: alongside the Sunshine executable under plugins/playnite/SunshinePlaynite
       std::wstring exePath;
@@ -1012,12 +1127,12 @@ namespace platf::playnite {
       exePath.resize(wcslen(exePath.c_str()));
       std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
       std::filesystem::path srcDir = exeDir / L"plugins" / L"playnite" / L"SunshinePlaynite";
-      BOOST_LOG(info) << "Playnite installer: srcDir=" << srcDir.string();
-      BOOST_LOG(info) << "Playnite installer: src exists? " << (std::filesystem::exists(srcDir) ? "yes" : "no");
-      BOOST_LOG(info) << "Playnite installer: src file(extension.yaml) exists? " << (std::filesystem::exists(srcDir / L"extension.yaml") ? "yes" : "no");
-      BOOST_LOG(info) << "Playnite installer: src file(SunshinePlaynite.psm1) exists? " << (std::filesystem::exists(srcDir / L"SunshinePlaynite.psm1") ? "yes" : "no");
+      BOOST_LOG(debug) << "Playnite installer: srcDir=" << srcDir.string();
+      BOOST_LOG(debug) << "Playnite installer: src exists? " << (std::filesystem::exists(srcDir) ? "yes" : "no");
+      BOOST_LOG(debug) << "Playnite installer: src file(extension.yaml) exists? " << (std::filesystem::exists(srcDir / L"extension.yaml") ? "yes" : "no");
+      BOOST_LOG(debug) << "Playnite installer: src file(SunshinePlaynite.psm1) exists? " << (std::filesystem::exists(srcDir / L"SunshinePlaynite.psm1") ? "yes" : "no");
       if (!std::filesystem::exists(srcDir)) {
-        error = "Plugin source not found: " + srcDir.string();
+        error_out = "Plugin source not found: " + srcDir.string();
         return false;
       }
 
@@ -1025,20 +1140,20 @@ namespace platf::playnite {
       std::filesystem::path destDir;
       if (!dest_override.empty()) {
         destDir = std::filesystem::path(dest_override);
-        BOOST_LOG(info) << "Playnite installer: using API override destDir=" << destDir.string();
+        BOOST_LOG(debug) << "Playnite installer: using API override destDir=" << destDir.string();
       } else {
         // Prefer the same resolution used by status API
         std::string resolved;
         if (!platf::playnite::get_extension_target_dir(resolved)) {
-          error = "Could not resolve Playnite Extensions directory (and no override provided).";
+          error_out = "Could not resolve Playnite Extensions directory (and no override provided).";
           return false;
         }
         destDir = std::filesystem::path(resolved);
-        BOOST_LOG(info) << "Playnite installer: using resolved target dir from API=" << destDir.string();
+        BOOST_LOG(debug) << "Playnite installer: using resolved target dir from API=" << destDir.string();
       }
       std::error_code ec;
       if (!std::filesystem::create_directories(destDir, ec) && ec) {
-        error = std::string("Failed to create destination directory: ") + destDir.string() + " (" + ec.message() + ")";
+        error_out = std::string("Failed to create destination directory: ") + destDir.string() + " (" + ec.message() + ")";
         return false;
       }
 
@@ -1048,20 +1163,20 @@ namespace platf::playnite {
         auto dst = destDir / name;
         std::wstring wname(name);
         std::string sname(wname.begin(), wname.end());
-        BOOST_LOG(info) << "Playnite installer: copying " << sname << " from " << src.string() << " to " << dst.string();
+        BOOST_LOG(debug) << "Playnite installer: copying " << sname << " from " << src.string() << " to " << dst.string();
         std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
         return !ec;
       };
 
       if (!copy_one(L"extension.yaml") || !copy_one(L"SunshinePlaynite.psm1")) {
-        error = "Failed to copy plugin files to " + destDir.string();
+        error_out = "Failed to copy plugin files to " + destDir.string();
         return false;
       }
-      BOOST_LOG(info) << "Playnite installer: installation complete";
+      BOOST_LOG(info) << "Playnite installer: deployed plugin to " << destDir.string();
       return true;
     } catch (const std::exception &e) {
-      BOOST_LOG(info) << "Playnite installer: exception: " << e.what();
-      error = e.what();
+      BOOST_LOG(error) << "Playnite installer: exception: " << e.what();
+      error_out = e.what();
       return false;
     }
   }

@@ -184,13 +184,13 @@ namespace platf::playnite {
       // Reduce log spam by only attempting to create/listen when Playnite is actually running
       if (!is_playnite_running()) {
         if (!no_playnite_logged_) {
-          BOOST_LOG(info) << "Playnite IPC: Playnite not running; deferring pipe startup";
+          BOOST_LOG(debug) << "Playnite IPC: Playnite not running; deferring pipe startup";
           no_playnite_logged_ = true;
         }
         std::this_thread::sleep_for(2s);
         continue;
       } else if (no_playnite_logged_) {
-        BOOST_LOG(info) << "Playnite IPC: Playnite detected; enabling pipe handshake";
+        BOOST_LOG(debug) << "Playnite IPC: Playnite detected; enabling pipe handshake";
         no_playnite_logged_ = false;
       }
       auto data_pipe = wait_for_handshake_and_get_data_pipe();
@@ -546,11 +546,11 @@ namespace platf::playnite {
   }
 
   void IpcServer::serve_connected_loop() {
-    BOOST_LOG(info) << "Playnite IPC: data pipe established";
+    BOOST_LOG(debug) << "Playnite IPC: data pipe established";
     while (running_.load() && pipe_->is_connected() && !broken_.load()) {
       std::this_thread::sleep_for(200ms);
     }
-    BOOST_LOG(info) << "Playnite IPC: disconnected";
+    BOOST_LOG(debug) << "Playnite IPC: disconnected";
   }
 
   bool IpcServer::is_user_session_available() {

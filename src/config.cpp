@@ -507,7 +507,7 @@ namespace config {
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
       {},  // mode_remapping
-      {}  // wa
+      {false, false}  // wa
     },  // display_device
 
     0,  // max_bitrate
@@ -600,6 +600,40 @@ namespace config {
     std::chrono::hours {2},  // session_token_ttl default 2h
     86400  // update_check_interval_seconds default 24h
   };
+
+  namespace {
+    const video_t default_video = video;
+    const audio_t default_audio = audio;
+    const stream_t default_stream = stream;
+    const input_t default_input = input;
+    const frame_limiter_t default_frame_limiter = frame_limiter;
+    const rtss_t default_rtss = rtss;
+    const sunshine_t default_sunshine = sunshine;
+
+    std::unordered_map<std::string, std::string> command_line_overrides;
+
+    void reset_runtime_config_to_defaults() {
+      const auto preserved_username = sunshine.username;
+      const auto preserved_password = sunshine.password;
+      const auto preserved_salt = sunshine.salt;
+      const auto preserved_config_file = sunshine.config_file;
+      const auto preserved_cmd = sunshine.cmd;
+
+      video = default_video;
+      audio = default_audio;
+      stream = default_stream;
+      input = default_input;
+      frame_limiter = default_frame_limiter;
+      rtss = default_rtss;
+
+      sunshine = default_sunshine;
+      sunshine.username = preserved_username;
+      sunshine.password = preserved_password;
+      sunshine.salt = preserved_salt;
+      sunshine.config_file = preserved_config_file;
+      sunshine.cmd = preserved_cmd;
+    }
+  }  // namespace
 
   bool endline(char ch) {
     return ch == '\r' || ch == '\n';
@@ -1060,6 +1094,7 @@ namespace config {
   }
 
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
+    reset_runtime_config_to_defaults();
 #ifndef __ANDROID__
     // TODO: Android can possibly support this
     if (!fs::exists(stream.file_apps.c_str())) {
@@ -1171,6 +1206,7 @@ namespace config {
         video.dd.wa.hdr_toggle = (legacy_delay_ms > 0);
       }
     }
+    bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -1184,6 +1220,10 @@ namespace config {
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
     bool_f(vars, "rtss_disable_vsync_ullm", rtss.disable_vsync_ullm);
+    if (video.dd.wa.dummy_plug_hdr10 && !rtss.disable_vsync_ullm) {
+      BOOST_LOG(info) << "config: Forcing rtss_disable_vsync_ullm=1 due to dummy plug HDR10 workaround.";
+      rtss.disable_vsync_ullm = true;
+    }
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
@@ -1432,6 +1472,8 @@ namespace config {
       // Read config file
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
 
+      command_line_overrides = cmd_vars;
+
       for (auto &[name, value] : cmd_vars) {
         vars.insert_or_assign(std::move(name), std::move(value));
       }
@@ -1538,8 +1580,12 @@ namespace config {
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
       const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
+      const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
+      for (const auto &[name, value] : command_line_overrides) {
+        vars.insert_or_assign(name, value);
+      }
       // Track old logging params to adjust sinks if needed
       const int old_min_level = sunshine.min_log_level;
       const std::string old_log_file = sunshine.log_file;
@@ -1565,7 +1611,8 @@ namespace config {
                                      (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                     (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle);
+                                     (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0) {

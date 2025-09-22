@@ -328,6 +328,10 @@ namespace display_device {
     std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
 
+      if (video_config.dd.wa.dummy_plug_hdr10) {
+        return HdrState::Enabled;
+      }
+
       switch (video_config.dd.hdr_option) {
         case hdr_option_e::automatic:
           return session.enable_hdr ? HdrState::Enabled : HdrState::Disabled;
