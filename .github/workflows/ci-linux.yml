@@ -28,7 +28,7 @@ jobs:
             dist: 22.04
     steps:
       - name: More space
-        uses: LizardByte/actions/actions/more_space@v2025.814.40518
+        uses: LizardByte/actions/actions/more_space@v2025.917.25039
         with:
           analyze-space-savings: true
           clean-all: true
@@ -58,7 +58,7 @@ jobs:
 
       - name: Setup python
         id: python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 

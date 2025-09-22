@@ -243,6 +243,15 @@ function removeCmd(index: number) {
       locale-prefix="config"
       default="false"
     />
+
+    <!-- Enable system tray -->
+    <Checkbox
+      id="system_tray"
+      v-model="config.system_tray"
+      class="mb-3"
+      locale-prefix="config"
+      default="true"
+    />
   </div>
 </template>
 

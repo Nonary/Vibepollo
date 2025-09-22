@@ -27,8 +27,10 @@
   #endif
 
   // standard includes
+  #include <atomic>
   #include <csignal>
   #include <string>
+  #include <thread>
 
   // lib includes
   #include <boost/filesystem.hpp>
@@ -49,20 +51,18 @@ using namespace std::literals;
 namespace system_tray {
   static std::atomic<bool> tray_initialized = false;
 
-  void tray_open_ui_cb(struct tray_menu *item) {
+  void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening UI from system tray"sv;
     launch_ui();
   }
 
-  // Donation actions removed
-
-  void tray_restart_cb(struct tray_menu *item) {
+  void tray_restart_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Restarting from system tray"sv;
 
     platf::restart();
   }
 
-  void tray_quit_cb(struct tray_menu *item) {
+  void tray_quit_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Quitting from system tray"sv;
 
   #ifdef _WIN32

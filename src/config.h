@@ -285,6 +285,7 @@ namespace config {
 
     std::string log_file;
     bool notify_pre_releases;
+    bool system_tray;
     std::vector<prep_cmd_t> prep_cmds;
     std::chrono::seconds session_token_ttl;  ///< Session token time-to-live (seconds)
     // Interval in seconds between automatic update checks (0 disables periodic checks)

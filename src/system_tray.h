@@ -4,6 +4,10 @@
  */
 #pragma once
 
+#include <string>
+
+struct tray_menu;
+
 /**
  * @brief Handles the system tray icon and notification system.
  */
@@ -12,7 +16,7 @@ namespace system_tray {
    * @brief Callback for opening the UI from the system tray.
    * @param item The tray menu item.
    */
-  void tray_open_ui_cb(struct tray_menu *item);
+  void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
    * @brief Generic notification helper (stacking). Title/text copied immediately; callback optional.
@@ -21,23 +25,18 @@ namespace system_tray {
    * @param cb Optional click callback (opens URLs, UI pages, etc.)
    */
   void tray_notify(const char *title, const char *text, void (*cb)() = nullptr);
-  /**
-   * @brief Callback for resetting display device configuration.
-   * @param item The tray menu item.
-   */
-  void tray_reset_display_device_config_cb(struct tray_menu *item);
 
   /**
    * @brief Callback for restarting Sunshine from the system tray.
    * @param item The tray menu item.
    */
-  void tray_restart_cb(struct tray_menu *item);
+  void tray_restart_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
    * @brief Callback for exiting Sunshine from the system tray.
    * @param item The tray menu item.
    */
-  void tray_quit_cb(struct tray_menu *item);
+  void tray_quit_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
    * @brief Create the system tray.

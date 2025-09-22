@@ -33,7 +33,8 @@ jobs:
 
       - name: Release Setup
         id: release-setup
-        uses: LizardByte/actions/actions/release_setup@v2025.814.40518
+        uses: LizardByte/actions/actions/release_setup@v2025.917.25039
+
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -130,6 +131,8 @@ jobs:
             coverage: false
           - name: Homebrew-macos-15
             coverage: false
+          - name: Homebrew-macos-26
+            coverage: false
           - name: Homebrew-ubuntu-latest
             coverage: false
           - name: Windows-AMD64
@@ -190,7 +193,7 @@ jobs:
         run: ls -l artifacts
 
       - name: Create/Update GitHub Release
-        uses: LizardByte/actions/actions/release_create@v2025.814.40518
+        uses: LizardByte/actions/actions/release_create@v2025.917.25039
         with:
           allowUpdates: false
           body: ${{ needs.release-setup.outputs.release_body }}
@@ -219,7 +222,7 @@ jobs:
           path: homebrew
 
       - name: Upload Homebrew Beta Formula
-        uses: LizardByte/actions/actions/release_homebrew@v2025.814.40518
+        uses: LizardByte/actions/actions/release_homebrew@v2025.917.25039
         with:
           formula_file: ${{ github.workspace }}/homebrew/sunshine-beta.rb
           git_email: ${{ secrets.GH_BOT_EMAIL }}
