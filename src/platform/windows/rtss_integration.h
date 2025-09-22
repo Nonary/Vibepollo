@@ -6,6 +6,7 @@
 
 #ifdef _WIN32
 
+  #include <optional>
   #include <string>
 
 namespace platf {
@@ -32,6 +33,9 @@ namespace platf {
 
   // Query RTSS availability and installation status (no side effects).
   rtss_status_t rtss_get_status();
+
+  void rtss_set_sync_limiter_override(std::optional<std::string> value);
+  std::optional<std::string> rtss_get_sync_limiter_override();
 }  // namespace platf
 
 #endif  // _WIN32

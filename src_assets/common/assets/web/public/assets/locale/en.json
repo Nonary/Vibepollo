@@ -809,7 +809,7 @@
     "sync_limiter_front_stutter": "Can reintroduce judder if FPS is not a divisor of refresh",
     "sync_limiter_front_advantages": "Absolute lowest latency if FPS divides evenly into refresh; required for Scanline Sync",
     "sync_limiter_front_disadvantages": "Adds latency when CPU-bound because finished frames wait; fragile pacing at mismatched caps",
-    "sync_limiter_front_use": "Latency-critical play or custom scanline-sync tearing tricks",
+    "sync_limiter_front_use": "DLSS 3 / FSR 3 frame generation capture; enable Frame Gen Limiter Fix per game in Applications when only some titles need RTSS Front Edge Sync",
     "sync_limiter_back_short": "Back edge",
     "sync_limiter_back_latency": "Moderate (+2-3 ms)",
     "sync_limiter_back_stutter": "Reduced tearing; may stutter when frametimes spike",

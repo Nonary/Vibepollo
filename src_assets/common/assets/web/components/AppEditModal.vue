@@ -179,7 +179,18 @@
             >
               Elevated
             </n-checkbox>
+            <n-checkbox
+              v-if="isWindows"
+              v-model:checked="form.frameGenLimiterFix"
+              size="small"
+              class="md:col-span-2"
+            > 
+            Apply Frame Generation fixes (e.g. DLSS 3)
+            </n-checkbox>
           </div>
+          <p v-if="isWindows" class="text-[11px] opacity-60">
+            Configures RTSS to limit with front-edge polling, which fixes issues with games being stuck at a lower frame rate using frame generation.
+          </p>
 
           <section class="space-y-3">
             <div class="flex items-center justify-between">
@@ -404,6 +415,7 @@ interface AppForm {
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
+  frameGenLimiterFix: boolean;
   exitTimeout: number;
   prepCmd: PrepCmd[];
   detached: string[];
@@ -422,6 +434,7 @@ interface ServerApp {
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;
+  'frame-gen-limiter-fix'?: boolean;
   'exit-timeout'?: number;
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
@@ -453,6 +466,7 @@ function fresh(): AppForm {
     elevated: false,
     autoDetach: true,
     waitAll: true,
+    frameGenLimiterFix: false,
     exitTimeout: 5,
     prepCmd: [],
     detached: [],
@@ -503,6 +517,10 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
+    frameGenLimiterFix:
+      src['frame-gen-limiter-fix'] !== undefined
+        ? !!src['frame-gen-limiter-fix']
+        : base.frameGenLimiterFix,
     exitTimeout: derivedExitTimeout,
     prepCmd: prep,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
@@ -524,6 +542,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
+    'frame-gen-limiter-fix': !!f.frameGenLimiterFix,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
       do: p.do,

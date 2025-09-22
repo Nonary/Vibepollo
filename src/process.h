@@ -66,6 +66,7 @@ namespace proc {
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
     bool playnite_fullscreen;
+    bool frame_gen_limiter_fix;
     bool elevated;
     bool auto_detach;
     bool wait_all;
@@ -100,6 +101,7 @@ namespace proc {
     std::vector<ctx_t> get_apps() const;
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
+    bool last_run_app_frame_gen_limiter_fix() const;
     void terminate();
 
     // Hot-update app list and environment without disrupting a running app

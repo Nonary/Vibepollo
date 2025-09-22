@@ -531,6 +531,10 @@ namespace proc {
     return _app.name;
   }
 
+  bool proc_t::last_run_app_frame_gen_limiter_fix() const {
+    return _app.frame_gen_limiter_fix;
+  }
+
   proc_t::~proc_t() {
     // It's not safe to call terminate() here because our proc_t is a static variable
     // that may be destroyed after the Boost loggers have been destroyed. Instead,
@@ -834,6 +838,13 @@ namespace proc {
           ctx.playnite_fullscreen = pfs.value_or(false);
         } catch (...) {
           ctx.playnite_fullscreen = false;
+        }
+
+        try {
+          auto fgfix = app_node.get_optional<bool>("frame-gen-limiter-fix"s);
+          ctx.frame_gen_limiter_fix = fgfix.value_or(false);
+        } catch (...) {
+          ctx.frame_gen_limiter_fix = false;
         }
 
         ctx.elevated = elevated.value_or(false);

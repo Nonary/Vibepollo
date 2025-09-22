@@ -6,6 +6,7 @@
 // standard includes
 #include <fstream>
 #include <future>
+#include <optional>
 #include <queue>
 
 // lib includes
@@ -1942,6 +1943,7 @@ namespace stream {
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32
+        platf::rtss_set_sync_limiter_override(std::nullopt);
         platf::frame_limiter_streaming_stop();
 #endif
         platf::streaming_will_stop();
@@ -1987,7 +1989,11 @@ namespace stream {
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
 #ifdef _WIN32
-        // Apply RTSS frame limit if enabled (Windows-only)
+        std::optional<std::string> rtss_sync_override;
+        if (proc::proc.last_run_app_frame_gen_limiter_fix()) {
+          rtss_sync_override = std::string("front edge sync");
+        }
+        platf::rtss_set_sync_limiter_override(rtss_sync_override);
         platf::frame_limiter_streaming_start(session.config.monitor.framerate);
 #endif
         platf::streaming_will_start();

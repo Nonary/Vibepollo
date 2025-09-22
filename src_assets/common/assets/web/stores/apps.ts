@@ -19,6 +19,7 @@ export interface App {
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;
+  'frame-gen-limiter-fix'?: boolean;
   'exit-timeout'?: number;
   'prep-cmd'?: PrepCmd[];
   detached?: string[];

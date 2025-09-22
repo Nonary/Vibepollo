@@ -580,7 +580,8 @@ namespace confighttp {
         "exclude-global-prep-cmd",
         "elevated",
         "auto-detach",
-        "wait-all"
+        "wait-all",
+        "frame-gen-limiter-fix"
       };
 
       // List of keys to convert to integers

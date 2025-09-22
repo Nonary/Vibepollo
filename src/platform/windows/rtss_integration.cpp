@@ -14,6 +14,7 @@
   #include <optional>
   #include <string>
   #include <system_error>
+  #include <utility>
   #include <vector>
 
 // clang-format off
@@ -62,6 +63,7 @@ namespace platf {
 
     // Remember original values so we can restore on stream end
     std::optional<int> g_original_limit;
+    std::optional<std::string> g_sync_limiter_override;
     std::optional<int> g_original_sync_limiter;
     std::optional<int> g_original_denominator;
     std::optional<DWORD> g_original_flags;
@@ -531,6 +533,18 @@ namespace platf {
     }
   }  // namespace
 
+  void rtss_set_sync_limiter_override(std::optional<std::string> value) {
+    if (value && value->empty()) {
+      g_sync_limiter_override.reset();
+    } else {
+      g_sync_limiter_override = std::move(value);
+    }
+  }
+
+  std::optional<std::string> rtss_get_sync_limiter_override() {
+    return g_sync_limiter_override;
+  }
+
   bool rtss_streaming_start(int fps) {
     g_limit_active = false;
 
@@ -597,12 +611,38 @@ namespace platf {
                       << (g_original_sync_limiter.has_value() ? std::to_string(*g_original_sync_limiter) : std::string("<unset>"));
     }
 
-    // Apply SyncLimiter preference
-    if (auto v = map_sync_limiter(config::rtss.frame_limit_type)) {
+    std::optional<int> sync_limiter_value;
+    std::optional<std::string> sync_limiter_label;
+    if (g_sync_limiter_override && !g_sync_limiter_override->empty()) {
+      if (auto mapped = map_sync_limiter(*g_sync_limiter_override)) {
+        sync_limiter_value = mapped;
+        sync_limiter_label = *g_sync_limiter_override;
+      } else {
+        BOOST_LOG(warning) << "RTSS SyncLimiter override ignored; unknown mode: "sv << *g_sync_limiter_override;
+      }
+    }
+    if (!sync_limiter_value) {
+      if (auto v = map_sync_limiter(config::rtss.frame_limit_type)) {
+        sync_limiter_value = v;
+        if (!config::rtss.frame_limit_type.empty()) {
+          sync_limiter_label = config::rtss.frame_limit_type;
+        }
+      }
+    }
+    if (sync_limiter_value) {
+      bool applied = false;
       if (g_hooks) {
-        set_profile_property_int("SyncLimiter", *v);
-      } else if (write_profile_value_int(g_rtss_root, "SyncLimiter", *v)) {
-        BOOST_LOG(info) << "RTSS profile SyncLimiter set to "sv << *v;
+        set_profile_property_int("SyncLimiter", *sync_limiter_value);
+        applied = true;
+      } else if (write_profile_value_int(g_rtss_root, "SyncLimiter", *sync_limiter_value)) {
+        applied = true;
+      }
+      if (applied) {
+        if (sync_limiter_label) {
+          BOOST_LOG(info) << "RTSS SyncLimiter applied ("sv << *sync_limiter_label << ')';
+        } else {
+          BOOST_LOG(info) << "RTSS SyncLimiter applied"sv;
+        }
       }
     }
 
@@ -619,6 +659,7 @@ namespace platf {
   }
 
   void rtss_streaming_stop() {
+    g_sync_limiter_override.reset();
     if (!g_limit_active && !g_original_denominator && !g_original_limit && !g_original_sync_limiter && !g_original_flags) {
       if (g_hooks.module) {
         FreeLibrary(g_hooks.module);
