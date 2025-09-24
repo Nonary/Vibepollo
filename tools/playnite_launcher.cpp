@@ -36,6 +36,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <psapi.h>
@@ -65,6 +66,25 @@ extern "C" __declspec(dllimport) LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmd
 #endif
 
 namespace {
+
+  static std::string normalize_game_id(std::string s) {
+    s.erase(std::remove_if(s.begin(), s.end(), [](char c) {
+              return c == '{' || c == '}';
+            }),
+            s.end());
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+      return (char) std::tolower(c);
+    });
+    return s;
+  }
+
+  static int64_t steady_to_millis(std::chrono::steady_clock::time_point tp) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+  }
+
+  static std::chrono::steady_clock::time_point millis_to_steady(int64_t ms) {
+    return std::chrono::steady_clock::time_point(std::chrono::milliseconds(ms));
+  }
 
   // Returns true if either Playnite Desktop or Fullscreen is running
   static bool is_playnite_running() {
@@ -1118,6 +1138,58 @@ static int launcher_run(int argc, char **argv) {
     }
   };
 
+  auto ensure_public_guid = [&]() -> bool {
+    if (!public_guid.empty()) {
+      return true;
+    }
+    try {
+      public_guid = platf::dxgi::generate_guid();
+    } catch (...) {
+      public_guid.clear();
+    }
+    if (public_guid.empty()) {
+      return true;
+    }
+    WCHAR selfPath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath)) == 0) {
+      return true;
+    }
+    std::wstring cmdline = GetCommandLineW();
+    std::wstring wguid;
+    try {
+      wguid = platf::dxgi::utf8_to_wide(public_guid);
+    } catch (...) {
+      wguid.assign(public_guid.begin(), public_guid.end());
+    }
+    if (wguid.empty()) {
+      wguid.assign(public_guid.begin(), public_guid.end());
+    }
+    cmdline.append(L" --public-guid ");
+    cmdline.append(wguid);
+    std::vector<wchar_t> mutable_cmd(cmdline.begin(), cmdline.end());
+    mutable_cmd.push_back(L'\0');
+
+    STARTUPINFOW si {};
+    si.cb = sizeof(si);
+    si.dwFlags |= STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi {};
+    DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
+    BOOL ok = CreateProcessW(selfPath, mutable_cmd.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi);
+    if (ok) {
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+      }
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+      }
+      BOOST_LOG(info) << "Spawned child with generated public GUID";
+      return false;
+    }
+    BOOST_LOG(error) << "Failed to spawn child process with GUID; continuing in current process";
+    return true;
+  };
+
   // Cleanup-only mode: optionally wait for a specific PID to exit, then run cleanup
   if (do_cleanup) {
     BOOST_LOG(info) << "Cleanup mode: starting (installDir='" << install_dir_arg << "' fullscreen=" << (fullscreen ? 1 : 0) << ")";
@@ -1152,8 +1224,105 @@ static int launcher_run(int argc, char **argv) {
     return 0;
   }
 
-  // Fullscreen mode: start Playnite.FullscreenApp and apply focus attempts, then schedule cleanup and exit
+  // Fullscreen mode: start Playnite.FullscreenApp and monitor game focus/lifecycle
   if (fullscreen) {
+    if (!ensure_public_guid()) {
+      return 0;
+    }
+    BOOST_LOG(info) << "Using public GUID for launcher pipes";
+
+    std::string control_name = std::string("sunshine_playnite_ctl_") + public_guid;
+    platf::playnite::IpcServer server(control_name);
+
+    std::atomic<bool> game_start_signal {false};
+    std::atomic<bool> game_stop_signal {false};
+    std::atomic<bool> cleanup_spawn_signal {false};
+    std::atomic<bool> active_game_flag {false};
+    std::atomic<int64_t> grace_deadline_ms {steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15))};
+
+    std::mutex game_mutex;
+
+    struct FullscreenGameState {
+      std::string id_norm;
+      std::string install_dir;
+      std::string exe_path;
+      std::string cleanup_dir;
+    } game_state;
+
+    std::mutex cleanup_mutex;
+    std::string active_cleanup_dir;
+    bool game_cleanup_spawned = false;
+
+    auto resolve_install_dir = [&](const std::string &install_dir, const std::string &exe_path) -> std::string {
+      if (!install_dir.empty()) {
+        return install_dir;
+      }
+      try {
+        if (!exe_path.empty()) {
+          std::wstring wexe = platf::dxgi::utf8_to_wide(exe_path);
+          std::filesystem::path p(wexe);
+          auto parent = p.parent_path();
+          if (!parent.empty()) {
+            return platf::dxgi::wide_to_utf8(parent.wstring());
+          }
+        }
+      } catch (...) {}
+      return std::string();
+    };
+
+    server.set_message_handler([&](std::span<const uint8_t> bytes) {
+      auto msg = platf::playnite::parse(bytes);
+      using MT = platf::playnite::MessageType;
+      if (msg.type != MT::Status) {
+        return;
+      }
+      auto norm_id = normalize_game_id(msg.status_game_id);
+      auto now = std::chrono::steady_clock::now();
+      if (msg.status_name == "gameStarted") {
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          game_state.id_norm = norm_id;
+          if (!msg.status_install_dir.empty()) {
+            game_state.install_dir = msg.status_install_dir;
+          }
+          if (!msg.status_exe.empty()) {
+            game_state.exe_path = msg.status_exe;
+          }
+          auto resolved = resolve_install_dir(game_state.install_dir, game_state.exe_path);
+          if (!resolved.empty()) {
+            game_state.install_dir = resolved;
+            game_state.cleanup_dir = resolved;
+          } else {
+            game_state.cleanup_dir.clear();
+          }
+        }
+        active_game_flag.store(true);
+        game_start_signal.store(true);
+        cleanup_spawn_signal.store(true);
+        grace_deadline_ms.store(steady_to_millis(now + std::chrono::seconds(15)));
+      } else if (msg.status_name == "gameStopped") {
+        bool matches = false;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          if (game_state.id_norm.empty() || norm_id.empty()) {
+            matches = true;
+          } else {
+            matches = game_state.id_norm == norm_id;
+          }
+          if (matches) {
+            game_state.id_norm.clear();
+          }
+        }
+        if (matches) {
+          active_game_flag.store(false);
+          game_stop_signal.store(true);
+          grace_deadline_ms.store(steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15)));
+        }
+      }
+    });
+
+    server.start();
+
     BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
     bool started = false;
     std::string fullscreen_install_dir_utf8;
@@ -1173,30 +1342,56 @@ static int launcher_run(int argc, char **argv) {
       BOOST_LOG(info) << "Fullscreen exe not resolved; falling back to playnite://";
       ensure_playnite_open();
     }
+
     WCHAR selfPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
     if (!spawn_cleanup_watchdog_process(selfPath, fullscreen_install_dir_utf8, exit_timeout_secs, true, GetCurrentProcessId())) {
       BOOST_LOG(warning) << "Fullscreen mode: failed to spawn cleanup watchdog";
     }
-    // Wait briefly for process to appear then try to focus
-    auto deadline = std::chrono::steady_clock::now() + 10s;
-    while (std::chrono::steady_clock::now() < deadline) {
+
+    auto spawn_game_cleanup = [&](const std::string &dir_utf8) {
+      if (dir_utf8.empty()) {
+        return;
+      }
+      std::lock_guard<std::mutex> lk(cleanup_mutex);
+      if (active_cleanup_dir != dir_utf8) {
+        active_cleanup_dir = dir_utf8;
+        game_cleanup_spawned = false;
+      }
+      if (game_cleanup_spawned) {
+        return;
+      }
+      if (spawn_cleanup_watchdog_process(selfPath, dir_utf8, exit_timeout_secs, false, GetCurrentProcessId())) {
+        game_cleanup_spawned = true;
+      } else if (active_cleanup_dir == dir_utf8) {
+        game_cleanup_spawned = false;
+      }
+    };
+
+    auto wait_deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < wait_deadline) {
       auto pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
       if (!pids.empty()) {
         break;
       }
       std::this_thread::sleep_for(300ms);
     }
+
     bool focused = focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", focus_attempts, focus_timeout_secs, focus_exit_on_first_flag);
     BOOST_LOG(info) << (focused ? "Fullscreen focus applied" : "Fullscreen focus not confirmed");
 
-    // Keep the helper alive while Playnite is running. This ensures Sunshine treats
-    // the fullscreen entry as active until the user exits Playnite.
+    int fullscreen_successes_left = std::max(0, focus_attempts);
+    bool fullscreen_focus_budget_active = fullscreen_successes_left > 0 && focus_timeout_secs > 0;
+    auto fullscreen_focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(0, focus_timeout_secs));
+    auto next_fullscreen_focus_check = std::chrono::steady_clock::now();
+
+    int game_successes_left = 0;
+    bool game_focus_budget_active = false;
+    auto game_focus_deadline = std::chrono::steady_clock::now();
+    auto next_game_focus_check = std::chrono::steady_clock::now();
+
     int consecutive_missing = 0;
-    auto next_focus_check = std::chrono::steady_clock::now();
-    int successes_left = std::max(0, focus_attempts);
-    auto focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(0, focus_timeout_secs));
-    bool focus_budget_active = successes_left > 0 && focus_timeout_secs > 0;
+
     while (true) {
       bool fs_running = false;
       std::vector<DWORD> fs_pids;
@@ -1205,10 +1400,111 @@ static int launcher_run(int argc, char **argv) {
         fs_running = !fs_pids.empty();
       } catch (...) {}
 
+      auto now = std::chrono::steady_clock::now();
+      bool active_game_now = active_game_flag.load();
+      int64_t grace_ms = grace_deadline_ms.load();
+      bool in_grace = grace_ms > 0 && now < millis_to_steady(grace_ms);
+
       if (fs_running) {
         consecutive_missing = 0;
-        auto now = std::chrono::steady_clock::now();
-        if (focus_budget_active && now >= next_focus_check) {
+      } else {
+        if (active_game_now || in_grace) {
+          consecutive_missing = 0;
+        } else {
+          consecutive_missing++;
+          if (consecutive_missing >= 12) {
+            break;
+          }
+        }
+      }
+
+      if (cleanup_spawn_signal.exchange(false)) {
+        std::string dir;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          dir = game_state.cleanup_dir;
+        }
+        spawn_game_cleanup(dir);
+      }
+
+      if (game_start_signal.exchange(false)) {
+        game_successes_left = std::max(0, focus_attempts);
+        game_focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, focus_timeout_secs));
+        game_focus_budget_active = focus_attempts > 0 && focus_timeout_secs > 0;
+        next_game_focus_check = std::chrono::steady_clock::now();
+        fullscreen_focus_budget_active = false;
+        fullscreen_successes_left = std::max(0, focus_attempts);
+      }
+
+      if (game_stop_signal.exchange(false)) {
+        game_focus_budget_active = false;
+        game_successes_left = 0;
+        if (focus_attempts > 0 && focus_timeout_secs > 0) {
+          fullscreen_focus_budget_active = true;
+          fullscreen_focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, focus_timeout_secs));
+          next_fullscreen_focus_check = std::chrono::steady_clock::now();
+        }
+      }
+
+      if (active_game_now && game_focus_budget_active) {
+        auto now_focus = std::chrono::steady_clock::now();
+        if (now_focus >= next_game_focus_check) {
+          int remaining_secs = (int) std::chrono::duration_cast<std::chrono::seconds>(game_focus_deadline - now_focus).count();
+          if (remaining_secs <= 0) {
+            game_focus_budget_active = false;
+          } else {
+            std::string install_dir;
+            std::string exe_path;
+            {
+              std::lock_guard<std::mutex> lk(game_mutex);
+              install_dir = game_state.install_dir;
+              exe_path = game_state.exe_path;
+            }
+            bool applied = false;
+            auto cancel = [&]() {
+              return !active_game_flag.load();
+            };
+            int slice = remaining_secs;
+            if (slice < 1) {
+              slice = 1;
+            }
+            if (slice > 3) {
+              slice = 3;
+            }
+            if (!install_dir.empty()) {
+              try {
+                std::wstring wdir = platf::dxgi::utf8_to_wide(install_dir);
+                applied = focus_by_install_dir_extended(wdir, 1, slice, true, cancel);
+              } catch (...) {}
+            }
+            if (!applied && !exe_path.empty()) {
+              try {
+                std::wstring wexe = platf::dxgi::utf8_to_wide(exe_path);
+                std::filesystem::path p(wexe);
+                std::wstring base = p.filename().wstring();
+                if (!base.empty()) {
+                  applied = focus_process_by_name_extended(base.c_str(), 1, slice, true, cancel);
+                }
+              } catch (...) {}
+            }
+            if (applied) {
+              if (game_successes_left > 0) {
+                game_successes_left--;
+              }
+              if (game_successes_left <= 0) {
+                game_focus_budget_active = false;
+              }
+            } else if (std::chrono::steady_clock::now() >= game_focus_deadline) {
+              game_focus_budget_active = false;
+            }
+          }
+          next_game_focus_check = std::chrono::steady_clock::now() + 1s;
+        }
+      }
+
+      if (!active_game_now && fullscreen_focus_budget_active) {
+        auto now_focus = std::chrono::steady_clock::now();
+        if (now_focus >= next_fullscreen_focus_check) {
           bool already_fg = false;
           for (auto pid : fs_pids) {
             if (confirm_foreground_pid(pid)) {
@@ -1217,60 +1513,35 @@ static int launcher_run(int argc, char **argv) {
             }
           }
           if (!already_fg) {
-            int remaining_secs = (int) std::chrono::duration_cast<std::chrono::seconds>(focus_deadline - now).count();
-            if (remaining_secs > 0 && successes_left > 0) {
+            int remaining_secs = (int) std::chrono::duration_cast<std::chrono::seconds>(fullscreen_focus_deadline - now_focus).count();
+            if (remaining_secs <= 0) {
+              fullscreen_focus_budget_active = false;
+            } else if (fullscreen_successes_left > 0) {
               bool ok = focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", 1, std::min(2, remaining_secs), true);
               if (ok) {
-                successes_left--;
+                fullscreen_successes_left--;
               }
-            }
-            if (successes_left <= 0 || std::chrono::steady_clock::now() >= focus_deadline) {
-              focus_budget_active = false;
+              if (fullscreen_successes_left <= 0 || std::chrono::steady_clock::now() >= fullscreen_focus_deadline) {
+                fullscreen_focus_budget_active = false;
+              }
+            } else {
+              fullscreen_focus_budget_active = false;
             }
           }
-          next_focus_check = now + 2s;
-        }
-      } else {
-        consecutive_missing++;
-        if (consecutive_missing >= 6) {
-          break;
+          next_fullscreen_focus_check = now_focus + 2s;
         }
       }
+
       std::this_thread::sleep_for(500ms);
     }
+
+    server.stop();
     BOOST_LOG(info) << "Playnite appears closed; exiting launcher";
     return 0;
   }
 
-  // If no public GUID was supplied, relaunch self with one so the GUID is visible
-  if (public_guid.empty()) {
-    try {
-      public_guid = platf::dxgi::generate_guid();
-    } catch (...) {
-      public_guid.clear();
-    }
-    // Build command line: "exe" --game-id <id> --public-guid <guid> [--timeout N]
-    WCHAR selfPath[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
-    std::wstring wexe(selfPath);
-    std::wstring wcmd = L"\"" + wexe + L"\" --game-id " + std::wstring(game_id.begin(), game_id.end()) +
-                        L" --public-guid " + std::wstring(public_guid.begin(), public_guid.end()) +
-                        (timeout_s.empty() ? L"" : (L" --timeout " + std::wstring(timeout_s.begin(), timeout_s.end())));
-    STARTUPINFOW si {};
-    si.cb = sizeof(si);
-    si.dwFlags |= STARTF_USESHOWWINDOW;  // ensure hidden window
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi {};
-    std::wstring cmdline = wcmd;  // mutable buffer for CreateProcess
-    BOOL ok = CreateProcessW(selfPath, cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr, &si, &pi);
-    if (ok) {
-      CloseHandle(pi.hThread);
-      CloseHandle(pi.hProcess);
-      BOOST_LOG(info) << "Spawned child with generated public GUID";
-      return 0;  // Parent exits; child continues with server
-    } else {
-      BOOST_LOG(error) << "Failed to spawn child process with GUID; continuing in current process";
-    }
+  if (!ensure_public_guid()) {
+    return 0;
   }
   BOOST_LOG(info) << "Using public GUID for launcher pipes";
 

@@ -1,7 +1,7 @@
 Id: Sunshine.Playnite.PowerShell
 Name: Sunshine Playnite Connector
 Author: Nonary
-Version: 0.2.1
+Version: 0.3.0
 Module: SunshinePlaynite.psm1
 Type: Script
-Description: Sends Playnite categories and game metadata to Sunshine over a secure named pipe.
+Description: Adds two-way communication between Vibeshine and Playnite, allowing you to launch games from Playnite and have Sunshine automatically start streaming them.

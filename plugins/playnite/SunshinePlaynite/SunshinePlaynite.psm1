@@ -31,6 +31,13 @@ if (-not $lcVar -or -not ($lcVar.Value -is [System.Collections.Concurrent.Concur
   $global:LauncherConns = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
 }
 $script:Outbox = $null
+$script:SunshineLaunchedGameIds = $null
+$slVar = $null
+try { $slVar = Get-Variable -Name 'SunshineLaunchedGameIds' -Scope Global -ErrorAction SilentlyContinue } catch { $slVar = $null }
+if (-not $slVar -or -not ($slVar.Value -is [System.Collections.Concurrent.ConcurrentDictionary[string,bool]])) {
+  $global:SunshineLaunchedGameIds = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,bool]'
+}
+$script:SunshineLaunchedGameIds = $global:SunshineLaunchedGameIds
 $script:GameEventSubs = @()
 $script:GameEventsRegistered = $false
 $script:SnapshotTimer = $null
@@ -732,6 +739,7 @@ function Start-LauncherConnReader {
       try {
         $obj = $line | ConvertFrom-Json -ErrorAction Stop
         if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
+          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
           Write-Log "LauncherConn[$Guid]: launch dispatched for $($obj.id)"
         }
@@ -937,6 +945,7 @@ function Start-ConnectorLoop {
           $obj = $line | ConvertFrom-Json -ErrorAction Stop
           if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
             try {
+              Register-SunshineLaunchedGame -Id $obj.id
               [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
               Write-Log "Dispatched launch to UI thread via UIBridge.StartGameByGuidStringOnUIThread"
             } catch { Write-Log "Failed to dispatch launch: $($_.Exception.Message)" }
@@ -1015,6 +1024,7 @@ function OnApplicationStarted() {
       $rs.Open()
       if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
       if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
+      try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
       if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
       $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
       # Ensure connector runspace can access the shared launcher connections table
@@ -1025,6 +1035,7 @@ function OnApplicationStarted() {
       if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
       # Rebind this runspace's $global:LauncherConns to the injected shared instance
       $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+      $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
       $ps.AddScript('Start-ConnectorLoop -Token $Cts.Token') | Out-Null
       $handle = $ps.BeginInvoke()
       $script:Bg = @{ Runspace = $rs; PowerShell = $ps; Handle = $handle }
@@ -1040,6 +1051,7 @@ function OnApplicationStarted() {
       if ($Outbox) { $rs2.SessionStateProxy.SetVariable('Outbox', $Outbox) }
       # Inject the existing shared LauncherConns object so this runspace uses the same instance
       try { $rs2.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
+      try { if ($global:SunshineLaunchedGameIds) { $rs2.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
       if ($PSScriptRoot) { $rs2.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
       $rs2.SessionStateProxy.SetVariable('Cts', $script:Cts)
       $ps2 = [System.Management.Automation.PowerShell]::Create()
@@ -1047,6 +1059,7 @@ function OnApplicationStarted() {
       if ($modulePath) { $ps2.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
       # After module import (which initializes its own table), rebind to the injected shared instance
       $ps2.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+      $ps2.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
       $ps2.AddScript('Start-LauncherWatcherLoop -Token $Cts.Token') | Out-Null
       $handle2 = $ps2.BeginInvoke()
       $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
@@ -1188,10 +1201,104 @@ function Send-StopSignalToLauncher {
   }
 }
 
+function Normalize-GameId {
+  param([object]$Id)
+  try {
+    if ($null -eq $Id) { return '' }
+    $str = [string]$Id
+    if ([string]::IsNullOrWhiteSpace($str)) { return '' }
+    $trimmed = $str.Trim().Trim('{','}')
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return '' }
+    return $trimmed.ToLowerInvariant()
+  } catch { return '' }
+}
+
+function Register-SunshineLaunchedGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return }
+    if (-not $script:SunshineLaunchedGameIds) { return }
+    $script:SunshineLaunchedGameIds[$norm] = $true
+    $count = 0
+    try { $count = $script:SunshineLaunchedGameIds.Count } catch {}
+    Write-Log ("LaunchTrack: registered {0} (count={1})" -f $norm, $count) -Level 'DEBUG'
+  } catch { Write-Log "LaunchTrack: register failed: $($_.Exception.Message)" }
+}
+
+function Test-SunshineLaunchedGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return $false }
+    if (-not $script:SunshineLaunchedGameIds) { return $false }
+    return $script:SunshineLaunchedGameIds.ContainsKey($norm)
+  } catch {
+    Write-Log "LaunchTrack: test failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Remove-SunshineLaunchedGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return $false }
+    if (-not $script:SunshineLaunchedGameIds) { return $false }
+    $removed = $false
+    if ($script:SunshineLaunchedGameIds.TryRemove($norm, [ref]$removed)) {
+      $count = 0
+      try { $count = $script:SunshineLaunchedGameIds.Count } catch {}
+      Write-Log ("LaunchTrack: removed {0} (count={1})" -f $norm, $count) -Level 'DEBUG'
+      return $true
+    }
+    Write-Log ("LaunchTrack: remove miss for {0}" -f $norm) -Level 'DEBUG'
+    return $false
+  } catch {
+    Write-Log "LaunchTrack: remove failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Test-LauncherConnectionForGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return $false }
+    $keys = @()
+    try { $keys = @($global:LauncherConns.Keys) } catch { $keys = @() }
+    foreach ($guid in $keys) {
+      $conn = $null
+      try { $conn = $global:LauncherConns[$guid] } catch {}
+      if (-not $conn) { continue }
+      $cid = $null
+      try { $cid = $conn.GameId } catch {}
+      if (-not $cid) { continue }
+      $cNorm = Normalize-GameId -Id $cid
+      if ($cNorm -and ($cNorm -eq $norm)) { return $true }
+    }
+    return $false
+  } catch {
+    Write-Log "LaunchTrack: connection probe failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 function OnGameStarted() {
   param($evnArgs)
   $game = $evnArgs.Game
   Write-Log "OnGameStarted: $($game.Name) [$($game.Id)]"
+  $gameId = $null
+  try { $gameId = $game.Id } catch {}
+  if (-not (Test-SunshineLaunchedGame -Id $gameId)) {
+    if (Test-LauncherConnectionForGame -Id $gameId) {
+      Register-SunshineLaunchedGame -Id $gameId
+      Write-Log "OnGameStarted: registered via launcher connection" -Level 'DEBUG'
+    }
+  }
+  if (Test-SunshineLaunchedGame -Id $gameId) {
+    Write-Log "OnGameStarted: sunshine-owned session" -Level 'DEBUG'
+  }
   Send-StatusMessage -Name 'gameStarted' -Game $game
 }
 
@@ -1199,6 +1306,14 @@ function OnGameStopped() {
   param($evnArgs)
   $game = $evnArgs.Game
   Write-Log "OnGameStopped: $($game.Name) [$($game.Id)]"
+  $gameId = $null
+  try { $gameId = $game.Id } catch {}
+  if (-not (Remove-SunshineLaunchedGame -Id $gameId)) {
+    $norm = Normalize-GameId -Id $gameId
+    if (-not $norm) { $norm = 'untracked' }
+    Write-DebugLog ("OnGameStopped: skipping status for {0}" -f $norm)
+    return
+  }
   Send-StatusMessage -Name 'gameStopped' -Game $game
 }
 
