@@ -250,9 +250,13 @@ namespace display_helper_integration {
 
     const bool dummy_plug_mode = video_config.dd.wa.dummy_plug_hdr10;
     const bool desktop_session = session_targets_desktop(session);
+    const bool dlss_framegen_fix = session.dlss_framegen_capture_fix;
     bool should_force_refresh = config::rtss.disable_vsync_ullm &&
                                 (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
-    if (dummy_plug_mode) {
+    if (dlss_framegen_fix) {
+      should_force_refresh = true;
+    }
+    if (dummy_plug_mode && !dlss_framegen_fix) {
       should_force_refresh = false;
     }
 
@@ -261,17 +265,22 @@ namespace display_helper_integration {
       // Copy parsed config so we can optionally override refresh when VSYNC/ULLM suppression is enabled
       auto cfg_effective = *cfg;
 
-      if (dummy_plug_mode && !desktop_session) {
+      if (dummy_plug_mode && !dlss_framegen_fix && !desktop_session) {
         BOOST_LOG(info) << "Display helper: dummy plug HDR10 mode forcing 30 Hz for non-desktop session.";
         cfg_effective.m_refresh_rate = display_device::Rational {30u, 1u};
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
+      if (dummy_plug_mode && dlss_framegen_fix && !desktop_session) {
+        BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix overriding dummy plug refresh lock.";
+        cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
+      }
       if (should_force_refresh) {
-        BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
-        // Prefer the highest available refresh rate for the targeted resolution to avoid
-        // VSYNC and ULLM engagement when the display refresh exceeds stream FPS.
+        if (dlss_framegen_fix) {
+          BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix forcing the highest available refresh rate for this session.";
+        } else {
+          BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
+        }
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
-        // If no resolution was selected by DD settings, use the session's requested resolution when SOPS is enabled
         if (!cfg_effective.m_resolution && session.enable_sops && session.width >= 0 && session.height >= 0) {
           cfg_effective.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(session.width),
@@ -302,7 +311,7 @@ namespace display_helper_integration {
       return ok;
     }
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
-      if (dummy_plug_mode && !desktop_session) {
+      if (dummy_plug_mode && !dlss_framegen_fix && !desktop_session) {
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
         cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
@@ -334,20 +343,26 @@ namespace display_helper_integration {
         return ok;
       }
 
+      if (dummy_plug_mode && dlss_framegen_fix && !desktop_session) {
+        BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix active; skipping dummy plug HDR 30 Hz override.";
+      }
+
       if (should_force_refresh) {
-        BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
+        if (dlss_framegen_fix) {
+          BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix forcing the highest available refresh rate for this session.";
+        } else {
+          BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
+        }
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
-        // Don't force device prep; verify-only is safest and avoids primary/only changes
         cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
-        // Target session resolution if the client opted-in to Optimize Game Settings
         if (session.enable_sops && session.width >= 0 && session.height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(session.width),
             static_cast<unsigned int>(session.height)
           };
         }
-        cfg_override.m_refresh_rate = display_device::Rational {10000u, 1u};  // prefer highest
+        cfg_override.m_refresh_rate = display_device::Rational {10000u, 1u};
 
         std::string json = display_device::toJson(cfg_override);
         try {

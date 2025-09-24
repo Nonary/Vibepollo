@@ -36,6 +36,7 @@ namespace stream {
     uint32_t encryptionFlagsEnabled;
 
     std::optional<int> gcmap;
+    bool dlss_framegen_capture_fix;
   };
 
   namespace session {

@@ -71,6 +71,7 @@ namespace proc {
     bool auto_detach;
     bool wait_all;
     std::chrono::seconds exit_timeout;
+    bool dlss_framegen_capture_fix;
   };
 
   class proc_t {

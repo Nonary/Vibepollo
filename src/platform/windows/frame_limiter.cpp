@@ -24,6 +24,13 @@ namespace platf {
 
     frame_limiter_provider g_active_provider = frame_limiter_provider::none;
     bool g_nvcp_started = false;
+    bool g_dlss_framegen_fix_active = false;
+    bool g_prev_frame_limiter_enabled = false;
+    std::string g_prev_frame_limiter_provider;
+    bool g_prev_frame_limiter_provider_set = false;
+    bool g_prev_disable_vsync_ullm = false;
+    std::string g_prev_rtss_frame_limit_type;
+    bool g_prev_rtss_frame_limit_type_set = false;
 
     frame_limiter_provider parse_provider(const std::string &value) {
       std::string normalized;
@@ -77,14 +84,32 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(int fps) {
+  void frame_limiter_streaming_start(int fps, bool dlss_framegen_capture_fix) {
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
+    g_dlss_framegen_fix_active = dlss_framegen_capture_fix;
 
-    const bool frame_limit_enabled = config::frame_limiter.enable;
+    const bool frame_limit_enabled = config::frame_limiter.enable || dlss_framegen_capture_fix;
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
-    const bool want_nv_overrides = config::rtss.disable_vsync_ullm && nvidia_gpu_present && nvcp_ready;
+
+    if (dlss_framegen_capture_fix) {
+      g_prev_frame_limiter_enabled = config::frame_limiter.enable;
+      g_prev_frame_limiter_provider = config::frame_limiter.provider;
+      g_prev_frame_limiter_provider_set = true;
+      g_prev_disable_vsync_ullm = config::rtss.disable_vsync_ullm;
+      g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
+      g_prev_rtss_frame_limit_type_set = true;
+      config::frame_limiter.enable = true;
+      config::frame_limiter.provider = "rtss";
+      config::rtss.disable_vsync_ullm = true;
+      config::rtss.frame_limit_type = "front edge sync";
+    } else {
+      g_prev_frame_limiter_provider_set = false;
+      g_prev_rtss_frame_limit_type_set = false;
+    }
+
+    const bool want_nv_overrides = (config::rtss.disable_vsync_ullm || dlss_framegen_capture_fix) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
 
@@ -161,6 +186,20 @@ namespace platf {
   }
 
   void frame_limiter_streaming_stop() {
+    if (g_dlss_framegen_fix_active) {
+      config::frame_limiter.enable = g_prev_frame_limiter_enabled;
+      if (g_prev_frame_limiter_provider_set) {
+        config::frame_limiter.provider = g_prev_frame_limiter_provider;
+      }
+      config::rtss.disable_vsync_ullm = g_prev_disable_vsync_ullm;
+      if (g_prev_rtss_frame_limit_type_set) {
+        config::rtss.frame_limit_type = g_prev_rtss_frame_limit_type;
+      }
+      g_dlss_framegen_fix_active = false;
+      g_prev_frame_limiter_provider_set = false;
+      g_prev_rtss_frame_limit_type_set = false;
+    }
+
     if (g_active_provider == frame_limiter_provider::rtss) {
       rtss_streaming_stop();
     }

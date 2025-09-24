@@ -181,15 +181,23 @@
             </n-checkbox>
             <n-checkbox
               v-if="isWindows"
-              v-model:checked="form.frameGenLimiterFix"
+              v-model:checked="form.dlssFramegenCaptureFix"
               size="small"
               class="md:col-span-2"
-            > 
-            Apply Frame Generation fixes (e.g. DLSS 3)
+            >
+              <div class="flex flex-col">
+                <span>DLSS Framegen capture fix</span>
+                <span class="text-[11px] opacity-60"
+                  >Requires a display capable of 240 Hz or higher (virtual display driver
+                  recommended) and RTSS installed. Configure Display Device to activate only that
+                  monitor during streams.</span
+                >
+              </div>
             </n-checkbox>
           </div>
           <p v-if="isWindows" class="text-[11px] opacity-60">
-            Configures RTSS to limit with front-edge polling, which fixes issues with games being stuck at a lower frame rate using frame generation.
+            Configures RTSS to limit with front-edge polling, which fixes issues with games being
+            stuck at a lower frame rate using frame generation.
           </p>
 
           <section class="space-y-3">
@@ -253,15 +261,6 @@
               <n-button size="small" type="primary" @click="addDetached">
                 <i class="fas fa-plus" /> Add
               </n-button>
-            </div>
-            <div v-if="form.detached.length === 0" class="text-[12px] opacity-60">None</div>
-            <div v-else class="space-y-2">
-              <div v-for="(d, i) in form.detached" :key="i" class="flex gap-2 items-center">
-                <n-input v-model:value="form.detached[i]" class="font-mono flex-1" />
-                <n-button type="error" strong @click="form.detached.splice(i, 1)">
-                  <i class="fas fa-times" />
-                </n-button>
-              </div>
             </div>
           </section>
           <section class="sr-only">
@@ -419,6 +418,7 @@ interface AppForm {
   exitTimeout: number;
   prepCmd: PrepCmd[];
   detached: string[];
+  dlssFramegenCaptureFix: boolean;
   // With exactOptionalPropertyTypes, allow explicit undefined when clearing selection
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
@@ -440,6 +440,7 @@ interface ServerApp {
   detached?: string[];
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
+  'dlss-framegen-capture-fix'?: boolean;
 }
 
 interface AppEditModalProps {
@@ -470,6 +471,7 @@ function fresh(): AppForm {
     exitTimeout: 5,
     prepCmd: [],
     detached: [],
+    dlssFramegenCaptureFix: false,
     output: '',
   };
 }
@@ -524,6 +526,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     exitTimeout: derivedExitTimeout,
     prepCmd: prep,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
+    dlssFramegenCaptureFix: !!src['dlss-framegen-capture-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
   };
@@ -542,7 +545,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
-    'frame-gen-limiter-fix': !!f.frameGenLimiterFix,
+    'dlss-framegen-capture-fix': !!f.dlssFramegenCaptureFix,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
       do: p.do,
@@ -749,6 +752,9 @@ const configStore = useConfigStore();
 const isWindows = computed(
   () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
 );
+const ddConfigOption = computed(
+  () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
+);
 const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
@@ -816,6 +822,39 @@ watch(newAppSource, (v) => {
     selectedPlayniteId.value = '';
   }
 });
+watch(
+  () => form.value.dlssFramegenCaptureFix,
+  async (enabled) => {
+    if (!enabled) {
+      return;
+    }
+    message?.info(
+      'DLSS Framegen capture fix requires a display capable of 240 Hz or higher. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+    );
+    if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
+      message?.warning(
+        'Enable Display Device configuration and set it to "Deactivate all other displays" so the DLSS Framegen capture fix can take effect.',
+      );
+    } else if (ddConfigOption.value !== 'ensure_only_display') {
+      message?.warning(
+        'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
+      );
+    }
+    try {
+      const rtss = await http.get('/api/rtss/status', { validateStatus: () => true });
+      const data = rtss?.data as any;
+      if (!data || !data.path_exists || !data.hooks_found) {
+        message?.warning(
+          'RTSS is required for this fix. Install RTSS to ensure the stream remains perfectly smooth and avoid microstuttering.',
+        );
+      }
+    } catch {
+      message?.warning(
+        'Unable to verify RTSS installation. Install RTSS to avoid microstuttering.',
+      );
+    }
+  },
+);
 function addDetached() {
   form.value.detached.push('');
   requestAnimationFrame(() => updateShadows());
@@ -935,10 +974,20 @@ async function save() {
       }
     } catch (_) {}
     const payload = toServerPayload(form.value);
-    await http.post('./api/apps', payload, {
+    const response = await http.post('./api/apps', payload, {
       headers: { 'Content-Type': 'application/json' },
       validateStatus: () => true,
     });
+    const okStatus = response.status >= 200 && response.status < 300;
+    const responseData = response?.data as any;
+    if (!okStatus || (responseData && responseData.status === false)) {
+      const errMessage =
+        responseData && typeof responseData === 'object' && 'error' in responseData
+          ? String(responseData.error ?? 'Failed to save application.')
+          : 'Failed to save application.';
+      message?.error(errMessage);
+      return;
+    }
     emit('saved');
     close();
   } finally {

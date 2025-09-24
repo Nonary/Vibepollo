@@ -581,7 +581,7 @@ namespace confighttp {
         "elevated",
         "auto-detach",
         "wait-all",
-        "frame-gen-limiter-fix"
+        "dlss-framegen-capture-fix"
       };
 
       // List of keys to convert to integers
@@ -698,6 +698,13 @@ namespace confighttp {
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
 #ifdef _WIN32
       enhance_app_with_playnite_cover(input_tree);
+#endif
+
+#ifndef _WIN32
+      if (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>()) {
+        bad_request(response, request, "DLSS Framegen capture fix is only supported on Windows hosts.");
+        return;
+      }
 #endif
 
       auto &apps_node = file_tree["apps"];

@@ -287,6 +287,7 @@ namespace nvhttp {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
+    launch_session->dlss_framegen_capture_fix = false;
 
     auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
     std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
@@ -310,6 +311,19 @@ namespace nvhttp {
     }
     launch_session->unique_id = (get_arg(args, "uniqueid", "unknown"));
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
+    if (launch_session->appid > 0) {
+      try {
+        auto apps_snapshot = proc::proc.get_apps();
+        const std::string app_id_str = std::to_string(launch_session->appid);
+        for (const auto &app_ctx : apps_snapshot) {
+          if (app_ctx.id == app_id_str) {
+            launch_session->dlss_framegen_capture_fix = app_ctx.dlss_framegen_capture_fix;
+            break;
+          }
+        }
+      } catch (...) {
+      }
+    }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));

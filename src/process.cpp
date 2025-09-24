@@ -182,6 +182,7 @@ namespace proc {
 
     _app_id = app_id;
     _app = *iter;
+    launch_session->dlss_framegen_capture_fix = _app.dlss_framegen_capture_fix;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -764,6 +765,7 @@ namespace proc {
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
+        auto dlss_framegen_capture_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -852,6 +854,7 @@ namespace proc {
         ctx.wait_all = wait_all.value_or(true);
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(10)};
+        ctx.dlss_framegen_capture_fix = dlss_framegen_capture_fix.value_or(false);
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {

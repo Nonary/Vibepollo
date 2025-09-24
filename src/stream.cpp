@@ -1989,12 +1989,8 @@ namespace stream {
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
 #ifdef _WIN32
-        std::optional<std::string> rtss_sync_override;
-        if (proc::proc.last_run_app_frame_gen_limiter_fix()) {
-          rtss_sync_override = std::string("front edge sync");
-        }
-        platf::rtss_set_sync_limiter_override(rtss_sync_override);
-        platf::frame_limiter_streaming_start(session.config.monitor.framerate);
+        // Apply RTSS frame limit if enabled (Windows-only)
+        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.dlss_framegen_capture_fix);
 #endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

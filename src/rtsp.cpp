@@ -979,6 +979,7 @@ namespace rtsp_stream {
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
 
     stream::config_t config;
+    config.dlss_framegen_capture_fix = false;
 
     std::int64_t configuredBitrateKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
@@ -1114,6 +1115,7 @@ namespace rtsp_stream {
     // Prevent interleaving with hot-apply while we allocate/start a session from RTSP
     auto _hot_apply_gate = config::acquire_apply_read_gate();
 
+    config.dlss_framegen_capture_fix = session.dlss_framegen_capture_fix;
     auto stream_session = stream::session::alloc(config, session);
     server->insert(stream_session);
 
