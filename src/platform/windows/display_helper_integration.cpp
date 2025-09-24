@@ -271,12 +271,12 @@ namespace display_helper_integration {
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
       if (dummy_plug_mode && dlss_framegen_fix && !desktop_session) {
-        BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix overriding dummy plug refresh lock.";
+        BOOST_LOG(info) << "Display helper: Frame generated capture fix overriding dummy plug refresh lock.";
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
       if (should_force_refresh) {
         if (dlss_framegen_fix) {
-          BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix forcing the highest available refresh rate for this session.";
+          BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
         } else {
           BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         }
@@ -344,12 +344,12 @@ namespace display_helper_integration {
       }
 
       if (dummy_plug_mode && dlss_framegen_fix && !desktop_session) {
-        BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix active; skipping dummy plug HDR 30 Hz override.";
+        BOOST_LOG(info) << "Display helper: Frame generated capture fix active; skipping dummy plug HDR 30 Hz override.";
       }
 
       if (should_force_refresh) {
         if (dlss_framegen_fix) {
-          BOOST_LOG(info) << "Display helper: DLSS Framegen capture fix forcing the highest available refresh rate for this session.";
+          BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
         } else {
           BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         }

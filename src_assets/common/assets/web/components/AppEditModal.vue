@@ -186,11 +186,12 @@
               class="md:col-span-2"
             >
               <div class="flex flex-col">
-                <span>DLSS Framegen capture fix</span>
+                <span>Frame generated capture fix</span>
                 <span class="text-[11px] opacity-60"
-                  >Requires a display capable of 240 Hz or higher (virtual display driver
-                  recommended) and RTSS installed. Configure Display Device to activate only that
-                  monitor during streams.</span
+                  >Supports DLSS, FSR, and Lossless Scaling frame generation. Requires a display
+                  capable of 240 Hz or higher (virtual display driver recommended) and RTSS
+                  installed. Configure Display Device to activate only that monitor during
+                  streams.</span
                 >
               </div>
             </n-checkbox>
@@ -829,11 +830,11 @@ watch(
       return;
     }
     message?.info(
-      'DLSS Framegen capture fix requires a display capable of 240 Hz or higher. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+      'Frame generated capture fix supports DLSS, FSR, and Lossless Scaling frame generation and requires a display capable of 240 Hz or higher. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
     );
     if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
       message?.warning(
-        'Enable Display Device configuration and set it to "Deactivate all other displays" so the DLSS Framegen capture fix can take effect.',
+        'Enable Display Device configuration and set it to "Deactivate all other displays" so the frame generated capture fix can take effect.',
       );
     } else if (ddConfigOption.value !== 'ensure_only_display') {
       message?.warning(

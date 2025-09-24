@@ -702,7 +702,7 @@ namespace confighttp {
 
 #ifndef _WIN32
       if (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>()) {
-        bad_request(response, request, "DLSS Framegen capture fix is only supported on Windows hosts.");
+  bad_request(response, request, "Frame generated capture fix is only supported on Windows hosts.");
         return;
       }
 #endif
