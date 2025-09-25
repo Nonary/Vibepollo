@@ -94,7 +94,7 @@ namespace {
     std::optional<std::filesystem::path> configured_path;
   };
 
-  constexpr std::string_view k_lossless_profile_prefix = "Sunshine Auto - ";
+  constexpr std::string_view k_lossless_profile_title = "Vibeshine";
   constexpr size_t k_lossless_max_executables = 256;
   constexpr int k_lossless_auto_delay_seconds = 10;
 
@@ -201,20 +201,22 @@ namespace {
     return true;
   }
 
-  static std::vector<std::filesystem::path> lossless_collect_executables(const std::filesystem::path &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
-    std::vector<std::filesystem::path> executables;
-    if (base_dir.empty()) {
+  static std::vector<std::wstring> lossless_collect_executable_names(const std::filesystem::path &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
+    std::vector<std::wstring> executables;
+    if (base_dir.empty() && !explicit_exe) {
       return executables;
     }
 
     std::unordered_set<std::wstring> seen;
-    auto add_candidate = [&](const std::filesystem::path &candidate) {
+    auto add_candidate = [&](const std::filesystem::path &candidate, bool require_exists) {
       if (executables.size() >= k_lossless_max_executables) {
         return;
       }
-      std::error_code ec;
-      if (!std::filesystem::exists(candidate, ec) || !std::filesystem::is_regular_file(candidate, ec)) {
-        return;
+      if (require_exists) {
+        std::error_code ec;
+        if (!std::filesystem::exists(candidate, ec) || !std::filesystem::is_regular_file(candidate, ec)) {
+          return;
+        }
       }
       auto ext = candidate.extension().wstring();
       if (ext.empty()) {
@@ -224,49 +226,87 @@ namespace {
       if (ext != L".exe") {
         return;
       }
-      auto normalized = candidate.lexically_normal().wstring();
-      lowercase_inplace(normalized);
-      if (!seen.insert(normalized).second) {
+      auto filename = candidate.filename().wstring();
+      if (filename.empty()) {
         return;
       }
-      executables.push_back(candidate);
+      auto key = filename;
+      lowercase_inplace(key);
+      if (!seen.insert(key).second) {
+        return;
+      }
+      executables.push_back(filename);
     };
 
-    std::error_code ec;
-    auto options = std::filesystem::directory_options::skip_permission_denied;
-    std::filesystem::recursive_directory_iterator it(base_dir, options, ec);
-    if (!ec) {
-      auto end = std::filesystem::recursive_directory_iterator();
-      for (; it != end && executables.size() < k_lossless_max_executables; it.increment(ec)) {
-        if (ec) {
-          ec.clear();
-          continue;
-        }
-        const auto &entry = *it;
-        std::error_code type_ec;
-        if (!entry.is_regular_file(type_ec)) {
-          if (type_ec) {
-            type_ec.clear();
+    if (!base_dir.empty()) {
+      std::error_code ec;
+      auto options = std::filesystem::directory_options::skip_permission_denied;
+      std::filesystem::recursive_directory_iterator it(base_dir, options, ec);
+      if (!ec) {
+        auto end = std::filesystem::recursive_directory_iterator();
+        for (; it != end && executables.size() < k_lossless_max_executables; it.increment(ec)) {
+          if (ec) {
+            ec.clear();
+            continue;
           }
-          continue;
+          const auto &entry = *it;
+          std::error_code type_ec;
+          if (!entry.is_regular_file(type_ec)) {
+            if (type_ec) {
+              type_ec.clear();
+            }
+            continue;
+          }
+          add_candidate(entry.path(), true);
         }
-        add_candidate(entry.path());
       }
     }
 
-    if (explicit_exe && lossless_path_within(*explicit_exe, base_dir)) {
-      add_candidate(*explicit_exe);
+    if (explicit_exe) {
+      if (!base_dir.empty()) {
+        if (lossless_path_within(*explicit_exe, base_dir)) {
+          add_candidate(*explicit_exe, true);
+        }
+      } else {
+        add_candidate(*explicit_exe, false);
+      }
     }
 
-    std::sort(executables.begin(), executables.end(), [](const std::filesystem::path &a, const std::filesystem::path &b) {
-      auto aw = a.lexically_normal().wstring();
-      auto bw = b.lexically_normal().wstring();
+    std::sort(executables.begin(), executables.end(), [](const std::wstring &a, const std::wstring &b) {
+      auto aw = a;
+      auto bw = b;
       lowercase_inplace(aw);
       lowercase_inplace(bw);
       return aw < bw;
     });
 
     return executables;
+  }
+
+  static std::string lossless_build_filter(const std::vector<std::wstring> &exe_names) {
+    if (exe_names.empty()) {
+      return std::string();
+    }
+    std::wstring filter;
+    for (size_t i = 0; i < exe_names.size(); ++i) {
+      std::wstring name = exe_names[i];
+      lowercase_inplace(name);
+      if (name.empty()) {
+        continue;
+      }
+      if (!filter.empty()) {
+        filter.push_back(L';');
+      }
+      filter.append(name);
+    }
+    if (filter.empty()) {
+      return std::string();
+    }
+    try {
+      return platf::dxgi::wide_to_utf8(filter);
+    } catch (...) {
+      return std::string();
+    }
   }
 
   static std::optional<std::filesystem::path> get_lossless_scaling_env_path() {
@@ -352,33 +392,27 @@ namespace {
     }
 
     auto &profiles = *profiles_opt;
-    std::unordered_set<std::wstring> existing_paths_ci;
     bool removed_auto_profiles = false;
     for (auto it = profiles.begin(); it != profiles.end();) {
       if (it->first == "Profile") {
         auto title = it->second.get<std::string>("Title", "");
-        if (!title.empty() && title.rfind(std::string(k_lossless_profile_prefix), 0) == 0) {
+        if (title == k_lossless_profile_title) {
           it = profiles.erase(it);
           removed_auto_profiles = true;
           continue;
-        }
-        auto path_opt = it->second.get_optional<std::string>("Path");
-        if (path_opt && !path_opt->empty()) {
-          try {
-            std::filesystem::path existing(platf::dxgi::utf8_to_wide(*path_opt));
-            auto normalized = existing.lexically_normal().wstring();
-            lowercase_inplace(normalized);
-            existing_paths_ci.insert(std::move(normalized));
-          } catch (...) {}
         }
       }
       ++it;
     }
 
     boost::property_tree::ptree *default_profile = nullptr;
+    boost::property_tree::ptree *first_profile = nullptr;
     for (auto &entry : profiles) {
       if (entry.first != "Profile") {
         continue;
+      }
+      if (!first_profile) {
+        first_profile = &entry.second;
       }
       auto path_opt = entry.second.get_optional<std::string>("Path");
       if (!path_opt || path_opt->empty()) {
@@ -387,57 +421,23 @@ namespace {
       }
     }
 
-    bool default_changed = false;
-    if (default_profile) {
-      auto &profile = *default_profile;
+    boost::property_tree::ptree *template_profile = default_profile ? default_profile : first_profile;
 
-      if (auto auto_scale_opt = profile.get_optional<std::string>("AutoScale")) {
+    if (template_profile) {
+      if (auto auto_scale_opt = template_profile->get_optional<std::string>("AutoScale")) {
         backup.had_auto_scale = true;
         backup.auto_scale = *auto_scale_opt;
-      } else {
-        backup.had_auto_scale = false;
       }
-
-      if (auto delay_opt = profile.get_optional<int>("AutoScaleDelay")) {
+      if (auto delay_opt = template_profile->get_optional<int>("AutoScaleDelay")) {
         backup.had_auto_scale_delay = true;
         backup.auto_scale_delay = *delay_opt;
-      } else {
-        backup.had_auto_scale_delay = false;
       }
-
-      if (auto target_opt = profile.get_optional<int>("LSFG3Target")) {
+      if (auto target_opt = template_profile->get_optional<int>("LSFG3Target")) {
         backup.had_lsfg_target = true;
         backup.lsfg_target = *target_opt;
-      } else {
-        backup.had_lsfg_target = false;
-      }
-
-      auto auto_scale_opt = profile.get_optional<std::string>("AutoScale");
-      if (!auto_scale_opt || *auto_scale_opt != "true") {
-        profile.put("AutoScale", "true");
-        default_changed = true;
-      }
-
-      auto delay_opt = profile.get_optional<int>("AutoScaleDelay");
-      if (!delay_opt || *delay_opt != k_lossless_auto_delay_seconds) {
-        profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
-        default_changed = true;
-      }
-
-      if (options.target_fps && *options.target_fps > 0) {
-        int target = std::clamp(*options.target_fps, 1, 480);
-        auto target_opt = profile.get_optional<int>("LSFG3Target");
-        if (!target_opt || *target_opt != target) {
-          profile.put("LSFG3Target", target);
-          default_changed = true;
-        }
-      }
-
-      if (default_changed) {
-        backup.valid = true;
       }
     } else {
-      BOOST_LOG(warning) << "Lossless Scaling: default profile not found";
+      BOOST_LOG(warning) << "Lossless Scaling: no profile available to clone";
     }
 
     std::optional<std::filesystem::path> base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
@@ -459,77 +459,34 @@ namespace {
       } catch (...) {}
     }
 
-    std::vector<std::filesystem::path> target_executables;
-    if (base_dir) {
-      target_executables = lossless_collect_executables(*base_dir, explicit_exe);
-    } else if (explicit_exe) {
-      target_executables.push_back(*explicit_exe);
+    std::vector<std::wstring> executable_names;
+    if (base_dir || explicit_exe) {
+      executable_names = lossless_collect_executable_names(base_dir.value_or(std::filesystem::path()), explicit_exe);
     }
 
-    bool inserted_profiles = false;
-    for (const auto &exe_path : target_executables) {
-      auto normalized = exe_path.lexically_normal().wstring();
-      auto normalized_lower = normalized;
-      lowercase_inplace(normalized_lower);
-      if (existing_paths_ci.find(normalized_lower) != existing_paths_ci.end()) {
-        continue;
-      }
+    std::string filter_utf8 = lossless_build_filter(executable_names);
 
-      std::string exe_utf8;
-      try {
-        exe_utf8 = platf::dxgi::wide_to_utf8(normalized);
-      } catch (...) {
-        continue;
+    bool inserted_profile = false;
+    if (!filter_utf8.empty()) {
+      boost::property_tree::ptree vibeshine_profile;
+      if (template_profile) {
+        vibeshine_profile = *template_profile;
       }
-
-      std::filesystem::path rel_component;
-      if (base_dir && lossless_path_within(exe_path, *base_dir)) {
-        std::error_code rel_ec;
-        auto rel = std::filesystem::relative(exe_path, *base_dir, rel_ec);
-        if (!rel_ec) {
-          bool has_parent = false;
-          for (const auto &part : rel) {
-            if (part == L"..") {
-              has_parent = true;
-              break;
-            }
-          }
-          if (!has_parent && !rel.empty()) {
-            rel_component = rel;
-          }
-        }
-      }
-      if (rel_component.empty()) {
-        rel_component = exe_path.filename();
-      }
-
-      std::string rel_utf8;
-      try {
-        rel_utf8 = platf::dxgi::wide_to_utf8(rel_component.wstring());
-      } catch (...) {
-        rel_utf8.clear();
-      }
-      if (rel_utf8.empty()) {
-        rel_utf8 = "Executable";
-      }
-
-      std::string title = std::string(k_lossless_profile_prefix) + rel_utf8;
-
-      boost::property_tree::ptree profile_node;
-      profile_node.put("Title", title);
-      profile_node.put("Path", exe_utf8);
-      profile_node.put("AutoScale", "true");
-      profile_node.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
+      vibeshine_profile.put("Title", std::string(k_lossless_profile_title));
+      vibeshine_profile.put("Path", filter_utf8);
+      vibeshine_profile.put("Filter", filter_utf8);
+      vibeshine_profile.put("AutoScale", "true");
+      vibeshine_profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
       if (options.target_fps && *options.target_fps > 0) {
         int target = std::clamp(*options.target_fps, 1, 480);
-        profile_node.put("LSFG3Target", target);
+        vibeshine_profile.put("LSFG3Target", target);
       }
-      profiles.push_back(std::make_pair("Profile", profile_node));
-      existing_paths_ci.insert(std::move(normalized_lower));
-      inserted_profiles = true;
+      profiles.push_back(std::make_pair("Profile", vibeshine_profile));
+      inserted_profile = true;
+      backup.valid = true;
     }
 
-    if (!removed_auto_profiles && !default_changed && !inserted_profiles) {
+    if (!removed_auto_profiles && !inserted_profile) {
       return false;
     }
 
@@ -568,7 +525,7 @@ namespace {
     for (auto it = profiles.begin(); it != profiles.end();) {
       if (it->first == "Profile") {
         auto title = it->second.get<std::string>("Title", "");
-        if (!title.empty() && title.rfind(std::string(k_lossless_profile_prefix), 0) == 0) {
+        if (title == k_lossless_profile_title) {
           it = profiles.erase(it);
           changed = true;
           continue;
