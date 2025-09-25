@@ -6,6 +6,7 @@
 
 // standard includes
 #include <atomic>
+#include <optional>
 
 // local includes
 #include "crypto.h"
@@ -35,6 +36,9 @@ namespace rtsp_stream {
     bool enable_hdr;
     bool enable_sops;
     bool dlss_framegen_capture_fix;
+    bool lossless_scaling_framegen;
+    std::optional<int> lossless_scaling_target_fps;
+    std::optional<int> lossless_scaling_rtss_limit;
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
     std::string rtsp_url_scheme;

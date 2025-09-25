@@ -23,6 +23,9 @@ export interface App {
   'exit-timeout'?: number;
   'prep-cmd'?: PrepCmd[];
   detached?: string[];
+  'lossless-scaling-framegen'?: boolean;
+  'lossless-scaling-target-fps'?: number;
+  'lossless-scaling-rtss-limit'?: number;
   // Fallback for any other server fields we don't model yet
   [key: string]: any;
 }

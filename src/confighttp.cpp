@@ -147,6 +147,7 @@ namespace confighttp {
 
   // RTSS status endpoint (Windows-only)
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getLosslessScalingStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Display helper: export current OS state as golden restore snapshot
   void postExportGoldenDisplay(resp_https_t response, req_https_t request);
@@ -581,12 +582,15 @@ namespace confighttp {
         "elevated",
         "auto-detach",
         "wait-all",
-        "dlss-framegen-capture-fix"
+        "dlss-framegen-capture-fix",
+        "lossless-scaling-framegen"
       };
 
       // List of keys to convert to integers
       std::vector<std::string> integer_keys = {
-        "exit-timeout"
+        "exit-timeout",
+        "lossless-scaling-target-fps",
+        "lossless-scaling-rtss-limit"
       };
 
       bool mutated = false;
@@ -702,7 +706,7 @@ namespace confighttp {
 
 #ifndef _WIN32
       if (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>()) {
-  bad_request(response, request, "Frame generated capture fix is only supported on Windows hosts.");
+        bad_request(response, request, "DLSS Framegen capture fix is only supported on Windows hosts.");
         return;
       }
 #endif
@@ -1987,6 +1991,7 @@ namespace confighttp {
 #ifdef _WIN32
     server.resource["^/api/playnite/status$"]["GET"] = getPlayniteStatus;
     server.resource["^/api/rtss/status$"]["GET"] = getRtssStatus;
+    server.resource["^/api/lossless_scaling/status$"]["GET"] = getLosslessScalingStatus;
     server.resource["^/api/playnite/install$"]["POST"] = installPlaynite;
     server.resource["^/api/playnite/uninstall$"]["POST"] = uninstallPlaynite;
     server.resource["^/api/playnite/games$"]["GET"] = getPlayniteGames;

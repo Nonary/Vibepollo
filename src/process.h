@@ -72,6 +72,9 @@ namespace proc {
     bool wait_all;
     std::chrono::seconds exit_timeout;
     bool dlss_framegen_capture_fix;
+    bool lossless_scaling_framegen;
+    std::optional<int> lossless_scaling_target_fps;
+    std::optional<int> lossless_scaling_rtss_limit;
   };
 
   class proc_t {

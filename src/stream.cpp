@@ -4,6 +4,7 @@
  */
 
 // standard includes
+#include <cmath>
 #include <fstream>
 #include <future>
 #include <optional>
@@ -1990,7 +1991,18 @@ namespace stream {
       if (++running_sessions == 1) {
 #ifdef _WIN32
         // Apply RTSS frame limit if enabled (Windows-only)
-        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.dlss_framegen_capture_fix);
+        std::optional<int> lossless_rtss_limit;
+        if (session.config.lossless_scaling_framegen) {
+          if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
+            lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
+          } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
+            int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.6);
+            if (computed > 0) {
+              lossless_rtss_limit = computed;
+            }
+          }
+        }
+        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.dlss_framegen_capture_fix, lossless_rtss_limit);
 #endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

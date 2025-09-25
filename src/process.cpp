@@ -183,6 +183,9 @@ namespace proc {
     _app_id = app_id;
     _app = *iter;
     launch_session->dlss_framegen_capture_fix = _app.dlss_framegen_capture_fix;
+    launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
+    launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
+    launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -209,6 +212,30 @@ namespace proc {
         break;
     }
     _env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
+
+    try {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = config::lossless_scaling.exe_path;
+    } catch (...) {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
+    }
+
+    if (_app.lossless_scaling_framegen) {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
+      if (_app.lossless_scaling_target_fps) {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*_app.lossless_scaling_target_fps);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      }
+      if (_app.lossless_scaling_rtss_limit) {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*_app.lossless_scaling_rtss_limit);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+      }
+    } else {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+    }
 
     if (!_app.output.empty() && _app.output != "null"sv) {
 #ifdef _WIN32
@@ -766,6 +793,21 @@ namespace proc {
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
         auto dlss_framegen_capture_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
+        auto lossless_scaling_framegen = app_node.get_optional<bool>("lossless-scaling-framegen"s);
+
+        ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
+        ctx.lossless_scaling_target_fps.reset();
+        ctx.lossless_scaling_rtss_limit.reset();
+        if (auto ls_target = app_node.get_optional<int>("lossless-scaling-target-fps"s)) {
+          if (*ls_target > 0) {
+            ctx.lossless_scaling_target_fps = *ls_target;
+          }
+        }
+        if (auto ls_rtss = app_node.get_optional<int>("lossless-scaling-rtss-limit"s)) {
+          if (*ls_rtss > 0) {
+            ctx.lossless_scaling_rtss_limit = *ls_rtss;
+          }
+        }
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -855,6 +897,10 @@ namespace proc {
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(10)};
         ctx.dlss_framegen_capture_fix = dlss_framegen_capture_fix.value_or(false);
+        if (!ctx.lossless_scaling_framegen) {
+          ctx.lossless_scaling_target_fps.reset();
+          ctx.lossless_scaling_rtss_limit.reset();
+        }
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
