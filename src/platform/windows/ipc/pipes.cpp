@@ -197,16 +197,27 @@ namespace platf::dxgi {
       }
     });
 
+    bool security_configured = false;
+
     if (_secdesc_builder) {
-      if (!_secdesc_builder(secDesc, &rawDacl)) {
-        BOOST_LOG(error) << "Custom security descriptor builder failed";
-        return nullptr;
+      if (_secdesc_builder(secDesc, &rawDacl)) {
+        secAttr.nLength = static_cast<DWORD>(sizeof(secAttr));
+        secAttr.lpSecurityDescriptor = &secDesc;
+        secAttr.bInheritHandle = FALSE;
+        pSecAttr = &secAttr;
+        security_configured = true;
+      } else {
+        DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Custom security descriptor builder failed (error=" << err
+                           << "); falling back to default pipe ACL";
+        if (rawDacl) {
+          LocalFree(rawDacl);
+          rawDacl = nullptr;
+        }
       }
-      secAttr.nLength = static_cast<DWORD>(sizeof(secAttr));
-      secAttr.lpSecurityDescriptor = &secDesc;
-      secAttr.bInheritHandle = FALSE;
-      pSecAttr = &secAttr;
-    } else if (platf::dxgi::is_running_as_system()) {
+    }
+
+    if (!security_configured && platf::dxgi::is_running_as_system()) {
       if (!create_security_descriptor(secDesc, &rawDacl)) {
         BOOST_LOG(error) << "Failed to init security descriptor";
         return nullptr;
@@ -215,6 +226,7 @@ namespace platf::dxgi {
       secAttr.lpSecurityDescriptor = &secDesc;
       secAttr.bInheritHandle = FALSE;
       pSecAttr = &secAttr;
+      security_configured = true;
     }
 
     winrt::file_handle hPipe {
@@ -425,8 +437,8 @@ namespace platf::dxgi {
       sizeof(message)
     );
 
-    // Wait for control client to connect (be generous to accommodate process startup jitter)
-    pipe->wait_for_client_connection(8000);
+    // Wait for control client to connect (match Playnite connector's 10s timeout with margin)
+    pipe->wait_for_client_connection(15000);
 
     if (!pipe->is_connected()) {
       BOOST_LOG(error) << "Client did not connect to pipe instance within the specified timeout. Disconnecting server pipe.";

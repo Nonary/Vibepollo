@@ -675,6 +675,27 @@ namespace platf::playnite {
     return inst->send_cmd_json_line(s);
   }
 
+  bool announce_launcher(const std::string &guid, uint32_t pid, const std::string &game_id) {
+    auto inst = g_instance.load(std::memory_order_acquire);
+    if (!inst) {
+      return false;
+    }
+    if (guid.empty()) {
+      return false;
+    }
+    nlohmann::json j;
+    j["type"] = "launcher";
+    j["command"] = "announce";
+    j["guid"] = guid;
+    if (pid != 0) {
+      j["pid"] = pid;
+    }
+    if (!game_id.empty()) {
+      j["gameId"] = game_id;
+    }
+    return inst->send_cmd_json_line(j.dump());
+  }
+
   bool get_games_list_json(std::string &out_json) {
     auto inst = g_instance.load(std::memory_order_acquire);
     if (!inst) {

@@ -88,6 +88,7 @@ const defaultGroups = [
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
+      lossless_scaling_path: '',
     },
   },
   {

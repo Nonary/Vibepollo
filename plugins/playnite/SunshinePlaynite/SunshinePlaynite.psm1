@@ -38,6 +38,13 @@ if (-not $slVar -or -not ($slVar.Value -is [System.Collections.Concurrent.Concur
   $global:SunshineLaunchedGameIds = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,bool]'
 }
 $script:SunshineLaunchedGameIds = $global:SunshineLaunchedGameIds
+$script:PendingLauncherGameIds = $null
+$plVar = $null
+try { $plVar = Get-Variable -Name 'PendingLauncherGameIds' -Scope Global -ErrorAction SilentlyContinue } catch { $plVar = $null }
+if (-not $plVar -or -not ($plVar.Value -is [System.Collections.Concurrent.ConcurrentDictionary[string,bool]])) {
+  $global:PendingLauncherGameIds = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,bool]'
+}
+$script:PendingLauncherGameIds = $global:PendingLauncherGameIds
 $script:GameEventSubs = @()
 $script:GameEventsRegistered = $false
 $script:SnapshotTimer = $null
@@ -596,11 +603,15 @@ function Get-LauncherProcesses {
     $pub = $null; $gid = $null
 
     # Accept -/-- or /, allow space or '=' between key and value
-    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}public[-_]?guid(?:\s+|=)\{?([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})\}?') {
-      $pub = $matches[1]
+    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}public[-_]?guid(?:\s+|=)(\{?[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}?)') {
+      $pub = $matches[1].Trim()
+      try { $pub = $pub.Trim('"') } catch {}
+      try { $pub = $pub.Trim("'") } catch {}
     }
-    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}game[-_]?id(?:\s+|=)\{?([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})\}?') {
-      $gid = $matches[1]
+    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}game[-_]?id(?:\s+|=)(\{?[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}?)') {
+      $gid = $matches[1].Trim()
+      try { $gid = $gid.Trim('"') } catch {}
+      try { $gid = $gid.Trim("'") } catch {}
     }
 
     if ($pub) {
@@ -655,10 +666,8 @@ function Get-LauncherProcesses {
 function Ensure-LauncherConnections {
   $found = Get-LauncherProcesses
   foreach ($it in $found) {
-    $guid = [string]$it.PublicGuid
-    # Ensure braces to match the server-side control pipe naming
-    $pipeGuid = if ($guid -match '^\{[0-9A-Fa-f\-]{36}\}$') { $guid } else { '{' + $guid + '}' }
-    $guid = $pipeGuid
+    $guid = ([string]$it.PublicGuid).Trim()
+    if (-not $guid) { continue }
     try {
       $exists = $false
       try { $exists = $global:LauncherConns.ContainsKey($guid) } catch { $exists = $false }
@@ -710,16 +719,22 @@ function Ensure-LauncherConnections {
       $rs.SessionStateProxy.SetVariable('Cts', $Cts)
       $rs.SessionStateProxy.SetVariable('ConnGuid', $guid)
       $rs.SessionStateProxy.SetVariable('Conn', $connInfo)
+      try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+      try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
       $ps = [System.Management.Automation.PowerShell]::Create()
       $ps.Runspace = $rs
       $modulePath = try { Join-Path $PSScriptRoot 'SunshinePlaynite.psm1' } catch { $null }
       if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
       # Ensure the runspace's $global:LauncherConns points to the shared table passed in
       $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+      $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+      $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
       $ps.AddScript('Start-LauncherConnReader -Guid $ConnGuid -Conn $Conn -Token $Cts.Token') | Out-Null
       $h = $ps.BeginInvoke()
       $connInfo.Runspace = $rs; $connInfo.PowerShell = $ps; $connInfo.Handle = $h
       Write-Log "LauncherWatcher: connected to launcher pipe"
+      try { Sync-LauncherConnectionActiveGame -Guid $guid -Conn $connInfo } catch { Write-Log ("LauncherWatcher: sync failed for {0}: {1}" -f $guid, $_.Exception.Message) }
+      try { Flush-PendingLauncherStatuses -Targets @($guid) } catch { Write-Log ("LauncherWatcher: pending flush failed for {0}: {1}" -f $guid, $_.Exception.Message) }
     }
     catch { Write-Log "LauncherWatcher: failed to connect to ${guid}: $($_.Exception.Message)" }
   }
@@ -1025,6 +1040,7 @@ function OnApplicationStarted() {
       if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
       if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
       try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+      try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
       if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
       $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
       # Ensure connector runspace can access the shared launcher connections table
@@ -1036,6 +1052,7 @@ function OnApplicationStarted() {
       # Rebind this runspace's $global:LauncherConns to the injected shared instance
       $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
       $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+      $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
       $ps.AddScript('Start-ConnectorLoop -Token $Cts.Token') | Out-Null
       $handle = $ps.BeginInvoke()
       $script:Bg = @{ Runspace = $rs; PowerShell = $ps; Handle = $handle }
@@ -1052,6 +1069,7 @@ function OnApplicationStarted() {
       # Inject the existing shared LauncherConns object so this runspace uses the same instance
       try { $rs2.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
       try { if ($global:SunshineLaunchedGameIds) { $rs2.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+      try { if ($global:PendingLauncherGameIds) { $rs2.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
       if ($PSScriptRoot) { $rs2.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
       $rs2.SessionStateProxy.SetVariable('Cts', $script:Cts)
       $ps2 = [System.Management.Automation.PowerShell]::Create()
@@ -1060,6 +1078,7 @@ function OnApplicationStarted() {
       # After module import (which initializes its own table), rebind to the injected shared instance
       $ps2.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
       $ps2.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+      $ps2.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
       $ps2.AddScript('Start-LauncherWatcherLoop -Token $Cts.Token') | Out-Null
       $handle2 = $ps2.BeginInvoke()
       $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
@@ -1067,6 +1086,7 @@ function OnApplicationStarted() {
       try { Write-DebugLog ("OnApplicationStarted: RS2={0}" -f $rs2.InstanceId) } catch {}
       try { Register-GameCollectionEvents } catch { Write-Log "OnApplicationStarted: event registration failed: $($_.Exception.Message)" }
       try { Ensure-SnapshotDebounceTimer } catch {}
+      try { Send-RunningGamesStatusSnapshot } catch { Write-Log ("OnApplicationStarted: running snapshot failed: {0}" -f $_.Exception.Message) }
     }
     catch {
       Write-Log "OnApplicationStarted: failed to start background runspace: $($_.Exception.Message)"
@@ -1081,7 +1101,7 @@ function OnApplicationStarted() {
 
 ## Removed Process-CmdQueue (no longer used)
 
-function Send-StatusMessage {
+function Build-StatusPayload {
   param([string]$Name, [object]$Game)
   $instDir = ''
   try { if ($Game.InstallDirectory) { $instDir = $Game.InstallDirectory } } catch {}
@@ -1125,29 +1145,216 @@ function Send-StatusMessage {
       }
     }
   } catch {}
-  $payload = @{ type = 'status'; status = @{ name = $Name; id = $Game.Id.ToString(); installDir = $instDir; exe = (Get-GameActionInfo -Game $Game).exe } } | ConvertTo-Json -Depth 5 -Compress
-  Send-JsonMessage -Json $payload
+  $status = @{ name = $Name; id = $Game.Id.ToString(); installDir = $instDir; exe = (Get-GameActionInfo -Game $Game).exe }
+  return @{ type = 'status'; status = $status } | ConvertTo-Json -Depth 5 -Compress
+}
+
+function Send-PayloadToLauncherConnections {
+  param(
+    [Parameter(Mandatory)][string]$Payload,
+    [string[]]$Targets,
+    [string]$Context = 'Status broadcast',
+    [switch]$ReturnCount
+  )
   try {
     $keys = @()
-    try { $keys = @($global:LauncherConns.Keys) } catch { $keys = @() }
-    $count = $keys.Count
-    Write-Log ("Status broadcast: enqueue to {0} launcher connection(s)" -f $count)
+    if ($Targets -and $Targets.Count -gt 0) {
+      foreach ($t in $Targets) { if ($t) { $keys += $t } }
+    } else {
+      try { $keys = @($global:LauncherConns.Keys) } catch { $keys = @() }
+    }
+    $count = 0
+    try { $count = $keys.Count } catch {}
+    Write-Log ("{0}: enqueue to {1} launcher connection(s)" -f $Context, $count)
+    $success = 0
     foreach ($guid in $keys) {
       $conn = $null
       try { $conn = $global:LauncherConns[$guid] } catch {}
+      if (-not $conn) { continue }
       try {
-        if ($conn -and $conn.Outbox) {
-          $null = $conn.Outbox.Add($payload)
-          Write-Log ("Status broadcast: queued for {0}" -f $guid)
-        } else {
-          Write-Log ("Status broadcast: missing conn/outbox for {0}" -f $guid)
+        if ($conn.Outbox) {
+          $null = $conn.Outbox.Add($Payload)
+          $success++
+          Write-Log ("{0}: queued for {1}" -f $Context, $guid)
+        }
+        elseif ($conn.Writer) {
+          $conn.Writer.WriteLine($Payload)
+          $conn.Writer.Flush()
+          $success++
+          Write-Log ("{0}: wrote directly for {1}" -f $Context, $guid)
+        }
+        else {
+          Write-Log ("{0}: missing conn/outbox for {1}" -f $Context, $guid)
         }
       } catch {
-        Write-Log ("Status broadcast: enqueue failed for {0}: {1}" -f $guid, $_.Exception.Message)
+        Write-Log ("{0}: enqueue failed for {1}: {2}" -f $Context, $guid, $_.Exception.Message)
       }
     }
+    if ($ReturnCount) { return $success }
   }
-  catch { Write-Log ("Status broadcast: unexpected failure: {0}" -f $_.Exception.Message) }
+  catch { Write-Log ("{0}: unexpected failure: {1}" -f $Context, $_.Exception.Message) }
+}
+
+function Send-StatusMessage {
+  param([string]$Name, [object]$Game, [switch]$ReturnLauncherCount)
+  $payload = $null
+  try { $payload = Build-StatusPayload -Name $Name -Game $Game }
+  catch {
+    Write-Log ("Status build failed: {0}" -f $_.Exception.Message)
+    return
+  }
+  Send-JsonMessage -Json $payload
+  if ($ReturnLauncherCount) {
+    return (Send-PayloadToLauncherConnections -Payload $payload -ReturnCount)
+  } else {
+    Send-PayloadToLauncherConnections -Payload $payload | Out-Null
+  }
+}
+
+function Get-PlayniteGameById {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return $null }
+    if (-not $PlayniteApi) { return $null }
+    $db = $null
+    try { $db = $PlayniteApi.Database } catch {}
+    if (-not $db) { return $null }
+    $games = $null
+    try { $games = $db.Games } catch {}
+    if (-not $games) { return $null }
+    try {
+      $guid = [guid]$norm
+      try {
+        $found = $games.Get($guid)
+        if ($found) { return $found }
+      } catch {}
+    } catch {}
+    foreach ($g in $games) {
+      try {
+        $gid = $g.Id
+        if ($gid -and ((Normalize-GameId -Id $gid) -eq $norm)) { return $g }
+      } catch {}
+    }
+  } catch {}
+  return $null
+}
+
+function Test-GameIsRunning {
+  param([object]$Game)
+  try {
+    if (-not $Game) { return $false }
+    try {
+      $prop = $Game.PSObject.Properties['IsRunning']
+      if ($prop -and ($prop.Value -ne $null)) { return [bool]$prop.Value }
+    } catch {}
+    try {
+      $type = $Game.GetType()
+      if ($type) {
+        $p = $type.GetProperty('IsRunning')
+        if ($p) {
+          $val = $p.GetValue($Game, $null)
+          if ($val -ne $null) { return [bool]$val }
+        }
+      }
+    } catch {}
+    try {
+      $stateProp = $Game.PSObject.Properties['PlayState']
+      if ($stateProp -and $stateProp.Value) {
+        $state = $stateProp.Value.ToString()
+        if ($state -and ($state -eq 'Playing')) { return $true }
+      }
+    } catch {}
+  } catch {}
+  return $false
+}
+
+function Get-RunningGames {
+  $result = @()
+  try {
+    if (-not $PlayniteApi) { return $result }
+    $db = $null
+    try { $db = $PlayniteApi.Database } catch {}
+    if (-not $db) { return $result }
+    $games = $null
+    try { $games = $db.Games } catch {}
+    if (-not $games) { return $result }
+    foreach ($g in $games) {
+      try {
+        if (Test-GameIsRunning -Game $g) { $result += $g }
+      } catch {}
+    }
+  } catch { Write-Log ("RunningGames: enumeration failed: {0}" -f $_.Exception.Message) }
+  return $result
+}
+
+function Send-RunningGamesStatusSnapshot {
+  try {
+    $running = Get-RunningGames
+    if (-not $running -or $running.Count -eq 0) { return }
+    foreach ($game in $running) {
+      if (-not $game) { continue }
+      $gameId = $null
+      try { $gameId = $game.Id } catch {}
+      if (-not $gameId) { continue }
+      if (-not (Test-SunshineLaunchedGame -Id $gameId)) {
+        $queued = 0
+        try { $queued = Send-StatusMessage -Name 'gameStarted' -Game $game -ReturnLauncherCount }
+        catch {
+          Write-Log ("RunningSnapshot: send failed for {0}: {1}" -f (Normalize-GameId -Id $gameId), $_.Exception.Message)
+          $queued = 0
+        }
+        if ($queued -gt 0) {
+          try { Remove-PendingLauncherGame -Id $gameId } catch {}
+          Write-Log ("RunningSnapshot: delivered gameStarted for {0} (connections={1})" -f (Normalize-GameId -Id $gameId), $queued) -Level 'DEBUG'
+        }
+        else {
+          try { Add-PendingLauncherGame -Id $gameId } catch {}
+          Write-Log ("RunningSnapshot: pending delivery for {0}" -f (Normalize-GameId -Id $gameId)) -Level 'DEBUG'
+        }
+        try { Register-SunshineLaunchedGame -Id $gameId } catch {}
+      }
+    }
+  } catch { Write-Log ("RunningSnapshot: error: {0}" -f $_.Exception.Message) }
+}
+
+function Sync-LauncherConnectionActiveGame {
+  param([string]$Guid, [hashtable]$Conn)
+  try {
+    if (-not $Guid) { return }
+    $targets = @($Guid)
+    $candidates = @()
+    $targetId = ''
+    try { $targetId = [string]$Conn.GameId } catch {}
+    if ($targetId) {
+      $game = Get-PlayniteGameById -Id $targetId
+      if ($game -and (Test-GameIsRunning -Game $game)) { $candidates = @($game) }
+    }
+    if (-not $candidates -or $candidates.Count -eq 0) {
+      $candidates = Get-RunningGames
+    }
+    foreach ($game in $candidates) {
+      if (-not $game) { continue }
+      $payload = $null
+      try { $payload = Build-StatusPayload -Name 'gameStarted' -Game $game } catch { continue }
+      $gid = ''
+      try { $gid = [string]$game.Id } catch {}
+      if ($gid -and (-not (Test-SunshineLaunchedGame -Id $gid))) {
+        Register-SunshineLaunchedGame -Id $gid
+      }
+      $queued = 0
+      try {
+        $queued = Send-PayloadToLauncherConnections -Payload $payload -Targets $targets -Context ("Connection sync {0}" -f $Guid) -ReturnCount
+      } catch { $queued = 0 }
+      if ($queued -gt 0) {
+        try { Remove-PendingLauncherGame -Id $gid } catch {}
+        Write-Log ("Connection sync {0}: delivered gameStarted for {1}" -f $Guid, (Normalize-GameId -Id $gid)) -Level 'DEBUG'
+      } else {
+        try { Add-PendingLauncherGame -Id $gid } catch {}
+        Write-Log ("Connection sync {0}: pending delivery for {1}" -f $Guid, (Normalize-GameId -Id $gid)) -Level 'DEBUG'
+      }
+    }
+  } catch { Write-Log ("Connection sync {0}: error: {1}" -f $Guid, $_.Exception.Message) }
 }
 
 # Send a synthetic 'gameStopped' status to launcher connection(s) to trigger graceful staging.
@@ -1211,6 +1418,73 @@ function Normalize-GameId {
     if ([string]::IsNullOrWhiteSpace($trimmed)) { return '' }
     return $trimmed.ToLowerInvariant()
   } catch { return '' }
+}
+
+function Add-PendingLauncherGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return }
+    if (-not $script:PendingLauncherGameIds) { return }
+    $script:PendingLauncherGameIds[$norm] = $true
+    Write-DebugLog ("PendingLaunch: queued {0}" -f $norm)
+  } catch { Write-Log "PendingLaunch: add failed: $($_.Exception.Message)" }
+}
+
+function Remove-PendingLauncherGame {
+  param([object]$Id)
+  try {
+    $norm = Normalize-GameId -Id $Id
+    if (-not $norm) { return $false }
+    if (-not $script:PendingLauncherGameIds) { return $false }
+    $dummy = $false
+    if ($script:PendingLauncherGameIds.TryRemove($norm, [ref]$dummy)) {
+      Write-DebugLog ("PendingLaunch: removed {0}" -f $norm)
+      return $true
+    }
+    return $false
+  } catch {
+    Write-Log "PendingLaunch: remove failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Get-PendingLauncherGameIds {
+  try {
+    if (-not $script:PendingLauncherGameIds) { return @() }
+    return @($script:PendingLauncherGameIds.Keys)
+  } catch {
+    Write-Log "PendingLaunch: enumerate failed: $($_.Exception.Message)"
+    return @()
+  }
+}
+
+function Flush-PendingLauncherStatuses {
+  param([string[]]$Targets)
+  $ids = Get-PendingLauncherGameIds
+  if (-not $ids -or $ids.Count -eq 0) { return 0 }
+  $sent = 0
+  foreach ($id in $ids) {
+    $game = $null
+    try { $game = Get-PlayniteGameById -Id $id } catch {}
+    if (-not $game) {
+      try { Remove-PendingLauncherGame -Id $id } catch {}
+      continue
+    }
+    $payload = $null
+    try { $payload = Build-StatusPayload -Name 'gameStarted' -Game $game } catch {}
+    if (-not $payload) { continue }
+    $queued = 0
+    try {
+      $queued = Send-PayloadToLauncherConnections -Payload $payload -Targets $Targets -Context ("Pending flush {0}" -f $id) -ReturnCount
+    } catch { $queued = 0 }
+    if ($queued -gt 0) {
+      $sent += $queued
+      try { Register-SunshineLaunchedGame -Id $id } catch {}
+      try { Remove-PendingLauncherGame -Id $id } catch {}
+    }
+  }
+  return $sent
 }
 
 function Register-SunshineLaunchedGame {

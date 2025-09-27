@@ -200,6 +200,59 @@
             stuck at a lower frame rate using frame generation.
           </p>
 
+          <div
+            v-if="isWindows"
+            class="mt-4 space-y-3 rounded-md border border-dark/10 p-3 dark:border-light/10"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  Lossless Scaling
+                </div>
+                <p class="text-[11px] opacity-60">
+                  Adds automatic Lossless Scaling profiles for every executable discovered in the
+                  install directory and restores defaults after cleanup.
+                </p>
+              </div>
+              <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
+            </div>
+            <div v-if="form.losslessScalingEnabled" class="grid gap-3 md:grid-cols-2">
+              <div class="space-y-1">
+                <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  Target Frame Rate
+                </label>
+                <n-input-number
+                  v-model:value="form.losslessScalingTargetFps"
+                  :min="1"
+                  :max="360"
+                  :step="1"
+                  :precision="0"
+                  placeholder="120"
+                />
+                <p class="text-[11px] opacity-60">
+                  Sets the Lossless Scaling frame generation target.
+                </p>
+              </div>
+              <div class="space-y-1">
+                <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  RTSS Frame Limit
+                </label>
+                <n-input-number
+                  v-model:value="form.losslessScalingRtssLimit"
+                  :min="1"
+                  :max="360"
+                  :step="1"
+                  :precision="0"
+                  placeholder="72"
+                  @update:value="onLosslessRtssLimitChange"
+                />
+                <p class="text-[11px] opacity-60">
+                  Defaults to 60% of the target when not customized.
+                </p>
+              </div>
+            </div>
+          </div>
+
           <section class="space-y-3">
             <div class="flex items-center justify-between">
               <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
@@ -419,6 +472,10 @@ interface AppForm {
   prepCmd: PrepCmd[];
   detached: string[];
   dlssFramegenCaptureFix: boolean;
+  losslessScalingEnabled: boolean;
+  losslessScalingTargetFps: number | null;
+  losslessScalingRtssLimit: number | null;
+  losslessScalingRtssTouched: boolean;
   // With exactOptionalPropertyTypes, allow explicit undefined when clearing selection
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
@@ -441,6 +498,9 @@ interface ServerApp {
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
   'dlss-framegen-capture-fix'?: boolean;
+  'lossless-scaling-framegen'?: boolean;
+  'lossless-scaling-target-fps'?: number | string | null;
+  'lossless-scaling-rtss-limit'?: number | string | null;
 }
 
 interface AppEditModalProps {
@@ -473,6 +533,10 @@ function fresh(): AppForm {
     detached: [],
     dlssFramegenCaptureFix: false,
     output: '',
+    losslessScalingEnabled: false,
+    losslessScalingTargetFps: null,
+    losslessScalingRtssLimit: null,
+    losslessScalingRtssTouched: false,
   };
 }
 const form = ref<AppForm>(fresh());
@@ -489,6 +553,28 @@ watch(
     }
   },
 );
+
+function parseNumeric(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function defaultRtssFromTarget(target: number | null): number | null {
+  if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) {
+    return null;
+  }
+  return Math.min(360, Math.max(1, Math.round(target * 0.6)));
+}
 
 function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const base = fresh();
@@ -508,6 +594,9 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       : isPlayniteLinked
         ? 10
         : base.exitTimeout;
+  const lsEnabled = !!src['lossless-scaling-framegen'];
+  const lsTarget = parseNumeric(src['lossless-scaling-target-fps']);
+  const lsLimit = parseNumeric(src['lossless-scaling-rtss-limit']);
   return {
     index: idx,
     name: String(src.name ?? ''),
@@ -529,6 +618,10 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     dlssFramegenCaptureFix: !!src['dlss-framegen-capture-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
+    losslessScalingEnabled: lsEnabled,
+    losslessScalingTargetFps: lsTarget,
+    losslessScalingRtssLimit: lsLimit,
+    losslessScalingRtssTouched: lsLimit !== null,
   };
 }
 
@@ -556,6 +649,11 @@ function toServerPayload(f: AppForm): Record<string, any> {
   };
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
+  const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
+  const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
+  payload['lossless-scaling-framegen'] = !!f.losslessScalingEnabled;
+  payload['lossless-scaling-target-fps'] = f.losslessScalingEnabled ? payloadLosslessTarget : null;
+  payload['lossless-scaling-rtss-limit'] = f.losslessScalingEnabled ? payloadLosslessLimit : null;
   return payload;
 }
 // Normalize cmd to single string; rehydrate typed form when props.app changes while open
@@ -577,6 +675,43 @@ const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
   () => isPlaynite.value && form.value.playniteManaged !== 'manual',
 );
+watch(
+  () => form.value.losslessScalingEnabled,
+  (enabled) => {
+    if (!enabled) {
+      form.value.losslessScalingRtssTouched = false;
+      return;
+    }
+    if (!form.value.losslessScalingRtssTouched) {
+      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
+        parseNumeric(form.value.losslessScalingTargetFps),
+      );
+    }
+  },
+);
+watch(
+  () => form.value.losslessScalingTargetFps,
+  (value) => {
+    const normalized = parseNumeric(value);
+    if (normalized !== value) {
+      form.value.losslessScalingTargetFps = normalized;
+      return;
+    }
+    if (!form.value.losslessScalingEnabled) {
+      return;
+    }
+    if (!form.value.losslessScalingRtssTouched) {
+      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(normalized);
+    }
+  },
+);
+
+function onLosslessRtssLimitChange(value: number | null) {
+  form.value.losslessScalingRtssTouched = true;
+  const normalized = parseNumeric(value);
+  form.value.losslessScalingRtssLimit =
+    normalized === null ? null : Math.min(360, Math.max(1, Math.round(normalized)));
+}
 // Unified name combobox state (supports Playnite suggestions + free-form)
 const nameSelectValue = ref<string>('');
 const nameOptions = ref<{ label: string; value: string }[]>([]);

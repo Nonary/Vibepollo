@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -63,6 +64,15 @@ namespace platf::playnite {
    * @return `true` if the launch request was sent or a fallback was triggered, `false` otherwise.
    */
   bool launch_game(const std::string &playnite_id);
+
+  /**
+   * @brief Announce a newly spawned launcher helper so the Playnite plugin can connect promptly.
+   * @param[in] guid Public GUID assigned to the launcher pipes ("{GUID}" format).
+   * @param[in] pid Process identifier of the launcher helper (0 if unknown).
+   * @param[in] game_id Associated Playnite game id (may be empty for fullscreen launches).
+   * @return `true` if the announcement was sent to the plugin, `false` otherwise.
+   */
+  bool announce_launcher(const std::string &guid, uint32_t pid, const std::string &game_id);
 
   /**
    * @brief Request Playnite to stop/quit a running game by its Playnite ID.

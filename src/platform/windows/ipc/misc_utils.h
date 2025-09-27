@@ -17,13 +17,15 @@
     #define WIN32_LEAN_AND_MEAN
   #endif
   // winsock2.h must be included before windows.h
-  #include <unknwn.h>
-  #include <windows.h>
-  #include <winrt/base.h>
+  // clang-format off
   #include <winsock2.h>
+  #include <windows.h>
+  #include <unknwn.h>
+  #include <winrt/base.h>
 #endif
 #include <avrt.h>
 #include <tlhelp32.h>
+// clang-format on
 
 namespace platf::dxgi {
 

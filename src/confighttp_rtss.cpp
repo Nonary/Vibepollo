@@ -15,8 +15,11 @@
 
   // local includes
   #include "confighttp.h"
+  #include "src/config.h"
   #include "src/logging.h"
   #include "src/platform/windows/frame_limiter.h"
+  #include "src/platform/windows/ipc/misc_utils.h"
+  #include "src/platform/windows/misc.h"
 
 namespace confighttp {
 
@@ -159,6 +162,87 @@ namespace confighttp {
       message = override_message;
     } else {
       message = provider_message;
+    }
+    out["message"] = message;
+
+    send_response(response, out);
+  }
+
+  void getLosslessScalingStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    auto query = request->parse_query_string();
+    std::string override_path;
+    if (auto it = query.find("path"); it != query.end()) {
+      override_path = it->second;
+    }
+
+    const std::string configured_utf8 = config::lossless_scaling.exe_path;
+    const std::string default_hint = "C\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
+
+    auto to_path = [](const std::string &utf8) -> std::optional<std::filesystem::path> {
+      if (utf8.empty()) {
+        return std::nullopt;
+      }
+      try {
+        std::wstring wide = platf::dxgi::utf8_to_wide(utf8);
+        if (wide.empty()) {
+          return std::nullopt;
+        }
+        return std::filesystem::path(wide);
+      } catch (...) {
+        return std::nullopt;
+      }
+    };
+
+    auto path_to_utf8 = [](const std::filesystem::path &path) -> std::string {
+      try {
+        return platf::dxgi::wide_to_utf8(path.wstring());
+      } catch (...) {
+        return std::string();
+      }
+    };
+
+    const auto configured_path = to_path(configured_utf8);
+    const bool configured_exists = configured_path && std::filesystem::exists(*configured_path);
+
+    const std::string check_utf8 = !override_path.empty() ? override_path : configured_utf8;
+    const auto checked_path = to_path(check_utf8);
+    const bool checked_exists = checked_path && std::filesystem::exists(*checked_path);
+
+    const auto default_path = to_path(default_hint);
+    const bool default_exists = default_path && std::filesystem::exists(*default_path);
+
+    nlohmann::json out;
+    out["configured_path"] = configured_utf8;
+    out["checked_path"] = check_utf8;
+    out["configured_exists"] = configured_exists;
+    // Provide explicit flags for the path we actually evaluated
+    out["checked_exists"] = checked_exists;
+    out["default_path"] = default_hint;
+    out["default_exists"] = default_exists;
+    out["suggested_path"] = !configured_utf8.empty() ? configured_utf8 : default_hint;
+    if (checked_path) {
+      out["resolved_path"] = path_to_utf8(*checked_path);
+    }
+
+    std::string message;
+    if (!checked_exists) {
+      if (!check_utf8.empty()) {
+        message = "Lossless Scaling executable not found at the specified path.";
+      } else {
+        message = "Lossless Scaling executable not configured.";
+      }
+      if (default_exists) {
+        message += " Detected installation at \"" + path_to_utf8(*default_path) + "\".";
+      } else {
+        message += " Please locate LosslessScaling.exe manually.";
+      }
+    } else {
+      message = "Lossless Scaling executable detected.";
     }
     out["message"] = message;
 

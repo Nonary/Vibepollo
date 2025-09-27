@@ -582,6 +582,10 @@ namespace config {
     false  // disable_vsync_ullm
   };
 
+  lossless_scaling_t lossless_scaling {
+    {}  // exe_path
+  };
+
   sunshine_t sunshine {
     "en",  // locale
     2,  // min_log_level
@@ -609,6 +613,7 @@ namespace config {
     const input_t default_input = input;
     const frame_limiter_t default_frame_limiter = frame_limiter;
     const rtss_t default_rtss = rtss;
+    const lossless_scaling_t default_lossless_scaling = lossless_scaling;
     const sunshine_t default_sunshine = sunshine;
 
     std::unordered_map<std::string, std::string> command_line_overrides;
@@ -626,6 +631,7 @@ namespace config {
       input = default_input;
       frame_limiter = default_frame_limiter;
       rtss = default_rtss;
+      lossless_scaling = default_lossless_scaling;
 
       sunshine = default_sunshine;
       sunshine.username = preserved_username;
@@ -1225,6 +1231,7 @@ namespace config {
       BOOST_LOG(info) << "config: Forcing rtss_disable_vsync_ullm=1 due to dummy plug HDR10 workaround.";
       rtss.disable_vsync_ullm = true;
     }
+    string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

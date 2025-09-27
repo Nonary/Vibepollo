@@ -65,3 +65,4 @@
 [submodule "third-party/tray"]
 	path = third-party/tray
 	url = https://github.com/Nonary/tray
+	branch = master

@@ -15,6 +15,7 @@
   #include <algorithm>
   #include <array>
   #include <cctype>
+  #include <optional>
   #include <string>
   #include <vector>
 
@@ -84,12 +85,12 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(int fps, bool dlss_framegen_capture_fix) {
+  void frame_limiter_streaming_start(int fps, bool dlss_framegen_capture_fix, std::optional<int> lossless_rtss_limit) {
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
     g_dlss_framegen_fix_active = dlss_framegen_capture_fix;
 
-    const bool frame_limit_enabled = config::frame_limiter.enable || dlss_framegen_capture_fix;
+    const bool frame_limit_enabled = config::frame_limiter.enable || dlss_framegen_capture_fix || (lossless_rtss_limit && *lossless_rtss_limit > 0);
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
 
@@ -112,6 +113,7 @@ namespace platf {
     const bool want_nv_overrides = (config::rtss.disable_vsync_ullm || dlss_framegen_capture_fix) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
+    const int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
 
     if (frame_limit_enabled) {
       auto configured = parse_provider(config::frame_limiter.provider);
@@ -141,7 +143,7 @@ namespace platf {
 
         if (provider == frame_limiter_provider::nvidia_control_panel) {
           bool ok = frame_limiter_nvcp::streaming_start(
-            fps,
+            effective_limit,
             true,
             want_nv_overrides,
             want_nv_overrides
@@ -154,7 +156,7 @@ namespace platf {
             break;
           }
         } else if (provider == frame_limiter_provider::rtss) {
-          bool ok = rtss_streaming_start(fps);
+          bool ok = rtss_streaming_start(effective_limit);
           if (ok) {
             g_active_provider = frame_limiter_provider::rtss;
             applied = true;
@@ -176,7 +178,7 @@ namespace platf {
     }
 
     if (want_nv_overrides && !nvcp_already_invoked) {
-      frame_limiter_nvcp::streaming_start(fps, false, true, true);
+      frame_limiter_nvcp::streaming_start(effective_limit, false, true, true);
       nvcp_already_invoked = true;
     }
 

@@ -8,6 +8,7 @@
 
   #include "src/platform/windows/rtss_integration.h"
 
+  #include <optional>
   #include <string>
 
 namespace platf {
@@ -33,7 +34,7 @@ namespace platf {
     rtss_status_t rtss;
   };
 
-  void frame_limiter_streaming_start(int fps, bool dlss_framegen_capture_fix);
+  void frame_limiter_streaming_start(int fps, bool dlss_framegen_capture_fix, std::optional<int> lossless_rtss_limit);
   void frame_limiter_streaming_stop();
 
   frame_limiter_provider frame_limiter_active_provider();

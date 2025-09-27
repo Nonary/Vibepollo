@@ -26,7 +26,11 @@
 #include "src/platform/windows/playnite_protocol.h"
 
 #include <algorithm>
+#include <array>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/xml_parser.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <locale>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -67,6 +72,10 @@ extern "C" __declspec(dllimport) LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmd
 
 namespace {
 
+  static HWND find_main_window_for_pid(DWORD pid);
+  static bool try_focus_hwnd(HWND hwnd);
+  static void strip_xml_whitespace(boost::property_tree::ptree &node);
+
   static std::string normalize_game_id(std::string s) {
     s.erase(std::remove_if(s.begin(), s.end(), [](char c) {
               return c == '{' || c == '}';
@@ -76,6 +85,733 @@ namespace {
       return (char) std::tolower(c);
     });
     return s;
+  }
+
+  struct lossless_scaling_options {
+    bool enabled = false;
+    std::optional<int> target_fps;
+    std::optional<int> rtss_limit;
+    std::optional<std::filesystem::path> configured_path;
+  };
+
+  constexpr std::string_view k_lossless_profile_title = "Vibeshine";
+  constexpr size_t k_lossless_max_executables = 256;
+  constexpr int k_lossless_auto_delay_seconds = 10;
+
+  static bool parse_env_flag(const char *value) {
+    if (!value) {
+      return false;
+    }
+    std::string v(value);
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+      return (char) std::tolower(c);
+    });
+    return v == "1" || v == "true" || v == "yes";
+  }
+
+  static std::optional<int> parse_env_int(const char *value) {
+    if (!value || !*value) {
+      return std::nullopt;
+    }
+    try {
+      int v = std::stoi(value);
+      if (v > 0) {
+        return v;
+      }
+    } catch (...) {}
+    return std::nullopt;
+  }
+
+  static void lowercase_inplace(std::wstring &value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) {
+      return std::towlower(c);
+    });
+  }
+
+  static std::optional<std::filesystem::path> lossless_resolve_base_dir(const std::string &install_dir_utf8, const std::string &exe_path_utf8) {
+    auto convert_utf8 = [](const std::string &input) -> std::optional<std::filesystem::path> {
+      if (input.empty()) {
+        return std::nullopt;
+      }
+      try {
+        std::wstring wide = platf::dxgi::utf8_to_wide(input);
+        if (wide.empty()) {
+          return std::nullopt;
+        }
+        return std::filesystem::path(wide);
+      } catch (...) {
+        return std::nullopt;
+      }
+    };
+
+    auto ensure_directory = [](std::filesystem::path candidate) -> std::optional<std::filesystem::path> {
+      if (candidate.empty()) {
+        return std::nullopt;
+      }
+      std::error_code ec;
+      if (!std::filesystem::exists(candidate, ec)) {
+        return std::nullopt;
+      }
+      if (std::filesystem::is_regular_file(candidate, ec)) {
+        candidate = candidate.parent_path();
+      } else if (!std::filesystem::is_directory(candidate, ec)) {
+        return std::nullopt;
+      }
+      if (candidate.empty()) {
+        return std::nullopt;
+      }
+      auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+      if (!ec && !canonical.empty()) {
+        candidate = canonical;
+      }
+      if (!std::filesystem::is_directory(candidate, ec)) {
+        return std::nullopt;
+      }
+      return candidate;
+    };
+
+    if (auto from_install = convert_utf8(install_dir_utf8)) {
+      if (auto dir = ensure_directory(*from_install)) {
+        return dir;
+      }
+    }
+    if (auto from_exe = convert_utf8(exe_path_utf8)) {
+      auto parent = from_exe->parent_path();
+      if (auto dir = ensure_directory(parent)) {
+        return dir;
+      }
+    }
+    return std::nullopt;
+  }
+
+  static bool lossless_path_within(const std::filesystem::path &candidate, const std::filesystem::path &base) {
+    if (candidate.empty() || base.empty()) {
+      return false;
+    }
+    std::error_code ec;
+    auto rel = std::filesystem::relative(candidate, base, ec);
+    if (ec) {
+      return false;
+    }
+    for (const auto &part : rel) {
+      if (part == L"..") {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static std::vector<std::wstring> lossless_collect_executable_names(const std::filesystem::path &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
+    std::vector<std::wstring> executables;
+    if (base_dir.empty() && !explicit_exe) {
+      return executables;
+    }
+
+    std::unordered_set<std::wstring> seen;
+    auto add_candidate = [&](const std::filesystem::path &candidate, bool require_exists) {
+      if (executables.size() >= k_lossless_max_executables) {
+        return;
+      }
+      if (require_exists) {
+        std::error_code ec;
+        if (!std::filesystem::exists(candidate, ec) || !std::filesystem::is_regular_file(candidate, ec)) {
+          return;
+        }
+      }
+      auto ext = candidate.extension().wstring();
+      if (ext.empty()) {
+        return;
+      }
+      lowercase_inplace(ext);
+      if (ext != L".exe") {
+        return;
+      }
+      auto filename = candidate.filename().wstring();
+      if (filename.empty()) {
+        return;
+      }
+      auto key = filename;
+      lowercase_inplace(key);
+      if (!seen.insert(key).second) {
+        return;
+      }
+      executables.push_back(filename);
+    };
+
+    if (!base_dir.empty()) {
+      std::error_code ec;
+      auto options = std::filesystem::directory_options::skip_permission_denied;
+      std::filesystem::recursive_directory_iterator it(base_dir, options, ec);
+      if (!ec) {
+        auto end = std::filesystem::recursive_directory_iterator();
+        for (; it != end && executables.size() < k_lossless_max_executables; it.increment(ec)) {
+          if (ec) {
+            ec.clear();
+            continue;
+          }
+          const auto &entry = *it;
+          std::error_code type_ec;
+          if (!entry.is_regular_file(type_ec)) {
+            if (type_ec) {
+              type_ec.clear();
+            }
+            continue;
+          }
+          add_candidate(entry.path(), true);
+        }
+      }
+    }
+
+    if (explicit_exe) {
+      if (!base_dir.empty()) {
+        if (lossless_path_within(*explicit_exe, base_dir)) {
+          add_candidate(*explicit_exe, true);
+        }
+      } else {
+        add_candidate(*explicit_exe, false);
+      }
+    }
+
+    std::sort(executables.begin(), executables.end(), [](const std::wstring &a, const std::wstring &b) {
+      auto aw = a;
+      auto bw = b;
+      lowercase_inplace(aw);
+      lowercase_inplace(bw);
+      return aw < bw;
+    });
+
+    return executables;
+  }
+
+  static std::string lossless_build_filter(const std::vector<std::wstring> &exe_names) {
+    if (exe_names.empty()) {
+      return std::string();
+    }
+    std::wstring filter;
+    for (size_t i = 0; i < exe_names.size(); ++i) {
+      std::wstring name = exe_names[i];
+      lowercase_inplace(name);
+      if (name.empty()) {
+        continue;
+      }
+      if (!filter.empty()) {
+        filter.push_back(L';');
+      }
+      filter.append(name);
+    }
+    if (filter.empty()) {
+      return std::string();
+    }
+    try {
+      return platf::dxgi::wide_to_utf8(filter);
+    } catch (...) {
+      return std::string();
+    }
+  }
+
+  static std::optional<std::filesystem::path> get_lossless_scaling_env_path() {
+    const char *env = std::getenv("SUNSHINE_LOSSLESS_SCALING_EXE");
+    if (!env || !*env) {
+      return std::nullopt;
+    }
+    try {
+      std::wstring wide = platf::dxgi::utf8_to_wide(env);
+      if (wide.empty()) {
+        return std::nullopt;
+      }
+      return std::filesystem::path(wide);
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  static lossless_scaling_options read_lossless_scaling_options() {
+    lossless_scaling_options opt;
+    opt.enabled = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"));
+    opt.target_fps = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
+    opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
+    if (opt.enabled && !opt.rtss_limit && opt.target_fps && *opt.target_fps > 0) {
+      int computed = (int) std::lround(*opt.target_fps * 0.6);
+      if (computed > 0) {
+        opt.rtss_limit = computed;
+      }
+    }
+    if (auto configured = get_lossless_scaling_env_path()) {
+      if (!configured->empty()) {
+        opt.configured_path = configured;
+      }
+    }
+    return opt;
+  }
+
+  static std::filesystem::path lossless_scaling_settings_path() {
+    PWSTR local = nullptr;
+    std::filesystem::path p;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)) && local) {
+      p = std::filesystem::path(local);
+      p /= L"Lossless Scaling";
+      p /= L"settings.xml";
+    }
+    if (local) {
+      CoTaskMemFree(local);
+    }
+    return p;
+  }
+
+  struct lossless_scaling_profile_backup {
+    bool valid = false;
+    bool had_auto_scale = false;
+    std::string auto_scale;
+    bool had_auto_scale_delay = false;
+    int auto_scale_delay = 0;
+    bool had_lsfg_target = false;
+    int lsfg_target = 0;
+  };
+
+  static bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup) {
+    backup = {};
+
+    auto settings_path = lossless_scaling_settings_path();
+    if (settings_path.empty()) {
+      BOOST_LOG(debug) << "Lossless Scaling: settings path not resolved";
+      return false;
+    }
+
+    boost::property_tree::ptree tree;
+    try {
+      boost::property_tree::read_xml(settings_path.string(), tree);
+    } catch (...) {
+      BOOST_LOG(warning) << "Lossless Scaling: failed to read settings";
+      return false;
+    }
+
+    auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
+    if (!profiles_opt) {
+      BOOST_LOG(warning) << "Lossless Scaling: GameProfiles missing";
+      return false;
+    }
+
+    auto &profiles = *profiles_opt;
+    bool removed_auto_profiles = false;
+    for (auto it = profiles.begin(); it != profiles.end();) {
+      if (it->first == "Profile") {
+        auto title = it->second.get<std::string>("Title", "");
+        if (title == k_lossless_profile_title) {
+          it = profiles.erase(it);
+          removed_auto_profiles = true;
+          continue;
+        }
+      }
+      ++it;
+    }
+
+    boost::property_tree::ptree *default_profile = nullptr;
+    boost::property_tree::ptree *first_profile = nullptr;
+    for (auto &entry : profiles) {
+      if (entry.first != "Profile") {
+        continue;
+      }
+      if (!first_profile) {
+        first_profile = &entry.second;
+      }
+      auto path_opt = entry.second.get_optional<std::string>("Path");
+      if (!path_opt || path_opt->empty()) {
+        default_profile = &entry.second;
+        break;
+      }
+    }
+
+    boost::property_tree::ptree *template_profile = default_profile ? default_profile : first_profile;
+
+    if (template_profile) {
+      if (auto auto_scale_opt = template_profile->get_optional<std::string>("AutoScale")) {
+        backup.had_auto_scale = true;
+        backup.auto_scale = *auto_scale_opt;
+      }
+      if (auto delay_opt = template_profile->get_optional<int>("AutoScaleDelay")) {
+        backup.had_auto_scale_delay = true;
+        backup.auto_scale_delay = *delay_opt;
+      }
+      if (auto target_opt = template_profile->get_optional<int>("LSFG3Target")) {
+        backup.had_lsfg_target = true;
+        backup.lsfg_target = *target_opt;
+      }
+    } else {
+      BOOST_LOG(warning) << "Lossless Scaling: no profile available to clone";
+    }
+
+    std::optional<std::filesystem::path> base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
+    std::optional<std::filesystem::path> explicit_exe;
+    if (!exe_path_utf8.empty()) {
+      try {
+        std::filesystem::path exe_candidate(platf::dxgi::utf8_to_wide(exe_path_utf8));
+        if (!exe_candidate.empty()) {
+          std::error_code can_ec;
+          auto canonical = std::filesystem::weakly_canonical(exe_candidate, can_ec);
+          if (!can_ec && !canonical.empty()) {
+            exe_candidate = canonical;
+          }
+          std::error_code exists_ec;
+          if (std::filesystem::exists(exe_candidate, exists_ec) && std::filesystem::is_regular_file(exe_candidate, exists_ec)) {
+            explicit_exe = exe_candidate;
+          }
+        }
+      } catch (...) {}
+    }
+
+    std::vector<std::wstring> executable_names;
+    if (base_dir || explicit_exe) {
+      executable_names = lossless_collect_executable_names(base_dir.value_or(std::filesystem::path()), explicit_exe);
+    }
+
+    std::string filter_utf8 = lossless_build_filter(executable_names);
+
+    bool inserted_profile = false;
+    if (!filter_utf8.empty()) {
+      boost::property_tree::ptree vibeshine_profile;
+      if (template_profile) {
+        vibeshine_profile = *template_profile;
+      }
+      vibeshine_profile.put("Title", std::string(k_lossless_profile_title));
+      vibeshine_profile.put("Path", filter_utf8);
+      vibeshine_profile.put("Filter", filter_utf8);
+      vibeshine_profile.put("AutoScale", "true");
+      vibeshine_profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
+      if (options.target_fps && *options.target_fps > 0) {
+        int target = std::clamp(*options.target_fps, 1, 480);
+        vibeshine_profile.put("LSFG3Target", target);
+      }
+      profiles.push_back(std::make_pair("Profile", vibeshine_profile));
+      inserted_profile = true;
+      backup.valid = true;
+    }
+
+    if (!removed_auto_profiles && !inserted_profile) {
+      return false;
+    }
+
+    strip_xml_whitespace(tree);
+    try {
+      boost::property_tree::xml_writer_settings<std::string> settings(' ', 2);
+      boost::property_tree::write_xml(settings_path.string(), tree, std::locale(), settings);
+      return true;
+    } catch (...) {
+      BOOST_LOG(warning) << "Lossless Scaling: failed to write settings";
+      return false;
+    }
+  }
+
+  static bool lossless_scaling_restore_global_profile(const lossless_scaling_profile_backup &backup) {
+    auto settings_path = lossless_scaling_settings_path();
+    if (settings_path.empty()) {
+      return false;
+    }
+
+    boost::property_tree::ptree tree;
+    try {
+      boost::property_tree::read_xml(settings_path.string(), tree);
+    } catch (...) {
+      return false;
+    }
+
+    auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
+    if (!profiles_opt) {
+      return false;
+    }
+
+    auto &profiles = *profiles_opt;
+    bool changed = false;
+
+    for (auto it = profiles.begin(); it != profiles.end();) {
+      if (it->first == "Profile") {
+        auto title = it->second.get<std::string>("Title", "");
+        if (title == k_lossless_profile_title) {
+          it = profiles.erase(it);
+          changed = true;
+          continue;
+        }
+      }
+      ++it;
+    }
+
+    if (backup.valid) {
+      boost::property_tree::ptree *default_profile = nullptr;
+      for (auto &entry : profiles) {
+        if (entry.first != "Profile") {
+          continue;
+        }
+        auto path_opt = entry.second.get_optional<std::string>("Path");
+        if (!path_opt || path_opt->empty()) {
+          default_profile = &entry.second;
+          break;
+        }
+      }
+
+      if (default_profile) {
+        auto &profile = *default_profile;
+        bool default_restored = false;
+
+        if (backup.had_auto_scale) {
+          auto current = profile.get_optional<std::string>("AutoScale");
+          if (!current || *current != backup.auto_scale) {
+            profile.put("AutoScale", backup.auto_scale);
+            default_restored = true;
+          }
+        } else if (profile.get_optional<std::string>("AutoScale")) {
+          profile.erase("AutoScale");
+          default_restored = true;
+        }
+
+        if (backup.had_auto_scale_delay) {
+          auto current = profile.get_optional<int>("AutoScaleDelay");
+          if (!current || *current != backup.auto_scale_delay) {
+            profile.put("AutoScaleDelay", backup.auto_scale_delay);
+            default_restored = true;
+          }
+        } else if (profile.get_optional<int>("AutoScaleDelay")) {
+          profile.erase("AutoScaleDelay");
+          default_restored = true;
+        }
+
+        if (backup.had_lsfg_target) {
+          auto current = profile.get_optional<int>("LSFG3Target");
+          if (!current || *current != backup.lsfg_target) {
+            profile.put("LSFG3Target", backup.lsfg_target);
+            default_restored = true;
+          }
+        } else if (profile.get_optional<int>("LSFG3Target")) {
+          profile.erase("LSFG3Target");
+          default_restored = true;
+        }
+
+        if (default_restored) {
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) {
+      return false;
+    }
+
+    strip_xml_whitespace(tree);
+    try {
+      boost::property_tree::xml_writer_settings<std::string> settings(' ', 2);
+      boost::property_tree::write_xml(settings_path.string(), tree, std::locale(), settings);
+      return true;
+    } catch (...) {
+      BOOST_LOG(warning) << "Lossless Scaling: failed to write settings";
+      return false;
+    }
+  }
+
+  static void strip_xml_whitespace(boost::property_tree::ptree &node) {
+    for (auto it = node.begin(); it != node.end();) {
+      if (it->first == "<xmltext>") {
+        it = node.erase(it);
+      } else {
+        strip_xml_whitespace(it->second);
+        ++it;
+      }
+    }
+  }
+
+  struct lossless_scaling_runtime_state {
+    std::vector<DWORD> running_pids;
+    std::optional<std::wstring> exe_path;
+    bool previously_running = false;
+    bool stopped = false;
+  };
+
+  static lossless_scaling_runtime_state capture_lossless_scaling_state() {
+    lossless_scaling_runtime_state state;
+    const std::array<const wchar_t *, 2> process_names {L"Lossless Scaling.exe", L"LosslessScaling.exe"};
+    for (auto name : process_names) {
+      try {
+        auto ids = platf::dxgi::find_process_ids_by_name(name);
+        for (DWORD pid : ids) {
+          if (std::find(state.running_pids.begin(), state.running_pids.end(), pid) != state.running_pids.end()) {
+            continue;
+          }
+          state.running_pids.push_back(pid);
+          if (!state.exe_path) {
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (h) {
+              std::wstring buffer;
+              buffer.resize(32768);
+              DWORD size = static_cast<DWORD>(buffer.size());
+              if (QueryFullProcessImageNameW(h, 0, buffer.data(), &size) && size > 0) {
+                buffer.resize(size);
+                state.exe_path = buffer;
+              }
+              CloseHandle(h);
+            }
+          }
+        }
+      } catch (...) {}
+    }
+    state.previously_running = !state.running_pids.empty();
+    return state;
+  }
+
+  static void lossless_scaling_post_wm_close(const std::vector<DWORD> &pids) {
+    if (pids.empty()) {
+      return;
+    }
+
+    struct EnumCtx {
+      const std::vector<DWORD> *pids;
+    } ctx {&pids};
+
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+      auto *ctx = reinterpret_cast<EnumCtx *>(lparam);
+      DWORD pid = 0;
+      GetWindowThreadProcessId(hwnd, &pid);
+      if (!pid) {
+        return TRUE;
+      }
+      if (std::find(ctx->pids->begin(), ctx->pids->end(), pid) != ctx->pids->end()) {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+      }
+      return TRUE;
+    },
+                reinterpret_cast<LPARAM>(&ctx));
+  }
+
+  static bool lossless_scaling_focus_window(DWORD pid) {
+    if (!pid) {
+      return false;
+    }
+    HWND hwnd = find_main_window_for_pid(pid);
+    if (hwnd) {
+      if (try_focus_hwnd(hwnd)) {
+        return true;
+      }
+    }
+
+    struct EnumCtx {
+      DWORD pid;
+      bool focused;
+    } ctx {pid, false};
+
+    EnumWindows([](HWND hwnd_enum, LPARAM lparam) -> BOOL {
+      auto *ctx = reinterpret_cast<EnumCtx *>(lparam);
+      DWORD window_pid = 0;
+      GetWindowThreadProcessId(hwnd_enum, &window_pid);
+      if (window_pid == ctx->pid && IsWindowVisible(hwnd_enum)) {
+        if (try_focus_hwnd(hwnd_enum)) {
+          ctx->focused = true;
+          return FALSE;
+        }
+      }
+      return TRUE;
+    },
+                reinterpret_cast<LPARAM>(&ctx));
+    return ctx.focused;
+  }
+
+  static void lossless_scaling_stop_processes(lossless_scaling_runtime_state &state) {
+    if (state.running_pids.empty()) {
+      return;
+    }
+    lossless_scaling_post_wm_close(state.running_pids);
+    for (DWORD pid : state.running_pids) {
+      HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+      if (!h) {
+        continue;
+      }
+      DWORD wait = WaitForSingleObject(h, 4000);
+      if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(h, 0);
+        WaitForSingleObject(h, 2000);
+      }
+      CloseHandle(h);
+    }
+    state.stopped = true;
+  }
+
+  static std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state) {
+    if (auto configured = get_lossless_scaling_env_path()) {
+      if (std::filesystem::exists(*configured)) {
+        return configured->wstring();
+      }
+    }
+    if (state.exe_path && std::filesystem::exists(*state.exe_path)) {
+      return state.exe_path;
+    }
+    auto settings = lossless_scaling_settings_path();
+    if (!settings.empty()) {
+      auto local_app = settings.parent_path().parent_path();
+      if (!local_app.empty()) {
+        std::filesystem::path candidate = local_app / L"Programs" / L"Lossless Scaling" / L"Lossless Scaling.exe";
+        if (std::filesystem::exists(candidate)) {
+          return candidate.wstring();
+        }
+      }
+    }
+    const std::array<const wchar_t *, 2> env_names {L"PROGRAMFILES", L"PROGRAMFILES(X86)"};
+    for (auto env_name : env_names) {
+      wchar_t buf[MAX_PATH] = {};
+      DWORD len = GetEnvironmentVariableW(env_name, buf, ARRAYSIZE(buf));
+      if (len == 0 || len >= ARRAYSIZE(buf)) {
+        continue;
+      }
+      std::filesystem::path base(buf);
+      std::filesystem::path candidate = base / L"Lossless Scaling" / L"Lossless Scaling.exe";
+      if (std::filesystem::exists(candidate)) {
+        return candidate.wstring();
+      }
+    }
+    return std::nullopt;
+  }
+
+  static void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch) {
+    if (!force_launch && !state.stopped && state.previously_running) {
+      for (DWORD pid : state.running_pids) {
+        if (lossless_scaling_focus_window(pid)) {
+          return;
+        }
+      }
+    }
+    if (!force_launch && !state.stopped && !state.previously_running) {
+      return;
+    }
+    auto exe = discover_lossless_scaling_exe(state);
+    if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
+      BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
+      return;
+    }
+    STARTUPINFOW si {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOWNORMAL;
+    PROCESS_INFORMATION pi {};
+    std::wstring cmd = L"\"" + *exe + L"\"";
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(L'\0');
+    BOOL ok = CreateProcessW(exe->c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi);
+    if (ok) {
+      if (pi.hProcess) {
+        WaitForInputIdle(pi.hProcess, 5000);
+        bool focused = false;
+        for (int attempt = 0; attempt < 10 && !focused; ++attempt) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          focused = lossless_scaling_focus_window(pi.dwProcessId);
+        }
+        if (!focused) {
+          BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+        }
+      }
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+      }
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+      }
+      BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
+    } else {
+      BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << GetLastError();
+    }
   }
 
   static int64_t steady_to_millis(std::chrono::steady_clock::time_point tp) {
@@ -1128,6 +1864,16 @@ static int launcher_run(int argc, char **argv) {
   auto _log_guard = logging::init_append(2 /*info*/, log_path);
   BOOST_LOG(info) << "Playnite launcher starting; pid=" << GetCurrentProcessId();
 
+  const lossless_scaling_options lossless_options = read_lossless_scaling_options();
+  const std::string lossless_game_name = []() {
+    if (const char *env = std::getenv("SUNSHINE_APP_NAME")) {
+      return std::string(env);
+    }
+    return std::string();
+  }();
+  lossless_scaling_profile_backup active_lossless_backup {};
+  bool lossless_profiles_applied = false;
+
   // Ensure Playnite is running if requested actions depend on it
   auto ensure_playnite_open = [&]() {
     if (!is_playnite_running()) {
@@ -1220,6 +1966,13 @@ static int launcher_run(int argc, char **argv) {
     if (fullscreen) {
       cleanup_fullscreen_via_desktop(std::max(3, exit_timeout_secs));
     }
+    if (lossless_options.enabled) {
+      auto runtime = capture_lossless_scaling_state();
+      if (!runtime.running_pids.empty()) {
+        lossless_scaling_stop_processes(runtime);
+        lossless_scaling_restart_foreground(runtime, false);
+      }
+    }
     BOOST_LOG(info) << "Cleanup mode: done";
     return 0;
   }
@@ -1252,6 +2005,8 @@ static int launcher_run(int argc, char **argv) {
     std::mutex cleanup_mutex;
     std::string active_cleanup_dir;
     bool game_cleanup_spawned = false;
+    lossless_scaling_profile_backup fullscreen_lossless_backup {};
+    bool fullscreen_lossless_applied = false;
 
     auto resolve_install_dir = [&](const std::string &install_dir, const std::string &exe_path) -> std::string {
       if (!install_dir.empty()) {
@@ -1279,6 +2034,8 @@ static int launcher_run(int argc, char **argv) {
       auto norm_id = normalize_game_id(msg.status_game_id);
       auto now = std::chrono::steady_clock::now();
       if (msg.status_name == "gameStarted") {
+        std::string install_for_ls;
+        std::string exe_for_ls;
         {
           std::lock_guard<std::mutex> lk(game_mutex);
           game_state.id_norm = norm_id;
@@ -1295,11 +2052,28 @@ static int launcher_run(int argc, char **argv) {
           } else {
             game_state.cleanup_dir.clear();
           }
+          install_for_ls = game_state.install_dir;
+          exe_for_ls = game_state.exe_path;
         }
         active_game_flag.store(true);
         game_start_signal.store(true);
         cleanup_spawn_signal.store(true);
         grace_deadline_ms.store(steady_to_millis(now + std::chrono::seconds(15)));
+        if (lossless_options.enabled && !fullscreen_lossless_applied) {
+          auto runtime = capture_lossless_scaling_state();
+          if (!runtime.running_pids.empty()) {
+            lossless_scaling_stop_processes(runtime);
+          }
+          lossless_scaling_profile_backup backup;
+          bool changed = lossless_scaling_apply_global_profile(lossless_options, install_for_ls, exe_for_ls, backup);
+          if (backup.valid) {
+            fullscreen_lossless_backup = backup;
+            fullscreen_lossless_applied = true;
+          } else {
+            fullscreen_lossless_backup = {};
+          }
+          lossless_scaling_restart_foreground(runtime, changed);
+        }
       } else if (msg.status_name == "gameStopped") {
         bool matches = false;
         {
@@ -1317,6 +2091,16 @@ static int launcher_run(int argc, char **argv) {
           active_game_flag.store(false);
           game_stop_signal.store(true);
           grace_deadline_ms.store(steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15)));
+          if (fullscreen_lossless_applied) {
+            auto runtime = capture_lossless_scaling_state();
+            if (!runtime.running_pids.empty()) {
+              lossless_scaling_stop_processes(runtime);
+            }
+            bool restored = lossless_scaling_restore_global_profile(fullscreen_lossless_backup);
+            lossless_scaling_restart_foreground(runtime, restored);
+            fullscreen_lossless_backup = {};
+            fullscreen_lossless_applied = false;
+          }
         }
       }
     });
@@ -1536,6 +2320,16 @@ static int launcher_run(int argc, char **argv) {
     }
 
     server.stop();
+    if (fullscreen_lossless_applied) {
+      auto runtime = capture_lossless_scaling_state();
+      if (!runtime.running_pids.empty()) {
+        lossless_scaling_stop_processes(runtime);
+      }
+      bool restored = lossless_scaling_restore_global_profile(fullscreen_lossless_backup);
+      lossless_scaling_restart_foreground(runtime, restored);
+      fullscreen_lossless_backup = {};
+      fullscreen_lossless_applied = false;
+    }
     BOOST_LOG(info) << "Playnite appears closed; exiting launcher";
     return 0;
   }
@@ -1587,19 +2381,43 @@ static int launcher_run(int argc, char **argv) {
         return s;
       };
       if (!msg.status_game_id.empty() && norm(msg.status_game_id) == norm(game_id)) {
-        if (msg.status_name == "gameStarted") {
-          got_started.store(true);
-        }
-        if (msg.status_name == "gameStopped") {
-          should_exit.store(true);
-        }
         if (!msg.status_install_dir.empty()) {
           last_install_dir = msg.status_install_dir;
-          // As soon as we learn the install dir, spawn a watcher to handle Moonlight-side termination
           spawn_cleanup_watcher(last_install_dir);
         }
         if (!msg.status_exe.empty()) {
           last_game_exe = msg.status_exe;
+        }
+        if (msg.status_name == "gameStarted") {
+          got_started.store(true);
+          if (lossless_options.enabled && !lossless_profiles_applied) {
+            auto runtime = capture_lossless_scaling_state();
+            if (!runtime.running_pids.empty()) {
+              lossless_scaling_stop_processes(runtime);
+            }
+            lossless_scaling_profile_backup backup;
+            bool changed = lossless_scaling_apply_global_profile(lossless_options, last_install_dir, last_game_exe, backup);
+            if (backup.valid) {
+              active_lossless_backup = backup;
+              lossless_profiles_applied = true;
+            } else {
+              active_lossless_backup = {};
+            }
+            lossless_scaling_restart_foreground(runtime, changed);
+          }
+        }
+        if (msg.status_name == "gameStopped") {
+          should_exit.store(true);
+          if (lossless_profiles_applied) {
+            auto runtime = capture_lossless_scaling_state();
+            if (!runtime.running_pids.empty()) {
+              lossless_scaling_stop_processes(runtime);
+            }
+            bool restored = lossless_scaling_restore_global_profile(active_lossless_backup);
+            lossless_scaling_restart_foreground(runtime, restored);
+            active_lossless_backup = {};
+            lossless_profiles_applied = false;
+          }
         }
       }
     }
@@ -1623,14 +2441,12 @@ static int launcher_run(int argc, char **argv) {
   }
 
   // Send command: {type:"command", command:"launch", id:"<GUID>"}
-  {
-    nlohmann::json j;
-    j["type"] = "command";
-    j["command"] = "launch";
-    j["id"] = game_id;
-    server.send_json_line(j.dump());
-    BOOST_LOG(info) << "Launch command sent for id=" << game_id;
-  }
+  nlohmann::json j;
+  j["type"] = "command";
+  j["command"] = "launch";
+  j["id"] = game_id;
+  server.send_json_line(j.dump());
+  BOOST_LOG(info) << "Launch command sent for id=" << game_id;
 
   // Best-effort: shortly after we observe game start, attempt to bring the game (or Playnite) to foreground
   // (helps controller navigation start). Prefer processes under the game's install directory by working set;
@@ -1722,6 +2538,16 @@ static int launcher_run(int argc, char **argv) {
     WCHAR selfPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
     static_cast<void>(spawn_cleanup_watchdog_process(selfPath, last_install_dir, exit_timeout_secs, false, std::nullopt));
+  }
+  if (lossless_profiles_applied) {
+    auto runtime = capture_lossless_scaling_state();
+    if (!runtime.running_pids.empty()) {
+      lossless_scaling_stop_processes(runtime);
+    }
+    bool restored = lossless_scaling_restore_global_profile(active_lossless_backup);
+    lossless_scaling_restart_foreground(runtime, restored);
+    active_lossless_backup = {};
+    lossless_profiles_applied = false;
   }
   return should_exit.load() ? 0 : 4;
 }

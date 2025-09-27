@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <optional>
 #include <utility>
 
 // lib includes
@@ -37,6 +38,9 @@ namespace stream {
 
     std::optional<int> gcmap;
     bool dlss_framegen_capture_fix;
+    bool lossless_scaling_framegen;
+    std::optional<int> lossless_scaling_target_fps;
+    std::optional<int> lossless_scaling_rtss_limit;
   };
 
   namespace session {

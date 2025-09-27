@@ -5,6 +5,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -28,6 +29,7 @@
 #include "platform/common.h"
 #ifdef _WIN32
   #include "config_playnite.h"
+  #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/playnite_integration.h"
 #endif
 #include "process.h"
@@ -183,6 +185,9 @@ namespace proc {
     _app_id = app_id;
     _app = *iter;
     launch_session->dlss_framegen_capture_fix = _app.dlss_framegen_capture_fix;
+    launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
+    launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
+    launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -209,6 +214,30 @@ namespace proc {
         break;
     }
     _env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
+
+    try {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = config::lossless_scaling.exe_path;
+    } catch (...) {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
+    }
+
+    if (_app.lossless_scaling_framegen) {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
+      if (_app.lossless_scaling_target_fps) {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*_app.lossless_scaling_target_fps);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      }
+      if (_app.lossless_scaling_rtss_limit) {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*_app.lossless_scaling_rtss_limit);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+      }
+    } else {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+    }
 
     if (!_app.output.empty() && _app.output != "null"sv) {
 #ifdef _WIN32
@@ -280,6 +309,7 @@ namespace proc {
 #ifdef _WIN32
     if (!_app.playnite_id.empty() && _app.cmd.empty()) {
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
+      std::string launcher_guid = platf::dxgi::generate_guid();
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
       try {
@@ -289,6 +319,9 @@ namespace proc {
         std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --game-id " + _app.playnite_id;
+        if (!launcher_guid.empty()) {
+          cmd += std::string(" --public-guid ") + launcher_guid;
+        }
         // Pass graceful-exit timeout to launcher for cleanup behavior
         try {
           int exit_to = (int) std::max<std::int64_t>(0, _app.exit_timeout.count());
@@ -315,6 +348,15 @@ namespace proc {
           BOOST_LOG(warning) << "Playnite helper launch failed: "sv << fec.message() << "; attempting URI fallback"sv;
         } else {
           BOOST_LOG(info) << "Playnite helper launched and is being monitored";
+          if (!launcher_guid.empty()) {
+            try {
+              auto pid = static_cast<uint32_t>(_process.id());
+              if (!platf::playnite::announce_launcher(launcher_guid, pid, _app.playnite_id)) {
+                BOOST_LOG(debug) << "Playnite helper: announce_launcher reported inactive IPC";
+              }
+            } catch (...) {
+            }
+          }
           launched = true;
         }
       } catch (...) {
@@ -345,6 +387,7 @@ namespace proc {
 #ifdef _WIN32
       if (_app.playnite_fullscreen) {
       BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
+      std::string launcher_guid = platf::dxgi::generate_guid();
       bool launched = false;
       try {
         WCHAR exePathW[MAX_PATH] = {};
@@ -353,6 +396,9 @@ namespace proc {
         std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
+        if (!launcher_guid.empty()) {
+          cmd += std::string(" --public-guid ") + launcher_guid;
+        }
         try {
           if (config::playnite.focus_attempts > 0) {
             cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
@@ -371,6 +417,15 @@ namespace proc {
           BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
         } else {
           BOOST_LOG(info) << "Playnite fullscreen helper launched";
+          if (!launcher_guid.empty()) {
+            try {
+              auto pid = static_cast<uint32_t>(_process.id());
+              if (!platf::playnite::announce_launcher(launcher_guid, pid, std::string())) {
+                BOOST_LOG(debug) << "Playnite helper (fullscreen): announce_launcher reported inactive IPC";
+              }
+            } catch (...) {
+            }
+          }
           launched = true;
         }
       } catch (...) {
@@ -766,6 +821,21 @@ namespace proc {
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
         auto dlss_framegen_capture_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
+        auto lossless_scaling_framegen = app_node.get_optional<bool>("lossless-scaling-framegen"s);
+
+        ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
+        ctx.lossless_scaling_target_fps.reset();
+        ctx.lossless_scaling_rtss_limit.reset();
+        if (auto ls_target = app_node.get_optional<int>("lossless-scaling-target-fps"s)) {
+          if (*ls_target > 0) {
+            ctx.lossless_scaling_target_fps = *ls_target;
+          }
+        }
+        if (auto ls_rtss = app_node.get_optional<int>("lossless-scaling-rtss-limit"s)) {
+          if (*ls_rtss > 0) {
+            ctx.lossless_scaling_rtss_limit = *ls_rtss;
+          }
+        }
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -855,6 +925,10 @@ namespace proc {
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(10)};
         ctx.dlss_framegen_capture_fix = dlss_framegen_capture_fix.value_or(false);
+        if (!ctx.lossless_scaling_framegen) {
+          ctx.lossless_scaling_target_fps.reset();
+          ctx.lossless_scaling_rtss_limit.reset();
+        }
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {

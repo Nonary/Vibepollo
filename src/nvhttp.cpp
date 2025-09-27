@@ -288,6 +288,9 @@ namespace nvhttp {
 
     launch_session->id = ++session_id_counter;
     launch_session->dlss_framegen_capture_fix = false;
+    launch_session->lossless_scaling_framegen = false;
+    launch_session->lossless_scaling_target_fps.reset();
+    launch_session->lossless_scaling_rtss_limit.reset();
 
     auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
     std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
@@ -318,6 +321,9 @@ namespace nvhttp {
         for (const auto &app_ctx : apps_snapshot) {
           if (app_ctx.id == app_id_str) {
             launch_session->dlss_framegen_capture_fix = app_ctx.dlss_framegen_capture_fix;
+            launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
+            launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
+            launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
             break;
           }
         }

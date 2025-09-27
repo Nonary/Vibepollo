@@ -257,7 +257,12 @@ namespace platf::playnite {
     // Tighten pre-connection security: use LocalSystem + INTERACTIVE DACL when running as SYSTEM,
     // otherwise LocalSystem + current user. Keeps WGC unaffected via factory seam.
     factory.set_security_descriptor_builder([](SECURITY_DESCRIPTOR &desc, PACL *out_pacl) -> bool {
+      auto log_builder_failure = [](const char *stage, DWORD code) {
+        BOOST_LOG(error) << "Playnite IPC: security descriptor builder " << stage << " failed, error=" << code;
+      };
+
       if (!InitializeSecurityDescriptor(&desc, SECURITY_DESCRIPTOR_REVISION)) {
+        log_builder_failure("InitializeSecurityDescriptor", GetLastError());
         return false;
       }
 
@@ -269,35 +274,39 @@ namespace platf::playnite {
       PSID interactive_sid = iu_sid_buf;
 
       if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &sid_size)) {
+        log_builder_failure("CreateWellKnownSid(WinLocalSystemSid)", GetLastError());
         return false;
       }
       sid_size = SECURITY_MAX_SID_SIZE;
       if (!CreateWellKnownSid(WinInteractiveSid, nullptr, interactive_sid, &sid_size)) {
+        log_builder_failure("CreateWellKnownSid(WinInteractiveSid)", GetLastError());
         return false;
       }
 
       // Optionally current user SID for user-mode
       PSID current_user_sid = nullptr;
       HANDLE tok = nullptr;
+      std::vector<uint8_t> token_user_buffer;
       if (!platf::is_running_as_system()) {
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+          log_builder_failure("OpenProcessToken", GetLastError());
           return false;
         }
         DWORD len = 0;
         GetTokenInformation(tok, TokenUser, nullptr, 0, &len);
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) {
+          log_builder_failure("GetTokenInformation(length)", GetLastError());
           CloseHandle(tok);
           return false;
         }
-        auto buf = std::make_unique<uint8_t[]>(len);
-        auto tu = reinterpret_cast<TOKEN_USER *>(buf.get());
+        token_user_buffer.resize(len);
+        auto tu = reinterpret_cast<TOKEN_USER *>(token_user_buffer.data());
         if (!GetTokenInformation(tok, TokenUser, tu, len, &len)) {
+          log_builder_failure("GetTokenInformation(TokenUser)", GetLastError());
           CloseHandle(tok);
           return false;
         }
         current_user_sid = tu->User.Sid;
-        // We'll keep buf alive until after SetSecurityDescriptorDacl by capturing it in lambda scope
-        // but we only need the raw SID pointer for SetEntriesInAcl below (it duplicates SIDs inside ACL)
         CloseHandle(tok);
       }
 
@@ -329,10 +338,14 @@ namespace platf::playnite {
 
       PACL rawDacl = nullptr;
       if (DWORD err = SetEntriesInAcl(static_cast<ULONG>(eaList.size()), eaList.data(), nullptr, &rawDacl); err != ERROR_SUCCESS) {
+        SetLastError(err);
+        log_builder_failure("SetEntriesInAcl", err);
         return false;
       }
       if (!SetSecurityDescriptorDacl(&desc, TRUE, rawDacl, FALSE)) {
+        DWORD err = GetLastError();
         LocalFree(rawDacl);
+        log_builder_failure("SetSecurityDescriptorDacl", err);
         return false;
       }
       *out_pacl = rawDacl;  // caller frees with LocalFree

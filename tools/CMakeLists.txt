@@ -35,9 +35,17 @@ add_custom_command(TARGET sunshinesvc POST_BUILD
 )
 
 # Playnite launcher: per-launch helper that hosts a private IPC server
-add_executable(playnite-launcher playnite_launcher.cpp)
+add_executable(playnite-launcher
+        playnite_launcher/main.cpp
+        playnite_launcher/launcher.cpp
+        playnite_launcher/arguments.cpp
+        playnite_launcher/cleanup.cpp
+        playnite_launcher/focus_utils.cpp
+        playnite_launcher/lossless_scaling.cpp
+        playnite_launcher/playnite_process.cpp)
 set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)
 set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
+target_include_directories(playnite-launcher PRIVATE ${CMAKE_SOURCE_DIR}/tools/playnite_launcher)
 target_sources(playnite-launcher PRIVATE
         ${CMAKE_SOURCE_DIR}/src/logging.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp

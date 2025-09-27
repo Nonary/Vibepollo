@@ -1116,6 +1116,9 @@ namespace rtsp_stream {
     auto _hot_apply_gate = config::acquire_apply_read_gate();
 
     config.dlss_framegen_capture_fix = session.dlss_framegen_capture_fix;
+    config.lossless_scaling_framegen = session.lossless_scaling_framegen;
+    config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
+    config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
     auto stream_session = stream::session::alloc(config, session);
     server->insert(stream_session);
 
