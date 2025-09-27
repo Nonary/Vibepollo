@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <windows.h>
 
@@ -367,6 +368,49 @@ namespace playnite_launcher::lossless {
       return focus_main_lossless_window(pid) || focus_any_visible_window(pid);
     }
 
+    bool minimize_hwnd_if_visible(HWND hwnd) {
+      if (!hwnd || !IsWindowVisible(hwnd)) {
+        return false;
+      }
+      if (IsIconic(hwnd)) {
+        return true;
+      }
+      return ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE) != 0;
+    }
+
+    bool minimize_main_lossless_window(DWORD pid) {
+      return minimize_hwnd_if_visible(focus::find_main_window_for_pid(pid));
+    }
+
+    bool minimize_any_visible_window(DWORD pid) {
+      struct Ctx {
+        DWORD target;
+        bool minimized = false;
+      } ctx {pid, false};
+
+      auto proc = [](HWND hwnd, LPARAM param) -> BOOL {
+        auto *ctx = reinterpret_cast<Ctx *>(param);
+        DWORD owner = 0;
+        GetWindowThreadProcessId(hwnd, &owner);
+        if (owner == ctx->target) {
+          if (minimize_hwnd_if_visible(hwnd)) {
+            ctx->minimized = true;
+            return FALSE;
+          }
+        }
+        return TRUE;
+      };
+      EnumWindows(proc, reinterpret_cast<LPARAM>(&ctx));
+      return ctx.minimized;
+    }
+
+    bool lossless_scaling_minimize_window(DWORD pid) {
+      if (!pid) {
+        return false;
+      }
+      return minimize_main_lossless_window(pid) || minimize_any_visible_window(pid);
+    }
+
     void lossless_scaling_post_wm_close(const std::vector<DWORD> &pids) {
       if (pids.empty()) {
         return;
@@ -643,16 +687,17 @@ namespace playnite_launcher::lossless {
     state.stopped = true;
   }
 
-  bool focus_existing_instances(const lossless_scaling_runtime_state &state) {
+  bool focus_and_minimize_existing_instances(const lossless_scaling_runtime_state &state) {
     if (state.stopped || !state.previously_running) {
       return false;
     }
+    bool handled = false;
     for (DWORD pid : state.running_pids) {
-      if (lossless_scaling_focus_window(pid)) {
-        return true;
-      }
+      bool focused = lossless_scaling_focus_window(pid);
+      bool minimized = lossless_scaling_minimize_window(pid);
+      handled = focused || minimized || handled;
     }
-    return false;
+    return handled;
   }
 
   bool should_launch_new_instance(const lossless_scaling_runtime_state &state, bool force_launch) {
@@ -662,13 +707,19 @@ namespace playnite_launcher::lossless {
     return state.stopped || state.previously_running;
   }
 
-  bool focus_new_process(PROCESS_INFORMATION &pi) {
+  std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi) {
     bool focused = false;
+    bool minimized = false;
     if (pi.hProcess) {
       WaitForInputIdle(pi.hProcess, 5000);
-      for (int attempt = 0; attempt < 10 && !focused; ++attempt) {
+      for (int attempt = 0; attempt < 10 && (!focused || !minimized); ++attempt) {
         std::this_thread::sleep_for(200ms);
-        focused = lossless_scaling_focus_window(pi.dwProcessId);
+        if (!focused) {
+          focused = lossless_scaling_focus_window(pi.dwProcessId);
+        }
+        if (!minimized) {
+          minimized = lossless_scaling_minimize_window(pi.dwProcessId);
+        }
       }
       CloseHandle(pi.hProcess);
       pi.hProcess = nullptr;
@@ -677,7 +728,7 @@ namespace playnite_launcher::lossless {
       CloseHandle(pi.hThread);
       pi.hThread = nullptr;
     }
-    return focused;
+    return {focused, minimized};
   }
 
   bool launch_lossless_executable(const std::wstring &exe) {
@@ -695,9 +746,12 @@ namespace playnite_launcher::lossless {
     if (!ok) {
       return false;
     }
-    bool focused = focus_new_process(pi);
+    auto [focused, minimized] = focus_and_minimize_new_process(pi);
     if (!focused) {
       BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+    }
+    if (!minimized) {
+      BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
     }
     return true;
   }
@@ -762,7 +816,7 @@ namespace playnite_launcher::lossless {
   }
 
   void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch) {
-    if (focus_existing_instances(state)) {
+    if (focus_and_minimize_existing_instances(state)) {
       return;
     }
     if (!should_launch_new_instance(state, force_launch)) {
