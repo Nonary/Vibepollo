@@ -434,6 +434,41 @@ public sealed class PerConnPump : IDisposable
 }
 catch { Write-Log "Failed to load PerConnPump: $($_.Exception.Message)" }
 
+try {
+  if (-not ([System.Management.Automation.PSTypeName]'AnonConnectMsgInterop.HandshakeUtil').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace AnonConnectMsgInterop {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct AnonConnectMsg {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 40)]
+        public string PipeName;
+    }
+
+    public static class HandshakeUtil {
+        public static byte[] BuildMessage(string pipeName) {
+            var msg = new AnonConnectMsg { PipeName = pipeName ?? string.Empty };
+            int size = Marshal.SizeOf(typeof(AnonConnectMsg));
+            var buffer = new byte[size];
+            IntPtr ptr = Marshal.AllocHGlobal(size);
+            try {
+                Marshal.StructureToPtr(msg, ptr, false);
+                Marshal.Copy(ptr, buffer, 0, size);
+            } finally {
+                Marshal.FreeHGlobal(ptr);
+            }
+            return buffer;
+        }
+    }
+}
+"@
+    Write-Log "Loaded anonymous handshake helpers"
+  }
+}
+catch { Write-Log "Failed to load handshake helpers: $($_.Exception.Message)" }
+
 # Cross-runspace shutdown bridge for the connector data pipe
 try {
   if (-not ([System.Management.Automation.PSTypeName]'ShutdownBridge').Type) {
@@ -646,24 +681,78 @@ function Initialize-LauncherConnection {
   return $ConnectionId
 }
 
+
 function Wait-ForPipeAck {
-  param($Control)
-  $ack = New-Object byte[] 1
-  $read = $Control.Read($ack, 0, 1)
-  if ($read -ne 1 -or $ack[0] -ne 0x02) {
-    throw "Handshake ACK missing"
+  param(
+    $Control,
+    [int]$TimeoutMs = 1500
+  )
+  if (-not $Control) { throw 'Control pipe missing' }
+  $timeout = [Math]::Max(1, [int]$TimeoutMs)
+  $buffer = New-Object byte[] 1
+  $hadTimeout = $false
+  $originalTimeout = 0
+  try {
+    $originalTimeout = $Control.ReadTimeout
+    $hadTimeout = $true
+  } catch {}
+  try {
+    try { $Control.ReadTimeout = $timeout } catch {}
+    $read = $Control.Read($buffer, 0, 1)
   }
+  catch [System.TimeoutException] {
+    Write-Log "Handshake: ACK wait timed out" -Level 'WARN'
+    return $false
+  }
+  catch [System.IO.IOException] {
+    Write-Log ("Handshake: ACK read failed: {0}" -f $_.Exception.Message) -Level 'WARN'
+    return $false
+  }
+  catch {
+    Write-Log ("Handshake: unexpected error waiting for ACK: {0}" -f $_.Exception.Message) -Level 'WARN'
+    return $false
+  }
+  finally {
+    if ($hadTimeout) {
+      try { $Control.ReadTimeout = $originalTimeout } catch {}
+    }
+  }
+  if ($read -ne 1) {
+    Write-Log ("Handshake: ACK read returned {0} byte(s)" -f $read) -Level 'WARN'
+    return $false
+  }
+  if ($buffer[0] -eq 0x02) {
+    Write-DebugLog 'Handshake: ACK received'
+    return $true
+  }
+  Write-Log ("Handshake: unexpected ACK byte {0}" -f $buffer[0]) -Level 'WARN'
+  return $false
 }
 
 function Write-HandShakeMessage {
-  param($Control, [string]$PipeName)
-  $chars = New-Object char[] 40
-  $nameChars = ($PipeName + [char]0).ToCharArray()
-  [System.Array]::Copy($nameChars, 0, $chars, 0, [Math]::Min($nameChars.Length, $chars.Length))
-  $buffer = New-Object byte[] (80)
-  [System.Text.Encoding]::Unicode.GetBytes($chars, 0, $chars.Length, $buffer, 0) | Out-Null
-  $Control.Write($buffer, 0, $buffer.Length)
+  param(
+    $Control,
+    [string]$PipeName
+  )
+  if (-not $Control) { throw 'Control pipe missing' }
+  $name = ''
+  try { $name = [string]$PipeName } catch { $name = '' }
+  if ([string]::IsNullOrWhiteSpace($name)) { throw 'Pipe name missing' }
+  $normalized = $name.Trim()
+  try { $normalized = $normalized.ToUpperInvariant() } catch {}
+  $bytes = $null
+  try {
+    $bytes = [AnonConnectMsgInterop.HandshakeUtil]::BuildMessage($normalized)
+  } catch {
+    $chars = New-Object char[] 40
+    $nameChars = ($normalized + [char]0).ToCharArray()
+    [System.Array]::Copy($nameChars, 0, $chars, 0, [Math]::Min($nameChars.Length, $chars.Length))
+    $bytes = New-Object byte[] 80
+    [System.Text.Encoding]::Unicode.GetBytes($chars, 0, $chars.Length, $bytes, 0) | Out-Null
+  }
+  $Control.Write($bytes, 0, $bytes.Length)
   $Control.Flush()
+  Write-DebugLog ("Handshake: sent pipe '{0}' ({1} bytes)" -f $normalized, $bytes.Length)
 }
 
 function Start-PipeServerLoop {
@@ -686,14 +775,14 @@ function Start-PipeServerLoop {
         if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
       }
       if (-not $control.IsConnected) { continue }
-      $pipeName = ([Guid]::NewGuid().ToString('B'))
+      $pipeName = ([Guid]::NewGuid().ToString('B').ToUpperInvariant())
       $data = if ($pipeSecurity) {
         New-Object System.IO.Pipes.NamedPipeServerStream($pipeName, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536, $pipeSecurity)
       } else {
         New-Object System.IO.Pipes.NamedPipeServerStream($pipeName, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
       }
       Write-HandShakeMessage -Control $control -PipeName $pipeName
-      Wait-ForPipeAck -Control $control
+      if (-not (Wait-ForPipeAck -Control $control)) { throw 'Handshake ACK missing' }
       try { $control.Disconnect() } catch {}
       try { $control.Dispose() } catch {}
       $control = $null
@@ -943,6 +1032,7 @@ function Start-ConnectorLoop {
     Write-Log "Connector loop: activating Sunshine connection"
     try { [OutboxPump]::Start($conn.Writer, $global:Outbox); Write-DebugLog "Connector loop: OutboxPump started" } catch { Write-Log "Failed to start OutboxPump: $($_.Exception.Message)" }
     Send-InitialSnapshot
+    try { Send-RunningGamesStatusSnapshot } catch { Write-Log ("Connector loop: running snapshot failed: {0}" -f $_.Exception.Message) }
     $active = $true
     while (-not ($Token -and $Token.IsCancellationRequested) -and $active) {
       $line = $null

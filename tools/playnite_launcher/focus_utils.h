@@ -15,6 +15,7 @@ namespace playnite_launcher::focus {
   bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel = {});
 
   std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir);
+  std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir, bool require_window);
 
   bool focus_by_install_dir_extended(const std::wstring &install_dir, int max_successes, int total_wait_sec, bool exit_on_first, std::function<bool()> cancel = {});
 

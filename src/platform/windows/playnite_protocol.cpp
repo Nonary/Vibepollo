@@ -32,8 +32,15 @@ namespace platf::playnite {
     if (bytes.empty()) {
       return m;
     }
+    std::span<const uint8_t> trimmed = bytes;
+    if (trimmed.size() >= 3 && trimmed[0] == 0xEF && trimmed[1] == 0xBB && trimmed[2] == 0xBF) {
+      trimmed = trimmed.subspan(3);
+    }
+    if (trimmed.empty()) {
+      return m;
+    }
     try {
-      json j = json::parse(bytes.begin(), bytes.end());
+      json j = json::parse(trimmed.begin(), trimmed.end());
       const std::string type = j.value("type", "");
       // Verbose protocol tracing: use debug to reduce noise in normal operation
       BOOST_LOG(debug) << "Playnite protocol: parsing message type='" << type << "'";

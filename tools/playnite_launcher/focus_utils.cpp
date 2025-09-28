@@ -105,7 +105,7 @@ namespace playnite_launcher::focus {
       return path_starts_with_dir(path, dir);
     }
 
-    bool append_candidate_if_match(DWORD pid, const std::wstring &install_dir, std::vector<std::pair<DWORD, SIZE_T>> &matches) {
+    bool append_candidate_if_match(DWORD pid, const std::wstring &install_dir, std::vector<std::pair<DWORD, SIZE_T>> &matches, bool require_window) {
       if (pid == 0) {
         return false;
       }
@@ -113,7 +113,7 @@ namespace playnite_launcher::focus {
       if (!process_matches_dir(pid, install_dir, path)) {
         return false;
       }
-      if (!find_main_window_for_pid(pid)) {
+      if (require_window && !find_main_window_for_pid(pid)) {
         return false;
       }
       matches.push_back({pid, query_working_set(pid)});
@@ -222,14 +222,18 @@ namespace playnite_launcher::focus {
     return any;
   }
 
-  std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir) {
+  std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir, bool require_window) {
     auto pids = enumerate_process_ids();
     std::vector<std::pair<DWORD, SIZE_T>> matches;
     matches.reserve(pids.size());
     for (auto pid : pids) {
-      append_candidate_if_match(pid, install_dir, matches);
+      append_candidate_if_match(pid, install_dir, matches, require_window);
     }
     return extract_sorted_pids(std::move(matches));
+  }
+
+  std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir) {
+    return find_pids_under_install_dir_sorted(install_dir, true);
   }
 
   bool focus_by_install_dir_extended(const std::wstring &install_dir, int max_successes, int total_wait_sec, bool exit_on_first, std::function<bool()> cancel) {

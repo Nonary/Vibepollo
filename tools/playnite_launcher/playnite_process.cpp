@@ -172,7 +172,7 @@ namespace playnite_launcher::playnite {
     DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
                   CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
     PROCESS_INFORMATION pi {};
-  BOOL ok = launch_detached_command(exe.c_str(), cmd, si, pi, flags);
+    BOOL ok = launch_detached_command(exe.c_str(), cmd, si, pi, flags);
     DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free_parent_attributes(attrList);
     if (parent) {

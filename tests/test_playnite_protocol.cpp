@@ -129,3 +129,12 @@ TEST(PlayniteProtocol_Parse, Status_ParsesFields) {
   EXPECT_EQ(m.status_install_dir, "C:/Games/X");
   EXPECT_EQ(m.status_exe, "C:/Games/X/game.exe");
 }
+
+TEST(PlayniteProtocol_Parse, Status_ParsesFieldsWithUtf8Bom) {
+  std::string j = "\xEF\xBB\xBF{";
+  j += R"("type":"status","status":{"name":"gameStarted","id":"bom-id"}})";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.type, MessageType::Status);
+  EXPECT_EQ(m.status_name, "gameStarted");
+  EXPECT_EQ(m.status_game_id, "bom-id");
+}

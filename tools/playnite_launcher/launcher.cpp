@@ -153,6 +153,7 @@ namespace playnite_launcher {
       BOOST_LOG(info) << "Fullscreen mode: preparing IPC connection to Playnite plugin";
 
       platf::playnite::IpcClient client;
+      std::atomic<bool> pipe_connected {false};
 
       std::atomic<bool> game_start_signal {false};
       std::atomic<bool> game_stop_signal {false};
@@ -163,6 +164,7 @@ namespace playnite_launcher {
       std::mutex game_mutex;
 
       struct FullscreenGameState {
+        std::string id_original;
         std::string id_norm;
         std::string install_dir;
         std::string exe_path;
@@ -176,6 +178,7 @@ namespace playnite_launcher {
 
       lossless::lossless_scaling_profile_backup fullscreen_lossless_backup {};
       bool fullscreen_lossless_applied = false;
+      bool game_started_once = false;
 
       auto resolve_install_dir = [&](const std::string &install_dir, const std::string &exe_path) -> std::string {
         if (!install_dir.empty()) {
@@ -208,6 +211,7 @@ namespace playnite_launcher {
           std::string exe_for_ls;
           {
             std::lock_guard<std::mutex> lk(game_mutex);
+            game_state.id_original = msg.status_game_id;
             game_state.id_norm = norm_id;
             if (!msg.status_install_dir.empty()) {
               game_state.install_dir = msg.status_install_dir;
@@ -225,6 +229,7 @@ namespace playnite_launcher {
             install_for_ls = game_state.install_dir;
             exe_for_ls = game_state.exe_path;
           }
+          game_started_once = true;
           active_game_flag.store(true);
           game_start_signal.store(true);
           cleanup_spawn_signal.store(true);
@@ -254,6 +259,7 @@ namespace playnite_launcher {
               matches = game_state.id_norm == norm_id;
             }
             if (matches) {
+              game_state.id_original.clear();
               game_state.id_norm.clear();
             }
           }
@@ -276,6 +282,7 @@ namespace playnite_launcher {
       });
 
       client.set_connected_handler([&]() {
+        pipe_connected.store(true);
         try {
           nlohmann::json hello;
           hello["type"] = "hello";
@@ -284,6 +291,10 @@ namespace playnite_launcher {
           hello["mode"] = "fullscreen";
           client.send_json_line(hello.dump());
         } catch (...) {}
+      });
+
+      client.set_disconnected_handler([&]() {
+        pipe_connected.store(false);
       });
 
       client.start();
@@ -375,6 +386,31 @@ namespace playnite_launcher {
       auto next_game_focus_check = std::chrono::steady_clock::now();
 
       int consecutive_missing = 0;
+      auto connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
+
+      auto send_stop_command_if_needed = [&]() {
+        if (!client.is_active()) {
+          return;
+        }
+        std::string id_to_stop;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          id_to_stop = game_state.id_original;
+        }
+        if (id_to_stop.empty()) {
+          return;
+        }
+        try {
+          nlohmann::json stop;
+          stop["type"] = "command";
+          stop["command"] = "stop";
+          stop["id"] = id_to_stop;
+          client.send_json_line(stop.dump());
+          BOOST_LOG(info) << "Fullscreen mode: stop command sent for id=" << id_to_stop;
+        } catch (...) {
+          BOOST_LOG(warning) << "Fullscreen mode: failed to send stop command";
+        }
+      };
 
       while (true) {
         bool fs_running = false;
@@ -389,11 +425,12 @@ namespace playnite_launcher {
         bool active_game_now = active_game_flag.load();
         int64_t grace_ms = grace_deadline_ms.load();
         bool in_grace = grace_ms > 0 && now < millis_to_steady(grace_ms);
+        bool waiting_for_pipe = !pipe_connected.load() && now < connection_grace_deadline;
 
         if (fs_running) {
           consecutive_missing = 0;
         } else {
-          if (active_game_now || in_grace) {
+          if (active_game_now || in_grace || waiting_for_pipe) {
             consecutive_missing = 0;
           } else {
             consecutive_missing++;
@@ -523,6 +560,21 @@ namespace playnite_launcher {
         }
 
         std::this_thread::sleep_for(500ms);
+      }
+
+      if (game_started_once) {
+        send_stop_command_if_needed();
+      }
+
+      {
+        std::string final_cleanup_dir;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          final_cleanup_dir = game_state.cleanup_dir;
+        }
+        if (!final_cleanup_dir.empty()) {
+          spawn_game_cleanup(final_cleanup_dir);
+        }
       }
 
       client.stop();

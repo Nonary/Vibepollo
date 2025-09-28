@@ -150,7 +150,11 @@ namespace playnite_launcher::cleanup {
     }
 
     std::vector<DWORD> collect_candidates(const std::wstring &install_dir) {
-      return focus::find_pids_under_install_dir_sorted(install_dir);
+      auto pids = focus::find_pids_under_install_dir_sorted(install_dir);
+      if (pids.empty()) {
+        pids = focus::find_pids_under_install_dir_sorted(install_dir, false);
+      }
+      return pids;
     }
 
     double elapsed_fraction(const CleanupPlan &plan) {
