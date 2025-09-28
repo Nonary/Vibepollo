@@ -6,7 +6,6 @@ namespace playnite_launcher {
 
   struct LauncherConfig {
     std::string game_id;
-    std::string public_guid;
     std::string install_dir;
     std::string wait_for_pid;
     int timeout_sec = 120;

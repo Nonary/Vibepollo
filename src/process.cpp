@@ -146,17 +146,39 @@ namespace proc {
     }
 
     std::optional<std::string> scaling_mode_to_lossless_value(const std::string &mode) {
-      if (mode == "off") return std::string("Off");
-      if (mode == "ls1") return std::string("LS1");
-      if (mode == "fsr") return std::string("FSR");
-      if (mode == "nis") return std::string("NIS");
-      if (mode == "sgsr") return std::string("SGSR");
-      if (mode == "bcas") return std::string("BicubicCAS");
-      if (mode == "anime4k") return std::string("Anime4k");
-      if (mode == "xbr") return std::string("XBR");
-      if (mode == "sharp-bilinear") return std::string("SharpBilinear");
-      if (mode == "integer") return std::string("Integer");
-      if (mode == "nearest") return std::string("Nearest");
+      if (mode == "off") {
+        return std::string("Off");
+      }
+      if (mode == "ls1") {
+        return std::string("LS1");
+      }
+      if (mode == "fsr") {
+        return std::string("FSR");
+      }
+      if (mode == "nis") {
+        return std::string("NIS");
+      }
+      if (mode == "sgsr") {
+        return std::string("SGSR");
+      }
+      if (mode == "bcas") {
+        return std::string("BicubicCAS");
+      }
+      if (mode == "anime4k") {
+        return std::string("Anime4k");
+      }
+      if (mode == "xbr") {
+        return std::string("XBR");
+      }
+      if (mode == "sharp-bilinear") {
+        return std::string("SharpBilinear");
+      }
+      if (mode == "integer") {
+        return std::string("Integer");
+      }
+      if (mode == "nearest") {
+        return std::string("Nearest");
+      }
       return std::nullopt;
     }
 
@@ -256,12 +278,12 @@ namespace proc {
     lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx) {
       lossless_runtime_values_t result;
       const lossless_profile_defaults_t &defaults = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
-        LOSSLESS_DEFAULTS_RECOMMENDED :
-        LOSSLESS_DEFAULTS_CUSTOM;
+                                                      LOSSLESS_DEFAULTS_RECOMMENDED :
+                                                      LOSSLESS_DEFAULTS_CUSTOM;
 
       const lossless_scaling_profile_overrides_t &overrides = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
-        ctx.lossless_scaling_recommended :
-        ctx.lossless_scaling_custom;
+                                                                ctx.lossless_scaling_recommended :
+                                                                ctx.lossless_scaling_custom;
 
       if (boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED)) {
         result.profile = LOSSLESS_PROFILE_RECOMMENDED;
@@ -631,7 +653,6 @@ namespace proc {
 #ifdef _WIN32
     if (!_app.playnite_id.empty() && _app.cmd.empty()) {
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
-      std::string launcher_guid = platf::dxgi::generate_guid();
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
       try {
@@ -641,9 +662,6 @@ namespace proc {
         std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --game-id " + _app.playnite_id;
-        if (!launcher_guid.empty()) {
-          cmd += std::string(" --public-guid ") + launcher_guid;
-        }
         // Pass graceful-exit timeout to launcher for cleanup behavior
         try {
           int exit_to = (int) std::max<std::int64_t>(0, _app.exit_timeout.count());
@@ -670,14 +688,12 @@ namespace proc {
           BOOST_LOG(warning) << "Playnite helper launch failed: "sv << fec.message() << "; attempting URI fallback"sv;
         } else {
           BOOST_LOG(info) << "Playnite helper launched and is being monitored";
-          if (!launcher_guid.empty()) {
-            try {
-              auto pid = static_cast<uint32_t>(_process.id());
-              if (!platf::playnite::announce_launcher(launcher_guid, pid, _app.playnite_id)) {
-                BOOST_LOG(debug) << "Playnite helper: announce_launcher reported inactive IPC";
-              }
-            } catch (...) {
+          try {
+            auto pid = static_cast<uint32_t>(_process.id());
+            if (!platf::playnite::announce_launcher(pid, _app.playnite_id)) {
+              BOOST_LOG(debug) << "Playnite helper: announce_launcher reported inactive IPC";
             }
+          } catch (...) {
           }
           launched = true;
         }
@@ -709,7 +725,6 @@ namespace proc {
 #ifdef _WIN32
       if (_app.playnite_fullscreen) {
       BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
-      std::string launcher_guid = platf::dxgi::generate_guid();
       bool launched = false;
       try {
         WCHAR exePathW[MAX_PATH] = {};
@@ -718,9 +733,6 @@ namespace proc {
         std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
-        if (!launcher_guid.empty()) {
-          cmd += std::string(" --public-guid ") + launcher_guid;
-        }
         try {
           if (config::playnite.focus_attempts > 0) {
             cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
@@ -739,14 +751,12 @@ namespace proc {
           BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
         } else {
           BOOST_LOG(info) << "Playnite fullscreen helper launched";
-          if (!launcher_guid.empty()) {
-            try {
-              auto pid = static_cast<uint32_t>(_process.id());
-              if (!platf::playnite::announce_launcher(launcher_guid, pid, std::string())) {
-                BOOST_LOG(debug) << "Playnite helper (fullscreen): announce_launcher reported inactive IPC";
-              }
-            } catch (...) {
+          try {
+            auto pid = static_cast<uint32_t>(_process.id());
+            if (!platf::playnite::announce_launcher(pid, std::string())) {
+              BOOST_LOG(debug) << "Playnite helper (fullscreen): announce_launcher reported inactive IPC";
             }
+          } catch (...) {
           }
           launched = true;
         }

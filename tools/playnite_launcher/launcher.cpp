@@ -31,7 +31,6 @@ namespace playnite_launcher {
 
     std::filesystem::path resolve_log_path();
     void ensure_playnite_open();
-    bool ensure_public_guid(std::string &public_guid);
     int64_t steady_to_millis(std::chrono::steady_clock::time_point tp);
     std::chrono::steady_clock::time_point millis_to_steady(int64_t ms);
     std::string normalize_game_id(std::string s);
@@ -88,66 +87,6 @@ namespace playnite_launcher {
           BOOST_LOG(warning) << "Failed to launch playnite:// via detached CreateProcess";
         }
       }
-    }
-
-    bool generate_guid_or_keep(std::string &public_guid) {
-      if (!public_guid.empty()) {
-        return true;
-      }
-      try {
-        public_guid = platf::dxgi::generate_guid();
-      } catch (...) {
-        public_guid.clear();
-      }
-      return public_guid.empty();
-    }
-
-    std::wstring to_wide_guid(const std::string &guid) {
-      try {
-        auto wide = platf::dxgi::utf8_to_wide(guid);
-        if (!wide.empty()) {
-          return wide;
-        }
-      } catch (...) {
-      }
-      return std::wstring(guid.begin(), guid.end());
-    }
-
-    bool spawn_guid_child(const std::wstring &wguid) {
-      WCHAR selfPath[MAX_PATH] = {};
-      if (GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath)) == 0) {
-        return false;
-      }
-      std::wstring cmdline = GetCommandLineW();
-      cmdline += L" --public-guid ";
-      cmdline += wguid;
-      std::vector<wchar_t> mutable_cmd(cmdline.begin(), cmdline.end());
-      mutable_cmd.push_back(0);
-      STARTUPINFOW si {sizeof(si)};
-      si.dwFlags = STARTF_USESHOWWINDOW;
-      si.wShowWindow = SW_HIDE;
-      PROCESS_INFORMATION pi {};
-      DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
-      BOOL ok = CreateProcessW(selfPath, mutable_cmd.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi);
-      if (ok && pi.hThread) {
-        CloseHandle(pi.hThread);
-      }
-      if (ok && pi.hProcess) {
-        CloseHandle(pi.hProcess);
-      }
-      return ok;
-    }
-
-    bool ensure_public_guid(std::string &public_guid) {
-      if (!generate_guid_or_keep(public_guid)) {
-        std::wstring wguid = to_wide_guid(public_guid);
-        if (spawn_guid_child(wguid)) {
-          BOOST_LOG(info) << "Spawned child with generated public GUID";
-          return false;
-        }
-        BOOST_LOG(error) << "Failed to spawn child process with GUID; continuing in current process";
-      }
-      return true;
     }
 
     int64_t steady_to_millis(std::chrono::steady_clock::time_point tp) {
@@ -211,13 +150,9 @@ namespace playnite_launcher {
     }
 
     int run_fullscreen_mode(LauncherConfig config, const lossless::lossless_scaling_options &lossless_options) {
-      if (!ensure_public_guid(config.public_guid)) {
-        return 0;
-      }
-      BOOST_LOG(info) << "Using public GUID for launcher pipes";
+      BOOST_LOG(info) << "Fullscreen mode: preparing IPC connection to Playnite plugin";
 
-      std::string control_name = std::string("sunshine_playnite_ctl_") + config.public_guid;
-      platf::playnite::IpcServer server(control_name);
+      platf::playnite::IpcClient client;
 
       std::atomic<bool> game_start_signal {false};
       std::atomic<bool> game_stop_signal {false};
@@ -260,7 +195,7 @@ namespace playnite_launcher {
         return std::string();
       };
 
-      server.set_message_handler([&](std::span<const uint8_t> bytes) {
+      client.set_message_handler([&](std::span<const uint8_t> bytes) {
         auto msg = platf::playnite::parse(bytes);
         using MT = platf::playnite::MessageType;
         if (msg.type != MT::Status) {
@@ -340,7 +275,18 @@ namespace playnite_launcher {
         }
       });
 
-      server.start();
+      client.set_connected_handler([&]() {
+        try {
+          nlohmann::json hello;
+          hello["type"] = "hello";
+          hello["role"] = "launcher";
+          hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+          hello["mode"] = "fullscreen";
+          client.send_json_line(hello.dump());
+        } catch (...) {}
+      });
+
+      client.start();
 
       BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
       bool started = false;
@@ -567,7 +513,7 @@ namespace playnite_launcher {
         std::this_thread::sleep_for(500ms);
       }
 
-      server.stop();
+      client.stop();
       if (fullscreen_lossless_applied) {
         auto runtime = lossless::capture_lossless_scaling_state();
         if (!runtime.running_pids.empty()) {
@@ -580,13 +526,9 @@ namespace playnite_launcher {
     }
 
     int run_standard_mode(LauncherConfig config, const lossless::lossless_scaling_options &lossless_options) {
-      std::string public_guid = config.public_guid;
-      if (!ensure_public_guid(public_guid)) {
-        return 0;
-      }
+      BOOST_LOG(info) << "Launcher mode: preparing IPC connection to Playnite plugin";
 
-      std::string control_name = std::string("sunshine_playnite_ctl_") + public_guid;
-      platf::playnite::IpcServer server(control_name);
+      platf::playnite::IpcClient client;
 
       std::atomic<bool> should_exit {false};
       std::atomic<bool> got_started {false};
@@ -618,7 +560,7 @@ namespace playnite_launcher {
         request_game_focus.store(true, std::memory_order_release);
       };
 
-      server.set_message_handler([&](std::span<const uint8_t> bytes) {
+      client.set_message_handler([&](std::span<const uint8_t> bytes) {
         auto msg = platf::playnite::parse(bytes);
         using MT = platf::playnite::MessageType;
         if (msg.type != MT::Status) {
@@ -691,18 +633,33 @@ namespace playnite_launcher {
         }
       });
 
-      server.start();
+      client.set_connected_handler([&]() {
+        try {
+          nlohmann::json hello;
+          hello["type"] = "hello";
+          hello["role"] = "launcher";
+          hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+          hello["mode"] = "standard";
+          if (!config.game_id.empty()) {
+            hello["gameId"] = config.game_id;
+          }
+          client.send_json_line(hello.dump());
+        } catch (...) {}
+      });
+
+      client.start();
 
       if (!config.game_id.empty()) {
         ensure_playnite_open();
       }
 
       auto start_deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
-      while (!server.is_active() && std::chrono::steady_clock::now() < start_deadline) {
+      while (!client.is_active() && std::chrono::steady_clock::now() < start_deadline) {
         std::this_thread::sleep_for(50ms);
       }
-      if (!server.is_active()) {
+      if (!client.is_active()) {
         BOOST_LOG(error) << "IPC did not become active; exiting";
+        client.stop();
         return 3;
       }
 
@@ -710,7 +667,7 @@ namespace playnite_launcher {
       j["type"] = "command";
       j["command"] = "launch";
       j["id"] = config.game_id;
-      server.send_json_line(j.dump());
+      client.send_json_line(j.dump());
       BOOST_LOG(info) << "Launch command sent for id=" << config.game_id;
 
       if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
@@ -878,7 +835,9 @@ namespace playnite_launcher {
         bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
         lossless::lossless_scaling_restart_foreground(runtime, restored);
       }
-      return should_exit.load() ? 0 : 4;
+      int exit_code = should_exit.load() ? 0 : 4;
+      client.stop();
+      return exit_code;
     }
 
   }  // namespace detail

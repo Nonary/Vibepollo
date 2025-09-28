@@ -187,15 +187,24 @@ namespace platf::playnite {
       g_instance.store(this, std::memory_order_release);
       // If plugin installed at startup, start immediately; otherwise wait for manager loop
       if (is_plugin_installed()) {
-        BOOST_LOG(info) << "Playnite integration: plugin installed; starting IPC server";
-        server_ = std::make_unique<platf::playnite::IpcServer>();
-        server_->set_message_handler([this](std::span<const uint8_t> bytes) {
+        BOOST_LOG(info) << "Playnite integration: plugin installed; starting IPC client";
+        client_ = std::make_unique<platf::playnite::IpcClient>();
+        client_->set_message_handler([this](std::span<const uint8_t> bytes) {
           handle_message(bytes);
         });
-        server_->start();
+        client_->set_connected_handler([this]() {
+          try {
+            nlohmann::json hello;
+            hello["type"] = "hello";
+            hello["role"] = "sunshine";
+            hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+            client_->send_json_line(hello.dump());
+          } catch (...) {}
+        });
+        client_->start();
         new_snapshot_ = true;
       } else {
-        BOOST_LOG(info) << "Playnite integration: plugin not installed; server idle";
+        BOOST_LOG(info) << "Playnite integration: plugin not installed; client idle";
       }
       // Start manager loop to hot-apply enablement state
       stop_flag_.store(false, std::memory_order_release);
@@ -212,19 +221,19 @@ namespace platf::playnite {
           manager_.join();
         }
       } catch (...) {}
-      if (server_) {
-        server_->stop();
-        server_.reset();
+      if (client_) {
+        client_->stop();
+        client_.reset();
       }
       g_instance.store(nullptr, std::memory_order_release);
     }
 
     bool is_server_active() const {
-      return server_ && server_->is_active();
+      return client_ && client_->is_active();
     }
 
     bool send_cmd_json_line(const std::string &s) {
-      return server_ && server_->send_json_line(s);
+      return client_ && client_->send_json_line(s);
     }
 
     void trigger_sync() {
@@ -242,13 +251,13 @@ namespace platf::playnite {
       out = last_categories_;
     }
 
-    // Hot-toggle helpers: stop or start the IPC server without destroying the instance
-    void stop_server() {
+    // Hot-toggle helpers: stop or start the IPC client without destroying the instance
+    void stop_client() {
       try {
-        if (server_) {
-          BOOST_LOG(info) << "Playnite: stopping IPC server (hot-toggle)";
-          server_->stop();
-          server_.reset();
+        if (client_) {
+          BOOST_LOG(info) << "Playnite: stopping IPC client (hot-toggle)";
+          client_->stop();
+          client_.reset();
         }
         // Clear cached snapshots so UI doesn't falsely show data as connected
         try {
@@ -269,15 +278,24 @@ namespace platf::playnite {
       // Avoid hot-toggling: if a server exists and is already running (even if not
       // yet connected), do not tear it down and recreate it. This prevents rapid
       // restarts during the handshake window.
-      if (server_ && (server_->is_active() || server_->is_started())) {
+      if (client_ && (client_->is_active() || client_->is_started())) {
         return;
       }
-      BOOST_LOG(info) << "Playnite: starting IPC server (hot-toggle)";
-      server_ = std::make_unique<platf::playnite::IpcServer>();
-      server_->set_message_handler([this](std::span<const uint8_t> bytes) {
+      BOOST_LOG(info) << "Playnite: starting IPC client (hot-toggle)";
+      client_ = std::make_unique<platf::playnite::IpcClient>();
+      client_->set_message_handler([this](std::span<const uint8_t> bytes) {
         handle_message(bytes);
       });
-      server_->start();
+      client_->set_connected_handler([this]() {
+        try {
+          nlohmann::json hello;
+          hello["type"] = "hello";
+          hello["role"] = "sunshine";
+          hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+          client_->send_json_line(hello.dump());
+        } catch (...) {}
+      });
+      client_->start();
       new_snapshot_ = true;
       {
         std::scoped_lock lk(progress_mutex_);
@@ -293,7 +311,7 @@ namespace platf::playnite {
         if (want) {
           ensure_started();
         } else {
-          stop_server();
+          stop_client();
         }
         emit_snapshot_summary_if_ready();
         std::this_thread::sleep_for(1500ms);
@@ -548,7 +566,7 @@ namespace platf::playnite {
       BOOST_LOG(info) << line.str();
     }
 
-    std::unique_ptr<platf::playnite::IpcServer> server_;
+    std::unique_ptr<platf::playnite::IpcClient> client_;
     std::atomic<bool> stop_flag_ {false};
     std::thread manager_;
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
@@ -675,18 +693,14 @@ namespace platf::playnite {
     return inst->send_cmd_json_line(s);
   }
 
-  bool announce_launcher(const std::string &guid, uint32_t pid, const std::string &game_id) {
+  bool announce_launcher(uint32_t pid, const std::string &game_id) {
     auto inst = g_instance.load(std::memory_order_acquire);
     if (!inst) {
-      return false;
-    }
-    if (guid.empty()) {
       return false;
     }
     nlohmann::json j;
     j["type"] = "launcher";
     j["command"] = "announce";
-    j["guid"] = guid;
     if (pid != 0) {
       j["pid"] = pid;
     }

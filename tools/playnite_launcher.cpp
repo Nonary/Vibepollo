@@ -1,17 +1,16 @@
 /**
  * @file tools/playnite_launcher.cpp
- * @brief Standalone Playnite launcher helper. Hosts a per-launch IPC server with a
- *        GUID-derived control pipe name and commands Playnite to start a specific game.
+ * @brief Standalone Playnite launcher helper. Connects to the Playnite plugin via the
+ *        shared Sunshine.PlayniteExtension pipe and commands Playnite to start a game.
  *
  * Usage:
- *   playnite-launcher --game-id <GUID> [--public-guid <GUID>] [--timeout <seconds>]
+ *   playnite-launcher --game-id <GUID> [--timeout <seconds>]
  *   playnite-launcher --fullscreen [--focus-attempts N] [--focus-timeout S] [--focus-exit-on-first]
  *
  * Behavior:
  *   - Initializes logging to sunshine_playnite_launcher.log in appdata
- *   - Chooses a public GUID (either provided or generated) and hosts a control pipe named
- *     "sunshine_playnite_ctl_<GUID>". The Playnite plugin connects to this, performs our
- *     anonymous handshake, then switches to a private data pipe.
+ *   - Connects to the shared Sunshine.PlayniteExtension pipe exposed by the Playnite plugin and
+ *     promotes the anonymous handshake to a per-connection data pipe.
  *   - Once the data pipe is active, sends a launch command for the requested Playnite game id.
  *   - Remains alive, listening for status messages, and exits when it receives
  *     status.gameStopped for the same game id (or on timeout).
@@ -1789,7 +1788,6 @@ namespace {
 static int launcher_run(int argc, char **argv) {
   // Minimal arg parsing
   std::string game_id;
-  std::string public_guid;
   std::string timeout_s;
   std::string focus_attempts_s;
   std::string focus_timeout_s;
@@ -1800,7 +1798,6 @@ static int launcher_run(int argc, char **argv) {
   std::string wait_for_pid_s;
   std::span<char *> argspan(argv, (size_t) argc);
   parse_arg(argspan, "--game-id", game_id);
-  parse_arg(argspan, "--public-guid", public_guid);
   parse_arg(argspan, "--timeout", timeout_s);
   parse_arg(argspan, "--focus-attempts", focus_attempts_s);
   parse_arg(argspan, "--focus-timeout", focus_timeout_s);
@@ -1884,58 +1881,6 @@ static int launcher_run(int argc, char **argv) {
     }
   };
 
-  auto ensure_public_guid = [&]() -> bool {
-    if (!public_guid.empty()) {
-      return true;
-    }
-    try {
-      public_guid = platf::dxgi::generate_guid();
-    } catch (...) {
-      public_guid.clear();
-    }
-    if (public_guid.empty()) {
-      return true;
-    }
-    WCHAR selfPath[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath)) == 0) {
-      return true;
-    }
-    std::wstring cmdline = GetCommandLineW();
-    std::wstring wguid;
-    try {
-      wguid = platf::dxgi::utf8_to_wide(public_guid);
-    } catch (...) {
-      wguid.assign(public_guid.begin(), public_guid.end());
-    }
-    if (wguid.empty()) {
-      wguid.assign(public_guid.begin(), public_guid.end());
-    }
-    cmdline.append(L" --public-guid ");
-    cmdline.append(wguid);
-    std::vector<wchar_t> mutable_cmd(cmdline.begin(), cmdline.end());
-    mutable_cmd.push_back(L'\0');
-
-    STARTUPINFOW si {};
-    si.cb = sizeof(si);
-    si.dwFlags |= STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi {};
-    DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
-    BOOL ok = CreateProcessW(selfPath, mutable_cmd.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi);
-    if (ok) {
-      if (pi.hThread) {
-        CloseHandle(pi.hThread);
-      }
-      if (pi.hProcess) {
-        CloseHandle(pi.hProcess);
-      }
-      BOOST_LOG(info) << "Spawned child with generated public GUID";
-      return false;
-    }
-    BOOST_LOG(error) << "Failed to spawn child process with GUID; continuing in current process";
-    return true;
-  };
-
   // Cleanup-only mode: optionally wait for a specific PID to exit, then run cleanup
   if (do_cleanup) {
     BOOST_LOG(info) << "Cleanup mode: starting (installDir='" << install_dir_arg << "' fullscreen=" << (fullscreen ? 1 : 0) << ")";
@@ -1979,13 +1924,9 @@ static int launcher_run(int argc, char **argv) {
 
   // Fullscreen mode: start Playnite.FullscreenApp and monitor game focus/lifecycle
   if (fullscreen) {
-    if (!ensure_public_guid()) {
-      return 0;
-    }
-    BOOST_LOG(info) << "Using public GUID for launcher pipes";
+    BOOST_LOG(info) << "Fullscreen mode: preparing IPC connection to Playnite plugin";
 
-    std::string control_name = std::string("sunshine_playnite_ctl_") + public_guid;
-    platf::playnite::IpcServer server(control_name);
+    platf::playnite::IpcClient client;
 
     std::atomic<bool> game_start_signal {false};
     std::atomic<bool> game_stop_signal {false};
@@ -2025,7 +1966,7 @@ static int launcher_run(int argc, char **argv) {
       return std::string();
     };
 
-    server.set_message_handler([&](std::span<const uint8_t> bytes) {
+    client.set_message_handler([&](std::span<const uint8_t> bytes) {
       auto msg = platf::playnite::parse(bytes);
       using MT = platf::playnite::MessageType;
       if (msg.type != MT::Status) {
@@ -2105,7 +2046,18 @@ static int launcher_run(int argc, char **argv) {
       }
     });
 
-    server.start();
+    client.set_connected_handler([&]() {
+      try {
+        nlohmann::json hello;
+        hello["type"] = "hello";
+        hello["role"] = "launcher";
+        hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+        hello["mode"] = "fullscreen";
+        client.send_json_line(hello.dump());
+      } catch (...) {}
+    });
+
+    client.start();
 
     BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
     bool started = false;
@@ -2319,7 +2271,7 @@ static int launcher_run(int argc, char **argv) {
       std::this_thread::sleep_for(500ms);
     }
 
-    server.stop();
+    client.stop();
     if (fullscreen_lossless_applied) {
       auto runtime = capture_lossless_scaling_state();
       if (!runtime.running_pids.empty()) {
@@ -2334,18 +2286,12 @@ static int launcher_run(int argc, char **argv) {
     return 0;
   }
 
-  if (!ensure_public_guid()) {
-    return 0;
-  }
-  BOOST_LOG(info) << "Using public GUID for launcher pipes";
-
-  // Build dynamic control pipe name
-  std::string control_name = std::string("sunshine_playnite_ctl_") + public_guid;
+  BOOST_LOG(info) << "Launcher mode: preparing IPC connection to Playnite plugin";
 
   // Discovery marker removed: do not write JSON files under %AppData%/Sunshine/playnite_launcher
 
-  // Host IPC server and watch for status updates
-  platf::playnite::IpcServer server(control_name);
+  // Connect to plugin and watch for status updates
+  platf::playnite::IpcClient client;
   std::atomic<bool> got_started {false};
   std::atomic<bool> should_exit {false};
   std::string last_install_dir;
@@ -2364,7 +2310,7 @@ static int launcher_run(int argc, char **argv) {
     }
   };
 
-  server.set_message_handler([&](std::span<const uint8_t> bytes) {
+  client.set_message_handler([&](std::span<const uint8_t> bytes) {
     // Incoming messages are JSON objects from the plugin; parse and watch for status
     auto msg = platf::playnite::parse(bytes);
     using MT = platf::playnite::MessageType;
@@ -2423,7 +2369,21 @@ static int launcher_run(int argc, char **argv) {
     }
   });
 
-  server.start();
+  client.set_connected_handler([&]() {
+    try {
+      nlohmann::json hello;
+      hello["type"] = "hello";
+      hello["role"] = "launcher";
+      hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
+      hello["mode"] = "standard";
+      if (!game_id.empty()) {
+        hello["gameId"] = game_id;
+      }
+      client.send_json_line(hello.dump());
+    } catch (...) {}
+  });
+
+  client.start();
 
   // If launching a game, ensure Playnite is running first (best-effort)
   if (!game_id.empty()) {
@@ -2432,11 +2392,12 @@ static int launcher_run(int argc, char **argv) {
 
   // Wait for data pipe active then send launch command
   auto start_deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
-  while (!server.is_active() && std::chrono::steady_clock::now() < start_deadline) {
+  while (!client.is_active() && std::chrono::steady_clock::now() < start_deadline) {
     std::this_thread::sleep_for(50ms);
   }
-  if (!server.is_active()) {
+  if (!client.is_active()) {
     BOOST_LOG(error) << "IPC did not become active; exiting";
+    client.stop();
     return 3;
   }
 
@@ -2445,7 +2406,7 @@ static int launcher_run(int argc, char **argv) {
   j["type"] = "command";
   j["command"] = "launch";
   j["id"] = game_id;
-  server.send_json_line(j.dump());
+  client.send_json_line(j.dump());
   BOOST_LOG(info) << "Launch command sent for id=" << game_id;
 
   // Best-effort: shortly after we observe game start, attempt to bring the game (or Playnite) to foreground
@@ -2549,7 +2510,9 @@ static int launcher_run(int argc, char **argv) {
     active_lossless_backup = {};
     lossless_profiles_applied = false;
   }
-  return should_exit.load() ? 0 : 4;
+  int exit_code = should_exit.load() ? 0 : 4;
+  client.stop();
+  return exit_code;
 }
 
 // Console entry point (used by non-WIN32 subsystem builds and tests)

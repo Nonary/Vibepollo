@@ -496,83 +496,32 @@ function Get-FullPipeName {
 
 ## Removed Test-PipeAvailable (pre-probe not needed)
 
-function Connect-SunshinePipe {
-  param(
-    [string]$PublicName = 'sunshine_playnite_connector',
-    [int]$TimeoutMs = 5000,
-    [System.Threading.CancellationToken]$Token = $null
-  )
-
-  # Mandatory anonymous handshake protocol:
-  # 1) Connect to control pipe ($PublicName)
-  # 2) Read 80-byte wchar[40] data-pipe name (AnonConnectMsg)
-  # 3) Send single-byte ACK (0x02)
-  # 4) Disconnect control pipe
-  # 5) Connect to returned data pipe name and build UTF-8 line reader/writer
-
-  $control = $null
-  $data = $null
-  $reader = $null
-  $writer = $null
-  $ACK = 0x02
-
+# Build a pipe security descriptor that allows Sunshine (SYSTEM) and the current user.
+function New-PipeSecurity {
   try {
-    if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
-    Write-Log "Handshake: connecting control pipe (timeout=${TimeoutMs}ms)"
-    $control = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PublicName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
-    $control.Connect([Math]::Max(1000, [int]$TimeoutMs))
-    Write-Log "Handshake: control connected (IsConnected=$($control.IsConnected))"
+    $pipeSec = New-Object System.IO.Pipes.PipeSecurity
 
-    # Read fixed-size AnonConnectMsg (wchar[40] => 80 bytes) with a simple synchronous read
-    $expected = 80
-    $buf = New-Object byte[] $expected
-    $off = 0
-    try { $control.ReadTimeout = 3000 } catch { Write-Log "Handshake: control stream does not support ReadTimeout; proceeding" }
-    while ($off -lt $expected) {
-      if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
-      $n = $control.Read($buf, $off, ($expected - $off))
-      if ($n -le 0) { throw "Control pipe closed during handshake ($off/$expected)" }
-      $off += $n
+    $systemSid = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $interactiveSid = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::InteractiveSid, $null)
+    $worldSid = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::WorldSid, $null)
+    try {
+      $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    } catch { $userSid = $null }
+
+    $full = [System.IO.Pipes.PipeAccessRights]::FullControl
+    $rw = [System.IO.Pipes.PipeAccessRights]::ReadWrite
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+
+    $pipeSec.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($systemSid, $full, $allow))) | Out-Null
+    $pipeSec.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($interactiveSid, $rw, $allow))) | Out-Null
+    $pipeSec.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($worldSid, $rw, $allow))) | Out-Null
+    if ($userSid) {
+      $pipeSec.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($userSid, $full, $allow))) | Out-Null
     }
-    # Decode wchar[40] to .NET string; trim trailing nulls
-    $pipeName = [System.Text.Encoding]::Unicode.GetString($buf)
-    $pipeName = $pipeName.Trim([char]0)
-    if (-not $pipeName) { throw "Handshake received empty data pipe name" }
-    Write-Log "Handshake: received data pipe name"
-
-    # Send ACK (single byte 0x02)
-    $ackBuf = [byte[]]@([byte]$ACK)
-    $control.Write($ackBuf, 0, 1)
-    $control.Flush()
-    Write-Log "Handshake: ACK sent"
-
-    # Close control and connect to data pipe
-    try { $control.Dispose() } catch {}
-    $control = $null
-
-    $data = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
-    if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
-    $data.Connect(3000)
-    if ($PublicName -eq 'sunshine_playnite_connector') {
-      try { [ShutdownBridge]::SetSunStream($data) } catch {}
-    }
-    try { $data.ReadTimeout = 5000 } catch {}
-    try { $data.WriteTimeout = 5000 } catch {}
-    $writer = New-Object System.IO.StreamWriter($data, [System.Text.Encoding]::UTF8, 8192, $true)
-    $writer.AutoFlush = $true
-    $reader = New-Object System.IO.StreamReader($data, [System.Text.Encoding]::UTF8, $false, 8192, $true)
-    Write-Log "Handshake: data pipe connected (IsConnected=$($data.IsConnected))"
-    return @{ Stream = $data; Writer = $writer; Reader = $reader }
-  }
-  catch {
-    if ($data -and $PublicName -eq 'sunshine_playnite_connector') { try { [ShutdownBridge]::CloseSunStream() } catch {} }
-    if ($reader) { try { $reader.Dispose() } catch {} }
-    if ($writer) { try { $writer.Dispose() } catch {} }
-    if ($data) { try { $data.Dispose() } catch {} }
-    if ($control) { try { $control.Dispose() } catch {} }
-    $ex = $_.Exception
-    Write-Log "Handshake connect failed: $($ex.GetType().FullName): $($ex.Message) HResult=$([String]::Format('0x{0:X8}', $ex.HResult))"
-    throw
+    return $pipeSec
+  } catch {
+    Write-Log "PipeSecurity: failed to build descriptor; defaulting" -Level 'WARN'
+    return $null
   }
 }
 
@@ -586,161 +535,218 @@ function Send-JsonMessage {
   catch { Write-Log "Failed to enqueue message: $($_.Exception.Message)" }
 }
 
-# Discover running launcher helper processes and extract their public GUID and game id
-function Get-LauncherProcesses {
-  # Tolerate Playnite.Launcher / playnite-launcher / playnite_launcher / ... (+ optional suffix)
-  $nameRegex = '(?i)^playnite[\._-]?launcher(?:.*)?\.exe$'
-  $found = New-Object System.Collections.ArrayList
-
-  function Add-Candidate {
-    param($pid, $name, $cmdline)
-    if (-not $name -or ($name -notmatch $nameRegex)) { return }
-    if (-not $cmdline) {
-      Write-Log "LauncherProbe: PID=$pid Name=$name has empty/blocked CommandLine"
-      return
-    }
-
-    $pub = $null; $gid = $null
-
-    # Accept -/-- or /, allow space or '=' between key and value
-    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}public[-_]?guid(?:\s+|=)(\{?[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}?)') {
-      $pub = $matches[1].Trim()
-      try { $pub = $pub.Trim('"') } catch {}
-      try { $pub = $pub.Trim("'") } catch {}
-    }
-    if ($cmdline -match '(?i)(?:^|\s)[-/]{1,2}game[-_]?id(?:\s+|=)(\{?[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}?)') {
-      $gid = $matches[1].Trim()
-      try { $gid = $gid.Trim('"') } catch {}
-      try { $gid = $gid.Trim("'") } catch {}
-    }
-
-    if ($pub) {
-      [void]$found.Add(@{ Pid = [int]$pid; PublicGuid = $pub; GameId = $gid })
-      $gidOut = $gid; if (-not $gidOut) { $gidOut = '' }
-      Write-DebugLog ("LauncherProbe: candidate pid={0} pguid={1} game={2}" -f $pid, $pub, $gidOut)
-    }
-  }
-
-  # 1) CIM/WMI broad LIKE filter
+function Close-SunshineConnection {
+  param([string]$Reason = '')
   try {
-    $q = "SELECT ProcessId, Name, CommandLine FROM Win32_Process WHERE Name LIKE 'Playnite%Launcher%.exe'"
-    $cim = Get-CimInstance -Query $q -ErrorAction SilentlyContinue
-    foreach ($p in ($cim | Where-Object { $_.Name -match $nameRegex })) {
-      Add-Candidate -pid $p.ProcessId -name $p.Name -cmdline $p.CommandLine
-    }
+    if ($Reason) { Write-Log ("CloseSunConn: reason={0}" -f $Reason) -Level 'DEBUG' } else { Write-Log "CloseSunConn: closing" -Level 'DEBUG' }
+  } catch {}
+  $conn = $global:SunConn
+  $global:SunConn = $null
+  try { [OutboxPump]::Stop() } catch {}
+  if ($conn) {
+    try { if ($conn.Reader) { $conn.Reader.Dispose() } } catch {}
+    try { if ($conn.Writer) { $conn.Writer.Dispose() } } catch {}
+    try { if ($conn.Stream) { $conn.Stream.Dispose() } } catch {}
   }
-  catch { Write-Log "LauncherProbe: CIM LIKE query failed: $($_.Exception.Message)" }
+  try { [ShutdownBridge]::CloseSunStream() } catch {}
+}
 
-  # 2) Fallback: Get-Process then query each PID’s CommandLine via CIM/WMI
+function Initialize-SunshineConnection {
+  param($Stream, $Reader, $Writer, $Hello)
   try {
-    foreach ($gp in (Get-Process -Name 'playnite*' -ErrorAction SilentlyContinue)) {
-      $pid = [int]$gp.Id
-      $name = $gp.Name
-      $cmd = $null
-      try {
-        $c = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pid) -ErrorAction SilentlyContinue
-        if (-not $c) { $c = Get-WmiObject Win32_Process -Filter ("ProcessId={0}" -f $pid) -ErrorAction SilentlyContinue }
-        if ($c) { $cmd = [string]$c.CommandLine }
+    Close-SunshineConnection -Reason 'replace'
+    $info = @{
+      Stream = $Stream
+      Reader = $Reader
+      Writer = $Writer
+      Hello  = $Hello
+    }
+    $global:SunConn = $info
+    try { [ShutdownBridge]::SetSunStream($Stream) } catch {}
+    Write-Log "PipeServer: Sunshine core connection ready"
+  }
+  catch {
+    Write-Log "PipeServer: failed to initialize Sunshine connection: $($_.Exception.Message)"
+    try { if ($Reader) { $Reader.Dispose() } } catch {}
+    try { if ($Writer) { $Writer.Dispose() } } catch {}
+    try { if ($Stream) { $Stream.Dispose() } } catch {}
+  }
+}
+
+function Initialize-LauncherConnection {
+  param([string]$ConnectionId, $Stream, $Reader, $Writer, $Hello)
+  if (-not $ConnectionId) { $ConnectionId = ([Guid]::NewGuid().ToString('N')) }
+  $connInfo = @{
+    Stream = $Stream
+    Reader = $Reader
+    Writer = $Writer
+    Hello  = $Hello
+    Guid   = $ConnectionId
+    Pid    = $null
+    GameId = $null
+  }
+  try {
+    if ($Hello) {
+      try { $connInfo.Pid = [int]$Hello.pid } catch {}
+      try { $connInfo.GameId = [string]$Hello.gameId } catch {}
+    }
+  } catch {}
+  try {
+    $connInfo.Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
+    if (-not $connInfo.Writer) {
+      $connInfo.Writer = New-Object System.IO.StreamWriter($Stream, [System.Text.Encoding]::UTF8, 8192, $true)
+      $connInfo.Writer.AutoFlush = $true
+    }
+    $connInfo.Pump = New-Object PerConnPump($connInfo.Writer, $connInfo.Outbox)
+    $connInfo.Pump.Start()
+  } catch {
+    Write-Log "PipeServer: failed to start launcher outbox pump: $($_.Exception.Message)"
+  }
+  try {
+    if (-not $global:LauncherConns.TryAdd($ConnectionId, $connInfo)) {
+      $global:LauncherConns[$ConnectionId] = $connInfo
+    }
+  } catch {
+    Write-Log "PipeServer: failed to register launcher connection: $($_.Exception.Message)"
+  }
+  try {
+    $modulePath = try { Join-Path $PSScriptRoot 'SunshinePlaynite.psm1' } catch { $null }
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
+    $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
+    $rs.Open()
+    if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
+    if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
+    try { $rs.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
+    try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+    try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
+    if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
+    $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
+    $rs.SessionStateProxy.SetVariable('ConnGuid', $ConnectionId)
+    $rs.SessionStateProxy.SetVariable('Conn', $connInfo)
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
+    $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+    $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+    $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
+    $ps.AddScript('Start-LauncherConnReader -Guid $ConnGuid -Conn $Conn -Token $Cts.Token') | Out-Null
+    $handle = $ps.BeginInvoke()
+    $connInfo.Runspace = $rs
+    $connInfo.PowerShell = $ps
+    $connInfo.Handle = $handle
+  } catch {
+    Write-Log "PipeServer: failed to start launcher reader: $($_.Exception.Message)"
+  }
+  try { Sync-LauncherConnectionActiveGame -Guid $ConnectionId -Conn $connInfo } catch { Write-Log ("PipeServer: sync failed for {0}: {1}" -f $ConnectionId, $_.Exception.Message) }
+  try { Flush-PendingLauncherStatuses -Targets @($ConnectionId) } catch { Write-Log ("PipeServer: pending flush failed for {0}: {1}" -f $ConnectionId, $_.Exception.Message) }
+  try {
+    Write-Log ("PipeServer: launcher connection registered id={0} pid={1}" -f $ConnectionId, $connInfo.Pid)
+  } catch {}
+  return $ConnectionId
+}
+
+function Wait-ForPipeAck {
+  param($Control)
+  $ack = New-Object byte[] 1
+  $read = $Control.Read($ack, 0, 1)
+  if ($read -ne 1 -or $ack[0] -ne 0x02) {
+    throw "Handshake ACK missing"
+  }
+}
+
+function Write-HandShakeMessage {
+  param($Control, [string]$PipeName)
+  $chars = New-Object char[] 40
+  $nameChars = ($PipeName + [char]0).ToCharArray()
+  [System.Array]::Copy($nameChars, 0, $chars, 0, [Math]::Min($nameChars.Length, $chars.Length))
+  $buffer = New-Object byte[] (80)
+  [System.Text.Encoding]::Unicode.GetBytes($chars, 0, $chars.Length, $buffer, 0) | Out-Null
+  $Control.Write($buffer, 0, $buffer.Length)
+  $Control.Flush()
+}
+
+function Start-PipeServerLoop {
+  param([System.Threading.CancellationToken]$Token = $script:Cts.Token)
+  try { if (-not $script:LogPath) { Initialize-Logging } } catch {}
+  Write-Log "PipeServer: starting"
+  $pipeSecurity = New-PipeSecurity
+  while (-not ($Token -and $Token.IsCancellationRequested)) {
+    $control = $null
+    $data = $null
+    try {
+      $control = if ($pipeSecurity) {
+        New-Object System.IO.Pipes.NamedPipeServerStream('Sunshine.PlayniteExtension', [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536, $pipeSecurity)
+      } else {
+        New-Object System.IO.Pipes.NamedPipeServerStream('Sunshine.PlayniteExtension', [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
       }
-      catch {}
-      Add-Candidate -pid $pid -name $name -cmdline $cmd
+      if ($Token -and $Token.IsCancellationRequested) { break }
+      $waitTask = $control.WaitForConnectionAsync()
+      while (-not $waitTask.Wait(200)) {
+        if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
+      }
+      if (-not $control.IsConnected) { continue }
+      $pipeName = ([Guid]::NewGuid().ToString('B'))
+      $data = if ($pipeSecurity) {
+        New-Object System.IO.Pipes.NamedPipeServerStream($pipeName, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536, $pipeSecurity)
+      } else {
+        New-Object System.IO.Pipes.NamedPipeServerStream($pipeName, [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
+      }
+      Write-HandShakeMessage -Control $control -PipeName $pipeName
+      Wait-ForPipeAck -Control $control
+      try { $control.Disconnect() } catch {}
+      try { $control.Dispose() } catch {}
+      $control = $null
+
+      $waitData = $data.WaitForConnectionAsync()
+      while (-not $waitData.Wait(200)) {
+        if ($Token -and $Token.IsCancellationRequested) { throw [System.OperationCanceledException]::new() }
+      }
+      if (-not $data.IsConnected) { throw "Data pipe failed to connect" }
+
+      $reader = New-Object System.IO.StreamReader($data, [System.Text.Encoding]::UTF8, $false, 8192, $true)
+      $writer = New-Object System.IO.StreamWriter($data, [System.Text.Encoding]::UTF8, 8192, $true)
+      $writer.AutoFlush = $true
+
+      $helloLine = $null
+      try { $helloLine = $reader.ReadLine() } catch {}
+      if ($null -eq $helloLine) {
+        throw "No hello received"
+      }
+      $hello = $null
+      try { $hello = $helloLine | ConvertFrom-Json -ErrorAction Stop } catch { $hello = $null }
+      $role = ''
+      try { if ($hello -and $hello.role) { $role = [string]$hello.role } } catch { $role = '' }
+      if (-not $role) {
+        if (-not $global:SunConn) { $role = 'sunshine' } else { $role = 'launcher' }
+      }
+      if ($role -eq 'sunshine') {
+        Initialize-SunshineConnection -Stream $data -Reader $reader -Writer $writer -Hello $hello
+        Write-Log "PipeServer: Sunshine connection accepted" -Level 'DEBUG'
+        $data = $null
+      } else {
+        $connId = Initialize-LauncherConnection -ConnectionId $pipeName -Stream $data -Reader $reader -Writer $writer -Hello $hello
+        Write-Log ("PipeServer: launcher connection accepted id={0}" -f $connId) -Level 'DEBUG'
+        $data = $null
+      }
+    }
+    catch [System.OperationCanceledException] {
+      break
+    }
+    catch {
+      Write-Log "PipeServer: connection failed: $($_.Exception.Message)"
+      if ($data) {
+        try { $data.Dispose() } catch {}
+      }
+    }
+    finally {
+      if ($control) { try { $control.Dispose() } catch {} }
+      if ($data) { try { $data.Dispose() } catch {} }
     }
   }
-  catch { Write-Log "LauncherProbe: Get-Process pass failed: $($_.Exception.Message)" }
-
-  # Marker-based discovery removed: do not scan %APPDATA%\Sunshine\playnite_launcher for JSON markers
-
-  if ($found.Count -gt 0) {
-    Write-Log ("LauncherProbe: total candidates={0}" -f $found.Count)
-    try {
-      $samples = ($found | Select-Object -First 3)
-      $sdesc = ($samples | ForEach-Object { "pid=$($_.Pid) guid=$($_.PublicGuid)" }) -join '; '
-      if ($sdesc) { Write-DebugLog ("LauncherProbe: sample: {0}" -f $sdesc) }
-    } catch {}
-  }
-  return , $found  # ensure array even if single
+  Write-Log "PipeServer: exiting"
 }
 
-
-# Ensure connections to discovered launchers; start reader threads to handle commands
-function Ensure-LauncherConnections {
-  $found = Get-LauncherProcesses
-  foreach ($it in $found) {
-    $guid = ([string]$it.PublicGuid).Trim()
-    if (-not $guid) { continue }
-    try {
-      $exists = $false
-      try { $exists = $global:LauncherConns.ContainsKey($guid) } catch { $exists = $false }
-      if ($exists) { continue }
-    } catch {}
-    try {
-      $pipe = "sunshine_playnite_ctl_$guid"
-      Write-Log "LauncherWatcher: connecting to pipe for pid=$($it.Pid)"
-      # Pass cancellation token so Connect can be interrupted on shutdown
-      $conn = Connect-SunshinePipe -PublicName $pipe -TimeoutMs 10000 -Token $Cts.Token
-      if (-not $conn) { continue }
-      $connInfo = @{ Stream = $conn.Stream; Writer = $conn.Writer; Reader = $conn.Reader; Pid = $it.Pid; GameId = $it.GameId }
-      $gOut = $it.GameId; if (-not $gOut) { $gOut = '' }
-      Write-DebugLog ("LauncherWatcher: new connection candidate guid={0} pid={1} game={2}" -f $guid, $it.Pid, $gOut)
-      # Attach a per-connection outbox + pump to avoid UI-thread blocking
-      try {
-        $connInfo.Outbox = New-Object 'System.Collections.Concurrent.BlockingCollection[string]'
-        if (-not $connInfo.Writer) {
-          $connInfo.Writer = New-Object System.IO.StreamWriter($conn.Stream, [System.Text.Encoding]::UTF8, 8192, $true)
-          $connInfo.Writer.AutoFlush = $true
-        }
-        $connInfo.Pump = New-Object PerConnPump($connInfo.Writer, $connInfo.Outbox)
-        $connInfo.Pump.Start()
-        Write-DebugLog ("LauncherWatcher: per-connection pump started for {0}" -f $guid)
-      } catch { Write-Log "LauncherWatcher: failed to start per-connection pump: $($_.Exception.Message)" }
-      try {
-        if (-not $global:LauncherConns.TryAdd($guid, $connInfo)) {
-          Write-Log "LauncherWatcher: connection already present for $guid; skipping add"
-          continue
-        }
-      } catch { $global:LauncherConns[$guid] = $connInfo }
-
-      # Send a tiny sanity status so the launcher log confirms data-pipe reads (enqueue; background will write)
-      try {
-        $hello = @{ type = 'status'; status = @{ name = 'hello'; id = [string]$it.GameId } } | ConvertTo-Json -Compress
-        if ($connInfo.Outbox) { $null = $connInfo.Outbox.Add($hello) }
-        Write-Log "LauncherWatcher: enqueued hello probe to ${guid}"
-      } catch { Write-Log ("LauncherWatcher: hello probe enqueue failed for {0}: {1}" -f $guid, $_.Exception.Message) }
-
-      # Start a dedicated runspace for this connection reader to avoid no-runspace errors
-      $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-      $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
-      $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
-      $rs.Open()
-      if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
-      if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
-      try { if ($global:LauncherConns) { $rs.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } } catch {}
-      if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
-      $rs.SessionStateProxy.SetVariable('Cts', $Cts)
-      $rs.SessionStateProxy.SetVariable('ConnGuid', $guid)
-      $rs.SessionStateProxy.SetVariable('Conn', $connInfo)
-      try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
-      try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
-      $ps = [System.Management.Automation.PowerShell]::Create()
-      $ps.Runspace = $rs
-      $modulePath = try { Join-Path $PSScriptRoot 'SunshinePlaynite.psm1' } catch { $null }
-      if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
-      # Ensure the runspace's $global:LauncherConns points to the shared table passed in
-      $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
-      $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
-      $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
-      $ps.AddScript('Start-LauncherConnReader -Guid $ConnGuid -Conn $Conn -Token $Cts.Token') | Out-Null
-      $h = $ps.BeginInvoke()
-      $connInfo.Runspace = $rs; $connInfo.PowerShell = $ps; $connInfo.Handle = $h
-      Write-Log "LauncherWatcher: connected to launcher pipe"
-      try { Sync-LauncherConnectionActiveGame -Guid $guid -Conn $connInfo } catch { Write-Log ("LauncherWatcher: sync failed for {0}: {1}" -f $guid, $_.Exception.Message) }
-      try { Flush-PendingLauncherStatuses -Targets @($guid) } catch { Write-Log ("LauncherWatcher: pending flush failed for {0}: {1}" -f $guid, $_.Exception.Message) }
-    }
-    catch { Write-Log "LauncherWatcher: failed to connect to ${guid}: $($_.Exception.Message)" }
-  }
-}
-
-# Reader loop for a single launcher connection; runs inside its own PowerShell runspace
 function Start-LauncherConnReader {
   param([Parameter(Mandatory)][string]$Guid,
         [Parameter(Mandatory)][hashtable]$Conn,
@@ -928,81 +934,62 @@ function Start-ConnectorLoop {
   try { if (-not $script:LogPath) { Initialize-Logging } } catch {}
   Write-Log "Connector loop: starting"
   while (-not ($Token -and $Token.IsCancellationRequested)) {
-    try {
-      if (-not $global:SunConn -or -not $global:SunConn.Stream -or -not $global:SunConn.Stream.CanWrite) {
-        if ($Token -and $Token.IsCancellationRequested) { break }
-        Write-Log "Connector loop: attempting connection"
-        # Keep timeouts small so shutdown isn't held by Connect()
-        $global:SunConn = Connect-SunshinePipe -TimeoutMs 2000 -Token $Token
-        Write-Log "Connector loop: connected"
-        # Start writer pump bound to this connection
-        try { [OutboxPump]::Start($global:SunConn.Writer, $global:Outbox); Write-DebugLog "Connector loop: OutboxPump started" } catch { Write-Log "Failed to start OutboxPump: $($_.Exception.Message)" }
-        # Send initial snapshot on (re)connect
-        Send-InitialSnapshot
-      }
-      else {
-        Write-Log "Connector loop: using existing connection"
-      }
-      # Reader loop: handle simple line-delimited command messages from Sunshine
-      while ($global:SunConn -and $global:SunConn.Stream -and $global:SunConn.Stream.CanRead -and -not ($Token -and $Token.IsCancellationRequested)) {
-        try {
-          $line = $global:SunConn.Reader.ReadLine()
-        }
-        catch {
-          if ($Token -and $Token.IsCancellationRequested) { break }
-          Write-Log "Reader exception: $($_.Exception.Message)"
+    $conn = $global:SunConn
+    if (-not $conn -or -not $conn.Stream -or -not $conn.Stream.CanRead) {
+      if ($Token -and $Token.IsCancellationRequested) { break }
+      Start-Sleep -Milliseconds 300
+      continue
+    }
+    Write-Log "Connector loop: activating Sunshine connection"
+    try { [OutboxPump]::Start($conn.Writer, $global:Outbox); Write-DebugLog "Connector loop: OutboxPump started" } catch { Write-Log "Failed to start OutboxPump: $($_.Exception.Message)" }
+    Send-InitialSnapshot
+    $active = $true
+    while (-not ($Token -and $Token.IsCancellationRequested) -and $active) {
+      $line = $null
+      try { $line = $conn.Reader.ReadLine() }
+      catch {
+        if ($Token -and $Token.IsCancellationRequested) {
+          $active = $false
           break
         }
-        if ($null -eq $line) { Write-Log "Reader: EOF from server"; break }
-        $lineLen = $line.Length
-        Write-Log ("Received line ({0} chars)" -f $lineLen)
-        try {
-          $obj = $line | ConvertFrom-Json -ErrorAction Stop
-          if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
-            try {
-              Register-SunshineLaunchedGame -Id $obj.id
-              [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
-              Write-Log "Dispatched launch to UI thread via UIBridge.StartGameByGuidStringOnUIThread"
-            } catch { Write-Log "Failed to dispatch launch: $($_.Exception.Message)" }
-          } elseif ($obj.type -eq 'command' -and $obj.command -eq 'stop') {
-            # New: forward a synthetic gameStopped status to the matching launcher connection(s)
-            try {
-              $targetId = ''
-              try { if ($obj.id) { $targetId = [string]$obj.id } } catch {}
-              Send-StopSignalToLauncher -GameId $targetId
-              Write-Log ("Forwarded stop signal to launcher(s) for id='{0}'" -f $targetId)
-            } catch { Write-Log ("Failed to forward stop signal: {0}" -f $_.Exception.Message) }
-          } else {
-            try { Write-DebugLog ("Connector loop: unhandled message type={0} cmd={1}" -f ([string]$obj.type), ([string]$obj.command)) } catch {}
-          }
-        }
-        catch {
-          if ($Token -and $Token.IsCancellationRequested) { break }
-          Write-Log "Failed to parse/handle line: $($_.Exception.Message)"
+        Write-Log "Reader exception: $($_.Exception.Message)"
+        $active = $false
+        break
+      }
+      if ($null -eq $line) {
+        Write-Log "Reader: EOF from Sunshine core"
+        $active = $false
+        break
+      }
+      try {
+        $obj = $line | ConvertFrom-Json -ErrorAction Stop
+        if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
+          try {
+            Register-SunshineLaunchedGame -Id $obj.id
+            [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
+            Write-Log "Dispatched launch to UI thread via UIBridge.StartGameByGuidStringOnUIThread"
+          } catch { Write-Log "Failed to dispatch launch: $($_.Exception.Message)" }
+        } elseif ($obj.type -eq 'command' -and $obj.command -eq 'stop') {
+          try {
+            $targetId = ''
+            try { if ($obj.id) { $targetId = [string]$obj.id } } catch {}
+            Send-StopSignalToLauncher -GameId $targetId
+            Write-Log ("Forwarded stop signal to launcher(s) for id='{0}'" -f $targetId)
+          } catch { Write-Log ("Failed to forward stop signal: {0}" -f $_.Exception.Message) }
+        } else {
+          try { Write-DebugLog ("Connector loop: unhandled message type={0} cmd={1}" -f ([string]$obj.type), ([string]$obj.command)) } catch {}
         }
       }
+      catch {
+        if ($Token -and $Token.IsCancellationRequested) { break }
+        Write-Log "Failed to parse/handle line: $($_.Exception.Message)"
+      }
     }
-    catch {
-      if ($Token -and $Token.IsCancellationRequested) { break }
-      Write-Log "Connector loop: connection attempt failed: $($_.Exception.Message)"
+    if ($global:SunConn -eq $conn) {
+      Close-SunshineConnection -Reason 'connector-loop'
     }
-    try { [ShutdownBridge]::CloseSunStream() } catch {}
-    $global:SunConn = $null
-    try { [OutboxPump]::Stop() } catch {}
-    if ($Token -and $Token.WaitHandle.WaitOne(300)) { break }  # was Start-Sleep -Seconds 3; now cancellable short waits
   }
   Write-Log "Connector loop: exiting (stopping=$([bool]($Token -and $Token.IsCancellationRequested)))"
-}
-
-function Start-LauncherWatcherLoop {
-  param([System.Threading.CancellationToken]$Token = $script:Cts.Token)
-  try { if (-not $script:LogPath) { Initialize-Logging } } catch {}
-  Write-Log "LauncherWatcher: started"
-  while (-not ($Token -and $Token.IsCancellationRequested)) {
-    try { Ensure-LauncherConnections } catch { if ($Token -and $Token.IsCancellationRequested) { break } else { Write-Log "LauncherWatcher: error: $($_.Exception.Message)" } }
-    if ($Token -and $Token.WaitHandle.WaitOne(1500)) { break }
-  }
-  Write-Log "LauncherWatcher: exiting"
 }
 
 # Synchronous single-shot connection probe to ensure logging works even before background loop
@@ -1059,7 +1046,7 @@ function OnApplicationStarted() {
       Write-Log "OnApplicationStarted: background runspace started"
       try { Write-DebugLog ("OnApplicationStarted: RS1={0}" -f $rs.InstanceId) } catch {}
 
-      # Start launcher watcher in a separate runspace
+      # Start pipe server in a separate runspace
       $rs2 = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
       $rs2.ApartmentState = [System.Threading.ApartmentState]::MTA
       $rs2.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
@@ -1079,10 +1066,10 @@ function OnApplicationStarted() {
       $ps2.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
       $ps2.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
       $ps2.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
-      $ps2.AddScript('Start-LauncherWatcherLoop -Token $Cts.Token') | Out-Null
+      $ps2.AddScript('Start-PipeServerLoop -Token $Cts.Token') | Out-Null
       $handle2 = $ps2.BeginInvoke()
       $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
-      Write-Log "OnApplicationStarted: launcher watcher runspace started"
+      Write-Log "OnApplicationStarted: pipe server runspace started"
       try { Write-DebugLog ("OnApplicationStarted: RS2={0}" -f $rs2.InstanceId) } catch {}
       try { Register-GameCollectionEvents } catch { Write-Log "OnApplicationStarted: event registration failed: $($_.Exception.Message)" }
       try { Ensure-SnapshotDebounceTimer } catch {}

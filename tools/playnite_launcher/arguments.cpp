@@ -39,7 +39,6 @@ namespace playnite_launcher {
 
     struct RawArgs {
       std::string game_id;
-      std::string public_guid;
       std::string timeout;
       std::string focus_attempts;
       std::string focus_timeout;
@@ -54,7 +53,6 @@ namespace playnite_launcher {
     RawArgs collect_raw_arguments(std::span<char *> args) {
       RawArgs raw;
       parse_arg(args, "--game-id", raw.game_id);
-      parse_arg(args, "--public-guid", raw.public_guid);
       parse_arg(args, "--timeout", raw.timeout);
       parse_arg(args, "--focus-attempts", raw.focus_attempts);
       parse_arg(args, "--focus-timeout", raw.focus_timeout);
@@ -69,7 +67,6 @@ namespace playnite_launcher {
 
     void apply_strings(const RawArgs &raw, LauncherConfig &config) {
       config.game_id = raw.game_id;
-      config.public_guid = raw.public_guid;
       config.install_dir = raw.install_dir;
       config.wait_for_pid = raw.wait_for_pid;
     }

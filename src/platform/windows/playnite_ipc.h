@@ -1,6 +1,6 @@
 /**
  * @file src/platform/windows/playnite_ipc.h
- * @brief Playnite plugin IPC server using Windows named pipes with anonymous handshake.
+ * @brief Playnite plugin IPC client using Windows named pipes with anonymous handshake.
  */
 #pragma once
 
@@ -17,18 +17,18 @@
 namespace platf::playnite {
 
   /**
-   * @brief Minimal IPC server to handshake with the Playnite plugin and receive messages.
+   * @brief IPC client that connects to the Playnite plugin's public pipe and receives messages.
    *
-   * Server uses AnonymousPipeFactory to establish a control pipe at a well-known name, then
-   * performs an anonymous handshake to switch to a per-session data pipe. It then polls for
-   * incoming messages from the plugin.
+   * Client connects to the well-known public pipe exposed by the Playnite plugin. The plugin
+   * hands out a per-session data pipe via the anonymous handshake, which we promote to an
+   * asynchronous channel for JSON message exchange.
    */
-  class IpcServer {
+  class IpcClient {
   public:
-    // Optional dynamic control pipe name; if empty, defaults to the well-known connector name
-    IpcServer();
-    explicit IpcServer(const std::string &control_name);
-    ~IpcServer();
+    // Optional override for control pipe name; empty selects the default well-known name.
+    IpcClient();
+    explicit IpcClient(const std::string &control_name);
+    ~IpcClient();
 
     /**
      * @brief Start server thread if not already running.
@@ -47,6 +47,14 @@ namespace platf::playnite {
       handler_ = std::move(handler);
     }
 
+    void set_connected_handler(std::function<void()> handler) {
+      connected_handler_ = std::move(handler);
+    }
+
+    void set_disconnected_handler(std::function<void()> handler) {
+      disconnected_handler_ = std::move(handler);
+    }
+
     // Returns true if actively connected to the plugin
     bool is_active() const {
       return active_.load();
@@ -63,35 +71,21 @@ namespace platf::playnite {
   private:
     void run();
     void accumulate_and_dispatch_lines(std::span<const uint8_t> bytes);
-    std::unique_ptr<platf::dxgi::INamedPipe> wait_for_handshake_and_get_data_pipe();
-    bool validate_client_and_get_expected_sid(platf::dxgi::WinPipe *wp);
-    bool get_client_pid(platf::dxgi::WinPipe *wp, DWORD &pid);
-    bool is_playnite_process(DWORD pid);
-    bool get_client_sid(platf::dxgi::WinPipe *wp, std::wstring &sid);
-    bool get_expected_user_sid(std::wstring &sid);
+    std::unique_ptr<platf::dxgi::INamedPipe> connect_to_plugin();
     void serve_connected_loop();
     // Check if any Playnite process is running (Desktop or Fullscreen)
     bool is_playnite_running();
-    /**
-     * @brief Check if an interactive user session is currently available.
-     *
-     * We only attempt to create / listen on the Playnite control pipe when an interactive
-     * user session (desktop token) exists. This prevents repeated failing attempts and
-     * associated log spam while Sunshine is running as a service before any user logs in.
-     *
-     * @return true if a user session token could be acquired (session available); false otherwise.
-     */
-    bool is_user_session_available();
 
     std::atomic<bool> running_ {false};
     std::thread worker_;
     std::unique_ptr<platf::dxgi::AsyncNamedPipe> pipe_;
     std::function<void(std::span<const uint8_t>)> handler_;
+    std::function<void()> connected_handler_;
+    std::function<void()> disconnected_handler_;
     std::atomic<bool> broken_ {false};
     std::atomic<bool> active_ {false};
     std::string recv_buffer_;
     std::string control_name_;
-    bool no_session_logged_ = false;  ///< Ensures we only log missing session once until it appears.
     bool no_playnite_logged_ = false;  ///< Ensures we only log missing Playnite once until it appears.
   };
 }  // namespace platf::playnite
