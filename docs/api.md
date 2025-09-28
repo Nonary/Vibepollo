@@ -121,6 +121,14 @@ The token grants access only to the specified paths and HTTP methods.
 - **List tokens:** `GET /api/tokens` (shows metadata, not token values)
 - **Revoke token:** `DELETE /api/token/{hash}`
 
+### Managing Remembered Sessions
+
+- **Stay signed in:** Include an optional `"remember_me": true` flag in the JSON body when calling `POST /api/auth/login`. Sunshine will issue a hardened `__Host-` cookie with an extended lifetime.
+- **List active sessions:** `GET /api/auth/sessions` returns all devices that currently hold a valid Sunshine session cookie. Each entry includes creation time, last activity, expiry, remote address, and whether it was a “remember me” session.
+- **Revoke a specific session:** `DELETE /api/auth/sessions/{hash}` immediately removes the matching session from disk. If the current device is revoked, its cookie is cleared and the browser must sign in again.
+
+All session metadata is stored hashed and persisted in the same state file as API tokens so Sunshine can validate cookies across service restarts.
+
 <div class="section_buttons">
 
 | Previous                                    |                                  Next |

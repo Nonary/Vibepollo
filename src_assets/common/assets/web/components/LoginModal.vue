@@ -39,6 +39,11 @@
           }}</label>
           <n-input v-model:value="password" type="password" autocomplete="current-password" />
         </div>
+        <div v-if="credentialsConfigured" class="flex items-center justify-between text-sm text-neutral-600">
+          <n-checkbox v-model:checked="rememberMe">
+            {{ t('auth.remember_me_label') }}
+          </n-checkbox>
+        </div>
         <template v-else>
           <div class="space-y-1">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
@@ -80,7 +85,7 @@ import { computed, ref, watch } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
 import { useI18n } from 'vue-i18n';
-import { NModal, NCard, NInput, NAlert, NButton } from 'naive-ui';
+import { NModal, NCard, NInput, NAlert, NButton, NCheckbox } from 'naive-ui';
 
 const auth = useAuthStore();
 const { t } = useI18n();
@@ -100,6 +105,33 @@ const confirmNewPassword = ref('');
 const error = ref('');
 const success = ref('');
 const submitting = ref(false);
+const rememberStorageKey = 'sunshine.auth.remember';
+
+function loadRememberPreference(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(rememberStorageKey) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistRememberPreference(value: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value) {
+      window.localStorage.setItem(rememberStorageKey, '1');
+    } else {
+      window.localStorage.removeItem(rememberStorageKey);
+    }
+  } catch {}
+}
+
+const rememberMe = ref(loadRememberPreference());
+
+watch(rememberMe, (value) => {
+  persistRememberPreference(value);
+});
 
 watch(visible, (v) => {
   if (v) reset();
@@ -112,6 +144,7 @@ function reset() {
   confirmNewPassword.value = '';
   error.value = '';
   success.value = '';
+  rememberMe.value = loadRememberPreference();
 }
 
 async function submit() {
@@ -172,6 +205,7 @@ async function submit() {
       {
         username: username.value,
         password: firstUserFlow ? newPassword.value : password.value,
+        remember_me: rememberMe.value,
       },
       { validateStatus: () => true },
     );

@@ -1922,6 +1922,9 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void listSessions(resp_https_t response, req_https_t request);
+  void revokeSession(resp_https_t response, req_https_t request);
+
   void start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
@@ -2012,6 +2015,8 @@ namespace confighttp {
     server.resource["^/api/auth/login$"]["POST"] = loginUser;
     server.resource["^/api/auth/logout$"]["POST"] = logoutUser;
     server.resource["^/api/auth/status$"]["GET"] = authStatus;
+    server.resource["^/api/auth/sessions$"]["GET"] = listSessions;
+    server.resource["^/api/auth/sessions/([A-Fa-f0-9]+)$"]["DELETE"] = revokeSession;
     server.config.reuse_address = true;
     server.config.address = net::af_to_any_address_string(address_family);
     server.config.port = port_https;
@@ -2034,11 +2039,14 @@ namespace confighttp {
     std::thread tcp {accept_and_run, &server};
 
     api_token_manager.load_api_tokens();
+    session_token_manager.load_session_tokens();
 
     // Start a background task to clean up expired session tokens every hour
     std::jthread cleanup_thread([shutdown_event]() {
       while (!shutdown_event->view(std::chrono::hours(1))) {
-        session_token_manager.cleanup_expired_session_tokens();
+        if (session_token_manager.cleanup_expired_session_tokens()) {
+          session_token_manager.save_session_tokens();
+        }
       }
     });
 
@@ -2144,8 +2152,22 @@ namespace confighttp {
       std::string username = input_tree["username"].get<std::string>();
       std::string password = input_tree["password"].get<std::string>();
       std::string redirect_url = input_tree.value("redirect", "/");
+      bool remember_me = false;
+      if (auto it = input_tree.find("remember_me"); it != input_tree.end()) {
+        try {
+          remember_me = it->get<bool>();
+        } catch (const nlohmann::json::exception &) {
+          remember_me = false;
+        }
+      }
 
-      APIResponse api_response = session_token_api.login(username, password, redirect_url);
+      std::string user_agent;
+      if (auto ua = request->header.find("user-agent"); ua != request->header.end()) {
+        user_agent = ua->second;
+      }
+      std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
+
+      APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
       write_api_response(response, api_response);
 
     } catch (const nlohmann::json::exception &e) {
@@ -2169,8 +2191,71 @@ namespace confighttp {
         auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
       session_token = auth->second.substr(8);
     }
+    if (session_token.empty()) {
+      session_token = extract_session_token_from_cookie(request->header);
+    }
 
     APIResponse api_response = session_token_api.logout(session_token);
+    write_api_response(response, api_response);
+  }
+
+  void listSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    std::string raw_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
+      raw_token = auth->second.substr(8);
+    }
+    if (raw_token.empty()) {
+      raw_token = extract_session_token_from_cookie(request->header);
+    }
+    std::string active_hash;
+    if (!raw_token.empty()) {
+      if (auto hash = session_token_manager.get_hash_for_token(raw_token)) {
+        active_hash = *hash;
+      }
+    }
+
+    APIResponse api_response = session_token_api.list_sessions(config::sunshine.username, active_hash);
+    write_api_response(response, api_response);
+  }
+
+  void revokeSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    if (request->path_match.size() < 2) {
+      bad_request(response, request, "Session id required");
+      return;
+    }
+    std::string session_hash = request->path_match[1].str();
+
+    std::string raw_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
+      raw_token = auth->second.substr(8);
+    }
+    if (raw_token.empty()) {
+      raw_token = extract_session_token_from_cookie(request->header);
+    }
+    bool is_current = false;
+    if (!raw_token.empty()) {
+      if (auto hash = session_token_manager.get_hash_for_token(raw_token)) {
+        is_current = boost::iequals(*hash, session_hash);
+      }
+    }
+
+    APIResponse api_response = session_token_api.revoke_session_by_hash(session_hash);
+    if (api_response.status_code == StatusCode::success_ok && is_current) {
+      std::string clear_cookie = std::string(session_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
+      api_response.headers.emplace("Set-Cookie", std::move(clear_cookie));
+    }
     write_api_response(response, api_response);
   }
 

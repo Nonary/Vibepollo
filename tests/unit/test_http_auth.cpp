@@ -3,6 +3,7 @@
 
 #include <boost/property_tree/ptree.hpp>
 #include <chrono>
+#include <filesystem>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -11,6 +12,7 @@
 using namespace confighttp;
 using namespace testing;
 namespace pt = boost::property_tree;
+namespace fs = std::filesystem;
 
 class MockApiTokenManagerDependencies {
 public:
@@ -46,6 +48,11 @@ public:
 };
 
 namespace {
+  fs::path MakeTempStatePath(const std::string &label) {
+    auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    return fs::temp_directory_path() / (label + "-" + std::to_string(unique) + ".json");
+  }
+
   void FillPtreeWithMalformedTokenData(pt::ptree &tree) {
     pt::ptree tokens_tree;
     // Add valid token
@@ -246,6 +253,102 @@ TEST_F(ApiTokenManagerTest, given_valid_token_and_matching_scope_when_authentica
 
   // Then: Authentication should succeed
   EXPECT_TRUE(result);
+}
+
+TEST(SessionTokenManagerStatefulTest, RememberMeTokenPersistsAcrossRestart) {
+  const std::string original_username = config::sunshine.username;
+  const std::chrono::seconds original_ttl = config::sunshine.session_token_ttl;
+  const std::string original_state_file = config::nvhttp.file_state;
+
+  fs::path temp_state = MakeTempStatePath("sunshine-session");
+  config::nvhttp.file_state = temp_state.string();
+  config::sunshine.username = "admin";
+  config::sunshine.session_token_ttl = std::chrono::seconds(7200);
+
+  {
+    SessionTokenManager manager(SessionTokenManager::make_default_dependencies());
+    auto token = manager.generate_session_token(
+      "admin",
+      std::chrono::seconds::zero(),
+      "UnitTestAgent",
+      "127.0.0.1",
+      true);
+    EXPECT_FALSE(token.empty());
+  }
+
+  {
+    SessionTokenManager restarted(SessionTokenManager::make_default_dependencies());
+    restarted.load_session_tokens();
+    auto sessions = restarted.list_sessions("admin");
+    ASSERT_EQ(sessions.size(), 1);
+    const auto &entry = sessions.front();
+    EXPECT_EQ(entry.username, "admin");
+    EXPECT_TRUE(entry.remember_me);
+    EXPECT_FALSE(entry.hash.empty());
+    EXPECT_EQ(entry.remote_address, "127.0.0.1");
+    EXPECT_EQ(entry.device_label, "UnitTestAgent");
+  }
+
+  if (fs::exists(temp_state)) {
+    fs::remove(temp_state);
+  }
+  config::nvhttp.file_state = original_state_file;
+  config::sunshine.session_token_ttl = original_ttl;
+  config::sunshine.username = original_username;
+}
+
+TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
+  const std::string original_username = config::sunshine.username;
+  const std::chrono::seconds original_ttl = config::sunshine.session_token_ttl;
+  const std::string original_state_file = config::nvhttp.file_state;
+
+  fs::path temp_state = MakeTempStatePath("sunshine-session-revoke");
+  config::nvhttp.file_state = temp_state.string();
+  config::sunshine.username = "admin";
+  config::sunshine.session_token_ttl = std::chrono::seconds(7200);
+
+  SessionTokenManager manager(SessionTokenManager::make_default_dependencies());
+  auto token_primary = manager.generate_session_token(
+    "admin",
+    std::chrono::seconds::zero(),
+    "PrimaryAgent",
+    "127.0.0.1",
+    true);
+  auto token_secondary = manager.generate_session_token(
+    "admin",
+    std::chrono::seconds::zero(),
+    "SecondaryAgent",
+    "10.0.0.5",
+    false);
+
+  ASSERT_FALSE(token_primary.empty());
+  ASSERT_FALSE(token_secondary.empty());
+
+  auto sessions = manager.list_sessions("admin");
+  ASSERT_EQ(sessions.size(), 2);
+  std::string removed_hash = sessions.front().hash;
+  EXPECT_TRUE(manager.revoke_session_by_hash(removed_hash));
+
+  auto remaining = manager.list_sessions("admin");
+  ASSERT_EQ(remaining.size(), 1);
+  EXPECT_NE(remaining.front().hash, removed_hash);
+  EXPECT_FALSE(remaining.front().device_label.empty());
+
+  {
+    SessionTokenManager restarted(SessionTokenManager::make_default_dependencies());
+    restarted.load_session_tokens();
+    auto after_reload = restarted.list_sessions("admin");
+    ASSERT_EQ(after_reload.size(), 1);
+    EXPECT_NE(after_reload.front().hash, removed_hash);
+    EXPECT_FALSE(after_reload.front().device_label.empty());
+  }
+
+  if (fs::exists(temp_state)) {
+    fs::remove(temp_state);
+  }
+  config::nvhttp.file_state = original_state_file;
+  config::sunshine.session_token_ttl = original_ttl;
+  config::sunshine.username = original_username;
 }
 
 TEST_F(ApiTokenManagerTest, given_invalid_token_when_authenticating_then_should_return_false) {

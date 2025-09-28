@@ -8,6 +8,19 @@ interface AuthStatusResponse {
   login_required?: boolean;
 }
 
+export interface AuthSession {
+  id: string;
+  username: string;
+  created_at: number;
+  expires_at: number;
+  last_seen: number;
+  remember_me: boolean;
+  current: boolean;
+  user_agent?: string;
+  remote_address?: string;
+  device_label?: string;
+}
+
 type AuthListener = () => void;
 interface RequireLoginOptions {
   bypassLogoutGuard?: boolean;
@@ -23,6 +36,9 @@ export const useAuthStore = defineStore('auth', () => {
   const credentialsConfigured: Ref<boolean> = ref(true);
   const loggingIn: Ref<boolean> = ref(false);
   const logoutInitiated: Ref<boolean> = ref(false);
+  const sessions: Ref<AuthSession[]> = ref([]);
+  const sessionsLoading: Ref<boolean> = ref(false);
+  const sessionsError: Ref<string> = ref('');
 
   function setAuthenticated(v: boolean): void {
     if (v === isAuthenticated.value) return;
@@ -30,6 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated.value = v;
     if (becameAuthed) {
       logoutInitiated.value = false;
+      fetchSessions().catch(() => {});
       for (const cb of _listeners) {
         try {
           cb();
@@ -37,6 +54,10 @@ export const useAuthStore = defineStore('auth', () => {
           console.error('auth listener error', e);
         }
       }
+    }
+    if (!v) {
+      sessions.value = [];
+      sessionsError.value = '';
     }
   }
 
@@ -110,6 +131,50 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function currentSessionId(): string | undefined {
+    return sessions.value.find((s) => s.current)?.id;
+  }
+
+  async function fetchSessions(): Promise<void> {
+    if (!isAuthenticated.value) return;
+    sessionsLoading.value = true;
+    sessionsError.value = '';
+    try {
+      const res = await http.get('/api/auth/sessions', { validateStatus: () => true });
+      if (res.status === 200 && res.data && res.data.status && Array.isArray(res.data.sessions)) {
+        sessions.value = res.data.sessions;
+        sessionsError.value = '';
+        return;
+      }
+      sessionsError.value = res.data && res.data.error ? res.data.error : 'error';
+    } catch (e) {
+      sessionsError.value = 'error';
+    } finally {
+      sessionsLoading.value = false;
+    }
+  }
+
+  async function revokeSession(id: string): Promise<boolean> {
+    if (!id) return false;
+    try {
+      const res = await http.delete(`/api/auth/sessions/${id}`, { validateStatus: () => true });
+      if (res.status === 200 && res.data && res.data.status) {
+        sessions.value = sessions.value.filter((session) => session.id !== id);
+        if (currentSessionId() === id) {
+          setAuthenticated(false);
+          requireLogin({ bypassLogoutGuard: true });
+        }
+        if (isAuthenticated.value) {
+          await fetchSessions();
+        }
+        return true;
+      }
+    } catch (e) {
+      /* swallow */
+    }
+    return false;
+  }
+
   return {
     isAuthenticated,
     ready,
@@ -125,5 +190,11 @@ export const useAuthStore = defineStore('auth', () => {
     waitForAuthentication,
     loggingIn,
     logoutInitiated,
+    sessions,
+    sessionsLoading,
+    sessionsError,
+    fetchSessions,
+    revokeSession,
+    currentSessionId,
   };
 });

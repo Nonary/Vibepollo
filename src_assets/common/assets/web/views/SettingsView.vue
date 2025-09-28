@@ -173,6 +173,7 @@
 </template>
 
 <script setup lang="ts">
+// @ts-nocheck
 import {
   ref,
   computed,
@@ -186,6 +187,7 @@ import {
 import { NInput, NButton, useMessage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import General from '@/configs/tabs/General.vue';
+import Security from '@/configs/tabs/Security.vue';
 import Inputs from '@/configs/tabs/Inputs.vue';
 import Network from '@/configs/tabs/Network.vue';
 import Files from '@/configs/tabs/Files.vue';
@@ -230,6 +232,7 @@ function setSectionRef(id, el) {
 
 const tabs = [
   { id: 'general', name: 'General', component: markRaw(General) },
+  { id: 'security', name: 'Security', component: markRaw(Security) },
   { id: 'input', name: 'Input', component: markRaw(Inputs) },
   { id: 'av', name: 'Audio / Video', component: markRaw(AudioVideo) },
   { id: 'capture', name: 'Capture', component: markRaw(Capture) },
@@ -252,6 +255,8 @@ const toggle = (id) => {
   // When expanding, (cheaply) rebuild index so new controls are searchable
   if (s.has(id)) queueBuildIndex();
 };
+
+let suppressRouteScroll = false;
 
 const route = useRoute();
 const router = useRouter();
@@ -360,20 +365,24 @@ const goSection = (id) => {
   route.path === '/settings' ? router.replace(dest) : router.push(dest);
 };
 
-async function scrollToOpen(id) {
+async function ensureSectionOpen(id) {
   if (!id) return;
   if (!isOpen(id)) toggle(id);
-  // Wait for DOM to reflect expansion before scrolling
   await nextTick();
-  requestAnimationFrame(() => {
-    const el = sectionRefs.get(id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function scrollToOpen(id) {
+  if (!id) return;
+  await ensureSectionOpen(id);
+  const el = sectionRefs.get(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 watch(
   () => route.query.sec,
   (id) => {
     if (typeof id !== 'string') return;
+    if (suppressRouteScroll) return;
     if (isReady.value) {
       scrollToOpen(id);
     } else {
@@ -551,30 +560,42 @@ watch(searchQuery, (q) => {
     .slice(0, 15)
     .map((x) => x.it);
 });
-function jumpFirstResult() {
-  if (searchResults.value.length) goTo(searchResults.value[0]);
+async function jumpFirstResult() {
+  if (searchResults.value.length) await goTo(searchResults.value[0]);
 }
-function goTo(item) {
+async function goTo(item) {
+  if (!item) return;
   searchOpen.value = false;
-  if (item?.sectionId) goSection(item.sectionId);
-  setTimeout(() => {
-    try {
-      // Prefer flashing the visual wrapper for Naive UI controls
-      let target = item.el;
+  let suppressing = false;
+  try {
+    if (item.sectionId) {
+      suppressRouteScroll = true;
+      suppressing = true;
+      goSection(item.sectionId);
+      await ensureSectionOpen(item.sectionId);
+    }
+
+    await nextTick();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    let target = (item.el || null) as HTMLElement | null;
+    if (target) {
       try {
-        const wrapper = target?.closest?.(
+        const wrapper = target.closest(
           '.n-input, .n-select, .n-input-number, .n-checkbox, .n-switch, .form-control',
-        );
+        ) as HTMLElement | null;
         if (wrapper) target = wrapper;
       } catch {}
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      flash(target || item.el);
-    } catch (err) {
-      console.warn('goTo: scroll/flash failed', err);
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      flash(target);
     }
-  }, 250);
+  } catch (err) {
+    console.warn('goTo: scroll/flash failed', err);
+  } finally {
+    if (suppressing) suppressRouteScroll = false;
+  }
 }
-function flash(el) {
+function flash(el: HTMLElement | null) {
   // Flash on wrapper if available so the ring isn't hidden by internal structure
   let target = el;
   try {

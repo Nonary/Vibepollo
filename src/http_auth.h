@@ -30,6 +30,7 @@
 #include <Simple-Web-Server/server_https.hpp>
 
 namespace confighttp {
+  inline constexpr std::string_view session_cookie_name {"__Host-sunshine_session"};
   using StatusCode = SimpleWeb::StatusCode;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
@@ -180,12 +181,32 @@ namespace confighttp {
     std::string username;
     std::chrono::system_clock::time_point created_at;
     std::chrono::system_clock::time_point expires_at;
+    std::string user_agent;
+    std::string remote_address;
+    std::chrono::system_clock::time_point last_seen;
+    bool remember_me;
+    std::string device_label;
+  };
+
+  struct SessionTokenView {
+    std::string hash;
+    std::string username;
+    std::chrono::system_clock::time_point created_at;
+    std::chrono::system_clock::time_point expires_at;
+    std::chrono::system_clock::time_point last_seen;
+    bool remember_me;
+    std::string user_agent;
+    std::string remote_address;
+    std::string device_label;
   };
 
   struct SessionTokenManagerDependencies {
     boost::function<std::chrono::system_clock::time_point()> now;
     boost::function<std::string(std::size_t)> rand_alphabet;
     boost::function<std::string(const std::string &)> hash;
+    boost::function<bool(const std::string &)> file_exists;
+    boost::function<void(const std::string &, boost::property_tree::ptree &)> read_json;
+    boost::function<void(const std::string &, const boost::property_tree::ptree &)> write_json;
     SessionTokenManagerDependencies() = default;
     SessionTokenManagerDependencies(const SessionTokenManagerDependencies &) = default;
     SessionTokenManagerDependencies &operator=(const SessionTokenManagerDependencies &) = default;
@@ -203,9 +224,10 @@ namespace confighttp {
     /**
      * @brief Create a new session token for a user.
      * @param username Account name.
+     * @param lifetime Desired lifetime; defaults to config value when zero.
      * @return Newly generated opaque token string.
      */
-    std::string generate_session_token(const std::string &username);
+    std::string generate_session_token(const std::string &username, std::chrono::seconds lifetime = std::chrono::seconds::zero(), const std::string &user_agent = std::string {}, const std::string &remote_address = std::string {}, bool remember_me = false);
     /**
      * @brief Validate a session token (and update internal state if expired).
      * @param token Opaque token string.
@@ -220,13 +242,14 @@ namespace confighttp {
     /**
      * @brief Remove all expired tokens.
      */
-    void cleanup_expired_session_tokens();
+    bool cleanup_expired_session_tokens();
     /**
      * @brief Lookup username for a token.
      * @param token Token string.
      * @return Username or `std::nullopt` if not found/expired.
      */
     std::optional<std::string> get_username_for_token(const std::string &token);
+    std::optional<std::string> get_hash_for_token(const std::string &token) const;
     /**
      * @brief Count active session tokens.
      * @return Number of stored (possibly unexpired) sessions.
@@ -237,6 +260,26 @@ namespace confighttp {
      * @return Dependency functors.
      */
     static SessionTokenManagerDependencies make_default_dependencies();
+    /**
+     * @brief Persist session tokens to disk.
+     */
+    void save_session_tokens() const;
+    /**
+     * @brief Load session tokens from disk, discarding expired entries.
+     */
+    void load_session_tokens();
+    /**
+     * @brief List session tokens, optionally filtered by username.
+     * @param username_filter Case-insensitive user filter (empty for all).
+     * @return Snapshot list of sessions.
+     */
+    std::vector<SessionTokenView> list_sessions(const std::string &username_filter = std::string {}) const;
+    /**
+     * @brief Revoke a session token by its stored hash.
+     * @param token_hash Hashed token identifier.
+     * @return `true` if a session was removed.
+     */
+    bool revoke_session_by_hash(const std::string &token_hash);
 
   private:
     SessionTokenManagerDependencies _dependencies;  ///< Injected dependencies
@@ -259,6 +302,8 @@ namespace confighttp {
     };
 
     std::unordered_map<std::string, SessionToken, TransparentStringHash, std::equal_to<>> _session_tokens;  ///< Active session tokens keyed by hash
+    mutable bool _dirty = false;  ///< Tracks whether persistence is required
+    mutable std::chrono::system_clock::time_point _last_persist;  ///< Last persistence timestamp
   };
 
   struct APIResponse {
@@ -290,9 +335,10 @@ namespace confighttp {
      * @param username User name.
      * @param password Plain password candidate.
      * @param redirect_url Optional redirect URL for HTML flows.
+     * @param remember_me Whether the session should persist beyond the browser session.
      * @return API response containing token or error.
      */
-    APIResponse login(const std::string &username, const std::string &password, const std::string &redirect_url = "/");
+    APIResponse login(const std::string &username, const std::string &password, const std::string &redirect_url = "/", bool remember_me = false, const std::string &user_agent = std::string {}, const std::string &remote_address = std::string {});
     /**
      * @brief Invalidate the provided session token.
      * @param session_token Token to revoke.
@@ -305,6 +351,19 @@ namespace confighttp {
      * @return Response containing validity state.
      */
     APIResponse validate_session(const std::string &session_token);
+    /**
+     * @brief List active sessions for the current user.
+     * @param username_filter Optional username filter.
+     * @param active_session_hash Hash of the session making the request.
+     * @return Response with session list payload.
+     */
+    APIResponse list_sessions(const std::string &username_filter, const std::string &active_session_hash = std::string {}) const;
+    /**
+     * @brief Revoke a session identified by its hash.
+     * @param session_hash Target session hash.
+     * @return Success or error response.
+     */
+    APIResponse revoke_session_by_hash(const std::string &session_hash);
 
   private:
     SessionTokenManager &_session_manager;  ///< Managed session token store reference

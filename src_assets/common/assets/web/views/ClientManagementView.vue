@@ -113,6 +113,8 @@
       </div>
     </n-card>
 
+    <TrustedDevicesCard />
+
     <ApiTokenManager></ApiTokenManager>
 
     <!-- Confirm remove single client -->
@@ -174,6 +176,7 @@ import { ref, onMounted } from 'vue';
 import { http } from '@/http';
 import { NCard, NButton, NAlert, NModal, NInput, NForm, NFormItem } from 'naive-ui';
 import ApiTokenManager from '@/ApiTokenManager.vue';
+import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import { useAuthStore } from '@/stores/auth';
 
 // ----- Types -----

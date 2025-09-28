@@ -339,7 +339,7 @@ namespace confighttp {
     std::string raw_token = "token_with_special%3Bchars%20and%25percent";
     std::string encoded_token = http::cookie_escape(raw_token);
     SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Cookie", "session_token=" + encoded_token);
+    headers.emplace("Cookie", std::string(session_cookie_name) + "=" + encoded_token);
 
     // When: Extracting the session token
     std::string extracted = extract_session_token_from_cookie(headers);
@@ -365,7 +365,7 @@ namespace confighttp {
     std::string raw_token = "token with spaces;and%percent";
     std::string encoded_token = http::cookie_escape(raw_token);
     SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Cookie", "session_token=" + encoded_token);
+    headers.emplace("Cookie", std::string(session_cookie_name) + "=" + encoded_token);
 
     // When: Extracting the session token
     std::string extracted = extract_session_token_from_cookie(headers);
