@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
-import { NSelect, NInput, NInputNumber, NButton, NRadioGroup, NRadio } from 'naive-ui';
+import { NSelect, NInput, NInputNumber, NButton, NRadioGroup, NRadio, NGrid, NGi } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import { http } from '@/http';
 
@@ -290,7 +290,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 
             <div
               :class="[
-                'mt-3 flex flex-wrap items-center gap-2 rounded px-3 py-2 text-[12px]',
+                'golden-status mt-3 flex flex-wrap items-center gap-2 rounded px-3 py-2 text-[12px]',
                 goldenExists === true
                   ? 'bg-success/10 text-success'
                   : goldenExists === false
@@ -298,7 +298,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                     : 'bg-light/80 dark:bg-dark/60 text-dark dark:text-light',
               ]"
             >
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 golden-status-label">
                 <i
                   :class="[
                     'text-sm',
@@ -320,7 +320,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                 </span>
               </div>
 
-              <div class="flex items-center gap-2 ml-auto">
+              <div class="golden-actions flex flex-wrap items-center gap-2 md:ml-auto">
                 <n-button size="tiny" type="default" strong @click="loadGoldenStatus">
                   <i class="fas fa-sync" />
                   <span class="ml-1">{{ $t('troubleshooting.dd_golden_refresh') }}</span>
@@ -392,275 +392,366 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
           <legend class="px-2 text-sm font-medium">
             {{ $t('config.dd_step_3') }}: {{ $t('config.dd_optional_adjustments') }}
           </legend>
-          <!-- Display overrides (formerly Display mode remapping) -->
-          <div v-if="canBeRemapped()" class="mb-4">
-            <label
-              for="dd_mode_remapping"
-              class="block text-sm font-medium mb-1 text-dark dark:text-light"
-            >
-              {{ $t('config.dd_display_overrides') }}
-            </label>
-            <p class="text-[11px] opacity-60">
-              {{ $t('config.dd_mode_remapping_desc_1') }}<br />
-              {{ $t('config.dd_mode_remapping_desc_2') }}<br />
-              {{ $t('config.dd_mode_remapping_desc_3') }}<br />
-              {{
-                $t(
-                  getRemappingType() === MIXED
-                    ? 'config.dd_mode_remapping_desc_4_final_values_mixed'
-                    : 'config.dd_mode_remapping_desc_4_final_values_non_mixed',
-                )
-              }}<br />
-              <template v-if="getRemappingType() === MIXED">
-                {{ $t('config.dd_mode_remapping_desc_5_sops_mixed_only') }}<br />
-              </template>
-              <template v-if="getRemappingType() === RESOLUTION_ONLY">
-                {{ $t('config.dd_mode_remapping_desc_5_sops_resolution_only') }}<br />
-              </template>
-            </p>
-
-            <div v-if="remappingArray.length > 0" class="space-y-2">
-              <div
-                v-for="(value, idx) in remappingArray"
-                :key="idx"
-                class="grid grid-cols-12 gap-2 items-start"
-              >
-                <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
-                  <n-input
-                    v-model:value="value.requested_resolution"
-                    type="text"
-                    class="monospace"
-                    :placeholder="'1920x1080'"
-                    @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                    :status="
-                      isResolutionFieldValid(value.requested_resolution) ? undefined : 'error'
-                    "
-                  />
-                </div>
-                <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
-                  <n-input
-                    v-model:value="value.requested_fps"
-                    type="text"
-                    class="monospace"
-                    :placeholder="'60'"
-                    @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                    :status="isRefreshFieldValid(value.requested_fps) ? undefined : 'error'"
-                  />
-                </div>
-
-                <div v-if="getRemappingType() !== REFRESH_RATE_ONLY" class="col-span-3">
-                  <n-input
-                    v-model:value="value.final_resolution"
-                    type="text"
-                    class="monospace"
-                    :placeholder="'2560x1440'"
-                    @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                    :status="isResolutionFieldValid(value.final_resolution) ? undefined : 'error'"
-                  />
-                </div>
-                <div v-if="getRemappingType() !== RESOLUTION_ONLY" class="col-span-2">
-                  <n-input
-                    v-model:value="value.final_refresh_rate"
-                    type="text"
-                    class="monospace"
-                    :placeholder="'119.95'"
-                    @update:value="store.markManualDirty?.('dd_mode_remapping')"
-                    :status="isRefreshFieldValid(value.final_refresh_rate) ? undefined : 'error'"
-                  />
-                </div>
-                <div class="col-span-2 flex justify-end self-start">
-                  <n-button size="small" type="error" strong @click="removeRemappingEntry(idx)">
-                    <i class="fas fa-trash" />
-                  </n-button>
-                </div>
-
-                <!-- Second grid row for validation messages to preserve top alignment -->
-                <div
-                  v-if="
-                    getRemappingType() !== REFRESH_RATE_ONLY &&
-                    !isResolutionFieldValid(value.requested_resolution)
-                  "
-                  class="col-span-3 text-[11px] text-red-500 mt-1"
+          <div class="space-y-6">
+            <!-- Display overrides (formerly Display mode remapping) -->
+            <section v-if="canBeRemapped()" class="space-y-3">
+              <div class="space-y-2">
+                <label
+                  for="dd_mode_remapping"
+                  class="block text-sm font-medium text-dark dark:text-light"
                 >
-                  Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
-                </div>
-                <div
-                  v-if="
-                    getRemappingType() !== RESOLUTION_ONLY &&
-                    !isRefreshFieldValid(value.requested_fps)
-                  "
-                  class="col-span-2 text-[11px] text-red-500 mt-1"
-                >
-                  Invalid. Use a positive number or leave blank.
-                </div>
-                <div
-                  v-if="
-                    getRemappingType() !== REFRESH_RATE_ONLY &&
-                    !isResolutionFieldValid(value.final_resolution)
-                  "
-                  class="col-span-3 text-[11px] text-red-500 mt-1"
-                >
-                  Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
-                </div>
-                <div
-                  v-if="
-                    getRemappingType() !== RESOLUTION_ONLY &&
-                    !isRefreshFieldValid(value.final_refresh_rate)
-                  "
-                  class="col-span-2 text-[11px] text-red-500 mt-1"
-                >
-                  Invalid. Use a positive number or leave blank.
-                </div>
-                <div
-                  v-if="
-                    getRemappingType() === MIXED &&
-                    !value.final_resolution &&
-                    !value.final_refresh_rate
-                  "
-                  class="col-span-12 text-[11px] text-red-500"
-                >
-                  For mixed mappings, specify at least one Final field.
+                  {{ $t('config.dd_display_overrides') }}
+                </label>
+                <div class="text-[11px] opacity-60 space-y-1">
+                  <p>{{ $t('config.dd_mode_remapping_desc_1') }}</p>
+                  <p>{{ $t('config.dd_mode_remapping_desc_2') }}</p>
+                  <p>{{ $t('config.dd_mode_remapping_desc_3') }}</p>
+                  <p>
+                    {{
+                      $t(
+                        getRemappingType() === MIXED
+                          ? 'config.dd_mode_remapping_desc_4_final_values_mixed'
+                          : 'config.dd_mode_remapping_desc_4_final_values_non_mixed',
+                      )
+                    }}
+                  </p>
+                  <p v-if="getRemappingType() === MIXED">
+                    {{ $t('config.dd_mode_remapping_desc_5_sops_mixed_only') }}
+                  </p>
+                  <p v-if="getRemappingType() === RESOLUTION_ONLY">
+                    {{ $t('config.dd_mode_remapping_desc_5_sops_resolution_only') }}
+                  </p>
                 </div>
               </div>
-            </div>
-            <div class="mt-2">
-              <n-button type="primary" strong size="small" @click="addRemappingEntry()">
-                &plus; {{ $t('config.dd_mode_remapping_add') }}
-              </n-button>
-            </div>
-          </div>
-          <!-- Resolution option -->
-          <div>
-            <label for="dd_resolution_option" class="form-label">{{
-              $t('config.dd_resolution_option')
-            }}</label>
-            <n-select
-              id="dd_resolution_option"
-              v-model:value="config.dd_resolution_option"
-              :options="ddResolutionOptions"
-              :data-search-options="
-                ddResolutionOptions.map((o) => `${o.label}::${o.value}`).join('|')
-              "
-            />
-            <p
-              v-if="
-                config.dd_resolution_option === 'auto' || config.dd_resolution_option === 'manual'
-              "
-              class="text-[11px] opacity-60 mt-1"
-            >
-              {{ $t('config.dd_resolution_option_ogs_desc') }}
-            </p>
 
-            <div v-if="config.dd_resolution_option === 'manual'" class="mt-2 pl-4">
-              <p class="text-[11px] opacity-60">
-                {{ $t('config.dd_resolution_option_manual_desc') }}
-              </p>
-              <n-input
-                id="dd_manual_resolution"
-                v-model:value="config.dd_manual_resolution"
-                type="text"
-                class="monospace"
-                placeholder="2560x1440"
-                @update:value="store.markManualDirty?.('dd_manual_resolution')"
-                :status="manualResolutionValid ? undefined : 'error'"
-              />
-              <p v-if="!manualResolutionValid" class="text-[11px] text-red-500 mt-1">
-                Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440.
-              </p>
-            </div>
-          </div>
+              <div v-if="remappingArray.length > 0" class="space-y-2">
+                <div class="rounded-lg border border-dark/10 dark:border-light/10 overflow-hidden">
+                  <div
+                    class="max-h-[360px] overflow-y-auto p-2 w-full"
+                    data-testid="dd-remap-scroll"
+                  >
+                    <div
+                      v-for="(value, idx) in remappingArray"
+                      :key="idx"
+                      class="remap-row flex flex-wrap gap-2 lg:grid lg:grid-cols-12 lg:gap-2 lg:items-start"
+                    >
+                      <div
+                        v-if="getRemappingType() !== REFRESH_RATE_ONLY"
+                        class="remap-col lg:col-span-3"
+                      >
+                        <n-input
+                          v-model:value="value.requested_resolution"
+                          type="text"
+                          class="font-mono w-full"
+                          :placeholder="'1920x1080'"
+                          @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                          v-bind="
+                            isResolutionFieldValid(value.requested_resolution)
+                              ? {}
+                              : { status: 'error' }
+                          "
+                        />
+                      </div>
+                      <div
+                        v-if="getRemappingType() !== RESOLUTION_ONLY"
+                        class="remap-col lg:col-span-2"
+                      >
+                        <n-input
+                          v-model:value="value.requested_fps"
+                          type="text"
+                          class="font-mono w-full"
+                          :placeholder="'60'"
+                          @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                          v-bind="
+                            isRefreshFieldValid(value.requested_fps) ? {} : { status: 'error' }
+                          "
+                        />
+                      </div>
 
-          <!-- Refresh rate option -->
-          <div class="mt-4">
-            <label for="dd_refresh_rate_option" class="form-label">{{
-              $t('config.dd_refresh_rate_option')
-            }}</label>
-            <n-select
-              id="dd_refresh_rate_option"
-              v-model:value="config.dd_refresh_rate_option"
-              :options="ddRefreshRateOptions"
-              :data-search-options="
-                ddRefreshRateOptions.map((o) => `${o.label}::${o.value}`).join('|')
-              "
-            />
+                      <div
+                        v-if="getRemappingType() !== REFRESH_RATE_ONLY"
+                        class="remap-col lg:col-span-3"
+                      >
+                        <n-input
+                          v-model:value="value.final_resolution"
+                          type="text"
+                          class="font-mono w-full"
+                          :placeholder="'2560x1440'"
+                          @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                          v-bind="
+                            isResolutionFieldValid(value.final_resolution)
+                              ? {}
+                              : { status: 'error' }
+                          "
+                        />
+                      </div>
+                      <div
+                        v-if="getRemappingType() !== RESOLUTION_ONLY"
+                        class="remap-col lg:col-span-2"
+                      >
+                        <n-input
+                          v-model:value="value.final_refresh_rate"
+                          type="text"
+                          class="font-mono w-full"
+                          :placeholder="'119.95'"
+                          @update:value="store.markManualDirty?.('dd_mode_remapping')"
+                          v-bind="
+                            isRefreshFieldValid(value.final_refresh_rate) ? {} : { status: 'error' }
+                          "
+                        />
+                      </div>
+                      <div
+                        class="remap-actions flex w-full items-start justify-start lg:col-span-2 lg:w-auto lg:justify-end"
+                      >
+                        <n-button
+                          size="small"
+                          type="error"
+                          strong
+                          @click="removeRemappingEntry(idx)"
+                        >
+                          <i class="fas fa-trash" />
+                        </n-button>
+                      </div>
 
-            <div v-if="config.dd_refresh_rate_option === 'manual'" class="mt-2 pl-4">
-              <p class="text-[11px] opacity-60">
-                {{ $t('config.dd_refresh_rate_option_manual_desc') }}
-              </p>
-              <n-input
-                id="dd_manual_refresh_rate"
-                v-model:value="config.dd_manual_refresh_rate"
-                type="text"
-                class="monospace"
-                placeholder="59.9558"
-                @update:value="store.markManualDirty?.('dd_manual_refresh_rate')"
-                :status="isRefreshFieldValid(config.dd_manual_refresh_rate) ? undefined : 'error'"
-              />
-              <p
-                v-if="!isRefreshFieldValid(config.dd_manual_refresh_rate)"
-                class="text-[11px] text-red-500 mt-1"
-              >
-                Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.
-              </p>
-            </div>
-          </div>
+                      <!-- Second grid row for validation messages to preserve top alignment -->
+                      <div
+                        v-if="
+                          getRemappingType() !== REFRESH_RATE_ONLY &&
+                          !isResolutionFieldValid(value.requested_resolution)
+                        "
+                        class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
+                      >
+                        Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
+                      </div>
+                      <div
+                        v-if="
+                          getRemappingType() !== RESOLUTION_ONLY &&
+                          !isRefreshFieldValid(value.requested_fps)
+                        "
+                        class="remap-message w-full lg:col-span-2 text-[11px] text-red-500 mt-1"
+                      >
+                        Invalid. Use a positive number or leave blank.
+                      </div>
+                      <div
+                        v-if="
+                          getRemappingType() !== REFRESH_RATE_ONLY &&
+                          !isResolutionFieldValid(value.final_resolution)
+                        "
+                        class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
+                      >
+                        Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
+                      </div>
+                      <div
+                        v-if="
+                          getRemappingType() !== RESOLUTION_ONLY &&
+                          !isRefreshFieldValid(value.final_refresh_rate)
+                        "
+                        class="remap-message w-full lg:col-span-2 text-[11px] text-red-500 mt-1"
+                      >
+                        Invalid. Use a positive number or leave blank.
+                      </div>
+                      <div
+                        v-if="
+                          getRemappingType() === MIXED &&
+                          !value.final_resolution &&
+                          !value.final_refresh_rate
+                        "
+                        class="remap-message w-full lg:col-span-12 text-[11px] text-red-500"
+                      >
+                        For mixed mappings, specify at least one Final field.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex justify-end pt-2">
+                <n-button type="primary" strong size="small" @click="addRemappingEntry()">
+                  &plus; {{ $t('config.dd_mode_remapping_add') }}
+                </n-button>
+              </div>
+            </section>
 
-          <!-- HDR option -->
-          <div class="mt-4">
-            <label for="dd_hdr_option" class="form-label">{{ $t('config.dd_hdr_option') }}</label>
-            <n-select
-              id="dd_hdr_option"
-              v-model:value="config.dd_hdr_option"
-              :options="ddHdrOptions"
-              :data-search-options="ddHdrOptions.map((o) => `${o.label}::${o.value}`).join('|')"
-              class="mb-2"
-            />
-            <Checkbox
-              id="dd_wa_hdr_toggle"
-              v-model="config.dd_wa_hdr_toggle"
-              locale-prefix="config"
-              default="false"
-            />
-            <div class="mt-3">
-              <Checkbox
-                id="dd_wa_dummy_plug_hdr10"
-                v-model="(config as any).dd_wa_dummy_plug_hdr10"
-                locale-prefix="config"
-                :default="false"
-              >
-                <template #default>
-                  <span class="block">
-                    <a :href="dummyPlugWikiUrl" class="underline" rel="noopener" target="_blank">
-                      {{ $t('config.dd_wa_dummy_plug_hdr10_link') }}
-                    </a>
-                  </span>
-                </template>
-              </Checkbox>
-            </div>
-          </div>
-          <!-- Revert behavior (merged into this card) -->
-          <div class="mt-4">
-            <label for="dd_config_revert_delay" class="form-label">{{
-              $t('config.dd_config_revert_delay')
-            }}</label>
-            <n-input-number
-              id="dd_config_revert_delay"
-              v-model:value="config.dd_config_revert_delay"
-              placeholder="3000"
-              :min="0"
-            />
-            <p class="text-[11px] opacity-60 mt-1">
-              {{ $t('config.dd_config_revert_delay_desc') }}
-            </p>
-          </div>
-          <div class="mt-2">
-            <Checkbox
-              id="dd_config_revert_on_disconnect"
-              v-model="config.dd_config_revert_on_disconnect"
-              locale-prefix="config"
-              default="false"
-            />
+            <n-grid :cols="12" x-gap="16" y-gap="16" class="optional-adjustments-grid">
+              <!-- Resolution option -->
+              <n-gi :span="12" :lg="6">
+                <div class="space-y-3">
+                  <div class="space-y-2">
+                    <label for="dd_resolution_option" class="form-label">{{
+                      $t('config.dd_resolution_option')
+                    }}</label>
+                    <n-select
+                      id="dd_resolution_option"
+                      v-model:value="config.dd_resolution_option"
+                      :options="ddResolutionOptions"
+                      :data-search-options="
+                        ddResolutionOptions.map((o) => `${o.label}::${o.value}`).join('|')
+                      "
+                      class="w-full"
+                    />
+                    <p
+                      v-if="
+                        config.dd_resolution_option === 'auto' ||
+                        config.dd_resolution_option === 'manual'
+                      "
+                      class="text-[11px] opacity-60"
+                    >
+                      {{ $t('config.dd_resolution_option_ogs_desc') }}
+                    </p>
+                  </div>
+
+                  <div
+                    v-if="config.dd_resolution_option === 'manual'"
+                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                  >
+                    <p class="text-[11px] opacity-60">
+                      {{ $t('config.dd_resolution_option_manual_desc') }}
+                    </p>
+                    <n-input
+                      id="dd_manual_resolution"
+                      v-model:value="config.dd_manual_resolution"
+                      type="text"
+                      class="font-mono w-full"
+                      placeholder="2560x1440"
+                      @update:value="store.markManualDirty?.('dd_manual_resolution')"
+                      v-bind="manualResolutionValid ? {} : { status: 'error' }"
+                    />
+                    <p v-if="!manualResolutionValid" class="text-[11px] text-red-500">
+                      Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440.
+                    </p>
+                  </div>
+                </div>
+              </n-gi>
+
+              <!-- Refresh rate option -->
+              <n-gi :span="12" :lg="6">
+                <div class="space-y-3">
+                  <div class="space-y-2">
+                    <label for="dd_refresh_rate_option" class="form-label">{{
+                      $t('config.dd_refresh_rate_option')
+                    }}</label>
+                    <n-select
+                      id="dd_refresh_rate_option"
+                      v-model:value="config.dd_refresh_rate_option"
+                      :options="ddRefreshRateOptions"
+                      :data-search-options="
+                        ddRefreshRateOptions.map((o) => `${o.label}::${o.value}`).join('|')
+                      "
+                      class="w-full"
+                    />
+                  </div>
+
+                  <div
+                    v-if="config.dd_refresh_rate_option === 'manual'"
+                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                  >
+                    <p class="text-[11px] opacity-60">
+                      {{ $t('config.dd_refresh_rate_option_manual_desc') }}
+                    </p>
+                    <n-input
+                      id="dd_manual_refresh_rate"
+                      v-model:value="config.dd_manual_refresh_rate"
+                      type="text"
+                      class="font-mono w-full"
+                      placeholder="59.9558"
+                      @update:value="store.markManualDirty?.('dd_manual_refresh_rate')"
+                      v-bind="
+                        isRefreshFieldValid(config.dd_manual_refresh_rate)
+                          ? {}
+                          : { status: 'error' }
+                      "
+                    />
+                    <p
+                      v-if="!isRefreshFieldValid(config.dd_manual_refresh_rate)"
+                      class="text-[11px] text-red-500"
+                    >
+                      Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.
+                    </p>
+                  </div>
+                </div>
+              </n-gi>
+
+              <!-- HDR option -->
+              <n-gi :span="12" :lg="6">
+                <div class="space-y-3">
+                  <div class="space-y-2">
+                    <label for="dd_hdr_option" class="form-label">{{
+                      $t('config.dd_hdr_option')
+                    }}</label>
+                    <n-select
+                      id="dd_hdr_option"
+                      v-model:value="config.dd_hdr_option"
+                      :options="ddHdrOptions"
+                      :data-search-options="
+                        ddHdrOptions.map((o) => `${o.label}::${o.value}`).join('|')
+                      "
+                      class="w-full"
+                    />
+                  </div>
+
+                  <div
+                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                  >
+                    <Checkbox
+                      id="dd_wa_hdr_toggle"
+                      v-model="config.dd_wa_hdr_toggle"
+                      locale-prefix="config"
+                      default="false"
+                    />
+                    <Checkbox
+                      id="dd_wa_dummy_plug_hdr10"
+                      v-model="(config as any).dd_wa_dummy_plug_hdr10"
+                      locale-prefix="config"
+                      :default="false"
+                    >
+                      <template #default>
+                        <span class="block">
+                          <a
+                            :href="dummyPlugWikiUrl"
+                            class="underline break-words"
+                            rel="noopener"
+                            target="_blank"
+                          >
+                            {{ $t('config.dd_wa_dummy_plug_hdr10_link') }}
+                          </a>
+                        </span>
+                      </template>
+                    </Checkbox>
+                  </div>
+                </div>
+              </n-gi>
+
+              <!-- Revert behavior -->
+              <n-gi :span="12" :lg="6">
+                <div class="space-y-3">
+                  <div class="space-y-2">
+                    <label for="dd_config_revert_delay" class="form-label">{{
+                      $t('config.dd_config_revert_delay')
+                    }}</label>
+                    <n-input-number
+                      id="dd_config_revert_delay"
+                      v-model:value="config.dd_config_revert_delay"
+                      placeholder="3000"
+                      :min="0"
+                      class="w-full"
+                    />
+                    <p class="text-[11px] opacity-60">
+                      {{ $t('config.dd_config_revert_delay_desc') }}
+                    </p>
+                  </div>
+
+                  <div
+                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                  >
+                    <Checkbox
+                      id="dd_config_revert_on_disconnect"
+                      v-model="config.dd_config_revert_on_disconnect"
+                      locale-prefix="config"
+                      default="false"
+                    />
+                  </div>
+                </div>
+              </n-gi>
+            </n-grid>
           </div>
         </fieldset>
       </div>
@@ -669,3 +760,67 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
     <template #macos></template>
   </PlatformLayout>
 </template>
+
+<style scoped>
+.golden-status {
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.golden-status-label {
+  align-items: flex-start;
+}
+
+.golden-actions {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+@media (min-width: 768px) {
+  .golden-status {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .golden-status-label {
+    align-items: center;
+  }
+
+  .golden-actions {
+    width: auto;
+    justify-content: flex-end;
+  }
+}
+
+.remap-row {
+  width: 100%;
+}
+
+.remap-row > * {
+  min-width: 0;
+}
+
+.remap-col {
+  flex: 1 1 220px;
+}
+
+.remap-actions {
+  flex: 1 1 160px;
+}
+
+.remap-message {
+  flex: 1 1 100%;
+}
+
+.remap-row input,
+.remap-row .n-input,
+.remap-row .n-input__input {
+  max-width: 100%;
+}
+
+.remap-row,
+.remap-row * {
+  box-sizing: border-box;
+}
+</style>
