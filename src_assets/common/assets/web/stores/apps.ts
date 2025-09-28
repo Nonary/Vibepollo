@@ -26,6 +26,9 @@ export interface App {
   'lossless-scaling-framegen'?: boolean;
   'lossless-scaling-target-fps'?: number;
   'lossless-scaling-rtss-limit'?: number;
+  'lossless-scaling-profile'?: string;
+  'lossless-scaling-recommended'?: Record<string, unknown>;
+  'lossless-scaling-custom'?: Record<string, unknown>;
   // Fallback for any other server fields we don't model yet
   [key: string]: any;
 }

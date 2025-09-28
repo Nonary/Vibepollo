@@ -594,6 +594,59 @@ namespace confighttp {
       };
 
       bool mutated = false;
+      auto normalize_lossless_profile_overrides = [](nlohmann::json &node) -> bool {
+        if (!node.is_object()) {
+          return false;
+        }
+        bool changed = false;
+        auto convert_int = [&](const char *key) {
+          if (!node.contains(key)) {
+            return;
+          }
+          auto &value = node[key];
+          if (value.is_string()) {
+            try {
+              value = std::stoi(value.get<std::string>());
+              changed = true;
+            } catch (...) {
+            }
+          }
+        };
+        auto convert_bool = [&](const char *key) {
+          if (!node.contains(key)) {
+            return;
+          }
+          auto &value = node[key];
+          if (value.is_string()) {
+            auto text = value.get<std::string>();
+            if (text == "true" || text == "false") {
+              value = (text == "true");
+              changed = true;
+            } else if (text == "1" || text == "0") {
+              value = (text == "1");
+              changed = true;
+            }
+          }
+        };
+        convert_bool("performance-mode");
+        convert_int("flow-scale");
+        convert_int("resolution-scale");
+        convert_int("sharpening");
+        convert_bool("anime4k-vrs");
+        if (node.contains("scaling-type") && node["scaling-type"].is_string()) {
+          auto text = node["scaling-type"].get<std::string>();
+          boost::algorithm::to_lower(text);
+          node["scaling-type"] = text;
+          changed = true;
+        }
+        if (node.contains("anime4k-size") && node["anime4k-size"].is_string()) {
+          auto text = node["anime4k-size"].get<std::string>();
+          boost::algorithm::to_upper(text);
+          node["anime4k-size"] = text;
+          changed = true;
+        }
+        return changed;
+      };
       // Walk fileTree and convert true/false strings to boolean or integer values
       for (auto &app : file_tree["apps"]) {
         for (const auto &key : boolean_keys) {
@@ -607,6 +660,12 @@ namespace confighttp {
             app[key] = std::stoi(app[key].get<std::string>());
             mutated = true;
           }
+        }
+        if (app.contains("lossless-scaling-recommended")) {
+          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-recommended"]) || mutated;
+        }
+        if (app.contains("lossless-scaling-custom")) {
+          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-custom"]) || mutated;
         }
         if (app.contains("prep-cmd")) {
           for (auto &prep : app["prep-cmd"]) {

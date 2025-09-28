@@ -39,6 +39,16 @@ namespace proc {
    *    "null"   -- The output of the commands are discarded
    *    filename -- The output of the commands are appended to filename
    */
+  struct lossless_scaling_profile_overrides_t {
+    std::optional<bool> performance_mode;
+    std::optional<int> flow_scale;
+    std::optional<int> resolution_scale;
+    std::optional<std::string> scaling_type;
+    std::optional<int> sharpening;
+    std::optional<std::string> anime4k_size;
+    std::optional<bool> anime4k_vrs;
+  };
+
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
 
@@ -75,6 +85,9 @@ namespace proc {
     bool lossless_scaling_framegen;
     std::optional<int> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
+    std::string lossless_scaling_profile {"custom"};
+    lossless_scaling_profile_overrides_t lossless_scaling_recommended;
+    lossless_scaling_profile_overrides_t lossless_scaling_custom;
   };
 
   class proc_t {

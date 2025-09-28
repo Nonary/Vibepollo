@@ -187,7 +187,6 @@ import {
 import { NInput, NButton, useMessage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import General from '@/configs/tabs/General.vue';
-import Security from '@/configs/tabs/Security.vue';
 import Inputs from '@/configs/tabs/Inputs.vue';
 import Network from '@/configs/tabs/Network.vue';
 import Files from '@/configs/tabs/Files.vue';
@@ -232,7 +231,6 @@ function setSectionRef(id, el) {
 
 const tabs = [
   { id: 'general', name: 'General', component: markRaw(General) },
-  { id: 'security', name: 'Security', component: markRaw(Security) },
   { id: 'input', name: 'Input', component: markRaw(Inputs) },
   { id: 'av', name: 'Audio / Video', component: markRaw(AudioVideo) },
   { id: 'capture', name: 'Capture', component: markRaw(Capture) },

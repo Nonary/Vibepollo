@@ -5,6 +5,8 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -49,6 +51,270 @@
 namespace proc {
   using namespace std::literals;
   namespace pt = boost::property_tree;
+
+  namespace {
+    constexpr const char *LOSSLESS_PROFILE_RECOMMENDED = "recommended";
+    constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
+    constexpr int LOSSLESS_DEFAULT_FLOW_SCALE = 50;
+    constexpr int LOSSLESS_DEFAULT_RESOLUTION_SCALE = 100;
+    constexpr bool LOSSLESS_DEFAULT_PERFORMANCE_MODE = true;
+    constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
+    constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
+    constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
+    constexpr int LOSSLESS_MAX_RESOLUTION_SCALE = 500;
+    constexpr int LOSSLESS_SHARPNESS_MIN = 1;
+    constexpr int LOSSLESS_SHARPNESS_MAX = 10;
+
+    constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
+    constexpr const char *ENV_LOSSLESS_CAPTURE_API = "SUNSHINE_LOSSLESS_SCALING_CAPTURE_API";
+    constexpr const char *ENV_LOSSLESS_QUEUE_TARGET = "SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET";
+    constexpr const char *ENV_LOSSLESS_HDR = "SUNSHINE_LOSSLESS_SCALING_HDR";
+    constexpr const char *ENV_LOSSLESS_FLOW_SCALE = "SUNSHINE_LOSSLESS_SCALING_FLOW_SCALE";
+    constexpr const char *ENV_LOSSLESS_PERFORMANCE_MODE = "SUNSHINE_LOSSLESS_SCALING_PERFORMANCE_MODE";
+    constexpr const char *ENV_LOSSLESS_RESOLUTION = "SUNSHINE_LOSSLESS_SCALING_RESOLUTION_SCALE";
+    constexpr const char *ENV_LOSSLESS_FRAMEGEN_MODE = "SUNSHINE_LOSSLESS_SCALING_FRAMEGEN_MODE";
+    constexpr const char *ENV_LOSSLESS_LSFG3_MODE = "SUNSHINE_LOSSLESS_SCALING_LSFG3_MODE";
+    constexpr const char *ENV_LOSSLESS_SCALING_TYPE = "SUNSHINE_LOSSLESS_SCALING_SCALING_TYPE";
+    constexpr const char *ENV_LOSSLESS_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_SHARPNESS";
+    constexpr const char *ENV_LOSSLESS_LS1_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS";
+    constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
+    constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
+
+    struct lossless_profile_defaults_t {
+      bool performance_mode;
+      int flow_scale;
+      int resolution_scale;
+      std::string scaling_mode;
+      int sharpening;
+      std::string anime4k_size;
+      bool anime4k_vrs;
+    };
+
+    const lossless_profile_defaults_t LOSSLESS_DEFAULTS_RECOMMENDED {
+      true,
+      LOSSLESS_DEFAULT_FLOW_SCALE,
+      LOSSLESS_DEFAULT_RESOLUTION_SCALE,
+      "off",
+      5,
+      "S",
+      false,
+    };
+
+    const lossless_profile_defaults_t LOSSLESS_DEFAULTS_CUSTOM {
+      false,
+      LOSSLESS_DEFAULT_FLOW_SCALE,
+      LOSSLESS_DEFAULT_RESOLUTION_SCALE,
+      "off",
+      5,
+      "S",
+      false,
+    };
+
+    const std::array<std::string, 11> &lossless_scaling_modes() {
+      static const std::array<std::string, 11> modes {
+        "off",
+        "ls1",
+        "fsr",
+        "nis",
+        "sgsr",
+        "bcas",
+        "anime4k",
+        "xbr",
+        "sharp-bilinear",
+        "integer",
+        "nearest"
+      };
+      return modes;
+    }
+
+    std::optional<std::string> normalize_scaling_mode(const std::string &value) {
+      std::string lower = boost::algorithm::to_lower_copy(value);
+      const auto &modes = lossless_scaling_modes();
+      if (std::find(modes.begin(), modes.end(), lower) != modes.end()) {
+        return lower;
+      }
+      return std::nullopt;
+    }
+
+    bool scaling_mode_requires_sharpening(const std::string &mode) {
+      static const std::array<std::string, 4> sharpening_modes {"ls1", "fsr", "nis", "sgsr"};
+      return std::find(sharpening_modes.begin(), sharpening_modes.end(), mode) != sharpening_modes.end();
+    }
+
+    bool scaling_mode_is_anime(const std::string &mode) {
+      return mode == "anime4k";
+    }
+
+    std::optional<std::string> scaling_mode_to_lossless_value(const std::string &mode) {
+      if (mode == "off") return std::string("Off");
+      if (mode == "ls1") return std::string("LS1");
+      if (mode == "fsr") return std::string("FSR");
+      if (mode == "nis") return std::string("NIS");
+      if (mode == "sgsr") return std::string("SGSR");
+      if (mode == "bcas") return std::string("BicubicCAS");
+      if (mode == "anime4k") return std::string("Anime4k");
+      if (mode == "xbr") return std::string("XBR");
+      if (mode == "sharp-bilinear") return std::string("SharpBilinear");
+      if (mode == "integer") return std::string("Integer");
+      if (mode == "nearest") return std::string("Nearest");
+      return std::nullopt;
+    }
+
+    int clamp_sharpness(int value) {
+      return std::clamp(value, LOSSLESS_SHARPNESS_MIN, LOSSLESS_SHARPNESS_MAX);
+    }
+
+    struct lossless_runtime_values_t {
+      std::string profile;
+      std::optional<bool> performance_mode;
+      std::optional<int> flow_scale;
+      std::optional<int> resolution_scale;
+      std::optional<std::string> capture_api;
+      std::optional<int> queue_target;
+      std::optional<bool> hdr_enabled;
+      std::optional<std::string> frame_generation;
+      std::optional<std::string> lsfg3_mode;
+      std::optional<std::string> scaling_type;
+      std::optional<int> sharpness;
+      std::optional<int> ls1_sharpness;
+      std::optional<std::string> anime4k_type;
+      std::optional<bool> anime4k_vrs;
+    };
+
+    std::optional<bool> pt_get_optional_bool(const pt::ptree &node, const std::string &key) {
+      auto child = node.get_child_optional(key);
+      if (!child) {
+        return std::nullopt;
+      }
+      try {
+        return child->get_value<bool>();
+      } catch (...) {
+      }
+      try {
+        auto text = child->get_value<std::string>();
+        if (text.empty()) {
+          return std::nullopt;
+        }
+        if (boost::iequals(text, "true") || text == "1") {
+          return true;
+        }
+        if (boost::iequals(text, "false") || text == "0") {
+          return false;
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    std::optional<int> pt_get_optional_int(const pt::ptree &node, const std::string &key) {
+      auto child = node.get_child_optional(key);
+      if (!child) {
+        return std::nullopt;
+      }
+      try {
+        return child->get_value<int>();
+      } catch (...) {
+      }
+      try {
+        auto text = child->get_value<std::string>();
+        if (text.empty()) {
+          return std::nullopt;
+        }
+        return std::stoi(text);
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
+      if (auto perf = pt_get_optional_bool(node, "performance-mode")) {
+        target.performance_mode = *perf;
+      }
+      if (auto flow = pt_get_optional_int(node, "flow-scale")) {
+        target.flow_scale = *flow;
+      }
+      if (auto res = pt_get_optional_int(node, "resolution-scale")) {
+        target.resolution_scale = *res;
+      }
+      if (auto scaling = node.get_optional<std::string>("scaling-type")) {
+        if (auto normalized = normalize_scaling_mode(*scaling)) {
+          target.scaling_type = *normalized;
+        }
+      }
+      if (auto sharp = pt_get_optional_int(node, "sharpening")) {
+        target.sharpening = clamp_sharpness(*sharp);
+      }
+      if (auto anime = node.get_optional<std::string>("anime4k-size")) {
+        std::string value = boost::algorithm::to_upper_copy(*anime);
+        target.anime4k_size = std::move(value);
+      }
+      if (auto vrs = pt_get_optional_bool(node, "anime4k-vrs")) {
+        target.anime4k_vrs = *vrs;
+      }
+    }
+
+    lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx) {
+      lossless_runtime_values_t result;
+      const lossless_profile_defaults_t &defaults = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
+        LOSSLESS_DEFAULTS_RECOMMENDED :
+        LOSSLESS_DEFAULTS_CUSTOM;
+
+      const lossless_scaling_profile_overrides_t &overrides = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
+        ctx.lossless_scaling_recommended :
+        ctx.lossless_scaling_custom;
+
+      if (boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED)) {
+        result.profile = LOSSLESS_PROFILE_RECOMMENDED;
+        result.capture_api = "WGC";
+        result.queue_target = 0;
+        result.hdr_enabled = true;
+        result.frame_generation = "LSFG3";
+        result.lsfg3_mode = "ADAPTIVE";
+      } else {
+        result.profile = LOSSLESS_PROFILE_CUSTOM;
+      }
+
+      bool performance_mode = overrides.performance_mode.value_or(defaults.performance_mode);
+      result.performance_mode = performance_mode;
+
+      int flow_scale = overrides.flow_scale.value_or(defaults.flow_scale);
+      flow_scale = std::clamp(flow_scale, LOSSLESS_MIN_FLOW_SCALE, LOSSLESS_MAX_FLOW_SCALE);
+      result.flow_scale = flow_scale;
+
+      int resolution_scale = overrides.resolution_scale.value_or(defaults.resolution_scale);
+      resolution_scale = std::clamp(resolution_scale, LOSSLESS_MIN_RESOLUTION_SCALE, LOSSLESS_MAX_RESOLUTION_SCALE);
+      result.resolution_scale = resolution_scale;
+
+      std::string scaling_mode = overrides.scaling_type.has_value() ? *overrides.scaling_type : defaults.scaling_mode;
+      auto normalized_mode = normalize_scaling_mode(scaling_mode);
+      if (!normalized_mode) {
+        normalized_mode = defaults.scaling_mode;
+      }
+
+      if (auto mapped = scaling_mode_to_lossless_value(*normalized_mode)) {
+        result.scaling_type = *mapped;
+      }
+
+      if (scaling_mode_requires_sharpening(*normalized_mode)) {
+        int sharpness = overrides.sharpening.value_or(defaults.sharpening);
+        sharpness = clamp_sharpness(sharpness);
+        result.sharpness = sharpness;
+        if (*normalized_mode == "ls1") {
+          result.ls1_sharpness = sharpness;
+        }
+      }
+
+      if (scaling_mode_is_anime(*normalized_mode)) {
+        std::string anime_type = overrides.anime4k_size.has_value() ? *overrides.anime4k_size : defaults.anime4k_size;
+        boost::algorithm::to_upper(anime_type);
+        result.anime4k_type = anime_type;
+        bool vrs = overrides.anime4k_vrs.value_or(defaults.anime4k_vrs);
+        result.anime4k_vrs = vrs;
+      }
+
+      return result;
+    }
+  }  // namespace
 
   proc_t proc;
 
@@ -221,6 +487,23 @@ namespace proc {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
 
+    auto clear_lossless_runtime_env = [&]() {
+      _env[ENV_LOSSLESS_PROFILE] = "";
+      _env[ENV_LOSSLESS_CAPTURE_API] = "";
+      _env[ENV_LOSSLESS_QUEUE_TARGET] = "";
+      _env[ENV_LOSSLESS_HDR] = "";
+      _env[ENV_LOSSLESS_FLOW_SCALE] = "";
+      _env[ENV_LOSSLESS_PERFORMANCE_MODE] = "";
+      _env[ENV_LOSSLESS_RESOLUTION] = "";
+      _env[ENV_LOSSLESS_FRAMEGEN_MODE] = "";
+      _env[ENV_LOSSLESS_LSFG3_MODE] = "";
+      _env[ENV_LOSSLESS_SCALING_TYPE] = "";
+      _env[ENV_LOSSLESS_SHARPNESS] = "";
+      _env[ENV_LOSSLESS_LS1_SHARPNESS] = "";
+      _env[ENV_LOSSLESS_ANIME4K_TYPE] = "";
+      _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
+    };
+
     if (_app.lossless_scaling_framegen) {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
       if (_app.lossless_scaling_target_fps) {
@@ -233,10 +516,49 @@ namespace proc {
       } else {
         _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
       }
+
+      auto runtime = compute_lossless_runtime(_app);
+      auto set_string = [&](const char *key, const std::optional<std::string> &value) {
+        if (value && !value->empty()) {
+          _env[key] = *value;
+        } else {
+          _env[key] = "";
+        }
+      };
+      auto set_int = [&](const char *key, const std::optional<int> &value) {
+        if (value.has_value()) {
+          _env[key] = std::to_string(*value);
+        } else {
+          _env[key] = "";
+        }
+      };
+      auto set_bool = [&](const char *key, const std::optional<bool> &value) {
+        if (value.has_value()) {
+          _env[key] = *value ? "1" : "0";
+        } else {
+          _env[key] = "";
+        }
+      };
+
+      _env[ENV_LOSSLESS_PROFILE] = runtime.profile;
+      set_string(ENV_LOSSLESS_CAPTURE_API, runtime.capture_api);
+      set_int(ENV_LOSSLESS_QUEUE_TARGET, runtime.queue_target);
+      set_bool(ENV_LOSSLESS_HDR, runtime.hdr_enabled);
+      set_int(ENV_LOSSLESS_FLOW_SCALE, runtime.flow_scale);
+      set_bool(ENV_LOSSLESS_PERFORMANCE_MODE, runtime.performance_mode);
+      set_int(ENV_LOSSLESS_RESOLUTION, runtime.resolution_scale);
+      set_string(ENV_LOSSLESS_FRAMEGEN_MODE, runtime.frame_generation);
+      set_string(ENV_LOSSLESS_LSFG3_MODE, runtime.lsfg3_mode);
+      set_string(ENV_LOSSLESS_SCALING_TYPE, runtime.scaling_type);
+      set_int(ENV_LOSSLESS_SHARPNESS, runtime.sharpness);
+      set_int(ENV_LOSSLESS_LS1_SHARPNESS, runtime.ls1_sharpness);
+      set_string(ENV_LOSSLESS_ANIME4K_TYPE, runtime.anime4k_type);
+      set_bool(ENV_LOSSLESS_ANIME4K_VRS, runtime.anime4k_vrs);
     } else {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+      clear_lossless_runtime_env();
     }
 
     if (!_app.output.empty() && _app.output != "null"sv) {
@@ -835,6 +1157,19 @@ namespace proc {
           if (*ls_rtss > 0) {
             ctx.lossless_scaling_rtss_limit = *ls_rtss;
           }
+        }
+
+        ctx.lossless_scaling_profile = LOSSLESS_PROFILE_CUSTOM;
+        if (auto profile = app_node.get_optional<std::string>("lossless-scaling-profile"s)) {
+          if (boost::iequals(*profile, LOSSLESS_PROFILE_RECOMMENDED)) {
+            ctx.lossless_scaling_profile = LOSSLESS_PROFILE_RECOMMENDED;
+          }
+        }
+        if (auto recommended_node = app_node.get_child_optional("lossless-scaling-recommended"s)) {
+          populate_lossless_overrides(*recommended_node, ctx.lossless_scaling_recommended);
+        }
+        if (auto custom_node = app_node.get_child_optional("lossless-scaling-custom"s)) {
+          populate_lossless_overrides(*custom_node, ctx.lossless_scaling_custom);
         }
 
         std::vector<proc::cmd_t> prep_cmds;

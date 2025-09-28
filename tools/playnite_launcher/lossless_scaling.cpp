@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <boost/algorithm/string.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <locale>
+#include <limits>
 #include <optional>
 #include <shlobj.h>
 #include <string>
@@ -34,6 +36,12 @@ namespace playnite_launcher::lossless {
     constexpr std::string_view k_lossless_profile_title = "Vibeshine";
     constexpr size_t k_lossless_max_executables = 256;
     constexpr int k_lossless_auto_delay_seconds = 10;
+    constexpr int k_sharpness_min = 1;
+    constexpr int k_sharpness_max = 10;
+    constexpr int k_flow_scale_min = 0;
+    constexpr int k_flow_scale_max = 100;
+    constexpr int k_resolution_scale_min = 10;
+    constexpr int k_resolution_scale_max = 500;
 
     bool parse_env_flag(const char *value) {
       if (!value) {
@@ -58,6 +66,43 @@ namespace playnite_launcher::lossless {
       } catch (...) {
       }
       return std::nullopt;
+    }
+
+    std::optional<int> parse_env_int_allow_zero(const char *value) {
+      if (!value || !*value) {
+        return std::nullopt;
+      }
+      try {
+        return std::stoi(value);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    std::optional<bool> parse_env_flag_optional(const char *value) {
+      if (!value || !*value) {
+        return std::nullopt;
+      }
+      return parse_env_flag(value);
+    }
+
+    std::optional<std::string> parse_env_string(const char *value) {
+      if (!value || !*value) {
+        return std::nullopt;
+      }
+      std::string converted(value);
+      boost::algorithm::trim(converted);
+      if (converted.empty()) {
+        return std::nullopt;
+      }
+      return converted;
+    }
+
+    std::optional<int> clamp_optional_int(std::optional<int> value, int min_value, int max_value) {
+      if (!value) {
+        return std::nullopt;
+      }
+      return std::clamp(*value, min_value, max_value);
     }
 
     void lowercase_inplace(std::wstring &value) {
@@ -513,6 +558,58 @@ namespace playnite_launcher::lossless {
         backup.had_lsfg_target = true;
         backup.lsfg_target = *target;
       }
+      if (auto capture = source->get_optional<std::string>("CaptureApi")) {
+        backup.had_capture_api = true;
+        backup.capture_api = *capture;
+      }
+      if (auto queue = source->get_optional<int>("QueueTarget")) {
+        backup.had_queue_target = true;
+        backup.queue_target = *queue;
+      }
+      if (auto hdr = source->get_optional<bool>("HdrSupport")) {
+        backup.had_hdr_support = true;
+        backup.hdr_support = *hdr;
+      }
+      if (auto flow = source->get_optional<int>("LSFGFlowScale")) {
+        backup.had_flow_scale = true;
+        backup.flow_scale = *flow;
+      }
+      if (auto size = source->get_optional<std::string>("LSFGSize")) {
+        backup.had_lsfg_size = true;
+        backup.lsfg_size = *size;
+      }
+      if (auto mode = source->get_optional<std::string>("LSFG3Mode1")) {
+        backup.had_lsfg3_mode = true;
+        backup.lsfg3_mode = *mode;
+      }
+      if (auto frame = source->get_optional<std::string>("FrameGeneration")) {
+        backup.had_frame_generation = true;
+        backup.frame_generation = *frame;
+      }
+      if (auto scaling_type = source->get_optional<std::string>("ScalingType")) {
+        backup.had_scaling_type = true;
+        backup.scaling_type = *scaling_type;
+      }
+      if (auto scale_factor = source->get_optional<double>("ScaleFactor")) {
+        backup.had_scale_factor = true;
+        backup.scale_factor = *scale_factor;
+      }
+      if (auto sharpness = source->get_optional<int>("Sharpness")) {
+        backup.had_sharpness = true;
+        backup.sharpness = *sharpness;
+      }
+      if (auto ls1 = source->get_optional<int>("LS1Sharpness")) {
+        backup.had_ls1_sharpness = true;
+        backup.ls1_sharpness = *ls1;
+      }
+      if (auto anime_type = source->get_optional<std::string>("Anime4kType")) {
+        backup.had_anime4k_type = true;
+        backup.anime4k_type = *anime_type;
+      }
+      if (auto vrs = source->get_optional<bool>("VRS")) {
+        backup.had_vrs = true;
+        backup.vrs = *vrs;
+      }
     }
 
     std::optional<std::filesystem::path> resolve_explicit_executable(const std::string &exe_path_utf8) {
@@ -572,9 +669,65 @@ namespace playnite_launcher::lossless {
       profile.put("Filter", filter_utf8);
       profile.put("AutoScale", "true");
       profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
+      if (options.capture_api) {
+        std::string capture = *options.capture_api;
+        boost::algorithm::to_upper(capture);
+        profile.put("CaptureApi", capture);
+      }
+      if (options.queue_target) {
+        profile.put("QueueTarget", std::max(0, *options.queue_target));
+      }
+      if (options.hdr_enabled.has_value()) {
+        profile.put("HdrSupport", *options.hdr_enabled);
+      }
+      if (options.frame_generation_mode) {
+        std::string frame_mode = *options.frame_generation_mode;
+        boost::algorithm::to_upper(frame_mode);
+        profile.put("FrameGeneration", frame_mode);
+      }
+      if (options.lsfg3_mode) {
+        std::string lsfg_mode = *options.lsfg3_mode;
+        boost::algorithm::to_upper(lsfg_mode);
+        profile.put("LSFG3Mode1", lsfg_mode);
+      }
+      if (options.performance_mode.has_value()) {
+        profile.put("LSFGSize", *options.performance_mode ? "PERFORMANCE" : "QUALITY");
+      }
+      if (options.flow_scale) {
+        int flow = std::clamp(*options.flow_scale, k_flow_scale_min, k_flow_scale_max);
+        profile.put("LSFGFlowScale", flow);
+      }
       if (options.target_fps && *options.target_fps > 0) {
         int target = std::clamp(*options.target_fps, 1, 480);
         profile.put("LSFG3Target", target);
+      }
+      if (options.resolution_scale) {
+        int resolution = std::clamp(*options.resolution_scale, k_resolution_scale_min, k_resolution_scale_max);
+        double scale_factor = resolution > 0 ? 100.0 / static_cast<double>(resolution) : 1.0;
+        profile.put("ScaleFactor", scale_factor);
+        if (options.scaling_type) {
+          profile.put("ScalingType", *options.scaling_type);
+        } else {
+          profile.put("ScalingType", resolution == 100 ? "Off" : "Auto");
+        }
+      } else if (options.scaling_type) {
+        profile.put("ScalingType", *options.scaling_type);
+      }
+      if (options.sharpness) {
+        int sharpness = std::clamp(*options.sharpness, k_sharpness_min, k_sharpness_max);
+        profile.put("Sharpness", sharpness);
+      }
+      if (options.ls1_sharpness) {
+        int ls1 = std::clamp(*options.ls1_sharpness, k_sharpness_min, k_sharpness_max);
+        profile.put("LS1Sharpness", ls1);
+      }
+      if (options.anime4k_type) {
+        std::string type = *options.anime4k_type;
+        boost::algorithm::to_upper(type);
+        profile.put("Anime4kType", type);
+      }
+      if (options.anime4k_vrs.has_value()) {
+        profile.put("VRS", *options.anime4k_vrs);
       }
       return profile;
     }
@@ -616,11 +769,52 @@ namespace playnite_launcher::lossless {
       return changed;
     }
 
+    bool restore_bool_field(boost::property_tree::ptree &profile, const char *key, bool had_value, bool value, bool &changed) {
+      auto current = profile.get_optional<bool>(key);
+      if (had_value) {
+        if (!current || *current != value) {
+          profile.put(key, value);
+          changed = true;
+        }
+      } else if (current) {
+        profile.erase(key);
+        changed = true;
+      }
+      return changed;
+    }
+
+    bool restore_double_field(boost::property_tree::ptree &profile, const char *key, bool had_value, double value, bool &changed) {
+      auto current = profile.get_optional<double>(key);
+      if (had_value) {
+        if (!current || std::abs(*current - value) > std::numeric_limits<double>::epsilon()) {
+          profile.put(key, value);
+          changed = true;
+        }
+      } else if (current) {
+        profile.erase(key);
+        changed = true;
+      }
+      return changed;
+    }
+
     bool apply_backup_to_profile(boost::property_tree::ptree &profile, const lossless_scaling_profile_backup &backup) {
       bool changed = false;
       restore_string_field(profile, "AutoScale", backup.had_auto_scale, backup.auto_scale, changed);
       restore_int_field(profile, "AutoScaleDelay", backup.had_auto_scale_delay, backup.auto_scale_delay, changed);
       restore_int_field(profile, "LSFG3Target", backup.had_lsfg_target, backup.lsfg_target, changed);
+      restore_string_field(profile, "CaptureApi", backup.had_capture_api, backup.capture_api, changed);
+      restore_int_field(profile, "QueueTarget", backup.had_queue_target, backup.queue_target, changed);
+      restore_bool_field(profile, "HdrSupport", backup.had_hdr_support, backup.hdr_support, changed);
+      restore_int_field(profile, "LSFGFlowScale", backup.had_flow_scale, backup.flow_scale, changed);
+      restore_string_field(profile, "LSFGSize", backup.had_lsfg_size, backup.lsfg_size, changed);
+      restore_string_field(profile, "LSFG3Mode1", backup.had_lsfg3_mode, backup.lsfg3_mode, changed);
+      restore_string_field(profile, "FrameGeneration", backup.had_frame_generation, backup.frame_generation, changed);
+      restore_string_field(profile, "ScalingType", backup.had_scaling_type, backup.scaling_type, changed);
+      restore_double_field(profile, "ScaleFactor", backup.had_scale_factor, backup.scale_factor, changed);
+      restore_int_field(profile, "Sharpness", backup.had_sharpness, backup.sharpness, changed);
+      restore_int_field(profile, "LS1Sharpness", backup.had_ls1_sharpness, backup.ls1_sharpness, changed);
+      restore_string_field(profile, "Anime4kType", backup.had_anime4k_type, backup.anime4k_type, changed);
+      restore_bool_field(profile, "VRS", backup.had_vrs, backup.vrs, changed);
       return changed;
     }
 
@@ -648,6 +842,23 @@ namespace playnite_launcher::lossless {
       if (computed > 0) {
         opt.rtss_limit = computed;
       }
+    }
+    opt.active_profile = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE"));
+    opt.capture_api = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_CAPTURE_API"));
+    opt.queue_target = parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET"));
+    opt.hdr_enabled = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_HDR"));
+    opt.flow_scale = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_FLOW_SCALE")), k_flow_scale_min, k_flow_scale_max);
+    opt.performance_mode = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_PERFORMANCE_MODE"));
+    opt.resolution_scale = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_RESOLUTION_SCALE")), k_resolution_scale_min, k_resolution_scale_max);
+    opt.frame_generation_mode = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN_MODE"));
+    opt.lsfg3_mode = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_LSFG3_MODE"));
+    opt.scaling_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_SCALING_TYPE"));
+    opt.sharpness = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_SHARPNESS")), k_sharpness_min, k_sharpness_max);
+    opt.ls1_sharpness = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS")), k_sharpness_min, k_sharpness_max);
+    opt.anime4k_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE"));
+    opt.anime4k_vrs = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS"));
+    if (opt.anime4k_type) {
+      boost::algorithm::to_upper(*opt.anime4k_type);
     }
     if (auto configured = get_lossless_scaling_env_path()) {
       if (!configured->empty()) {
