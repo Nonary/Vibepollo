@@ -227,8 +227,8 @@
                     <n-radio value="custom">Custom (Default)</n-radio>
                   </n-radio-group>
                   <p class="text-[11px] opacity-60">
-                    Recommended enables WGC capture, HDR, and LSFG 3.1 adaptive defaults. Adjust Flow
-                    Scale, Performance Mode, and Resolution per profile.
+                    Recommended enables WGC capture, HDR, and LSFG 3.1 adaptive defaults. Adjust
+                    Flow Scale, Performance Mode, and Resolution per profile.
                   </p>
                 </div>
                 <div class="flex items-end justify-end">
@@ -288,10 +288,14 @@
                     :clearable="false"
                   />
                 </div>
-                <div class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10">
+                <div
+                  class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
+                >
                   <div>
                     <div class="text-xs font-semibold uppercase tracking-wide opacity-70">VRS</div>
-                    <p class="text-[11px] opacity-60">Enable Variable Rate Shading where supported.</p>
+                    <p class="text-[11px] opacity-60">
+                      Enable Variable Rate Shading where supported.
+                    </p>
                   </div>
                   <n-switch v-model:value="losslessAnimeVrsModel" size="small" />
                 </div>
@@ -332,7 +336,9 @@
                 </div>
               </div>
 
-              <div class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10">
+              <div
+                class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
+              >
                 <div>
                   <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
                     Performance Mode
@@ -576,7 +582,19 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
-import { NModal, NCard, NButton, NInput, NInputNumber, NCheckbox, NSelect, NSpin, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
+import {
+  NModal,
+  NCard,
+  NButton,
+  NInput,
+  NInputNumber,
+  NCheckbox,
+  NSelect,
+  NSpin,
+  NSwitch,
+  NRadioGroup,
+  NRadio,
+} from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 
 // Types for form and server payload
@@ -870,7 +888,8 @@ function parseLosslessOverrides(input: unknown): LosslessProfileOverrides {
   if (rawSharpness !== null) {
     overrides.sharpening = rawSharpness;
   }
-  const animeSizeRaw = typeof source['anime4k-size'] === 'string' ? source['anime4k-size'].toUpperCase() : null;
+  const animeSizeRaw =
+    typeof source['anime4k-size'] === 'string' ? source['anime4k-size'].toUpperCase() : null;
   if (animeSizeRaw && LOSSLESS_ANIME_SIZES.some((o) => o.value === animeSizeRaw)) {
     overrides.anime4kSize = animeSizeRaw as Anime4kSize;
   }
@@ -964,7 +983,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
   payload['lossless-scaling-framegen'] = !!f.losslessScalingEnabled;
   payload['lossless-scaling-target-fps'] = f.losslessScalingEnabled ? payloadLosslessTarget : null;
   payload['lossless-scaling-rtss-limit'] = f.losslessScalingEnabled ? payloadLosslessLimit : null;
-  payload['lossless-scaling-profile'] = f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
+  payload['lossless-scaling-profile'] =
+    f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
   const buildLosslessProfilePayload = (profile: LosslessProfileOverrides) => {
     const profilePayload: Record<string, any> = {};
     if (profile.performanceMode !== null) {
@@ -1068,7 +1088,8 @@ function getEffectivePerformanceMode(profile: LosslessProfileKey): boolean {
 
 function setPerformanceMode(profile: LosslessProfileKey, value: boolean): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  form.value.losslessScalingProfiles[profile].performanceMode = value === defaults.performanceMode ? null : value;
+  form.value.losslessScalingProfiles[profile].performanceMode =
+    value === defaults.performanceMode ? null : value;
 }
 
 function getEffectiveFlowScale(profile: LosslessProfileKey): number {
@@ -1079,7 +1100,8 @@ function getEffectiveFlowScale(profile: LosslessProfileKey): number {
 function setFlowScale(profile: LosslessProfileKey, value: number | null): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
   const clamped = clampFlow(value);
-  form.value.losslessScalingProfiles[profile].flowScale = clamped === null || clamped === defaults.flowScale ? null : clamped;
+  form.value.losslessScalingProfiles[profile].flowScale =
+    clamped === null || clamped === defaults.flowScale ? null : clamped;
 }
 
 function getEffectiveResolutionScale(profile: LosslessProfileKey): number {
@@ -1090,7 +1112,8 @@ function getEffectiveResolutionScale(profile: LosslessProfileKey): number {
 function setResolutionScale(profile: LosslessProfileKey, value: number | null): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
   const clamped = clampResolution(value);
-  form.value.losslessScalingProfiles[profile].resolutionScale = clamped === null || clamped === defaults.resolutionScale ? null : clamped;
+  form.value.losslessScalingProfiles[profile].resolutionScale =
+    clamped === null || clamped === defaults.resolutionScale ? null : clamped;
 }
 
 function getEffectiveScalingMode(profile: LosslessProfileKey): LosslessScalingMode {
@@ -1120,7 +1143,8 @@ function getEffectiveSharpening(profile: LosslessProfileKey): number {
 function setSharpening(profile: LosslessProfileKey, value: number | null): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
   const clamped = clampSharpness(value);
-  form.value.losslessScalingProfiles[profile].sharpening = clamped === null || clamped === defaults.sharpening ? null : clamped;
+  form.value.losslessScalingProfiles[profile].sharpening =
+    clamped === null || clamped === defaults.sharpening ? null : clamped;
 }
 
 function getEffectiveAnimeSize(profile: LosslessProfileKey): Anime4kSize {
@@ -1131,7 +1155,8 @@ function getEffectiveAnimeSize(profile: LosslessProfileKey): Anime4kSize {
 function setAnimeSize(profile: LosslessProfileKey, value: Anime4kSize | null): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
   const resolved = value ?? defaults.anime4kSize;
-  form.value.losslessScalingProfiles[profile].anime4kSize = resolved === defaults.anime4kSize ? null : resolved;
+  form.value.losslessScalingProfiles[profile].anime4kSize =
+    resolved === defaults.anime4kSize ? null : resolved;
 }
 
 function getEffectiveAnimeVrs(profile: LosslessProfileKey): boolean {
@@ -1141,7 +1166,8 @@ function getEffectiveAnimeVrs(profile: LosslessProfileKey): boolean {
 
 function setAnimeVrs(profile: LosslessProfileKey, value: boolean): void {
   const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  form.value.losslessScalingProfiles[profile].anime4kVrs = value === defaults.anime4kVrs ? null : value;
+  form.value.losslessScalingProfiles[profile].anime4kVrs =
+    value === defaults.anime4kVrs ? null : value;
 }
 
 const losslessPerformanceModeModel = computed<boolean>({

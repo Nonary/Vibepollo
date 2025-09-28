@@ -17,8 +17,8 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
-#include <locale>
 #include <limits>
+#include <locale>
 #include <optional>
 #include <shlobj.h>
 #include <string>

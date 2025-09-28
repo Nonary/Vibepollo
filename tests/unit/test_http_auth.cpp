@@ -272,7 +272,8 @@ TEST(SessionTokenManagerStatefulTest, RememberMeTokenPersistsAcrossRestart) {
       std::chrono::seconds::zero(),
       "UnitTestAgent",
       "127.0.0.1",
-      true);
+      true
+    );
     EXPECT_FALSE(token.empty());
   }
 
@@ -313,13 +314,15 @@ TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
     std::chrono::seconds::zero(),
     "PrimaryAgent",
     "127.0.0.1",
-    true);
+    true
+  );
   auto token_secondary = manager.generate_session_token(
     "admin",
     std::chrono::seconds::zero(),
     "SecondaryAgent",
     "10.0.0.5",
-    false);
+    false
+  );
 
   ASSERT_FALSE(token_primary.empty());
   ASSERT_FALSE(token_secondary.empty());

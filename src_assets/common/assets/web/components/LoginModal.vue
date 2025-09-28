@@ -39,7 +39,10 @@
           }}</label>
           <n-input v-model:value="password" type="password" autocomplete="current-password" />
         </div>
-        <div v-if="credentialsConfigured" class="flex items-center justify-between text-sm text-neutral-600">
+        <div
+          v-if="credentialsConfigured"
+          class="flex items-center justify-between text-sm text-neutral-600"
+        >
           <n-checkbox v-model:checked="rememberMe">
             {{ t('auth.remember_me_label') }}
           </n-checkbox>

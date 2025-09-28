@@ -22,7 +22,9 @@
       </div>
       <div v-else class="overflow-x-auto">
         <table class="min-w-full text-sm">
-          <thead class="text-left text-xs uppercase tracking-wide opacity-70 border-b border-dark/10 dark:border-light/10">
+          <thead
+            class="text-left text-xs uppercase tracking-wide opacity-70 border-b border-dark/10 dark:border-light/10"
+          >
             <tr>
               <th class="py-2 pr-4 font-semibold">{{ t('auth.sessions_device') }}</th>
               <th class="py-2 pr-4 font-semibold">{{ t('auth.sessions_activity') }}</th>
@@ -43,8 +45,12 @@
               <td class="py-3 pr-4">
                 <div class="flex flex-col gap-1 text-xs">
                   <span>{{ formatTimestamp(session.created_at) }}</span>
-                  <span class="opacity-70">{{ t('auth.sessions_last_seen', { time: formatTimestamp(session.last_seen) }) }}</span>
-                  <span class="opacity-70">{{ t('auth.sessions_expires', { time: formatTimestamp(session.expires_at) }) }}</span>
+                  <span class="opacity-70">{{
+                    t('auth.sessions_last_seen', { time: formatTimestamp(session.last_seen) })
+                  }}</span>
+                  <span class="opacity-70">{{
+                    t('auth.sessions_expires', { time: formatTimestamp(session.expires_at) })
+                  }}</span>
                 </div>
               </td>
               <td class="py-3 pr-4">
@@ -115,7 +121,9 @@ function formatTimestamp(seconds?: number): string {
 }
 
 function primaryLabel(session: AuthSession): string {
-  return session.device_label || fallbackAgent(session.user_agent) || t('auth.sessions_unknown_device');
+  return (
+    session.device_label || fallbackAgent(session.user_agent) || t('auth.sessions_unknown_device')
+  );
 }
 
 function secondaryLabel(session: AuthSession): string {
