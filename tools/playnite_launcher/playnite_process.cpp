@@ -102,17 +102,25 @@ namespace playnite_launcher::playnite {
     InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
     attrList = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, size));
     if (!attrList) {
+      BOOST_LOG(warning) << "assign_parent_attributes: HeapAlloc failed";
+      SetLastError(ERROR_OUTOFMEMORY);
       return false;
     }
     if (!InitializeProcThreadAttributeList(attrList, 1, 0, &size)) {
+      DWORD err = GetLastError();
+      BOOST_LOG(warning) << "assign_parent_attributes: InitializeProcThreadAttributeList failed: " << err;
       HeapFree(GetProcessHeap(), 0, attrList);
       attrList = nullptr;
+      SetLastError(err);
       return false;
     }
     if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &parent, sizeof(parent), nullptr, nullptr)) {
+      DWORD err = GetLastError();
+      BOOST_LOG(warning) << "assign_parent_attributes: UpdateProcThreadAttribute failed: " << err;
       DeleteProcThreadAttributeList(attrList);
       HeapFree(GetProcessHeap(), 0, attrList);
       attrList = nullptr;
+      SetLastError(err);
       return false;
     }
     si.lpAttributeList = attrList;
@@ -126,10 +134,10 @@ namespace playnite_launcher::playnite {
     }
   }
 
-  bool launch_detached_command(const std::wstring &exe, const std::wstring &cmd, STARTUPINFOEXW &si, PROCESS_INFORMATION &pi, DWORD flags) {
+  bool launch_detached_command(const wchar_t *application, const std::wstring &cmd, STARTUPINFOEXW &si, PROCESS_INFORMATION &pi, DWORD flags) {
     std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
     cmdline.push_back(0);
-    return CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si.StartupInfo, &pi);
+    return CreateProcessW(application, cmdline.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si.StartupInfo, &pi);
   }
 
   void close_process_info(PROCESS_INFORMATION &pi) {
@@ -156,21 +164,22 @@ namespace playnite_launcher::playnite {
       parent = nullptr;
     }
     std::wstring exe = get_explorer_path();
-    std::wstring cmd =
-      L""
-      " + exe + L"
-      " " +
-      uri;
+    std::wstring cmd = L"\"" + exe + L"\"";
+    if (!uri.empty()) {
+      cmd += L" ";
+      cmd += uri;
+    }
     DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
                   CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
     PROCESS_INFORMATION pi {};
-    BOOL ok = launch_detached_command(exe, cmd, si, pi, flags);
+  BOOL ok = launch_detached_command(exe.c_str(), cmd, si, pi, flags);
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free_parent_attributes(attrList);
     if (parent) {
       CloseHandle(parent);
     }
     if (!ok) {
-      BOOST_LOG(warning) << "CreateProcessW(explorer uri) failed: " << GetLastError();
+      BOOST_LOG(warning) << "CreateProcessW(explorer uri) failed: " << err;
       return false;
     }
     close_process_info(pi);
@@ -220,33 +229,87 @@ namespace playnite_launcher::playnite {
     return parse_command_executable(command);
   }
 
-  bool launch_executable_detached_parented(const std::wstring &exe_full_path) {
-    HANDLE parent = open_explorer_parent_handle();
-    STARTUPINFOEXW si {};
-    si.StartupInfo.cb = sizeof(si);
-    LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
-    if (parent && !assign_parent_attributes(parent, si, attrList)) {
-      CloseHandle(parent);
-      parent = nullptr;
+  bool launch_executable_detached_parented_with_args(const std::wstring &exe_full_path, const std::wstring &args) {
+    // Build command line: "<exe>" <args>
+    std::wstring cmd = L"\"" + exe_full_path + L"\"";
+    if (!args.empty()) {
+      cmd += L" ";
+      cmd += args;
     }
-    std::wstring cmd =
-      L""
-      " + exe_full_path + L"
-      "";
-    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
-                  CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
-    PROCESS_INFORMATION pi {};
-    BOOL ok = launch_detached_command(exe_full_path, cmd, si, pi, flags);
-    free_parent_attributes(attrList);
-    if (parent) {
-      CloseHandle(parent);
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(0);
+
+    std::wstring working_dir;
+    try {
+      std::filesystem::path p(exe_full_path);
+      working_dir = p.parent_path().wstring();
+    } catch (...) {
     }
-    if (ok) {
-      close_process_info(pi);
+    const wchar_t *cwd_ptr = working_dir.empty() ? nullptr : working_dir.c_str();
+
+    auto attempt_launch = [&](bool use_parent) -> std::pair<bool, DWORD> {
+      HANDLE parent = nullptr;
+      LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
+      STARTUPINFOEXW si_ex {};
+      STARTUPINFOW si_basic {};
+      STARTUPINFOW *si_ptr = nullptr;
+      DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
+                    CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
+
+      if (use_parent) {
+        parent = open_explorer_parent_handle();
+        if (!parent) {
+          use_parent = false;
+        } else if (!assign_parent_attributes(parent, si_ex, attrList)) {
+          CloseHandle(parent);
+          parent = nullptr;
+          use_parent = false;
+        } else {
+          si_ex.StartupInfo.cb = sizeof(si_ex);
+          si_ptr = &si_ex.StartupInfo;
+        }
+      }
+
+      if (!use_parent) {
+        flags &= ~EXTENDED_STARTUPINFO_PRESENT;
+      }
+      if (!si_ptr) {
+        si_basic.cb = sizeof(si_basic);
+        si_ptr = &si_basic;
+      }
+
+      PROCESS_INFORMATION pi {};
+      BOOL ok = CreateProcessW(exe_full_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags, nullptr, cwd_ptr, si_ptr, &pi);
+      DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+      }
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+      }
+      if (attrList) {
+        free_parent_attributes(attrList);
+      }
+      if (parent) {
+        CloseHandle(parent);
+      }
+      return {ok != FALSE, err};
+    };
+
+    auto result = attempt_launch(true);
+    if (!result.first && result.second == ERROR_INVALID_HANDLE) {
+      BOOST_LOG(warning) << "CreateProcessW(executable with args) failed with ERROR_INVALID_HANDLE when using explorer parent; retrying without explicit parent";
+      result = attempt_launch(false);
+    }
+    if (result.first) {
       return true;
     }
-    BOOST_LOG(warning) << "CreateProcessW(executable) failed: " << GetLastError();
+    BOOST_LOG(warning) << "CreateProcessW(executable with args) failed: " << result.second;
     return false;
+  }
+
+  bool launch_executable_detached_parented(const std::wstring &exe_full_path) {
+    return launch_executable_detached_parented_with_args(exe_full_path, std::wstring());
   }
 
   bool spawn_cleanup_watchdog_process(const std::wstring &self_path, const std::string &install_dir_utf8, int exit_timeout_secs, bool fullscreen_flag, std::optional<DWORD> wait_for_pid) {

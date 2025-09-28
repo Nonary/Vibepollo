@@ -288,24 +288,36 @@ namespace playnite_launcher {
 
       client.start();
 
-      BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.FullscreenApp.exe";
+      BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.DesktopApp.exe --startfullscreen";
       bool started = false;
       std::string fullscreen_install_dir_utf8;
       try {
         std::wstring assocExe = playnite::query_playnite_executable_from_assoc();
         if (!assocExe.empty()) {
-          std::filesystem::path base = std::filesystem::path(assocExe).parent_path();
+          std::filesystem::path assoc_path(assocExe);
+          std::filesystem::path base = assoc_path.parent_path();
           fullscreen_install_dir_utf8 = platf::dxgi::wide_to_utf8(base.wstring());
-          std::filesystem::path fs = base / L"Playnite.FullscreenApp.exe";
-          if (std::filesystem::exists(fs)) {
-            BOOST_LOG(info) << "Launching FullscreenApp from: " << platf::dxgi::wide_to_utf8(fs.wstring());
-            started = playnite::launch_executable_detached_parented(fs.wstring());
+          std::filesystem::path desktopExe = base / L"Playnite.DesktopApp.exe";
+          std::filesystem::path targetExe = desktopExe;
+          if (!std::filesystem::exists(targetExe) && std::filesystem::exists(assoc_path)) {
+            targetExe = assoc_path;
+          }
+          if (std::filesystem::exists(targetExe)) {
+            BOOST_LOG(info) << "Launching Playnite Desktop with --startfullscreen from: " << platf::dxgi::wide_to_utf8(targetExe.wstring());
+            started = playnite::launch_executable_detached_parented_with_args(targetExe.wstring(), L"--startfullscreen");
+          }
+          if (!started) {
+            std::filesystem::path fullscreenExe = base / L"Playnite.FullscreenApp.exe";
+            if (std::filesystem::exists(fullscreenExe)) {
+              BOOST_LOG(info) << "Desktop launch failed; falling back to FullscreenApp from: " << platf::dxgi::wide_to_utf8(fullscreenExe.wstring());
+              started = playnite::launch_executable_detached_parented(fullscreenExe.wstring());
+            }
           }
         }
       } catch (...) {
       }
       if (!started) {
-        BOOST_LOG(info) << "Fullscreen exe not resolved; falling back to playnite://";
+        BOOST_LOG(info) << "Playnite executable not resolved; falling back to playnite://";
         ensure_playnite_open();
       }
 
