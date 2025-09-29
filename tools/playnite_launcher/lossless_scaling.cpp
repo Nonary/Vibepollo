@@ -379,6 +379,41 @@ namespace playnite_launcher::lossless {
       return exe_from_program_files();
     }
 
+    bool is_any_executable_running(const std::vector<std::wstring> &exe_names) {
+      if (exe_names.empty()) {
+        return false;
+      }
+      for (const auto &exe_name : exe_names) {
+        if (exe_name.empty()) {
+          continue;
+        }
+        try {
+          auto ids = platf::dxgi::find_process_ids_by_name(exe_name);
+          if (!ids.empty()) {
+            return true;
+          }
+        } catch (...) {
+        }
+      }
+      return false;
+    }
+
+    bool wait_for_any_executable(const std::vector<std::wstring> &exe_names, int timeout_seconds) {
+      if (exe_names.empty() || timeout_seconds <= 0) {
+        return false;
+      }
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (is_any_executable_running(exe_names)) {
+          BOOST_LOG(debug) << "Lossless Scaling: game executable detected in process list";
+          return true;
+        }
+        std::this_thread::sleep_for(250ms);
+      }
+      BOOST_LOG(debug) << "Lossless Scaling: timeout waiting for game executable to appear";
+      return false;
+    }
+
     bool focus_main_lossless_window(DWORD pid) {
       HWND hwnd = focus::find_main_window_for_pid(pid);
       return hwnd && focus::try_focus_hwnd(hwnd);
@@ -1026,13 +1061,31 @@ namespace playnite_launcher::lossless {
     return write_settings_tree(tree, settings_path);
   }
 
-  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch) {
+  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8) {
     if (focus_and_minimize_existing_instances(state)) {
       return;
     }
     if (!should_launch_new_instance(state, force_launch)) {
       return;
     }
+
+    if (!install_dir_utf8.empty() || !exe_path_utf8.empty()) {
+      auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
+      auto explicit_exe = resolve_explicit_executable(exe_path_utf8);
+      auto exe_names = lossless_collect_executable_names(base_dir.value_or(std::filesystem::path()), explicit_exe);
+
+      if (!exe_names.empty()) {
+        const char *timeout_env = std::getenv("SUNSHINE_LOSSLESS_WAIT_TIMEOUT");
+        int timeout_secs = 10;
+        if (auto parsed = parse_env_int(timeout_env)) {
+          timeout_secs = std::clamp(*parsed, 1, 60);
+        }
+
+        BOOST_LOG(debug) << "Lossless Scaling: waiting up to " << timeout_secs << " seconds for game process to appear (checking " << exe_names.size() << " executables)";
+        wait_for_any_executable(exe_names, timeout_secs);
+      }
+    }
+
     auto exe = discover_lossless_scaling_exe(state);
     if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
       BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";

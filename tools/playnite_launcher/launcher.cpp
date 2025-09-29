@@ -247,7 +247,7 @@ namespace playnite_launcher {
             } else {
               fullscreen_lossless_backup = {};
             }
-            lossless::lossless_scaling_restart_foreground(runtime, changed);
+            lossless::lossless_scaling_restart_foreground(runtime, changed, install_for_ls, exe_for_ls);
           }
         } else if (msg.status_name == "gameStopped") {
           bool matches = false;
@@ -690,7 +690,7 @@ namespace playnite_launcher {
               } else {
                 active_lossless_backup = {};
               }
-              lossless::lossless_scaling_restart_foreground(runtime, changed);
+              lossless::lossless_scaling_restart_foreground(runtime, changed, last_install_dir, last_game_exe);
             }
           }
           if (msg.status_name == "gameStopped") {
