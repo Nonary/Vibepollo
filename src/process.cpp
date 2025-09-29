@@ -303,14 +303,20 @@ namespace proc {
       flow_scale = std::clamp(flow_scale, LOSSLESS_MIN_FLOW_SCALE, LOSSLESS_MAX_FLOW_SCALE);
       result.flow_scale = flow_scale;
 
-      int resolution_scale = overrides.resolution_scale.value_or(defaults.resolution_scale);
-      resolution_scale = std::clamp(resolution_scale, LOSSLESS_MIN_RESOLUTION_SCALE, LOSSLESS_MAX_RESOLUTION_SCALE);
-      result.resolution_scale = resolution_scale;
-
       std::string scaling_mode = overrides.scaling_type.has_value() ? *overrides.scaling_type : defaults.scaling_mode;
       auto normalized_mode = normalize_scaling_mode(scaling_mode);
       if (!normalized_mode) {
         normalized_mode = defaults.scaling_mode;
+      }
+
+      // Only apply resolution scaling if scaling type is not 'off'
+      if (*normalized_mode != "off") {
+        int resolution_scale = overrides.resolution_scale.value_or(defaults.resolution_scale);
+        resolution_scale = std::clamp(resolution_scale, LOSSLESS_MIN_RESOLUTION_SCALE, LOSSLESS_MAX_RESOLUTION_SCALE);
+        result.resolution_scale = resolution_scale;
+      } else {
+        // When scaling is off, use default/100% - don't apply custom resolution scaling
+        result.resolution_scale = LOSSLESS_DEFAULT_RESOLUTION_SCALE;
       }
 
       if (auto mapped = scaling_mode_to_lossless_value(*normalized_mode)) {
@@ -653,6 +659,46 @@ namespace proc {
     // Playnite-backed apps: invoke via Playnite and treat as placebo (lifetime managed via Playnite status)
 #ifdef _WIN32
     if (!_app.playnite_id.empty() && _app.cmd.empty()) {
+      // Auto-update Playnite plugin if an update is available
+      try {
+        std::string installed_ver, packaged_ver;
+        bool have_installed = platf::playnite::get_installed_plugin_version(installed_ver);
+        bool have_packaged = platf::playnite::get_packaged_plugin_version(packaged_ver);
+        
+        if (have_installed && have_packaged) {
+          // Simple version comparison: compare as strings (works for semantic versioning)
+          auto normalize_ver = [](std::string s) -> std::string {
+            // Strip leading 'v' if present
+            if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) {
+              s = s.substr(1);
+            }
+            // Remove whitespace
+            s.erase(std::remove_if(s.begin(), s.end(), ::isspace), s.end());
+            return s;
+          };
+          
+          std::string installed_normalized = normalize_ver(installed_ver);
+          std::string packaged_normalized = normalize_ver(packaged_ver);
+          
+          if (installed_normalized < packaged_normalized) {
+            BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver 
+                           << " -> " << packaged_ver << "), auto-updating before launch";
+            std::string install_error;
+            if (platf::playnite::install_plugin(install_error)) {
+              BOOST_LOG(info) << "Playnite plugin auto-update succeeded";
+            } else {
+              BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error 
+                                << " (continuing with game launch)";
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Exception during Playnite plugin auto-update check: " << e.what() 
+                          << " (continuing with game launch)";
+      } catch (...) {
+        BOOST_LOG(warning) << "Unknown exception during Playnite plugin auto-update check (continuing with game launch)";
+      }
+      
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe

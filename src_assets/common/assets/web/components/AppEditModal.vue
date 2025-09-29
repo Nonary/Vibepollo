@@ -286,6 +286,10 @@
                   Choose the Lossless Scaling algorithm. Options like LS1, FSR, NIS, and SGSR expose
                   sharpening controls below. Anime4K unlocks size and VRS toggles.
                 </p>
+                <p class="text-[11px] opacity-60 text-warning">
+                  <strong>Note:</strong> Only use scaling if your game does not natively support FSR
+                  or DLSS, as it will cost additional performance.
+                </p>
               </div>
 
               <div v-if="showLosslessSharpening" class="space-y-1">
@@ -1168,6 +1172,10 @@ function setScalingMode(profile: LosslessProfileKey, value: LosslessScalingMode)
     overrides.anime4kSize = null;
     overrides.anime4kVrs = null;
   }
+  // When scaling is set to 'off', reset resolution scaling to default (100%)
+  if (value === 'off') {
+    overrides.resolutionScale = null;
+  }
 }
 
 function getEffectiveSharpening(profile: LosslessProfileKey): number {
@@ -1533,22 +1541,36 @@ watch(newAppSource, (v) => {
     selectedPlayniteId.value = '';
   }
 });
+// Track if Gen1 is being auto-enabled by Lossless Scaling to prevent alert spam
+let autoEnablingGen1 = false;
+
 watch(
   () => form.value.gen1FramegenFix,
   async (enabled) => {
     if (!enabled) {
       return;
     }
+    // Disable Gen2 when Gen1 is enabled (mutually exclusive)
+    if (form.value.gen2FramegenFix) {
+      form.value.gen2FramegenFix = false;
+    }
+    // Skip alerts if this was triggered by lossless scaling auto-enable
+    if (autoEnablingGen1) {
+      return;
+    }
     message?.info(
       '1st Gen Frame Generation Capture Fix requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher, and RTSS installed. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+      { duration: 8000 },
     );
     if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
       message?.warning(
         'Enable Display Device configuration and set it to "Deactivate all other displays" so the Frame Generation capture fix can take effect.',
+        { duration: 8000 },
       );
     } else if (ddConfigOption.value !== 'ensure_only_display') {
       message?.warning(
         'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
+        { duration: 8000 },
       );
     }
     try {
@@ -1557,11 +1579,13 @@ watch(
       if (!data || !data.path_exists || !data.hooks_found) {
         message?.warning(
           'RTSS is required for this fix. Install RTSS to ensure the stream remains perfectly smooth and avoid microstuttering.',
+          { duration: 8000 },
         );
       }
     } catch {
       message?.warning(
         'Unable to verify RTSS installation. Install RTSS to avoid microstuttering.',
+        { duration: 8000 },
       );
     }
   },
@@ -1573,16 +1597,23 @@ watch(
     if (!enabled) {
       return;
     }
+    // Disable Gen1 when Gen2 is enabled (mutually exclusive)
+    if (form.value.gen1FramegenFix) {
+      form.value.gen1FramegenFix = false;
+    }
     message?.info(
       '2nd Gen Frame Generation Capture Fix (for DLSS 4) forces NVIDIA Control Panel frame limiter. Requires Windows Graphics Capture (WGC) and an NVIDIA GPU.',
+      { duration: 8000 },
     );
     if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
       message?.warning(
         'Enable Display Device configuration and set it to "Deactivate all other displays" for best results.',
+        { duration: 8000 },
       );
     } else if (ddConfigOption.value !== 'ensure_only_display') {
       message?.warning(
         'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
+        { duration: 8000 },
       );
     }
   },
@@ -1593,10 +1624,17 @@ watch(
   () => form.value.losslessScalingEnabled,
   (enabled) => {
     if (enabled && !form.value.gen1FramegenFix) {
+      autoEnablingGen1 = true;
       form.value.gen1FramegenFix = true;
+      // Only show the lossless scaling integration message, not the full gen1 messages
       message?.info(
         '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling integration.',
+        { duration: 8000 },
       );
+      // Reset flag after Vue updates to avoid race conditions
+      setTimeout(() => {
+        autoEnablingGen1 = false;
+      }, 100);
     }
   },
 );
