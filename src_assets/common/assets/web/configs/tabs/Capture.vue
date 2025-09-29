@@ -114,7 +114,7 @@ async function refreshLosslessStatus() {
   try {
     const params: Record<string, string> = {};
     if (losslessConfiguredPath.value) {
-      params.path = String(losslessConfiguredPath.value);
+      params['path'] = String(losslessConfiguredPath.value);
     }
     const response = await http.get('/api/lossless_scaling/status', {
       params,

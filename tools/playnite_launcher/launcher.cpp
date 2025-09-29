@@ -661,6 +661,22 @@ namespace playnite_launcher {
           if (msg.status_name == "gameStarted") {
             got_started.store(true);
             schedule_focus_retry();
+            // Wait for user to unlock if they launched the game while locked
+            bool was_locked = false;
+            while (platf::dxgi::is_secure_desktop_active()) {
+              if (!was_locked) {
+                BOOST_LOG(info) << "Secure desktop detected (user locked screen). Waiting for unlock before applying Lossless Scaling and autofocus...";
+                was_locked = true;
+              }
+              if (should_exit.load()) {
+                BOOST_LOG(info) << "Exit requested while waiting for unlock";
+                return;
+              }
+              std::this_thread::sleep_for(500ms);
+            }
+            if (was_locked) {
+              BOOST_LOG(info) << "User unlocked. Proceeding with Lossless Scaling and autofocus.";
+            }
             if (lossless_options.enabled && !lossless_profiles_applied) {
               auto runtime = lossless::capture_lossless_scaling_state();
               if (!runtime.running_pids.empty()) {
@@ -733,6 +749,24 @@ namespace playnite_launcher {
       j["id"] = config.game_id;
       client.send_json_line(j.dump());
       BOOST_LOG(info) << "Launch command sent for id=" << config.game_id;
+
+      // Wait for user to unlock if they launched the game while locked
+      bool was_initially_locked = false;
+      while (platf::dxgi::is_secure_desktop_active()) {
+        if (!was_initially_locked) {
+          BOOST_LOG(info) << "Secure desktop detected at launch (user locked screen). Waiting for unlock before proceeding...";
+          was_initially_locked = true;
+        }
+        if (should_exit.load()) {
+          BOOST_LOG(info) << "Exit requested while waiting for unlock at launch";
+          client.stop();
+          return 0;
+        }
+        std::this_thread::sleep_for(500ms);
+      }
+      if (was_initially_locked) {
+        BOOST_LOG(info) << "User unlocked. Proceeding with game launch.";
+      }
 
       if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
         auto start_wait = std::chrono::steady_clock::now() + 5s;

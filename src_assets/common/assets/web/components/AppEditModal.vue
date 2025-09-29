@@ -188,9 +188,9 @@
               <div class="flex flex-col">
                 <span>DLSS Framegen capture fix</span>
                 <span class="text-[11px] opacity-60"
-                  >Requires a display capable of 240 Hz or higher (virtual display driver
-                  recommended) and RTSS installed. Configure Display Device to activate only that
-                  monitor during streams.</span
+                  >Requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher
+                  (virtual display driver recommended), and RTSS installed. Configure Display Device
+                  to activate only that monitor during streams.</span
                 >
               </div>
             </n-checkbox>
@@ -211,11 +211,22 @@
                 </div>
                 <p class="text-[11px] opacity-60">
                   Adds automatic Lossless Scaling profiles for every executable discovered in the
-                  install directory and restores defaults after cleanup.
+                  install directory and restores defaults after cleanup. Requires Playnite
+                  integration to be installed.
                 </p>
               </div>
               <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
             </div>
+            <n-alert
+              v-if="form.losslessScalingEnabled && !playniteInstalled"
+              type="warning"
+              :show-icon="true"
+              size="small"
+              class="text-xs"
+            >
+              Playnite integration is not installed. Install the Playnite plugin from the Settings →
+              Playnite tab to use Lossless Scaling integration.
+            </n-alert>
             <div v-if="form.losslessScalingEnabled" class="space-y-4">
               <div class="grid gap-3 md:grid-cols-2">
                 <div class="space-y-1">
@@ -596,6 +607,7 @@ import {
   NSwitch,
   NRadioGroup,
   NRadio,
+  NAlert,
 } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 
@@ -1431,6 +1443,7 @@ const isWindows = computed(
 const ddConfigOption = computed(
   () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
 );
+const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
 const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
@@ -1505,7 +1518,7 @@ watch(
       return;
     }
     message?.info(
-      'DLSS Framegen capture fix requires a display capable of 240 Hz or higher. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+      'DLSS Framegen capture fix requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher, and RTSS installed. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
     );
     if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
       message?.warning(
@@ -1527,6 +1540,19 @@ watch(
     } catch {
       message?.warning(
         'Unable to verify RTSS installation. Install RTSS to avoid microstuttering.',
+      );
+    }
+  },
+);
+
+// Automatically enable DLSS Framegen capture fix when Lossless Scaling is enabled
+watch(
+  () => form.value.losslessScalingEnabled,
+  (enabled) => {
+    if (enabled && !form.value.dlssFramegenCaptureFix) {
+      form.value.dlssFramegenCaptureFix = true;
+      message?.info(
+        'DLSS Framegen capture fix has been automatically enabled because it is required for Lossless Scaling integration.',
       );
     }
   },
