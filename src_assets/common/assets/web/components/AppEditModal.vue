@@ -223,12 +223,14 @@
                     Profile
                   </label>
                   <n-radio-group v-model:value="form.losslessScalingProfile">
-                    <n-radio value="recommended">Recommended</n-radio>
-                    <n-radio value="custom">Custom (Default)</n-radio>
+                    <n-radio value="recommended">Recommended (Lowest Latency)</n-radio>
+                    <n-radio value="custom">Use Lossless Scaling "Default"</n-radio>
                   </n-radio-group>
                   <p class="text-[11px] opacity-60">
-                    Recommended enables WGC capture, HDR, and LSFG 3.1 adaptive defaults. Adjust
-                    Flow Scale, Performance Mode, and Resolution per profile.
+                    Recommended keeps Sunshine-tuned values for the lowest latency and best frame
+                    pacing, enabling WGC capture, HDR, and LSFG 3.1 adaptive defaults. Select Use
+                    Lossless Scaling "Default" to run the profile you maintain inside Lossless
+                    Scaling.
                   </p>
                 </div>
                 <div class="flex items-end justify-end">
@@ -302,7 +304,7 @@
               </div>
 
               <div class="grid gap-3 md:grid-cols-2">
-                <div class="space-y-1">
+                <div v-if="showLosslessResolution" class="space-y-1">
                   <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
                     Resolution Scaling (%)
                   </label>
@@ -642,7 +644,7 @@ interface LosslessProfileDefaults {
 const LOSSLESS_FLOW_MIN = 0;
 const LOSSLESS_FLOW_MAX = 100;
 const LOSSLESS_RESOLUTION_MIN = 50;
-const LOSSLESS_RESOLUTION_MAX = 200;
+const LOSSLESS_RESOLUTION_MAX = 100;
 const LOSSLESS_SHARPNESS_MIN = 1;
 const LOSSLESS_SHARPNESS_MAX = 10;
 
@@ -1222,6 +1224,10 @@ const losslessAnimeVrsModel = computed<boolean>({
 const showLosslessSharpening = computed(() =>
   LOSSLESS_SCALING_SHARPENING.has(losslessScalingModeModel.value),
 );
+const showLosslessResolution = computed(() => {
+  const mode = losslessScalingModeModel.value;
+  return mode !== null && mode !== 'off';
+});
 const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
 
 const hasActiveLosslessOverrides = computed<boolean>(() => {
