@@ -964,22 +964,9 @@ namespace playnite_launcher::lossless {
     bool minimized = false;
     if (pi.hProcess) {
       WaitForInputIdle(pi.hProcess, 5000);
-      for (int attempt = 0; attempt < 10 && (!focused || !minimized); ++attempt) {
-        std::this_thread::sleep_for(200ms);
-        if (!focused) {
-          focused = lossless_scaling_focus_window(pi.dwProcessId);
-        }
-        if (!minimized) {
-          minimized = lossless_scaling_minimize_window(pi.dwProcessId);
-        }
-      }
-      // Double focus mechanism: attempt to focus again after delays to ensure activation
-      if (focused) {
-        std::this_thread::sleep_for(3000ms);
-        lossless_scaling_focus_window(pi.dwProcessId);
-        std::this_thread::sleep_for(1000ms);
-        lossless_scaling_focus_window(pi.dwProcessId);
-      }
+      // Single focus attempt only
+      focused = lossless_scaling_focus_window(pi.dwProcessId);
+      minimized = lossless_scaling_minimize_window(pi.dwProcessId);
       CloseHandle(pi.hProcess);
       pi.hProcess = nullptr;
     }
@@ -1097,8 +1084,8 @@ namespace playnite_launcher::lossless {
         BOOST_LOG(debug) << "Lossless Scaling: waiting up to " << timeout_secs << " seconds for game process to appear (checking " << exe_names.size() << " executables)";
         bool game_detected = wait_for_any_executable(exe_names, timeout_secs);
         if (game_detected) {
-          BOOST_LOG(debug) << "Lossless Scaling: game detected, adding 250ms delay before launch";
-          std::this_thread::sleep_for(250ms);
+          BOOST_LOG(info) << "Lossless Scaling: game detected, waiting 5 seconds before launch";
+          std::this_thread::sleep_for(5000ms);
         }
       }
     }
