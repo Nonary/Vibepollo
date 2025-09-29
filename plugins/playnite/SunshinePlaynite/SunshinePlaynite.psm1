@@ -503,6 +503,64 @@ public static class ShutdownBridge
 }
 catch { Write-Log "Failed to load ShutdownBridge: $($_.Exception.Message)" }
 
+try {
+  if (-not ([System.Management.Automation.PSTypeName]'SunConnBridge').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections;
+
+public static class SunConnBridge
+{
+    static readonly object Gate = new object();
+    static Hashtable Current;
+
+    public static void Set(Hashtable conn)
+    {
+        lock (Gate)
+        {
+            Current = conn;
+        }
+    }
+
+    public static Hashtable Get()
+    {
+        lock (Gate)
+        {
+            return Current;
+        }
+    }
+
+    public static Hashtable Swap(Hashtable replacement)
+    {
+        lock (Gate)
+        {
+            var previous = Current;
+            Current = replacement;
+            return previous;
+        }
+    }
+
+    public static Hashtable SwapIfSame(Hashtable expected)
+    {
+        lock (Gate)
+        {
+            if (!object.ReferenceEquals(Current, expected))
+            {
+                return null;
+            }
+
+            var previous = Current;
+            Current = null;
+            return previous;
+        }
+    }
+}
+"@
+    Write-Log "Loaded SunConnBridge"
+  }
+}
+catch { Write-Log "Failed to load SunConnBridge: $($_.Exception.Message)" }
+
 # Outbox shared between UI and background runspaces (global singleton)
 try {
   $haveGlobal = $null
@@ -571,18 +629,32 @@ function Send-JsonMessage {
 }
 
 function Close-SunshineConnection {
-  param([string]$Reason = '')
+  param(
+    [string]$Reason = '',
+    $Expected = $null
+  )
   try {
     if ($Reason) { Write-Log ("CloseSunConn: reason={0}" -f $Reason) -Level 'DEBUG' } else { Write-Log "CloseSunConn: closing" -Level 'DEBUG' }
   } catch {}
-  $conn = $global:SunConn
-  $global:SunConn = $null
+
+  try { Set-Variable -Name 'SunConn' -Scope Global -Value $null -ErrorAction SilentlyContinue } catch {}
+
+  $conn = $null
+  if ($PSBoundParameters.ContainsKey('Expected')) {
+    try { $conn = [SunConnBridge]::SwapIfSame($Expected) } catch { $conn = $null }
+    if (-not $conn) { return }
+  } else {
+    try { $conn = [SunConnBridge]::Swap($null) } catch { $conn = $null }
+  }
+
   try { [OutboxPump]::Stop() } catch {}
+
   if ($conn) {
     try { if ($conn.Reader) { $conn.Reader.Dispose() } } catch {}
     try { if ($conn.Writer) { $conn.Writer.Dispose() } } catch {}
     try { if ($conn.Stream) { $conn.Stream.Dispose() } } catch {}
   }
+
   try { [ShutdownBridge]::CloseSunStream() } catch {}
 }
 
@@ -596,7 +668,8 @@ function Initialize-SunshineConnection {
       Writer = $Writer
       Hello  = $Hello
     }
-    $global:SunConn = $info
+    try { [SunConnBridge]::Set($info) } catch {}
+    try { Set-Variable -Name 'SunConn' -Scope Global -Value $info -ErrorAction SilentlyContinue } catch {}
     try { [ShutdownBridge]::SetSunStream($Stream) } catch {}
     Write-Log "PipeServer: Sunshine core connection ready"
   }
@@ -807,7 +880,9 @@ function Start-PipeServerLoop {
       $role = ''
       try { if ($hello -and $hello.role) { $role = [string]$hello.role } } catch { $role = '' }
       if (-not $role) {
-        if (-not $global:SunConn) { $role = 'sunshine' } else { $role = 'launcher' }
+        $existingConn = $null
+        try { $existingConn = [SunConnBridge]::Get() } catch { $existingConn = $null }
+        if (-not $existingConn) { $role = 'sunshine' } else { $role = 'launcher' }
       }
       if ($role -eq 'sunshine') {
         Initialize-SunshineConnection -Stream $data -Reader $reader -Writer $writer -Hello $hello
@@ -1023,7 +1098,8 @@ function Start-ConnectorLoop {
   try { if (-not $script:LogPath) { Initialize-Logging } } catch {}
   Write-Log "Connector loop: starting"
   while (-not ($Token -and $Token.IsCancellationRequested)) {
-    $conn = $global:SunConn
+    $conn = $null
+    try { $conn = [SunConnBridge]::Get() } catch { $conn = $null }
     if (-not $conn -or -not $conn.Stream -or -not $conn.Stream.CanRead) {
       if ($Token -and $Token.IsCancellationRequested) { break }
       Start-Sleep -Milliseconds 300
@@ -1035,6 +1111,13 @@ function Start-ConnectorLoop {
     try { Send-RunningGamesStatusSnapshot } catch { Write-Log ("Connector loop: running snapshot failed: {0}" -f $_.Exception.Message) }
     $active = $true
     while (-not ($Token -and $Token.IsCancellationRequested) -and $active) {
+      try {
+        if (-not [object]::ReferenceEquals([SunConnBridge]::Get(), $conn)) {
+          Write-Log "Connector loop: connection superseded" -Level 'DEBUG'
+          $active = $false
+          break
+        }
+      } catch {}
       $line = $null
       try { $line = $conn.Reader.ReadLine() }
       catch {
@@ -1075,9 +1158,7 @@ function Start-ConnectorLoop {
         Write-Log "Failed to parse/handle line: $($_.Exception.Message)"
       }
     }
-    if ($global:SunConn -eq $conn) {
-      Close-SunshineConnection -Reason 'connector-loop'
-    }
+    try { Close-SunshineConnection -Reason 'connector-loop' -Expected $conn } catch {}
   }
   Write-Log "Connector loop: exiting (stopping=$([bool]($Token -and $Token.IsCancellationRequested)))"
 }
@@ -1754,13 +1835,8 @@ function OnApplicationStopped() {
     # 1) Signal all loops to exit ASAP
     try { if ($script:Cts) { $script:Cts.Cancel() } } catch {}
     # Actively break the connector runspace's blocking ReadLine()
+    try { Close-SunshineConnection -Reason 'stopped' } catch {}
     try { [ShutdownBridge]::CloseSunStream() } catch {}
-
-    # 2) Proactively close streams to break any ReadLine() blocking
-    try {
-      if ($global:SunConn -and $global:SunConn.Stream) { $global:SunConn.Stream.Dispose() }
-    } catch {}
-    $global:SunConn = $null
 
     # 3) Stop pumps
     try { [OutboxPump]::Stop() } catch {}
