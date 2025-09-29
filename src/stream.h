@@ -37,7 +37,8 @@ namespace stream {
     uint32_t encryptionFlagsEnabled;
 
     std::optional<int> gcmap;
-    bool dlss_framegen_capture_fix;
+    bool gen1_framegen_fix;
+    bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
     std::optional<int> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;

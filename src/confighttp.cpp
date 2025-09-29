@@ -582,7 +582,9 @@ namespace confighttp {
         "elevated",
         "auto-detach",
         "wait-all",
-        "dlss-framegen-capture-fix",
+        "gen1-framegen-fix",
+        "gen2-framegen-fix",
+        "dlss-framegen-capture-fix",  // backward compatibility
         "lossless-scaling-framegen"
       };
 
@@ -764,10 +766,22 @@ namespace confighttp {
 #endif
 
 #ifndef _WIN32
-      if (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>()) {
-        bad_request(response, request, "DLSS Framegen capture fix is only supported on Windows hosts.");
+      if ((input_tree.contains("gen1-framegen-fix") && input_tree["gen1-framegen-fix"].is_boolean() && input_tree["gen1-framegen-fix"].get<bool>()) ||
+          (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>())) {
+        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
         return;
       }
+      if (input_tree.contains("gen2-framegen-fix") && input_tree["gen2-framegen-fix"].is_boolean() && input_tree["gen2-framegen-fix"].get<bool>()) {
+        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
+        return;
+      }
+#else
+      // Migrate old field name to new for backward compatibility
+      if (input_tree.contains("dlss-framegen-capture-fix") && !input_tree.contains("gen1-framegen-fix")) {
+        input_tree["gen1-framegen-fix"] = input_tree["dlss-framegen-capture-fix"];
+      }
+      // Remove old field to avoid duplication
+      input_tree.erase("dlss-framegen-capture-fix");
 #endif
 
       auto &apps_node = file_tree["apps"];

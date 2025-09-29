@@ -472,7 +472,8 @@ namespace proc {
 
     _app_id = app_id;
     _app = *iter;
-    launch_session->dlss_framegen_capture_fix = _app.dlss_framegen_capture_fix;
+    launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
+    launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
     launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
@@ -1152,7 +1153,12 @@ namespace proc {
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
-        auto dlss_framegen_capture_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
+        auto gen1_framegen_fix = app_node.get_optional<bool>("gen1-framegen-fix"s);
+        auto gen2_framegen_fix = app_node.get_optional<bool>("gen2-framegen-fix"s);
+        // Backward compatibility: check old field name if new one not present
+        if (!gen1_framegen_fix) {
+          gen1_framegen_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
+        }
         auto lossless_scaling_framegen = app_node.get_optional<bool>("lossless-scaling-framegen"s);
 
         ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
@@ -1269,7 +1275,8 @@ namespace proc {
         ctx.wait_all = wait_all.value_or(true);
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(10)};
-        ctx.dlss_framegen_capture_fix = dlss_framegen_capture_fix.value_or(false);
+        ctx.gen1_framegen_fix = gen1_framegen_fix.value_or(false);
+        ctx.gen2_framegen_fix = gen2_framegen_fix.value_or(false);
         if (!ctx.lossless_scaling_framegen) {
           ctx.lossless_scaling_target_fps.reset();
           ctx.lossless_scaling_rtss_limit.reset();

@@ -287,7 +287,8 @@ namespace nvhttp {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
-    launch_session->dlss_framegen_capture_fix = false;
+    launch_session->gen1_framegen_fix = false;
+    launch_session->gen2_framegen_fix = false;
     launch_session->lossless_scaling_framegen = false;
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
@@ -320,7 +321,8 @@ namespace nvhttp {
         const std::string app_id_str = std::to_string(launch_session->appid);
         for (const auto &app_ctx : apps_snapshot) {
           if (app_ctx.id == app_id_str) {
-            launch_session->dlss_framegen_capture_fix = app_ctx.dlss_framegen_capture_fix;
+            launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
+            launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
             launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
             launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
             launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;

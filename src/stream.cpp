@@ -2002,7 +2002,7 @@ namespace stream {
             }
           }
         }
-        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.dlss_framegen_capture_fix, lossless_rtss_limit);
+        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.gen1_framegen_fix, session.config.gen2_framegen_fix, lossless_rtss_limit);
 #endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

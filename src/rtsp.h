@@ -35,7 +35,8 @@ namespace rtsp_stream {
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
-    bool dlss_framegen_capture_fix;
+    bool gen1_framegen_fix;
+    bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
     std::optional<int> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;

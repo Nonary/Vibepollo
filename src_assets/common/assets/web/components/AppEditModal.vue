@@ -181,23 +181,39 @@
             </n-checkbox>
             <n-checkbox
               v-if="isWindows"
-              v-model:checked="form.dlssFramegenCaptureFix"
+              v-model:checked="form.gen1FramegenFix"
               size="small"
               class="md:col-span-2"
             >
               <div class="flex flex-col">
-                <span>DLSS Framegen capture fix</span>
+                <span>1st Gen Frame Generation Capture Fix</span>
                 <span class="text-[11px] opacity-60"
-                  >Requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher
-                  (virtual display driver recommended), and RTSS installed. Configure Display Device
-                  to activate only that monitor during streams.</span
+                  >For DLSS 3, FSR 3, and Lossless Scaling. Requires Windows Graphics Capture (WGC),
+                  a display capable of 240 Hz or higher (virtual display driver recommended), and
+                  RTSS installed. Configure Display Device to activate only that monitor during
+                  streams.</span
+                >
+              </div>
+            </n-checkbox>
+            <n-checkbox
+              v-if="isWindows"
+              v-model:checked="form.gen2FramegenFix"
+              size="small"
+              class="md:col-span-2"
+            >
+              <div class="flex flex-col">
+                <span>2nd Gen Frame Generation Capture Fix</span>
+                <span class="text-[11px] opacity-60"
+                  >For DLSS 4 with 2nd generation frame generation. Forces NVIDIA Control Panel
+                  frame limiter. Requires Windows Graphics Capture (WGC) and a high refresh rate
+                  display.</span
                 >
               </div>
             </n-checkbox>
           </div>
           <p v-if="isWindows" class="text-[11px] opacity-60">
-            Configures RTSS to limit with front-edge polling, which fixes issues with games being
-            stuck at a lower frame rate using frame generation.
+            Frame generation capture fixes configure limiters to resolve issues with games being
+            stuck at lower frame rates when using frame generation.
           </p>
 
           <div
@@ -737,7 +753,8 @@ interface AppForm {
   exitTimeout: number;
   prepCmd: PrepCmd[];
   detached: string[];
-  dlssFramegenCaptureFix: boolean;
+  gen1FramegenFix: boolean;
+  gen2FramegenFix: boolean;
   losslessScalingEnabled: boolean;
   losslessScalingTargetFps: number | null;
   losslessScalingRtssLimit: number | null;
@@ -765,7 +782,9 @@ interface ServerApp {
   detached?: string[];
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
-  'dlss-framegen-capture-fix'?: boolean;
+  'gen1-framegen-fix'?: boolean;
+  'gen2-framegen-fix'?: boolean;
+  'dlss-framegen-capture-fix'?: boolean; // backward compatibility
   'lossless-scaling-framegen'?: boolean;
   'lossless-scaling-target-fps'?: number | string | null;
   'lossless-scaling-rtss-limit'?: number | string | null;
@@ -802,7 +821,8 @@ function fresh(): AppForm {
     exitTimeout: 5,
     prepCmd: [],
     detached: [],
-    dlssFramegenCaptureFix: false,
+    gen1FramegenFix: false,
+    gen2FramegenFix: false,
     output: '',
     losslessScalingEnabled: false,
     losslessScalingTargetFps: null,
@@ -956,7 +976,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     exitTimeout: derivedExitTimeout,
     prepCmd: prep,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
-    dlssFramegenCaptureFix: !!src['dlss-framegen-capture-fix'],
+    gen1FramegenFix: !!(src['gen1-framegen-fix'] ?? src['dlss-framegen-capture-fix']),
+    gen2FramegenFix: !!src['gen2-framegen-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
     losslessScalingEnabled: lsEnabled,
@@ -981,7 +1002,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
-    'dlss-framegen-capture-fix': !!f.dlssFramegenCaptureFix,
+    'gen1-framegen-fix': !!f.gen1FramegenFix,
+    'gen2-framegen-fix': !!f.gen2FramegenFix,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
       do: p.do,
@@ -1512,17 +1534,17 @@ watch(newAppSource, (v) => {
   }
 });
 watch(
-  () => form.value.dlssFramegenCaptureFix,
+  () => form.value.gen1FramegenFix,
   async (enabled) => {
     if (!enabled) {
       return;
     }
     message?.info(
-      'DLSS Framegen capture fix requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher, and RTSS installed. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+      '1st Gen Frame Generation Capture Fix requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher, and RTSS installed. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
     );
     if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
       message?.warning(
-        'Enable Display Device configuration and set it to "Deactivate all other displays" so the DLSS Framegen capture fix can take effect.',
+        'Enable Display Device configuration and set it to "Deactivate all other displays" so the Frame Generation capture fix can take effect.',
       );
     } else if (ddConfigOption.value !== 'ensure_only_display') {
       message?.warning(
@@ -1545,14 +1567,35 @@ watch(
   },
 );
 
-// Automatically enable DLSS Framegen capture fix when Lossless Scaling is enabled
+watch(
+  () => form.value.gen2FramegenFix,
+  async (enabled) => {
+    if (!enabled) {
+      return;
+    }
+    message?.info(
+      '2nd Gen Frame Generation Capture Fix (for DLSS 4) forces NVIDIA Control Panel frame limiter. Requires Windows Graphics Capture (WGC) and an NVIDIA GPU.',
+    );
+    if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
+      message?.warning(
+        'Enable Display Device configuration and set it to "Deactivate all other displays" for best results.',
+      );
+    } else if (ddConfigOption.value !== 'ensure_only_display') {
+      message?.warning(
+        'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
+      );
+    }
+  },
+);
+
+// Automatically enable Gen1 Frame Generation fix when Lossless Scaling is enabled
 watch(
   () => form.value.losslessScalingEnabled,
   (enabled) => {
-    if (enabled && !form.value.dlssFramegenCaptureFix) {
-      form.value.dlssFramegenCaptureFix = true;
+    if (enabled && !form.value.gen1FramegenFix) {
+      form.value.gen1FramegenFix = true;
       message?.info(
-        'DLSS Framegen capture fix has been automatically enabled because it is required for Lossless Scaling integration.',
+        '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling integration.',
       );
     }
   },
