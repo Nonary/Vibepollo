@@ -645,6 +645,10 @@ namespace playnite_launcher::lossless {
         backup.had_vrs = true;
         backup.vrs = *vrs;
       }
+      if (auto sync = source->get_optional<std::string>("SyncMode")) {
+        backup.had_sync_mode = true;
+        backup.sync_mode = *sync;
+      }
     }
 
     std::optional<std::filesystem::path> resolve_explicit_executable(const std::string &exe_path_utf8) {
@@ -704,6 +708,7 @@ namespace playnite_launcher::lossless {
       profile.put("Filter", filter_utf8);
       profile.put("AutoScale", "true");
       profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
+      profile.put("SyncMode", "OFF");
       if (options.capture_api) {
         std::string capture = *options.capture_api;
         boost::algorithm::to_upper(capture);
@@ -850,6 +855,7 @@ namespace playnite_launcher::lossless {
       restore_int_field(profile, "LS1Sharpness", backup.had_ls1_sharpness, backup.ls1_sharpness, changed);
       restore_string_field(profile, "Anime4kType", backup.had_anime4k_type, backup.anime4k_type, changed);
       restore_bool_field(profile, "VRS", backup.had_vrs, backup.vrs, changed);
+      restore_string_field(profile, "SyncMode", backup.had_sync_mode, backup.sync_mode, changed);
       return changed;
     }
 
@@ -873,7 +879,7 @@ namespace playnite_launcher::lossless {
     opt.target_fps = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
     opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
     if (opt.enabled && !opt.rtss_limit && opt.target_fps && *opt.target_fps > 0) {
-      int computed = static_cast<int>(std::lround(*opt.target_fps * 0.6));
+      int computed = *opt.target_fps / 2;
       if (computed > 0) {
         opt.rtss_limit = computed;
       }
@@ -966,6 +972,13 @@ namespace playnite_launcher::lossless {
         if (!minimized) {
           minimized = lossless_scaling_minimize_window(pi.dwProcessId);
         }
+      }
+      // Double focus mechanism: attempt to focus again after delays to ensure activation
+      if (focused) {
+        std::this_thread::sleep_for(3000ms);
+        lossless_scaling_focus_window(pi.dwProcessId);
+        std::this_thread::sleep_for(1000ms);
+        lossless_scaling_focus_window(pi.dwProcessId);
       }
       CloseHandle(pi.hProcess);
       pi.hProcess = nullptr;
@@ -1082,7 +1095,11 @@ namespace playnite_launcher::lossless {
         }
 
         BOOST_LOG(debug) << "Lossless Scaling: waiting up to " << timeout_secs << " seconds for game process to appear (checking " << exe_names.size() << " executables)";
-        wait_for_any_executable(exe_names, timeout_secs);
+        bool game_detected = wait_for_any_executable(exe_names, timeout_secs);
+        if (game_detected) {
+          BOOST_LOG(debug) << "Lossless Scaling: game detected, adding 250ms delay before launch";
+          std::this_thread::sleep_for(250ms);
+        }
       }
     }
 

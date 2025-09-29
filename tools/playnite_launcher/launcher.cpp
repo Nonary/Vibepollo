@@ -56,6 +56,13 @@ namespace playnite_launcher {
 
     auto lossless_options = lossless::read_lossless_scaling_options();
 
+    // Adjust focus_attempts to account for lossless scaling focus attempts (2 additional)
+    // This ensures the game still gets the configured number of focus attempts
+    if (lossless_options.enabled && config.focus_attempts > 0) {
+      config.focus_attempts += 2;
+      BOOST_LOG(debug) << "Lossless Scaling enabled: adjusted focus_attempts by +2 to " << config.focus_attempts;
+    }
+
     if (config.cleanup) {
       return detail::run_cleanup_mode(config, lossless_options);
     }

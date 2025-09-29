@@ -64,6 +64,8 @@ namespace playnite_launcher::lossless {
     std::string anime4k_type;
     bool had_vrs = false;
     bool vrs = false;
+    bool had_sync_mode = false;
+    std::string sync_mode;
   };
 
   struct lossless_scaling_runtime_state {

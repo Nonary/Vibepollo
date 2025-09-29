@@ -888,7 +888,7 @@ function defaultRtssFromTarget(target: number | null): number | null {
   if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) {
     return null;
   }
-  return Math.min(360, Math.max(1, Math.round(target * 0.6)));
+  return Math.min(360, Math.max(1, Math.round(target / 2)));
 }
 
 function parseLosslessProfileKey(value: unknown): LosslessProfileKey {
