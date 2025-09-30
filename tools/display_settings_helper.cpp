@@ -26,6 +26,7 @@
   #include <string>
   #include <thread>
   #include <unordered_map>
+  #include <utility>
   #include <vector>
 
 // third-party (libdisplaydevice)
@@ -44,12 +45,21 @@
   #include <nlohmann/json.hpp>
 
   // platform
+  #ifndef SECURITY_WIN32
+    #define SECURITY_WIN32
+  #endif
+
+  #include <comdef.h>
   #include <dbt.h>
   #include <devguid.h>
+  #include <lmcons.h>
   #include <powrprof.h>
+  #include <secext.h>
   #include <shlobj.h>
+  #include <taskschd.h>
   #include <windows.h>
   #include <winerror.h>
+  #include <wtsapi32.h>
 
 namespace {
   static const GUID kMonitorInterfaceGuid = {0xe6f07b5f, 0xee97, 0x4a90, {0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7}};
@@ -59,6 +69,61 @@ using namespace std::chrono_literals;
 namespace bl = boost::log;
 
 namespace {
+
+  constexpr DWORD kInvalidSessionId = static_cast<DWORD>(-1);
+
+  std::wstring query_session_account(DWORD session_id) {
+    if (session_id == kInvalidSessionId) {
+      return {};
+    }
+
+    auto fetch_session_string = [&](WTS_INFO_CLASS info_class) -> std::wstring {
+      LPWSTR buffer = nullptr;
+      DWORD bytes = 0;
+      if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, info_class, &buffer, &bytes)) {
+        return {};
+      }
+
+      std::wstring value;
+      if (buffer && *buffer != L'\0') {
+        value.assign(buffer);
+      }
+
+      if (buffer) {
+        WTSFreeMemory(buffer);
+      }
+
+      return value;
+    };
+
+    std::wstring user = fetch_session_string(WTSUserName);
+    if (user.empty()) {
+      return {};
+    }
+
+    std::wstring domain = fetch_session_string(WTSDomainName);
+    if (!domain.empty()) {
+      return domain + L"\\" + user;
+    }
+
+    return user;
+  }
+
+  std::wstring sanitize_task_suffix(const std::wstring &name) {
+    std::wstring sanitized;
+    sanitized.reserve(name.size());
+    for (wchar_t ch : name) {
+      const bool is_alpha = (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
+      const bool is_digit = (ch >= L'0' && ch <= L'9');
+      const bool is_sep = (ch == L'-' || ch == L'_');
+      sanitized.push_back((is_alpha || is_digit || is_sep) ? ch : L'_');
+    }
+    return sanitized;
+  }
+
+  std::wstring build_restore_task_name(const std::wstring &username) {
+    return L"VibeshineDisplayRestore";
+  }
 
   // Trigger a more robust Explorer/shell refresh so that desktop/taskbar icons
   // and other shell-controlled UI elements pick up DPI/metrics changes that
@@ -881,6 +946,9 @@ namespace {
     HDEVNOTIFY device_cookie_ {nullptr};
   };
 
+  bool create_restore_scheduled_task();
+  bool delete_restore_scheduled_task();
+
   struct ServiceState {
     enum class RestoreWindow {
       Primary,
@@ -1539,6 +1607,9 @@ namespace {
         if (!st.stop_requested() && self->try_restore_once_if_valid(st)) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
+
+          delete_restore_scheduled_task();
+
           const bool exit_helper = self->should_exit_after_restore();
           if (exit_helper && self->running_flag) {
             BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
@@ -1625,6 +1696,9 @@ namespace {
         if (success) {
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
+
+          delete_restore_scheduled_task();
+
           const bool exit_helper = self->should_exit_after_restore();
           if (exit_helper && self->running_flag) {
             BOOST_LOG(info) << "Restore confirmed; exiting helper.";
@@ -1803,6 +1877,320 @@ namespace {
     return path;
   }
 
+  bool create_restore_scheduled_task() {
+    BOOST_LOG(info) << "Attempting to create scheduled task 'VibeshineDisplayRestore'...";
+
+    const DWORD active_session_id = WTSGetActiveConsoleSessionId();
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to initialize COM for Task Scheduler: 0x" << std::hex << hr;
+      return false;
+    }
+
+    ITaskService *service = nullptr;
+    hr = CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskService, (void **) &service);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create Task Scheduler service instance: 0x" << std::hex << hr;
+      CoUninitialize();
+      return false;
+    }
+
+    hr = service->Connect(_variant_t(), _variant_t(), _variant_t(), _variant_t());
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to connect to Task Scheduler service: 0x" << std::hex << hr;
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ITaskFolder *root_folder = nullptr;
+    hr = service->GetFolder(_bstr_t(L"\\"), &root_folder);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to get root task folder: 0x" << std::hex << hr;
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ITaskDefinition *task = nullptr;
+    hr = service->NewTask(0, &task);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create new task definition: 0x" << std::hex << hr;
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    IRegistrationInfo *reg_info = nullptr;
+    hr = task->get_RegistrationInfo(&reg_info);
+    if (SUCCEEDED(hr)) {
+      reg_info->put_Author(_bstr_t(L"Sunshine Display Helper"));
+      reg_info->put_Description(_bstr_t(L"Automatically restores display settings after reboot"));
+      reg_info->Release();
+    }
+
+    ITaskSettings *settings = nullptr;
+    hr = task->get_Settings(&settings);
+    if (SUCCEEDED(hr)) {
+      settings->put_StartWhenAvailable(VARIANT_TRUE);
+      settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
+      settings->put_StopIfGoingOnBatteries(VARIANT_FALSE);
+      settings->put_ExecutionTimeLimit(_bstr_t(L"PT0S"));
+      settings->Release();
+    }
+
+    std::wstring username = query_session_account(active_session_id);
+
+    if (username.empty()) {
+      DWORD sam_required = 0;
+      if (!GetUserNameExW(NameSamCompatible, nullptr, &sam_required) && GetLastError() == ERROR_MORE_DATA && sam_required > 0) {
+        std::wstring sam_name;
+        sam_name.resize(sam_required);
+        DWORD sam_size = sam_required;
+        if (GetUserNameExW(NameSamCompatible, sam_name.data(), &sam_size)) {
+          sam_name.resize(sam_size);
+          username = std::move(sam_name);
+        }
+      }
+    }
+
+    if (username.empty()) {
+      wchar_t fallback[UNLEN + 1] = {0};
+      DWORD fallback_len = UNLEN + 1;
+      if (GetUserNameW(fallback, &fallback_len) && fallback_len > 0) {
+        username.assign(fallback);
+      }
+    }
+
+    bool has_username = !username.empty();
+    if (has_username) {
+      if (_wcsicmp(username.c_str(), L"SYSTEM") == 0 || _wcsicmp(username.c_str(), L"NT AUTHORITY\\SYSTEM") == 0) {
+        BOOST_LOG(warning) << "Resolved session identity is SYSTEM; skipping per-user task registration";
+        has_username = false;
+      }
+    } else {
+      BOOST_LOG(warning) << "Failed to get current username, using empty user for task";
+    }
+
+    const std::wstring task_name = build_restore_task_name(has_username ? username : std::wstring {});
+
+    wchar_t exe_path[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, exe_path, MAX_PATH)) {
+      BOOST_LOG(error) << "Failed to get current executable path";
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ITriggerCollection *trigger_collection = nullptr;
+    hr = task->get_Triggers(&trigger_collection);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to get trigger collection: " << std::hex << hr;
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ITrigger *trigger = nullptr;
+    hr = trigger_collection->Create(TASK_TRIGGER_LOGON, &trigger);
+    trigger_collection->Release();
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create logon trigger: " << std::hex << hr;
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ILogonTrigger *logon_trigger = nullptr;
+    hr = trigger->QueryInterface(IID_ILogonTrigger, (void **) &logon_trigger);
+    trigger->Release();
+    if (SUCCEEDED(hr)) {
+      logon_trigger->put_Id(_bstr_t(L"SunshineDisplayHelperLogonTrigger"));
+      logon_trigger->put_Enabled(VARIANT_TRUE);
+      if (has_username) {
+        logon_trigger->put_UserId(_bstr_t(username.c_str()));
+      }
+      logon_trigger->Release();
+    }
+
+    IActionCollection *action_collection = nullptr;
+    hr = task->get_Actions(&action_collection);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to get action collection: " << std::hex << hr;
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    IAction *action = nullptr;
+    hr = action_collection->Create(TASK_ACTION_EXEC, &action);
+    action_collection->Release();
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create exec action: " << std::hex << hr;
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    IExecAction *exec_action = nullptr;
+    hr = action->QueryInterface(IID_IExecAction, (void **) &exec_action);
+    action->Release();
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to query IExecAction interface: " << std::hex << hr;
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    exec_action->put_Path(_bstr_t(exe_path));
+    exec_action->put_Arguments(_bstr_t(L"--restore"));
+    exec_action->Release();
+
+    IPrincipal *principal = nullptr;
+    hr = task->get_Principal(&principal);
+    if (SUCCEEDED(hr)) {
+      principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN);
+      principal->put_RunLevel(TASK_RUNLEVEL_LUA);
+      principal->Release();
+    }
+
+    IRegisteredTask *registered_task = nullptr;
+    HRESULT registration_hr = root_folder->RegisterTaskDefinition(
+      _bstr_t(task_name.c_str()),
+      task,
+      TASK_CREATE_OR_UPDATE,
+      _variant_t(),
+      _variant_t(),
+      TASK_LOGON_INTERACTIVE_TOKEN,
+      _variant_t(L""),
+      &registered_task
+    );
+
+    if (registered_task) {
+      registered_task->Release();
+    }
+
+    task->Release();
+    root_folder->Release();
+    service->Release();
+
+    if (FAILED(registration_hr)) {
+      BOOST_LOG(error) << "Failed to register scheduled task: " << std::hex << registration_hr;
+      CoUninitialize();
+      return false;
+    }
+
+    BOOST_LOG(info) << "Successfully created scheduled task '" << std::string(task_name.begin(), task_name.end()) << "'";
+    CoUninitialize();
+    return true;
+  }
+
+  bool delete_restore_scheduled_task() {
+    BOOST_LOG(info) << "Attempting to delete restore helper scheduled tasks";
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to initialize COM for Task Scheduler deletion: 0x" << std::hex << hr;
+      return false;
+    }
+
+    ITaskService *service = nullptr;
+    hr = CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskService, (void **) &service);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create Task Scheduler service instance for deletion: 0x" << std::hex << hr;
+      CoUninitialize();
+      return false;
+    }
+
+    hr = service->Connect(_variant_t(), _variant_t(), _variant_t(), _variant_t());
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to connect to Task Scheduler service for deletion: 0x" << std::hex << hr;
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    ITaskFolder *root_folder = nullptr;
+    hr = service->GetFolder(_bstr_t(L"\\"), &root_folder);
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to get root task folder for deletion: " << std::hex << hr;
+      service->Release();
+      CoUninitialize();
+      return false;
+    }
+
+    const DWORD active_session_id = WTSGetActiveConsoleSessionId();
+    std::wstring username = query_session_account(active_session_id);
+
+    if (username.empty()) {
+      DWORD sam_required = 0;
+      if (!GetUserNameExW(NameSamCompatible, nullptr, &sam_required) && GetLastError() == ERROR_MORE_DATA && sam_required > 0) {
+        std::wstring sam_name;
+        sam_name.resize(sam_required);
+        DWORD sam_size = sam_required;
+        if (GetUserNameExW(NameSamCompatible, sam_name.data(), &sam_size)) {
+          sam_name.resize(sam_size);
+          username = std::move(sam_name);
+        }
+      }
+    }
+
+    if (username.empty()) {
+      wchar_t fallback[UNLEN + 1] = {0};
+      DWORD fallback_len = UNLEN + 1;
+      if (GetUserNameW(fallback, &fallback_len) && fallback_len > 0) {
+        username.assign(fallback);
+      }
+    }
+
+    std::vector<std::wstring> task_names;
+    task_names.push_back(build_restore_task_name({}));
+
+    if (!username.empty()) {
+      if (_wcsicmp(username.c_str(), L"SYSTEM") != 0 && _wcsicmp(username.c_str(), L"NT AUTHORITY\\SYSTEM") != 0) {
+        task_names.push_back(build_restore_task_name(username));
+      }
+    }
+
+    bool success = true;
+    for (const auto &name : task_names) {
+      const HRESULT delete_hr = root_folder->DeleteTask(_bstr_t(name.c_str()), 0);
+      if (SUCCEEDED(delete_hr)) {
+        BOOST_LOG(info) << "Removed scheduled task '" << std::string(name.begin(), name.end()) << "'";
+        continue;
+      }
+
+      if (delete_hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
+        BOOST_LOG(debug) << "Scheduled task '" << std::string(name.begin(), name.end()) << "' not found";
+        continue;
+      }
+
+      BOOST_LOG(error) << "Failed to delete scheduled task '" << std::string(name.begin(), name.end())
+                       << "': 0x" << std::hex << delete_hr;
+      success = false;
+    }
+
+    root_folder->Release();
+    service->Release();
+    CoUninitialize();
+
+    return success;
+  }
+
   void handle_apply(ServiceState &state, std::span<const uint8_t> payload) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
@@ -1905,6 +2293,10 @@ namespace {
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
     if (state.controller.soft_test_display_settings(cfg)) {
+      BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
+      const bool task_created = create_restore_scheduled_task();
+      BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
+
       const auto before_sig = state.controller.signature(state.controller.snapshot());
       (void) state.controller.apply(cfg);
       display_device::DisplaySettingsSnapshot cur;
@@ -1922,12 +2314,13 @@ namespace {
   }
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
+    BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
     state.restore_origin_epoch.store(state.current_connection_epoch(), std::memory_order_release);
-    // Begin polling every ~3s until restore confirmed successful.
+
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 
@@ -2038,7 +2431,17 @@ namespace {
   }
 }  // namespace
 
-int main() {
+int main(int argc, char *argv[]) {
+  bool restore_mode = false;
+  if (argc > 1) {
+    for (int i = 1; i < argc; ++i) {
+      if (std::strcmp(argv[i], "--restore") == 0) {
+        restore_mode = true;
+        break;
+      }
+    }
+  }
+
   HANDLE singleton = nullptr;
   if (!ensure_single_instance(singleton)) {
     return 3;
@@ -2051,6 +2454,54 @@ int main() {
   const auto session_current = (logdir / L"display_session_current.json");
   const auto session_previous = (logdir / L"display_session_previous.json");
   auto _log_guard = logging::init_append(2 /*info*/, logfile);
+
+  if (restore_mode) {
+    BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
+    dd_log_bridge().install();
+    ServiceState state;
+    state.golden_path = goldenfile;
+    state.session_path = sessionfile;
+    state.session_current_path = session_current;
+    state.session_previous_path = session_previous;
+
+    {
+      std::error_code ec_cur, ec_legacy;
+      const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);
+      const bool legacy_exists = std::filesystem::exists(state.session_path, ec_legacy);
+      if (cur_exists && !ec_cur) {
+        state.session_saved.store(true, std::memory_order_release);
+        BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
+                        << state.session_current_path.string();
+      } else if (legacy_exists && !ec_legacy) {
+        std::error_code ec_copy;
+        std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
+        (void) ec_copy;
+        std::filesystem::copy_file(state.session_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+        if (!ec_copy) {
+          state.session_saved.store(true, std::memory_order_release);
+          BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+          std::error_code ec_rm;
+          (void) std::filesystem::remove(state.session_path, ec_rm);
+        }
+      }
+    }
+
+    std::atomic<bool> running {true};
+    state.running_flag = &running;
+    state.exit_after_revert.store(true, std::memory_order_release);
+    state.restore_requested.store(true, std::memory_order_release);
+    state.restore_origin_epoch.store(0, std::memory_order_release);
+
+    state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
+
+    while (running.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(500ms);
+    }
+
+    BOOST_LOG(info) << "Display helper restore mode completed; shutting down";
+    logging::log_flush();
+    return 0;
+  }
 
   platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
   dd_log_bridge().install();
