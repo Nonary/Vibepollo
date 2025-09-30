@@ -664,7 +664,7 @@ namespace proc {
         std::string installed_ver, packaged_ver;
         bool have_installed = platf::playnite::get_installed_plugin_version(installed_ver);
         bool have_packaged = platf::playnite::get_packaged_plugin_version(packaged_ver);
-        
+
         if (have_installed && have_packaged) {
           // Simple version comparison: compare as strings (works for semantic versioning)
           auto normalize_ver = [](std::string s) -> std::string {
@@ -676,29 +676,29 @@ namespace proc {
             s.erase(std::remove_if(s.begin(), s.end(), ::isspace), s.end());
             return s;
           };
-          
+
           std::string installed_normalized = normalize_ver(installed_ver);
           std::string packaged_normalized = normalize_ver(packaged_ver);
-          
+
           if (installed_normalized < packaged_normalized) {
-            BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver 
-                           << " -> " << packaged_ver << "), auto-updating before launch";
+            BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver
+                            << " -> " << packaged_ver << "), auto-updating before launch";
             std::string install_error;
             if (platf::playnite::install_plugin(install_error)) {
               BOOST_LOG(info) << "Playnite plugin auto-update succeeded";
             } else {
-              BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error 
-                                << " (continuing with game launch)";
+              BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error
+                                 << " (continuing with game launch)";
             }
           }
         }
       } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Exception during Playnite plugin auto-update check: " << e.what() 
-                          << " (continuing with game launch)";
+        BOOST_LOG(warning) << "Exception during Playnite plugin auto-update check: " << e.what()
+                           << " (continuing with game launch)";
       } catch (...) {
         BOOST_LOG(warning) << "Unknown exception during Playnite plugin auto-update check (continuing with game launch)";
       }
-      
+
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
