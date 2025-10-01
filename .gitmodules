@@ -40,8 +40,8 @@
 	branch = sdk/12.0
 [submodule "third-party/nvapi-open-source-sdk"]
 	path = third-party/nvapi-open-source-sdk
-	url = https://github.com/LizardByte/nvapi-open-source-sdk.git
-	branch = sdk
+	url = https://github.com/Nonary/nvapi.git
+	branch = main
 [submodule "third-party/Simple-Web-Server"]
 	path = third-party/Simple-Web-Server
 	url = https://github.com/LizardByte-infrastructure/Simple-Web-Server.git

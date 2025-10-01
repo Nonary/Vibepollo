@@ -84,6 +84,7 @@ namespace proc {
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
+    std::string frame_generation_provider {"lossless-scaling"};
     std::optional<int> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
     std::string lossless_scaling_profile {"custom"};

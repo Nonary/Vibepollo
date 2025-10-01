@@ -86,7 +86,7 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(int fps, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit) {
+  void frame_limiter_streaming_start(int fps, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, bool smooth_motion) {
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
     g_gen1_framegen_fix_active = gen1_framegen_fix;
@@ -95,6 +95,7 @@ namespace platf {
     const bool frame_limit_enabled = config::frame_limiter.enable || gen1_framegen_fix || gen2_framegen_fix || (lossless_rtss_limit && *lossless_rtss_limit > 0);
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
+    const bool want_smooth_motion = smooth_motion && nvidia_gpu_present;
 
     // Gen1 fix: Force RTSS with front-edge sync (for DLSS3, FSR3, Lossless Scaling)
     if (gen1_framegen_fix) {
@@ -157,7 +158,8 @@ namespace platf {
             effective_limit,
             true,
             want_nv_overrides,
-            want_nv_overrides
+            want_nv_overrides,
+            want_smooth_motion
           );
           if (ok) {
             g_active_provider = frame_limiter_provider::nvidia_control_panel;
@@ -188,9 +190,18 @@ namespace platf {
       }
     }
 
-    if (want_nv_overrides && !nvcp_already_invoked) {
-      frame_limiter_nvcp::streaming_start(effective_limit, false, true, true);
+    if ((want_nv_overrides || want_smooth_motion) && !nvcp_already_invoked) {
+      bool nvcp_result = frame_limiter_nvcp::streaming_start(
+        effective_limit,
+        false,
+        want_nv_overrides,
+        want_nv_overrides,
+        want_smooth_motion
+      );
       nvcp_already_invoked = true;
+      if (want_smooth_motion && !nvcp_result) {
+        BOOST_LOG(warning) << "Requested NVIDIA Smooth Motion but NVIDIA Control Panel overrides failed";
+      }
     }
 
     if (nvcp_already_invoked) {

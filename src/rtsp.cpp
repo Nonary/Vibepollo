@@ -1119,6 +1119,7 @@ namespace rtsp_stream {
     config.gen1_framegen_fix = session.gen1_framegen_fix;
     config.gen2_framegen_fix = session.gen2_framegen_fix;
     config.lossless_scaling_framegen = session.lossless_scaling_framegen;
+    config.frame_generation_provider = session.frame_generation_provider;
     config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
     config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
     auto stream_session = stream::session::alloc(config, session);

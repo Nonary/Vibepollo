@@ -292,6 +292,7 @@ namespace nvhttp {
     launch_session->lossless_scaling_framegen = false;
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
+    launch_session->frame_generation_provider = "lossless-scaling";
 
     auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
     std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
@@ -326,6 +327,7 @@ namespace nvhttp {
             launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
             launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
             launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
+            launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
             break;
           }
         }

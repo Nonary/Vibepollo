@@ -188,7 +188,7 @@
               <div class="flex flex-col">
                 <span>1st Gen Frame Generation Capture Fix</span>
                 <span class="text-[11px] opacity-60"
-                  >For DLSS 3, FSR 3, and Lossless Scaling. Requires Windows Graphics Capture (WGC),
+                  >For DLSS3, FSR3, NVIDIA Smooth Motion, and Lossless Scaling. Requires Windows Graphics Capture (WGC),
                   a display capable of 240 Hz or higher (virtual display driver recommended), and
                   RTSS installed. Configure Display Device to activate only that monitor during
                   streams.</span
@@ -220,30 +220,73 @@
             v-if="isWindows"
             class="mt-4 space-y-3 rounded-md border border-dark/10 p-3 dark:border-light/10"
           >
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  Lossless Scaling
-                </div>
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                Frame Generation
+              </div>
+              <p class="text-[11px] opacity-60">
+                Enable per-app frame generation helpers. Choose NVIDIA Smooth Motion to toggle the
+                driver feature automatically, or Lossless Scaling to launch the external helper with
+                customized profiles.
+              </p>
+            </div>
+            <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
+          </div>
+
+          <div class="grid gap-3 md:grid-cols-2">
+            <div class="space-y-1">
+              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                Provider
+              </label>
+              <n-select
+                v-model:value="form.frameGenerationProvider"
+                :options="FRAME_GENERATION_PROVIDERS"
+                :disabled="!form.losslessScalingEnabled"
+                size="small"
+              />
+              <div class="space-y-2">
                 <p class="text-[11px] opacity-60">
-                  Adds automatic Lossless Scaling profiles for every executable discovered in the
-                  install directory and restores defaults after cleanup. Requires Playnite
-                  integration to be installed.
+                  <strong>NVIDIA Smooth Motion:</strong> Recommended for RTX 40xx/50xx cards with driver 571.86 or higher. 
+                  Offers better performance and lower latency than Lossless Scaling.
+                </p>
+                <p class="text-[11px] opacity-60">
+                  <strong>Lossless Scaling:</strong> Use this if you don't have an RTX 40xx+ card, or if you prefer more customization options.
                 </p>
               </div>
-              <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
             </div>
-            <n-alert
-              v-if="form.losslessScalingEnabled && !playniteInstalled"
-              type="warning"
-              :show-icon="true"
-              size="small"
-              class="text-xs"
-            >
-              Playnite integration is not installed. Install the Playnite plugin from the Settings →
-              Playnite tab to use Lossless Scaling integration.
-            </n-alert>
-            <div v-if="form.losslessScalingEnabled" class="space-y-4">
+          </div>
+
+          <n-alert
+            v-if="form.losslessScalingEnabled && usingLosslessProvider && !playniteInstalled"
+            type="warning"
+            :show-icon="true"
+            size="small"
+            class="text-xs"
+          >
+            Playnite integration is not installed. Install the Playnite plugin from the Settings →
+            Playnite tab to use Lossless Scaling integration.
+          </n-alert>
+
+          <n-alert
+            v-if="form.losslessScalingEnabled && usingSmoothMotionProvider"
+            type="info"
+            :show-icon="true"
+            size="small"
+            class="text-xs"
+          >
+            <div class="space-y-1">
+              <p>
+                <strong>Requirements:</strong> NVIDIA GeForce RTX 40xx or 50xx series GPU with driver version 571.86 or higher.
+              </p>
+              <p>
+                NVIDIA Smooth Motion will be enabled in the global profile when the stream starts and restored afterward. 
+                The 1st Gen Frame Generation Capture Fix will also be applied automatically for optimal streaming performance.
+              </p>
+            </div>
+          </n-alert>
+
+          <div v-if="form.losslessScalingEnabled && usingLosslessProvider" class="space-y-4">
               <div class="grid gap-3 md:grid-cols-2">
                 <div class="space-y-1">
                   <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -724,6 +767,13 @@ const LOSSLESS_PROFILE_DEFAULTS: Record<LosslessProfileKey, LosslessProfileDefau
   },
 };
 
+type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion';
+
+const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> = [
+  { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
+  { label: 'Lossless Scaling', value: 'lossless-scaling' },
+];
+
 function emptyLosslessOverrides(): LosslessProfileOverrides {
   return {
     performanceMode: null,
@@ -742,6 +792,24 @@ function emptyLosslessProfileState(): Record<LosslessProfileKey, LosslessProfile
     custom: emptyLosslessOverrides(),
   };
 }
+
+function normalizeFrameGenerationProvider(value: unknown): FrameGenerationProvider {
+  if (typeof value !== 'string') {
+    return 'lossless-scaling';
+  }
+  const compact = value
+    .toLowerCase()
+    .split('')
+    .filter((ch) => /[a-z0-9]/.test(ch))
+    .join('');
+  if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
+    return 'nvidia-smooth-motion';
+  }
+  if (compact === 'losslessscaling' || compact === 'lossless') {
+    return 'lossless-scaling';
+  }
+  return 'lossless-scaling';
+}
 interface AppForm {
   index: number;
   name: string;
@@ -759,6 +827,7 @@ interface AppForm {
   detached: string[];
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
+  frameGenerationProvider: FrameGenerationProvider;
   losslessScalingEnabled: boolean;
   losslessScalingTargetFps: number | null;
   losslessScalingRtssLimit: number | null;
@@ -789,6 +858,7 @@ interface ServerApp {
   'gen1-framegen-fix'?: boolean;
   'gen2-framegen-fix'?: boolean;
   'dlss-framegen-capture-fix'?: boolean; // backward compatibility
+  'frame-generation-provider'?: string;
   'lossless-scaling-framegen'?: boolean;
   'lossless-scaling-target-fps'?: number | string | null;
   'lossless-scaling-rtss-limit'?: number | string | null;
@@ -828,6 +898,7 @@ function fresh(): AppForm {
     gen1FramegenFix: false,
     gen2FramegenFix: false,
     output: '',
+    frameGenerationProvider: 'lossless-scaling',
     losslessScalingEnabled: false,
     losslessScalingTargetFps: null,
     losslessScalingRtssLimit: null,
@@ -984,6 +1055,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     gen2FramegenFix: !!src['gen2-framegen-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
+    frameGenerationProvider: normalizeFrameGenerationProvider(src['frame-generation-provider']),
     losslessScalingEnabled: lsEnabled,
     losslessScalingTargetFps: lsTarget,
     losslessScalingRtssLimit: lsLimit,
@@ -1018,6 +1090,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
   };
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
+  const provider = normalizeFrameGenerationProvider(f.frameGenerationProvider);
+  payload['frame-generation-provider'] = provider;
   const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
   const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
   payload['lossless-scaling-framegen'] = !!f.losslessScalingEnabled;
@@ -1079,11 +1153,39 @@ const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
   () => isPlaynite.value && form.value.playniteManaged !== 'manual',
 );
+const usingLosslessProvider = computed<boolean>(
+  () => form.value.frameGenerationProvider === 'lossless-scaling',
+);
+const usingSmoothMotionProvider = computed<boolean>(
+  () => form.value.frameGenerationProvider === 'nvidia-smooth-motion',
+);
+watch(
+  () => form.value.frameGenerationProvider,
+  (provider) => {
+    const normalized = normalizeFrameGenerationProvider(provider);
+    if (provider !== normalized) {
+      form.value.frameGenerationProvider = normalized;
+      return;
+    }
+    if (
+      normalized === 'lossless-scaling' &&
+      form.value.losslessScalingEnabled &&
+      !form.value.losslessScalingRtssTouched
+    ) {
+      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
+        parseNumeric(form.value.losslessScalingTargetFps),
+      );
+    }
+  },
+);
 watch(
   () => form.value.losslessScalingEnabled,
   (enabled) => {
     if (!enabled) {
       form.value.losslessScalingRtssTouched = false;
+      return;
+    }
+    if (!usingLosslessProvider.value) {
       return;
     }
     if (!form.value.losslessScalingRtssTouched) {
@@ -1101,7 +1203,7 @@ watch(
       form.value.losslessScalingTargetFps = normalized;
       return;
     }
-    if (!form.value.losslessScalingEnabled) {
+    if (!form.value.losslessScalingEnabled || !usingLosslessProvider.value) {
       return;
     }
     if (!form.value.losslessScalingRtssTouched) {
@@ -1619,18 +1721,25 @@ watch(
   },
 );
 
-// Automatically enable Gen1 Frame Generation fix when Lossless Scaling is enabled
+// Automatically enable Gen1 Frame Generation fix when Frame Generation is enabled
 watch(
-  () => form.value.losslessScalingEnabled,
-  (enabled) => {
+  () => [form.value.losslessScalingEnabled, form.value.frameGenerationProvider] as const,
+  ([enabled, provider]) => {
     if (enabled && !form.value.gen1FramegenFix) {
       autoEnablingGen1 = true;
       form.value.gen1FramegenFix = true;
-      // Only show the lossless scaling integration message, not the full gen1 messages
-      message?.info(
-        '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling integration.',
-        { duration: 8000 },
-      );
+      // Show appropriate message based on provider
+      if (provider === 'nvidia-smooth-motion') {
+        message?.info(
+          '1st Gen Frame Generation Capture Fix has been automatically enabled for optimal NVIDIA Smooth Motion performance.',
+          { duration: 8000 },
+        );
+      } else {
+        message?.info(
+          '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling integration.',
+          { duration: 8000 },
+        );
+      }
       // Reset flag after Vue updates to avoid race conditions
       setTimeout(() => {
         autoEnablingGen1 = false;

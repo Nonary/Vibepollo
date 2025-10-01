@@ -11,6 +11,7 @@
 #include <queue>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/endian/arithmetic.hpp>
 #include <openssl/err.h>
 
@@ -1992,7 +1993,11 @@ namespace stream {
 #ifdef _WIN32
         // Apply RTSS frame limit if enabled (Windows-only)
         std::optional<int> lossless_rtss_limit;
-        if (session.config.lossless_scaling_framegen) {
+        const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
+                                             boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
+        const bool using_smooth_motion = session.config.lossless_scaling_framegen &&
+                                         boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
+        if (using_lossless_provider) {
           if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
             lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
           } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
@@ -2002,7 +2007,13 @@ namespace stream {
             }
           }
         }
-        platf::frame_limiter_streaming_start(session.config.monitor.framerate, session.config.gen1_framegen_fix, session.config.gen2_framegen_fix, lossless_rtss_limit);
+        platf::frame_limiter_streaming_start(
+          session.config.monitor.framerate,
+          session.config.gen1_framegen_fix,
+          session.config.gen2_framegen_fix,
+          lossless_rtss_limit,
+          using_smooth_motion
+        );
 #endif
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

@@ -13,10 +13,12 @@
   #include <cstdint>
   #include <filesystem>
   #include <fstream>
+  #include <iomanip>
   #include <nlohmann/json.hpp>
-  #include <nvapi.h>
-  #include <NvApiDriverSettings.h>
+  #include "nvapi_driver_settings.h"
   #include <optional>
+  #include <sstream>
+  #include <string>
   #include <system_error>
   #include <windows.h>
 
@@ -31,18 +33,101 @@ namespace platf::frame_limiter_nvcp {
       bool frame_limit_applied = false;
       bool vsync_applied = false;
       bool llm_applied = false;
+      bool smooth_motion_applied = false;
+      bool smooth_motion_mask_applied = false;
+      bool smooth_motion_supported = false;
+      NvU32 driver_version = 0;
       std::optional<NvU32> original_frame_limit;
       std::optional<NvU32> original_vsync;
       std::optional<NvU32> original_prerender_limit;
+      std::optional<NvU32> original_smooth_motion;
+      std::optional<NvU32> original_smooth_motion_mask;
+      std::optional<NvU32> original_smooth_motion_value;
+      std::optional<NvU32> original_smooth_motion_mask_value;
+      bool original_smooth_motion_override = false;
+      bool original_smooth_motion_mask_override = false;
     };
 
     state_t g_state;
     bool g_recovery_file_owned = false;
 
+    constexpr NvU32 SMOOTH_MOTION_ENABLE_ID = 0xB0D384C0;
+    constexpr NvU32 SMOOTH_MOTION_API_MASK_ID = 0xB0CC0875;
+    constexpr NvU32 SMOOTH_MOTION_ON = 0x00000001;
+    constexpr NvU32 SMOOTH_MOTION_API_MASK_VALUE = 0x00000007;
+    constexpr NvU32 SMOOTH_MOTION_MIN_DRIVER_VERSION = 57186;
+    constexpr NvU32 NVAPI_DRIVER_AND_BRANCH_VERSION_ID = 0x2926AAAD;
+
+    using query_interface_fn = void *(__cdecl *)(NvU32);
+    using driver_version_fn = NvAPI_Status (__cdecl *)(NvU32 *, NvAPI_ShortString);
+
     void log_nvapi_error(NvAPI_Status status, const char *label) {
       NvAPI_ShortString message = {};
       NvAPI_GetErrorMessage(status, message);
       BOOST_LOG(warning) << "NvAPI " << label << " failed: " << message;
+    }
+
+    std::string format_driver_version(NvU32 version) {
+      if (version == 0) {
+        return "unknown";
+      }
+      std::ostringstream out;
+      NvU32 major = version / 100;
+      NvU32 minor = version % 100;
+      out << major << '.' << std::setw(2) << std::setfill('0') << minor;
+      return out.str();
+    }
+
+    query_interface_fn resolve_query_interface() {
+      static query_interface_fn cached = nullptr;
+      static bool attempted = false;
+      if (attempted) {
+        return cached;
+      }
+      attempted = true;
+
+      auto ensure_module = [](const wchar_t *name) -> HMODULE {
+        HMODULE module = GetModuleHandleW(name);
+        if (!module) {
+          module = LoadLibraryW(name);
+        }
+        return module;
+      };
+
+      HMODULE module = ensure_module(L"nvapi64.dll");
+      if (!module) {
+        module = ensure_module(L"nvapi.dll");
+      }
+      if (!module) {
+        return nullptr;
+      }
+
+      FARPROC symbol = GetProcAddress(module, "nvapi_QueryInterface");
+      if (!symbol) {
+        symbol = GetProcAddress(module, "NvAPI_QueryInterface");
+      }
+      if (!symbol) {
+        return nullptr;
+      }
+
+      cached = reinterpret_cast<query_interface_fn>(symbol);
+      return cached;
+    }
+
+    NvAPI_Status get_driver_and_branch_version(NvU32 *version, NvAPI_ShortString branch) {
+      static driver_version_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        auto query = resolve_query_interface();
+        if (query) {
+          fn = reinterpret_cast<driver_version_fn>(query(NVAPI_DRIVER_AND_BRANCH_VERSION_ID));
+        }
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      return fn(version, branch);
     }
 
     void cleanup() {
@@ -58,9 +143,19 @@ namespace platf::frame_limiter_nvcp {
       g_state.frame_limit_applied = false;
       g_state.vsync_applied = false;
       g_state.llm_applied = false;
+      g_state.smooth_motion_applied = false;
+      g_state.smooth_motion_mask_applied = false;
       g_state.original_frame_limit.reset();
       g_state.original_vsync.reset();
       g_state.original_prerender_limit.reset();
+      g_state.original_smooth_motion.reset();
+      g_state.original_smooth_motion_mask.reset();
+      g_state.original_smooth_motion_value.reset();
+      g_state.original_smooth_motion_mask_value.reset();
+      g_state.original_smooth_motion_override = false;
+      g_state.original_smooth_motion_mask_override = false;
+      g_state.smooth_motion_supported = false;
+      g_state.driver_version = 0;
     }
 
     bool ensure_initialized() {
@@ -76,6 +171,18 @@ namespace platf::frame_limiter_nvcp {
         return false;
       }
       g_state.initialized = true;
+
+      NvU32 driver_version = 0;
+      NvAPI_ShortString branch = {};
+      NvAPI_Status version_status = get_driver_and_branch_version(&driver_version, branch);
+      if (version_status != NVAPI_OK) {
+        log_nvapi_error(version_status, "SYS_GetDriverAndBranchVersion");
+        g_state.driver_version = 0;
+        g_state.smooth_motion_supported = false;
+      } else {
+        g_state.driver_version = driver_version;
+        g_state.smooth_motion_supported = driver_version >= SMOOTH_MOTION_MIN_DRIVER_VERSION;
+      }
 
       status = NvAPI_DRS_CreateSession(&g_state.session);
       if (status != NVAPI_OK) {
@@ -101,15 +208,34 @@ namespace platf::frame_limiter_nvcp {
       return true;
     }
 
-    NvAPI_Status get_current_setting(NvU32 setting_id, std::optional<NvU32> &storage) {
+    NvAPI_Status get_current_setting(NvU32 setting_id, std::optional<NvU32> &storage, bool *had_override = nullptr, NvU32 *current_value = nullptr) {
       NVDRS_SETTING existing = {};
       existing.version = NVDRS_SETTING_VER;
       NvAPI_Status status = NvAPI_DRS_GetSetting(g_state.session, g_state.profile, setting_id, &existing);
-      if (status == NVAPI_OK && existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION) {
-        storage = existing.u32CurrentValue;
+      if (status == NVAPI_OK) {
+        if (had_override) {
+          *had_override = existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION;
+        }
+        if (current_value) {
+          *current_value = existing.u32CurrentValue;
+        }
+        if (existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION) {
+          storage = existing.u32CurrentValue;
+        } else {
+          storage.reset();
+        }
       } else if (status == NVAPI_SETTING_NOT_FOUND) {
+        if (had_override) {
+          *had_override = false;
+        }
+        if (current_value) {
+          *current_value = 0;
+        }
         storage.reset();
         status = NVAPI_OK;
+      }
+      if (status != NVAPI_OK && had_override) {
+        *had_override = false;
       }
       return status;
     }
@@ -121,6 +247,14 @@ namespace platf::frame_limiter_nvcp {
       std::optional<NvU32> vsync_value;
       bool llm_applied = false;
       std::optional<NvU32> prerender_value;
+      bool smooth_motion_applied = false;
+      std::optional<NvU32> smooth_motion_value;
+      std::optional<NvU32> smooth_motion_fallback_value;
+      bool smooth_motion_override = false;
+      bool smooth_motion_mask_applied = false;
+      std::optional<NvU32> smooth_motion_mask_value;
+      std::optional<NvU32> smooth_motion_mask_fallback_value;
+      bool smooth_motion_mask_override = false;
     };
 
     bool restore_with_fresh_session(const restore_info_t &restore_data);
@@ -156,7 +290,7 @@ namespace platf::frame_limiter_nvcp {
     }
 
     bool write_overrides_file(const restore_info_t &info) {
-      if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied) {
+      if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied && !info.smooth_motion_applied && !info.smooth_motion_mask_applied) {
         return true;
       }
 
@@ -178,20 +312,26 @@ namespace platf::frame_limiter_nvcp {
       }
 
       nlohmann::json j;
-      auto encode_section = [&](const char *key, bool applied, const std::optional<NvU32> &value) {
+      auto encode_section = [&](const char *key, bool applied, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback) {
         nlohmann::json node;
         node["applied"] = applied;
+        node["had_override"] = had_override;
         if (value.has_value()) {
           node["value"] = *value;
         } else {
           node["value"] = nullptr;
         }
+        if (fallback.has_value()) {
+          node["fallback"] = *fallback;
+        }
         j[key] = node;
       };
 
-      encode_section("frame_limit", info.frame_limit_applied, info.frame_limit_value);
-      encode_section("vsync", info.vsync_applied, info.vsync_value);
-      encode_section("low_latency", info.llm_applied, info.prerender_value);
+      encode_section("frame_limit", info.frame_limit_applied, info.frame_limit_value.has_value(), info.frame_limit_value, std::nullopt);
+      encode_section("vsync", info.vsync_applied, info.vsync_value.has_value(), info.vsync_value, std::nullopt);
+      encode_section("low_latency", info.llm_applied, info.prerender_value.has_value(), info.prerender_value, std::nullopt);
+      encode_section("smooth_motion", info.smooth_motion_applied, info.smooth_motion_override, info.smooth_motion_value, info.smooth_motion_fallback_value);
+      encode_section("smooth_motion_mask", info.smooth_motion_mask_applied, info.smooth_motion_mask_override, info.smooth_motion_mask_value, info.smooth_motion_mask_fallback_value);
 
       std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
       if (!out.is_open()) {
@@ -238,17 +378,22 @@ namespace platf::frame_limiter_nvcp {
         return std::nullopt;
       }
 
-      auto decode_section = [&](const char *key, bool &applied, std::optional<NvU32> &value) {
+      auto decode_section = [&](const char *key, bool &applied, bool &had_override, std::optional<NvU32> &value, std::optional<NvU32> &fallback) {
         applied = false;
         value.reset();
+        fallback.reset();
         if (!j.contains(key)) {
+          had_override = false;
           return;
         }
         const auto &node = j[key];
         if (!node.is_object()) {
+          had_override = false;
           return;
         }
         applied = node.value("applied", false);
+        bool had_override_present = node.contains("had_override");
+        had_override = node.value("had_override", false);
         if (node.contains("value") && !node["value"].is_null()) {
           try {
             auto v = node["value"].get<std::uint32_t>();
@@ -257,14 +402,33 @@ namespace platf::frame_limiter_nvcp {
             value.reset();
           }
         }
+        if (node.contains("fallback") && !node["fallback"].is_null()) {
+          try {
+            auto v = node["fallback"].get<std::uint32_t>();
+            fallback = static_cast<NvU32>(v);
+          } catch (...) {
+            fallback.reset();
+          }
+        }
+        if (!had_override_present) {
+          had_override = value.has_value();
+        }
       };
 
       restore_info_t info;
-      decode_section("frame_limit", info.frame_limit_applied, info.frame_limit_value);
-      decode_section("vsync", info.vsync_applied, info.vsync_value);
-      decode_section("low_latency", info.llm_applied, info.prerender_value);
+      bool dummy_override = false;
+      std::optional<NvU32> dummy_fallback;
+      decode_section("frame_limit", info.frame_limit_applied, dummy_override, info.frame_limit_value, dummy_fallback);
+      dummy_override = false;
+      dummy_fallback.reset();
+      decode_section("vsync", info.vsync_applied, dummy_override, info.vsync_value, dummy_fallback);
+      dummy_override = false;
+      dummy_fallback.reset();
+      decode_section("low_latency", info.llm_applied, dummy_override, info.prerender_value, dummy_fallback);
+      decode_section("smooth_motion", info.smooth_motion_applied, info.smooth_motion_override, info.smooth_motion_value, info.smooth_motion_fallback_value);
+      decode_section("smooth_motion_mask", info.smooth_motion_mask_applied, info.smooth_motion_mask_override, info.smooth_motion_mask_value, info.smooth_motion_mask_fallback_value);
 
-      if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied) {
+      if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied && !info.smooth_motion_applied && !info.smooth_motion_mask_applied) {
         return std::nullopt;
       }
 
@@ -299,7 +463,7 @@ namespace platf::frame_limiter_nvcp {
     }
 
     bool restore_with_fresh_session(const restore_info_t &restore_data) {
-      if (!restore_data.frame_limit_applied && !restore_data.vsync_applied && !restore_data.llm_applied) {
+      if (!restore_data.frame_limit_applied && !restore_data.vsync_applied && !restore_data.llm_applied && !restore_data.smooth_motion_applied && !restore_data.smooth_motion_mask_applied) {
         return true;
       }
 
@@ -333,46 +497,79 @@ namespace platf::frame_limiter_nvcp {
           break;
         }
 
-        auto restore_setting = [&](NvU32 setting_id, std::optional<NvU32> value, const char *label) -> bool {
+        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *label) -> bool {
           NVDRS_SETTING setting = {};
-          setting.version = NVDRS_SETTING_VER1;
+          setting.version = NVDRS_SETTING_VER;
           setting.settingId = setting_id;
           setting.settingType = NVDRS_DWORD_TYPE;
           setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
 
-          if (value) {
-            setting.u32CurrentValue = *value;
-            NvAPI_Status s = NvAPI_DRS_SetSetting(session, profile, &setting);
-            if (s != NVAPI_OK) {
-              log_nvapi_error(s, label);
-              return false;
+          if (had_override) {
+            if (value) {
+              setting.u32CurrentValue = *value;
+              NvAPI_Status s = NvAPI_DRS_SetSetting(session, profile, &setting);
+              if (s != NVAPI_OK) {
+                log_nvapi_error(s, label);
+                return false;
+              }
+            } else {
+              NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
+              if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
+                log_nvapi_error(s, label);
+                return false;
+              }
             }
           } else {
-            NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
-            if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
-              log_nvapi_error(s, label);
-              return false;
+            if (fallback) {
+              setting.u32CurrentValue = *fallback;
+              NvAPI_Status s = NvAPI_DRS_SetSetting(session, profile, &setting);
+              if (s != NVAPI_OK) {
+                log_nvapi_error(s, label);
+                return false;
+              }
+            } else {
+              NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
+              if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
+                log_nvapi_error(s, label);
+                return false;
+              }
             }
           }
           return true;
         };
 
         if (restore_data.frame_limit_applied) {
-          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value, "DRS_SetSetting(FRL_FPS restore)")) {
+          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value.has_value(), restore_data.frame_limit_value, std::nullopt, "DRS_SetSetting(FRL_FPS restore)")) {
             break;
           }
         }
 
         if (restore_data.vsync_applied) {
-          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value, "DRS_SetSetting(VSYNCMODE restore)")) {
+          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value.has_value(), restore_data.vsync_value, std::nullopt, "DRS_SetSetting(VSYNCMODE restore)")) {
             break;
           }
         }
 
         if (restore_data.llm_applied) {
-          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value, "DRS_SetSetting(PRERENDERLIMIT restore)")) {
+          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value.has_value(), restore_data.prerender_value, std::nullopt, "DRS_SetSetting(PRERENDERLIMIT restore)")) {
             break;
           }
+        }
+
+        if (restore_data.smooth_motion_applied) {
+          if (!restore_setting(SMOOTH_MOTION_ENABLE_ID, restore_data.smooth_motion_override, restore_data.smooth_motion_value, restore_data.smooth_motion_fallback_value, "DRS_SetSetting(SMOOTH_MOTION restore)")) {
+            break;
+          }
+          NvU32 restored_value = restore_data.smooth_motion_override && restore_data.smooth_motion_value ? *restore_data.smooth_motion_value : (restore_data.smooth_motion_fallback_value ? *restore_data.smooth_motion_fallback_value : 0u);
+          BOOST_LOG(info) << "NVIDIA Smooth Motion restored to value " << restored_value;
+        }
+
+        if (restore_data.smooth_motion_mask_applied) {
+          if (!restore_setting(SMOOTH_MOTION_API_MASK_ID, restore_data.smooth_motion_mask_override, restore_data.smooth_motion_mask_value, restore_data.smooth_motion_mask_fallback_value, "DRS_SetSetting(SMOOTH_MOTION_MASK restore)")) {
+            break;
+          }
+          NvU32 restored_mask = restore_data.smooth_motion_mask_override && restore_data.smooth_motion_mask_value ? *restore_data.smooth_motion_mask_value : (restore_data.smooth_motion_mask_fallback_value ? *restore_data.smooth_motion_mask_fallback_value : 0u);
+          BOOST_LOG(info) << "NVIDIA Smooth Motion API mask restored to value " << restored_mask;
         }
 
         result = NvAPI_DRS_SaveSettings(session);
@@ -420,17 +617,25 @@ namespace platf::frame_limiter_nvcp {
     return status == NVAPI_OK;
   }
 
-  bool streaming_start(int fps, bool apply_frame_limit, bool force_vsync_off, bool force_low_latency_off) {
+  bool streaming_start(int fps, bool apply_frame_limit, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
     maybe_restore_from_overrides_file();
 
     g_state.frame_limit_applied = false;
     g_state.vsync_applied = false;
     g_state.llm_applied = false;
+    g_state.smooth_motion_applied = false;
+    g_state.smooth_motion_mask_applied = false;
     g_state.original_frame_limit.reset();
     g_state.original_vsync.reset();
     g_state.original_prerender_limit.reset();
+    g_state.original_smooth_motion.reset();
+    g_state.original_smooth_motion_mask.reset();
+    g_state.original_smooth_motion_value.reset();
+    g_state.original_smooth_motion_mask_value.reset();
+    g_state.original_smooth_motion_override = false;
+    g_state.original_smooth_motion_mask_override = false;
 
-    if (!apply_frame_limit && !force_vsync_off && !force_low_latency_off) {
+    if (!apply_frame_limit && !force_vsync_off && !force_low_latency_off && !apply_smooth_motion) {
       return false;
     }
 
@@ -445,6 +650,7 @@ namespace platf::frame_limiter_nvcp {
 
     bool dirty = false;
     bool frame_limit_success = false;
+    bool smooth_motion_already_enabled = false;
 
     if (apply_frame_limit) {
       NvAPI_Status status = get_current_setting(FRL_FPS_ID, g_state.original_frame_limit);
@@ -452,7 +658,7 @@ namespace platf::frame_limiter_nvcp {
         log_nvapi_error(status, "DRS_GetSetting(FRL_FPS)");
       } else {
         NVDRS_SETTING setting = {};
-        setting.version = NVDRS_SETTING_VER1;
+        setting.version = NVDRS_SETTING_VER;
         setting.settingId = FRL_FPS_ID;
         setting.settingType = NVDRS_DWORD_TYPE;
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
@@ -477,7 +683,7 @@ namespace platf::frame_limiter_nvcp {
         log_nvapi_error(status, "DRS_GetSetting(VSYNCMODE)");
       } else {
         NVDRS_SETTING setting = {};
-        setting.version = NVDRS_SETTING_VER1;
+        setting.version = NVDRS_SETTING_VER;
         setting.settingId = VSYNCMODE_ID;
         setting.settingType = NVDRS_DWORD_TYPE;
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
@@ -500,7 +706,7 @@ namespace platf::frame_limiter_nvcp {
         log_nvapi_error(status, "DRS_GetSetting(PRERENDERLIMIT)");
       } else {
         NVDRS_SETTING setting = {};
-        setting.version = NVDRS_SETTING_VER1;
+        setting.version = NVDRS_SETTING_VER;
         setting.settingId = PRERENDERLIMIT_ID;
         setting.settingType = NVDRS_DWORD_TYPE;
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
@@ -517,6 +723,79 @@ namespace platf::frame_limiter_nvcp {
       }
     }
 
+    if (apply_smooth_motion) {
+      if (!g_state.smooth_motion_supported) {
+        const std::string required_version = format_driver_version(SMOOTH_MOTION_MIN_DRIVER_VERSION);
+        const std::string current_version = format_driver_version(g_state.driver_version);
+        BOOST_LOG(warning) << "NVIDIA Smooth Motion requires driver " << required_version << " or newer; current driver version " << current_version;
+      } else {
+        NvU32 original_smooth_value = 0;
+        NvAPI_Status status = get_current_setting(SMOOTH_MOTION_ENABLE_ID, g_state.original_smooth_motion, &g_state.original_smooth_motion_override, &original_smooth_value);
+        if (status != NVAPI_OK) {
+          log_nvapi_error(status, "DRS_GetSetting(SMOOTH_MOTION)");
+          g_state.original_smooth_motion_value.reset();
+        }
+        if (status == NVAPI_OK) {
+          g_state.original_smooth_motion_value = original_smooth_value;
+        }
+
+        NvU32 original_mask_value = 0;
+        NvAPI_Status mask_status = get_current_setting(SMOOTH_MOTION_API_MASK_ID, g_state.original_smooth_motion_mask, &g_state.original_smooth_motion_mask_override, &original_mask_value);
+        if (mask_status != NVAPI_OK) {
+          log_nvapi_error(mask_status, "DRS_GetSetting(SMOOTH_MOTION_MASK)");
+          g_state.original_smooth_motion_mask_value.reset();
+        }
+        if (mask_status == NVAPI_OK) {
+          g_state.original_smooth_motion_mask_value = original_mask_value;
+        }
+
+        const NvU32 desired = SMOOTH_MOTION_ON;
+        const bool already_enabled = g_state.original_smooth_motion && *g_state.original_smooth_motion == desired;
+
+        if (!already_enabled && status == NVAPI_OK) {
+          NVDRS_SETTING setting = {};
+          setting.version = NVDRS_SETTING_VER;
+          setting.settingId = SMOOTH_MOTION_ENABLE_ID;
+          setting.settingType = NVDRS_DWORD_TYPE;
+          setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
+          setting.u32CurrentValue = desired;
+
+          status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+          if (status != NVAPI_OK) {
+            log_nvapi_error(status, "DRS_SetSetting(SMOOTH_MOTION)");
+          } else {
+            g_state.smooth_motion_applied = true;
+            dirty = true;
+            BOOST_LOG(info) << "NVIDIA Smooth Motion enabled for stream";
+          }
+        } else if (already_enabled) {
+          smooth_motion_already_enabled = true;
+          BOOST_LOG(info) << "NVIDIA Smooth Motion already enabled globally";
+        }
+
+        if (mask_status == NVAPI_OK) {
+          const bool mask_matches = g_state.original_smooth_motion_mask && *g_state.original_smooth_motion_mask == SMOOTH_MOTION_API_MASK_VALUE;
+          if (!mask_matches) {
+            NVDRS_SETTING mask_setting = {};
+            mask_setting.version = NVDRS_SETTING_VER;
+            mask_setting.settingId = SMOOTH_MOTION_API_MASK_ID;
+            mask_setting.settingType = NVDRS_DWORD_TYPE;
+            mask_setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
+            mask_setting.u32CurrentValue = SMOOTH_MOTION_API_MASK_VALUE;
+
+            NvAPI_Status set_mask_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &mask_setting);
+            if (set_mask_status != NVAPI_OK) {
+              log_nvapi_error(set_mask_status, "DRS_SetSetting(SMOOTH_MOTION_MASK)");
+            } else {
+              g_state.smooth_motion_mask_applied = true;
+              dirty = true;
+              BOOST_LOG(info) << "NVIDIA Smooth Motion API mask set to DX12|DX11|Vulkan";
+            }
+          }
+        }
+      }
+    }
+
     if (dirty) {
       NvAPI_Status status = NvAPI_DRS_SaveSettings(g_state.session);
       if (status != NVAPI_OK) {
@@ -529,6 +808,14 @@ namespace platf::frame_limiter_nvcp {
           g_state.original_vsync,
           g_state.llm_applied,
           g_state.original_prerender_limit,
+          g_state.smooth_motion_applied,
+          g_state.original_smooth_motion,
+          g_state.original_smooth_motion_value,
+          g_state.original_smooth_motion_override,
+          g_state.smooth_motion_mask_applied,
+          g_state.original_smooth_motion_mask,
+          g_state.original_smooth_motion_mask_value,
+          g_state.original_smooth_motion_mask_override,
         };
         if (write_overrides_file(info)) {
           g_recovery_file_owned = true;
@@ -536,7 +823,7 @@ namespace platf::frame_limiter_nvcp {
       }
     }
 
-    return frame_limit_success;
+    return frame_limit_success || g_state.vsync_applied || g_state.llm_applied || g_state.smooth_motion_applied || g_state.smooth_motion_mask_applied || smooth_motion_already_enabled;
   }
 
   void streaming_stop() {
@@ -552,6 +839,14 @@ namespace platf::frame_limiter_nvcp {
       g_state.original_vsync,
       g_state.llm_applied,
       g_state.original_prerender_limit,
+      g_state.smooth_motion_applied,
+      g_state.original_smooth_motion,
+      g_state.original_smooth_motion_value,
+      g_state.original_smooth_motion_override,
+      g_state.smooth_motion_mask_applied,
+      g_state.original_smooth_motion_mask,
+      g_state.original_smooth_motion_mask_value,
+      g_state.original_smooth_motion_mask_override,
     };
 
     cleanup();

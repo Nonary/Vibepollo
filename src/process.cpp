@@ -7,6 +7,7 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -79,6 +80,23 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_LS1_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS";
     constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
+
+    std::string normalize_frame_generation_provider(const std::string &value) {
+      std::string normalized;
+      normalized.reserve(value.size());
+      for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch))) {
+          normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        }
+      }
+      if (normalized == "nvidia" || normalized == "smoothmotion" || normalized == "nvidiasmoothmotion") {
+        return "nvidia-smooth-motion";
+      }
+      if (normalized == "lossless" || normalized == "losslessscaling") {
+        return "lossless-scaling";
+      }
+      return "lossless-scaling";
+    }
 
     struct lossless_profile_defaults_t {
       bool performance_mode;
@@ -483,6 +501,7 @@ namespace proc {
     launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
+    launch_session->frame_generation_provider = _app.frame_generation_provider;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -533,7 +552,13 @@ namespace proc {
       _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
     };
 
-    if (_app.lossless_scaling_framegen) {
+    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = _app.lossless_scaling_framegen
+                                                    ? _app.frame_generation_provider
+                                                    : "";
+
+    const bool using_lossless_provider = _app.lossless_scaling_framegen &&
+                                         boost::iequals(_app.frame_generation_provider, "lossless-scaling");
+    if (using_lossless_provider) {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
       if (_app.lossless_scaling_target_fps) {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*_app.lossless_scaling_target_fps);
@@ -1206,8 +1231,12 @@ namespace proc {
           gen1_framegen_fix = app_node.get_optional<bool>("dlss-framegen-capture-fix"s);
         }
         auto lossless_scaling_framegen = app_node.get_optional<bool>("lossless-scaling-framegen"s);
+        auto frame_generation_provider = app_node.get_optional<std::string>("frame-generation-provider"s);
 
         ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
+        ctx.frame_generation_provider = frame_generation_provider
+                                            ? normalize_frame_generation_provider(*frame_generation_provider)
+                                            : "lossless-scaling";
         ctx.lossless_scaling_target_fps.reset();
         ctx.lossless_scaling_rtss_limit.reset();
         if (auto ls_target = app_node.get_optional<int>("lossless-scaling-target-fps"s)) {
