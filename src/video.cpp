@@ -2425,11 +2425,15 @@ namespace video {
     return flag;
   }
 
+  static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
+  static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
+
   bool validate_encoder(encoder_t &encoder, bool expect_failure) {
     // During encoder probing, always use the current active display and do not
     // attempt to select/swap displays based on configured output_name. Display
     // swaps are now handled externally when a stream starts.
     const std::string probe_display_name;  // empty selects the current active display
+    
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -2449,7 +2453,15 @@ namespace video {
     config_t config_autoselect {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 0};
 
     // If the encoder isn't supported at all (not even H.264), bail early
-    reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
+    // Try to reuse cached display if same device type
+    if (cached_probe_display && cached_display_type == encoder.platform_formats->dev_type) {
+      disp = cached_probe_display;
+    } else {
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
+      cached_probe_display = disp;
+      cached_display_type = encoder.platform_formats->dev_type;
+    }
+    
     if (!disp) {
       return false;
     }
@@ -2552,6 +2564,8 @@ namespace video {
 
       // Reset the display since we're switching from SDR to HDR. Keep probing on the
       // current active display without attempting a display swap.
+      // Clear the cache since we need a fresh display for HDR testing
+      cached_probe_display.reset();
       reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
       if (!disp) {
         return false;
@@ -2629,6 +2643,9 @@ namespace video {
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
+
+    // Clear any cached display from previous probes to ensure fresh start
+    cached_probe_display.reset();
 
     auto adjust_encoder_constraints = [&](encoder_t *encoder) {
       // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
