@@ -268,7 +268,7 @@ namespace nvhttp {
    * @param[in]  enable_legacy_ordering  Enable legacy ordering
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
-   * 
+   *
    * @return     Whether the update is successful
    */
   bool update_device_info(
@@ -282,4 +282,10 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display
   );
+
+  /**
+   * @brief Persist current nvhttp-related state (paired clients, update subsystem markers, etc.).
+   * @note Exposed so subsystems (e.g. update) can trigger a save after mutating persisted fields.
+   */
+  void save_state();
 }  // namespace nvhttp

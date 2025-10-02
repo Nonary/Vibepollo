@@ -4,6 +4,10 @@
  */
 #pragma once
 
+#include <string>
+
+struct tray_menu;
+
 /**
  * @brief Handles the system tray icon and notification system.
  */
@@ -14,7 +18,6 @@ namespace system_tray {
    */
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item);
 
-
   void tray_force_stop_cb(struct tray_menu *item);
 
   /**
@@ -24,28 +27,37 @@ namespace system_tray {
   void tray_reset_display_device_config_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
-   * @brief Callback for restarting Sunshine from the system tray.
+   * @brief Generic notification helper (stacking). Title/text copied immediately; callback optional.
+   * @param title Notification title
+   * @param text Notification body
+   * @param cb Optional click callback (opens URLs, UI pages, etc.)
+   */
+  void tray_notify(const char *title, const char *text, void (*cb)() = nullptr);
+
+  /**
+   * @brief Callback for restarting Apollo from the system tray.
    * @param item The tray menu item.
    */
   void tray_restart_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
-   * @brief Callback for exiting Sunshine from the system tray.
+   * @brief Callback for exiting Apollo from the system tray.
    * @param item The tray menu item.
    */
   void tray_quit_cb([[maybe_unused]] struct tray_menu *item);
 
   /**
-   * @brief Initializes the system tray without starting a loop.
-   * @return 0 if initialization was successful, non-zero otherwise.
+   * @brief Create the system tray.
+   * @details This function has an endless loop, so it should be run in a separate thread.
+   * @return 1 if the system tray failed to create, otherwise 0 once the tray has been terminated.
    */
-  int init_tray();
+  int system_tray();
 
   /**
-   * @brief Processes a single tray event iteration.
-   * @return 0 if processing was successful, non-zero otherwise.
+   * @brief Run the system tray with platform specific options.
+   * @todo macOS requires that UI elements be created on the main thread, so the system tray is not currently implemented for macOS.
    */
-  int process_tray_events();
+  int run_tray();
 
   /**
    * @brief Exit the system tray.
@@ -83,14 +95,8 @@ namespace system_tray {
 
   void update_tray_client_connected(std::string client_name);
   /**
-   * @brief Initializes and runs the system tray in a separate thread.
-   * @return 0 if initialization was successful, non-zero otherwise.
+   * @brief Spawns a notification when ViGEm is missing.
+   * Clicking it opens the Web UI Dashboard for more information.
    */
-  int init_tray_threaded();
-
-  /**
-   * @brief Stops the threaded system tray and waits for the thread to finish.
-   * @return 0 after stopping the threaded tray.
-   */
-  int end_tray_threaded();
+  void update_tray_vigem_missing();
 }  // namespace system_tray

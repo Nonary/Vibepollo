@@ -2,12 +2,28 @@
 
 Sunshine has a RESTful API which can be used to interact with the service.
 
-Unless otherwise specified, authentication is required for all API calls. You can authenticate using
-basic authentication with the admin username and password.
+Unless otherwise specified, authentication is required for all API calls. You can authenticate using either basic authentication with the admin username and password, or with an API token that provides fine-grained access control.
 
 @htmlonly
 <script src="api.js"></script>
 @endhtmlonly
+
+## API Token Security Model and Best Practices
+
+Sunshine API tokens are designed for security and fine-grained access control:
+
+- **Token Creation:** When you generate an API token, Sunshine creates a secure random 32-character string. Only a cryptographic hash of the token is stored on disk and in memory. The raw token is shown to you only once—immediately after creation. If you lose it, you must generate a new token.
+- **Security:** Because only the hash is stored, even if the state file is compromised, attackers cannot recover the original token value.
+- **Principle of Least Privilege:** When creating a token, always grant access only to the specific API paths and HTTP methods required for your use case. Avoid giving broad or unnecessary permissions.
+- **Token Management:**
+  - Store your token securely after creation. Never share or log it.
+  - Revoke tokens immediately if they are no longer needed or if you suspect they are compromised.
+  - Use HTTPS to protect tokens in transit.
+- **Listing and Revocation:** You can list all active tokens (metadata only, not the token value) and revoke any token at any time using the API.
+
+API Tokens can also be managed in the Web UI under the "API Token" tab in the navigation bar.
+
+See below for details on token endpoints and usage examples.
 
 ## GET /api/apps
 @copydoc confighttp::getApps()
@@ -33,6 +49,7 @@ basic authentication with the admin username and password.
 ## GET /api/config
 @copydoc confighttp::getConfig()
 
+
 ## GET /api/configLocale
 @copydoc confighttp::getLocale()
 
@@ -45,6 +62,12 @@ basic authentication with the admin username and password.
 ## GET /api/logs
 @copydoc confighttp::getLogs()
 
+## GET /api/logs/export
+Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).
+
+- Includes: Sunshine log, Playnite logs (`playnite.log`, `extensions.log`, `launcher.log`), Sunshine Playnite plugin log (`sunshine_playnite.log`), launcher helper logs (`sunshine_playnite_launcher.log`/`sunshine_launcher.log`), and display helper log (`sunshine_display_helper.log`) when present.
+- Requires authentication.
+
 ## POST /api/password
 @copydoc confighttp::savePassword()
 
@@ -56,6 +79,55 @@ basic authentication with the admin username and password.
 
 ## POST /api/restart
 @copydoc confighttp::restart()
+
+## Authentication
+
+All API calls require authentication. You can use either:
+- **Basic Authentication**: Use your admin username and password.
+- **API Token (recommended for automation)**: Use a generated token with fine-grained access control.
+
+### Generating an API Token
+
+**POST /api/token**
+
+Authenticate with Basic Auth. The request body should specify the allowed API paths and HTTP methods for the token:
+
+```json
+{
+  "scopes": [
+    { "path": "/api/apps", "methods": ["GET", "POST"] },
+    { "path": "/api/logs", "methods": ["GET"] }
+  ]
+}
+```
+
+**Response:**
+```json
+{ "token": "...your-new-token..." }
+```
+> The token is only shown once. Store it securely.
+
+### Using an API Token
+
+Send the token in the `Authorization` header:
+```
+Authorization: Bearer <token>
+```
+
+The token grants access only to the specified paths and HTTP methods.
+
+### Managing API Tokens
+
+- **List tokens:** `GET /api/tokens` (shows metadata, not token values)
+- **Revoke token:** `DELETE /api/token/{hash}`
+
+### Managing Remembered Sessions
+
+- **Stay signed in:** Include an optional `"remember_me": true` flag in the JSON body when calling `POST /api/auth/login`. Sunshine will issue a hardened `__Host-` cookie with an extended lifetime.
+- **List active sessions:** `GET /api/auth/sessions` returns all devices that currently hold a valid Sunshine session cookie. Each entry includes creation time, last activity, expiry, remote address, and whether it was a “remember me” session.
+- **Revoke a specific session:** `DELETE /api/auth/sessions/{hash}` immediately removes the matching session from disk. If the current device is revoked, its cookie is cleared and the browser must sign in again.
+
+All session metadata is stored hashed and persisted in the same state file as API tokens so Sunshine can validate cookies across service restarts.
 
 <div class="section_buttons">
 

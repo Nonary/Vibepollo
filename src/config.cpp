@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -20,11 +21,15 @@
 
 // local includes
 #include "config.h"
+#include "config_playnite.h"
+#include "display_helper_integration.h"
 #include "entry_handler.h"
 #include "file_handler.h"
+#include "httpcommon.h"
 #include "logging.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "process.h"
 #include "rtsp.h"
 #include "video.h"
 #include "utility.h"
@@ -391,6 +396,7 @@ namespace config {
       _CONVERT_(disabled);
       _CONVERT_2_ARG_(auto, automatic);
       _CONVERT_(manual);
+      _CONVERT_(prefer_highest);
 #undef _CONVERT_
 #undef _CONVERT_2_ARG_
       return video_t::dd_t::refresh_rate_option_e::disabled;  // Default to this if value is invalid
@@ -507,11 +513,11 @@ namespace config {
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
       {},  // mode_remapping
-      {}  // wa
+      {false, false}  // wa
     },  // display_device
 
     0,  // max_bitrate
-    0,  // minimum_fps_target (0 = framerate)
+    20,  // minimum_fps_target (0 = framerate)
 
     "1920x1080x60",  // fallback_mode
     false, // isolated Display
@@ -578,6 +584,22 @@ namespace config {
     true, // forward_rumble
   };
 
+  frame_limiter_t frame_limiter {
+    false,  // enable
+    "auto"  // provider
+  };
+
+  // Windows-only: RTSS defaults
+  rtss_t rtss {
+    {},  // install_path
+    "async",  // frame_limit_type
+    false  // disable_vsync_ullm
+  };
+
+  lossless_scaling_t lossless_scaling {
+    {}  // exe_path
+  };
+
   sunshine_t sunshine {
     false, // hide_tray_controls
     true, // enable_pairing
@@ -601,7 +623,45 @@ namespace config {
     {},  // prep commands
     {},  // state commands
     {},  // server commands
+    std::chrono::hours {2},  // session_token_ttl default 2h
+    86400  // update_check_interval_seconds default 24h
   };
+
+  namespace {
+    const video_t default_video = video;
+    const audio_t default_audio = audio;
+    const stream_t default_stream = stream;
+    const input_t default_input = input;
+    const frame_limiter_t default_frame_limiter = frame_limiter;
+    const rtss_t default_rtss = rtss;
+    const lossless_scaling_t default_lossless_scaling = lossless_scaling;
+    const sunshine_t default_sunshine = sunshine;
+
+    std::unordered_map<std::string, std::string> command_line_overrides;
+
+    void reset_runtime_config_to_defaults() {
+      const auto preserved_username = sunshine.username;
+      const auto preserved_password = sunshine.password;
+      const auto preserved_salt = sunshine.salt;
+      const auto preserved_config_file = sunshine.config_file;
+      const auto preserved_cmd = sunshine.cmd;
+
+      video = default_video;
+      audio = default_audio;
+      stream = default_stream;
+      input = default_input;
+      frame_limiter = default_frame_limiter;
+      rtss = default_rtss;
+      lossless_scaling = default_lossless_scaling;
+
+      sunshine = default_sunshine;
+      sunshine.username = preserved_username;
+      sunshine.password = preserved_password;
+      sunshine.salt = preserved_salt;
+      sunshine.config_file = preserved_config_file;
+      sunshine.cmd = preserved_cmd;
+    }
+  }  // namespace
 
   bool endline(char ch) {
     return ch == '\r' || ch == '\n';
@@ -1088,6 +1148,7 @@ namespace config {
   }
 
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
+    reset_runtime_config_to_defaults();
 #ifndef __ANDROID__
     // TODO: Android can possibly support this
     if (!fs::exists(stream.file_apps.c_str())) {
@@ -1197,11 +1258,17 @@ namespace config {
     }
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
+    // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
+    bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
     {
-      int value = 0;
-      int_between_f(vars, "dd_wa_hdr_toggle_delay", value, {0, 3000});
-      video.dd.wa.hdr_toggle_delay = std::chrono::milliseconds {value};
+      int legacy_delay_ms = 0;
+      int_between_f(vars, "dd_wa_hdr_toggle_delay", legacy_delay_ms, {0, 3000});
+      if (!video.dd.wa.hdr_toggle) {
+        // If not explicitly set by new flag, treat legacy value > 0 as enabled
+        video.dd.wa.hdr_toggle = (legacy_delay_ms > 0);
+      }
     }
+    bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -1209,6 +1276,21 @@ namespace config {
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
+
+    // Windows-only frame limiter options
+    bool_f(vars, "frame_limiter_enable", frame_limiter.enable);
+    string_f(vars, "frame_limiter_provider", frame_limiter.provider);
+    if (frame_limiter.provider.empty()) {
+      frame_limiter.provider = "auto";
+    }
+    string_f(vars, "rtss_install_path", rtss.install_path);
+    string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
+    bool_f(vars, "rtss_disable_vsync_ullm", rtss.disable_vsync_ullm);
+    if (video.dd.wa.dummy_plug_hdr10 && !rtss.disable_vsync_ullm) {
+      BOOST_LOG(info) << "config: Forcing rtss_disable_vsync_ullm=1 due to dummy plug HDR10 workaround.";
+      rtss.disable_vsync_ullm = true;
+    }
+    string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
@@ -1225,6 +1307,8 @@ namespace config {
     list_prep_cmd_f(vars, "global_state_cmd", config::sunshine.state_cmds);
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);
 
+    int_f(vars, "update_check_interval", config::sunshine.update_check_interval_seconds);
+
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
     bool_f(vars, "stream_audio", audio.stream);
@@ -1233,6 +1317,10 @@ namespace config {
     bool_f(vars, "auto_capture_sink", audio.auto_capture);
 
     string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
+    // reflect origin ACL update immediately in HTTP layer
+    if (modified_config_settings.contains("origin_web_ui_allowed")) {
+      http::refresh_origin_acl();
+    }
 
     int to = -1;
     int_between_f(vars, "ping_timeout", to, {-1, std::numeric_limits<int>::max()});
@@ -1281,7 +1369,6 @@ namespace config {
     bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
-    bool_f(vars, "ds5_inputtino_randomize_mac", input.ds5_inputtino_randomize_mac);
 
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);
@@ -1367,11 +1454,23 @@ namespace config {
       }
     }
 
+    // Apply Playnite-specific configuration keys
+    config::apply_playnite(vars);
+
     auto it = vars.find("flags"s);
     if (it != std::end(vars)) {
       apply_flags(it->second.c_str());
 
       vars.erase(it);
+    }
+
+    // Parse session token TTL (seconds) if provided
+    {
+      int ttl_secs = -1;
+      int_between_f(vars, "session_token_ttl_seconds", ttl_secs, {1, std::numeric_limits<int>::max()});
+      if (ttl_secs > 0) {
+        sunshine.session_token_ttl = std::chrono::seconds {ttl_secs};
+      }
     }
 
     if (sunshine.min_log_level <= 3) {
@@ -1458,6 +1557,8 @@ namespace config {
       // Read config file
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
 
+      command_line_overrides = cmd_vars;
+
       for (auto &[name, value] : cmd_vars) {
         vars.insert_or_assign(std::move(name), std::move(value));
       }
@@ -1535,5 +1636,93 @@ namespace config {
 #endif
 
     return 0;
+  }
+
+  // Hot-reload manager
+  namespace {
+    std::atomic<bool> g_deferred_reload {false};
+    std::mutex g_apply_mutex;  // serialize apply_config_now()
+    std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
+  }  // namespace
+
+  // Acquire a shared lock while preparing/starting sessions.
+  std::shared_lock<std::shared_mutex> acquire_apply_read_gate() {
+    return std::shared_lock<std::shared_mutex>(g_apply_gate);
+  }
+
+  void apply_config_now() {
+    // Ensure only one apply runs at a time and block session start/resume while applying.
+    std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
+    std::unique_lock<std::mutex> apply_once(g_apply_mutex);
+    try {
+      // Capture previous DD configuration state to detect any changes
+      const auto prev_dd_config_opt = video.dd.configuration_option;
+      const auto prev_dd_resolution_opt = video.dd.resolution_option;
+      const auto prev_dd_refresh_rate_opt = video.dd.refresh_rate_option;
+      const auto prev_dd_hdr_opt = video.dd.hdr_option;
+      const auto prev_dd_manual_resolution = video.dd.manual_resolution;
+      const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
+      const auto prev_dd_revert_delay = video.dd.config_revert_delay;
+      const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
+      const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
+      const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
+
+      auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
+      for (const auto &[name, value] : command_line_overrides) {
+        vars.insert_or_assign(name, value);
+      }
+      // Track old logging params to adjust sinks if needed
+      const int old_min_level = sunshine.min_log_level;
+      const std::string old_log_file = sunshine.log_file;
+
+      apply_config(std::move(vars));
+
+      // If only the log level changed, we can reconfigure sinks in place.
+      if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
+        logging::reconfigure_min_log_level(sunshine.min_log_level);
+      }
+
+      // Check if any DD configuration changed and handle hot-apply when no active sessions
+      using dd_cfg_e = config::video_t::dd_t::config_option_e;
+      const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
+      const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
+
+      // Detect if any DD settings changed
+      const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
+                                     (prev_dd_resolution_opt != video.dd.resolution_option) ||
+                                     (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
+                                     (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                     (prev_dd_manual_resolution != video.dd.manual_resolution) ||
+                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                     (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
+
+      // If any DD settings changed and there are no active sessions, revert to clear cached state
+      if (dd_config_changed && rtsp_stream::session_count() == 0) {
+        BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
+        display_helper_integration::revert();
+
+        if (dd_was_enabled && dd_disabled_now) {
+          BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";
+        } else if (!dd_disabled_now) {
+          BOOST_LOG(info) << "Hot-apply: DD configuration updated. New settings will take effect on next stream.";
+        }
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
+    }
+  }
+
+  void mark_deferred_reload() {
+    g_deferred_reload.store(true, std::memory_order_release);
+  }
+
+  void maybe_apply_deferred() {
+    // Single-shot winner clears the flag and applies atomically.
+    if (rtsp_stream::session_count() == 0 && g_deferred_reload.exchange(false, std::memory_order_acq_rel)) {
+      apply_config_now();
+    }
   }
 }  // namespace config

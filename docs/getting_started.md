@@ -568,6 +568,16 @@ Guides are available [here](guides.md).
 @admonition{Community! |
 Tutorials and Guides are community generated. Want to contribute? Reach out to us on our discord server.}
 
+### Version Status Messages
+The Web UI provides detailed context about how your locally built Sunshine instance relates to the latest public release:
+
+* Ahead: Your build's commit is ahead of the latest release tag (extra commits not yet part of a release). You will not be prompted to update.
+* Behind: Your build is a number of commits behind the latest release; an update is recommended.
+* Pre-release / Development: Non-`master` branch builds or builds that embed a short commit hash (or have a `.dirty` suffix) are treated as pre-release builds.
+* Unknown Distance: If the GitHub compare API cannot be reached, a neutral message is shown instead of an update prompt.
+
+Commit distance is determined using the GitHub compare endpoint between the latest release tag and the compiled commit hash.
+
 <div class="section_buttons">
 
 | Previous                 |                      Next |

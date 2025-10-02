@@ -3,12 +3,14 @@
  * @brief Miscellaneous definitions for Windows.
  */
 // standard includes
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
 #include <set>
 #include <sstream>
+#include <vector>
 
 #ifndef BOOST_PROCESS_VERSION
  #define BOOST_PROCESS_VERSION 1
@@ -25,6 +27,7 @@
 // prevent clang format from "optimizing" the header include order
 // clang-format off
 #include <dwmapi.h>
+#include <dxgi1_6.h>
 #include <iphlpapi.h>
 #include <iterator>
 #include <timeapi.h>
@@ -36,6 +39,7 @@
 #include <WS2tcpip.h>
 #include <WtsApi32.h>
 #include <sddl.h>
+#include <wrl/client.h>
 // clang-format on
 
 // Boost overrides NTDDI_VERSION, so we re-override it here
@@ -47,6 +51,7 @@
 #include "misc.h"
 #include "utils.h"
 #include "nvprefs/nvprefs_interface.h"
+#include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
 #include "src/logging.h"
@@ -72,6 +77,7 @@
 #include <winternl.h>
 extern "C" {
   NTSTATUS NTAPI NtSetTimerResolution(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+  NTSTATUS NTAPI RtlGetVersion(PRTL_OSVERSIONINFOW lpVersionInformation);
 }
 
 namespace {
@@ -246,6 +252,29 @@ namespace platf {
     }
 
     return local_ip;
+  }
+
+  bool is_vigem_installed(std::string *version_out) {
+    // Check for ViGEmBus.sys presence in System32\\drivers
+    WCHAR sys_dir[MAX_PATH] = {0};
+    UINT n = GetSystemDirectoryW(sys_dir, _countof(sys_dir));
+    if (n == 0 || n >= _countof(sys_dir)) {
+      return false;
+    }
+    std::filesystem::path driver_path = std::filesystem::path {sys_dir} / L"drivers" / L"ViGEmBus.sys";
+    if (!std::filesystem::exists(driver_path)) {
+      return false;
+    }
+    if (version_out) {
+      // Best-effort: report file size as a pseudo-version hint to avoid extra link deps
+      try {
+        auto sz = std::filesystem::file_size(driver_path);
+        *version_out = std::to_string(sz);
+      } catch (...) {
+        version_out->clear();
+      }
+    }
+    return true;
   }
 
   HDESK syncThreadDesktop() {
@@ -619,11 +648,6 @@ namespace platf {
     return startup_info;
   }
 
-  /**
-   * @brief This function overrides HKEY_CURRENT_USER and HKEY_CLASSES_ROOT using the provided token.
-   * @param token The primary token identifying the user to use, or `nullptr` to restore original keys.
-   * @return `true` if the override or restore operation was successful.
-   */
   bool override_per_user_predefined_keys(HANDLE token) {
     HKEY user_classes_root = nullptr;
     if (token) {
@@ -938,6 +962,77 @@ namespace platf {
   }
 
   /**
+   * @brief Launch a process with user impersonation (for use when running as SYSTEM).
+   */
+  bool launch_process_with_impersonation(bool elevated, const std::string &cmd, const std::wstring &start_dir, DWORD creation_flags, STARTUPINFOEXW &startup_info, PROCESS_INFORMATION &process_info, std::error_code &ec) {
+    // Duplicate the current user's token
+    HANDLE user_token = retrieve_users_token(elevated);
+    if (!user_token) {
+      // Fail the launch rather than risking launching with Sunshine's permissions unmodified.
+      ec = std::make_error_code(std::errc::permission_denied);
+      return false;
+    }
+
+    // Use RAII to ensure the shell token is closed when we're done with it
+    auto token_close = util::fail_guard([user_token]() {
+      CloseHandle(user_token);
+    });
+
+    // Create environment block with user-specific environment variables
+    bp::environment cloned_env = boost::this_process::environment();
+    if (!merge_user_environment_block(cloned_env, user_token)) {
+      ec = std::make_error_code(std::errc::not_enough_memory);
+      return false;
+    }
+
+    // Open the process as the current user account, elevation is handled in the token itself.
+    BOOL ret = FALSE;
+    ec = impersonate_current_user(user_token, [&]() {
+      std::wstring env_block = create_environment_block(cloned_env);
+      std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, creation_flags);
+      // Allocate a writable buffer for the command string
+      std::vector<wchar_t> wcmd_buf(wcmd.begin(), wcmd.end());
+      wcmd_buf.push_back(L'\0');
+      ret = CreateProcessAsUserW(user_token, nullptr, wcmd_buf.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&startup_info), &process_info);
+    });
+
+    if (!ret && !ec) {
+      BOOST_LOG(error) << "Failed to launch process: " << GetLastError();
+      ec = std::make_error_code(std::errc::invalid_argument);
+    }
+
+    return ret != FALSE;
+  }
+
+  /**
+   * @brief Launch a process without impersonation (for use when running as regular user).
+   */
+  bool launch_process_without_impersonation(const std::string &cmd, const std::wstring &start_dir, DWORD creation_flags, STARTUPINFOEXW &startup_info, PROCESS_INFORMATION &process_info, std::error_code &ec) {
+    // Open our current token to resolve environment variables
+    HANDLE process_token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &process_token)) {
+      ec = std::make_error_code(std::errc::permission_denied);
+      return false;
+    }
+    auto token_close = util::fail_guard([process_token]() {
+      CloseHandle(process_token);
+    });
+
+    std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, creation_flags);
+    // Allocate a writable buffer for the command string
+    std::vector<wchar_t> wcmd_buf(wcmd.begin(), wcmd.end());
+    wcmd_buf.push_back(L'\0');
+    BOOL ret = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, nullptr, start_dir.empty() ? nullptr : start_dir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&startup_info), &process_info);
+
+    if (!ret) {
+      BOOST_LOG(error) << "Failed to launch process: " << GetLastError();
+      ec = std::make_error_code(std::errc::invalid_argument);
+    }
+
+    return ret != FALSE;
+  }
+
+  /**
    * @brief Run a command on the users profile.
    *
    * Launches a child process as the user, using the current user's environment and a specific working directory.
@@ -1069,7 +1164,9 @@ namespace platf {
     auto working_dir = boost::filesystem::path();
     std::error_code ec;
 
-    auto child = run_command(false, false, url, working_dir, _env, nullptr, ec, nullptr);
+    const std::string explorer_cmd = "explorer.exe \"" + url + "\"";
+
+    auto child = run_command(false, false, explorer_cmd, working_dir, _env, nullptr, ec, nullptr);
     if (ec) {
       BOOST_LOG(warning) << "Couldn't open url ["sv << url << "]: System: "sv << ec.message();
     } else {
@@ -1150,6 +1247,9 @@ namespace platf {
     // Promote ourselves to high priority class
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
+    // Start display helper watchdog to self-heal helper crashes during active stream
+    display_helper_integration::start_watchdog();
+
     // Modify NVIDIA control panel settings again, in case they have been changed externally since sunshine launch
     if (nvprefs_instance.load()) {
       if (!nvprefs_instance.owning_undo_file()) {
@@ -1220,6 +1320,8 @@ namespace platf {
   }
 
   void streaming_will_stop() {
+    // Stop display helper watchdog when streams stop
+    display_helper_integration::stop_watchdog();
     // Demote ourselves back to normal priority class
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 
@@ -1803,6 +1905,123 @@ namespace platf {
       return "Sunshine"s;
     }
     return to_utf8(hostname);
+  }
+
+  std::vector<gpu_info_t> enumerate_gpus() {
+    std::vector<gpu_info_t> result;
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+      return result;
+    }
+
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+
+      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      gpu_info_t info {};
+      info.description = to_utf8(desc.Description);
+      info.vendor_id = desc.VendorId;
+      info.device_id = desc.DeviceId;
+      info.dedicated_video_memory = desc.DedicatedVideoMemory;
+      result.emplace_back(std::move(info));
+    }
+
+    return result;
+  }
+
+  bool has_nvidia_gpu() {
+    constexpr std::uint32_t NVIDIA_VENDOR_ID = 0x10DE;
+    for (const auto &gpu : enumerate_gpus()) {
+      if (gpu.vendor_id == NVIDIA_VENDOR_ID) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  windows_version_info_t query_windows_version() {
+    windows_version_info_t info {};
+
+    HKEY key = nullptr;
+    const auto close_key = util::fail_guard([&]() {
+      if (key) {
+        RegCloseKey(key);
+        key = nullptr;
+      }
+    });
+
+    if (RegOpenKeyExW(
+          HKEY_LOCAL_MACHINE,
+          L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+          0,
+          KEY_READ | KEY_WOW64_64KEY,
+          &key
+        ) == ERROR_SUCCESS) {
+      auto read_string = [&](const wchar_t *value_name) -> std::string {
+        if (!key) {
+          return {};
+        }
+        DWORD type = 0;
+        DWORD size = 0;
+        LONG status = RegGetValueW(key, nullptr, value_name, RRF_RT_REG_SZ, &type, nullptr, &size);
+        if (status != ERROR_SUCCESS || size == 0) {
+          return {};
+        }
+        std::vector<wchar_t> buffer(size / sizeof(wchar_t));
+        status = RegGetValueW(key, nullptr, value_name, RRF_RT_REG_SZ, &type, buffer.data(), &size);
+        if (status != ERROR_SUCCESS || buffer.empty()) {
+          return {};
+        }
+        if (buffer.back() == L'\0') {
+          buffer.pop_back();
+        }
+        return to_utf8(std::wstring(buffer.begin(), buffer.end()));
+      };
+
+      info.display_version = read_string(L"DisplayVersion");
+      info.release_id = read_string(L"ReleaseId");
+      info.product_name = read_string(L"ProductName");
+      info.current_build = read_string(L"CurrentBuild");
+      if (info.current_build.empty()) {
+        info.current_build = read_string(L"CurrentBuildNumber");
+      }
+
+      auto build_number_str = read_string(L"CurrentBuildNumber");
+      if (!build_number_str.empty()) {
+        try {
+          info.build_number = static_cast<std::uint32_t>(std::stoul(build_number_str));
+        } catch (...) {
+          info.build_number.reset();
+        }
+      }
+    }
+
+    RTL_OSVERSIONINFOW version_info {};
+    version_info.dwOSVersionInfoSize = sizeof(version_info);
+    if (NT_SUCCESS(RtlGetVersion(&version_info))) {
+      info.major_version = version_info.dwMajorVersion;
+      info.minor_version = version_info.dwMinorVersion;
+      if (!info.build_number) {
+        info.build_number = version_info.dwBuildNumber;
+      }
+      if (info.current_build.empty() && info.build_number) {
+        info.current_build = std::to_string(*info.build_number);
+      }
+    }
+
+    return info;
   }
 
   class win32_high_precision_timer: public high_precision_timer {

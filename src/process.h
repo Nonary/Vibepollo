@@ -13,6 +13,7 @@
 #endif
 
 // standard includes
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 
@@ -60,6 +61,16 @@ namespace proc {
    *    "null"   -- The output of the commands are discarded
    *    filename -- The output of the commands are appended to filename
    */
+  struct lossless_scaling_profile_overrides_t {
+    std::optional<bool> performance_mode;
+    std::optional<int> flow_scale;
+    std::optional<int> resolution_scale;
+    std::optional<std::string> scaling_type;
+    std::optional<int> sharpening;
+    std::optional<std::string> anime4k_size;
+    std::optional<bool> anime4k_vrs;
+  };
+
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
     std::vector<cmd_t> state_cmds;
@@ -87,6 +98,11 @@ namespace proc {
     std::string image_path;
     std::string id;
     std::string gamepad;
+    // When present, this app should be launched via Playnite instead of direct cmd.
+    std::string playnite_id;
+    // When true, launch Playnite in fullscreen mode via the helper.
+    bool playnite_fullscreen;
+    bool frame_gen_limiter_fix;
     bool elevated;
     bool auto_detach;
     bool wait_all;
@@ -98,11 +114,22 @@ namespace proc {
     bool terminate_on_pause;
     int  scale_factor;
     std::chrono::seconds exit_timeout;
+    bool gen1_framegen_fix;
+    bool gen2_framegen_fix;
+    bool lossless_scaling_framegen;
+    std::string frame_generation_provider {"lossless-scaling"};
+    std::optional<int> lossless_scaling_target_fps;
+    std::optional<int> lossless_scaling_rtss_limit;
+    std::string lossless_scaling_profile {"custom"};
+    lossless_scaling_profile_overrides_t lossless_scaling_recommended;
+    lossless_scaling_profile_overrides_t lossless_scaling_custom;
   };
 
   class proc_t {
   public:
-    KITTY_DEFAULT_CONSTR_MOVE_THROW(proc_t)
+    proc_t() = default;
+    proc_t(proc_t &&other) noexcept;
+    proc_t &operator=(proc_t &&other) noexcept;
 
     std::string display_name;
     std::string initial_display;
@@ -130,15 +157,23 @@ namespace proc {
 
     ~proc_t();
 
-    const std::vector<ctx_t> &get_apps() const;
-    std::vector<ctx_t> &get_apps();
+    // Return a snapshot copy to avoid concurrent access races
+    std::vector<ctx_t> get_apps() const;
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     boost::process::v1::environment get_env();
+    bool last_run_app_frame_gen_limiter_fix() const;
     void resume();
     void pause();
     void terminate(bool immediate = false, bool needs_refresh = true);
+
+    // Hot-update app list and environment without disrupting a running app
+    void update_apps(std::vector<ctx_t> &&apps, boost::process::v1::environment &&env);
+
+    // Helpers for parse/refresh to extract newly parsed state without exposing internals
+    std::vector<ctx_t> release_apps();
+    boost::process::v1::environment release_env();
 
   private:
     int _app_id = 0;
@@ -152,6 +187,8 @@ namespace proc {
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
+
+    mutable std::mutex _apps_mutex;
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};

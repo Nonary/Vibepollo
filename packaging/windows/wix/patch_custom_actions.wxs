@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CPackWiXPatch>
+  <CPackWiXFragment Id="#PRODUCT">
+    <Property Id="ALLUSERS" Value="1"/>
+    <Condition Message="Administrator privileges are required.">Privileged</Condition>
+    <Property Id="VIGEMBUS_PRESENT">
+      <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
+      <RegistrySearch Id="Search_ViGEmBus_Service32" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw"/>
+    </Property>
+    <Feature Id="VibeshineExtras" Title="Vibeshine Components" Level="1" Absent="disallow">
+      <ComponentRef Id="CtlStopSunshine"/>
+      <ComponentRef Id="SunshineSvc"/>
+      <ComponentRef Id="Env_Path"/>
+      <ComponentRef Id="Fw_Exceptions"/>
+    </Feature>
+
+    <InstallExecuteSequence>
+      <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
+      <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
+
+      <!-- Stop service proactively on repair or uninstall -->
+      <Custom Action="SetStopSvcQuiet" After="InstallInitialize">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="StopSvcQuiet" After="SetStopSvcQuiet">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+
+      <!-- Start quietly on repair with basic/silent UI -->
+      <Custom Action="SetStartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
+      <Custom Action="StartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
+
+      <!-- Manual uninstall: process/legacy service cleanup -->
+      <Custom Action="SetKillProcsQuiet" After="StopSvcQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="KillProcsQuiet" After="SetKillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetRemoveServiceQuiet" After="KillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveServiceQuiet" After="SetRemoveServiceQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+
+      <!-- Post-install chores -->
+      <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
+      <Custom Action="SetMigrateConfig" After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
+      <Custom Action="SetInstallGamepad" After="MigrateConfig">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+      <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+
+      <!-- Uninstall before file removal -->
+      <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
+
+      <!-- Prompts (VBS) to remove ViGEm and optionally delete install dir; only on manual uninstalls with full UI -->
+      <Custom Action="AskRemoveGamepad" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+      <Custom Action="SetUninstallGamepad" After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="UninstallGamepad" After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="AskDeleteInstallDir" After="UninstallGamepad">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+
+      <!-- Execute delete/prune after MSI removes its files -->
+      <Custom Action="SetDeleteInstallDir" After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+      <Custom Action="DeleteInstallDir" After="SetDeleteInstallDir">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
+
+      <!-- If not deleting whole dir, prune everything but config -->
+      <Custom Action="SetPruneButConfig" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+
+    <!-- We can't remove the reboot required message on repairs, but we can tell users it's not needed.
+         Restrict strictly to repair by requiring REINSTALL to be set, so it won't fire on uninstall or upgrade. -->
+    <InstallUISequence>
+      <Custom Action="RepairCompletePrompt" After="ExecuteAction">REINSTALL AND NOT REMOVE AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+    </InstallUISequence>
+  </CPackWiXFragment>
+</CPackWiXPatch>

@@ -1,0 +1,62 @@
+name: Backlog Item
+description: Create a backlog item for Agile/SCRUM planning.
+labels:
+  - backlog
+body:
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User Story
+      description: |
+        Write in the format:  
+        **As a [role], I want [feature] so that [benefit].**
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: |
+        Define the conditions of satisfaction (when is this “done”?).  
+        Example:  
+        - [ ] Given X, when Y, then Z  
+        - [ ] Error messages shown if invalid
+    validations:
+      required: true
+
+  - type: dropdown
+    id: story-points
+    attributes:
+      label: Story Points
+      description: Estimate the effort for this item.
+      options:
+        - 1
+        - 2
+        - 3
+        - 5
+        - 8
+        - 13
+        - 21
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Select the priority of this backlog item.
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / Additional Context
+      description: Any design references, dependencies, or other notes.
+    validations:
+      required: false

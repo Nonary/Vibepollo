@@ -14,6 +14,7 @@ extern "C" {
 #include <cctype>
 #include <format>
 #include <set>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -547,18 +548,32 @@ namespace rtsp_stream {
      * @examples_end
      */
     void clear(bool all = true) {
-      auto lg = _session_slots.lock();
+      // Collect sessions to stop/join first while holding the set lock,
+      // but perform the potentially blocking join() outside of the lock to
+      // avoid deadlocks (join() may indirectly query session_count()).
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
 
-      for (auto i = _session_slots->begin(); i != _session_slots->end();) {
-        auto &slot = *(*i);
-        if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
-          stream::session::stop(slot);
-          stream::session::join(slot);
+      {
+        auto lg = _session_slots.lock();
 
-          i = _session_slots->erase(i);
-        } else {
-          i++;
+        for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+          auto &slot = *(*i);
+          if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
+            // Make a copy to operate on after releasing the lock
+            to_cleanup.emplace_back(*i);
+
+            // Remove from the active set now so counts reflect pending removal
+            i = _session_slots->erase(i);
+          } else {
+            ++i;
+          }
         }
+      }
+
+      // Stop and join outside the lock
+      for (auto &slot : to_cleanup) {
+        stream::session::stop(*slot);
+        stream::session::join(*slot);
       }
     }
 
@@ -699,7 +714,17 @@ namespace rtsp_stream {
 
     int serialized_len;
     util::c_ptr<char> raw_resp {serializeRtspMessage(resp.get(), &serialized_len)};
-    BOOST_LOG(debug)
+
+    std::ostringstream summary;
+    summary << "RTSP RESPONSE seq=" << resp->sequenceNumber;
+    if (resp->type == TYPE_RESPONSE) {
+      summary << " status=" << resp->message.response.statusString
+              << " code=" << resp->message.response.statusCode;
+    }
+    summary << " payload_len=" << payload.second;
+
+    BOOST_LOG(debug) << summary.str();
+    BOOST_LOG(verbose)
       << "---Begin Response---"sv << std::endl
       << std::string_view {raw_resp.get(), (std::size_t) serialized_len} << std::endl
       << std::string_view {payload.first, (std::size_t) payload.second} << std::endl
@@ -987,6 +1012,8 @@ namespace rtsp_stream {
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
 
     stream::config_t config;
+    config.gen1_framegen_fix = false;
+    config.gen2_framegen_fix = false;
 
     std::int64_t configuredBitrateKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
@@ -1156,6 +1183,20 @@ namespace rtsp_stream {
       return;
     }
 
+    // Before starting a new session, apply any deferred config updates now
+    // (e.g., capture method changes like switching to WGC). This ensures
+    // the next session reflects the latest settings without requiring a restart.
+    config::maybe_apply_deferred();
+
+    // Prevent interleaving with hot-apply while we allocate/start a session from RTSP
+    auto _hot_apply_gate = config::acquire_apply_read_gate();
+
+    config.gen1_framegen_fix = session.gen1_framegen_fix;
+    config.gen2_framegen_fix = session.gen2_framegen_fix;
+    config.lossless_scaling_framegen = session.lossless_scaling_framegen;
+    config.frame_generation_provider = session.frame_generation_provider;
+    config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
+    config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
     auto stream_session = stream::session::alloc(config, session);
     server->insert(stream_session);
 
@@ -1232,10 +1273,9 @@ namespace rtsp_stream {
     auto seqnm = msg->sequenceNumber;
     std::string_view messageBuffer {msg->messageBuffer};
 
-    BOOST_LOG(debug) << "type ["sv << type << ']';
-    BOOST_LOG(debug) << "sequence number ["sv << seqnm << ']';
-    BOOST_LOG(debug) << "protocol :: "sv << protocol;
-    BOOST_LOG(debug) << "payload :: "sv << payload;
+    std::ostringstream summary;
+    summary << "RTSP " << type << " seq=" << seqnm << " protocol=" << protocol;
+    BOOST_LOG(verbose) << "payload :: "sv << payload;
 
     if (msg->type == TYPE_RESPONSE) {
       auto &resp = msg->message.response;
@@ -1243,27 +1283,31 @@ namespace rtsp_stream {
       auto statuscode = resp.statusCode;
       std::string_view status {resp.statusString};
 
-      BOOST_LOG(debug) << "statuscode :: "sv << statuscode;
-      BOOST_LOG(debug) << "status :: "sv << status;
+      summary << " status=" << status << " code=" << statuscode;
+      BOOST_LOG(verbose) << "statuscode :: "sv << statuscode;
+      BOOST_LOG(verbose) << "status :: "sv << status;
     } else {
       auto &req = msg->message.request;
 
       std::string_view command {req.command};
       std::string_view target {req.target};
 
-      BOOST_LOG(debug) << "command :: "sv << command;
-      BOOST_LOG(debug) << "target :: "sv << target;
+      summary << " command=" << command << " target=" << target;
+      BOOST_LOG(verbose) << "command :: "sv << command;
+      BOOST_LOG(verbose) << "target :: "sv << target;
     }
 
     for (auto option = msg->options; option != nullptr; option = option->next) {
       std::string_view content {option->content};
       std::string_view name {option->option};
 
-      BOOST_LOG(debug) << name << " :: "sv << content;
+      BOOST_LOG(verbose) << name << " :: "sv << content;
     }
 
-    BOOST_LOG(debug) << "---Begin MessageBuffer---"sv << std::endl
-                     << messageBuffer << std::endl
-                     << "---End MessageBuffer---"sv << std::endl;
+    BOOST_LOG(debug) << summary.str();
+
+    BOOST_LOG(verbose) << "---Begin MessageBuffer---"sv << std::endl
+                       << messageBuffer << std::endl
+                       << "---End MessageBuffer---"sv << std::endl;
   }
 }  // namespace rtsp_stream

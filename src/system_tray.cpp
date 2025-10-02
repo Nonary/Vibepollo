@@ -35,9 +35,7 @@
 
   // standard includes
   #include <atomic>
-  #include <chrono>
   #include <csignal>
-  #include <format>
   #include <string>
   #include <thread>
 
@@ -49,23 +47,18 @@
   // local includes
   #include "config.h"
   #include "confighttp.h"
-  #include "display_device.h"
   #include "logging.h"
   #include "platform/common.h"
   #include "process.h"
   #include "network.h"
   #include "src/entry_handler.h"
+  #include "update.h"
 
 using namespace std::literals;
 
 // system_tray namespace
 namespace system_tray {
-  static std::atomic tray_initialized = false;
-
-  // Threading variables for all platforms
-  static std::thread tray_thread;
-  static std::atomic tray_thread_running = false;
-  static std::atomic tray_thread_should_exit = false;
+  static std::atomic<bool> tray_initialized = false;
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening UI from system tray"sv;
@@ -117,21 +110,15 @@ namespace system_tray {
         // todo - use boost/locale to translate menu strings
         { .text = "Open Apollo", .cb = tray_open_ui_cb },
         { .text = "-" },
-        // { .text = "-" },
-        // { .text = "Donate",
-        //   .submenu =
-        //     (struct tray_menu[]) {
-        //       { .text = "GitHub Sponsors", .cb = tray_donate_github_cb },
-        //       { .text = "MEE6", .cb = tray_donate_mee6_cb },
-        //       { .text = "Patreon", .cb = tray_donate_patreon_cb },
-        //       { .text = "PayPal", .cb = tray_donate_paypal_cb },
-        //       { .text = nullptr } } },
-        // { .text = "-" },
         { .text = TRAY_MSG_NO_APP_RUNNING, .cb = tray_force_stop_cb },
   // Currently display device settings are only supported on Windows
   #ifdef _WIN32
         {.text = "Reset Display Device Config", .cb = tray_reset_display_device_config_cb},
   #endif
+        {.text = "Check for Update", .cb = [](tray_menu *) {
+           BOOST_LOG(info) << "Manual update check requested from tray"sv;
+           update::trigger_check(true);
+         }},
         {.text = "Restart", .cb = tray_restart_cb},
         {.text = "Quit", .cb = tray_quit_cb},
         {.text = nullptr}
@@ -140,7 +127,7 @@ namespace system_tray {
     .allIconPaths = {TRAY_ICON, TRAY_ICON_LOCKED, TRAY_ICON_PLAYING, TRAY_ICON_PAUSING},
   };
 
-  int init_tray() {
+  int system_tray() {
   #ifdef _WIN32
     // If we're running as SYSTEM, Explorer.exe will not have permission to open our thread handle
     // to monitor for thread termination. If Explorer fails to open our thread, our tray icon
@@ -206,34 +193,45 @@ namespace system_tray {
     if (tray_init(&tray) < 0) {
       BOOST_LOG(warning) << "Failed to create system tray"sv;
       return 1;
+    } else {
+      BOOST_LOG(info) << "System tray created"sv;
     }
 
-    BOOST_LOG(info) << "System tray created"sv;
     tray_initialized = true;
+    while (tray_loop(1) == 0) {
+      BOOST_LOG(debug) << "System tray loop"sv;
+    }
+
     return 0;
   }
 
-  int process_tray_events() {
-    if (!tray_initialized) {
-      return 1;
-    }
+  void run_tray() {
+    // create the system tray
+  #if defined(__APPLE__) || defined(__MACH__)
+    // macOS requires that UI elements be created on the main thread
+    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
 
-    // Process one iteration of the tray loop with non-blocking mode (0)
-    if (const int result = tray_loop(0); result != 0) {
-      BOOST_LOG(warning) << "System tray loop failed"sv;
-      return result;
-    }
+    // dispatch_async(dispatch_get_main_queue(), ^{
+    //   system_tray();
+    // });
 
-    return 0;
+    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
+  #else  // Windows, Linux
+    // create tray in separate thread
+    std::thread tray_thread(system_tray);
+    tray_thread.detach();
+  #endif
   }
 
   int end_tray() {
-    if (tray_initialized) {
-      tray_initialized = false;
-      tray_exit();
-    }
+    tray_initialized = false;
+    tray_exit();
     return 0;
   }
+
+  // Persistent storage for tooltip/notification strings to avoid dangling pointers
+  static std::string s_tooltip;
+  static std::string s_notification_text;
 
   void update_tray_playing(std::string app_name) {
     if (!tray_initialized) {
@@ -248,18 +246,17 @@ namespace system_tray {
 
     tray_update(&tray);
     tray.icon = TRAY_ICON_PLAYING;
-    tray.notification_title = "App launched";
-    char msg[256];
+    tray.notification_title = "Stream Started";
+    s_notification_text = "Streaming started for " + app_name;
+    s_tooltip = s_notification_text;
+    tray.notification_text = s_notification_text.c_str();
+    tray.tooltip = s_tooltip.c_str();
+    tray.notification_icon = TRAY_ICON_PLAYING;
     static char force_close_msg[256];
-    snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
     snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
   #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
     strncpy(force_close_msg, utf8ToAcp(force_close_msg).c_str(), std::size(force_close_msg) - 1);
   #endif
-    tray.notification_text = msg;
-    tray.notification_icon = TRAY_ICON_PLAYING;
-    tray.tooltip = PROJECT_NAME;
     tray.menu[2].text = force_close_msg;
     tray_update(&tray);
   }
@@ -275,16 +272,12 @@ namespace system_tray {
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON_PAUSING;
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+    s_notification_text = "Streaming paused for " + app_name;
     tray.icon = TRAY_ICON_PAUSING;
     tray.notification_title = "Stream Paused";
-    tray.notification_text = msg;
+    tray.notification_text = s_notification_text.c_str();
+    tray.tooltip = s_notification_text.c_str();
     tray.notification_icon = TRAY_ICON_PAUSING;
-    tray.tooltip = PROJECT_NAME;
     tray_update(&tray);
   }
 
@@ -299,15 +292,11 @@ namespace system_tray {
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+    s_notification_text = "Application " + app_name + " successfully stopped";
     tray.icon = TRAY_ICON;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Application Stopped";
-    tray.notification_text = msg;
+    tray.notification_text = s_notification_text.c_str();
     tray.tooltip = PROJECT_NAME;
     tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
     tray_update(&tray);
@@ -411,105 +400,50 @@ namespace system_tray {
     tray_update(&tray);
   }
 
-  // Threading functions available on all platforms
-  static void tray_thread_worker() {
-    BOOST_LOG(info) << "System tray thread started"sv;
-
-    // Initialize the tray in this thread
-    if (init_tray() != 0) {
-      BOOST_LOG(error) << "Failed to initialize tray in thread"sv;
-      tray_thread_running = false;
+  void update_tray_vigem_missing() {
+    if (!tray_initialized) {
       return;
     }
 
-    tray_thread_running = true;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+    tray.icon = TRAY_ICON;
+    tray_update(&tray);
 
-    // Main tray event loop
-    while (!tray_thread_should_exit) {
-      if (process_tray_events() != 0) {
-        BOOST_LOG(warning) << "Tray event processing failed in thread"sv;
-        break;
-      }
-
-      // Sleep to avoid busy waiting
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    // Clean up the tray
-    end_tray();
-    tray_thread_running = false;
-    BOOST_LOG(info) << "System tray thread ended"sv;
+    tray.icon = TRAY_ICON;
+    tray.notification_title = "Gamepad Input Unavailable";
+    tray.notification_text = "ViGEm is not installed. Click for setup info";
+    tray.notification_icon = TRAY_ICON;
+    tray.tooltip = PROJECT_NAME;
+    tray.notification_cb = []() {
+      // Open Dashboard for more information
+      launch_ui("/");
+    };
+    tray_update(&tray);
   }
 
-  int init_tray_threaded() {
-    if (tray_thread_running) {
-      BOOST_LOG(warning) << "Tray thread is already running"sv;
-      return 1;
+  void tray_notify(const char *title, const char *text, void (*cb)()) {
+    if (!tray_initialized) {
+      return;
     }
 
-  #ifdef _WIN32
-    std::string tmp_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-    static const std::string title_str = utf8ToAcp(tmp_str);
-  #else
-    static const std::string title_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-  #endif
-    tray.menu[0].text = title_str.c_str();
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+    tray.icon = TRAY_ICON;
+    tray_update(&tray);
 
-    if (config::sunshine.hide_tray_controls) {
-      tray.menu[1].text = nullptr;
-    }
-
-    tray_thread_should_exit = false;
-
-    try {
-      tray_thread = std::thread(tray_thread_worker);
-
-      // Wait for the thread to start and initialize
-      const auto start_time = std::chrono::steady_clock::now();
-      while (!tray_thread_running && !tray_thread_should_exit) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        // Timeout after 10 seconds
-        if (std::chrono::steady_clock::now() - start_time > std::chrono::seconds(10)) {
-          BOOST_LOG(error) << "Tray thread initialization timeout"sv;
-          tray_thread_should_exit = true;
-          if (tray_thread.joinable()) {
-            tray_thread.join();
-          }
-          return 1;
-        }
-      }
-
-      if (!tray_thread_running) {
-        BOOST_LOG(error) << "Tray thread failed to start"sv;
-        if (tray_thread.joinable()) {
-          tray_thread.join();
-        }
-        return 1;
-      }
-
-      BOOST_LOG(info) << "System tray thread initialized successfully"sv;
-      return 0;
-    } catch (const std::exception &e) {
-      BOOST_LOG(error) << "Failed to create tray thread: " << e.what();
-      return 1;
-    }
-  }
-
-  int end_tray_threaded() {
-    if (!tray_thread_running) {
-      return 0;
-    }
-
-    BOOST_LOG(info) << "Stopping system tray thread"sv;
-    tray_thread_should_exit = true;
-
-    if (tray_thread.joinable()) {
-      tray_thread.join();
-    }
-
-    BOOST_LOG(info) << "System tray thread stopped"sv;
-    return 0;
+    tray.icon = TRAY_ICON;
+    tray.notification_title = title;
+    s_notification_text = text ? std::string {text} : std::string {};
+    tray.notification_text = s_notification_text.c_str();
+    tray.notification_icon = TRAY_ICON;
+    tray.tooltip = PROJECT_NAME;
+    tray.notification_cb = cb;
+    tray_update(&tray);
   }
 
 }  // namespace system_tray

@@ -3,7 +3,10 @@
  * @brief Definitions for the Windows display base code.
  */
 // standard includes
+#include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <thread>
 
 // platform includes
@@ -40,6 +43,54 @@ namespace platf {
 }
 
 namespace platf::dxgi {
+  namespace {
+    constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
+
+    bool is_windows_23h2_or_later() {
+      static const bool is_modern = []() {
+        const auto version = platf::query_windows_version();
+        if (version.build_number.has_value() && version.build_number.value() >= WINDOWS_23H2_BUILD) {
+          return true;
+        }
+
+        const auto parse_numeric_prefix = [](const std::string &value) -> std::uint32_t {
+          std::uint32_t result = 0;
+          bool seen_digit = false;
+
+          for (unsigned char ch : value) {
+            if (std::isdigit(ch)) {
+              seen_digit = true;
+              const auto digit = static_cast<std::uint32_t>(ch - '0');
+              if (result > (std::numeric_limits<std::uint32_t>::max() - digit) / 10) {
+                return 0;
+              }
+              result = result * 10 + digit;
+            } else if (seen_digit) {
+              break;
+            } else if (!std::isspace(ch)) {
+              return 0;
+            }
+          }
+
+          return seen_digit ? result : 0;
+        };
+
+        if (parse_numeric_prefix(version.current_build) >= WINDOWS_23H2_BUILD) {
+          return true;
+        }
+
+        return false;
+      }();
+
+      return is_modern;
+    }
+
+    bool should_use_wgc_default() {
+      return is_windows_23h2_or_later();
+    }
+  }  // namespace
+
+  namespace bp = boost::process;
 
   /**
    * DDAPI-specific initialization goes here.
@@ -989,44 +1040,39 @@ namespace platf::dxgi {
 }  // namespace platf::dxgi
 
 namespace platf {
-  /**
-   * Pick a display adapter and capture method.
-   * @param hwdevice_type enables possible use of hardware encoder
-   */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
-    if (config::video.capture == "ddx" || config::video.capture.empty()) {
-      if (hwdevice_type == mem_type_e::dxgi) {
-        auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
+    const auto &capture_mode = config::video.capture;
+    const bool user_requested_ddx = capture_mode == "ddx";
+    const bool default_to_wgc = dxgi::should_use_wgc_default();
+    const bool wgc_requested = capture_mode.starts_with("wgc");
+    const bool prefer_wgc_backend = !user_requested_ddx && (wgc_requested || default_to_wgc);
 
-        if (!disp->init(config, display_name)) {
-          return disp;
-        }
-      } else if (hwdevice_type == mem_type_e::system) {
-        auto disp = std::make_shared<dxgi::display_ddup_ram_t>();
-
-        if (!disp->init(config, display_name)) {
-          return disp;
-        }
-      }
-    }
-
-    if (config::video.capture == "wgc" || config::video.capture.empty()) {
-      if (hwdevice_type == mem_type_e::dxgi) {
-        auto disp = std::make_shared<dxgi::display_wgc_vram_t>();
-
-        if (!disp->init(config, display_name)) {
-          return disp;
-        }
-      } else if (hwdevice_type == mem_type_e::system) {
-        auto disp = std::make_shared<dxgi::display_wgc_ram_t>();
-
-        if (!disp->init(config, display_name)) {
+    if (hwdevice_type == mem_type_e::dxgi) {
+      if (prefer_wgc_backend) {
+        auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name);
+        if (disp || wgc_requested) {
           return disp;
         }
       }
+
+      auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
+      if (!disp->init(config, display_name)) {
+        return disp;
+      }
+    } else if (hwdevice_type == mem_type_e::system) {
+      if (prefer_wgc_backend) {
+        auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name);
+        if (disp || wgc_requested) {
+          return disp;
+        }
+      }
+
+      auto disp = std::make_shared<dxgi::display_ddup_ram_t>();
+      if (!disp->init(config, display_name)) {
+        return disp;
+      }
     }
 
-    // ddx and wgc failed
     return nullptr;
   }
 

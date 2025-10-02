@@ -6,10 +6,9 @@
 
 // nvapi headers
 // disable clang-format header reordering
-// as <NvApiDriverSettings.h> needs types from <nvapi.h>
+// wrapper keeps NvAPI SAL annotations friendly to non-MSVC toolchains
 // clang-format off
-#include <nvapi.h>
-#include <NvApiDriverSettings.h>
+#include "../nvapi_driver_settings.h"
 // clang-format on
 
 // local includes

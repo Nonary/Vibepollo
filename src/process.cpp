@@ -8,6 +8,10 @@
  #define BOOST_PROCESS_VERSION 1
 #endif
 // standard includes
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -28,8 +32,14 @@
 #include "crypto.h"
 #include "display_device.h"
 #include "file_handler.h"
+#include "display_helper_integration.h"
 #include "logging.h"
 #include "platform/common.h"
+#ifdef _WIN32
+  #include "config_playnite.h"
+  #include "platform/windows/ipc/misc_utils.h"
+  #include "platform/windows/playnite_integration.h"
+#endif
 #include "process.h"
 #include "httpcommon.h"
 #include "system_tray.h"
@@ -51,6 +61,315 @@
 namespace proc {
   using namespace std::literals;
   namespace pt = boost::property_tree;
+
+  namespace {
+    constexpr const char *LOSSLESS_PROFILE_RECOMMENDED = "recommended";
+    constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
+    constexpr int LOSSLESS_DEFAULT_FLOW_SCALE = 50;
+    constexpr int LOSSLESS_DEFAULT_RESOLUTION_SCALE = 100;
+    constexpr bool LOSSLESS_DEFAULT_PERFORMANCE_MODE = true;
+    constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
+    constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
+    constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
+    constexpr int LOSSLESS_MAX_RESOLUTION_SCALE = 500;
+    constexpr int LOSSLESS_SHARPNESS_MIN = 1;
+    constexpr int LOSSLESS_SHARPNESS_MAX = 10;
+
+    constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
+    constexpr const char *ENV_LOSSLESS_CAPTURE_API = "SUNSHINE_LOSSLESS_SCALING_CAPTURE_API";
+    constexpr const char *ENV_LOSSLESS_QUEUE_TARGET = "SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET";
+    constexpr const char *ENV_LOSSLESS_HDR = "SUNSHINE_LOSSLESS_SCALING_HDR";
+    constexpr const char *ENV_LOSSLESS_FLOW_SCALE = "SUNSHINE_LOSSLESS_SCALING_FLOW_SCALE";
+    constexpr const char *ENV_LOSSLESS_PERFORMANCE_MODE = "SUNSHINE_LOSSLESS_SCALING_PERFORMANCE_MODE";
+    constexpr const char *ENV_LOSSLESS_RESOLUTION = "SUNSHINE_LOSSLESS_SCALING_RESOLUTION_SCALE";
+    constexpr const char *ENV_LOSSLESS_FRAMEGEN_MODE = "SUNSHINE_LOSSLESS_SCALING_FRAMEGEN_MODE";
+    constexpr const char *ENV_LOSSLESS_LSFG3_MODE = "SUNSHINE_LOSSLESS_SCALING_LSFG3_MODE";
+    constexpr const char *ENV_LOSSLESS_SCALING_TYPE = "SUNSHINE_LOSSLESS_SCALING_SCALING_TYPE";
+    constexpr const char *ENV_LOSSLESS_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_SHARPNESS";
+    constexpr const char *ENV_LOSSLESS_LS1_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS";
+    constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
+    constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
+
+    std::string normalize_frame_generation_provider(const std::string &value) {
+      std::string normalized;
+      normalized.reserve(value.size());
+      for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch))) {
+          normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        }
+      }
+      if (normalized == "nvidia" || normalized == "smoothmotion" || normalized == "nvidiasmoothmotion") {
+        return "nvidia-smooth-motion";
+      }
+      if (normalized == "lossless" || normalized == "losslessscaling") {
+        return "lossless-scaling";
+      }
+      return "lossless-scaling";
+    }
+
+    struct lossless_profile_defaults_t {
+      bool performance_mode;
+      int flow_scale;
+      int resolution_scale;
+      std::string scaling_mode;
+      int sharpening;
+      std::string anime4k_size;
+      bool anime4k_vrs;
+    };
+
+    const lossless_profile_defaults_t LOSSLESS_DEFAULTS_RECOMMENDED {
+      true,
+      LOSSLESS_DEFAULT_FLOW_SCALE,
+      LOSSLESS_DEFAULT_RESOLUTION_SCALE,
+      "off",
+      5,
+      "S",
+      false,
+    };
+
+    const lossless_profile_defaults_t LOSSLESS_DEFAULTS_CUSTOM {
+      false,
+      LOSSLESS_DEFAULT_FLOW_SCALE,
+      LOSSLESS_DEFAULT_RESOLUTION_SCALE,
+      "off",
+      5,
+      "S",
+      false,
+    };
+
+    const std::array<std::string, 11> &lossless_scaling_modes() {
+      static const std::array<std::string, 11> modes {
+        "off",
+        "ls1",
+        "fsr",
+        "nis",
+        "sgsr",
+        "bcas",
+        "anime4k",
+        "xbr",
+        "sharp-bilinear",
+        "integer",
+        "nearest"
+      };
+      return modes;
+    }
+
+    std::optional<std::string> normalize_scaling_mode(const std::string &value) {
+      std::string lower = boost::algorithm::to_lower_copy(value);
+      const auto &modes = lossless_scaling_modes();
+      if (std::find(modes.begin(), modes.end(), lower) != modes.end()) {
+        return lower;
+      }
+      return std::nullopt;
+    }
+
+    bool scaling_mode_requires_sharpening(const std::string &mode) {
+      static const std::array<std::string, 4> sharpening_modes {"ls1", "fsr", "nis", "sgsr"};
+      return std::find(sharpening_modes.begin(), sharpening_modes.end(), mode) != sharpening_modes.end();
+    }
+
+    bool scaling_mode_is_anime(const std::string &mode) {
+      return mode == "anime4k";
+    }
+
+    std::optional<std::string> scaling_mode_to_lossless_value(const std::string &mode) {
+      if (mode == "off") {
+        return std::string("Off");
+      }
+      if (mode == "ls1") {
+        return std::string("LS1");
+      }
+      if (mode == "fsr") {
+        return std::string("FSR");
+      }
+      if (mode == "nis") {
+        return std::string("NIS");
+      }
+      if (mode == "sgsr") {
+        return std::string("SGSR");
+      }
+      if (mode == "bcas") {
+        return std::string("BicubicCAS");
+      }
+      if (mode == "anime4k") {
+        return std::string("Anime4k");
+      }
+      if (mode == "xbr") {
+        return std::string("XBR");
+      }
+      if (mode == "sharp-bilinear") {
+        return std::string("SharpBilinear");
+      }
+      if (mode == "integer") {
+        return std::string("Integer");
+      }
+      if (mode == "nearest") {
+        return std::string("Nearest");
+      }
+      return std::nullopt;
+    }
+
+    int clamp_sharpness(int value) {
+      return std::clamp(value, LOSSLESS_SHARPNESS_MIN, LOSSLESS_SHARPNESS_MAX);
+    }
+
+    struct lossless_runtime_values_t {
+      std::string profile;
+      std::optional<bool> performance_mode;
+      std::optional<int> flow_scale;
+      std::optional<int> resolution_scale;
+      std::optional<std::string> capture_api;
+      std::optional<int> queue_target;
+      std::optional<bool> hdr_enabled;
+      std::optional<std::string> frame_generation;
+      std::optional<std::string> lsfg3_mode;
+      std::optional<std::string> scaling_type;
+      std::optional<int> sharpness;
+      std::optional<int> ls1_sharpness;
+      std::optional<std::string> anime4k_type;
+      std::optional<bool> anime4k_vrs;
+    };
+
+    std::optional<bool> pt_get_optional_bool(const pt::ptree &node, const std::string &key) {
+      auto child = node.get_child_optional(key);
+      if (!child) {
+        return std::nullopt;
+      }
+      try {
+        return child->get_value<bool>();
+      } catch (...) {
+      }
+      try {
+        auto text = child->get_value<std::string>();
+        if (text.empty()) {
+          return std::nullopt;
+        }
+        if (boost::iequals(text, "true") || text == "1") {
+          return true;
+        }
+        if (boost::iequals(text, "false") || text == "0") {
+          return false;
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    std::optional<int> pt_get_optional_int(const pt::ptree &node, const std::string &key) {
+      auto child = node.get_child_optional(key);
+      if (!child) {
+        return std::nullopt;
+      }
+      try {
+        return child->get_value<int>();
+      } catch (...) {
+      }
+      try {
+        auto text = child->get_value<std::string>();
+        if (text.empty()) {
+          return std::nullopt;
+        }
+        return std::stoi(text);
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
+      if (auto perf = pt_get_optional_bool(node, "performance-mode")) {
+        target.performance_mode = *perf;
+      }
+      if (auto flow = pt_get_optional_int(node, "flow-scale")) {
+        target.flow_scale = *flow;
+      }
+      if (auto res = pt_get_optional_int(node, "resolution-scale")) {
+        target.resolution_scale = *res;
+      }
+      if (auto scaling = node.get_optional<std::string>("scaling-type")) {
+        if (auto normalized = normalize_scaling_mode(*scaling)) {
+          target.scaling_type = *normalized;
+        }
+      }
+      if (auto sharp = pt_get_optional_int(node, "sharpening")) {
+        target.sharpening = clamp_sharpness(*sharp);
+      }
+      if (auto anime = node.get_optional<std::string>("anime4k-size")) {
+        std::string value = boost::algorithm::to_upper_copy(*anime);
+        target.anime4k_size = std::move(value);
+      }
+      if (auto vrs = pt_get_optional_bool(node, "anime4k-vrs")) {
+        target.anime4k_vrs = *vrs;
+      }
+    }
+
+    lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx) {
+      lossless_runtime_values_t result;
+      const lossless_profile_defaults_t &defaults = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
+                                                      LOSSLESS_DEFAULTS_RECOMMENDED :
+                                                      LOSSLESS_DEFAULTS_CUSTOM;
+
+      const lossless_scaling_profile_overrides_t &overrides = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
+                                                                ctx.lossless_scaling_recommended :
+                                                                ctx.lossless_scaling_custom;
+
+      if (boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED)) {
+        result.profile = LOSSLESS_PROFILE_RECOMMENDED;
+        result.capture_api = "WGC";
+        result.queue_target = 0;
+        result.hdr_enabled = true;
+        result.frame_generation = "LSFG3";
+        result.lsfg3_mode = "ADAPTIVE";
+      } else {
+        result.profile = LOSSLESS_PROFILE_CUSTOM;
+      }
+
+      bool performance_mode = overrides.performance_mode.value_or(defaults.performance_mode);
+      result.performance_mode = performance_mode;
+
+      int flow_scale = overrides.flow_scale.value_or(defaults.flow_scale);
+      flow_scale = std::clamp(flow_scale, LOSSLESS_MIN_FLOW_SCALE, LOSSLESS_MAX_FLOW_SCALE);
+      result.flow_scale = flow_scale;
+
+      std::string scaling_mode = overrides.scaling_type.has_value() ? *overrides.scaling_type : defaults.scaling_mode;
+      auto normalized_mode = normalize_scaling_mode(scaling_mode);
+      if (!normalized_mode) {
+        normalized_mode = defaults.scaling_mode;
+      }
+
+      // Only apply resolution scaling if scaling type is not 'off'
+      if (*normalized_mode != "off") {
+        int resolution_scale = overrides.resolution_scale.value_or(defaults.resolution_scale);
+        resolution_scale = std::clamp(resolution_scale, LOSSLESS_MIN_RESOLUTION_SCALE, LOSSLESS_MAX_RESOLUTION_SCALE);
+        result.resolution_scale = resolution_scale;
+      } else {
+        // When scaling is off, use default/100% - don't apply custom resolution scaling
+        result.resolution_scale = LOSSLESS_DEFAULT_RESOLUTION_SCALE;
+      }
+
+      if (auto mapped = scaling_mode_to_lossless_value(*normalized_mode)) {
+        result.scaling_type = *mapped;
+      }
+
+      if (scaling_mode_requires_sharpening(*normalized_mode)) {
+        int sharpness = overrides.sharpening.value_or(defaults.sharpening);
+        sharpness = clamp_sharpness(sharpness);
+        result.sharpness = sharpness;
+        if (*normalized_mode == "ls1") {
+          result.ls1_sharpness = sharpness;
+        }
+      }
+
+      if (scaling_mode_is_anime(*normalized_mode)) {
+        std::string anime_type = overrides.anime4k_size.has_value() ? *overrides.anime4k_size : defaults.anime4k_size;
+        boost::algorithm::to_upper(anime_type);
+        result.anime4k_type = anime_type;
+        bool vrs = overrides.anime4k_vrs.value_or(defaults.anime4k_vrs);
+        result.anime4k_vrs = vrs;
+      }
+
+      return result;
+    }
+  }  // namespace
 
   proc_t proc;
 
@@ -77,6 +396,39 @@ namespace proc {
     }
   }
 #endif
+
+  // Custom move operations to allow global proc replacement if ever needed
+  proc_t::proc_t(proc_t &&other) noexcept:
+      _app_id(other._app_id),
+      _env(std::move(other._env)),
+      _apps(std::move(other._apps)),
+      _app(std::move(other._app)),
+      _app_launch_time(other._app_launch_time),
+      placebo(other.placebo),
+      _process(std::move(other._process)),
+      _process_group(std::move(other._process_group)),
+      _pipe(std::move(other._pipe)),
+      _app_prep_it(other._app_prep_it),
+      _app_prep_begin(other._app_prep_begin) {
+  }
+
+  proc_t &proc_t::operator=(proc_t &&other) noexcept {
+    if (this != &other) {
+      std::scoped_lock lk(_apps_mutex, other._apps_mutex);
+      _app_id = other._app_id;
+      _env = std::move(other._env);
+      _apps = std::move(other._apps);
+      _app = std::move(other._app);
+      _app_launch_time = other._app_launch_time;
+      placebo = other.placebo;
+      _process = std::move(other._process);
+      _process_group = std::move(other._process_group);
+      _pipe = std::move(other._pipe);
+      _app_prep_it = other._app_prep_it;
+      _app_prep_begin = other._app_prep_begin;
+    }
+    return *this;
+  }
 
   class deinit_t: public platf::deinit_t {
   public:
@@ -189,6 +541,16 @@ namespace proc {
     _app_name = app.name;
     _launch_session = launch_session;
     allow_client_commands = app.allow_client_commands;
+
+    // Set framegen fields from app config (vibe/vibe addition)
+    launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
+    launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
+    launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
+    launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
+    launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
+    launch_session->frame_generation_provider = _app.frame_generation_provider;
+    _app_prep_begin = std::begin(_app.prep_cmds);
+    _app_prep_it = _app_prep_begin;
 
     uint32_t client_width = launch_session->width ? launch_session->width : 1920;
     uint32_t client_height = launch_session->height ? launch_session->height : 1080;
@@ -412,6 +774,92 @@ namespace proc {
     _env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
     _env["APOLLO_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
 
+    try {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = config::lossless_scaling.exe_path;
+    } catch (...) {
+      _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
+    }
+
+    auto clear_lossless_runtime_env = [&]() {
+      _env[ENV_LOSSLESS_PROFILE] = "";
+      _env[ENV_LOSSLESS_CAPTURE_API] = "";
+      _env[ENV_LOSSLESS_QUEUE_TARGET] = "";
+      _env[ENV_LOSSLESS_HDR] = "";
+      _env[ENV_LOSSLESS_FLOW_SCALE] = "";
+      _env[ENV_LOSSLESS_PERFORMANCE_MODE] = "";
+      _env[ENV_LOSSLESS_RESOLUTION] = "";
+      _env[ENV_LOSSLESS_FRAMEGEN_MODE] = "";
+      _env[ENV_LOSSLESS_LSFG3_MODE] = "";
+      _env[ENV_LOSSLESS_SCALING_TYPE] = "";
+      _env[ENV_LOSSLESS_SHARPNESS] = "";
+      _env[ENV_LOSSLESS_LS1_SHARPNESS] = "";
+      _env[ENV_LOSSLESS_ANIME4K_TYPE] = "";
+      _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
+    };
+
+    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = _app.lossless_scaling_framegen
+                                                    ? _app.frame_generation_provider
+                                                    : "";
+
+    const bool using_lossless_provider = _app.lossless_scaling_framegen &&
+                                         boost::iequals(_app.frame_generation_provider, "lossless-scaling");
+    if (using_lossless_provider) {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
+      if (_app.lossless_scaling_target_fps) {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*_app.lossless_scaling_target_fps);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      }
+      if (_app.lossless_scaling_rtss_limit) {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*_app.lossless_scaling_rtss_limit);
+      } else {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+      }
+
+      auto runtime = compute_lossless_runtime(_app);
+      auto set_string = [&](const char *key, const std::optional<std::string> &value) {
+        if (value && !value->empty()) {
+          _env[key] = *value;
+        } else {
+          _env[key] = "";
+        }
+      };
+      auto set_int = [&](const char *key, const std::optional<int> &value) {
+        if (value.has_value()) {
+          _env[key] = std::to_string(*value);
+        } else {
+          _env[key] = "";
+        }
+      };
+      auto set_bool = [&](const char *key, const std::optional<bool> &value) {
+        if (value.has_value()) {
+          _env[key] = *value ? "1" : "0";
+        } else {
+          _env[key] = "";
+        }
+      };
+
+      _env[ENV_LOSSLESS_PROFILE] = runtime.profile;
+      set_string(ENV_LOSSLESS_CAPTURE_API, runtime.capture_api);
+      set_int(ENV_LOSSLESS_QUEUE_TARGET, runtime.queue_target);
+      set_bool(ENV_LOSSLESS_HDR, runtime.hdr_enabled);
+      set_int(ENV_LOSSLESS_FLOW_SCALE, runtime.flow_scale);
+      set_bool(ENV_LOSSLESS_PERFORMANCE_MODE, runtime.performance_mode);
+      set_int(ENV_LOSSLESS_RESOLUTION, runtime.resolution_scale);
+      set_string(ENV_LOSSLESS_FRAMEGEN_MODE, runtime.frame_generation);
+      set_string(ENV_LOSSLESS_LSFG3_MODE, runtime.lsfg3_mode);
+      set_string(ENV_LOSSLESS_SCALING_TYPE, runtime.scaling_type);
+      set_int(ENV_LOSSLESS_SHARPNESS, runtime.sharpness);
+      set_int(ENV_LOSSLESS_LS1_SHARPNESS, runtime.ls1_sharpness);
+      set_string(ENV_LOSSLESS_ANIME4K_TYPE, runtime.anime4k_type);
+      set_bool(ENV_LOSSLESS_ANIME4K_VRS, runtime.anime4k_vrs);
+    } else {
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
+      _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
+      clear_lossless_runtime_env();
+    }
+
     if (!_app.output.empty() && _app.output != "null"sv) {
 #ifdef _WIN32
       // fopen() interprets the filename as an ANSI string on Windows, so we must convert it
@@ -478,8 +926,171 @@ namespace proc {
       }
     }
 
-    if (_app.cmd.empty()) {
-      BOOST_LOG(info) << "No commands configured, showing desktop..."sv;
+    // Playnite-backed apps: invoke via Playnite and treat as placebo (lifetime managed via Playnite status)
+#ifdef _WIN32
+    if (!_app.playnite_id.empty() && _app.cmd.empty()) {
+      // Auto-update Playnite plugin if an update is available
+      try {
+        std::string installed_ver, packaged_ver;
+        bool have_installed = platf::playnite::get_installed_plugin_version(installed_ver);
+        bool have_packaged = platf::playnite::get_packaged_plugin_version(packaged_ver);
+
+        if (have_installed && have_packaged) {
+          // Simple version comparison: compare as strings (works for semantic versioning)
+          auto normalize_ver = [](std::string s) -> std::string {
+            // Strip leading 'v' if present
+            if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) {
+              s = s.substr(1);
+            }
+            // Remove whitespace
+            s.erase(std::remove_if(s.begin(), s.end(), ::isspace), s.end());
+            return s;
+          };
+
+          std::string installed_normalized = normalize_ver(installed_ver);
+          std::string packaged_normalized = normalize_ver(packaged_ver);
+
+          if (installed_normalized < packaged_normalized) {
+            BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver
+                            << " -> " << packaged_ver << "), auto-updating before launch";
+            std::string install_error;
+            if (platf::playnite::install_plugin(install_error)) {
+              BOOST_LOG(info) << "Playnite plugin auto-update succeeded";
+            } else {
+              BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error
+                                 << " (continuing with game launch)";
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Exception during Playnite plugin auto-update check: " << e.what()
+                           << " (continuing with game launch)";
+      } catch (...) {
+        BOOST_LOG(warning) << "Unknown exception during Playnite plugin auto-update check (continuing with game launch)";
+      }
+
+      BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
+      bool launched = false;
+      // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
+      try {
+        WCHAR exePathW[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exePathW, ARRAYSIZE(exePathW));
+        std::filesystem::path exeDir = std::filesystem::path(exePathW).parent_path();
+        std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
+        std::string lpath = launcher.string();
+        std::string cmd = std::string("\"") + lpath + "\" --game-id " + _app.playnite_id;
+        // Pass graceful-exit timeout to launcher for cleanup behavior
+        try {
+          int exit_to = (int) std::max<std::int64_t>(0, _app.exit_timeout.count());
+          if (exit_to > 0) {
+            cmd += std::string(" --exit-timeout ") + std::to_string(exit_to);
+          }
+        } catch (...) {}
+        // Pass focus attempts from config so the helper can try to bring Playnite/game to foreground
+        try {
+          if (config::playnite.focus_attempts > 0) {
+            cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
+          }
+          if (config::playnite.focus_timeout_secs > 0) {
+            cmd += std::string(" --focus-timeout ") + std::to_string(config::playnite.focus_timeout_secs);
+          }
+          if (config::playnite.focus_exit_on_first) {
+            cmd += std::string(" --focus-exit-on-first");
+          }
+        } catch (...) {}
+        std::error_code fec;
+        boost::filesystem::path wd;  // empty wd
+        _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        if (fec) {
+          BOOST_LOG(warning) << "Playnite helper launch failed: "sv << fec.message() << "; attempting URI fallback"sv;
+        } else {
+          BOOST_LOG(info) << "Playnite helper launched and is being monitored";
+          try {
+            auto pid = static_cast<uint32_t>(_process.id());
+            if (!platf::playnite::announce_launcher(pid, _app.playnite_id)) {
+              BOOST_LOG(debug) << "Playnite helper: announce_launcher reported inactive IPC";
+            }
+          } catch (...) {
+          }
+          launched = true;
+        }
+      } catch (...) {
+        launched = false;
+      }
+      if (!launched) {
+        // Best-effort fallback using Playnite URI protocol
+        std::string uri = std::string("playnite://playnite/start/") + _app.playnite_id;
+        std::error_code fec;
+        boost::filesystem::path wd;  // empty working dir as lvalue
+        auto child = platf::run_command(false, true, std::string("cmd /c start \"\" \"") + uri + "\"", wd, _env, _pipe.get(), fec, nullptr);
+        if (fec) {
+          BOOST_LOG(warning) << "Playnite URI launch failed: "sv << fec.message();
+        } else {
+          BOOST_LOG(info) << "Playnite URI launch started";
+          child.detach();
+          launched = true;
+        }
+      }
+      if (!launched) {
+        BOOST_LOG(error) << "Failed to launch Playnite game."sv;
+        return -1;
+      }
+      // Track the helper process; when it exits, Sunshine will terminate the stream automatically
+      placebo = false;
+    } else
+#endif
+#ifdef _WIN32
+      if (_app.playnite_fullscreen) {
+      BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
+      bool launched = false;
+      try {
+        WCHAR exePathW[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exePathW, ARRAYSIZE(exePathW));
+        std::filesystem::path exeDir = std::filesystem::path(exePathW).parent_path();
+        std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
+        std::string lpath = launcher.string();
+        std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
+        try {
+          if (config::playnite.focus_attempts > 0) {
+            cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
+          }
+          if (config::playnite.focus_timeout_secs > 0) {
+            cmd += std::string(" --focus-timeout ") + std::to_string(config::playnite.focus_timeout_secs);
+          }
+          if (config::playnite.focus_exit_on_first) {
+            cmd += std::string(" --focus-exit-on-first");
+          }
+        } catch (...) {}
+        std::error_code fec;
+        boost::filesystem::path wd;  // empty wd
+        _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        if (fec) {
+          BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
+        } else {
+          BOOST_LOG(info) << "Playnite fullscreen helper launched";
+          try {
+            auto pid = static_cast<uint32_t>(_process.id());
+            if (!platf::playnite::announce_launcher(pid, std::string())) {
+              BOOST_LOG(debug) << "Playnite helper (fullscreen): announce_launcher reported inactive IPC";
+            }
+          } catch (...) {
+          }
+          launched = true;
+        }
+      } catch (...) {
+        launched = false;
+      }
+      if (!launched) {
+        BOOST_LOG(error) << "Failed to launch Playnite fullscreen."sv;
+        return -1;
+      }
+      placebo = false;
+    } else
+#endif
+      if (_app.cmd.empty()) {
+      BOOST_LOG(info) << "Executing [Desktop]"sv;
+      BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
+>>>>>>> remotes/vibe/vibe
       placebo = true;
     } else {
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
@@ -582,6 +1193,7 @@ namespace proc {
     } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
       BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
       BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
+      BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
       placebo = true;
 
     #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -595,6 +1207,7 @@ namespace proc {
 
     // Perform cleanup actions now if needed
     if (_process) {
+      BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
       terminate();
     }
 
@@ -707,8 +1320,25 @@ namespace proc {
     std::error_code ec;
     placebo = false;
 
+    // For Playnite-managed apps, request a graceful stop via Playnite first
+#ifdef _WIN32
+    std::chrono::seconds remaining_timeout = _app.exit_timeout;
+    if (!_app.playnite_id.empty()) {
+      try {
+        // Ask Playnite to stop the game; then wait up to exit-timeout to let it close
+        platf::playnite::stop_game(_app.playnite_id);
+        while (remaining_timeout.count() > 0 && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+          std::this_thread::sleep_for(1s);
+          remaining_timeout -= 1s;
+        }
+      } catch (...) {}
+    }
+#else
+    std::chrono::seconds remaining_timeout = _app.exit_timeout;
+#endif
+
     if (!immediate) {
-      terminate_process_group(_process, _process_group, _app.exit_timeout);
+      terminate_process_group(_process, _process_group, remaining_timeout);
     }
 
     _process = boost::process::v1::child();
@@ -792,6 +1422,10 @@ namespace proc {
     } else {
       // Restore output name to its original value
       config::video.output_name = initial_display;
+
+      if (config::video.dd.config_revert_on_disconnect) {
+        display_helper_integration::revert();
+      }
     }
 
     _app_id = -1;
@@ -814,11 +1448,8 @@ namespace proc {
     }
   }
 
-  const std::vector<ctx_t> &proc_t::get_apps() const {
-    return _apps;
-  }
-
-  std::vector<ctx_t> &proc_t::get_apps() {
+  std::vector<ctx_t> proc_t::get_apps() const {
+    std::scoped_lock lk(_apps_mutex);
     return _apps;
   }
 
@@ -827,6 +1458,7 @@ namespace proc {
   // Returns default image if image configuration is not set.
   // Returns http content-type header compatible image type.
   std::string proc_t::get_app_image(int app_id) {
+    std::scoped_lock lk(_apps_mutex);
     auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
       return app.id == std::to_string(app_id);
     });
@@ -845,6 +1477,10 @@ namespace proc {
 
   boost::process::environment proc_t::get_env() {
     return _env;
+  }
+
+  bool proc_t::last_run_app_frame_gen_limiter_fix() const {
+    return _app.frame_gen_limiter_fix;
   }
 
   proc_t::~proc_t() {
@@ -923,6 +1559,7 @@ namespace proc {
 
         dollar = std::find(next, std::end(val_raw), '$');
       } else {
+        BOOST_LOG(info) << "Playnite URI launch started";
         dollar = next;
       }
     }
@@ -1019,6 +1656,7 @@ namespace proc {
       if (file_hash) {
         to_hash.push_back(file_hash.value());
       } else {
+        BOOST_LOG(info) << "Playnite URI launch started";
         // Fallback to just hashing image path
         to_hash.push_back(file_path);
       }
@@ -1502,6 +2140,12 @@ namespace proc {
         ctx.wait_all = true;
         ctx.exit_timeout = 5s;
 
+        ctx.gen1_framegen_fix = false;
+        ctx.gen2_framegen_fix = false;
+        ctx.lossless_scaling_framegen = false;
+        ctx.frame_gen_limiter_fix = false;
+        ctx.playnite_fullscreen = false;
+
         auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
           // Avoid using index to generate id if possible
@@ -1537,6 +2181,12 @@ namespace proc {
         ctx.auto_detach = true;
         ctx.wait_all = true;
         ctx.exit_timeout = 5s;
+
+        ctx.gen1_framegen_fix = false;
+        ctx.gen2_framegen_fix = false;
+        ctx.lossless_scaling_framegen = false;
+        ctx.frame_gen_limiter_fix = false;
+        ctx.playnite_fullscreen = false;
 
         auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
@@ -1582,8 +2232,39 @@ namespace proc {
 
     auto proc_opt = proc::parse(file_name);
 
-    if (proc_opt) {
+    if (!proc_opt) {
+      return;
+    }
+
+    // If an app is currently running, do not replace the entire proc_t instance.
+    // Replacing it would drop tracking state and cause the active stream loop
+    // to think no app is running, prematurely terminating the session.
+    // Instead, update only the applications list to reflect the latest config.
+    if (proc.running() > 0) {
+      // Move the parsed apps list and environment into the existing proc instance
+      // Use proc.update_apps(...) which safely replaces the app list and env
+      proc.update_apps(proc_opt->release_apps(), proc_opt->release_env());
+
+    } else {
+      // No app running: safe to refresh full state (env + apps)
       proc = std::move(*proc_opt);
     }
+  }
+
+  void proc_t::update_apps(std::vector<ctx_t> &&apps, boost::process::v1::environment &&env) {
+    // Replace app list and environment while keeping current running app intact
+    {
+      std::scoped_lock lk(_apps_mutex);
+      _apps = std::move(apps);
+      _env = std::move(env);
+    }
+  }
+
+  std::vector<ctx_t> proc_t::release_apps() {
+    return std::move(_apps);
+  }
+
+  boost::process::v1::environment proc_t::release_env() {
+    return std::move(_env);
   }
 }  // namespace proc

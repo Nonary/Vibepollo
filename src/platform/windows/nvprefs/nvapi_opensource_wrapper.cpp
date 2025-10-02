@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <map>
+#include <cstring>
 
 // local includes
 #include "driver_settings.h"
@@ -16,6 +17,8 @@ namespace {
 
   std::map<const char *, void *> interfaces;
   HMODULE dll = nullptr;
+
+  constexpr NvU32 NVAPI_DRS_SETSETTING_NEW_ID = 0x8A2CF5F5;
 
   template<typename Func, typename... Args>
   NvAPI_Status call_interface(const char *name, Args... args) {
@@ -48,9 +51,24 @@ NvAPI_Initialize() {
 #endif
 
   if ((dll = LoadLibraryEx(dll_name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))) {
-    if (auto query_interface = (decltype(nvapi_QueryInterface) *) GetProcAddress(dll, "nvapi_QueryInterface")) {
+    auto query_interface = (decltype(nvapi_QueryInterface) *) GetProcAddress(dll, "nvapi_QueryInterface");
+    if (!query_interface) {
+      query_interface = (decltype(nvapi_QueryInterface) *) GetProcAddress(dll, "NvAPI_QueryInterface");
+    }
+    if (query_interface) {
       for (const auto &item : nvapi_interface_table) {
-        interfaces[item.func] = query_interface(item.id);
+        void *resolved = nullptr;
+
+        if (std::strcmp(item.func, "NvAPI_DRS_SetSetting") == 0) {
+          resolved = query_interface(NVAPI_DRS_SETSETTING_NEW_ID);
+          if (!resolved) {
+            resolved = query_interface(item.id);
+          }
+        } else {
+          resolved = query_interface(item.id);
+        }
+
+        interfaces[item.func] = resolved;
       }
       return NVAPI_OK;
     }

@@ -1,46 +1,77 @@
-<script setup>
-import { loadAutoTheme, setupThemeToggleListener } from './theme'
-import { onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, onMounted, computed, h } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { NDropdown, NButton } from 'naive-ui';
+import {
+  loadAutoTheme,
+  setupThemeToggleListener,
+  getPreferredTheme,
+  setStoredTheme,
+  setTheme,
+} from '@/theme';
+
+const { t } = useI18n();
+
+const open = ref(false);
+const current = ref('auto');
+
+const options = computed(() => [
+  {
+    key: 'light',
+    label: t('navbar.theme_light'),
+    icon: () => h('i', { class: 'fa-solid fa-sun' }),
+  },
+  { key: 'dark', label: t('navbar.theme_dark'), icon: () => h('i', { class: 'fa-solid fa-moon' }) },
+  {
+    key: 'auto',
+    label: t('navbar.theme_auto'),
+    icon: () => h('i', { class: 'fa-solid fa-circle-half-stroke' }),
+  },
+]);
+
+const activeIcon = computed(() => {
+  const m = {
+    light: 'fa-solid fa-sun',
+    dark: 'fa-solid fa-moon',
+    auto: 'fa-solid fa-circle-half-stroke',
+  } as Record<string, string>;
+  return m[current.value] || m['auto'];
+});
+
+type ThemeKey = 'light' | 'dark' | 'auto';
+
+interface ThemeOption {
+  key: ThemeKey;
+  label: string;
+  icon: () => ReturnType<typeof h>;
+}
+
+function onSelect(key: string | number): void {
+  const v = String(key) as ThemeKey;
+  setStoredTheme(v);
+  setTheme(v);
+  current.value = v;
+  open.value = false;
+}
 
 onMounted(() => {
-  loadAutoTheme()
-  setupThemeToggleListener()
-})
+  loadAutoTheme();
+  setupThemeToggleListener();
+  current.value = getPreferredTheme();
+});
 </script>
 
 <template>
-  <div class="dropdown bd-mode-toggle">
-    <a class="nav-link dropdown-toggle align-items-center"
-            id="bd-theme"
-            type="button"
-            aria-expanded="false"
-            data-bs-toggle="dropdown"
-            aria-label="{{ $t('navbar.toggle_theme') }} ({{ $t('navbar.theme_auto') }})">
-      <span class="bi my-1 theme-icon-active"><i class="fa-solid fa-circle-half-stroke"></i></span>
-      <span id="bd-theme-text">{{ $t('navbar.toggle_theme') }}</span>
-    </a>
-    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="bd-theme-text">
-      <li>
-        <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="light" aria-pressed="false">
-          <i class="bi me-2 theme-icon fas fa-fw fa-solid fa-sun"></i>
-          {{ $t('navbar.theme_light') }}
-        </button>
-      </li>
-      <li>
-        <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="dark" aria-pressed="false">
-          <i class="bi me-2 theme-icon fas fa-fw fa-solid fa-moon"></i>
-          {{ $t('navbar.theme_dark') }}
-        </button>
-      </li>
-      <li>
-        <button type="button" class="dropdown-item d-flex align-items-center active" data-bs-theme-value="auto" aria-pressed="true">
-          <i class="bi me-2 theme-icon fas fa-fw fa-solid fa-circle-half-stroke"></i>
-          {{ $t('navbar.theme_auto') }}
-        </button>
-      </li>
-    </ul>
-  </div>
+  <n-dropdown trigger="click" :options="options" @select="onSelect">
+    <n-button
+      tertiary
+      size="small"
+      class="flex items-center gap-2 bg-transparent border-0 shadow-none hover:bg-transparent focus:outline-none"
+    >
+      <span class="theme-icon-active"><i :class="activeIcon" /></span>
+      <span>{{ $t('navbar.toggle_theme') }}</span>
+    </n-button>
+  </n-dropdown>
 </template>
 
-<style scoped>
-</style>
+<style scoped></style>

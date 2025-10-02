@@ -261,13 +261,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### update_check_interval
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Interval in seconds between automatic checks for new Sunshine releases. Set to 0 to disable periodic checking.
+            Checks are date-based: Sunshine compares its build date to the latest release (and pre-releases if enabled) and notifies when a newer build is available.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            86400
+            @endcode (24 hours)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            update_check_interval = 14400
+            @endcode</td>
+    </tr>
+</table>
+
 ### system_tray
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Show icon in system tray and display desktop notifications
+            Show icon in system tray and display desktop notifications.
         </td>
     </tr>
     <tr>
@@ -283,6 +307,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
 </table>
+
+<!-- The update command mechanism was removed. Sunshine now only notifies about updates. -->
 
 ## Input
 
@@ -1186,7 +1212,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="4">Choices</td>
         <td>disabled</td>
         <td>Perform no additional configuration.</td>
     </tr>
@@ -1197,6 +1223,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>manual</td>
         <td>Change refresh rate to the user specified one (set via [dd_manual_refresh_rate](#dd_manual_refresh_rate)).</td>
+    </tr>
+    <tr>
+        <td>prefer_highest</td>
+        <td>Prefer the highest available refresh rate for the selected resolution. Recommended when using a virtual display + RTSS to minimize VSYNC engagement on hosts with global VSYNC enabled and G-SYNC with ULLM.</td>
     </tr>
 </table>
 
@@ -1271,7 +1301,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            0
+            20
             @endcode</td>
     </tr>
     <tr>
@@ -1279,6 +1309,36 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">@code{}
             dd_wa_hdr_toggle_delay = 500
             @endcode</td>
+    </tr>
+</table>
+
+### dd_wa_dummy_plug_hdr10
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Forces Windows to run the capture output at 30&nbsp;Hz with HDR enabled so physical HDMI dummy plugs expose 10-bit colour.<br>
+            Sunshine also keeps the "Disable VSYNC/ULLM" option engaged to ensure the driver profile disables VSYNC and Ultra-Low Latency Mode.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_wa_dummy_plug_hdr10 = true
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Notes</td>
+        <td colspan="2">
+            Only enable this when using a physical dummy plug that needs the 10-bit HDR workaround.<br>
+            The workaround applies to directly launched applications only; Desktop streams keep their normal refresh rate so everyday use remains smooth.<br>
+            See the @hyperlink{https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions}{Dummy Plugs guide} for full setup details.
+        </td>
     </tr>
 </table>
 
@@ -1753,6 +1813,36 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### session_token_ttl_seconds
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Web UI session timeout in seconds. Determines how long a login session remains valid before re-authentication is required.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            7200
+            @endcode (2 hours)
+        </td>
+    </tr>
+    <tr>
+        <td>Notes</td>
+        <td colspan="2">
+            For higher security on shared systems, reduce this value (e.g. 3600 for 1 hour). Minimum is 1 second.
+        </td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            session_token_ttl_seconds = 3600
+            @endcode</td>
+    </tr>
+</table>
+
 ### log_path
 
 <table>
@@ -2025,8 +2115,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">Automatic.
-            Sunshine will use the first capture method available in the order of the table above.</td>
+        <td colspan="2">Automatic<br>
+            Sunshine will use the first capture method available in the order of the table below</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -2064,9 +2154,17 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>wgc</td>
-        <td>(beta feature) Use Windows.Graphics.Capture to capture the display.
-            @note{Applies to Windows only.}
-            @attention{This capture method is not compatible with the Sunshine service.}</td>
+        <td>Use Windows.Graphics.Capture to capture the display. Captures at a variable rate.
+            @note{Windows only.}
+            @note{NVIDIA Ultra Low Latency Mode (ULLM) can hurt performance; avoid this by either using a monitor whose refresh rate exceeds the stream and capping FPS to stop ULLM from engaging, or simply disable Low Latency Mode in the driver.}
+            @tip{On NVIDIA cards, selecting this option will resolve stream freezes caused by high VRAM utilization.}</td>
+    </tr>
+    <tr>
+        <td>wgcc</td>
+        <td>Use Windows.Graphics.Capture to capture the display. Captures at a constant rate.
+            @note{Windows only.}
+            @note{NVIDIA Ultra Low Latency Mode (ULLM) can hurt performance; avoid this by either using a monitor whose refresh rate exceeds the stream and capping FPS to stop ULLM from engaging, or simply disable Low Latency Mode in the driver.}
+            @tip{On NVIDIA cards, selecting this option will resolve stream freezes caused by high VRAM utilization.}</td>
     </tr>
 </table>
 
@@ -2109,6 +2207,46 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>software</td>
         <td>Encoding occurs on the CPU</td>
+    </tr>
+</table>
+
+## Frame Limiter (Windows)
+
+These options integrate with Windows tooling to manage frame pacing and related behavior during a stream.
+They appear in the Frame Limiter section of the settings UI.
+
+### rtss_disable_vsync_ullm
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Attempt to prevent driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM) from engaging during a stream by configuring the display to use the highest available refresh rate for the targeted resolution.<br>
+            This works because VSYNC/ULLM only apply when VSYNC is engaged. By running the display at a refresh rate higher than the stream FPS, the driver avoids applying VSYNC and ULLM to the stream.
+            <br><br>
+            This option is primarily intended for users following Blur Busters guidance to force VSYNC and enable ULLM globally in the NVIDIA profile. It helps avoid unintended latency and pacing effects while streaming.
+            <br><br>
+            When enabled, Sunshine asks the Windows Display Helper to switch the active display mode to the highest refresh rate available for the stream's resolution. If no resolution is selected by other display settings, the stream's requested resolution is used when the client has Optimize Game Settings enabled.
+            <br><br>
+            A virtual display is highly recommended for this option.
+            <br>
+            <b>Notes</b>:
+            <ul>
+                <li>Windows only; requires the Display Helper (tools/sunshine_display_helper.exe).</li>
+                <li>Does not change encoder FPS; pair with a frame cap if desired.</li>
+                <li>If Display Device configuration is disabled, this option still applies the minimal refresh-rate-only change.</li>
+            </ul>
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            rtss_disable_vsync_ullm = enabled
+            @endcode</td>
     </tr>
 </table>
 
@@ -2282,6 +2420,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             the freeze at the cost of reduced capture performance when the GPU is heavily loaded.
             @note{This option only applies when using NVENC [encoder](#encoder).}
             @note{Applies to Windows only.}
+            @tip{Changing the capture method to Windows.Graphics.Capture also resolves this problem without any additional changes.}
         </td>
     </tr>
     <tr>
@@ -2392,7 +2531,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         </td>
     </tr>
     <tr>
-        <td>Default</td>
+               <td>Default</td>
         <td colspan="2">@code{}
             medium
             @endcode</td>

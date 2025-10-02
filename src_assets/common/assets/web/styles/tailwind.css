@@ -1,0 +1,338 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme CSS variables (semantic tokens) */
+@layer base {
+  body {
+    @apply text-dark dark:text-light bg-light dark:bg-dark antialiased;
+  }
+}
+
+/* Naive UI button overrides to ensure solid variants across the app */
+@layer components {
+  :root .n-button {
+    @apply shadow-sm;
+  }
+  :root .n-button .n-button__content {
+    @apply inline-flex items-center gap-2;
+  }
+  :root .n-button--default-type {
+    /* Neutral button surfaces align with our Tailwind tokens */
+    @apply bg-dark/10 dark:bg-light/10 text-dark dark:text-light hover:bg-dark/15 dark:hover:bg-light/15;
+  }
+  /* Link-like button variant to match navbar links */
+  :root .n-button.n-button--linkish {
+    @apply bg-transparent text-brand hover:bg-primary/10 shadow-none border-0 px-3 py-1 rounded-md;
+  }
+
+  /* Preserve scrollbar gutter to avoid content overlap in scrollable dropdowns */
+  .scroll-stable {
+    scrollbar-gutter: stable;
+  }
+  :root .n-button--primary-type {
+    @apply bg-primary text-onPrimary hover:bg-primary/90;
+  }
+  :root .n-button--secondary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
+  }
+  :root .n-button--success-type {
+    @apply bg-success text-onLight hover:bg-success/90;
+  }
+  :root .n-button--error-type {
+    @apply bg-danger text-onDark hover:bg-danger/90;
+  }
+  :root .n-button--warning-type {
+    @apply bg-warning text-onLight hover:bg-warning/90;
+  }
+  :root .n-button--info-type {
+    @apply bg-info text-onLight hover:bg-info/90;
+  }
+  :root .n-button--tertiary {
+    @apply bg-secondary text-onSecondary hover:bg-secondary/90;
+  }
+  :root .n-button--disabled,
+  :root .n-button[disabled='true'],
+  :root .n-button[aria-disabled='true'] {
+    @apply opacity-50 cursor-not-allowed;
+  }
+
+  /*
+   * Naive UI button content alignment and icon spacing
+   * - Ensure icons and text inside buttons are consistently centered with spacing.
+   * - Avoid per-button flex wrappers by normalizing the inner content element.
+   */
+  :root .n-button .n-button__content {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem; /* 8px gap between icon and text */
+  }
+
+  /* Reset icon margins inside Naive buttons (gap handles spacing there) */
+  :root .n-button .n-button__content .icon,
+  :root .n-button .n-button__content .fa,
+  :root .n-button .n-button__content .fas,
+  :root .n-button .n-button__content .far,
+  :root .n-button .n-button__content .fal,
+  :root .n-button .n-button__content .fab {
+    margin: 0 !important;
+  }
+
+  /* Global icon alignment and spacing when used inline (outside buttons) */
+  .icon,
+  .fa,
+  .fas,
+  .far,
+  .fal,
+  .fab {
+    line-height: 1;
+    vertical-align: -0.125em; /* optical alignment with text baseline */
+  }
+
+  /* Provide spacing when icon is leading or trailing text (non-button contexts) */
+  :not(.n-button__content) > .icon:first-child,
+  :not(.n-button__content) > .fa:first-child,
+  :not(.n-button__content) > .fas:first-child,
+  :not(.n-button__content) > .far:first-child,
+  :not(.n-button__content) > .fal:first-child,
+  :not(.n-button__content) > .fab:first-child {
+    margin-right: 0.5rem;
+  }
+
+  :not(.n-button__content) > .icon:last-child,
+  :not(.n-button__content) > .fa:last-child,
+  :not(.n-button__content) > .fas:last-child,
+  :not(.n-button__content) > .far:last-child,
+  :not(.n-button__content) > .fal:last-child,
+  :not(.n-button__content) > .fab:last-child {
+    margin-left: 0.5rem;
+  }
+  /* Card + forms: stronger borders in light mode for ≥3:1 contrast */
+  .card {
+    @apply p-5 rounded-md border border-dark/55 dark:border-light/10 bg-white dark:bg-surface shadow-sm;
+  }
+
+  .card-header {
+    @apply flex items-center gap-3 mb-4;
+  }
+
+  .form-control {
+    @apply w-full px-3 py-2 text-sm rounded-md 
+           border border-dark/55 dark:border-light/15
+           bg-light dark:bg-surface/70
+           text-dark dark:text-light
+           placeholder-dark/70 dark:placeholder-light/40
+           focus:outline-none focus:ring-2 focus:ring-primary/40;
+    /* normalize native select appearance and ensure padding for custom arrow */
+    -webkit-appearance: none;
+    appearance: none;
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1.25rem 1.25rem;
+  }
+
+  .form-control.monospace {
+    @apply font-mono;
+  }
+
+  .form-label {
+    @apply block text-sm font-medium mb-1 text-dark dark:text-light;
+  }
+
+  .form-text {
+    @apply text-[11px] mt-1;
+    color: rgb(var(--color-dark) / 0.7);
+  }
+  .dark .form-text {
+    color: rgb(var(--color-light) / 0.65);
+  }
+
+  .form-select {
+    @apply form-control;
+  }
+
+  select.form-control option {
+    background-color: rgb(var(--color-light));
+    color: rgb(var(--color-on-light));
+  }
+
+  .dark select.form-control option {
+    background-color: rgb(var(--color-surface));
+    color: rgb(var(--color-on-dark));
+  }
+
+  select.form-control {
+    background-image:
+      linear-gradient(45deg, transparent 50%, currentColor 50%),
+      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position:
+      calc(100% - 1rem) calc(50% - 0.2rem),
+      calc(100% - 0.7rem) calc(50% - 0.2rem);
+    background-size:
+      0.45em 0.45em,
+      0.45em 0.45em;
+    padding-right: 2.25rem;
+  }
+
+  .table {
+    @apply w-full text-sm border-collapse;
+  }
+
+  .table th {
+    @apply text-left font-semibold pr-3 pb-2;
+  }
+
+  .table td {
+    @apply pr-3 py-2 align-top;
+  }
+
+  .align-middle {
+    vertical-align: middle;
+  }
+
+  /* Alerts (bootstrap-like) */
+  .alert {
+    @apply rounded-md px-3 py-2 my-2;
+  }
+
+  .alert-danger {
+    background-color: rgba(var(--color-danger), 0.1);
+    color: rgb(var(--color-on-dark));
+    border: 1px solid rgba(var(--color-danger), 0.25);
+  }
+
+  .alert-success {
+    background-color: rgba(var(--color-success), 0.1);
+    color: rgb(var(--color-on-light));
+    border: 1px solid rgba(var(--color-success), 0.2);
+  }
+
+  .alert-warning {
+    background-color: rgba(var(--color-warning), 0.12);
+    color: rgb(var(--color-on-primary));
+    border: 1px solid rgba(var(--color-warning), 0.25);
+  }
+
+  .alert-info {
+    background-color: rgba(var(--color-info), 0.1);
+    color: rgb(var(--color-on-light));
+    border: 1px solid rgba(var(--color-info), 0.2);
+  }
+
+  /* Improve contrast for alerts in dark mode */
+  .dark .alert-success {
+    color: rgb(var(--color-on-dark));
+  }
+  .dark .alert-info {
+    color: rgb(var(--color-on-dark));
+  }
+
+  /* spacing utilities like mb-3/mb-2 should use Tailwind classes directly in templates; do not @apply them here */
+
+  /* Removed .w-100 and .ms-auto alias shims; use w-full and ml-auto directly in templates */
+}
+
+/*
+ * Improve dark-mode visibility for unchecked Naive UI checkboxes.
+ * Adds a subtle inset outline when unchecked; removed when checked.
+ */
+@layer components {
+  .dark .n-checkbox:not(.n-checkbox--checked) .n-checkbox-box,
+  .dark .n-checkbox:not(.n-checkbox--checked) .n-checkbox__input {
+    /* Stronger visible outline + subtle fill in dark mode */
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.45);
+    border-color: rgb(var(--color-light) / 0.45) !important;
+    background-color: rgb(var(--color-light) / 0.06);
+  }
+
+  /* Hover state: slightly increase contrast so it reads as interactive */
+  .dark .n-checkbox:not(.n-checkbox--checked):hover .n-checkbox-box,
+  .dark .n-checkbox:not(.n-checkbox--checked):hover .n-checkbox__input {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.65);
+    border-color: rgb(var(--color-light) / 0.65) !important;
+    background-color: rgb(var(--color-light) / 0.1);
+  }
+
+  /* Keyboard focus ring for accessibility */
+  .dark .n-checkbox .n-checkbox__input:focus-visible .n-checkbox-box {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-light) / 0.55);
+  }
+
+  .dark .n-checkbox.n-checkbox--checked .n-checkbox-box,
+  .dark .n-checkbox.n-checkbox--checked .n-checkbox__input {
+    box-shadow: none;
+  }
+}
+
+/* Radios — better visible outline when unchecked and clear active dot */
+@layer components {
+  :root .n-radio:not(.n-radio--checked) .n-radio__input {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.6);
+    border-color: rgb(var(--color-secondary) / 0.6) !important;
+    background-color: transparent;
+  }
+  :root .n-radio.n-radio--checked .n-radio__dot {
+    background-color: rgb(var(--color-primary));
+  }
+
+  /* Dark mode: add visible outline + readable label */
+  .dark .n-radio:not(.n-radio--checked) .n-radio__input {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.55);
+    border-color: rgb(var(--color-light) / 0.55) !important;
+    background-color: rgb(var(--color-light) / 0.06);
+  }
+  .dark .n-radio:not(.n-radio--checked):hover .n-radio__input {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.75);
+    background-color: rgb(var(--color-light) / 0.1);
+  }
+  .dark .n-radio .n-radio__input:focus-visible {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-light) / 0.55);
+  }
+  .dark .n-radio.n-radio--checked .n-radio__dot {
+    background-color: rgb(var(--color-primary));
+  }
+  /* Naive uses either __label or -label across versions; cover both */
+  .dark .n-radio .n-radio__label,
+  .dark .n-radio .n-radio-label {
+    color: rgb(var(--color-on-dark));
+  }
+
+  /* Ensure the actual visible circle shows a clear outline (unselected) */
+  :root .n-radio:not(.n-radio--checked) .n-radio__dot {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
+    background-color: transparent !important;
+  }
+  :root .n-radio:not(.n-radio--checked):hover .n-radio__dot {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-secondary) / 0.8) !important;
+    background-color: rgb(var(--color-secondary) / 0.06) !important;
+  }
+  :root .n-radio:focus-visible .n-radio__dot {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
+  }
+  .dark .n-radio:not(.n-radio--checked) .n-radio__dot {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.55) !important;
+    background-color: rgb(var(--color-light) / 0.06) !important;
+  }
+  .dark .n-radio:not(.n-radio--checked):hover .n-radio__dot {
+    box-shadow: inset 0 0 0 2px rgb(var(--color-light) / 0.75) !important;
+    background-color: rgb(var(--color-light) / 0.1) !important;
+  }
+  .dark .n-radio:focus-visible .n-radio__dot {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-light) / 0.55) !important;
+  }
+
+  /* Keyboard focus ring in light mode */
+  :root .n-radio .n-radio__input:focus-visible {
+    box-shadow:
+      0 0 0 3px rgb(var(--color-primary) / 0.35),
+      inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
+  }
+}

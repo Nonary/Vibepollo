@@ -13,7 +13,8 @@ set(CPACK_PACKAGE_DESCRIPTION ${CMAKE_PROJECT_DESCRIPTION})
 set(CPACK_PACKAGE_HOMEPAGE_URL ${CMAKE_PROJECT_HOMEPAGE_URL})
 set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/LICENSE)
 set(CPACK_PACKAGE_ICON ${PROJECT_SOURCE_DIR}/apollo.png)
-set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}")
+# Ensure the generated installer filename uses the branded name
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}")
 set(CPACK_STRIP_FILES YES)
 
 # install common assets
@@ -36,6 +37,9 @@ install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web"
 # platform specific packaging
 if(WIN32)
     include(${CMAKE_MODULE_PATH}/packaging/windows.cmake)
+    # WiX specifics: ensure license is RTF and set stable Upgrade GUID
+    set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/packaging/windows/LICENSE.rtf)
+    set(CPACK_WIX_UPGRADE_GUID "{C2C36624-2D9C-4AFD-9C79-6B7861AE4A0D}")
 elseif(UNIX)
     include(${CMAKE_MODULE_PATH}/packaging/unix.cmake)
 
