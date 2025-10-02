@@ -48,13 +48,13 @@ namespace {
       return false;
     }
 
-    const auto app_id = std::to_string(session.appid);
+    const auto app_id = std::to_string(session.id);
     const auto it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
       return app.id == app_id;
     });
 
     if (it == apps.end()) {
-      return session.appid <= 0;
+      return session.id <= 0;
     }
 
     return it->cmd.empty() && it->playnite_id.empty();

@@ -307,7 +307,7 @@
     "install_steam_audio_drivers": "Install Steam Audio Drivers",
     "install_steam_audio_drivers_desc": "If Steam is installed, this will automatically install the Steam Streaming Speakers driver to support 5.1/7.1 surround sound and muting host audio.",
     "isolated_virtual_display_option": "Move the Virtual Display to the bottom right-most corner of the display layout",
-    "isolated_virtual_display_option_desc": "This makes the display isolated from all other display and contains mouse movements to the virtual screen. This reorganizes the displays such that the all other displays are to the left of the virtual display.",
+    "isolated_virtual_display_option_desc": "This makes the display isolated from all other display and contains mouse movements to the virtual screen. This reorganizes the displays such that the all other displays are to the left of the virtual display.",	
     "keep_sink_default": "Keep virtual sink as default",
     "keep_sink_default_desc": "Whether to force selected virtual sink as default (effective when host audio output is disabled).",
     "key_repeat_delay": "Key Repeat Delay",
@@ -489,8 +489,7 @@
     "theme_dark": "Dark",
     "theme_light": "Light",
     "toggle_theme": "Theme",
-    "troubleshoot": "Troubleshooting",
-    "logout": "Logout"
+    "troubleshoot": "Troubleshooting"
   },
   "password": {
     "confirm_password": "Confirm Password",
@@ -586,16 +585,7 @@
     "quit_apollo_success": "Apollo has exited.",
     "quit_apollo_success_ongoing": "Apollo is quitting...",
     "quit_apollo_confirm": "Do you really want to quit Apollo? You'll not be able to start Apollo again if you have no other methods to operate your computer.",
-    "troubleshooting": "Troubleshooting",
-    "restart_sunshine": "Restart Apollo",
-    "restart_sunshine_desc": "Restart Apollo to apply configuration changes",
-    "collect_playnite_logs": "Collect Playnite Logs",
-    "collect_playnite_logs_desc": "Collect diagnostic logs from Playnite",
-    "copy_logs": "Copy Logs",
-    "wrap": "Wrap",
-    "unpair_desc": "Remove paired devices from Apollo",
-    "unpair_all": "Unpair All Devices",
-    "unpair_single_no_devices": "No paired devices found"
+    "troubleshooting": "Troubleshooting"
   },
   "welcome": {
     "confirm_password": "Confirm password",
@@ -605,33 +595,5 @@
     "login": "Login",
     "welcome_success": "This page will reload soon, your browser will ask you for the new credentials",
     "login_success": "This page will reload soon."
-  },
-  "auth": {
-    "refresh": "Refresh",
-    "sessions_heading": "Active Sessions",
-    "sessions_description": "Manage your active login sessions",
-    "sessions_device": "Device",
-    "sessions_activity": "Activity",
-    "sessions_status": "Status",
-    "sessions_actions": "Actions",
-    "sessions_last_seen": "Last Seen",
-    "sessions_expires": "Expires",
-    "sessions_remember_flag": "Remember Me",
-    "sessions_session_flag": "Session",
-    "sessions_current_device": "Current Device",
-    "sessions_revoke": "Revoke",
-    "sessions_logout": "Logout"
-  },
-  "clients": {
-    "nav": "Clients",
-    "title": "Client Management",
-    "pair_title": "Pair New Device",
-    "pair_desc": "Pair a new device to stream with Apollo",
-    "existing_title": "Paired Devices"
-  },
-  "playnite": {
-    "setup_integration": "Setup Playnite Integration",
-    "force_sync": "Force Sync"
-  },
-  "General": "General"
+  }
 }

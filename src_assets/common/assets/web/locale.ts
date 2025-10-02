@@ -10,7 +10,7 @@ interface LocaleResponse {
 
 type MessageSchema = typeof en;
 
-export default async function (): Promise<any> {
+export default async function () {
   const r: LocaleResponse = await http
     .get('./api/configLocale', { validateStatus: () => true })
     .then((r) => (r.status === 200 ? r.data : {}))
@@ -30,7 +30,7 @@ export default async function (): Promise<any> {
   } catch (e) {
     console.error('Failed to download translations', e);
   }
-  const i18n = createI18n({
+  const i18n = createI18n<{ message: MessageSchema }, string>({
     // Use the Composition API and inject global helpers so `$t` works in templates
     legacy: false,
     globalInjection: true,

@@ -1872,6 +1872,26 @@ namespace platf {
     return output;
   }
 
+  std::string to_utf8(const std::wstring &string) {
+    if (string.empty()) {
+      return {};
+    }
+    auto output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(), nullptr, 0, nullptr, nullptr);
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to get UTF-8 buffer size: "sv << winerr;
+      return {};
+    }
+    std::string output(output_size, '\0');
+    output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(), output.data(), output.size(), nullptr, nullptr);
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to convert string to UTF-8: "sv << winerr;
+      return {};
+    }
+    return output;
+  }
+
   std::string to_utf8(const std::wstring_view &string) {
     // No conversion needed if the string is empty
     if (string.empty()) {
@@ -1904,7 +1924,7 @@ namespace platf {
       BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
       return "Sunshine"s;
     }
-    return to_utf8(hostname);
+    return to_utf8(std::wstring_view(hostname));
   }
 
   std::vector<gpu_info_t> enumerate_gpus() {
@@ -1931,7 +1951,7 @@ namespace platf {
       }
 
       gpu_info_t info {};
-      info.description = to_utf8(desc.Description);
+      info.description = to_utf8(std::wstring_view(desc.Description));
       info.vendor_id = desc.VendorId;
       info.device_id = desc.DeviceId;
       info.dedicated_video_memory = desc.DedicatedVideoMemory;

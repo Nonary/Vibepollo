@@ -36,6 +36,7 @@
 #include "http_auth.h"
 #include "httpcommon.h"
 #include "platform/common.h"
+#include "uuid.h"  // Include before Windows headers to avoid UUID conflicts
 #ifdef _WIN32
   #include "src/platform/windows/image_convert.h"
 
@@ -59,11 +60,14 @@
   #include <KnownFolders.h>
   #include <ShlObj.h>
   #include <windows.h>
+  // Windows rpc.h defines uuid_t as a typedef/macro for UUID which conflicts with our uuid_util::uuid_t
+  #ifdef uuid_t
+    #undef uuid_t
+  #endif
 #endif
 #include "display_helper_integration.h"
 #include "process.h"
 #include "utility.h"
-#include "uuid.h"
 
 // libdisplaydevice JSON usage is encapsulated in display_helper_integration
 

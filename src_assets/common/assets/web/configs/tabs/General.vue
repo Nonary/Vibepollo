@@ -10,14 +10,14 @@ const props = defineProps({
   serverCmd: Array
 })
 
-const config = ref(props.config)
-const globalPrepCmd = ref(props.globalPrepCmd)
-const globalStateCmd = ref(props.globalStateCmd)
-const serverCmd = ref(props.serverCmd)
+const config = ref(props.config || {})
+const globalPrepCmd = ref(props.globalPrepCmd || [])
+const globalStateCmd = ref(props.globalStateCmd || [])
+const serverCmd = ref(props.serverCmd || [])
 
 const cmds = ref({
-  prep: globalPrepCmd,
-  state: globalStateCmd
+  prep: globalPrepCmd.value,
+  state: globalStateCmd.value
 })
 
 const prepCmdTemplate = {

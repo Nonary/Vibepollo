@@ -57,7 +57,7 @@
         <ServiceInstall
             Id="SunshineServiceInstall"
             Name="SunshineService"
-            DisplayName="Vibeshine Service"
+            DisplayName="Vibepollo Service"
             Type="ownProcess"
             Start="auto"
             ErrorControl="normal"

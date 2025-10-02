@@ -47,33 +47,12 @@ namespace video {
    * @return True if there should be no issues with the probing, false if we should prevent it.
    */
   bool allow_encoder_probing() {
-    const auto devices {display_device::enumerate_devices()};
-
-    // If there are no devices, check if we have virtual display capability
-    if (devices.empty()) {
-      #ifdef _WIN32
-      // We'll create a temporary virtual display for probing anyways.
-      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-        return false;
-      }
-      #endif
-      return true;
+    #ifdef _WIN32
+    if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      return false;
     }
-
-    // Since Windows 11 24H2, it is possible that there will be no active devices present
-    // for some reason (probably a bug). Trying to probe encoders in such a state locks/breaks the DXGI
-    // and also the display device for Windows. So we must have at least 1 active device.
-    const bool at_least_one_device_is_active = std::any_of(std::begin(devices), std::end(devices), [](const auto &device) {
-      // If device has additional info, it is active.
-      return static_cast<bool>(device.m_info);
-    });
-
-    if (at_least_one_device_is_active) {
-      return true;
-    }
-
-    BOOST_LOG(error) << "No display devices are active at the moment! Cannot probe the encoders.";
-    return false;
+    #endif
+    return true;
   }
 
   void free_ctx(AVCodecContext *ctx) {

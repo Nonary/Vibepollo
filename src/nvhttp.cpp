@@ -473,11 +473,11 @@ namespace nvhttp {
     launch_session->perm = named_cert_p->perm;
 
     // Get appid for frame generation settings from vibe
-    launch_session->appid = util::from_view(get_arg(args, "appid", "0"));
-    if (launch_session->appid > 0) {
+    launch_session->id = util::from_view(get_arg(args, "appid", "0"));
+    if (launch_session->id > 0) {
       try {
         auto apps_snapshot = proc::proc.get_apps();
-        const std::string app_id_str = std::to_string(launch_session->appid);
+        const std::string app_id_str = std::to_string(launch_session->id);
         for (const auto &app_ctx : apps_snapshot) {
           if (app_ctx.id == app_id_str) {
             launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
@@ -1321,7 +1321,7 @@ namespace nvhttp {
         }
 
         if (no_active_sessions && !proc::proc.virtual_display) {
-          display_device::configure_display(config::video, *launch_session);
+          display_helper_integration::apply_from_session(config::video, *launch_session);
           if (video::probe_encoders()) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 503);
@@ -1450,7 +1450,7 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
       // This should be done before probing encoders as it could change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      display_helper_integration::apply_from_session(config::video, *launch_session);
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed

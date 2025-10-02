@@ -9,7 +9,7 @@
                 class="sticky top-0 z-30 h-14 flex items-center gap-4 px-4 border-b border-dark/10 dark:border-light/10 bg-light/70 dark:bg-dark/60 backdrop-blur supports-[backdrop-filter]:bg-light/40 supports-[backdrop-filter]:dark:bg-dark/40"
               >
                 <div class="flex items-center gap-3 min-w-0">
-                  <img src="/images/logo-sunshine-45.png" alt="Sunshine" class="h-8 w-8" />
+                  <img src="/images/logo-apollo-45.png" alt="Apollo" class="h-8 w-8" />
                   <h1 class="text-base md:text-lg font-semibold tracking-tight truncate">
                     {{
                       displayTitle && displayTitle.includes('.') ? $t(displayTitle) : displayTitle
@@ -89,8 +89,8 @@
                   >
                     <div class="w-full max-w-md mx-auto text-center space-y-6">
                       <img
-                        src="/images/logo-sunshine-45.png"
-                        alt="Sunshine"
+                        src="/images/logo-apollo-45.png"
+                        alt="Apollo"
                         class="h-24 w-24 opacity-80 mx-auto select-none"
                       />
                       <div class="space-y-2">
@@ -108,7 +108,7 @@
                         </n-button>
                       </div>
                       <p class="mt-8 text-[10px] tracking-wider uppercase opacity-60 select-none">
-                        Sunshine
+                        Apollo
                       </p>
                     </div>
                   </div>

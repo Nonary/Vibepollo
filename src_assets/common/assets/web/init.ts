@@ -11,6 +11,7 @@ export function initApp(
   // stores and components see the runtime config immediately.
   i18n().then(async (i18n) => {
     app.use(i18n);
+    (app.config.globalProperties as any).$t = i18n.global.t.bind(i18n.global);
     app.provide('i18n', i18n.global);
     // expose i18n instance for runtime locale switching
     setI18nGlobal(i18n);

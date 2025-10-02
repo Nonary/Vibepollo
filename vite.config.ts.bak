@@ -1,8 +1,6 @@
 import fs from 'fs';
 import { resolve } from 'path';
 import { defineConfig } from 'vite';
-import Components from 'unplugin-vue-components/vite';
-import { NaiveUiResolver } from 'unplugin-vue-components/resolvers';
 import vue from '@vitejs/plugin-vue';
 import { ViteEjsPlugin } from 'vite-plugin-ejs';
 
@@ -27,28 +25,35 @@ const header = fs.readFileSync(resolve(assetsSrcPath, 'template_header.html'), '
 export default defineConfig(({ mode }) => {
   const isDebug = mode === 'debug';
 
+  // Dynamically include only HTML entry points that actually exist to avoid
+  // Rollup errors when legacy pages are removed. Primary SPA is index.html.
+  const candidatePages = [
+    'index',
+    'apps',
+    'playnite',
+    'clients',
+    'config',
+    'password',
+    'troubleshooting',
+    'pin',
+  ];
+  const input: Record<string, string> = {};
+  for (const name of candidatePages) {
+    const p = resolve(assetsSrcPath, `${name}.html`);
+    if (fs.existsSync(p)) input[name] = p;
+  }
+
   return {
     root: resolve(assetsSrcPath),
     base: './',
     resolve: {
       alias: { '@': resolve(assetsSrcPath) },
     },
-    // Compile-time Vue feature flags
-    // - Keep Options API off for Composition API only
-    // - Enable Vue devtools in production when building Debug bundles
+    // Ensure Vue devtools can attach in Debug bundles
     define: {
-      __VUE_OPTIONS_API__: false,
       __VUE_PROD_DEVTOOLS__: isDebug,
     },
-    plugins: [
-      vue(),
-      Components({
-        // Auto-import only used Naive UI components to minimize bundle
-        resolvers: [NaiveUiResolver()],
-        dts: false,
-      }),
-      ViteEjsPlugin({ header }),
-    ],
+    plugins: [vue(), ViteEjsPlugin({ header })],
     css: {
       // Include CSS sources in sourcemaps during debug
       devSourcemap: isDebug,
@@ -56,11 +61,9 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: resolve(assetsDstPath),
       sourcemap: isDebug ? 'inline' : false,
-      emptyOutDir: true,
       minify: isDebug ? false : 'esbuild',
       rollupOptions: {
-        // Only build the SPA entry point - index.html
-        input: { index: resolve(assetsSrcPath, 'index.html') },
+        input,
       },
     },
   };

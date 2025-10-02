@@ -35,6 +35,8 @@
 #include "utility.h"
 
 #ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
   #include <shellapi.h>
   #include "platform/windows/utils.h"
 #endif
@@ -116,12 +118,16 @@ namespace config {
   #define AMF_VIDEO_ENCODER_CABAC 1
   #define AMF_VIDEO_ENCODER_CALV 2
 #else
+}  // namespace amd
+}  // namespace config
   #ifdef _GLIBCXX_USE_C99_INTTYPES
     #undef _GLIBCXX_USE_C99_INTTYPES
   #endif
   #include <AMF/components/VideoEncoderAV1.h>
   #include <AMF/components/VideoEncoderHEVC.h>
   #include <AMF/components/VideoEncoderVCE.h>
+namespace config {
+namespace amd {
 #endif
 
     enum class quality_av1_e : int {

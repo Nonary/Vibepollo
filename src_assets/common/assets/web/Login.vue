@@ -5,7 +5,7 @@
     <n-card class="w-full max-w-md" :bordered="false">
       <n-space vertical size="large" class="w-full">
         <n-space vertical align="center" size="small">
-          <n-image src="/images/logo-sunshine-45.png" width="45" preview-disabled alt="Sunshine" />
+          <n-image src="/images/logo-apollo-45.png" width="45" preview-disabled alt="Apollo" />
           <n-h2>{{ $t('auth.login_title') }}</n-h2>
         </n-space>
 

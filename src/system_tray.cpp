@@ -47,6 +47,7 @@
   // local includes
   #include "config.h"
   #include "confighttp.h"
+  #include "display_helper_integration.h"
   #include "logging.h"
   #include "platform/common.h"
   #include "process.h"
@@ -74,7 +75,7 @@ namespace system_tray {
   void tray_reset_display_device_config_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Resetting display device config from system tray"sv;
 
-    std::ignore = display_device::reset_persistence();
+    std::ignore = display_helper_integration::reset_persistence();
   }
 
   void tray_restart_cb([[maybe_unused]] struct tray_menu *item) {
