@@ -59,6 +59,11 @@ using namespace std::literals;
 // system_tray namespace
 namespace system_tray {
   static std::atomic<bool> tray_initialized = false;
+  static std::atomic<bool> tray_thread_running = false;
+  static std::atomic<bool> tray_thread_should_exit = false;
+  static std::thread tray_thread;
+
+  static int init_tray();
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening UI from system tray"sv;
@@ -129,8 +134,8 @@ namespace system_tray {
     .allIconPaths = {TRAY_ICON, TRAY_ICON_LOCKED, TRAY_ICON_PLAYING, TRAY_ICON_PAUSING},
   };
 
-  int system_tray() {
-  #ifdef _WIN32
+  static int init_tray() {
+#ifdef _WIN32
     // If we're running as SYSTEM, Explorer.exe will not have permission to open our thread handle
     // to monitor for thread termination. If Explorer fails to open our thread, our tray icon
     // will persist forever if we terminate unexpectedly. To avoid this, we will modify our thread
@@ -190,20 +195,29 @@ namespace system_tray {
     while (GetShellWindow() == nullptr) {
       Sleep(1000);
     }
-  #endif
+#endif
 
     if (tray_init(&tray) < 0) {
       BOOST_LOG(warning) << "Failed to create system tray"sv;
       return 1;
-    } else {
-      BOOST_LOG(info) << "System tray created"sv;
     }
 
+    BOOST_LOG(info) << "System tray created"sv;
     tray_initialized = true;
+    return 0;
+  }
+
+  int system_tray() {
+    if (init_tray() != 0) {
+      return 1;
+    }
+
     while (tray_loop(1) == 0) {
       BOOST_LOG(debug) << "System tray loop"sv;
     }
 
+    tray_exit();
+    tray_initialized = false;
     return 0;
   }
 
@@ -451,7 +465,6 @@ namespace system_tray {
       return;
     }
 
-    tray_initialized = true;
     tray_thread_running = true;
 
     // Run the event loop
@@ -460,7 +473,7 @@ namespace system_tray {
     }
 
     // Cleanup
-    tray_exit(&tray);
+    tray_exit();
     tray_initialized = false;
     tray_thread_running = false;
     BOOST_LOG(info) << "System tray thread ended"sv;

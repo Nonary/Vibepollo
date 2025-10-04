@@ -7,7 +7,7 @@
     - Migrate config files
     - Add/remove firewall rules
     - Install/uninstall Virtual Gamepad (ViGEm) via PowerShell helper
-    - Install/uninstall Sunshine service and autostart configuration
+    - Install/uninstall Apollo service and autostart configuration
     - Optional prompts on uninstall for gamepad removal and deleting install dir
 
     Notes:
@@ -29,53 +29,16 @@
 
   </Fragment>
 
-  <!-- Define a stable tools directory under INSTALL_ROOT for WiX-authored payloads -->
-  <Fragment>
-    <DirectoryRef Id="INSTALL_ROOT">
-      <Directory Id="DIR_Tools" Name="tools"/>
-    </DirectoryRef>
-  </Fragment>
-
-  <!-- Place the component under INSTALL_ROOT directory -->
-  <Fragment>
-    <DirectoryRef Id="INSTALL_ROOT">
-      <!-- Control legacy service names; keep separate from primary install component -->
-      <Component Id="CtlStopSunshine" Guid="{B6D8A6A3-63B7-4C3F-8A2C-2C8F2B2F3B61}" KeyPath="yes">
-        <CreateFolder/>
-        <!-- Legacy service name cleanup (best-effort) -->
-        <ServiceControl Id="SC_StopLegacy" Name="sunshinesvc" Stop="both" Remove="uninstall" Wait="yes" />
-      </Component>
-    </DirectoryRef>
-  </Fragment>
-
-  <!-- Official service installation component (installed under INSTALL_ROOT\tools) -->
-  <Fragment>
-    <DirectoryRef Id="DIR_Tools">
-      <Component Id="SunshineSvc" Guid="*">
-        <!-- The service executable bound in at link-time via PayloadRoot binder path -->
-        <File Id="SunshineSvcExe" Source="!(bindpath.PayloadRoot)tools\sunshinesvc.exe" KeyPath="yes" />
-        <ServiceInstall
-            Id="SunshineServiceInstall"
-            Name="SunshineService"
-            DisplayName="Vibeshine Service"
-            Type="ownProcess"
-            Start="auto"
-            ErrorControl="normal"
-            Arguments="--service" />
-        <ServiceControl Id="StartSunshineService"
-            Name="SunshineService"
-            Start="install"
-            Stop="both"
-            Remove="uninstall"
-            Wait="yes" />
-      </Component>
-    </DirectoryRef>
-  </Fragment>
+  <!-- Legacy service cleanup handled by service scripts; no WiX-authored service components necessary -->
 
   <Fragment>
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="AddFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="AutostartService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
     <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -88,7 +51,9 @@
     <CustomAction Id="StartSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
     <!-- Quiet process kill and service removal for manual uninstalls -->
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UninstallService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
@@ -107,6 +72,22 @@
     <CustomAction Id="SetInstallGamepad"
                  Property="InstallGamepad"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\install-gamepad.ps1&quot;"/>
+
+    <CustomAction Id="SetUpdatePathAdd"
+                 Property="UpdatePathAdd"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; add&quot;"/>
+
+    <CustomAction Id="SetAddFirewallRule"
+                 Property="AddFirewallRule"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\add-firewall-rule.bat&quot;&quot;"/>
+
+    <CustomAction Id="SetInstallService"
+                 Property="InstallService"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\install-service.bat&quot;&quot;"/>
+
+    <CustomAction Id="SetAutostartService"
+                 Property="AutostartService"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\autostart-service.bat&quot;&quot;"/>
 
     <!-- Immediate setter for pruning installed web assets directory before file copy -->
     <CustomAction Id="SetPruneWebDir"
@@ -132,7 +113,7 @@
     <!-- Immediate setter for quiet stop service -->
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $names=@('ApolloService','SunshineService','sunshinesvc'); foreach($n in $names){ $svc=Get-Service -Name $n -ErrorAction SilentlyContinue; if($svc){ if($svc.Status -ne 'Stopped'){ Stop-Service -Name $n -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
     <!-- Immediate setter to prune everything except the config directory -->
     <CustomAction Id="SetPruneButConfig"
                  Property="PruneButConfig"
@@ -141,47 +122,28 @@
     <!-- Immediate setter for quiet start service -->
     <CustomAction Id="SetStartSvcQuiet"
                  Property="StartSvcQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Running') { Start-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue; if(-not $svc){ $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue } if($svc -and $svc.Status -ne 'Running'){ Start-Service -Name $svc.Name -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } }&quot;"/>
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
-    <CustomAction Id="SetRemoveServiceQuiet"
-                 Property="RemoveServiceQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+
+    <CustomAction Id="SetUpdatePathRemove"
+                 Property="UpdatePathRemove"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; remove&quot;"/>
+
+    <CustomAction Id="SetRemoveFirewallRule"
+                 Property="RemoveFirewallRule"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\delete-firewall-rule.bat&quot;&quot;"/>
+
+    <CustomAction Id="SetUninstallService"
+                 Property="UninstallService"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\uninstall-service.bat&quot;&quot;"/>
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />
 
   </Fragment>
 
-  <Fragment>
-    <DirectoryRef Id="INSTALL_ROOT">
-      <Component Id="Env_Path" Guid="{0D8C0E3E-6A7D-48E2-9A1C-0B1A6B7D8C90}">
-        <CreateFolder />
-        <Environment Id="EnvPathSunshine"
-                     Name="PATH"
-                     Action="set"
-                     System="yes"
-                     Part="last"
-                     Permanent="no"
-                     Value="[INSTALL_ROOT]" />
-      </Component>
-      <Component Id="Fw_Exceptions" Guid="{2A7E0C83-2F3D-4C0C-9D5D-7C0B1A2E3F45}">
-        <CreateFolder />
-        <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
-                                    Id="FE_SunshineExe"
-                                    Name="Vibeshine Sunshine"
-                                    Program="[INSTALL_ROOT]sunshine.exe"
-                                    Profile="all"
-                                    Scope="any" />
-        <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
-                                    Id="FE_SunshineSvcExe"
-                                    Name="Vibeshine Sunshine Service"
-                                    Program="[INSTALL_ROOT]tools\sunshinesvc.exe"
-                                    Profile="all"
-                                    Scope="any" />
-      </Component>
-    </DirectoryRef>
-  </Fragment>
+  <!-- PATH and firewall management handled via scripted custom actions -->
 </Wix>

@@ -10,6 +10,10 @@ install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
+if (TARGET sunshinesvc)
+    install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
+
 
 # Helpers and tools
 # - Playnite launcher helper used for Playnite-managed app launches
@@ -76,9 +80,9 @@ execute_process(COMMAND cmd.exe /c mklink /J "${shaders_in_build_dest_native}" "
 
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}\\\\apollo.ico")
 
-# The name of the directory that will be created in C:/Program files/
-# Keep install directory as Sunshine regardless of displayed product name
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Sunshine")
+# The name of the directory that will be created in C:/Program Files/
+# Match the legacy NSIS layout by installing under Apollo
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Apollo")
 
 # Setting components groups and dependencies
 set(CPACK_COMPONENT_GROUP_CORE_EXPANDED true)

@@ -1898,13 +1898,17 @@ namespace platf {
     return output;
   }
 
+  std::string to_utf8(const std::wstring &string) {
+    return to_utf8(std::wstring_view {string});
+  }
+
   std::string get_host_name() {
     WCHAR hostname[256];
     if (GetHostNameW(hostname, ARRAYSIZE(hostname)) == SOCKET_ERROR) {
       BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
       return "Sunshine"s;
     }
-    return to_utf8(hostname);
+    return to_utf8(std::wstring_view {hostname});
   }
 
   std::vector<gpu_info_t> enumerate_gpus() {
@@ -1931,7 +1935,7 @@ namespace platf {
       }
 
       gpu_info_t info {};
-      info.description = to_utf8(desc.Description);
+      info.description = to_utf8(std::wstring_view {desc.Description});
       info.vendor_id = desc.VendorId;
       info.device_id = desc.DeviceId;
       info.dedicated_video_memory = desc.DedicatedVideoMemory;

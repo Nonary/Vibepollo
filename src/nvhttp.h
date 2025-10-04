@@ -182,6 +182,12 @@ namespace nvhttp {
    * Then using the client certificate public key we should be able to verify that
    * the client secret has been signed by Moonlight
    */
+  void clientpairingsecret(
+    pair_session_t &sess,
+    const std::shared_ptr<safe::queue_t<crypto::x509_t>> &pending_certs,
+    boost::property_tree::ptree &tree,
+    const std::string &client_pairing_secret);
+
   void clientpairingsecret(pair_session_t &sess, boost::property_tree::ptree &tree, const std::string &client_pairing_secret);
 
   /**

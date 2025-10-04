@@ -7,13 +7,6 @@
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
       <RegistrySearch Id="Search_ViGEmBus_Service32" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw"/>
     </Property>
-    <Feature Id="VibeshineExtras" Title="Vibeshine Components" Level="1" Absent="disallow">
-      <ComponentRef Id="CtlStopSunshine"/>
-      <ComponentRef Id="SunshineSvc"/>
-      <ComponentRef Id="Env_Path"/>
-      <ComponentRef Id="Fw_Exceptions"/>
-    </Feature>
-
     <InstallExecuteSequence>
       <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
       <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
@@ -30,8 +23,6 @@
       <!-- Manual uninstall: process/legacy service cleanup -->
       <Custom Action="SetKillProcsQuiet" After="StopSvcQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="KillProcsQuiet" After="SetKillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="SetRemoveServiceQuiet" After="KillProcsQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="RemoveServiceQuiet" After="SetRemoveServiceQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
@@ -40,6 +31,14 @@
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
       <Custom Action="SetInstallGamepad" After="MigrateConfig">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
       <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+      <Custom Action="SetUpdatePathAdd" After="InstallGamepad">NOT REMOVE</Custom>
+      <Custom Action="UpdatePathAdd" After="SetUpdatePathAdd">NOT REMOVE</Custom>
+      <Custom Action="SetAddFirewallRule" After="UpdatePathAdd">NOT REMOVE</Custom>
+      <Custom Action="AddFirewallRule" After="SetAddFirewallRule">NOT REMOVE</Custom>
+      <Custom Action="SetInstallService" After="AddFirewallRule">NOT REMOVE</Custom>
+      <Custom Action="InstallService" After="SetInstallService">NOT REMOVE</Custom>
+      <Custom Action="SetAutostartService" After="InstallService">NOT REMOVE</Custom>
+      <Custom Action="AutostartService" After="SetAutostartService">NOT REMOVE</Custom>
 
       <!-- Uninstall before file removal -->
       <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
@@ -50,6 +49,12 @@
       <Custom Action="SetUninstallGamepad" After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
       <Custom Action="UninstallGamepad" After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
       <Custom Action="AskDeleteInstallDir" After="UninstallGamepad">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+      <Custom Action="SetUpdatePathRemove" After="AskDeleteInstallDir">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="UpdatePathRemove" After="SetUpdatePathRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetRemoveFirewallRule" After="UpdatePathRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveFirewallRule" After="SetRemoveFirewallRule">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetUninstallService" After="RemoveFirewallRule">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="UninstallService" After="SetUninstallService">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 
       <!-- Execute delete/prune after MSI removes its files -->
       <Custom Action="SetDeleteInstallDir" After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>

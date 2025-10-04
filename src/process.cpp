@@ -580,7 +580,9 @@ namespace proc {
       // Restore to user defined output name
       config::video.output_name = this->initial_display;
       terminate();
-      display_device::revert_configuration();
+#ifdef _WIN32
+      display_helper_integration::revert();
+#endif
     });
 
     if (!app.gamepad.empty()) {
@@ -684,7 +686,7 @@ namespace proc {
           // So we always set output_name to the newly created virtual display as a workaround for
           // empty name when probing graphics cards.
 
-          config::video.output_name = display_device::map_display_name(this->display_name);
+          config::video.output_name = this->display_name;
         } else {
           BOOST_LOG(warning) << "Virtual Display creation failed, or cannot get created display name in time!";
         }
@@ -694,19 +696,15 @@ namespace proc {
       }
     }
 
-    display_device::configure_display(config::video, *launch_session);
+    display_helper_integration::apply_from_session(config::video, *launch_session);
 
     // We should not preserve display state when using virtual display.
     // It is already handled by Windows properly.
     if (this->virtual_display) {
-      display_device::reset_persistence();
+      display_helper_integration::reset_persistence();
     }
 
-#else
-
-    display_device::configure_display(config::video, *launch_session);
-
-#endif
+#endif  // _WIN32
 
     // Probe encoders again before streaming to ensure our chosen
     // encoder matches the active GPU (which could have changed
@@ -1391,13 +1389,12 @@ namespace proc {
     // Since terminate() is always run when a new app has started
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
       if (used_virtual_display) {
-        display_device::reset_persistence();
+        display_helper_integration::reset_persistence();
       } else {
-        display_device::revert_configuration();
+        display_helper_integration::revert();
       }
 #else
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
-      display_device::revert_configuration();
 #endif
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

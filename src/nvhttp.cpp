@@ -6,6 +6,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -61,6 +62,8 @@ namespace nvhttp {
   struct pair_session_t;
 
   crypto::cert_chain_t cert_chain;
+  static std::shared_ptr<safe::queue_t<crypto::x509_t>> pending_cert_queue =
+    std::make_shared<safe::queue_t<crypto::x509_t>>(30);
   static std::string one_time_pin;
   static std::string otp_passphrase;
   static std::string otp_device_name;
@@ -388,6 +391,7 @@ namespace nvhttp {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
+    launch_session->appid = 0;
     launch_session->gen1_framegen_fix = false;
     launch_session->gen2_framegen_fix = false;
     launch_session->lossless_scaling_framegen = false;
@@ -609,7 +613,12 @@ namespace nvhttp {
     tree.put("root.<xmlattr>.status_code", 200);
   }
 
-  void clientpairingsecret(pair_session_t &sess, pt::ptree &tree, const std::string &client_pairing_secret) {
+  void clientpairingsecret(
+    pair_session_t &sess,
+    const std::shared_ptr<safe::queue_t<crypto::x509_t>> &pending_certs,
+    pt::ptree &tree,
+    const std::string &client_pairing_secret
+  ) {
     if (sess.last_phase != PAIR_PHASE::SERVERCHALLENGERESP) {
       fail_pair(sess, tree, "Out of order call to clientpairingsecret");
       return;
@@ -670,6 +679,10 @@ namespace nvhttp {
       auto it = map_id_sess.find(client.uniqueID);
       map_id_sess.erase(it);
 
+      if (pending_certs) {
+        pending_certs->raise(crypto::x509(named_cert_p->cert));
+      }
+
       add_authorized_client(named_cert_p);
     } else {
       tree.put("root.paired", 0);
@@ -678,6 +691,10 @@ namespace nvhttp {
 
     remove_session(sess);
     tree.put("root.<xmlattr>.status_code", 200);
+  }
+
+  void clientpairingsecret(pair_session_t &sess, pt::ptree &tree, const std::string &client_pairing_secret) {
+    clientpairingsecret(sess, pending_cert_queue, tree, client_pairing_secret);
   }
 
   template<class T>
@@ -1183,6 +1200,7 @@ namespace nvhttp {
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
+    bool revert_display_configuration = false;
     auto g = util::fail_guard([&]() {
       std::ostringstream data;
 
@@ -1342,7 +1360,7 @@ namespace nvhttp {
         }
 
         if (no_active_sessions && !proc::proc.virtual_display) {
-          display_device::configure_display(config::video, *launch_session);
+          display_helper_integration::apply_from_session(config::video, *launch_session);
           if (video::probe_encoders()) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 503);
@@ -1402,6 +1420,7 @@ namespace nvhttp {
     tree.put("root.gamesession", 1);
 
     rtsp_stream::launch_session_raise(launch_session);
+    revert_display_configuration = false;
   }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
@@ -1742,17 +1761,35 @@ namespace nvhttp {
         BOOST_LOG(verbose) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
       });
 
-      while (add_cert->peek()) {
-        char subject_name[256];
+      if (pending_cert_queue) {
+        while (pending_cert_queue->peek()) {
+          auto cert = pending_cert_queue->pop();
+          if (!cert) {
+            continue;
+          }
 
-        auto cert = add_cert->pop();
-        X509_NAME_oneline(X509_get_subject_name(cert.get()), subject_name, sizeof(subject_name));
+          char subject_name[256];
+          X509_NAME_oneline(X509_get_subject_name(cert.get()), subject_name, sizeof(subject_name));
+          BOOST_LOG(verbose) << "Added cert ["sv << subject_name << ']';
 
-        BOOST_LOG(verbose) << "Added cert ["sv << subject_name << ']';
-        cert_chain.add(std::move(cert));
+          const auto pem = crypto::pem(cert);
+          auto named_it = std::find_if(
+            client_root.named_devices.begin(),
+            client_root.named_devices.end(),
+            [&pem](const p_named_cert_t &named_cert) {
+              return named_cert && named_cert->cert == pem;
+            }
+          );
+
+          if (named_it != client_root.named_devices.end()) {
+            cert_chain.add(*named_it);
+          } else {
+            BOOST_LOG(warning) << "Pending certificate not found in client registry: "sv << subject_name;
+          }
+        }
       }
 
-      auto err_str = cert_chain.verify(x509.get());
+      auto err_str = cert_chain.verify(x509.get(), named_cert_p);
       if (err_str) {
         BOOST_LOG(warning) << "SSL Verification error :: "sv << err_str;
         return verified;

@@ -44,6 +44,15 @@
   #include <ffnvcodec/nvEncodeAPI.h>
 #endif
 
+#if defined(_WIN32) && !defined(DOXYGEN)
+  #ifdef _GLIBCXX_USE_C99_INTTYPES
+    #undef _GLIBCXX_USE_C99_INTTYPES
+  #endif
+  #include <AMF/components/VideoEncoderAV1.h>
+  #include <AMF/components/VideoEncoderHEVC.h>
+  #include <AMF/components/VideoEncoderVCE.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace std::literals;
 
@@ -115,13 +124,6 @@ namespace config {
   #define AMF_VIDEO_ENCODER_UNDEFINED 0
   #define AMF_VIDEO_ENCODER_CABAC 1
   #define AMF_VIDEO_ENCODER_CALV 2
-#else
-  #ifdef _GLIBCXX_USE_C99_INTTYPES
-    #undef _GLIBCXX_USE_C99_INTTYPES
-  #endif
-  #include <AMF/components/VideoEncoderAV1.h>
-  #include <AMF/components/VideoEncoderHEVC.h>
-  #include <AMF/components/VideoEncoderVCE.h>
 #endif
 
     enum class quality_av1_e : int {

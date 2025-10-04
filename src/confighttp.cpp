@@ -56,6 +56,9 @@
 
   #include <windows.h>
 #endif
+#ifdef uuid_t
+  #undef uuid_t
+#endif
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
 
@@ -277,6 +280,31 @@ namespace confighttp {
   }
 
   /**
+   * @brief Enforce origin access policy based on configured network scope.
+   * @return True if the remote address is permitted, false otherwise (response set).
+   */
+  bool checkIPOrigin(resp_https_t response, req_https_t request) {
+    const auto remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
+    const auto ip_type = net::from_address(remote_address);
+    if (ip_type > http::origin_web_ui_allowed) {
+      BOOST_LOG(info) << "Web UI: ["sv << remote_address << "] -- denied by origin policy"sv;
+      nlohmann::json tree;
+      tree["status_code"] = static_cast<int>(SimpleWeb::StatusCode::client_error_forbidden);
+      tree["status"] = false;
+      tree["error"] = "Forbidden";
+      SimpleWeb::CaseInsensitiveMultimap headers {
+        {"Content-Type", "application/json"},
+        {"X-Frame-Options", "DENY"},
+        {"Content-Security-Policy", "frame-ancestors 'none';"}
+      };
+      add_cors_headers(headers);
+      response->write(SimpleWeb::StatusCode::client_error_forbidden, tree.dump(), headers);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * @brief Check authentication and authorization for an HTTP request.
    * @param request The HTTP request object.
    * @return AuthResult with outcome and response details if not authorized.
@@ -430,8 +458,10 @@ namespace confighttp {
       return false;
     }
     return true;
+  }
 
-    return true;
+  bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType) {
+    return validateContentType(response, request, contentType);
   }
 
 
@@ -754,14 +784,14 @@ namespace confighttp {
       // TODO: Input Validation
 
       // Read the input JSON from the request body.
-      nlohmann::json inputTree = nlohmann::json::parse(ss.str());
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
 
       // Read the existing apps file.
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
-      nlohmann::json fileTree = nlohmann::json::parse(content);
+      nlohmann::json file_tree = nlohmann::json::parse(content);
 
       // Migrate/merge the new app into the file tree.
-      proc::migrate_apps(&fileTree, &inputTree);
+      proc::migrate_apps(&file_tree, &input_tree);
 
 
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
@@ -1024,35 +1054,64 @@ namespace confighttp {
         return false;
       };
 
-      bool disabled_fullscreen_flag = false;
-      for (size_t i = 0; i < apps_node.size(); ++i) {
-        if (i != index) {
-          new_apps.push_back(apps_node[i]);
-        } else {
-          // If user deletes the Playnite fullscreen app, turn off the config flag
-#ifdef _WIN32
-          try {
-            if (is_playnite_fullscreen(apps_node[i])) {
-              auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
-              current_cfg["playnite_fullscreen_entry_enabled"] = "false";
-              std::stringstream config_stream;
-              for (const auto &kv : current_cfg) {
-                config_stream << kv.first << " = " << kv.second << std::endl;
-              }
-              file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
-              config::apply_config_now();
-              disabled_fullscreen_flag = true;
-            }
-          } catch (...) {
-          }
-#endif
-        }
+      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(content);
+      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+        bad_request(response, request, "Apps configuration missing or invalid");
+        return;
       }
 
+      auto &apps_node = file_tree["apps"];
+      std::vector<nlohmann::json> new_apps;
+      new_apps.reserve(apps_node.size());
+
+      int index = -1;
+      bool disabled_fullscreen_flag = false;
+
+      for (size_t i = 0; i < apps_node.size(); ++i) {
+        const auto &app_entry = apps_node[i];
+        auto app_uuid = app_entry.contains("uuid") && app_entry["uuid"].is_string()
+          ? app_entry["uuid"].get<std::string>()
+          : std::string {};
+
+        if (app_uuid != uuid) {
+          new_apps.push_back(app_entry);
+          continue;
+        }
+
+        index = static_cast<int>(i);
+
+        // If user deletes the Playnite fullscreen app, turn off the config flag
+#ifdef _WIN32
+        try {
+          if (is_playnite_fullscreen(app_entry)) {
+            auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+            current_cfg["playnite_fullscreen_entry_enabled"] = "false";
+            std::stringstream config_stream;
+            for (const auto &kv : current_cfg) {
+              config_stream << kv.first << " = " << kv.second << std::endl;
+            }
+            file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+            config::apply_config_now();
+            disabled_fullscreen_flag = true;
+          }
+        } catch (...) {
+        }
+#endif
+      }
+
+      if (index < 0) {
+        bad_request(response, request, "Specified application UUID not found");
+        return;
+      }
+
+      file_tree["apps"] = new_apps;
+
       // Write the updated JSON back to the file.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps);
 
+      nlohmann::json output_tree;
       output_tree["status"] = true;
       output_tree["result"] = std::format("application {} deleted", index);
       if (disabled_fullscreen_flag) {
@@ -1429,7 +1488,7 @@ namespace confighttp {
    * restart is required and attempts to apply immediately when safe.
    */
   void patchConfig(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
+    if (!validateContentType(response, request, "application/json")) {
       return;
     }
     if (!authenticate(response, request)) {
@@ -1931,7 +1990,7 @@ namespace confighttp {
    * @api_examples{/api/display/export_golden| POST| {"status":true}}
    */
   void postExportGoldenDisplay(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
+    if (!validateContentType(response, request, "application/json")) {
       return;
     }
     if (!authenticate(response, request)) {
@@ -2196,7 +2255,8 @@ namespace confighttp {
   void listSessions(resp_https_t response, req_https_t request);
   void revokeSession(resp_https_t response, req_https_t request);
 
-  * @brief Launch an application.
+  /**
+   * @brief Launch an application.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    */
@@ -2413,7 +2473,8 @@ namespace confighttp {
     server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getApolloLogoImage;
+    server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
+    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getApolloLogoImage;  // legacy alias
     server.resource["^/assets\\/.+$"]["GET"] = getNodeModules;
     server.resource["^/api/token$"]["POST"] = generateApiToken;
     server.resource["^/api/tokens$"]["GET"] = listApiTokens;

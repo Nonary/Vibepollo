@@ -39,6 +39,7 @@ namespace rtsp_stream {
     std::string device_name;
     std::string unique_id;
     crypto::PERM perm;
+    int appid;
 
     bool input_only;
     bool host_audio;
