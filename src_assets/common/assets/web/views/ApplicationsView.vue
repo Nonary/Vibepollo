@@ -2,7 +2,9 @@
   <div class="max-w-3xl mx-auto px-6 py-8 space-y-4">
     <!-- Toolbar aligned to card -->
     <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-wider">{{ $t('apps.applications_title') }}</h2>
+      <h2 class="text-sm font-semibold uppercase tracking-wider">
+        {{ $t('apps.applications_title') }}
+      </h2>
       <!-- Toolbar: one Primary + one secondary, 8-pt spacing -->
       <n-space align="center" :size="16" class="items-center">
         <!-- Windows + Playnite secondary action -->
@@ -85,9 +87,13 @@
       class="rounded-2xl overflow-hidden border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur"
     >
       <template v-if="orderedApps.length">
-        <div class="px-6 py-3 text-[11px] uppercase tracking-wide opacity-60 flex items-center justify-between">
+        <div
+          class="px-6 py-3 text-[11px] uppercase tracking-wide opacity-60 flex items-center justify-between"
+        >
           <span>{{ $t('apps.reorder_hint') }}</span>
-          <span v-if="reorderDirty" class="font-medium text-primary">{{ $t('apps.reorder_unsaved') }}</span>
+          <span v-if="reorderDirty" class="font-medium text-primary">{{
+            $t('apps.reorder_unsaved')
+          }}</span>
         </div>
         <div class="divide-y divide-black/5 dark:divide-white/10">
           <div
@@ -97,7 +103,7 @@
             @dragover.prevent="handleDragOver(i, $event)"
             @drop.prevent="handleDrop($event)"
           >
-            <div v-if="dragInsertIndex === i" class="drag-indicator" style="top: -1px;"></div>
+            <div v-if="dragInsertIndex === i" class="drag-indicator" style="top: -1px"></div>
             <div
               class="app-row w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
               role="button"
@@ -120,12 +126,7 @@
                   tabindex="-1"
                   role="button"
                 >
-                  <svg
-                    class="w-3.5 h-3.5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                  >
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                     <path
                       stroke-linecap="round"
                       stroke-linejoin="round"
@@ -174,7 +175,9 @@
                         class="text-[10px] opacity-70"
                         >{{ $t('apps.playnite_label_recent_category') }}</span
                       >
-                      <span v-else class="text-[10px] opacity-70">{{ $t('apps.playnite_label_managed') }}</span>
+                      <span v-else class="text-[10px] opacity-70">{{
+                        $t('apps.playnite_label_managed')
+                      }}</span>
                     </template>
                     <template v-else>
                       <n-tag
@@ -206,7 +209,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="dragInsertIndex === i + 1" class="drag-indicator" style="bottom: -1px;"></div>
+            <div v-if="dragInsertIndex === i + 1" class="drag-indicator" style="bottom: -1px"></div>
           </div>
         </div>
         <div
@@ -563,8 +566,7 @@ async function forceSync(): Promise<void> {
 function gotoPlaynite(): void {
   try {
     router.push({ path: '/settings', query: { sec: 'playnite' } });
-  } catch {
-  }
+  } catch {}
 }
 
 async function fetchPlayniteStatus(): Promise<void> {
@@ -641,7 +643,9 @@ auth.onLogin(() => {
   border-radius: 9999px;
   color: rgba(0, 0, 0, 0.35);
   cursor: grab;
-  transition: background-color 0.2s ease, color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .drag-handle:hover {

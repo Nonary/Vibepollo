@@ -11,7 +11,6 @@
 #include <format>
 #include <string>
 #include <utility>
-#include <string>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
@@ -81,7 +80,7 @@ namespace nvhttp {
       context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem);
     }
 
-    std::function<bool(std::shared_ptr<Request>, SSL*)> verify;
+    std::function<bool(std::shared_ptr<Request>, SSL *)> verify;
     std::function<void(std::shared_ptr<Response>, std::shared_ptr<Request>)> on_verify_failed;
 
   protected:
@@ -178,14 +177,14 @@ namespace nvhttp {
   }
 
   // Helper function to extract command entries from a JSON object.
-  cmd_list_t extract_command_entries(const nlohmann::json& j, const std::string& key) {
+  cmd_list_t extract_command_entries(const nlohmann::json &j, const std::string &key) {
     cmd_list_t commands;
 
     // Check if the key exists in the JSON.
     if (j.contains(key)) {
       // Ensure that the value for the key is an array.
       try {
-        for (const auto& item : j.at(key)) {
+        for (const auto &item : j.at(key)) {
           try {
             // Extract "cmd" and "elevated" fields from the JSON object.
             std::string cmd = item.at("cmd").get<std::string>();
@@ -193,7 +192,7 @@ namespace nvhttp {
 
             // Add the command entry to the list.
             commands.push_back({cmd, elevated});
-          } catch (const std::exception& e) {
+          } catch (const std::exception &e) {
             BOOST_LOG(warning) << "Error parsing command entry: " << e.what();
           }
         }
@@ -320,7 +319,6 @@ namespace nvhttp {
     http::unique_id = uid;
     update::state.last_notified_version = tree["root"].value("last_notified_version", "");
 
-
     nlohmann::json root = tree["root"];
     client_t client;  // Local client to load into
 
@@ -353,7 +351,7 @@ namespace nvhttp {
         named_cert_p->cert = el.value("cert", "");
         named_cert_p->uuid = el.value("uuid", "");
         named_cert_p->display_mode = el.value("display_mode", "");
-        named_cert_p->perm = (PERM)(util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t)PERM::_all)) & PERM::_all;
+        named_cert_p->perm = (PERM) (util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t) PERM::_all)) & PERM::_all;
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
         named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
@@ -373,7 +371,7 @@ namespace nvhttp {
     client_root = client;
   }
 
-  void add_authorized_client(const p_named_cert_t& named_cert_p) {
+  void add_authorized_client(const p_named_cert_t &named_cert_p) {
     client_t &client = client_root;
     client.named_devices.push_back(named_cert_p);
 
@@ -387,7 +385,7 @@ namespace nvhttp {
     }
   }
 
-  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p) {
+  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t *named_cert_p) {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
@@ -410,7 +408,8 @@ namespace nvhttp {
       auto corever = util::from_view(get_arg(args, "corever", "0"));
       if (corever >= 1) {
         launch_session->rtsp_cipher = crypto::cipher::gcm_t {
-          launch_session->gcm_key, false
+          launch_session->gcm_key,
+          false
         };
         launch_session->rtsp_iv_counter = 0;
       }
@@ -432,10 +431,10 @@ namespace nvhttp {
     if (named_cert_p->display_mode.empty()) {
       auto mode_str = get_arg(args, "mode", config::video.fallback_mode.c_str());
       mode = std::stringstream(mode_str);
-      BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name <<"] requested to ["sv << mode_str << ']';
+      BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] requested to ["sv << mode_str << ']';
     } else {
       mode = std::stringstream(named_cert_p->display_mode);
-      BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name <<"] overriden to ["sv << named_cert_p->display_mode << ']';
+      BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] overriden to ["sv << named_cert_p->display_mode << ']';
     }
 
     // Split mode by the char "x", to populate width/height/fps
@@ -453,7 +452,7 @@ namespace nvhttp {
         if (fps < 1000) {
           fps *= 1000;
         };
-        launch_session->fps = (int)fps;
+        launch_session->fps = (int) fps;
         break;
       }
       x++;
@@ -463,14 +462,14 @@ namespace nvhttp {
     if (x != 2) {
       launch_session->width = 1920;
       launch_session->height = 1080;
-      launch_session->fps = 60000; // 60fps * 1000 denominator
+      launch_session->fps = 60000;  // 60fps * 1000 denominator
     }
 
     launch_session->device_name = named_cert_p->name.empty() ? "ApolloDisplay"s : named_cert_p->name;
     launch_session->unique_id = named_cert_p->uuid;
     launch_session->perm = named_cert_p->perm;
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
-    
+
     if (launch_session->appid > 0) {
       try {
         auto apps_snapshot = proc::proc.get_apps();
@@ -659,9 +658,12 @@ namespace nvhttp {
 
       auto named_cert_p = std::make_shared<crypto::named_cert_t>();
       named_cert_p->name = client.name;
-      for (char& c : named_cert_p->name) {
-        if (c == '(') c = '[';
-        else if (c == ')') c = ']';
+      for (char &c : named_cert_p->name) {
+        if (c == '(') {
+          c = '[';
+        } else if (c == ')') {
+          c = ']';
+        }
       }
       named_cert_p->cert = std::move(client.cert);
       named_cert_p->uuid = uuid_util::uuid_t::generate().string();
@@ -710,11 +712,11 @@ namespace nvhttp {
     static auto constexpr to_string = "NONE"sv;
   };
 
-  inline crypto::named_cert_t* get_verified_cert(req_https_t request) {
-    return (crypto::named_cert_t*)request->userp.get();
+  inline crypto::named_cert_t *get_verified_cert(req_https_t request) {
+    return (crypto::named_cert_t *) request->userp.get();
   }
 
-  template <class T>
+  template<class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     BOOST_LOG(verbose) << "HTTP "sv << request->method << ' ' << request->path << " tunnel="sv << tunnel<T>::to_string;
 
@@ -748,7 +750,7 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
-  template <class T>
+  template<class T>
   void pair(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     print_req<T>(request);
 
@@ -784,7 +786,7 @@ namespace nvhttp {
       if (it->second == "getservercert"sv) {
         pair_session_t sess;
 
-        auto deviceName { get_arg(args, "devicename") };
+        auto deviceName {get_arg(args, "devicename")};
 
         if (deviceName == "roth"sv) {
           deviceName = "Legacy Moonlight Client";
@@ -811,7 +813,6 @@ namespace nvhttp {
             auto hash = util::hex(crypto::hash(one_time_pin + ptr->second.async_insert_pin.salt + otp_passphrase), true);
 
             if (hash.to_string_view() == it->second) {
-
               if (!otp_device_name.empty()) {
                 ptr->second.client.name = std::move(otp_device_name);
               }
@@ -962,30 +963,30 @@ namespace nvhttp {
 
       auto named_cert_p = get_verified_cert(request);
       if (!!(named_cert_p->perm & PERM::server_cmd)) {
-        pt::ptree& root_node = tree.get_child("root");
+        pt::ptree &root_node = tree.get_child("root");
 
         if (config::sunshine.server_cmds.size() > 0) {
           // Broadcast server_cmds
-          for (const auto& cmd : config::sunshine.server_cmds) {
+          for (const auto &cmd : config::sunshine.server_cmds) {
             pt::ptree cmd_node;
             cmd_node.put_value(cmd.cmd_name);
             root_node.push_back(std::make_pair("ServerCommand", cmd_node));
           }
         }
       } else {
-        BOOST_LOG(debug) << "Permission Get ServerCommand denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+        BOOST_LOG(debug) << "Permission Get ServerCommand denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
       }
 
-      tree.put("root.Permission", std::to_string((uint32_t)named_cert_p->perm));
+      tree.put("root.Permission", std::to_string((uint32_t) named_cert_p->perm));
 
-    #ifdef _WIN32
+#ifdef _WIN32
       tree.put("root.VirtualDisplayCapable", true);
       if (!!(named_cert_p->perm & PERM::_all_actions)) {
         tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
       } else {
         tree.put("root.VirtualDisplayDriverReady", true);
       }
-    #endif
+#endif
     } else {
       tree.put("root.mac", "00:00:00:00:00:00");
       tree.put("root.Permission", "0");
@@ -1145,13 +1146,11 @@ namespace nvhttp {
       }
 
       for (size_t i = 0; i < app_list.size(); i++) {
-        auto& app = app_list[i];
+        auto &app = app_list[i];
         auto appid = util::from_view(app.id);
         if (should_hide_inactive_apps) {
           if (
-            appid != current_appid
-            && appid != proc::input_only_app_id
-            && appid != proc::terminate_app_id
+            appid != current_appid && appid != proc::input_only_app_id && appid != proc::terminate_app_id
           ) {
             continue;
           }
@@ -1179,7 +1178,7 @@ namespace nvhttp {
         apps.push_back(std::make_pair("App", std::move(app_node)));
       }
     } else {
-      BOOST_LOG(debug) << "Permission ListApp denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission ListApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       pt::ptree app_node;
 
@@ -1193,7 +1192,6 @@ namespace nvhttp {
 
       return;
     }
-
   }
 
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
@@ -1230,15 +1228,13 @@ namespace nvhttp {
 
     // If we have already launched an app, we should allow clients with view permission to join the input only or current app's session.
     if (
-      current_appid > 0
-      && (appuuid_str != TERMINATE_APP_UUID || appid != proc::terminate_app_id)
-      && (is_input_only || appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid))
+      current_appid > 0 && (appuuid_str != TERMINATE_APP_UUID || appid != proc::terminate_app_id) && (is_input_only || appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid))
     ) {
       perm = PERM::_allow_view;
     }
 
     if (!(named_cert_p->perm & perm)) {
-      BOOST_LOG(debug) << "Permission LaunchApp denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission LaunchApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -1262,8 +1258,7 @@ namespace nvhttp {
     if (!is_input_only) {
       // Special handling for the "terminate" app
       if (
-        (config::input.enable_input_only_mode && appid == proc::terminate_app_id)
-        || appuuid_str == TERMINATE_APP_UUID
+        (config::input.enable_input_only_mode && appid == proc::terminate_app_id) || appuuid_str == TERMINATE_APP_UUID
       ) {
         proc::proc.terminate();
 
@@ -1275,12 +1270,7 @@ namespace nvhttp {
       }
 
       if (
-        current_appid > 0
-        && current_appid != proc::input_only_app_id
-        && (
-          (appid > 0 && appid != current_appid)
-          || (!appuuid_str.empty() && appuuid_str != current_app_uuid)
-        )
+        current_appid > 0 && current_appid != proc::input_only_app_id && ((appid > 0 && appid != current_appid) || (!appuuid_str.empty() && appuuid_str != current_app_uuid))
       ) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 400);
@@ -1370,7 +1360,7 @@ namespace nvhttp {
           }
         }
       } else {
-        const auto& apps = proc::proc.get_apps();
+        const auto &apps = proc::proc.get_apps();
         auto app_iter = std::find_if(apps.begin(), apps.end(), [&appid_str, &appuuid_str](const auto _app) {
           return _app.id == appid_str || _app.uuid == appuuid_str;
         });
@@ -1393,9 +1383,8 @@ namespace nvhttp {
           tree.put("root.<xmlattr>.status_code", err);
           tree.put(
             "root.<xmlattr>.status_message",
-            err == 503
-            ? "Failed to initialize video capture/encoding. Is a display connected and turned on?"
-            : "Failed to start the specified application");
+            err == 503 ? "Failed to initialize video capture/encoding. Is a display connected and turned on?" : "Failed to start the specified application"
+          );
           tree.put("root.gamesession", 0);
 
           return;
@@ -1437,7 +1426,7 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
     if (!(named_cert_p->perm & PERM::_allow_view)) {
-      BOOST_LOG(debug) << "Permission ViewApp denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission ViewApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -1549,7 +1538,7 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
     if (!(named_cert_p->perm & PERM::launch)) {
-      BOOST_LOG(debug) << "Permission CancelApp denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission CancelApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -1582,7 +1571,7 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
 
     if (!(named_cert_p->perm & PERM::_all_actions)) {
-      BOOST_LOG(debug) << "Permission Get AppAsset denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission Get AppAsset denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       fg.disable();
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
@@ -1608,10 +1597,9 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
 
     if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_read)
+      !(named_cert_p->perm & PERM::_allow_view) || !(named_cert_p->perm & PERM::clipboard_read)
     ) {
-      BOOST_LOG(debug) << "Permission Read Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission Read Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
@@ -1637,7 +1625,7 @@ namespace nvhttp {
     }
 
     if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to get clipboard is not connected to a stream";
+      BOOST_LOG(debug) << "Client [" << named_cert_p->name << "] trying to get clipboard is not connected to a stream";
 
       response->write(SimpleWeb::StatusCode::client_error_forbidden);
       response->close_connection_after_response = true;
@@ -1650,16 +1638,15 @@ namespace nvhttp {
   }
 
   void
-  setClipboard(resp_https_t response, req_https_t request) {
+    setClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
     auto named_cert_p = get_verified_cert(request);
 
     if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_set)
+      !(named_cert_p->perm & PERM::_allow_view) || !(named_cert_p->perm & PERM::clipboard_set)
     ) {
-      BOOST_LOG(debug) << "Permission Write Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
+      BOOST_LOG(debug) << "Permission Write Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
@@ -1685,7 +1672,7 @@ namespace nvhttp {
     }
 
     if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to set clipboard is not connected to a stream";
+      BOOST_LOG(debug) << "Client [" << named_cert_p->name << "] trying to set clipboard is not connected to a stream";
 
       response->write(SimpleWeb::StatusCode::client_error_forbidden);
       response->close_connection_after_response = true;
@@ -1872,7 +1859,7 @@ namespace nvhttp {
     tcp.join();
   }
 
-  std::string request_otp(const std::string& passphrase, const std::string& deviceName) {
+  std::string request_otp(const std::string &passphrase, const std::string &deviceName) {
     if (passphrase.size() < 4) {
       return "";
     }
@@ -1886,7 +1873,7 @@ namespace nvhttp {
   }
 
   void
-  erase_all_clients() {
+    erase_all_clients() {
     client_t client;
     client_root = client;
     cert_chain.clear();
@@ -1894,7 +1881,7 @@ namespace nvhttp {
     load_state();
   }
 
-  void stop_session(stream::session_t& session, bool graceful) {
+  void stop_session(stream::session_t &session, bool graceful) {
     if (graceful) {
       stream::session::graceful_stop(session);
     } else {
@@ -1902,7 +1889,7 @@ namespace nvhttp {
     }
   }
 
-  bool find_and_stop_session(const std::string& uuid, bool graceful) {
+  bool find_and_stop_session(const std::string &uuid, bool graceful) {
     auto session = rtsp_stream::find_session(uuid);
     if (session) {
       stop_session(*session, graceful);
@@ -1911,11 +1898,11 @@ namespace nvhttp {
     return false;
   }
 
-  void update_session_info(stream::session_t& session, const std::string& name, const crypto::PERM newPerm) {
+  void update_session_info(stream::session_t &session, const std::string &name, const crypto::PERM newPerm) {
     stream::session::update_device_info(session, name, newPerm);
   }
 
-  bool find_and_udpate_session_info(const std::string& uuid, const std::string& name, const crypto::PERM newPerm) {
+  bool find_and_udpate_session_info(const std::string &uuid, const std::string &name, const crypto::PERM newPerm) {
     auto session = rtsp_stream::find_session(uuid);
     if (session) {
       update_session_info(*session, name, newPerm);
@@ -1925,11 +1912,11 @@ namespace nvhttp {
   }
 
   bool update_device_info(
-    const std::string& uuid,
-    const std::string& name,
-    const std::string& display_mode,
-    const cmd_list_t& do_cmds,
-    const cmd_list_t& undo_cmds,
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const cmd_list_t &do_cmds,
+    const cmd_list_t &undo_cmds,
     const crypto::PERM newPerm,
     const bool enable_legacy_ordering,
     const bool allow_client_commands,

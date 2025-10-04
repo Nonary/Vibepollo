@@ -6,8 +6,8 @@
 
 // standard includes
 #include <atomic>
-#include <memory>
 #include <list>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -67,9 +67,9 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_do_cmds;
     std::list<crypto::command_entry_t> client_undo_cmds;
 
-  #ifdef _WIN32
-    GUID display_guid{};
-  #endif
+#ifdef _WIN32
+    GUID display_guid {};
+#endif
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
@@ -87,10 +87,10 @@ namespace rtsp_stream {
   int session_count();
 
   std::shared_ptr<stream::session_t>
-  find_session(const std::string_view& uuid);
+    find_session(const std::string_view &uuid);
 
   std::list<std::string>
-  get_all_session_uuids();
+    get_all_session_uuids();
 
   /**
    * @brief Terminates all running streaming sessions.

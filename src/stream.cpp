@@ -1018,13 +1018,13 @@ namespace stream {
         return;
       }
 
-      uint8_t cmdIndex = *(uint8_t*)payload.data();
+      uint8_t cmdIndex = *(uint8_t *) payload.data();
 
       if (cmdIndex < config::sunshine.server_cmds.size()) {
-        const auto& cmd = config::sunshine.server_cmds[cmdIndex];
+        const auto &cmd = config::sunshine.server_cmds[cmdIndex];
         BOOST_LOG(info) << "Executing server command: " << cmd.cmd_name;
 
-        auto exec_thread = std::thread([&cmd]{
+        auto exec_thread = std::thread([&cmd] {
           std::error_code ec;
           auto env = proc::proc.get_env();
           boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd_val, env);
@@ -1039,7 +1039,7 @@ namespace stream {
 
         exec_thread.detach();
       } else {
-        BOOST_LOG(error) << "Invalid server command index: " << (int)cmdIndex;
+        BOOST_LOG(error) << "Invalid server command index: " << (int) cmdIndex;
       }
     });
 
@@ -1957,19 +1957,19 @@ namespace stream {
       return session.state.load(std::memory_order_relaxed);
     }
 
-    inline bool send(session_t& session, const std::string_view &payload) {
+    inline bool send(session_t &session, const std::string_view &payload) {
       return session.broadcast_ref->control_server.send(payload, session.control.peer);
     }
 
-    std::string uuid(const session_t& session) {
+    std::string uuid(const session_t &session) {
       return session.device_uuid;
     }
 
-    bool uuid_match(const session_t &session, const std::string_view& uuid) {
+    bool uuid_match(const session_t &session, const std::string_view &uuid) {
       return session.device_uuid == uuid;
     }
 
-    bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm) {
+    bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm) {
       session.permission = newPerm;
       if (!(newPerm & crypto::PERM::_allow_view)) {
         BOOST_LOG(debug) << "Session: View permission revoked for [" << session.device_name << "], disconnecting...";
@@ -1998,7 +1998,7 @@ namespace stream {
       session.shutdown_event->raise(true);
     }
 
-    void graceful_stop(session_t& session) {
+    void graceful_stop(session_t &session) {
       while_starting_do_nothing(session.state);
       auto expected = state_e::RUNNING;
       auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
@@ -2016,8 +2016,7 @@ namespace stream {
 
       // We may not have gotten far enough to have an ENet connection yet
       if (session.control.peer) {
-        std::array<std::uint8_t,
-          sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+        std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
           encrypted_payload;
         auto payload = stream::encode_control(&session, util::view(plaintext), encrypted_payload);
 
@@ -2057,7 +2056,7 @@ namespace stream {
       input::reset(session.input);
 
       if (!session.undo_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.undo_cmds]{
+        auto exec_thread = std::thread([cmd_list = session.undo_cmds] {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
             auto env = proc::proc.get_env();
@@ -2168,7 +2167,7 @@ namespace stream {
       }
 
       if (!session.do_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.do_cmds]{
+        auto exec_thread = std::thread([cmd_list = session.do_cmds] {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
             auto env = proc::proc.get_env();

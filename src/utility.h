@@ -6,10 +6,11 @@
 
 // standard includes
 #include <algorithm>
-#include <condition_variable>
 #include <cctype>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -17,8 +18,6 @@
 #include <type_traits>
 #include <variant>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #define KITTY_WHILE_LOOP(x, y, z) \
   { \
@@ -457,18 +456,22 @@ namespace util {
   }
 
   template<typename T>
-  T get_non_string_json_value(const nlohmann::json& j, const std::string& key, const T& default_value = T{}) {
-    if (!j.contains(key))
+  T get_non_string_json_value(const nlohmann::json &j, const std::string &key, const T &default_value = T {}) {
+    if (!j.contains(key)) {
       return default_value;
-    const auto& val = j.at(key);
-    if (val.is_number() || val.is_boolean())
+    }
+    const auto &val = j.at(key);
+    if (val.is_number() || val.is_boolean()) {
       return val.get<T>();
+    }
     if (val.is_string()) {
       std::string s = val.get<std::string>();
       if constexpr (std::is_same_v<T, bool>) {
         std::string lowered;
         lowered.resize(s.size());
-        std::transform(s.begin(), s.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        std::transform(s.begin(), s.end(), lowered.begin(), [](unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
         if (lowered == "true" || lowered == "1" || lowered == "yes") {
           return true;
         }

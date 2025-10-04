@@ -31,12 +31,13 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
-#include "video.h"
 #include "utility.h"
+#include "video.h"
 
 #ifdef _WIN32
-  #include <shellapi.h>
   #include "platform/windows/utils.h"
+
+  #include <shellapi.h>
 #endif
 
 #if !defined(__ANDROID__) && !defined(__APPLE__)
@@ -445,9 +446,9 @@ namespace config {
   }  // namespace dd
 
   video_t video {
-    false, // headless_mode
-    true, // limit_framerate
-    false, // double_refreshrate
+    false,  // headless_mode
+    true,  // limit_framerate
+    false,  // double_refreshrate
 
     28,  // qp
 
@@ -522,8 +523,8 @@ namespace config {
     20,  // minimum_fps_target (0 = framerate)
 
     "1920x1080x60",  // fallback_mode
-    false, // isolated Display
-    false, // ignore_encoder_probe_failure
+    false,  // isolated Display
+    false,  // ignore_encoder_probe_failure
   };
 
   audio_t audio {
@@ -531,8 +532,8 @@ namespace config {
     {},  // virtual_sink
     true,  // stream audio
     true,  // install_steam_drivers
-    true, // keep_sink_default
-    true, // auto_capture
+    true,  // keep_sink_default
+    true,  // auto_capture
   };
 
   stream_t stream {
@@ -582,8 +583,8 @@ namespace config {
     true,  // always send scancodes
     true,  // high resolution scrolling
     true,  // native pen/touch support
-    false, // enable input only mode
-    true, // forward_rumble
+    false,  // enable input only mode
+    true,  // forward_rumble
   };
 
   frame_limiter_t frame_limiter {
@@ -603,10 +604,10 @@ namespace config {
   };
 
   sunshine_t sunshine {
-    false, // hide_tray_controls
-    true, // enable_pairing
-    true, // enable_discovery
-    false, // envvar_compatibility_mode
+    false,  // hide_tray_controls
+    true,  // enable_pairing
+    true,  // enable_discovery
+    false,  // envvar_compatibility_mode
     "en",  // locale
     2,  // min_log_level
     0,  // flags
@@ -1159,11 +1160,11 @@ namespace config {
 #endif
 
     for (auto &[name, val] : vars) {
-    #ifdef _WIN32
+#ifdef _WIN32
       BOOST_LOG(info) << "config: ["sv << name << "] -- ["sv << utf8ToAcp(val) << ']';
-    #else
+#else
       BOOST_LOG(info) << "config: ["sv << name << "] -- ["sv << val << ']';
-    #endif
+#endif
       modified_config_settings[name] = val;
     }
 
@@ -1278,7 +1279,7 @@ namespace config {
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
-    
+
     // Windows-only frame limiter options
     bool_f(vars, "frame_limiter_enable", frame_limiter.enable);
     string_f(vars, "frame_limiter_provider", frame_limiter.provider);
@@ -1551,9 +1552,9 @@ namespace config {
       // Create empty config file if it does not exist
       if (!fs::exists(sunshine.config_file)) {
         auto cfg_file = std::ofstream {sunshine.config_file};
-      #ifdef _WIN32
+#ifdef _WIN32
         cfg_file << "server_cmd = [{\"name\":\"Bubbles\",\"cmd\":\"bubbles.scr\",\"elevated\":false}]\n";
-      #endif
+#endif
       }
 
       // Read config file

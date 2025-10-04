@@ -164,13 +164,10 @@
               <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
                 >Gamepad Override</label
               >
-              <n-select
-                v-model:value="form.gamepad"
-                :options="gamepadOptions"
-                size="small"
-              />
+              <n-select v-model:value="form.gamepad" :options="gamepadOptions" size="small" />
               <p class="text-[11px] opacity-60">
-                Choose a specific controller profile for this application instead of the global default.
+                Choose a specific controller profile for this application instead of the global
+                default.
               </p>
             </div>
             <div v-if="isWindows" class="space-y-1 md:col-span-2">
@@ -198,7 +195,8 @@
                 />
               </div>
               <p class="text-[11px] opacity-60">
-                Adjust per-app display scaling (20% to 200%). Values above 100% render at a higher resolution.
+                Adjust per-app display scaling (20% to 200%). Values above 100% render at a higher
+                resolution.
               </p>
             </div>
           </div>
@@ -250,10 +248,10 @@
               <div class="flex flex-col">
                 <span>1st Gen Frame Generation Capture Fix</span>
                 <span class="text-[11px] opacity-60"
-                  >For DLSS3, FSR3, NVIDIA Smooth Motion, and Lossless Scaling. Requires Windows Graphics Capture (WGC),
-                  a display capable of 240 Hz or higher (virtual display driver recommended), and
-                  RTSS installed. Configure Display Device to activate only that monitor during
-                  streams.</span
+                  >For DLSS3, FSR3, NVIDIA Smooth Motion, and Lossless Scaling. Requires Windows
+                  Graphics Capture (WGC), a display capable of 240 Hz or higher (virtual display
+                  driver recommended), and RTSS installed. Configure Display Device to activate only
+                  that monitor during streams.</span
                 >
               </div>
             </n-checkbox>
@@ -282,73 +280,77 @@
             v-if="isWindows"
             class="mt-4 space-y-3 rounded-md border border-dark/10 p-3 dark:border-light/10"
           >
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Frame Generation
-              </div>
-              <p class="text-[11px] opacity-60">
-                Enable per-app frame generation helpers. Choose NVIDIA Smooth Motion to toggle the
-                driver feature automatically, or Lossless Scaling to launch the external helper with
-                customized profiles.
-              </p>
-            </div>
-            <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
-          </div>
-
-          <div class="grid gap-3 md:grid-cols-2">
-            <div class="space-y-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Provider
-              </label>
-              <n-select
-                v-model:value="form.frameGenerationProvider"
-                :options="FRAME_GENERATION_PROVIDERS"
-                :disabled="!form.losslessScalingEnabled"
-                size="small"
-              />
-              <div class="space-y-2">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  Frame Generation
+                </div>
                 <p class="text-[11px] opacity-60">
-                  <strong>NVIDIA Smooth Motion:</strong> Recommended for RTX 40xx/50xx cards with driver 571.86 or higher. 
-                  Offers better performance and lower latency than Lossless Scaling.
-                </p>
-                <p class="text-[11px] opacity-60">
-                  <strong>Lossless Scaling:</strong> Use this if you don't have an RTX 40xx+ card, or if you prefer more customization options.
+                  Enable per-app frame generation helpers. Choose NVIDIA Smooth Motion to toggle the
+                  driver feature automatically, or Lossless Scaling to launch the external helper
+                  with customized profiles.
                 </p>
               </div>
+              <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
             </div>
-          </div>
 
-          <n-alert
-            v-if="form.losslessScalingEnabled && usingLosslessProvider && !playniteInstalled"
-            type="warning"
-            :show-icon="true"
-            size="small"
-            class="text-xs"
-          >
-            Playnite integration is not installed. Install the Playnite plugin from the Settings →
-            Playnite tab to use Lossless Scaling integration.
-          </n-alert>
-
-          <n-alert
-            v-if="form.losslessScalingEnabled && usingSmoothMotionProvider"
-            type="info"
-            :show-icon="true"
-            size="small"
-            class="text-xs"
-          >
-            <div class="space-y-1">
-              <p>
-                <strong>Requirements:</strong> NVIDIA GeForce RTX 40xx or 50xx series GPU with driver version 571.86 or higher.
-              </p>
-              <p>
-                NVIDIA Smooth Motion will be enabled in the global profile when the stream starts and restored afterward. 
-                The 1st Gen Frame Generation Capture Fix will also be applied automatically for optimal streaming performance.
-              </p>
+            <div class="grid gap-3 md:grid-cols-2">
+              <div class="space-y-1">
+                <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  Provider
+                </label>
+                <n-select
+                  v-model:value="form.frameGenerationProvider"
+                  :options="FRAME_GENERATION_PROVIDERS"
+                  :disabled="!form.losslessScalingEnabled"
+                  size="small"
+                />
+                <div class="space-y-2">
+                  <p class="text-[11px] opacity-60">
+                    <strong>NVIDIA Smooth Motion:</strong> Recommended for RTX 40xx/50xx cards with
+                    driver 571.86 or higher. Offers better performance and lower latency than
+                    Lossless Scaling.
+                  </p>
+                  <p class="text-[11px] opacity-60">
+                    <strong>Lossless Scaling:</strong> Use this if you don't have an RTX 40xx+ card,
+                    or if you prefer more customization options.
+                  </p>
+                </div>
+              </div>
             </div>
-          </n-alert>
 
-          <div v-if="form.losslessScalingEnabled && usingLosslessProvider" class="space-y-4">
+            <n-alert
+              v-if="form.losslessScalingEnabled && usingLosslessProvider && !playniteInstalled"
+              type="warning"
+              :show-icon="true"
+              size="small"
+              class="text-xs"
+            >
+              Playnite integration is not installed. Install the Playnite plugin from the Settings →
+              Playnite tab to use Lossless Scaling integration.
+            </n-alert>
+
+            <n-alert
+              v-if="form.losslessScalingEnabled && usingSmoothMotionProvider"
+              type="info"
+              :show-icon="true"
+              size="small"
+              class="text-xs"
+            >
+              <div class="space-y-1">
+                <p>
+                  <strong>Requirements:</strong> NVIDIA GeForce RTX 40xx or 50xx series GPU with
+                  driver version 571.86 or higher.
+                </p>
+                <p>
+                  NVIDIA Smooth Motion will be enabled in the global profile when the stream starts
+                  and restored afterward. The 1st Gen Frame Generation Capture Fix will also be
+                  applied automatically for optimal streaming performance.
+                </p>
+              </div>
+            </n-alert>
+
+            <div v-if="form.losslessScalingEnabled && usingLosslessProvider" class="space-y-4">
               <div class="grid gap-3 md:grid-cols-2">
                 <div class="space-y-1">
                   <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -1824,10 +1826,7 @@ const gamepadOptions = computed(() => {
     );
   }
   if (isWindows.value) {
-    options.push(
-      { label: 'DualShock 4', value: 'ds4' },
-      { label: 'Xbox 360', value: 'x360' },
-    );
+    options.push({ label: 'DualShock 4', value: 'ds4' }, { label: 'Xbox 360', value: 'x360' });
   }
   return options;
 });

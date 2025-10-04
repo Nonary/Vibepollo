@@ -1576,7 +1576,7 @@ namespace input {
    * @param input The input context pointer.
    * @param input_data The input message.
    */
-  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM& permission) {
+  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission) {
     // No input permissions at all
     if (!(permission & crypto::PERM::_all_inputs)) {
       return;
@@ -1585,7 +1585,7 @@ namespace input {
     // Have some input permission
     // Otherwise have all input permission
     if ((permission & crypto::PERM::_all_inputs) != crypto::PERM::_all_inputs) {
-      PNV_INPUT_HEADER payload = (PNV_INPUT_HEADER)input_data.data();
+      PNV_INPUT_HEADER payload = (PNV_INPUT_HEADER) input_data.data();
 
       // Check permission
       switch (util::endian::little(payload->magic)) {

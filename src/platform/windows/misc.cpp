@@ -13,15 +13,15 @@
 #include <vector>
 
 #ifndef BOOST_PROCESS_VERSION
- #define BOOST_PROCESS_VERSION 1
+  #define BOOST_PROCESS_VERSION 1
 #endif
 
 // lib includes
 #include <boost/algorithm/string.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/process/v1/child.hpp>
-#include <boost/process/v1/group.hpp>
 #include <boost/process/v1/environment.hpp>
+#include <boost/process/v1/group.hpp>
 #include <boost/program_options/parsers.hpp>
 
 // prevent clang format from "optimizing" the header include order
@@ -49,7 +49,6 @@
 
 // local includes
 #include "misc.h"
-#include "utils.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
@@ -57,6 +56,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+#include "utils.h"
 
 // UDP_SEND_MSG_SIZE was added in the Windows 10 20H1 SDK
 #ifndef UDP_SEND_MSG_SIZE
@@ -106,9 +106,9 @@ namespace {
 
 namespace bp = boost::process;
 
-static std::string ensureCrLf(const std::string& utf8Str);
+static std::string ensureCrLf(const std::string &utf8Str);
 static std::wstring getClipboardData();
-static int setClipboardData(const std::wstring& utf16Str);
+static int setClipboardData(const std::wstring &utf16Str);
 
 using namespace std::literals;
 
@@ -205,7 +205,7 @@ namespace platf {
     DWORD dwRetVal = 0;
     ULONG ulOutBufLen = sizeof(IP_ADAPTER_INFO);
 
-    pAdapterInfo = (IP_ADAPTER_INFO *)malloc(sizeof(IP_ADAPTER_INFO));
+    pAdapterInfo = (IP_ADAPTER_INFO *) malloc(sizeof(IP_ADAPTER_INFO));
     if (pAdapterInfo == nullptr) {
       BOOST_LOG(warning) << "Error allocating memory needed to call GetAdaptersInfo";
       return "";
@@ -214,7 +214,7 @@ namespace platf {
     // Make an initial call to GetAdaptersInfo to get the necessary size into the ulOutBufLen variable
     if (GetAdaptersInfo(pAdapterInfo, &ulOutBufLen) == ERROR_BUFFER_OVERFLOW) {
       free(pAdapterInfo);
-      pAdapterInfo = (IP_ADAPTER_INFO *)malloc(ulOutBufLen);
+      pAdapterInfo = (IP_ADAPTER_INFO *) malloc(ulOutBufLen);
       if (pAdapterInfo == nullptr) {
         BOOST_LOG(warning) << "Error allocating memory needed to call GetAdaptersInfo";
         return "";
@@ -234,7 +234,7 @@ namespace platf {
 
     // Iterate through the list of adapters
     while (pAdapter) {
-      IP_ADDR_STRING* pGateway = &pAdapter->GatewayList;
+      IP_ADDR_STRING *pGateway = &pAdapter->GatewayList;
       if (pGateway && pGateway->IpAddress.String[0] != '\0') {
         // This adapter has a default gateway, use its IP address
         local_ip = pAdapter->IpAddressList.IpAddress.String;
@@ -789,8 +789,7 @@ namespace platf {
       // If the file has no extension, assume it's a command and allow CreateProcess()
       // to try to find it via PATH
       return from_utf8(raw_cmd);
-    }
-    else if (boost::iequals(extension, L".exe")) {
+    } else if (boost::iequals(extension, L".exe")) {
       // If the file has an .exe extension, we will bypass the resolution here and
       // directly pass the unmodified command string to CreateProcess(). The argument
       // escaping rules are subtly different between CreateProcess() and ShellExecute(),
@@ -2080,30 +2079,30 @@ namespace platf {
   }
 
   std::string
-  get_clipboard() {
+    get_clipboard() {
     std::string currentClipboard = to_utf8(getClipboardData());
     return currentClipboard;
   }
 
   bool
-  set_clipboard(const std::string& content) {
+    set_clipboard(const std::string &content) {
     std::wstring cpContent = from_utf8(ensureCrLf(content));
     return !setClipboardData(cpContent);
   }
 }  // namespace platf
 
-static std::string ensureCrLf(const std::string& utf8Str) {
-    std::string result;
-    result.reserve(utf8Str.size() + utf8Str.size() / 2); // Reserve extra space
+static std::string ensureCrLf(const std::string &utf8Str) {
+  std::string result;
+  result.reserve(utf8Str.size() + utf8Str.size() / 2);  // Reserve extra space
 
-    for (size_t i = 0; i < utf8Str.size(); ++i) {
-        if (utf8Str[i] == '\n' && (i == 0 || utf8Str[i - 1] != '\r')) {
-            result += '\r'; // Add \r before \n if not present
-        }
-        result += utf8Str[i]; // Always add the current character
+  for (size_t i = 0; i < utf8Str.size(); ++i) {
+    if (utf8Str[i] == '\n' && (i == 0 || utf8Str[i - 1] != '\r')) {
+      result += '\r';  // Add \r before \n if not present
     }
+    result += utf8Str[i];  // Always add the current character
+  }
 
-    return result;
+  return result;
 }
 
 static std::wstring getClipboardData() {
@@ -2119,7 +2118,7 @@ static std::wstring getClipboardData() {
     return L"";
   }
 
-  wchar_t* pszText = static_cast<wchar_t*>(GlobalLock(hData));
+  wchar_t *pszText = static_cast<wchar_t *>(GlobalLock(hData));
   if (pszText == nullptr) {
     BOOST_LOG(warning) << "Failed to lock clipboard data.";
     CloseClipboard();
@@ -2134,7 +2133,7 @@ static std::wstring getClipboardData() {
   return ret;
 }
 
-static int setClipboardData(const std::wstring& utf16Str) {
+static int setClipboardData(const std::wstring &utf16Str) {
   if (!OpenClipboard(nullptr)) {
     BOOST_LOG(warning) << "Failed to open clipboard.";
     return 1;
@@ -2155,7 +2154,7 @@ static int setClipboardData(const std::wstring& utf16Str) {
   }
 
   // Lock the global memory and copy the text
-  char* pGlobal = static_cast<char*>(GlobalLock(hGlobal));
+  char *pGlobal = static_cast<char *>(GlobalLock(hGlobal));
   if (pGlobal == nullptr) {
     BOOST_LOG(warning) << "Failed to lock global memory.";
     GlobalFree(hGlobal);

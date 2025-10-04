@@ -619,7 +619,7 @@ namespace rtsp_stream {
     }
 
     std::shared_ptr<stream::session_t>
-    find_session(const std::string_view& uuid) {
+      find_session(const std::string_view &uuid) {
       auto lg = _session_slots.lock();
 
       for (auto &slot : *_session_slots) {
@@ -632,7 +632,7 @@ namespace rtsp_stream {
     }
 
     std::list<std::string>
-    get_all_session_uuids() {
+      get_all_session_uuids() {
       std::list<std::string> uuids;
       auto lg = _session_slots.lock();
       for (auto &slot : *_session_slots) {
@@ -672,7 +672,7 @@ namespace rtsp_stream {
     return server.session_count();
   }
 
-  std::shared_ptr<stream::session_t> find_session(const std::string_view& uuid) {
+  std::shared_ptr<stream::session_t> find_session(const std::string_view &uuid) {
     return server.find_session(uuid);
   }
 
@@ -1063,7 +1063,7 @@ namespace rtsp_stream {
       // When fractional refresh rate requested from client side, it should be well above 1000fps
       // 4000fps is when Warp2 Mode is enabled on the client, requested framerate can be actual * 4
       if (config.monitor.framerate > 4000) {
-        config.monitor.framerate = std::round((float)config.monitor.framerate / 1000);
+        config.monitor.framerate = std::round((float) config.monitor.framerate / 1000);
       }
 
       config.monitor.input_only = session.input_only;
@@ -1085,7 +1085,7 @@ namespace rtsp_stream {
       BOOST_LOG(info) << "Host Streaming bitrate is [" << configuredBitrateKbps << "kbps]";
 
       // Hack: Restore bitrate for warp mode
-      size_t warp_factor = std::round((float)config.monitor.framerate * 1000 / session.fps);
+      size_t warp_factor = std::round((float) config.monitor.framerate * 1000 / session.fps);
       if (config::video.limit_framerate && warp_factor >= 2) {
         configuredBitrateKbps *= warp_factor;
         BOOST_LOG(info) << "Warp factor [" << warp_factor << "] engaged";

@@ -371,7 +371,12 @@ export const useConfigStore = defineStore('config', () => {
     _data.value = obj ? JSON.parse(JSON.stringify(obj)) : {};
 
     // decode known JSON string fields
-    const specialOptions = ['dd_mode_remapping', 'global_prep_cmd', 'global_state_cmd', 'server_cmd'];
+    const specialOptions = [
+      'dd_mode_remapping',
+      'global_prep_cmd',
+      'global_state_cmd',
+      'server_cmd',
+    ];
     for (const key of specialOptions) {
       if (
         _data.value &&

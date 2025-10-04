@@ -18,7 +18,6 @@ namespace system_tray {
    */
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item);
 
-
   void tray_force_stop_cb(struct tray_menu *item);
 
   /**
@@ -79,7 +78,7 @@ namespace system_tray {
   void update_tray_stopped(std::string app_name);
 
   void
-  update_tray_launch_error(std::string app_name, int exit_code);
+    update_tray_launch_error(std::string app_name, int exit_code);
 
   /**
    * @brief Spawns a notification for PIN Pairing. Clicking it opens the PIN Web UI Page

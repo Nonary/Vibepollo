@@ -5,7 +5,6 @@
 // standard includes
 #include <filesystem>
 #include <fstream>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 
@@ -169,7 +168,7 @@ namespace logging {
         }
         // Rename the current log file to the backup name
         std::filesystem::rename(log_file, backup_log_file);
-      } catch (std::exception& e) {
+      } catch (std::exception &e) {
         std::cout << "Failed to rotate log file: " << e.what() << std::endl;
       }
     }

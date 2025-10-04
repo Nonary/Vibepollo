@@ -11,6 +11,8 @@ type DisplayDevice = {
   device_id?: string;
   display_name?: string; // e.g. \\ \\.\\DISPLAY1
   friendly_name?: string; // e.g. ROG PG279Q
+  is_virtual?: boolean; // True if this is a SudaVDA virtual display
+  is_isolated?: boolean; // True if this is intended as an isolated monitor
   // Present when device is currently active; shape mirrors libdisplaydevice types but we only check presence
   info?: unknown;
 };
@@ -93,6 +95,8 @@ function toOptions() {
     value: string;
     displayName?: string;
     id?: string;
+    isVirtual?: boolean;
+    isIsolated?: boolean;
   }> = [
     {
       label: outputNameDefaultLabel.value,
@@ -122,6 +126,8 @@ function toOptions() {
         value,
         displayName,
         id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
+        isVirtual: d.is_virtual ?? undefined,
+        isIsolated: d.is_isolated ?? undefined,
       });
   }
 
@@ -153,7 +159,21 @@ function toOptions() {
           <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
           <template #option="slot">
             <div class="leading-tight">
-              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="flex items-center gap-2">
+                <span>{{ slot.option?.displayName || slot.option?.label }}</span>
+                <span
+                  v-if="slot.option?.isVirtual"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                >
+                  Virtual
+                </span>
+                <span
+                  v-if="slot.option?.isIsolated"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                >
+                  Isolated
+                </span>
+              </div>
               <div class="text-[12px] opacity-60 font-mono">
                 {{ slot.option?.id || slot.option?.value }}
               </div>
@@ -163,7 +183,21 @@ function toOptions() {
           <!-- Show the selected value similarly: name then id -->
           <template #value="slot">
             <div class="leading-tight">
-              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="flex items-center gap-2">
+                <span>{{ slot.option?.displayName || slot.option?.label }}</span>
+                <span
+                  v-if="slot.option?.isVirtual"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                >
+                  Virtual
+                </span>
+                <span
+                  v-if="slot.option?.isIsolated"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                >
+                  Isolated
+                </span>
+              </div>
               <div class="text-[12px] opacity-60 font-mono">
                 {{ slot.option?.id || slot.option?.value }}
               </div>

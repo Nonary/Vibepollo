@@ -349,7 +349,7 @@ int main(int argc, char *argv[]) {
     if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
       std::string probe_uuid_str = PROBE_DISPLAY_UUID;
       auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
-      auto* probe_guid = (GUID*)(void*)&probe_uuid;
+      auto *probe_guid = (GUID *) (void *) &probe_uuid;
 
       BOOST_LOG(info) << "Creating a temporary virtual display to probe for encoders..."sv;
 

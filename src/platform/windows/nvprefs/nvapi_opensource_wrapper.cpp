@@ -3,8 +3,8 @@
  * @brief Definitions for the NVAPI wrapper.
  */
 // standard includes
-#include <map>
 #include <cstring>
+#include <map>
 
 // local includes
 #include "driver_settings.h"

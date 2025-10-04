@@ -22,7 +22,6 @@
 // lib includes
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/host_name.hpp>
-#include <boost/process/v1/group.hpp>
 #include <boost/process/v1/child.hpp>
 #include <boost/process/v1/env.hpp>
 #include <boost/process/v1/environment.hpp>
@@ -238,85 +237,88 @@ namespace platf {
     return "00:00:00:00:00:00"s;
   }
 
-std::string get_local_ip_for_gateway() {
-  int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-  if (fd < 0) {
-    BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
-    return "";
-  }
+  std::string get_local_ip_for_gateway() {
+    int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (fd < 0) {
+      BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
+      return "";
+    }
 
-  char buffer[8192];
-  struct nlmsghdr *nlMsg = (struct nlmsghdr *)buffer;
-  struct rtmsg *rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
-  struct rtattr *rtAttr;
-  int len = 0;
+    char buffer[8192];
+    struct nlmsghdr *nlMsg = (struct nlmsghdr *) buffer;
+    struct rtmsg *rtMsg = (struct rtmsg *) NLMSG_DATA(nlMsg);
+    struct rtattr *rtAttr;
+    int len = 0;
 
-  memset(nlMsg, 0, sizeof(struct nlmsghdr));
-  nlMsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-  nlMsg->nlmsg_type = RTM_GETROUTE;
-  nlMsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
-  nlMsg->nlmsg_seq = 1;
-  nlMsg->nlmsg_pid = getpid();
+    memset(nlMsg, 0, sizeof(struct nlmsghdr));
+    nlMsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlMsg->nlmsg_type = RTM_GETROUTE;
+    nlMsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
+    nlMsg->nlmsg_seq = 1;
+    nlMsg->nlmsg_pid = getpid();
 
-  if (send(fd, nlMsg, nlMsg->nlmsg_len, 0) < 0) {
-    BOOST_LOG(warning) << "Send message failed: " << strerror(errno);
-    close(fd);
-    return "";
-  }
+    if (send(fd, nlMsg, nlMsg->nlmsg_len, 0) < 0) {
+      BOOST_LOG(warning) << "Send message failed: " << strerror(errno);
+      close(fd);
+      return "";
+    }
 
-  std::string local_ip;
-  bool found = false;
+    std::string local_ip;
+    bool found = false;
 
-  while ((len = recv(fd, nlMsg, sizeof(buffer), 0)) > 0) {
-    for (; NLMSG_OK(nlMsg, len); nlMsg = NLMSG_NEXT(nlMsg, len)) {
-      if (nlMsg->nlmsg_type == NLMSG_DONE) {
-        found = true;
-        break;
-      }
+    while ((len = recv(fd, nlMsg, sizeof(buffer), 0)) > 0) {
+      for (; NLMSG_OK(nlMsg, len); nlMsg = NLMSG_NEXT(nlMsg, len)) {
+        if (nlMsg->nlmsg_type == NLMSG_DONE) {
+          found = true;
+          break;
+        }
 
-      rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
-      if (rtMsg->rtm_family != AF_INET || rtMsg->rtm_table != RT_TABLE_MAIN)
-        continue;
+        rtMsg = (struct rtmsg *) NLMSG_DATA(nlMsg);
+        if (rtMsg->rtm_family != AF_INET || rtMsg->rtm_table != RT_TABLE_MAIN) {
+          continue;
+        }
 
-      rtAttr = (struct rtattr *)RTM_RTA(rtMsg);
-      int rtLen = RTM_PAYLOAD(nlMsg);
+        rtAttr = (struct rtattr *) RTM_RTA(rtMsg);
+        int rtLen = RTM_PAYLOAD(nlMsg);
 
-      in_addr gateway;
-      in_addr local;
-      memset(&gateway, 0, sizeof(gateway));
-      memset(&local, 0, sizeof(local));
+        in_addr gateway;
+        in_addr local;
+        memset(&gateway, 0, sizeof(gateway));
+        memset(&local, 0, sizeof(local));
 
-      for (; RTA_OK(rtAttr, rtLen); rtAttr = RTA_NEXT(rtAttr, rtLen)) {
-        switch(rtAttr->rta_type) {
-          case RTA_GATEWAY:
-            gateway.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
-            break;
-          case RTA_PREFSRC:
-            local.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
-            break;
-          default:
-            break;
+        for (; RTA_OK(rtAttr, rtLen); rtAttr = RTA_NEXT(rtAttr, rtLen)) {
+          switch (rtAttr->rta_type) {
+            case RTA_GATEWAY:
+              gateway.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
+              break;
+            case RTA_PREFSRC:
+              local.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
+              break;
+            default:
+              break;
+          }
+        }
+
+        if (gateway.s_addr != 0 && local.s_addr != 0) {
+          local_ip = inet_ntoa(local);
+          found = true;
+          break;
         }
       }
 
-      if (gateway.s_addr != 0 && local.s_addr != 0) {
-        local_ip = inet_ntoa(local);
-        found = true;
+      if (found) {
         break;
       }
     }
 
-    if (found) break;
+    close(fd);
+
+    if (local_ip.empty()) {
+      BOOST_LOG(warning) << "No associated IP address found for the default gateway";
+    }
+
+    return local_ip;
   }
-
-  close(fd);
-
-  if (local_ip.empty()) {
-    BOOST_LOG(warning) << "No associated IP address found for the default gateway";
-  }
-
-  return local_ip;
-}
 
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
     // clang-format off
@@ -1064,13 +1066,13 @@ std::string get_local_ip_for_gateway() {
   }
 
   std::string
-  get_clipboard() {
+    get_clipboard() {
     // Placeholder
     return "";
   }
 
   bool
-  set_clipboard(const std::string& content) {
+    set_clipboard(const std::string &content) {
     // Placeholder
     return false;
   }

@@ -42,8 +42,8 @@ const logLevelOptions = computed(() =>
 );
 
 const serverCmdTemplate = {
-  name: "",
-  cmd: ""
+  name: '',
+  cmd: '',
 };
 
 const serverCmd = computed({
@@ -55,7 +55,7 @@ const serverCmd = computed({
       store.updateOption('server_cmd', val);
       if (store.markManualDirty) store.markManualDirty('server_cmd');
     }
-  }
+  },
 });
 
 // Global prep commands
@@ -107,9 +107,9 @@ function removeServerCmd(index: number) {
 onMounted(() => {
   // Set default value for enable_pairing if not present
   if (config.value && config.value.enable_pairing === undefined) {
-    config.value.enable_pairing = "enabled"
+    config.value.enable_pairing = 'enabled';
   }
-})
+});
 </script>
 
 <template>
@@ -166,7 +166,10 @@ onMounted(() => {
       <div class="text-[11px] opacity-60 mt-1">
         {{ t('config.global_prep_cmd_desc') }}
       </div>
-      <div v-if="config.global_prep_cmd && config.global_prep_cmd.length > 0" class="mt-3 space-y-3">
+      <div
+        v-if="config.global_prep_cmd && config.global_prep_cmd.length > 0"
+        class="mt-3 space-y-3"
+      >
         <div
           v-for="(c, i) in config.global_prep_cmd"
           :key="i"
@@ -258,12 +261,19 @@ onMounted(() => {
 
     <!-- Server Commands -->
     <div id="server_cmd" class="mb-6 flex flex-col">
-      <label class="block text-sm font-medium mb-1 text-dark dark:text-light">{{ t('config.server_cmd') }}</label>
+      <label class="block text-sm font-medium mb-1 text-dark dark:text-light">{{
+        t('config.server_cmd')
+      }}</label>
       <div class="text-[11px] opacity-60 mt-1">
         {{ t('config.server_cmd_desc') }}
       </div>
       <div class="text-[11px] opacity-60 mt-1">
-        <a href="https://github.com/ClassicOldSong/Apollo/wiki/Server-Commands" target="_blank" class="underline">{{ t('_common.learn_more') }}</a>
+        <a
+          href="https://github.com/ClassicOldSong/Apollo/wiki/Server-Commands"
+          target="_blank"
+          class="underline"
+          >{{ t('_common.learn_more') }}</a
+        >
       </div>
       <div v-if="serverCmd.length > 0" class="mt-3 space-y-3">
         <div
@@ -293,11 +303,7 @@ onMounted(() => {
           <div class="grid grid-cols-1 gap-2">
             <div>
               <label class="text-[11px] opacity-60">{{ t('_common.cmd_name') }}</label>
-              <n-input
-                v-model:value="c.name"
-                type="text"
-                @update:value="store.markManualDirty()"
-              />
+              <n-input v-model:value="c.name" type="text" @update:value="store.markManualDirty()" />
             </div>
             <div>
               <label class="text-[11px] opacity-60">{{ t('_common.cmd_val') }}</label>
@@ -319,19 +325,21 @@ onMounted(() => {
     </div>
 
     <!-- Enable Pairing -->
-    <Checkbox class="mb-3"
-              id="enable_pairing"
-              locale-prefix="config"
-              v-model="config.enable_pairing"
-              default="true"
+    <Checkbox
+      class="mb-3"
+      id="enable_pairing"
+      locale-prefix="config"
+      v-model="config.enable_pairing"
+      default="true"
     ></Checkbox>
 
     <!-- Enable Discovery -->
-    <Checkbox class="mb-3"
-              id="enable_discovery"
-              locale-prefix="config"
-              v-model="config.enable_discovery"
-              default="true"
+    <Checkbox
+      class="mb-3"
+      id="enable_discovery"
+      locale-prefix="config"
+      v-model="config.enable_discovery"
+      default="true"
     ></Checkbox>
 
     <!-- Notify Pre-Releases -->

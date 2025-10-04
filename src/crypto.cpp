@@ -13,10 +13,12 @@ namespace crypto {
   using asn1_string_t = util::safe_ptr<ASN1_STRING, ASN1_STRING_free>;
 
   cert_chain_t::cert_chain_t():
-      _certs {}, _cert_ctx { X509_STORE_CTX_new() } {
+      _certs {},
+      _cert_ctx {X509_STORE_CTX_new()} {
   }
-  void cert_chain_t::add(p_named_cert_t& named_cert_p) {
-    x509_store_t x509_store { X509_STORE_new() };
+
+  void cert_chain_t::add(p_named_cert_t &named_cert_p) {
+    x509_store_t x509_store {X509_STORE_new()};
 
     X509_STORE_add_cert(x509_store.get(), x509(named_cert_p->cert).get());
     _certs.emplace_back(std::make_pair(named_cert_p, std::move(x509_store)));
@@ -54,7 +56,7 @@ namespace crypto {
    * @param cert The certificate to verify.
    * @return nullptr if the certificate is valid, otherwise an error string.
    */
-  const char * cert_chain_t::verify(x509_t::element_type *cert, p_named_cert_t& named_cert_out) {
+  const char *cert_chain_t::verify(x509_t::element_type *cert, p_named_cert_t &named_cert_out) {
     int err_code = 0;
     for (auto &[named_cert_p, x509_store] : _certs) {
       auto fg = util::fail_guard([this]() {

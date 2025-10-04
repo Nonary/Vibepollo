@@ -158,15 +158,19 @@ const twopassOptions = [
 
         <!-- NVENC Intra Refresh -->
         <div class="mb-4">
-          <label for="nvenc_intra_refresh" class="form-label">{{ $t('config.nvenc_intra_refresh') }}</label>
+          <label for="nvenc_intra_refresh" class="form-label">{{
+            $t('config.nvenc_intra_refresh')
+          }}</label>
           <n-select
             id="nvenc_intra_refresh"
             v-model:value="config.nvenc_intra_refresh"
             :options="[
               { label: $t('_common.auto'), value: 'disabled' },
-              { label: $t('_common.enabled'), value: 'enabled' }
+              { label: $t('_common.enabled'), value: 'enabled' },
             ]"
-            :data-search-options="[$t('_common.auto') + '::disabled', $t('_common.enabled') + '::enabled'].join('|')"
+            :data-search-options="
+              [$t('_common.auto') + '::disabled', $t('_common.enabled') + '::enabled'].join('|')
+            "
           />
           <p class="text-[11px] opacity-60 mt-1">{{ $t('config.nvenc_intra_refresh_desc') }}</p>
         </div>

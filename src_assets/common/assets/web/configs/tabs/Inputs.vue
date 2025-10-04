@@ -268,31 +268,34 @@ const gamepadOptions = computed(() => {
     />
 
     <!-- Native pen/touch support -->
-    <Checkbox v-if="config.mouse === 'enabled'"
-              class="mb-3"
-              id="native_pen_touch"
-              locale-prefix="config"
-              v-model="config.native_pen_touch"
-              default="true"
+    <Checkbox
+      v-if="config.mouse === 'enabled'"
+      class="mb-3"
+      id="native_pen_touch"
+      locale-prefix="config"
+      v-model="config.native_pen_touch"
+      default="true"
     ></Checkbox>
 
     <!-- Enable Input Only Mode -->
-    
-    <Checkbox class="mb-3"
-              id="enable_input_only_mode"
-              locale-prefix="config"
-              v-model="config.enable_input_only_mode"
-              default="false"
+
+    <Checkbox
+      class="mb-3"
+      id="enable_input_only_mode"
+      locale-prefix="config"
+      v-model="config.enable_input_only_mode"
+      default="false"
     ></Checkbox>
 
     <!-- Enable Rumble Messages to Controllers -->
 
-    <Checkbox v-if="platform === 'windows'"
-              class="mb-3"
-              id="forward_rumble"
-              locale-prefix="config"
-              v-model="config.forward_rumble"
-              default="true"
+    <Checkbox
+      v-if="platform === 'windows'"
+      class="mb-3"
+      id="forward_rumble"
+      locale-prefix="config"
+      v-model="config.forward_rumble"
+      default="true"
     ></Checkbox>
 
     <Checkbox

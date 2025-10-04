@@ -7,9 +7,10 @@
 
   #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
+    #include "platform/windows/utils.h"
+
     #include <accctrl.h>
     #include <aclapi.h>
-    #include "platform/windows/utils.h"
     #define TRAY_ICON WEB_DIR "images/apollo.ico"
     #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.ico"
     #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.ico"
@@ -48,9 +49,9 @@
   #include "config.h"
   #include "confighttp.h"
   #include "logging.h"
+  #include "network.h"
   #include "platform/common.h"
   #include "process.h"
-  #include "network.h"
   #include "src/entry_handler.h"
   #include "update.h"
 
@@ -71,11 +72,10 @@ namespace system_tray {
   }
 
   void
-  tray_force_stop_cb(struct tray_menu *item) {
+    tray_force_stop_cb(struct tray_menu *item) {
     BOOST_LOG(info) << "Force stop from system tray"sv;
     proc::proc.terminate(true);
   }
-
 
   void tray_restart_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Restarting from system tray"sv;
@@ -108,20 +108,20 @@ namespace system_tray {
     .menu =
       (struct tray_menu[]) {
         // todo - use boost/locale to translate menu strings
-        { .text = "Open Apollo", .cb = tray_open_ui_cb },
-        { .text = "-" },
+        {.text = "Open Apollo", .cb = tray_open_ui_cb},
+        {.text = "-"},
         // { .text = "-" },
         // { .text = "Donate",
         //   .submenu =
-        //     (struct tray_menu[]) {
-        //       { .text = "GitHub Sponsors", .cb = tray_donate_github_cb },
-        //       { .text = "MEE6", .cb = tray_donate_mee6_cb },
-        //       { .text = "Patreon", .cb = tray_donate_patreon_cb },
-        //       { .text = "PayPal", .cb = tray_donate_paypal_cb },
-        //       { .text = nullptr } } },
+        //   (struct tray_menu[]) {
+        //   { .text = "GitHub Sponsors", .cb = tray_donate_github_cb },
+        //   { .text = "MEE6", .cb = tray_donate_mee6_cb },
+        //   { .text = "Patreon", .cb = tray_donate_patreon_cb },
+        //   { .text = "PayPal", .cb = tray_donate_paypal_cb },
+        //   { .text = nullptr } } },
         // { .text = "-" },
-        { .text = TRAY_MSG_NO_APP_RUNNING, .cb = tray_force_stop_cb },
-                {.text = "Check for Update", .cb = [](tray_menu *) {
+        {.text = TRAY_MSG_NO_APP_RUNNING, .cb = tray_force_stop_cb},
+        {.text = "Check for Update", .cb = [](tray_menu *) {
            BOOST_LOG(info) << "Manual update check requested from tray"sv;
            update::trigger_check(true);
          }},
@@ -135,7 +135,7 @@ namespace system_tray {
   };
 
   static int init_tray() {
-#ifdef _WIN32
+  #ifdef _WIN32
     // If we're running as SYSTEM, Explorer.exe will not have permission to open our thread handle
     // to monitor for thread termination. If Explorer fails to open our thread, our tray icon
     // will persist forever if we terminate unexpectedly. To avoid this, we will modify our thread
@@ -195,7 +195,7 @@ namespace system_tray {
     while (GetShellWindow() == nullptr) {
       Sleep(1000);
     }
-#endif
+  #endif
 
     if (tray_init(&tray) < 0) {
       BOOST_LOG(warning) << "Failed to create system tray"sv;
@@ -264,14 +264,14 @@ namespace system_tray {
     static char force_close_msg[256];
     snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
     snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     auto force_msg_acp = utf8ToAcp(force_close_msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
     strncpy(force_close_msg, force_msg_acp.c_str(), std::size(force_close_msg) - 1);
     force_close_msg[std::size(force_close_msg) - 1] = '\0';
-#endif
+  #endif
     s_notification_text = msg;
     s_tooltip = "Streaming started for " + app_name;
     tray.notification_title = "App launched";
@@ -295,11 +295,11 @@ namespace system_tray {
 
     char msg[256];
     snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
-#endif
+  #endif
     s_notification_text = msg;
     tray.notification_title = "Stream Paused";
     tray.notification_text = s_notification_text.c_str();
@@ -321,11 +321,11 @@ namespace system_tray {
 
     char msg[256];
     snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
-#endif
+  #endif
     s_notification_text = msg;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Application Stopped";
@@ -336,7 +336,7 @@ namespace system_tray {
   }
 
   void
-  update_tray_launch_error(std::string app_name, int exit_code) {
+    update_tray_launch_error(std::string app_name, int exit_code) {
     if (!tray_initialized) {
       return;
     }
@@ -349,11 +349,11 @@ namespace system_tray {
 
     char msg[256];
     snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
-#endif
+  #endif
     s_notification_text = msg;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Launch Error";
@@ -388,7 +388,7 @@ namespace system_tray {
   }
 
   void
-  update_tray_paired(std::string device_name) {
+    update_tray_paired(std::string device_name) {
     if (!tray_initialized) {
       return;
     }
@@ -400,11 +400,11 @@ namespace system_tray {
 
     char msg[256];
     snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
-#endif
+  #endif
     tray.notification_title = "Device Paired Succesfully";
     tray.notification_text = msg;
     tray.notification_icon = TRAY_ICON;
@@ -413,7 +413,7 @@ namespace system_tray {
   }
 
   void
-  update_tray_client_connected(std::string client_name) {
+    update_tray_client_connected(std::string client_name) {
     if (!tray_initialized) {
       return;
     }
@@ -426,11 +426,11 @@ namespace system_tray {
 
     char msg[256];
     snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
-#ifdef _WIN32
+  #ifdef _WIN32
     auto msg_acp = utf8ToAcp(msg);
     strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
     msg[std::size(msg) - 1] = '\0';
-#endif
+  #endif
     tray.notification_title = "Client Connected";
     tray.notification_text = msg;
     tray.notification_icon = TRAY_ICON;

@@ -46,7 +46,7 @@ namespace video {
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
 
-    int encodingFramerate; // Requested display framerate
+    int encodingFramerate;  // Requested display framerate
     bool input_only;
   };
 

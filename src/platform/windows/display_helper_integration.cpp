@@ -27,6 +27,7 @@
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
 
 namespace {
@@ -435,7 +436,39 @@ namespace display_helper_integration {
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
       const auto devices = dd.enumAvailableDevices();
-      return display_device::toJson(devices);
+      auto json_str = display_device::toJson(devices);
+
+      // Parse the JSON array and append SudaVDA displays if available
+      auto json_array = nlohmann::json::parse(json_str, nullptr, false);
+      if (json_array.is_discarded() || !json_array.is_array()) {
+        json_array = nlohmann::json::array();
+      }
+
+      // Enumerate SudaVDA virtual displays and add them to the list
+      const auto sudavda_displays = VDISPLAY::enumerateSudaVDADisplays();
+      for (const auto &vd : sudavda_displays) {
+        nlohmann::json vd_entry;
+        vd_entry["device_id"] = "";  // No GUID for virtual displays
+        vd_entry["display_name"] = platf::to_utf8(vd.device_name);
+        vd_entry["friendly_name"] = platf::to_utf8(vd.friendly_name) + " (SudaVDA Virtual)";
+        vd_entry["is_virtual"] = true;
+        vd_entry["is_isolated"] = true;
+
+        if (vd.is_active && vd.width > 0 && vd.height > 0) {
+          vd_entry["info"] = {
+            {"width", vd.width},
+            {"height", vd.height},
+            {"active", true}
+          };
+        }
+
+        json_array.push_back(vd_entry);
+      }
+
+      return json_array.dump();
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "Failed to enumerate display devices: " << e.what();
+      return "[]";
     } catch (...) {
       return "[]";  // Fail-safe: empty list
     }

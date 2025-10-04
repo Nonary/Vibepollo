@@ -26,11 +26,13 @@ const sudovdaStatus = {
   '0': 'Ready',
   '-1': 'Uninitialized',
   '-2': 'Version Incompatible',
-  '-3': 'Watchdog Failed'
+  '-3': 'Watchdog Failed',
 };
 
 const vdisplay = computed(() => (config as any)?.vdisplay || 0);
-const currentDriverStatus = computed(() => sudovdaStatus[String(vdisplay.value) as keyof typeof sudovdaStatus] || 'Unknown');
+const currentDriverStatus = computed(
+  () => sudovdaStatus[String(vdisplay.value) as keyof typeof sudovdaStatus] || 'Unknown',
+);
 
 // Fallback mode validation
 const validateFallbackMode = (event: Event) => {
@@ -244,9 +246,7 @@ const isolatedVirtualDisplay = boolProxy('isolated_virtual_display_option', 'fal
         <!-- SudoVDA Driver Status -->
         <div
           class="px-4 py-3 rounded-md mb-3"
-          :class="[
-            vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'
-          ]"
+          :class="[vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success']"
         >
           <i class="fa-solid fa-circle-info mr-2"></i> SudoVDA Driver status:
           {{ currentDriverStatus }}

@@ -19,7 +19,6 @@ extern "C" {
 }
 
 // local includes
-#include "process.h"
 #include "cbs.h"
 #include "config.h"
 #include "display_device.h"
@@ -28,6 +27,7 @@ extern "C" {
 #include "logging.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
+#include "process.h"
 #include "sync.h"
 #include "video.h"
 
@@ -2494,7 +2494,7 @@ namespace video {
     // attempt to select/swap displays based on configured output_name. Display
     // swaps are now handled externally when a stream starts.
     const std::string probe_display_name;  // empty selects the current active display
-    
+
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -2522,7 +2522,7 @@ namespace video {
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
     }
-    
+
     if (!disp) {
       return false;
     }

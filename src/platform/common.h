@@ -16,8 +16,8 @@
 #ifndef _WIN32
   #include <boost/asio/ip/address.hpp>
   #include <boost/process/v1/child.hpp>
-  #include <boost/process/v1/group.hpp>
   #include <boost/process/v1/environment.hpp>
+  #include <boost/process/v1/group.hpp>
 #endif
 
 // local includes
@@ -874,9 +874,9 @@ namespace platf {
   std::unique_ptr<high_precision_timer> create_high_precision_timer();
 
   std::string
-  get_clipboard();
+    get_clipboard();
 
   bool
-  set_clipboard(const std::string& content);
+    set_clipboard(const std::string &content);
 
 }  // namespace platf

@@ -8,18 +8,20 @@
 
 // standard includes
 #include <algorithm>
+#include <array>
 #include <boost/regex.hpp>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <mutex>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <thread>
-#include <numeric>
-#include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -91,6 +93,7 @@ namespace confighttp {
     {"js", "application/javascript"},
     {"json", "application/json"},
     {"png", "image/png"},
+    {"webp", "image/webp"},
     {"svg", "image/svg+xml"},
     {"ttf", "font/ttf"},
     {"txt", "text/plain"},
@@ -131,6 +134,138 @@ namespace confighttp {
   namespace fs = std::filesystem;
   using enum confighttp::StatusCode;
 
+  static std::string trim_copy(const std::string &input) {
+    auto begin = input.begin();
+    auto end = input.end();
+    while (begin != end && std::isspace(static_cast<unsigned char>(*begin))) {
+      ++begin;
+    }
+    while (end != begin && std::isspace(static_cast<unsigned char>(*(end - 1)))) {
+      --end;
+    }
+    return std::string {begin, end};
+  }
+
+  static bool file_is_regular(const fs::path &path) {
+    if (path.empty()) {
+      return false;
+    }
+    std::error_code ec;
+    return fs::exists(path, ec) && fs::is_regular_file(path, ec);
+  }
+
+  static bool resolve_cover_path_for_uuid(const std::string &uuid, fs::path &out_path) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    try {
+      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(content);
+      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+        return false;
+      }
+
+      const fs::path cover_dir = fs::path(platf::appdata()) / "covers";
+      const fs::path config_dir = fs::path(config::stream.file_apps).parent_path();
+      const fs::path assets_dir = fs::path(SUNSHINE_ASSETS_DIR);
+
+      for (const auto &entry : file_tree["apps"]) {
+        if (!entry.is_object()) {
+          continue;
+        }
+        if (!entry.contains("uuid") || !entry["uuid"].is_string()) {
+          continue;
+        }
+        if (entry["uuid"].get<std::string>() != uuid) {
+          continue;
+        }
+
+        std::string image_path;
+        if (entry.contains("image-path") && entry["image-path"].is_string()) {
+          image_path = entry["image-path"].get<std::string>();
+        }
+        std::string playnite_id;
+        if (entry.contains("playnite-id") && entry["playnite-id"].is_string()) {
+          playnite_id = entry["playnite-id"].get<std::string>();
+        }
+
+        std::vector<fs::path> candidates;
+        std::unordered_set<std::string> seen;
+        auto push_candidate = [&](fs::path candidate) {
+          if (candidate.empty()) {
+            return;
+          }
+          auto normalized = candidate.lexically_normal();
+          std::string key = normalized.generic_string();
+#ifdef _WIN32
+          std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+          });
+#endif
+          if (!seen.insert(key).second) {
+            return;
+          }
+          candidates.emplace_back(std::move(normalized));
+        };
+
+        auto trimmed = trim_copy(image_path);
+        auto normalized_path = trimmed;
+        std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
+
+        if (!trimmed.empty()) {
+          fs::path direct(trimmed);
+          push_candidate(direct);
+          if (!direct.is_absolute()) {
+            if (!normalized_path.empty() && normalized_path.rfind("./", 0) == 0) {
+              fs::path rel(normalized_path.substr(2));
+              push_candidate(config_dir / rel);
+              push_candidate(assets_dir / rel);
+            }
+            push_candidate(config_dir / direct);
+            push_candidate(assets_dir / direct);
+            if (normalized_path.rfind("covers/", 0) == 0) {
+              fs::path rel(normalized_path.substr(7));
+              push_candidate(cover_dir / rel);
+            }
+            if (normalized_path.rfind("./covers/", 0) == 0) {
+              fs::path rel(normalized_path.substr(9));
+              push_candidate(cover_dir / rel);
+            }
+          }
+        }
+
+        static const std::array<const char *, 4> fallback_exts {".png", ".jpg", ".jpeg", ".webp"};
+        for (const char *ext : fallback_exts) {
+          push_candidate(cover_dir / (uuid + ext));
+        }
+        if (!playnite_id.empty()) {
+          push_candidate(cover_dir / (std::string("playnite_") + playnite_id + ".png"));
+        }
+
+        for (const auto &candidate : candidates) {
+          if (file_is_regular(candidate)) {
+            out_path = candidate;
+            return true;
+          }
+        }
+
+        fs::path fallback = assets_dir / "box.png";
+        if (file_is_regular(fallback)) {
+          out_path = fallback;
+          return true;
+        }
+
+        return false;
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "resolve_cover_path_for_uuid: failed for uuid '" << uuid << "': " << e.what();
+    } catch (...) {
+      BOOST_LOG(warning) << "resolve_cover_path_for_uuid: failed for uuid '" << uuid << "': unknown error";
+    }
+    return false;
+  }
+
   using https_server_t = SimpleWeb::Server<SimpleWeb::HTTPS>;
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
@@ -138,6 +273,7 @@ namespace confighttp {
 
   // Forward declaration for error helper implemented later
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
+  void getAppCover(resp_https_t response, req_https_t request);
 
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
@@ -161,7 +297,7 @@ namespace confighttp {
 #endif
 
   enum class op_e {
-    ADD,    ///< Add client
+    ADD,  ///< Add client
     REMOVE  ///< Remove client
   };
 
@@ -425,14 +561,13 @@ namespace confighttp {
     response->write(client_error_bad_request, error.dump(), headers);
   }
 
-
   /**
    * @brief Validate the request content type and send bad request when mismatch.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    * @param contentType The required content type.
    */
-  bool validateContentType(resp_https_t response, req_https_t request, const std::string_view& contentType) {
+  bool validateContentType(resp_https_t response, req_https_t request, const std::string_view &contentType) {
     auto requestContentType = request->header.find("content-type");
     if (requestContentType == request->header.end()) {
       bad_request(response, request, "Content type not provided");
@@ -463,7 +598,6 @@ namespace confighttp {
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType) {
     return validateContentType(response, request, contentType);
   }
-
 
   /**
    * @brief SPA entry responder - serves the single-page app shell (index.html)
@@ -808,7 +942,6 @@ namespace confighttp {
       // Migrate/merge the new app into the file tree.
       proc::migrate_apps(&file_tree, &input_tree);
 
-
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
 #ifdef _WIN32
       enhance_app_with_playnite_cover(input_tree);
@@ -870,8 +1003,7 @@ namespace confighttp {
       nlohmann::json outputTree;
       outputTree["status"] = true;
       send_response(response, outputTree);
-    }
-    catch (std::exception &e) {
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "SaveApp: "sv << e.what();
       bad_request(response, request, e.what());
     }
@@ -882,6 +1014,59 @@ namespace confighttp {
    *        Looks for files named @c uuid with a supported image extension in the covers directory.
    * @api_examples{/api/apps/@c uuid/cover| GET| null}
    */
+  void getAppCover(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    if (request->path_match.size() < 2) {
+      bad_request(response, request, "Application uuid required");
+      return;
+    }
+
+    std::string uuid = request->path_match[1];
+    if (uuid.empty()) {
+      bad_request(response, request, "Application uuid required");
+      return;
+    }
+
+    fs::path cover_path;
+    if (!resolve_cover_path_for_uuid(uuid, cover_path)) {
+      not_found(response, request);
+      return;
+    }
+
+    std::ifstream in(cover_path, std::ios::binary);
+    if (!in) {
+      not_found(response, request);
+      return;
+    }
+
+    std::string ext = cover_path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (!ext.empty() && ext.front() == '.') {
+      ext.erase(ext.begin());
+    }
+
+    std::string mime = "image/png";
+    if (!ext.empty()) {
+      auto it = mime_types.find(ext);
+      if (it != mime_types.end()) {
+        mime = it->second;
+      }
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", mime);
+    headers.emplace("Cache-Control", "private, max-age=300");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    response->write(success_ok, in, headers);
+  }
 
   /**
    * @brief Upload or set a specific application's cover image by UUID.
@@ -939,7 +1124,7 @@ namespace confighttp {
       if (!input_tree.contains("order") || !input_tree["order"].is_array()) {
         throw std::runtime_error("Missing or invalid 'order' array in request body");
       }
-      const auto& order_uuids_json = input_tree["order"];
+      const auto &order_uuids_json = input_tree["order"];
 
       // Get the original apps array from the fileTree.
       // Default to an empty array if "apps" key is missing or if it's present but not an array (after logging an error).
@@ -965,7 +1150,7 @@ namespace confighttp {
 
       // Phase 1: Place apps according to the 'order' array from the request.
       // Iterate through the desired order of UUIDs.
-      for (const auto& uuid_json_value : order_uuids_json) {
+      for (const auto &uuid_json_value : order_uuids_json) {
         if (!uuid_json_value.is_string()) {
           BOOST_LOG(warning) << "ReorderApps: Encountered a non-string UUID in the 'order' array. Skipping this entry.";
           continue;
@@ -976,17 +1161,17 @@ namespace confighttp {
         // Find the first unmoved app in the original list that matches the current target_uuid.
         for (size_t i = 0; i < original_apps_list.size(); ++i) {
           if (item_moved[i]) {
-            continue; // This specific app object has already been placed.
+            continue;  // This specific app object has already been placed.
           }
 
-          const auto& app_item = original_apps_list[i];
+          const auto &app_item = original_apps_list[i];
           // Ensure the app item is an object and has a UUID to match against.
           if (app_item.is_object() && app_item.contains("uuid") && app_item["uuid"].is_string()) {
             if (app_item["uuid"].get<std::string>() == target_uuid) {
-              reordered_apps_list.push_back(app_item); // Add the found app object to the new list.
-              item_moved[i] = true;                    // Mark this specific object as moved.
+              reordered_apps_list.push_back(app_item);  // Add the found app object to the new list.
+              item_moved[i] = true;  // Mark this specific object as moved.
               found_match_for_ordered_uuid = true;
-              break; // Found an app for this UUID, move to the next UUID in the 'order' array.
+              break;  // Found an app for this UUID, move to the next UUID in the 'order' array.
             }
           }
         }
@@ -1085,9 +1270,7 @@ namespace confighttp {
 
       for (size_t i = 0; i < apps_node.size(); ++i) {
         const auto &app_entry = apps_node[i];
-        auto app_uuid = app_entry.contains("uuid") && app_entry["uuid"].is_string()
-          ? app_entry["uuid"].get<std::string>()
-          : std::string {};
+        auto app_uuid = app_entry.contains("uuid") && app_entry["uuid"].is_string() ? app_entry["uuid"].get<std::string>() : std::string {};
 
         if (app_uuid != uuid) {
           new_apps.push_back(app_entry);
@@ -1296,7 +1479,7 @@ namespace confighttp {
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
 #ifdef _WIN32
-    output_tree["vdisplayStatus"] = (int)proc::vDisplayDriverStatus;
+    output_tree["vdisplayStatus"] = (int) proc::vDisplayDriverStatus;
 #endif
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
     for (auto &[name, value] : vars) {
@@ -1823,10 +2006,10 @@ namespace confighttp {
     std::string content = file_handler::read_file(config::sunshine.log_file.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";
-  #ifdef _WIN32
+#ifdef _WIN32
     contentType += "; charset=";
     contentType += currentCodePageToCharset();
-  #endif
+#endif
     headers.emplace("Content-Type", contentType);
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
@@ -1855,8 +2038,9 @@ namespace confighttp {
    * @api_examples{/api/password| POST| {"currentUsername":"admin","currentPassword":"admin","newUsername":"admin","newPassword":"admin","confirmNewPassword":"admin"}}
    */
   void savePassword(resp_https_t response, req_https_t request) {
-    if ((!config::sunshine.username.empty() && !authenticate(response, request)) || !validateContentType(response, request, "application/json"))
+    if ((!config::sunshine.username.empty() && !authenticate(response, request)) || !validateContentType(response, request, "application/json")) {
       return;
+    }
     print_req(request);
     std::vector<std::string> errors;
     std::stringstream ss;
@@ -1869,20 +2053,21 @@ namespace confighttp {
       std::string password = input_tree.value("currentPassword", "");
       std::string newPassword = input_tree.value("newPassword", "");
       std::string confirmPassword = input_tree.value("confirmNewPassword", "");
-      if (newUsername.empty())
+      if (newUsername.empty()) {
         newUsername = username;
+      }
       if (newUsername.empty()) {
         errors.push_back("Invalid Username");
       } else {
         auto hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
         if (config::sunshine.username.empty() ||
             (boost::iequals(username, config::sunshine.username) && hash == config::sunshine.password)) {
-          if (newPassword.empty() || newPassword != confirmPassword)
+          if (newPassword.empty() || newPassword != confirmPassword) {
             errors.push_back("Password Mismatch");
-          else {
+          } else {
             http::save_user_creds(config::sunshine.credentials_file, newUsername, newPassword);
             http::reload_user_creds(config::sunshine.credentials_file);
-            sessionCookie.clear(); // force re-login
+            sessionCookie.clear();  // force re-login
             output_tree["status"] = true;
           }
         } else {
@@ -1890,10 +2075,9 @@ namespace confighttp {
         }
       }
       if (!errors.empty()) {
-        std::string error = std::accumulate(errors.begin(), errors.end(), std::string(),
-                                              [](const std::string &a, const std::string &b) {
-                                                return a.empty() ? b : a + ", " + b;
-                                              });
+        std::string error = std::accumulate(errors.begin(), errors.end(), std::string(), [](const std::string &a, const std::string &b) {
+          return a.empty() ? b : a + ", " + b;
+        });
         bad_request(response, request, error);
         return;
       }
@@ -1925,10 +2109,12 @@ namespace confighttp {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
 
       std::string passphrase = input_tree.value("passphrase", "");
-      if (passphrase.empty())
+      if (passphrase.empty()) {
         throw std::runtime_error("Passphrase not provided!");
-      if (passphrase.size() < 4)
+      }
+      if (passphrase.size() < 4) {
         throw std::runtime_error("Passphrase too short!");
+      }
 
       std::string deviceName = input_tree.value("deviceName", "");
       output_tree["otp"] = nvhttp::request_otp(passphrase, deviceName);
@@ -2169,7 +2355,7 @@ namespace confighttp {
       lifetime::exit_sunshine(0, true);
     }
     // If exit fails, write a response after 5 seconds.
-    std::thread write_resp([response]{
+    std::thread write_resp([response] {
       std::this_thread::sleep_for(5s);
       response->write();
     });
@@ -2307,9 +2493,7 @@ namespace confighttp {
           auto launch_session = nvhttp::make_launch_session(true, false, request->parse_query_string(), &named_cert);
           auto err = proc::proc.execute(app, launch_session);
           if (err) {
-            bad_request(response, request, err == 503 ?
-                        "Failed to initialize video capture/encoding. Is a display connected and turned on?" :
-                        "Failed to start the specified application");
+            bad_request(response, request, err == 503 ? "Failed to initialize video capture/encoding. Is a display connected and turned on?" : "Failed to start the specified application");
           } else {
             output_tree["status"] = true;
             send_response(response, output_tree);
@@ -2319,8 +2503,7 @@ namespace confighttp {
       }
       BOOST_LOG(error) << "Couldn't find app with uuid ["sv << uuid << ']';
       bad_request(response, request, "Cannot find requested application");
-    }
-    catch (std::exception &e) {
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "LaunchApp: "sv << e.what();
       bad_request(response, request, e.what());
     }
@@ -2370,7 +2553,7 @@ namespace confighttp {
       return;
     }
 
-    auto fg = util::fail_guard([&]{
+    auto fg = util::fail_guard([&] {
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
     });
 
@@ -2381,26 +2564,25 @@ namespace confighttp {
       std::string username = input_tree.value("username", "");
       std::string password = input_tree.value("password", "");
       std::string hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
-      if (!boost::iequals(username, config::sunshine.username) || hash != config::sunshine.password)
+      if (!boost::iequals(username, config::sunshine.username) || hash != config::sunshine.password) {
         return;
+      }
       std::string sessionCookieRaw = crypto::rand_alphabet(64);
       sessionCookie = util::hex(crypto::hash(sessionCookieRaw + config::sunshine.salt)).to_string();
       cookie_creation_time = std::chrono::steady_clock::now();
       const SimpleWeb::CaseInsensitiveMultimap headers {
-        { "Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; SameSite=Strict; Max-Age=2592000; Path=/" }
+        {"Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; SameSite=Strict; Max-Age=2592000; Path=/"}
       };
       response->write(headers);
       fg.disable();
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Web UI Login failed: ["sv << net::addr_to_normalized_string(request->remote_endpoint().address())
-                               << "]: "sv << e.what();
+                         << "]: "sv << e.what();
       response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
       fg.disable();
       return;
     }
   }
-
-  
 
   void start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
@@ -2439,6 +2621,7 @@ namespace confighttp {
     server.resource["^/api/otp$"]["POST"] = getOTP;
     server.resource["^/api/apps$"]["GET"] = getApps;
     server.resource["^/api/apps$"]["POST"] = saveApp;
+    server.resource["^/api/apps/([^/]+)/cover$"]["GET"] = getAppCover;
     server.resource["^/api/apps/reorder$"]["POST"] = reorderApps;
     server.resource["^/api/apps/delete$"]["POST"] = deleteApp;
     server.resource["^/api/apps/launch$"]["POST"] = launchApp;
@@ -2512,14 +2695,15 @@ namespace confighttp {
         });
       } catch (boost::system::system_error &err) {
         // It's possible the exception gets thrown after calling server->stop() from a different thread
-        if (shutdown_event->peek())
+        if (shutdown_event->peek()) {
           return;
+        }
         BOOST_LOG(fatal) << "Couldn't start Configuration HTTPS server on port ["sv << port_https << "]: "sv << err.what();
         shutdown_event->raise(true);
         return;
       }
     };
-    std::thread tcp { accept_and_run, &server };
+    std::thread tcp {accept_and_run, &server};
 
     api_token_manager.load_api_tokens();
     session_token_manager.load_session_tokens();

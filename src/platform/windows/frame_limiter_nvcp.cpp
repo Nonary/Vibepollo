@@ -7,6 +7,7 @@
 
   #include "frame_limiter_nvcp.h"
 
+  #include "nvapi_driver_settings.h"
   #include "src/logging.h"
 
   #include <algorithm>
@@ -15,7 +16,6 @@
   #include <fstream>
   #include <iomanip>
   #include <nlohmann/json.hpp>
-  #include "nvapi_driver_settings.h"
   #include <optional>
   #include <sstream>
   #include <string>
@@ -58,8 +58,8 @@ namespace platf::frame_limiter_nvcp {
     constexpr NvU32 SMOOTH_MOTION_MIN_DRIVER_VERSION = 57186;
     constexpr NvU32 NVAPI_DRIVER_AND_BRANCH_VERSION_ID = 0x2926AAAD;
 
-    using query_interface_fn = void *(__cdecl *)(NvU32);
-    using driver_version_fn = NvAPI_Status (__cdecl *)(NvU32 *, NvAPI_ShortString);
+    using query_interface_fn = void *(__cdecl *) (NvU32);
+    using driver_version_fn = NvAPI_Status(__cdecl *)(NvU32 *, NvAPI_ShortString);
 
     void log_nvapi_error(NvAPI_Status status, const char *label) {
       NvAPI_ShortString message = {};

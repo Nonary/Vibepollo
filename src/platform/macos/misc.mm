@@ -537,13 +537,13 @@ namespace platf {
   }
 
   std::string
-  get_clipboard() {
+    get_clipboard() {
     // Placeholder
     return "";
   }
 
   bool
-  set_clipboard(const std::string& content) {
+    set_clipboard(const std::string &content) {
     // Placeholder
     return false;
   }

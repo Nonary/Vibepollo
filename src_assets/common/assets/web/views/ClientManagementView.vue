@@ -15,14 +15,19 @@
           <n-tab-pane name="otp" :tab="$t('pin.otp_pairing')">
             <div class="grid gap-6 lg:grid-cols-2">
               <div class="space-y-4">
-                <div class="flex flex-col items-center gap-4 rounded-2xl border border-dark/[0.08] bg-light/[0.02] p-6 dark:border-light/[0.08]">
+                <div
+                  class="flex flex-col items-center gap-4 rounded-2xl border border-dark/[0.08] bg-light/[0.02] p-6 dark:border-light/[0.08]"
+                >
                   <div v-if="shouldShowQr" class="flex w-full justify-center">
                     <div ref="qrRef" class="rounded-xl bg-white p-4 shadow-sm"></div>
                   </div>
                   <div class="text-4xl font-semibold tracking-[0.3em] text-center">
                     {{ otpDisplay }}
                   </div>
-                  <div v-if="!editingHost && hostDisplay" class="flex flex-col items-center gap-2 text-center text-sm">
+                  <div
+                    v-if="!editingHost && hostDisplay"
+                    class="flex flex-col items-center gap-2 text-center text-sm"
+                  >
                     <a class="text-brand break-all" :href="deepLink" target="_blank" rel="noopener">
                       art://{{ hostDisplay }}
                     </a>
@@ -43,7 +48,12 @@
                       <n-button size="small" @click="cancelHostEdit">
                         {{ $t('_common.cancel') }}
                       </n-button>
-                      <n-button type="primary" size="small" :disabled="!canSaveHost" @click="saveHost">
+                      <n-button
+                        type="primary"
+                        size="small"
+                        :disabled="!canSaveHost"
+                        @click="saveHost"
+                      >
                         {{ $t('_common.save') }}
                       </n-button>
                     </div>
@@ -67,7 +77,7 @@
                       :input-props="{
                         pattern: '[0-9a-zA-Z]{4,}',
                         required: true,
-                        inputmode: 'text'
+                        inputmode: 'text',
                       }"
                     />
                   </n-form-item>
@@ -91,7 +101,10 @@
           <n-tab-pane name="pin" :tab="$t('pin.pin_pairing')">
             <div class="space-y-4">
               <p class="text-sm opacity-75">{{ $t('clients.pair_desc') }}</p>
-              <n-form class="grid grid-cols-1 gap-4 items-end md:grid-cols-3" @submit.prevent="registerDevice">
+              <n-form
+                class="grid grid-cols-1 gap-4 items-end md:grid-cols-3"
+                @submit.prevent="registerDevice"
+              >
                 <n-form-item class="flex flex-col" :label="$t('navbar.pin')" label-placement="top">
                   <n-input
                     id="pin-input"
@@ -102,11 +115,15 @@
                       pattern: '^[0-9]{4}$',
                       title: 'Enter 4 digits',
                       maxlength: 4,
-                      required: true
+                      required: true,
                     }"
                   />
                 </n-form-item>
-                <n-form-item class="flex flex-col" :label="$t('pin.device_name')" label-placement="top">
+                <n-form-item
+                  class="flex flex-col"
+                  :label="$t('pin.device_name')"
+                  label-placement="top"
+                >
                   <n-input
                     id="name-input"
                     v-model:value="deviceName"
@@ -127,8 +144,12 @@
                 </n-form-item>
               </n-form>
               <div class="space-y-2">
-                <n-alert v-if="pairStatus === true" type="success">{{ $t('pin.pair_success') }}</n-alert>
-                <n-alert v-if="pairStatus === false" type="error">{{ $t('pin.pair_failure') }}</n-alert>
+                <n-alert v-if="pairStatus === true" type="success">{{
+                  $t('pin.pair_success')
+                }}</n-alert>
+                <n-alert v-if="pairStatus === false" type="error">{{
+                  $t('pin.pair_failure')
+                }}</n-alert>
               </div>
             </div>
           </n-tab-pane>
@@ -176,8 +197,12 @@
             {{ $t('_common.dismiss') }}
           </n-button>
         </n-alert>
-        <n-alert v-if="unpairAllStatus === true" type="success">{{ $t('pin.unpair_all_success') }}</n-alert>
-        <n-alert v-if="unpairAllStatus === false" type="error">{{ $t('pin.unpair_all_error') }}</n-alert>
+        <n-alert v-if="unpairAllStatus === true" type="success">{{
+          $t('pin.unpair_all_success')
+        }}</n-alert>
+        <n-alert v-if="unpairAllStatus === false" type="error">{{
+          $t('pin.unpair_all_error')
+        }}</n-alert>
         <div v-if="clients.length > 0" class="space-y-4">
           <div
             v-for="client in clients"
@@ -194,7 +219,9 @@
               <span class="text-base font-medium">
                 {{ client.name !== '' ? client.name : $t('pin.unpair_single_unknown') }}
               </span>
-              <n-tag v-if="client.connected" type="warning" size="small">{{ $t('clients.connected') }}</n-tag>
+              <n-tag v-if="client.connected" type="warning" size="small">{{
+                $t('clients.connected')
+              }}</n-tag>
               <div class="ml-auto flex items-center gap-2">
                 <n-button
                   v-if="client.connected"
@@ -215,12 +242,7 @@
                 >
                   <i class="fas fa-check" />
                 </n-button>
-                <n-button
-                  v-if="client.editing"
-                  size="small"
-                  quaternary
-                  @click="cancelEdit(client)"
-                >
+                <n-button v-if="client.editing" size="small" quaternary @click="cancelEdit(client)">
                   <i class="fas fa-times" />
                 </n-button>
                 <n-button
@@ -250,11 +272,7 @@
                 </n-form-item>
                 <div class="space-y-3">
                   <div class="grid gap-4 md:grid-cols-3">
-                    <div
-                      v-for="group in permissionGroups"
-                      :key="group.id"
-                      class="space-y-2"
-                    >
+                    <div v-for="group in permissionGroups" :key="group.id" class="space-y-2">
                       <div class="text-xs font-medium uppercase tracking-wide opacity-70">
                         {{ $t(group.labelKey) }}
                       </div>
@@ -263,7 +281,12 @@
                           v-for="perm in group.permissions"
                           :key="perm.key"
                           size="small"
-                          :type="isSuppressed(client.editPerm, perm.key, perm.suppressedBy) || checkPermission(client.editPerm, perm.key) ? 'primary' : 'default'"
+                          :type="
+                            isSuppressed(client.editPerm, perm.key, perm.suppressedBy) ||
+                            checkPermission(client.editPerm, perm.key)
+                              ? 'primary'
+                              : 'default'
+                          "
                           :ghost="!checkPermission(client.editPerm, perm.key)"
                           :disabled="isSuppressed(client.editPerm, perm.key, perm.suppressedBy)"
                           @click="togglePermission(client, perm.key)"
@@ -459,7 +482,7 @@ import {
   NTabs,
   NTabPane,
   NTag,
-  useMessage
+  useMessage,
 } from 'naive-ui';
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
@@ -584,7 +607,7 @@ const permissionMapping = {
   _all_actions: 0x07000000,
   _default: 0x03000000,
   _no: 0x00000000,
-  _all: 0x071f1f00
+  _all: 0x071f1f00,
 } as const;
 
 const permissionGroups: PermissionGroup[] = [
@@ -594,8 +617,8 @@ const permissionGroups: PermissionGroup[] = [
     permissions: [
       { key: 'list', suppressedBy: ['view', 'launch'] },
       { key: 'view', suppressedBy: ['launch'] },
-      { key: 'launch', suppressedBy: [] }
-    ]
+      { key: 'launch', suppressedBy: [] },
+    ],
   },
   {
     id: 'operations',
@@ -603,8 +626,8 @@ const permissionGroups: PermissionGroup[] = [
     permissions: [
       { key: 'clipboard_set', suppressedBy: [] },
       { key: 'clipboard_read', suppressedBy: [] },
-      { key: 'server_cmd', suppressedBy: [] }
-    ]
+      { key: 'server_cmd', suppressedBy: [] },
+    ],
   },
   {
     id: 'inputs',
@@ -614,9 +637,9 @@ const permissionGroups: PermissionGroup[] = [
       { key: 'input_touch', suppressedBy: [] },
       { key: 'input_pen', suppressedBy: [] },
       { key: 'input_mouse', suppressedBy: [] },
-      { key: 'input_kbd', suppressedBy: [] }
-    ]
-  }
+      { key: 'input_kbd', suppressedBy: [] },
+    ],
+  },
 ];
 
 const commandTypes: CommandType[] = ['do', 'undo'];
@@ -661,7 +684,7 @@ if (typeof window !== 'undefined') {
       const parsed = JSON.parse(raw) as HostInfo;
       hostInfoCache.value = {
         hostAddr: parsed.hostAddr ?? '',
-        hostPort: parsed.hostPort ?? ''
+        hostPort: parsed.hostPort ?? '',
       };
       hostManuallySet.value = true;
       hostAddr.value = hostInfoCache.value.hostAddr;
@@ -739,7 +762,7 @@ function toBool(value: unknown, defaultValue = false): boolean {
 function cloneCommand(entry?: ClientCommand): ClientCommand {
   return {
     cmd: entry?.cmd ?? '',
-    elevated: !!entry?.elevated
+    elevated: !!entry?.elevated,
   };
 }
 
@@ -747,7 +770,7 @@ function normalizeCommands(entries?: any): ClientCommand[] {
   if (!Array.isArray(entries)) return [];
   return entries.map((entry: any) => ({
     cmd: typeof entry?.cmd === 'string' ? entry.cmd : '',
-    elevated: toBool(entry?.elevated, false)
+    elevated: toBool(entry?.elevated, false),
   }));
 }
 
@@ -782,7 +805,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editEnableLegacyOrdering: legacyOrdering,
     editAlwaysUseVirtualDisplay: alwaysVirtual,
     editDo: doCommands.map(cloneCommand),
-    editUndo: undoCommands.map(cloneCommand)
+    editUndo: undoCommands.map(cloneCommand),
   };
 }
 
@@ -800,7 +823,7 @@ function resetClientEdits(client: ClientViewModel) {
 async function refreshClients(): Promise<void> {
   try {
     const r = await http.get<ClientsListResponse>('./api/clients/list', {
-      validateStatus: () => true
+      validateStatus: () => true,
     });
     const response = r.data ?? {};
     if (response.status && Array.isArray(response.named_certs)) {
@@ -857,7 +880,7 @@ function checkPermission(perm: number, permission: PermissionToggleKey): boolean
 function isSuppressed(
   perm: number,
   permission: PermissionToggleKey,
-  suppressedBy: PermissionToggleKey[]
+  suppressedBy: PermissionToggleKey[],
 ): boolean {
   return suppressedBy.some((suppressed) => checkPermission(perm, suppressed));
 }
@@ -923,7 +946,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     always_use_virtual_display: !!client.editAlwaysUseVirtualDisplay,
     perm: client.editPerm & permissionMapping._all,
     do: cleanedDo,
-    undo: cleanedUndo
+    undo: cleanedUndo,
   };
   client.editing = false;
   currentEditingClient.value = null;
@@ -931,7 +954,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     const resp = await http.post<{ status?: boolean; message?: string }>(
       './api/clients/update',
       payload,
-      { validateStatus: () => true }
+      { validateStatus: () => true },
     );
     if (!resp.data?.status) {
       throw new Error(resp.data?.message ?? '');
@@ -953,7 +976,11 @@ async function disconnectClient(client: ClientViewModel): Promise<void> {
   if (disconnecting.value[client.uuid]) return;
   disconnecting.value = { ...disconnecting.value, [client.uuid]: true };
   try {
-    await http.post('./api/clients/disconnect', { uuid: client.uuid }, { validateStatus: () => true });
+    await http.post(
+      './api/clients/disconnect',
+      { uuid: client.uuid },
+      { validateStatus: () => true },
+    );
   } catch {
   } finally {
     const map = { ...disconnecting.value };
@@ -1044,7 +1071,7 @@ async function saveHost(): Promise<void> {
   if (!canSaveHost.value) return;
   const info = {
     hostAddr: hostAddr.value.trim(),
-    hostPort: hostPort.value.trim()
+    hostPort: hostPort.value.trim(),
   };
   saveHostCache(info, true);
   editingHost.value = false;
@@ -1132,11 +1159,14 @@ function clearOtpResetTimer() {
 function scheduleOtpReset() {
   clearOtpResetTimer();
   if (typeof window === 'undefined') return;
-  otpResetHandle = window.setTimeout(() => {
-    otp.value = t('pin.otp_expired');
-    otpMessage.value = t('pin.otp_expired_msg');
-    otpStatus.value = 'warning';
-  }, 3 * 60 * 1000);
+  otpResetHandle = window.setTimeout(
+    () => {
+      otp.value = t('pin.otp_expired');
+      otpMessage.value = t('pin.otp_expired_msg');
+      otpStatus.value = 'warning';
+    },
+    3 * 60 * 1000,
+  );
 }
 
 function resetPairingForms() {
@@ -1179,7 +1209,7 @@ async function registerDevice(): Promise<void> {
     const trimmedName = deviceName.value.trim();
     const body = { pin: trimmedPin, name: trimmedName };
     const r = await http.post<PinResponse>('./api/pin', body, {
-      validateStatus: () => true
+      validateStatus: () => true,
     });
     const ok =
       r &&
@@ -1220,7 +1250,7 @@ async function requestOtp(): Promise<void> {
   try {
     const body = {
       passphrase: passphrase.value.trim(),
-      deviceName: otpDeviceName.value.trim()
+      deviceName: otpDeviceName.value.trim(),
     };
     const resp = await http.post<OtpResponse>('./api/otp', body, { validateStatus: () => true });
     const data = resp.data ?? {};
@@ -1261,9 +1291,9 @@ async function requestOtp(): Promise<void> {
       saveHostCache(
         {
           hostAddr: hostAddr.value,
-          hostPort: hostPort.value
+          hostPort: hostPort.value,
         },
-        false
+        false,
       );
     }
 
@@ -1304,19 +1334,16 @@ watch(pairTab, (tab) => {
   }
 });
 
-watch(
-  [deepLink, shouldShowQr],
-  async ([link, show]) => {
-    if (!show || !link) {
-      if (!editingHost.value) {
-        clearQr();
-      }
-      return;
+watch([deepLink, shouldShowQr], async ([link, show]) => {
+  if (!show || !link) {
+    if (!editingHost.value) {
+      clearQr();
     }
-    await nextTick();
-    await renderQr(link);
+    return;
   }
-);
+  await nextTick();
+  await renderQr(link);
+});
 
 onMounted(async () => {
   await authStore.waitForAuthentication();

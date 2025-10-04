@@ -284,6 +284,7 @@ namespace config {
         cmd_val(std::move(cmd_val)),
         elevated(std::move(elevated)) {
     }
+
     std::string cmd_name;
     std::string cmd_val;
     bool elevated;

@@ -5,8 +5,8 @@
 #pragma once
 
 // standard includes
-#include <random>
 #include <cstdio>
+#include <random>
 
 /**
  * @brief UUID utilities.
@@ -41,7 +41,7 @@ namespace uuid_util {
     }
 
     static uuid_t
-    parse(std::string& uuid_str) {
+      parse(std::string &uuid_str) {
       if (uuid_str.length() != 36) {
         throw std::invalid_argument("Invalid UUID string length");
       }
@@ -53,8 +53,14 @@ namespace uuid_util {
       // Parse UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
       unsigned int data1, data2;
       std::sscanf(
-        uuid_str.c_str(), "%8x-%4x-%4x-%4x-%8x%4x",
-        &uuid.b32[0], &data1, &data2, &temp16_1, &temp32_1, &temp32_2
+        uuid_str.c_str(),
+        "%8x-%4x-%4x-%4x-%8x%4x",
+        &uuid.b32[0],
+        &data1,
+        &data2,
+        &temp16_1,
+        &temp32_1,
+        &temp32_2
       );
 
       // Assign parsed values into uuid_t structure
