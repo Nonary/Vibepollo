@@ -2,25 +2,50 @@
 
 ## What is Vibeshine?
 
-Vibeshine is a Windows-exclusive fork of *Sunshine* designed to introduce significant enhancements, including:
+Vibeshine introduces major enhancements for stability, capture performance, and day-to-day usability on Windows.
 
-- **API token management**
-- **Session-based authentication**
-- **A fully redesigned frontend with complete mobile support**
-- **Playnite integration**
-- **Windows Graphics Capture running in service mode**
-- **Update notifications**
-- **Numerous bug fixes**
+## Key Features
+
+- **Display Setting Automation**  
+  Vibeshine adds multiple safeguards to prevent dummy plugs or virtual displays from getting “stuck” when you return to your PC. It resolves common Windows 11 **24H2** display issues and restores your layout after hard crashes, shutdowns, or reboots. (The only scenario it can’t restore is during a user logout.) The workflow is simplified to a dropdown—just pick the display you want to stream.
+
+- **Windows Graphics Capture in Service Mode**  
+  Running Windows Graphics Capture (WGC) as a service improves performance and stability. It captures the full frame rate of frame-generated titles, avoids crashes when VRAM is exceeded, and follows Microsoft’s recommended capture method going forward. Vibeshine auto-switches capture methods on demand, so the login screen and UAC prompts are still captured even when using WGC.
+
+- **Redesigned Frontend with Full Mobile Support**  
+  The new Web UI makes it easy to add games and change settings without restarting the program. It’s fully responsive, so you can manage your library and configuration from a phone or tablet.
+
+- **Playnite Integration**  
+  Deep integration with Playnite (a “launcher of launchers”) automatically syncs your recently played games with configurable expiration rules, per-category sync, and exclusions. You can also add games manually from a WebUI dropdown; Vibeshine handles artwork, launching, and clean termination—emulators included. The goal is a seamless, GeForce Experience–style library experience—only better.
+
+- **RTSS & NVIDIA Control Panel Integration**  
+  Vibeshine can manage RTSS to apply the correct frame limit and disable V-Sync before streaming, significantly improving frame pacing and smoothness. The applied frame cap matches the client device’s requested FPS.
+
+- **Frame-Generated Capture Fixes**  
+  Vibeshine includes workarounds so DLSS/FSR frame-generated games are captured at the game’s full frame rate without micro-stutter. This requires a very high-refresh-rate display (physical or virtual) at **240 Hz**.
+
+- **Lossless Scaling & NVIDIA Smooth Motion**  
+  Vibeshine can automatically apply optimal Lossless Scaling settings to generate frames for any application. On RTX 40-series and newer GPUs, you can optionally enable **NVIDIA Smooth Motion** for better performance and image quality (while Lossless Scaling remains more customizable).
+
+- **API Token Management**  
+  Access tokens can be tightly scoped—down to specific methods—so external scripts don’t need full administrative rights. This improves security while keeping automation flexible.
+
+- **Session-Based Authentication**  
+  The sign-in flow supports password managers and includes a “remember me” option to minimize prompts. The experience is security-hardened without sacrificing convenience.
+
+- **Update Notifications**  
+  Built-in notifications let you know when new features or bug fixes are available, making it easy to stay current.
+
 
 Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibeshine as a standalone fork.
 
-Currently, Vibeshine has already introduced over **30,000 new lines of code**, nearly matching the size of Sunshine’s original codebase.
+Currently, Vibeshine has already introduced over **50,000 new lines of code**, nearly matching the size of Sunshine’s original codebase.
 
 ---
 
 ## Does Vibeshine aim to replace Sunshine?
 
-No. Vibeshine is intended as a **complementary fork**, not a replacement. It also intends to incorporate functionality from *Apollo* in the future.
+No. Vibeshine is intended as a **complementary fork**, not a replacement. Coming soon an Apollo fork will also have all of Vibeshines features.
 
 ---
 
@@ -35,6 +60,7 @@ So this “mess” is only cosmetic. It doesn’t break the code, create securit
 Because I define the architecture, I know how everything works. Whether the code looks polished or not doesn’t matter to me. 
 
 Bringing Vibeshine fully in line with upstream style and documentation standards would take a lot of engineering time for very little practical gain. For now, backporting is unlikely. The fork will continue to move quickly here, and over time, targeted refactors or added documentation may make selective upstreaming possible.
+
 ---
 
 
