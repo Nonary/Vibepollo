@@ -679,11 +679,11 @@ namespace nvhttp {
       auto it = map_id_sess.find(client.uniqueID);
       map_id_sess.erase(it);
 
+      add_authorized_client(named_cert_p);
+
       if (pending_certs) {
         pending_certs->raise(crypto::x509(named_cert_p->cert));
       }
-
-      add_authorized_client(named_cert_p);
     } else {
       tree.put("root.paired", 0);
       BOOST_LOG(warning) << "Pair attempt failed due to same_hash: " << same_hash << ", verify: " << verify;

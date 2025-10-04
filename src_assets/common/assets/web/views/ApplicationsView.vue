@@ -2,7 +2,7 @@
   <div class="max-w-3xl mx-auto px-6 py-8 space-y-4">
     <!-- Toolbar aligned to card -->
     <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-wider">Applications</h2>
+      <h2 class="text-sm font-semibold uppercase tracking-wider">{{ $t('apps.applications_title') }}</h2>
       <!-- Toolbar: one Primary + one secondary, 8-pt spacing -->
       <n-space align="center" :size="16" class="items-center">
         <!-- Windows + Playnite secondary action -->
@@ -16,7 +16,7 @@
             :loading="syncBusy"
             :disabled="syncBusy"
             @click="forceSync"
-            aria-label="Force sync now"
+            :aria-label="$t('playnite.force_sync')"
           >
             <svg
               class="w-4 h-4 mr-2 inline-block"
@@ -31,7 +31,7 @@
                 d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6"
               />
             </svg>
-            {{ $t('playnite.force_sync') || 'Force Sync' }}
+            {{ $t('playnite.force_sync') }}
           </n-button>
 
           <!-- Setup Playnite when disabled -->
@@ -56,7 +56,7 @@
                 d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95"
               />
             </svg>
-            {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
+            {{ $t('playnite.setup_integration') }}
           </n-button>
         </template>
 
@@ -75,7 +75,7 @@
               d="M12 5v14M5 12h14"
             />
           </svg>
-          Add
+          {{ $t('_common.add') }}
         </n-button>
       </n-space>
     </div>
@@ -86,8 +86,8 @@
     >
       <template v-if="orderedApps.length">
         <div class="px-6 py-3 text-[11px] uppercase tracking-wide opacity-60 flex items-center justify-between">
-          <span>Drag the handle to reorder applications.</span>
-          <span v-if="reorderDirty" class="font-medium text-primary">Unsaved order</span>
+          <span>{{ $t('apps.reorder_hint') }}</span>
+          <span v-if="reorderDirty" class="font-medium text-primary">{{ $t('apps.reorder_unsaved') }}</span>
         </div>
         <div class="divide-y divide-black/5 dark:divide-white/10">
           <div
@@ -115,7 +115,7 @@
                   @dragstart="handleDragStart(i, $event)"
                   @dragend="handleDragEnd"
                   @click.stop
-                  aria-label="Drag to reorder"
+                  :aria-label="$t('apps.drag_handle_label')"
                   tabindex="-1"
                   role="button"
                 >
@@ -135,39 +135,41 @@
                 </div>
                 <div class="min-w-0 flex-1">
                   <div class="text-sm font-semibold truncate flex items-center gap-2">
-                    <span class="truncate">{{ app.name || '(untitled)' }}</span>
+                    <span class="truncate">{{ app.name || $t('apps.untitled') }}</span>
                     <!-- Playnite or Custom badges -->
                     <template v-if="app['playnite-id']">
                       <n-tag
                         size="small"
                         class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200"
-                        >Playnite</n-tag
+                        >{{ $t('apps.playnite_badge') }}</n-tag
                       >
-                      <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
-                        >manual</span
+                      <span
+                        v-if="app['playnite-managed'] === 'manual'"
+                        class="text-[10px] opacity-70"
+                        >{{ $t('apps.playnite_label_manual') }}</span
                       >
                       <span
                         v-else-if="(app['playnite-source'] || '') === 'recent'"
                         class="text-[10px] opacity-70"
-                        >recent</span
+                        >{{ $t('apps.playnite_label_recent') }}</span
                       >
                       <span
                         v-else-if="(app['playnite-source'] || '') === 'category'"
                         class="text-[10px] opacity-70"
-                        >category</span
+                        >{{ $t('apps.playnite_label_category') }}</span
                       >
                       <span
                         v-else-if="(app['playnite-source'] || '') === 'recent+category'"
                         class="text-[10px] opacity-70"
-                        >recent+category</span
+                        >{{ $t('apps.playnite_label_recent_category') }}</span
                       >
-                      <span v-else class="text-[10px] opacity-70">managed</span>
+                      <span v-else class="text-[10px] opacity-70">{{ $t('apps.playnite_label_managed') }}</span>
                     </template>
                     <template v-else>
                       <n-tag
                         size="small"
                         class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200"
-                        >Custom</n-tag
+                        >{{ $t('apps.custom_badge') }}</n-tag
                       >
                     </template>
                   </div>
@@ -201,8 +203,8 @@
           class="flex items-center justify-between px-6 py-4 border-t border-black/5 dark:border-white/10 bg-dark/5 dark:bg-light/5"
         >
           <div class="text-xs opacity-70">
-            <span v-if="reorderDirty">Order changed. Save to apply.</span>
-            <span v-else>Order matches configuration.</span>
+            <span v-if="reorderDirty">{{ $t('apps.reorder_dirty_notice') }}</span>
+            <span v-else>{{ $t('apps.reorder_clean_notice') }}</span>
           </div>
           <n-space :size="8" align="center">
             <n-button
@@ -211,7 +213,7 @@
               @click="alphabetize"
               :disabled="reorderSaving || orderedApps.length < 2"
             >
-              Alphabetize
+              {{ $t('apps.alphabetize') }}
             </n-button>
             <n-button
               size="small"
@@ -220,7 +222,7 @@
               @click="resetOrder"
               :disabled="reorderSaving || !reorderDirty"
             >
-              Reset
+              {{ $t('apps.reorder_reset') }}
             </n-button>
             <n-button
               type="primary"
@@ -230,13 +232,13 @@
               :loading="reorderSaving"
               :disabled="!reorderDirty"
             >
-              Save Order
+              {{ $t('apps.reorder_save') }}
             </n-button>
           </n-space>
         </div>
       </template>
       <div v-else class="px-6 py-10 text-center text-sm opacity-60">
-        No applications configured.
+        {{ $t('apps.none_configured') }}
       </div>
     </div>
 
@@ -268,6 +270,7 @@ import { http } from '@/http';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import type { App } from '@/stores/apps';
+import { useI18n } from 'vue-i18n';
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
@@ -275,6 +278,7 @@ const configStore = useConfigStore();
 const auth = useAuthStore();
 const router = useRouter();
 const message = useMessage();
+const { t } = useI18n();
 
 const orderedApps = ref<App[]>([]);
 const reorderDirty = ref(false);
@@ -443,7 +447,7 @@ function alphabetize(): void {
   });
   const changed = sorted.some((item, idx) => item !== snapshot[idx]);
   if (!changed) {
-    message.info('Apps already alphabetical');
+    message.info(t('apps.alphabetize_done'));
     return;
   }
   orderedApps.value = sorted;
@@ -457,16 +461,16 @@ async function saveOrder(): Promise<void> {
     .map((item) => item?.uuid)
     .filter((uuid): uuid is string => typeof uuid === 'string' && uuid.length > 0);
   if (!uuids.length) {
-    message.warning('No applications to reorder');
+    message.warning(t('apps.reorder_none'));
     return;
   }
   reorderSaving.value = true;
   const result = await appsStore.reorderApps(uuids);
   if (result.ok) {
-    message.success('Application order saved');
+    message.success(t('apps.reorder_saved'));
     reorderDirty.value = false;
   } else {
-    message.error(result.error || 'Failed to save order');
+    message.error(result.error || t('apps.reorder_save_failed'));
   }
   reorderSaving.value = false;
 }
