@@ -1890,7 +1890,7 @@ namespace proc {
 
         // Iterate over each application in the "apps" array.
         for (auto &app_node : tree["apps"]) {
-          proc::ctx_t ctx;
+          proc::ctx_t ctx {};
           ctx.idx = std::to_string(i);
           ctx.uuid = app_node.at("uuid");
 
@@ -1987,6 +1987,33 @@ namespace proc {
           ctx.terminate_on_pause = app_node.value("terminate-on-pause", false);
           ctx.gamepad = app_node.value("gamepad", "");
 
+          ctx.playnite_id.clear();
+          if (app_node.contains("playnite-id") && app_node["playnite-id"].is_string()) {
+            try {
+              ctx.playnite_id = parse_env_val(this_env, app_node["playnite-id"].get<std::string>());
+            } catch (...) {
+              ctx.playnite_id.clear();
+            }
+          }
+          ctx.playnite_fullscreen = false;
+          if (app_node.contains("playnite-fullscreen")) {
+            try {
+              const auto &flag = app_node["playnite-fullscreen"];
+              if (flag.is_boolean()) {
+                ctx.playnite_fullscreen = flag.get<bool>();
+              } else if (flag.is_number_integer()) {
+                ctx.playnite_fullscreen = flag.get<int>() != 0;
+              } else if (flag.is_string()) {
+                auto text = flag.get<std::string>();
+                boost::algorithm::trim(text);
+                boost::algorithm::to_lower(text);
+                ctx.playnite_fullscreen = (text == "true" || text == "1" || text == "yes");
+              }
+            } catch (...) {
+              ctx.playnite_fullscreen = false;
+            }
+          }
+
           // Calculate a unique application id.
           auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
           if (ids.count(std::get<0>(possible_ids)) == 0) {
@@ -2041,7 +2068,7 @@ namespace proc {
 
     if (fail_count > 0) {
       BOOST_LOG(warning) << "No applications configured, adding fallback Desktop entry.";
-      proc::ctx_t ctx;
+      proc::ctx_t ctx {};
       ctx.idx = std::to_string(i);
       ctx.uuid = FALLBACK_DESKTOP_UUID; // Placeholder UUID
       ctx.name = "Desktop (fallback)";
@@ -2075,7 +2102,7 @@ namespace proc {
     // Virtual Display entry
   #ifdef _WIN32
     if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-      proc::ctx_t ctx;
+      proc::ctx_t ctx {};
       ctx.idx = std::to_string(i);
       ctx.uuid = VIRTUAL_DISPLAY_UUID;
       ctx.name = "Virtual Display";
@@ -2110,7 +2137,7 @@ namespace proc {
     if (config::input.enable_input_only_mode) {
       // Input Only entry
       {
-        proc::ctx_t ctx;
+        proc::ctx_t ctx {};
         ctx.idx = std::to_string(i);
         ctx.uuid = REMOTE_INPUT_UUID;
         ctx.name = "Remote Input";
@@ -2146,7 +2173,7 @@ namespace proc {
 
       // Terminate entry
       {
-        proc::ctx_t ctx;
+        proc::ctx_t ctx {};
         ctx.idx = std::to_string(i);
         ctx.uuid = TERMINATE_APP_UUID;
         ctx.name = "Terminate";

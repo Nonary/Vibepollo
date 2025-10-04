@@ -98,9 +98,13 @@
             @drop.prevent="handleDrop($event)"
           >
             <div v-if="dragInsertIndex === i" class="drag-indicator" style="top: -1px;"></div>
-            <button
-              type="button"
-              class="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            <div
+              class="app-row w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              role="button"
+              tabindex="0"
+              draggable="true"
+              @dragstart="handleDragStart(i, $event)"
+              @dragend="handleDragEnd"
               @click="openEdit(app, i)"
               @keydown.enter.prevent="openEdit(app, i)"
               @keydown.space.prevent="openEdit(app, i)"
@@ -111,9 +115,6 @@
               >
                 <div
                   class="drag-handle"
-                  draggable="true"
-                  @dragstart="handleDragStart(i, $event)"
-                  @dragend="handleDragEnd"
                   @click.stop
                   :aria-label="$t('apps.drag_handle_label')"
                   tabindex="-1"
@@ -132,6 +133,16 @@
                       d="M7 6h0m0 6h0m0 6h0m10-12h0m0 6h0m0 6h0"
                     />
                   </svg>
+                </div>
+                <div class="app-icon-container">
+                  <img
+                    v-if="resolveAppIcon(app)"
+                    :src="resolveAppIcon(app)"
+                    class="app-icon-image"
+                    :alt="(app.name || 'Application') + ' icon'"
+                    loading="lazy"
+                  />
+                  <div v-else class="app-icon-fallback">{{ appInitial(app) }}</div>
                 </div>
                 <div class="min-w-0 flex-1">
                   <div class="text-sm font-semibold truncate flex items-center gap-2">
@@ -194,7 +205,7 @@
                   </svg>
                 </div>
               </div>
-            </button>
+            </div>
             <div v-if="dragInsertIndex === i + 1" class="drag-indicator" style="bottom: -1px;"></div>
           </div>
         </div>
@@ -504,6 +515,40 @@ function appKey(app: App | null | undefined, index: number) {
   return `${app?.name || 'app'}|${id}|${index}`;
 }
 
+function resolveAppIcon(app: App | null | undefined): string | null {
+  if (!app) return null;
+  const direct = typeof app['image-path'] === 'string' ? app['image-path'].trim() : '';
+  if (direct) {
+    if (/^https?:\/\//i.test(direct)) return direct;
+    if (direct.startsWith('/')) return direct;
+    if (direct.startsWith('covers/')) return `./${direct}`;
+    if (direct.startsWith('./')) return direct;
+  }
+  const coverUrl = (() => {
+    const candidate = (app as Record<string, unknown>)['cover-url'];
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim();
+    const playniteCover = (app as Record<string, unknown>)['playnite-cover'];
+    if (typeof playniteCover === 'string' && playniteCover.trim().length > 0) {
+      return playniteCover.trim();
+    }
+    return '';
+  })();
+  if (coverUrl) return coverUrl;
+  const uuid = app.uuid?.trim();
+  if (uuid && (direct || app['playnite-id'])) {
+    return `./api/apps/${encodeURIComponent(uuid)}/cover`;
+  }
+  return null;
+}
+
+function appInitial(app: App | null | undefined): string {
+  const source = app?.name?.trim();
+  if (source && source.length > 0) {
+    return source.charAt(0).toUpperCase();
+  }
+  return '?';
+}
+
 async function forceSync(): Promise<void> {
   syncBusy.value = true;
   try {
@@ -607,12 +652,61 @@ auth.onLogin(() => {
   cursor: grabbing;
 }
 
+.app-row {
+  cursor: grab;
+}
+
+.app-row:active {
+  cursor: grabbing;
+}
+
 :global(.dark) .drag-handle {
   color: rgba(255, 255, 255, 0.45);
 }
 
 :global(.dark) .drag-handle:hover {
   background-color: rgba(255, 255, 255, 0.08);
+}
+
+.app-icon-container {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.8rem;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.app-icon-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.app-icon-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: rgba(15, 23, 42, 0.7);
+  background: linear-gradient(135deg, rgba(226, 232, 240, 0.9), rgba(203, 213, 225, 0.9));
+}
+
+:global(.dark) .app-icon-container {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+:global(.dark) .app-icon-fallback {
+  color: rgba(255, 255, 255, 0.85);
+  background: linear-gradient(135deg, rgba(100, 116, 139, 0.65), rgba(71, 85, 105, 0.65));
 }
 
 .drag-indicator {

@@ -160,18 +160,80 @@
                 Optional; stored only and not fetched by Sunshine.
               </p>
             </div>
+            <div v-if="!isMac" class="space-y-1 md:col-span-2">
+              <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
+                >Gamepad Override</label
+              >
+              <n-select
+                v-model:value="form.gamepad"
+                :options="gamepadOptions"
+                size="small"
+              />
+              <p class="text-[11px] opacity-60">
+                Choose a specific controller profile for this application instead of the global default.
+              </p>
+            </div>
+            <div v-if="isWindows" class="space-y-1 md:col-span-2">
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
+                  >Resolution Scale Factor</label
+                >
+                <span class="text-xs font-semibold">{{ scaleFactorModel }}%</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <n-slider
+                  v-model:value="scaleFactorModel"
+                  :min="SCALE_FACTOR_MIN"
+                  :max="SCALE_FACTOR_MAX"
+                  :step="1"
+                  class="flex-1"
+                />
+                <n-input-number
+                  v-model:value="scaleFactorModel"
+                  :min="SCALE_FACTOR_MIN"
+                  :max="SCALE_FACTOR_MAX"
+                  :step="1"
+                  size="small"
+                  class="w-20"
+                />
+              </div>
+              <p class="text-[11px] opacity-60">
+                Adjust per-app display scaling (20% to 200%). Values above 100% render at a higher resolution.
+              </p>
+            </div>
           </div>
 
           <div class="grid grid-cols-2 gap-3">
-            <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
-              Exclude Global Prep
-            </n-checkbox>
             <n-checkbox v-if="!isPlaynite" v-model:checked="form.autoDetach" size="small">
               Auto Detach
             </n-checkbox>
             <n-checkbox v-if="!isPlaynite" v-model:checked="form.waitAll" size="small"
               >Wait All</n-checkbox
             >
+            <n-checkbox v-model:checked="form.terminateOnPause" size="small">
+              Terminate On Pause
+            </n-checkbox>
+            <n-checkbox v-model:checked="form.virtualDisplay" size="small">
+              Use Virtual Display
+            </n-checkbox>
+            <n-checkbox
+              v-model:checked="form.allowClientCommands"
+              size="small"
+              class="md:col-span-2"
+            >
+              Allow Client Commands
+            </n-checkbox>
+            <n-checkbox v-model:checked="form.useAppIdentity" size="small">
+              Use App Identity
+            </n-checkbox>
+            <n-checkbox
+              v-if="form.useAppIdentity"
+              v-model:checked="form.perClientAppIdentity"
+              size="small"
+              class="md:col-span-2"
+            >
+              Per-client App Identity
+            </n-checkbox>
             <n-checkbox
               v-if="isWindows && !isPlaynite"
               v-model:checked="form.elevated"
@@ -473,6 +535,9 @@
                 <i class="fas fa-plus" /> Add
               </n-button>
             </div>
+            <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
+              Exclude Global Prep Commands
+            </n-checkbox>
             <div v-if="form.prepCmd.length === 0" class="text-[12px] opacity-60">None</div>
             <div v-else class="space-y-2">
               <div
@@ -510,6 +575,62 @@
                       :autosize="{ minRows: 1, maxRows: 3 }"
                       class="font-mono"
                       placeholder="Command to run on stop"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
+                State Commands
+              </h3>
+              <n-button size="small" type="primary" @click="addState">
+                <i class="fas fa-plus" /> Add
+              </n-button>
+            </div>
+            <n-checkbox v-model:checked="form.excludeGlobalStateCmd" size="small">
+              Exclude Global State Commands
+            </n-checkbox>
+            <div v-if="form.stateCmd.length === 0" class="text-[12px] opacity-60">None</div>
+            <div v-else class="space-y-2">
+              <div
+                v-for="(s, i) in form.stateCmd"
+                :key="`state-${i}`"
+                class="rounded-md border border-dark/10 dark:border-light/10 p-2"
+              >
+                <div class="flex items-center justify-between gap-2 mb-2">
+                  <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
+                  <div class="flex items-center gap-2">
+                    <n-checkbox v-if="isWindows" v-model:checked="s.elevated" size="small">
+                      Elevated
+                    </n-checkbox>
+                    <n-button size="small" type="error" strong @click="form.stateCmd.splice(i, 1)">
+                      <i class="fas fa-trash" />
+                    </n-button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 gap-2">
+                  <div>
+                    <label class="text-[11px] opacity-60">Do Command</label>
+                    <n-input
+                      v-model:value="s.do"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      class="font-mono"
+                      placeholder="Command to run when stream starts"
+                    />
+                  </div>
+                  <div>
+                    <label class="text-[11px] opacity-60">Undo Command</label>
+                    <n-input
+                      v-model:value="s.undo"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      class="font-mono"
+                      placeholder="Command to run when stream stops"
                     />
                   </div>
                 </div>
@@ -671,6 +792,7 @@ import {
   NRadioGroup,
   NRadio,
   NAlert,
+  NSlider,
 } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 
@@ -722,6 +844,8 @@ const LOSSLESS_RESOLUTION_MIN = 50;
 const LOSSLESS_RESOLUTION_MAX = 100;
 const LOSSLESS_SHARPNESS_MIN = 1;
 const LOSSLESS_SHARPNESS_MAX = 10;
+const SCALE_FACTOR_MIN = 20;
+const SCALE_FACTOR_MAX = 200;
 
 const LOSSLESS_SCALING_OPTIONS: { label: string; value: LosslessScalingMode }[] = [
   { label: 'Off', value: 'off' },
@@ -818,12 +942,21 @@ interface AppForm {
   workingDir: string;
   imagePath: string;
   excludeGlobalPrepCmd: boolean;
+  excludeGlobalStateCmd: boolean;
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
+  terminateOnPause: boolean;
+  virtualDisplay: boolean;
+  allowClientCommands: boolean;
+  useAppIdentity: boolean;
+  perClientAppIdentity: boolean;
+  gamepad: string;
+  scaleFactor: number;
   frameGenLimiterFix: boolean;
   exitTimeout: number;
   prepCmd: PrepCmd[];
+  stateCmd: PrepCmd[];
   detached: string[];
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
@@ -846,12 +979,21 @@ interface ServerApp {
   'working-dir'?: string;
   'image-path'?: string;
   'exclude-global-prep-cmd'?: boolean;
+  'exclude-global-state-cmd'?: boolean;
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;
+  'terminate-on-pause'?: boolean;
+  'virtual-display'?: boolean;
+  'allow-client-commands'?: boolean;
+  'use-app-identity'?: boolean;
+  'per-client-app-identity'?: boolean;
+  gamepad?: string;
+  'scale-factor'?: number | string;
   'frame-gen-limiter-fix'?: boolean;
   'exit-timeout'?: number;
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
+  'state-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
@@ -888,12 +1030,21 @@ function fresh(): AppForm {
     workingDir: '',
     imagePath: '',
     excludeGlobalPrepCmd: false,
+    excludeGlobalStateCmd: false,
     elevated: false,
     autoDetach: true,
     waitAll: true,
+    terminateOnPause: false,
+    virtualDisplay: false,
+    allowClientCommands: true,
+    useAppIdentity: false,
+    perClientAppIdentity: false,
+    gamepad: '',
+    scaleFactor: 100,
     frameGenLimiterFix: false,
     exitTimeout: 5,
     prepCmd: [],
+    stateCmd: [],
     detached: [],
     gen1FramegenFix: false,
     gen2FramegenFix: false,
@@ -918,6 +1069,27 @@ watch(
     const et = form.value.exitTimeout as any;
     if (form.value.playniteId && (typeof et !== 'number' || et === 5)) {
       form.value.exitTimeout = 10;
+    }
+  },
+);
+
+watch(
+  () => form.value.useAppIdentity,
+  (enabled) => {
+    if (!enabled) {
+      form.value.perClientAppIdentity = false;
+    }
+  },
+);
+
+watch(
+  () => form.value.scaleFactor,
+  (value) => {
+    const clamped = clampScaleFactor(
+      typeof value === 'number' && Number.isFinite(value) ? value : null,
+    );
+    if (clamped !== value) {
+      form.value.scaleFactor = clamped;
     }
   },
 );
@@ -953,6 +1125,14 @@ function clampSharpness(value: number | null): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   const rounded = Math.round(value);
   return Math.min(LOSSLESS_SHARPNESS_MAX, Math.max(LOSSLESS_SHARPNESS_MIN, rounded));
+}
+
+function clampScaleFactor(value: number | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 100;
+  }
+  const rounded = Math.round(value);
+  return Math.min(SCALE_FACTOR_MAX, Math.max(SCALE_FACTOR_MIN, rounded));
 }
 
 function defaultRtssFromTarget(target: number | null): number | null {
@@ -1019,6 +1199,13 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
         elevated: !!p?.elevated,
       }))
     : [];
+  const state = Array.isArray(src['state-cmd'])
+    ? src['state-cmd'].map((p) => ({
+        do: String(p?.do ?? ''),
+        undo: String(p?.undo ?? ''),
+        elevated: !!p?.elevated,
+      }))
+    : [];
   const isPlayniteLinked = !!src['playnite-id'];
   const derivedExitTimeout =
     typeof src['exit-timeout'] === 'number'
@@ -1033,6 +1220,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const losslessProfiles = emptyLosslessProfileState();
   losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
   losslessProfiles.custom = parseLosslessOverrides(src['lossless-scaling-custom']);
+  const useAppIdentity = !!src['use-app-identity'];
   return {
     index: idx,
     name: String(src.name ?? ''),
@@ -1041,15 +1229,32 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
     excludeGlobalPrepCmd: !!src['exclude-global-prep-cmd'],
+    excludeGlobalStateCmd: !!src['exclude-global-state-cmd'],
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
+    terminateOnPause:
+      src['terminate-on-pause'] !== undefined ? !!src['terminate-on-pause'] : base.terminateOnPause,
+    virtualDisplay:
+      src['virtual-display'] !== undefined ? !!src['virtual-display'] : base.virtualDisplay,
+    allowClientCommands:
+      src['allow-client-commands'] !== undefined
+        ? !!src['allow-client-commands']
+        : base.allowClientCommands,
+    useAppIdentity: useAppIdentity,
+    perClientAppIdentity:
+      useAppIdentity && src['per-client-app-identity'] !== undefined
+        ? !!src['per-client-app-identity']
+        : base.perClientAppIdentity,
+    gamepad: typeof src.gamepad === 'string' ? src.gamepad : '',
+    scaleFactor: clampScaleFactor(parseNumeric(src['scale-factor'])),
     frameGenLimiterFix:
       src['frame-gen-limiter-fix'] !== undefined
         ? !!src['frame-gen-limiter-fix']
         : base.frameGenLimiterFix,
     exitTimeout: derivedExitTimeout,
     prepCmd: prep,
+    stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     gen1FramegenFix: !!(src['gen1-framegen-fix'] ?? src['dlss-framegen-capture-fix']),
     gen2FramegenFix: !!src['gen2-framegen-fix'],
@@ -1075,13 +1280,28 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'working-dir': f.workingDir,
     'image-path': String(f.imagePath || '').replace(/\"/g, ''),
     'exclude-global-prep-cmd': !!f.excludeGlobalPrepCmd,
+    'exclude-global-state-cmd': !!f.excludeGlobalStateCmd,
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
+    'terminate-on-pause': !!f.terminateOnPause,
+    'virtual-display': !!f.virtualDisplay,
+    'allow-client-commands': !!f.allowClientCommands,
+    'use-app-identity': !!f.useAppIdentity,
+    'per-client-app-identity': f.useAppIdentity ? !!f.perClientAppIdentity : false,
+    gamepad: String(f.gamepad || ''),
+    'scale-factor': clampScaleFactor(
+      typeof f.scaleFactor === 'number' && Number.isFinite(f.scaleFactor) ? f.scaleFactor : null,
+    ),
     'gen1-framegen-fix': !!f.gen1FramegenFix,
     'gen2-framegen-fix': !!f.gen2FramegenFix,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
+      do: p.do,
+      undo: p.undo,
+      ...(isWindows.value ? { elevated: !!p.elevated } : {}),
+    })),
+    'state-cmd': f.stateCmd.map((p) => ({
       do: p.do,
       undo: p.undo,
       ...(isWindows.value ? { elevated: !!p.elevated } : {}),
@@ -1147,6 +1367,14 @@ const cmdText = computed<string>({
   get: () => form.value.cmd || '',
   set: (v: string) => {
     form.value.cmd = v;
+  },
+});
+const scaleFactorModel = computed<number>({
+  get: () => form.value.scaleFactor,
+  set: (v: number) => {
+    form.value.scaleFactor = clampScaleFactor(
+      typeof v === 'number' && Number.isFinite(v) ? v : null,
+    );
   },
 });
 const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
@@ -1477,6 +1705,15 @@ function addPrep() {
   });
   requestAnimationFrame(() => updateShadows());
 }
+
+function addState() {
+  form.value.stateCmd.push({
+    do: '',
+    undo: '',
+    ...(isWindows.value ? { elevated: false } : {}),
+  });
+  requestAnimationFrame(() => updateShadows());
+}
 const saving = ref(false);
 const showDeleteConfirm = ref(false);
 
@@ -1569,9 +1806,31 @@ async function useCover(cover: CoverCandidate) {
 
 // Platform + Playnite detection
 const configStore = useConfigStore();
-const isWindows = computed(
-  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
-);
+const platformName = computed(() => (configStore.metadata?.platform || '').toLowerCase());
+const isWindows = computed(() => platformName.value === 'windows');
+const isLinux = computed(() => platformName.value === 'linux');
+const isMac = computed(() => platformName.value === 'macos');
+const gamepadOptions = computed(() => {
+  const options = [
+    { label: 'Default (Global)', value: '' },
+    { label: 'Disabled', value: 'disabled' },
+    { label: 'Auto', value: 'auto' },
+  ];
+  if (isLinux.value) {
+    options.push(
+      { label: 'DualSense (PS5)', value: 'ds5' },
+      { label: 'Switch Pro', value: 'switch' },
+      { label: 'Xbox One', value: 'xone' },
+    );
+  }
+  if (isWindows.value) {
+    options.push(
+      { label: 'DualShock 4', value: 'ds4' },
+      { label: 'Xbox 360', value: 'x360' },
+    );
+  }
+  return options;
+});
 const ddConfigOption = computed(
   () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
 );

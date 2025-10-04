@@ -119,7 +119,7 @@ namespace confighttp {
     try {
       sort_apps_by_name(file_tree);
       file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-      proc::refresh(config::stream.file_apps);
+      proc::refresh(config::stream.file_apps, false);
       return true;
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "refresh_client_apps_cache: failed: " << e.what();
@@ -615,9 +615,15 @@ namespace confighttp {
       // List of keys to convert to boolean
       std::vector<std::string> boolean_keys = {
         "exclude-global-prep-cmd",
+        "exclude-global-state-cmd",
         "elevated",
         "auto-detach",
         "wait-all",
+        "terminate-on-pause",
+        "virtual-display",
+        "allow-client-commands",
+        "use-app-identity",
+        "per-client-app-identity",
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
@@ -628,7 +634,8 @@ namespace confighttp {
       std::vector<std::string> integer_keys = {
         "exit-timeout",
         "lossless-scaling-target-fps",
-        "lossless-scaling-rtss-limit"
+        "lossless-scaling-rtss-limit",
+        "scale-factor"
       };
 
       bool mutated = false;
@@ -709,6 +716,14 @@ namespace confighttp {
           for (auto &prep : app["prep-cmd"]) {
             if (prep.contains("elevated") && prep["elevated"].is_string()) {
               prep["elevated"] = prep["elevated"] == "true";
+              mutated = true;
+            }
+          }
+        }
+        if (app.contains("state-cmd")) {
+          for (auto &state : app["state-cmd"]) {
+            if (state.contains("elevated") && state["elevated"].is_string()) {
+              state["elevated"] = state["elevated"] == "true";
               mutated = true;
             }
           }
@@ -999,7 +1014,7 @@ namespace confighttp {
       file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
 
       // Notify relevant parts of the system that the apps configuration has changed.
-      proc::refresh(config::stream.file_apps);
+      proc::refresh(config::stream.file_apps, false);
 
       output_tree["status"] = true;
       send_response(response, output_tree);
@@ -1109,7 +1124,7 @@ namespace confighttp {
 
       // Write the updated JSON back to the file.
       file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-      proc::refresh(config::stream.file_apps);
+      proc::refresh(config::stream.file_apps, false);
 
       nlohmann::json output_tree;
       output_tree["status"] = true;

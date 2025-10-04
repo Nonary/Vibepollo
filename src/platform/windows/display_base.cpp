@@ -246,7 +246,7 @@ namespace platf::dxgi {
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
     auto adjust_client_frame_rate = [&]() -> DXGI_RATIONAL {
       // Adjust capture frame interval when display refresh rate is not integral but very close to requested fps.
-      if (display_refresh_rate.Denominator > 1) {
+      if (display_refresh_rate.Denominator > 1 && client_frame_rate > 0 && display_refresh_rate_rounded > 0) {
         DXGI_RATIONAL candidate = display_refresh_rate;
         if (client_frame_rate % display_refresh_rate_rounded == 0) {
           candidate.Numerator *= client_frame_rate / display_refresh_rate_rounded;

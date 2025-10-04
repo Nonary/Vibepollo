@@ -39,7 +39,13 @@ const defaultGroups = [
       locale: 'en',
       sunshine_name: '',
       min_log_level: 2,
+      system_tray: 'enabled',
+      hide_tray_controls: 'disabled',
+      enable_pairing: 'enabled',
+      enable_discovery: 'enabled',
       global_prep_cmd: [],
+      global_state_cmd: [],
+      server_cmd: [],
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
@@ -63,6 +69,9 @@ const defaultGroups = [
       mouse: 'enabled',
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
+      ds5_inputtino_randomize_mac: 'enabled',
+      enable_input_only_mode: 'disabled',
+      forward_rumble: 'enabled',
       keybindings: '[0x10,0xA0,0x11,0xA2,0x12,0xA4]',
     },
   },
@@ -86,6 +95,13 @@ const defaultGroups = [
       dd_mode_remapping: { mixed: [], resolution_only: [], refresh_rate_only: [] },
       dd_wa_hdr_toggle: false,
       dd_wa_dummy_plug_hdr10: false,
+      stream_audio: 'enabled',
+      keep_sink_default: 'enabled',
+      auto_capture_sink: 'enabled',
+      headless_mode: 'disabled',
+      double_refreshrate: 'disabled',
+      isolated_virtual_display_option: 'disabled',
+      fallback_mode: '1920x1080x60',
       max_bitrate: 0,
       minimum_fps_target: 20,
       lossless_scaling_path: '',
@@ -147,6 +163,10 @@ const defaultGroups = [
       av1_mode: 0,
       capture: '',
       encoder: '',
+      limit_framerate: 'enabled',
+      envvar_compatibility_mode: 'disabled',
+      legacy_ordering: 'disabled',
+      ignore_encoder_probe_failure: 'disabled',
     },
   },
   {
@@ -242,6 +262,8 @@ export const useConfigStore = defineStore('config', () => {
   // Track keys that should require manual save (no autosave)
   const manualSaveKeys = new Set<string>([
     'global_prep_cmd',
+    'server_cmd',
+    'global_state_cmd',
     'dd_configuration_option',
     'dd_resolution_option',
     'dd_manual_resolution',
@@ -349,7 +371,7 @@ export const useConfigStore = defineStore('config', () => {
     _data.value = obj ? JSON.parse(JSON.stringify(obj)) : {};
 
     // decode known JSON string fields
-    const specialOptions = ['dd_mode_remapping', 'global_prep_cmd'];
+    const specialOptions = ['dd_mode_remapping', 'global_prep_cmd', 'global_state_cmd', 'server_cmd'];
     for (const key of specialOptions) {
       if (
         _data.value &&
