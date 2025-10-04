@@ -33,14 +33,45 @@ if %ERRORLEVEL%==0 (
 )
 
 rem Stop and delete the legacy SunshineSvc service (best-effort)
-net stop sunshinesvc >nul 2>&1
-for /L %%i in (1,1,15) do (
-  sc query sunshinesvc | findstr /C:"STATE" | findstr /C:"STOPPED" >nul 2>&1 && goto :legacy_stopped
-  timeout /t 1 >nul
-)
-:legacy_stopped
-sc delete sunshinesvc >nul 2>&1
+call :stop_and_delete_service sunshinesvc 15
 
 rem Stop and delete the new ApolloService service
-net stop ApolloService
-sc delete ApolloService
+call :stop_and_delete_service ApolloService 60
+
+goto :eof
+
+:stop_and_delete_service
+set "TARGET_SERVICE=%~1"
+set "WAIT_SECONDS=%~2"
+set "SERVICE_PID="
+
+if "%TARGET_SERVICE%"=="" goto :eof
+if not defined WAIT_SECONDS set "WAIT_SECONDS=30"
+
+sc query "%TARGET_SERVICE%" >nul 2>&1
+if errorlevel 1 goto :delete_service
+
+sc stop "%TARGET_SERVICE%" >nul 2>&1
+
+for /L %%i in (1,1,%WAIT_SECONDS%) do (
+    sc query "%TARGET_SERVICE%" | findstr /C:"STATE" | findstr /C:"STOPPED" >nul 2>&1 && goto :delete_service
+    timeout /t 1 >nul
+)
+
+for /f "tokens=3" %%p in ('sc queryex "%TARGET_SERVICE%" ^| findstr /C:"PID"') do (
+    set "SERVICE_PID=%%p"
+)
+
+if defined SERVICE_PID (
+    if /I not "!SERVICE_PID!"=="0" (
+        taskkill /pid !SERVICE_PID! /f >nul 2>&1
+        timeout /t 1 >nul
+    )
+)
+
+:delete_service
+sc delete "%TARGET_SERVICE%" >nul 2>&1
+set "TARGET_SERVICE="
+set "WAIT_SECONDS="
+set "SERVICE_PID="
+goto :eof

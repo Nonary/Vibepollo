@@ -10,11 +10,6 @@ install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
-if (TARGET sunshinesvc)
-    install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
-endif()
-
-
 # Helpers and tools
 # - Playnite launcher helper used for Playnite-managed app launches
 # - WGC capture helper used by the WGC display backend

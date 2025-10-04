@@ -60,49 +60,10 @@ if /i "%~1"=="add" (
 
 rem Check if removing from path
 if /i "%~1"=="remove" (
-    set "CHANGES_MADE=0"
+    set "REMOVE0=!PATHS_TO_MANAGE[0]!"
+    set "REMOVE1=!PATHS_TO_MANAGE[1]!"
 
-    rem Process each directory to remove
-    for /L %%i in (0,1,1) do (
-        set "DIR_TO_REMOVE=!PATHS_TO_MANAGE[%%i]!"
-
-        rem Check if path contains this directory
-        echo "!CURRENT_PATH!" | findstr /i /c:"!DIR_TO_REMOVE!" > nul
-        if !ERRORLEVEL!==0 (
-            echo Removing from path: !DIR_TO_REMOVE!
-
-            rem Build a new path by parsing and filtering the current path
-            set "NEW_PATH="
-            for %%p in ("!CURRENT_PATH:;=" "!") do (
-                set "PART=%%~p"
-                if /i "!PART!" NEQ "!DIR_TO_REMOVE!" (
-                    if defined NEW_PATH (
-                        set "NEW_PATH=!NEW_PATH!;!PART!"
-                    ) else (
-                        set "NEW_PATH=!PART!"
-                    )
-                )
-            )
-
-            set "CURRENT_PATH=!NEW_PATH!"
-            set "CHANGES_MADE=1"
-        ) else (
-            echo !DIR_TO_REMOVE! not found in path
-        )
-    )
-
-    rem Only update if path was changed
-    if "!CHANGES_MADE!"=="1" (
-        rem Set the new path in the registry
-        reg add "%KEY_NAME%" /v "%VALUE_NAME%" /t REG_EXPAND_SZ /d "!CURRENT_PATH!" /f
-        if !ERRORLEVEL!==0 (
-            echo Successfully removed Apollo directories from PATH
-        ) else (
-            echo Failed to remove Apollo directories from PATH
-        )
-    ) else (
-        echo No changes needed to PATH
-    )
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $key='HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'; $pathValue=(Get-ItemProperty -Path $key -Name 'Path').Path; $entries = if ($pathValue) { $pathValue -split ';' } else { @() }; $targets = @($env:REMOVE0, $env:REMOVE1) | Where-Object { $_ -and $_.Trim() -ne '' }; $kept = [System.Collections.Generic.List[string]]::new(); $removed = [System.Collections.Generic.List[string]]::new(); foreach ($entry in $entries) { if ([string]::IsNullOrWhiteSpace($entry)) { continue }; if ($targets -contains $entry) { $removed.Add($entry) } else { $kept.Add($entry) } } if ($removed.Count -gt 0) { Set-ItemProperty -Path $key -Name 'Path' -Value ($kept -join ';'); foreach ($entry in $removed) { Write-Output ('Removing from path: ' + $entry) }; Write-Output 'Successfully removed Apollo directories from PATH' } else { Write-Output 'No changes needed to PATH' }; exit 0 } catch { Write-Output 'Failed to remove Apollo directories from PATH'; Write-Output $_.Exception.Message; exit 1 }"
     exit /b !ERRORLEVEL!
 )
 

@@ -29,7 +29,45 @@
 
   </Fragment>
 
-  <!-- Legacy service cleanup handled by service scripts; no WiX-authored service components necessary -->
+  <!-- Define a stable tools directory under INSTALL_ROOT for WiX-authored payloads -->
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Directory Id="DIR_Tools" Name="tools"/>
+    </DirectoryRef>
+  </Fragment>
+
+  <!-- Control legacy service names separate from primary service component -->
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="CtlStopApolloLegacy" Guid="{640D87CF-69A4-4F54-AE29-941F78D020B2}" KeyPath="yes">
+        <CreateFolder/>
+        <ServiceControl Id="SC_StopLegacyApollo" Name="sunshinesvc" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <!-- Author the Apollo service installation under INSTALL_ROOT\\tools -->
+  <Fragment>
+    <DirectoryRef Id="DIR_Tools">
+      <Component Id="ApolloSvc" Guid="{CBA8A3D9-5A2A-4F76-9923-5B23D1EDFBB6}">
+        <File Id="ApolloSvcExe" Source="!(bindpath.PayloadRoot)tools\\sunshinesvc.exe" KeyPath="yes" />
+        <ServiceInstall
+            Id="ApolloServiceInstall"
+            Name="ApolloService"
+            DisplayName="Apollo Service"
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Arguments="--service" />
+        <ServiceControl Id="StartApolloService"
+            Name="ApolloService"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
 
   <Fragment>
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
@@ -37,8 +75,6 @@
     <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="AddFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="InstallService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="AutostartService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
     <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -51,9 +87,9 @@
     <CustomAction Id="StartSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
     <!-- Quiet process kill and service removal for manual uninstalls -->
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UninstallService" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
@@ -80,14 +116,6 @@
     <CustomAction Id="SetAddFirewallRule"
                  Property="AddFirewallRule"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\add-firewall-rule.bat&quot;&quot;"/>
-
-    <CustomAction Id="SetInstallService"
-                 Property="InstallService"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\install-service.bat&quot;&quot;"/>
-
-    <CustomAction Id="SetAutostartService"
-                 Property="AutostartService"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\autostart-service.bat&quot;&quot;"/>
 
     <!-- Immediate setter for pruning installed web assets directory before file copy -->
     <CustomAction Id="SetPruneWebDir"
@@ -136,9 +164,9 @@
                  Property="RemoveFirewallRule"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\delete-firewall-rule.bat&quot;&quot;"/>
 
-    <CustomAction Id="SetUninstallService"
-                 Property="UninstallService"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\uninstall-service.bat&quot;&quot;"/>
+    <CustomAction Id="SetRemoveServiceQuiet"
+                 Property="RemoveServiceQuiet"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;&amp; { sc.exe delete 'ApolloService' | Out-Null; sc.exe delete 'SunshineService' | Out-Null; sc.exe delete 'sunshinesvc' | Out-Null }&quot;"/>
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />

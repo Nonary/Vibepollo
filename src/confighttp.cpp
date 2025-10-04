@@ -934,6 +934,7 @@ namespace confighttp {
 
       // Read the input JSON from the request body.
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+      const int index = input_tree.at("index").get<int>();  // intentionally throws if the provided value is missing or the wrong type
 
       // Read the existing apps file.
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
@@ -967,8 +968,6 @@ namespace confighttp {
 #endif
 
       auto &apps_node = file_tree["apps"];
-      int index = input_tree["index"].get<int>();  // this will intentionally cause exception if the provided value is the wrong type
-
       input_tree.erase("index");
 
       if (index == -1) {
