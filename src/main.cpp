@@ -28,6 +28,7 @@
 
 #ifdef _WIN32
   #include "platform/windows/misc.h"
+  #include "platform/windows/display_helper_integration.h"
   #include "platform/windows/virtual_display.h"
 #endif
 
@@ -345,8 +346,44 @@ int main(int argc, char *argv[]) {
   if (video::probe_encoders()) {
 #ifdef _WIN32
     bool allow_probing = video::allow_encoder_probing();
-    // Create a temporary virtual display for encoder capability probing
-    if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+    using dd_config_option_e = config::video_t::dd_t::config_option_e;
+    const auto dd_option = config::video.dd.configuration_option;
+    const bool dd_available = dd_option != dd_config_option_e::disabled && !config::video.headless_mode;
+
+    bool encoder_recovered = false;
+    bool dd_bootstrap_applied = false;
+
+    if (dd_available) {
+      rtsp_stream::launch_session_t dd_probe_session {};
+      dd_probe_session.width = 1920;
+      dd_probe_session.height = 1080;
+      dd_probe_session.fps = 60000;
+      dd_probe_session.enable_sops = true;
+      dd_probe_session.enable_hdr = false;
+      dd_probe_session.scale_factor = 100;
+      dd_probe_session.virtual_display = false;
+      dd_probe_session.device_name = "Display Helper Probe";
+      dd_probe_session.unique_id = PROBE_DISPLAY_UUID;
+
+      BOOST_LOG(info) << "Display helper bootstrap requested for encoder probing."sv;
+      dd_bootstrap_applied = display_helper_integration::apply_from_session(config::video, dd_probe_session);
+      if (dd_bootstrap_applied) {
+        if (!video::probe_encoders()) {
+          encoder_recovered = true;
+        } else {
+          BOOST_LOG(warning) << "Encoder probe still failing after display helper bootstrap."sv;
+        }
+      } else {
+        BOOST_LOG(info) << "Display helper bootstrap unavailable; continuing with virtual display fallback if needed."sv;
+      }
+    }
+
+    if (dd_bootstrap_applied) {
+      display_helper_integration::revert();
+    }
+
+    // Create a temporary virtual display for encoder capability probing if display helper could not recover
+    if (!encoder_recovered && proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
       std::string probe_uuid_str = PROBE_DISPLAY_UUID;
       auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
       auto *probe_guid = (GUID *) (void *) &probe_uuid;
@@ -375,10 +412,12 @@ int main(int argc, char *argv[]) {
         } else {
           BOOST_LOG(error) << "Video failed to find working encoder even after attempted with a virtual display"sv;
         }
+      } else {
+        encoder_recovered = true;
       }
 
       VDISPLAY::removeVirtualDisplay(*probe_guid);
-    } else if (!allow_probing) {
+    } else if (!encoder_recovered && !allow_probing) {
       BOOST_LOG(error) << "Video failed to find working encoder: probe failed and virtual display driver isn't initialized"sv;
     }
 #else

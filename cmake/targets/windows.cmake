@@ -14,18 +14,19 @@ add_custom_target(copy_playnite_plugin ALL
         COMMENT "Copying Playnite plugin sources")
 add_dependencies(sunshine copy_playnite_plugin)
 
-# Ensure the Windows display helper is built and placed next to the Sunshine binary
-# so the runtime launcher can find it reliably.
+# Ensure the Windows display helper is built and staged under the Sunshine tools
+# directory so the runtime launcher can find it reliably.
 if (TARGET sunshine_display_helper)
     # Build helper before sunshine to make the copy step reliable
     add_dependencies(sunshine sunshine_display_helper)
 
-    # Copy helper next to the sunshine executable after build
+    # Copy helper into the tools directory next to the sunshine executable after build
     add_custom_command(TARGET sunshine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:sunshine>/tools"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:sunshine_display_helper>
-                $<TARGET_FILE_DIR:sunshine>
-        COMMENT "Copying sunshine_display_helper next to Sunshine binary")
+                "$<TARGET_FILE_DIR:sunshine>/tools"
+        COMMENT "Copying sunshine_display_helper into tools directory")
 endif()
 
 # Enable libdisplaydevice logging in the main Sunshine binary only

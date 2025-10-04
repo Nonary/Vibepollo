@@ -97,6 +97,7 @@ function toOptions() {
     id?: string;
     isVirtual?: boolean;
     isIsolated?: boolean;
+    hideIdentifier?: boolean;
   }> = [
     {
       label: outputNameDefaultLabel.value,
@@ -107,32 +108,30 @@ function toOptions() {
   ];
 
   for (const d of devices.value) {
-    // Prefer a human-friendly name for the first line, fall back to display_name
     const displayName = d.friendly_name || d.display_name || 'Display';
-    // For the ID line prefer device_id, fall back to the raw display_name
     const guid = d.device_id || '';
     const dispName = d.display_name || '';
-    const id = guid || dispName;
-    // Compose label to include identifying info even if slots are not applied
+    const hideIdentifier = Boolean(d.is_virtual);
+    const composedId = hideIdentifier ? '' : (guid && dispName ? `${guid} - ${dispName}` : guid || dispName);
     const parts: string[] = [displayName];
-    if (guid) parts.push(guid);
-    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
-    const label = parts.join(' — ');
-    // Only include entries that can be selected by config: prefer device_id, else display_name
+    if (!hideIdentifier && guid) parts.push(guid);
+    if (!hideIdentifier && dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    const label = parts.join(' - ');
     const value = d.device_id || d.display_name || '';
     if (value)
       opts.push({
         label,
         value,
         displayName,
-        id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
+        id: composedId || undefined,
         isVirtual: d.is_virtual ?? undefined,
         isIsolated: d.is_isolated ?? undefined,
+        hideIdentifier: hideIdentifier || undefined,
       });
   }
-
   return opts;
 }
+
 </script>
 
 <template>
@@ -174,7 +173,7 @@ function toOptions() {
                   Isolated
                 </span>
               </div>
-              <div class="text-[12px] opacity-60 font-mono">
+              <div v-if="!slot.option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
                 {{ slot.option?.id || slot.option?.value }}
               </div>
             </div>
@@ -198,7 +197,7 @@ function toOptions() {
                   Isolated
                 </span>
               </div>
-              <div class="text-[12px] opacity-60 font-mono">
+              <div v-if="!slot.option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
                 {{ slot.option?.id || slot.option?.value }}
               </div>
             </div>

@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { useI18n } from 'vue-i18n';
-import { NInput, NInputNumber, NSelect, NButton, NModal, NCard, NTag } from 'naive-ui';
-import { http } from '@/http';
+import { NInputNumber, NSelect } from 'naive-ui';
 
 const store = useConfigStore();
 const config = store.config;
@@ -18,14 +17,21 @@ const av1ModeOptions = [0, 1, 2, 3].map((v) => ({ labelKey: `config.av1_mode_${v
     <!-- FEC Percentage -->
     <div class="mb-6">
       <label for="fec_percentage" class="form-label">{{ $t('config.fec_percentage') }}</label>
-      <n-input-number id="fec_percentage" v-model:value="config.fec_percentage" placeholder="20" />
+      <n-input-number
+        id="fec_percentage"
+        v-model:value="config.fec_percentage"
+        :min="1"
+        :max="255"
+        :step="1"
+        placeholder="20"
+      />
       <div class="form-text">{{ $t('config.fec_percentage_desc') }}</div>
     </div>
 
     <!-- Quantization Parameter -->
     <div class="mb-6">
       <label for="qp" class="form-label">{{ $t('config.qp') }}</label>
-      <n-input-number id="qp" v-model:value="config.qp" placeholder="28" />
+      <n-input-number id="qp" v-model:value="config.qp" :min="0" :step="1" placeholder="28" />
       <div class="form-text">{{ $t('config.qp_desc') }}</div>
     </div>
 

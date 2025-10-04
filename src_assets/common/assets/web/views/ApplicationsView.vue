@@ -100,6 +100,7 @@
             v-for="(app, i) in orderedApps"
             :key="appKey(app, i)"
             class="relative"
+            :ref="(el) => setRowRef(el, i)"
             @dragover.prevent="handleDragOver(i, $event)"
             @drop.prevent="handleDrop($event)"
           >
@@ -122,6 +123,7 @@
                 <div
                   class="drag-handle"
                   @click.stop
+                  @pointerdown="handlePointerDown(i, $event)"
                   :aria-label="$t('apps.drag_handle_label')"
                   tabindex="-1"
                   role="button"
@@ -274,7 +276,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, watch, defineAsyncComponent } from 'vue';
 const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
@@ -300,6 +302,18 @@ const reorderSaving = ref(false);
 const draggingIndex = ref<number | null>(null);
 const dragInsertIndex = ref<number | null>(null);
 const suppressClick = ref(false);
+const rowRefs = ref<(HTMLElement | null)[]>([]);
+
+type PointerDragState = {
+  pointerId: number;
+  startY: number;
+  index: number;
+  started: boolean;
+  source: HTMLElement | null;
+};
+
+const pointerDrag = ref<PointerDragState | null>(null);
+let pointerListenersAttached = false;
 
 watch(
   apps,
@@ -360,7 +374,12 @@ const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
 const currentIndex = ref<number | null>(-1);
 
+function setRowRef(el: Element | null, index: number): void {
+  rowRefs.value[index] = el instanceof HTMLElement ? el : null;
+}
+
 function resetDragState(): void {
+  cleanupPointerDrag();
   draggingIndex.value = null;
   dragInsertIndex.value = null;
   window.setTimeout(() => {
@@ -443,6 +462,105 @@ function handleDrop(event: DragEvent): void {
 
 function handleDragEnd(): void {
   resetDragState();
+}
+
+function handlePointerDown(index: number, event: PointerEvent): void {
+  if (event.pointerType === 'mouse') return;
+  if (reorderSaving.value) return;
+  if (pointerDrag.value) return;
+  pointerDrag.value = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    index,
+    started: false,
+    source: event.currentTarget instanceof HTMLElement ? event.currentTarget : null,
+  };
+  event.preventDefault();
+  attachPointerListeners();
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+}
+
+function handlePointerMove(event: PointerEvent): void {
+  const state = pointerDrag.value;
+  if (!state || event.pointerId !== state.pointerId) return;
+  const delta = event.clientY - state.startY;
+  if (!state.started) {
+    if (Math.abs(delta) < 6) return;
+    state.started = true;
+    draggingIndex.value = state.index;
+    dragInsertIndex.value = state.index;
+    suppressClick.value = true;
+  }
+  event.preventDefault();
+  updatePointerInsertIndex(event.clientY);
+}
+
+function handlePointerRelease(event: PointerEvent): void {
+  const state = pointerDrag.value;
+  if (!state || event.pointerId !== state.pointerId) return;
+  const started = state.started;
+  cleanupPointerDrag();
+  if (started) {
+    event.preventDefault();
+    applyReorder();
+  } else {
+    resetDragState();
+  }
+}
+
+function handlePointerCancel(event: PointerEvent): void {
+  const state = pointerDrag.value;
+  if (!state || event.pointerId !== state.pointerId) return;
+  cleanupPointerDrag();
+  resetDragState();
+}
+
+function updatePointerInsertIndex(clientY: number): void {
+  const rows = rowRefs.value
+    .map((el, idx) => ({ el, idx }))
+    .filter((item): item is { el: HTMLElement; idx: number } => item.el instanceof HTMLElement);
+  if (!rows.length) return;
+  let position = rows[rows.length - 1]!.idx + 1;
+  for (const { el, idx } of rows) {
+    const rect = el.getBoundingClientRect();
+    const midpoint = rect.top + rect.height / 2;
+    if (clientY < midpoint) {
+      position = idx;
+      break;
+    }
+  }
+  const maxPosition = orderedApps.value.length;
+  if (position > maxPosition) {
+    position = maxPosition;
+  }
+  if (dragInsertIndex.value !== position) {
+    dragInsertIndex.value = position;
+  }
+}
+
+function attachPointerListeners(): void {
+  if (pointerListenersAttached) return;
+  pointerListenersAttached = true;
+  window.addEventListener('pointermove', handlePointerMove, { passive: false });
+  window.addEventListener('pointerup', handlePointerRelease);
+  window.addEventListener('pointercancel', handlePointerCancel);
+}
+
+function detachPointerListeners(): void {
+  if (!pointerListenersAttached) return;
+  pointerListenersAttached = false;
+  window.removeEventListener('pointermove', handlePointerMove);
+  window.removeEventListener('pointerup', handlePointerRelease);
+  window.removeEventListener('pointercancel', handlePointerCancel);
+}
+
+function cleanupPointerDrag(): void {
+  const state = pointerDrag.value;
+  if (state?.source) {
+    state.source.releasePointerCapture?.(state.pointerId);
+  }
+  pointerDrag.value = null;
+  detachPointerListeners();
 }
 
 function resetOrder(): void {
@@ -607,6 +725,10 @@ auth.onLogin(() => {
   playniteStatusReady.value = false;
   void fetchPlayniteStatus();
 });
+
+onBeforeUnmount(() => {
+  cleanupPointerDrag();
+});
 </script>
 <style scoped>
 .main-btn {
@@ -673,9 +795,9 @@ auth.onLogin(() => {
 }
 
 .app-icon-container {
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: 0.8rem;
+  width: 2.25rem;
+  aspect-ratio: 2 / 3;
+  border-radius: 0.65rem;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.08);
   display: flex;

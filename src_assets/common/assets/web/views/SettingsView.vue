@@ -401,106 +401,181 @@ watch(
 function buildSearchIndex() {
   const root = mainEl.value;
   if (!root) return;
-  const items = [];
-  for (const sec of Array.from(root.querySelectorAll('section[id]'))) {
+  const items = [] as Array<{
+    sectionId: string | null;
+    label: string;
+    path: string;
+    el: Element;
+    desc?: string;
+    options?: Array<{ text: string; value: string }>;
+    optionsText?: string;
+  }>;
+  const seen = new Set<string>();
+  const selectorTargets =
+    'input,select,textarea,.form-control,.n-input,.n-select,.n-input-number,.n-checkbox input,.n-switch input,[contenteditable="true"]';
+
+  const sections = Array.from(root.querySelectorAll('section[id]')) as HTMLElement[];
+
+  const isDescClass = (cls?: string | null) =>
+    !!cls && (cls.includes('text-[11px]') || cls.includes('form-text') || cls.includes('text-xs'));
+
+  const extractDescription = (sourceEl: Element | null, explicit?: string) => {
+    if (explicit && explicit.trim().length) return explicit.trim();
+    if (!sourceEl) return '';
+    let descText = '';
+    try {
+      const container = sourceEl.parentElement;
+      if (container) {
+        const candidate = Array.from(container.querySelectorAll('div,p,small')).find(
+          (d) => d !== sourceEl && isDescClass(d.className) && d.textContent.trim().length > 0,
+        );
+        if (candidate) descText = candidate.textContent.trim();
+      }
+      if (!descText) {
+        let sib = sourceEl.nextElementSibling;
+        let steps = 0;
+        while (sib && steps < 6) {
+          if (isDescClass(sib.className) && sib.textContent.trim()) {
+            descText = sib.textContent.trim();
+            break;
+          }
+          sib = sib.nextElementSibling;
+          steps++;
+        }
+      }
+    } catch (err) {
+      console.warn('buildSearchIndex: description extraction failed', err);
+    }
+    return descText;
+  };
+
+  const resolveTarget = (
+    sectionEl: HTMLElement,
+    sourceEl: Element | null,
+    forId?: string | null,
+    targetOverride?: Element | null,
+  ) => {
+    if (targetOverride) return targetOverride;
+    let target: Element | null = null;
+    const lookupId = forId || sourceEl?.getAttribute?.('data-search-target') || null;
+    if (lookupId) {
+      try {
+        target = sectionEl.querySelector('#' + CSS.escape(lookupId));
+      } catch (err) {
+        console.warn('buildSearchIndex: CSS.escape lookup failed', err);
+      }
+    }
+    if (!target && sourceEl) {
+      const container = sourceEl.closest?.('div') || sourceEl.parentElement;
+      if (container) {
+        target = container.querySelector(selectorTargets);
+        if (!target) target = container.querySelector('.n-checkbox, .n-switch');
+      }
+      if (!target) target = sourceEl.querySelector?.(selectorTargets) || null;
+    }
+    if (!target && lookupId) {
+      target = sectionEl.querySelector(selectorTargets + `[name="${lookupId}"]`);
+    }
+    if (!target && sourceEl) {
+      target = sourceEl.closest?.('.n-checkbox, .n-switch') || null;
+    }
+    return target;
+  };
+
+  const extractOptions = (target: Element | null, sourceEl: Element | null) => {
+    let optionsList: Array<{ text: string; value: string }> = [];
+    let optionsText = '';
+    const optionSource = target?.closest?.('[data-search-options]') || target || sourceEl;
+    try {
+      if (target && target.tagName && target.tagName.toLowerCase() === 'select') {
+        optionsList = Array.from(target.querySelectorAll('option')).map((o) => ({
+          text: (o.textContent || '').trim(),
+          value: (o as HTMLInputElement).value?.trim() || '',
+        }));
+      }
+      if ((!optionsList || optionsList.length === 0) && optionSource) {
+        const ds = optionSource.getAttribute?.('data-search-options') || '';
+        if (ds && typeof ds === 'string') {
+          optionsList = ds
+            .split('|')
+            .map((chunk) => chunk.trim())
+            .filter(Boolean)
+            .map((pair) => {
+              const [textRaw, valRaw] = pair.split('::');
+              const text = (textRaw || '').trim();
+              const value = (valRaw || '').trim();
+              return { text, value };
+            })
+            .filter((o) => o.text || o.value);
+        }
+      }
+      if (optionsList && optionsList.length) {
+        optionsText = optionsList
+          .map((o) => `${o.text || ''} ${o.value || ''}`.trim())
+          .filter(Boolean)
+          .join(' | ');
+      }
+    } catch (err) {
+      optionsList = [];
+      optionsText = '';
+      console.warn('buildSearchIndex: options extraction failed', err);
+    }
+    return { optionsList, optionsText };
+  };
+
+  const register = (
+    sectionEl: HTMLElement,
+    sectionId: string | null,
+    sectionTitle: string,
+    labelText: string,
+    sourceEl: Element | null,
+    explicitDesc?: string,
+    targetOverride?: Element | null,
+  ) => {
+    const label = (labelText || '').trim();
+    if (!label) return;
+    const target = resolveTarget(sectionEl, sourceEl, sourceEl?.getAttribute?.('for'), targetOverride);
+    if (!target) return;
+    const key = `${sectionId ?? 'unknown'}::${label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const desc = extractDescription(sourceEl, explicitDesc);
+    const { optionsList, optionsText } = extractOptions(target, sourceEl);
+    items.push({
+      sectionId,
+      label,
+      path: `${sectionTitle} › ${label}`,
+      el: target,
+      desc,
+      options: optionsList,
+      optionsText,
+    });
+  };
+
+  for (const sec of sections) {
     const sectionId = sec.getAttribute('id');
-    const sectionTitle = sec.querySelector('h3')?.textContent?.trim() || sectionId;
+    const sectionTitle = sec.querySelector('h3')?.textContent?.trim() || sectionId || '';
     for (const lbl of Array.from(sec.querySelectorAll('label'))) {
-      const text = (lbl.textContent || '').trim();
-      if (!text) continue;
-      const forId = lbl.getAttribute('for');
-      let target = null;
-      if (forId) {
+      register(sec, sectionId, sectionTitle, lbl.textContent || '', lbl);
+    }
+    for (const proxy of Array.from(sec.querySelectorAll('[data-search-label]'))) {
+      const label = proxy.getAttribute('data-search-label') || '';
+      const desc = proxy.getAttribute('data-search-desc') || '';
+      const defText = proxy.getAttribute('data-search-default') || '';
+      const combinedDesc = [desc, defText].filter((part) => part && part.trim().length).join(' ');
+      let target: Element | null = null;
+      const targetId = proxy.getAttribute('data-search-target');
+      if (targetId) {
         try {
-          target = sec.querySelector('#' + CSS.escape(forId));
+          target = sec.querySelector('#' + CSS.escape(targetId));
         } catch (err) {
           console.warn('buildSearchIndex: CSS.escape lookup failed', err);
         }
       }
-      if (!target)
-        target = lbl.closest('div')?.querySelector('input,select,textarea,.form-control');
-      // Attempt to locate a descriptor/description element associated with this label.
-      let descText = '';
-      try {
-        const isDescClass = (cls) =>
-          !!cls &&
-          (cls.includes('text-[11px]') || cls.includes('form-text') || cls.includes('text-xs'));
-        // First search within the immediate container for a small description div.
-        const container = lbl.parentElement;
-        if (container) {
-          const candidate = Array.from(container.querySelectorAll('div,p,small')).find(
-            (d) => d !== lbl && isDescClass(d.className) && d.textContent.trim().length > 0,
-          );
-          if (candidate) descText = candidate.textContent.trim();
-        }
-        // Fallback: look at following siblings up to a few steps
-        if (!descText) {
-          let sib = lbl.nextElementSibling;
-          let steps = 0;
-          while (sib && steps < 6) {
-            if (isDescClass(sib.className) && sib.textContent.trim()) {
-              descText = sib.textContent.trim();
-              break;
-            }
-            sib = sib.nextElementSibling;
-            steps++;
-          }
-        }
-      } catch (err) {
-        console.warn('buildSearchIndex: description extraction failed', err);
-      }
-      // If the control is a select, gather option texts/values to allow matching
-      let optionsList = [];
-      let optionsText = '';
-      try {
-        if (target && target.tagName && target.tagName.toLowerCase() === 'select') {
-          optionsList = Array.from(target.querySelectorAll('option')).map((o) => ({
-            text: (o.textContent || '').trim(),
-            value: (o.value || '').trim(),
-          }));
-        }
-        // Also support virtual selects (e.g., Naive UI NSelect) via a data attribute
-        // data-search-options="Label::value|Label2::value2|..."
-        if ((!optionsList || optionsList.length === 0) && target) {
-          const ds = target.getAttribute?.('data-search-options') || '';
-          if (ds && typeof ds === 'string') {
-            optionsList = ds
-              .split('|')
-              .map((chunk) => chunk.trim())
-              .filter(Boolean)
-              .map((pair) => {
-                const [textRaw, valRaw] = pair.split('::');
-                const text = (textRaw || '').trim();
-                const value = (valRaw || '').trim();
-                return { text, value };
-              })
-              .filter((o) => o.text || o.value);
-          }
-        }
-        if (optionsList && optionsList.length) {
-          optionsText = optionsList
-            .map((o) => `${o.text || ''} ${o.value || ''}`.trim())
-            .filter(Boolean)
-            .join(' | ');
-        }
-      } catch (err) {
-        optionsList = [];
-        optionsText = '';
-        console.warn('buildSearchIndex: options extraction failed', err);
-      }
-
-      if (target)
-        items.push({
-          sectionId,
-          label: text,
-          path: `${sectionTitle} › ${text}`,
-          el: target,
-          desc: descText,
-          options: optionsList,
-          optionsText,
-        });
+      register(sec, sectionId, sectionTitle, label, proxy, combinedDesc, target);
     }
   }
+
   searchIndex.value = items;
 }
 

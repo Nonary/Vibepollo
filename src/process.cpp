@@ -598,10 +598,15 @@ namespace proc {
 #ifdef _WIN32
     using dd_config_option_e = config::video_t::dd_t::config_option_e;
     const auto dd_config_option = config::video.dd.configuration_option;
+    const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
     const bool dd_conflicts_with_virtual_display =
       dd_config_option == dd_config_option_e::ensure_only_display &&
       dd_config_option != dd_config_option_e::disabled &&
       !config::video.headless_mode;
+
+    if (forced_sudavda_virtual_display) {
+      launch_session->virtual_display = true;
+    }
 
     bool should_use_virtual_display =
       config::video.headless_mode  // Headless mode
@@ -609,7 +614,7 @@ namespace proc {
       || _app.virtual_display  // App is configured to use virtual display
       || !video::allow_encoder_probing();  // No active display presents
 
-    if (should_use_virtual_display && dd_conflicts_with_virtual_display) {
+    if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
       if (launch_session->virtual_display || _app.virtual_display) {
         BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
       }
@@ -619,7 +624,18 @@ namespace proc {
         || !video::allow_encoder_probing();  // No active display presents
     }
 
-    if (should_use_virtual_display) {
+    // Try DD API first if enabled and not in headless mode
+    bool dd_api_handled = false;
+    if (!forced_sudavda_virtual_display && (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !config::video.headless_mode))) {
+      dd_api_handled = display_helper_integration::apply_from_session(config::video, *launch_session);
+      if (dd_api_handled) {
+        BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
+        should_use_virtual_display = false;
+      }
+    }
+
+    // Use SudoVDA as fallback only if DD API didn't handle it or is disabled
+    if (should_use_virtual_display && !dd_api_handled) {
       if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
         // Try init driver again
         initVDisplayDriver();
@@ -714,7 +730,10 @@ namespace proc {
       }
     }
 
-    display_helper_integration::apply_from_session(config::video, *launch_session);
+    // Call DD API again if it wasn't already called above
+    if (!dd_api_handled && !this->virtual_display) {
+      display_helper_integration::apply_from_session(config::video, *launch_session);
+    }
 
     // We should not preserve display state when using virtual display.
     // It is already handled by Windows properly.

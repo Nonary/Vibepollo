@@ -66,6 +66,44 @@ namespace {
     return config::video.dd.configuration_option != config_option_e::disabled;
   }
 
+  void terminate_stale_helpers() {
+    // Skip if we already manage a live helper process
+    if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
+      return;
+    }
+
+    const auto helper_pids = platf::dxgi::find_process_ids_by_name(L"sunshine_display_helper.exe");
+    if (helper_pids.empty()) {
+      return;
+    }
+
+    const DWORD current_pid = GetCurrentProcessId();
+    for (DWORD pid : helper_pids) {
+      if (pid == 0 || pid == current_pid) {
+        continue;
+      }
+
+      HANDLE proc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+      if (!proc) {
+        BOOST_LOG(warning) << "Display helper: unable to open stale process (pid=" << pid
+                           << ") for termination, error=" << GetLastError();
+        continue;
+      }
+
+      BOOST_LOG(info) << "Display helper: terminating stale process (pid=" << pid << ")";
+      if (!TerminateProcess(proc, 0)) {
+        BOOST_LOG(warning) << "Display helper: TerminateProcess failed for pid=" << pid
+                           << ", error=" << GetLastError();
+        CloseHandle(proc);
+        continue;
+      }
+
+      // Best-effort wait so the pipe endpoints are released before we spawn a new helper
+      (void) WaitForSingleObject(proc, 2000);
+      CloseHandle(proc);
+    }
+  }
+
   bool ensure_helper_started() {
     if (!dd_feature_enabled()) {
       return false;
@@ -100,6 +138,8 @@ namespace {
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
     }
+
+    terminate_stale_helpers();
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, module_path, _countof(module_path))) {
@@ -438,31 +478,19 @@ namespace display_helper_integration {
       const auto devices = dd.enumAvailableDevices();
       auto json_str = display_device::toJson(devices);
 
-      // Parse the JSON array and append SudaVDA displays if available
+      // Parse the JSON array and append SudaVDA option if available
       auto json_array = nlohmann::json::parse(json_str, nullptr, false);
       if (json_array.is_discarded() || !json_array.is_array()) {
         json_array = nlohmann::json::array();
       }
 
-      // Enumerate SudaVDA virtual displays and add them to the list
-      const auto sudavda_displays = VDISPLAY::enumerateSudaVDADisplays();
-      for (const auto &vd : sudavda_displays) {
+      if (VDISPLAY::isSudaVDADriverInstalled()) {
         nlohmann::json vd_entry;
-        vd_entry["device_id"] = "";  // No GUID for virtual displays
-        vd_entry["display_name"] = platf::to_utf8(vd.device_name);
-        vd_entry["friendly_name"] = platf::to_utf8(vd.friendly_name) + " (SudaVDA Virtual)";
+        vd_entry["device_id"] = VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+        vd_entry["friendly_name"] = "SudaVDA Virtual Display";
         vd_entry["is_virtual"] = true;
         vd_entry["is_isolated"] = true;
-
-        if (vd.is_active && vd.width > 0 && vd.height > 0) {
-          vd_entry["info"] = {
-            {"width", vd.width},
-            {"height", vd.height},
-            {"active", true}
-          };
-        }
-
-        json_array.push_back(vd_entry);
+        json_array.push_back(std::move(vd_entry));
       }
 
       return json_array.dump();

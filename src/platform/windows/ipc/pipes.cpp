@@ -157,9 +157,10 @@ namespace platf::dxgi {
     return true;
   }
 
-  bool NamedPipeFactory::build_access_control_list(bool isSystem, SECURITY_DESCRIPTOR &desc, PSID raw_user_sid, PSID system_sid, PACL *out_pacl) const {
+  bool NamedPipeFactory::build_access_control_list(bool /*isSystem*/, SECURITY_DESCRIPTOR &desc, PSID raw_user_sid, PSID system_sid, PACL *out_pacl) const {
     std::vector<EXPLICIT_ACCESS> eaList;
-    if (isSystem) {
+
+    if (system_sid) {
       EXPLICIT_ACCESS eaSys {};
       eaSys.grfAccessPermissions = GENERIC_ALL;
       eaSys.grfAccessMode = SET_ACCESS;
@@ -168,8 +169,14 @@ namespace platf::dxgi {
       eaSys.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
       eaSys.Trustee.ptstrName = (LPTSTR) system_sid;
       eaList.push_back(eaSys);
+    }
 
-      EXPLICIT_ACCESS eaUser = eaSys;
+    if (raw_user_sid) {
+      EXPLICIT_ACCESS eaUser {};
+      eaUser.grfAccessPermissions = GENERIC_ALL;
+      eaUser.grfAccessMode = SET_ACCESS;
+      eaUser.grfInheritance = NO_INHERITANCE;
+      eaUser.Trustee.TrusteeForm = TRUSTEE_IS_SID;
       eaUser.Trustee.TrusteeType = TRUSTEE_IS_USER;
       eaUser.Trustee.ptstrName = (LPTSTR) raw_user_sid;
       eaList.push_back(eaUser);
@@ -217,7 +224,7 @@ namespace platf::dxgi {
       }
     }
 
-    if (!security_configured && platf::dxgi::is_running_as_system()) {
+    if (!security_configured) {
       if (!create_security_descriptor(secDesc, &rawDacl)) {
         BOOST_LOG(error) << "Failed to init security descriptor";
         return nullptr;
