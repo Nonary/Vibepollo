@@ -1,124 +1,174 @@
-<script setup>
-import { ref } from 'vue'
-import Checkbox from "../../../Checkbox.vue";
+<script setup lang="ts">
+import { ref, computed } from 'vue';
+import Checkbox from '@/Checkbox.vue';
+import { useConfigStore } from '@/stores/config';
+import { useI18n } from 'vue-i18n';
+import { NSelect, NInputNumber } from 'naive-ui';
 
-const props = defineProps([
-  'platform',
-  'config',
-])
-
-const config = ref(props.config)
+const store = useConfigStore();
+const config = store.config;
+const platform = computed(() => config.value?.platform || '');
+const { t } = useI18n();
+const presetOptions = [
+  { label: () => `P1 ${t('config.nvenc_preset_1')}`, value: 1 },
+  { label: 'P2', value: 2 },
+  { label: 'P3', value: 3 },
+  { label: () => `P4 ${t('config.nvenc_preset_4')}`, value: 4 },
+  { label: 'P5', value: 5 },
+  { label: 'P6', value: 6 },
+  { label: () => `P7 ${t('config.nvenc_preset_7')}`, value: 7 },
+];
+const twopassOptions = [
+  { labelKey: 'config.nvenc_twopass_disabled', value: 'disabled' },
+  { labelKey: 'config.nvenc_twopass_quarter_res', value: 'quarter_res' },
+  { labelKey: 'config.nvenc_twopass_full_res', value: 'full_res' },
+];
 </script>
 
 <template>
   <div id="nvidia-nvenc-encoder" class="config-page">
+    <header class="section-header">
+      <h3 class="text-sm font-medium">
+        {{ $t('config.nvenc_section_title') || 'NVIDIA NVENC Encoder' }}
+      </h3>
+      <p
+        class="text-xs opacity-70 mt-1"
+        v-if="$t('config.nvenc_section_desc') !== 'config.nvenc_section_desc'"
+      >
+        {{ $t('config.nvenc_section_desc') }}
+      </p>
+    </header>
     <!-- Performance preset -->
-    <div class="mb-3">
+    <div class="mb-4">
       <label for="nvenc_preset" class="form-label">{{ $t('config.nvenc_preset') }}</label>
-      <select id="nvenc_preset" class="form-select" v-model="config.nvenc_preset">
-        <option value="1">P1 {{ $t('config.nvenc_preset_1') }}</option>
-        <option value="2">P2</option>
-        <option value="3">P3</option>
-        <option value="4">P4</option>
-        <option value="5">P5</option>
-        <option value="6">P6</option>
-        <option value="7">P7 {{ $t('config.nvenc_preset_7') }}</option>
-      </select>
-      <div class="form-text">{{ $t('config.nvenc_preset_desc') }}</div>
+      <n-select
+        id="nvenc_preset"
+        v-model:value="config.nvenc_preset"
+        :options="
+          presetOptions.map((o) => ({
+            label: typeof o.label === 'function' ? o.label() : o.label,
+            value: o.value,
+          }))
+        "
+        :data-search-options="
+          presetOptions
+            .map((o) => `${typeof o.label === 'function' ? o.label() : o.label}::${o.value}`)
+            .join('|')
+        "
+      />
+      <p class="text-[11px] opacity-60 mt-1">
+        {{ $t('config.nvenc_preset_desc') }}
+      </p>
     </div>
 
     <!-- Two-pass mode -->
-    <div class="mb-3">
+    <div class="mb-4">
       <label for="nvenc_twopass" class="form-label">{{ $t('config.nvenc_twopass') }}</label>
-      <select id="nvenc_twopass" class="form-select" v-model="config.nvenc_twopass">
-        <option value="disabled">{{ $t('config.nvenc_twopass_disabled') }}</option>
-        <option value="quarter_res">{{ $t('config.nvenc_twopass_quarter_res') }}</option>
-        <option value="full_res">{{ $t('config.nvenc_twopass_full_res') }}</option>
-      </select>
-      <div class="form-text">{{ $t('config.nvenc_twopass_desc') }}</div>
+      <n-select
+        id="nvenc_twopass"
+        v-model:value="config.nvenc_twopass"
+        :options="twopassOptions.map((o) => ({ label: $t(o.labelKey), value: o.value }))"
+        :data-search-options="twopassOptions.map((o) => `${$t(o.labelKey)}::${o.value}`).join('|')"
+      />
+      <p class="text-[11px] opacity-60 mt-1">
+        {{ $t('config.nvenc_twopass_desc') }}
+      </p>
     </div>
 
     <!-- Spatial AQ -->
-    <Checkbox class="mb-3"
-              id="nvenc_spatial_aq"
-              locale-prefix="config"
-              v-model="config.nvenc_spatial_aq"
-              default="false"
-    ></Checkbox>
+    <Checkbox
+      id="nvenc_spatial_aq"
+      v-model="config.nvenc_spatial_aq"
+      class="mb-3"
+      locale-prefix="config"
+      default="false"
+    />
 
     <!-- Single-frame VBV/HRD percentage increase -->
-    <div class="mb-3">
-      <label for="nvenc_vbv_increase" class="form-label">{{ $t('config.nvenc_vbv_increase') }}</label>
-      <input type="number" min="0" max="400" class="form-control" id="nvenc_vbv_increase" placeholder="0"
-             v-model="config.nvenc_vbv_increase" />
-      <div class="form-text">
-        {{ $t('config.nvenc_vbv_increase_desc') }}<br>
-        <br>
+    <div class="mb-4">
+      <label for="nvenc_vbv_increase" class="form-label">{{
+        $t('config.nvenc_vbv_increase')
+      }}</label>
+      <n-input-number
+        id="nvenc_vbv_increase"
+        v-model:value="config.nvenc_vbv_increase"
+        :min="0"
+        :max="400"
+        placeholder="0"
+      />
+      <p class="text-[11px] opacity-60 mt-1">
+        {{ $t('config.nvenc_vbv_increase_desc') }}<br />
+        <br />
         <a href="https://en.wikipedia.org/wiki/Video_buffering_verifier">VBV/HRD</a>
-      </div>
+      </p>
     </div>
 
     <!-- Miscellaneous options -->
-    <div class="mb-3 accordion">
-      <div class="accordion-item">
-        <h2 class="accordion-header">
-          <button class="accordion-button" type="button" data-bs-toggle="collapse"
-                  data-bs-target="#panelsStayOpen-collapseOne">
-            {{ $t('config.misc') }}
-          </button>
-        </h2>
-        <div id="panelsStayOpen-collapseOne" class="accordion-collapse collapse show"
-             aria-labelledby="panelsStayOpen-headingOne">
-          <div class="accordion-body">
-            <!-- NVENC Realtime HAGS priority -->
-            <Checkbox v-if="platform === 'windows'"
-                      class="mb-3"
-                      id="nvenc_realtime_hags"
-                      locale-prefix="config"
-                      v-model="config.nvenc_realtime_hags"
-                      default="true"
-            >
-              <br>
-              <br>
-              <a href="https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/">HAGS</a>
-            </Checkbox>
+    <div class="mb-4 rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
+      <div class="bg-surface/40 dark:bg-surface/30 px-4 py-3">
+        <h3 class="text-sm font-medium">
+          {{ $t('config.misc') }}
+        </h3>
+      </div>
+      <div class="p-4">
+        <!-- NVENC Realtime HAGS priority -->
+        <Checkbox
+          v-if="platform === 'windows'"
+          id="nvenc_realtime_hags"
+          v-model="config.nvenc_realtime_hags"
+          class="mb-3"
+          locale-prefix="config"
+          default="true"
+        >
+          <br />
+          <br />
+          <a href="https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/"
+            >HAGS</a
+          >
+        </Checkbox>
 
-            <!-- Prefer lower encoding latency over power savings -->
-            <Checkbox v-if="platform === 'windows'"
-                      class="mb-3"
-                      id="nvenc_latency_over_power"
-                      locale-prefix="config"
-                      v-model="config.nvenc_latency_over_power"
-                      default="true"
-            ></Checkbox>
+        <!-- Prefer lower encoding latency over power savings -->
+        <Checkbox
+          v-if="platform === 'windows'"
+          id="nvenc_latency_over_power"
+          v-model="config.nvenc_latency_over_power"
+          class="mb-3"
+          locale-prefix="config"
+          default="true"
+        />
 
-            <!-- Present OpenGL/Vulkan on top of DXGI -->
-            <Checkbox v-if="platform === 'windows'"
-                      class="mb-3"
-                      id="nvenc_opengl_vulkan_on_dxgi"
-                      locale-prefix="config"
-                      v-model="config.nvenc_opengl_vulkan_on_dxgi"
-                      default="true"
-            ></Checkbox>
+        <!-- Present OpenGL/Vulkan on top of DXGI -->
+        <Checkbox
+          v-if="platform === 'windows'"
+          id="nvenc_opengl_vulkan_on_dxgi"
+          v-model="config.nvenc_opengl_vulkan_on_dxgi"
+          class="mb-3"
+          locale-prefix="config"
+          default="true"
+        />
 
-            <!-- NVENC H264 CAVLC -->
-            <Checkbox class="mb-3"
-                      id="nvenc_h264_cavlc"
-                      locale-prefix="config"
-                      v-model="config.nvenc_h264_cavlc"
-                      default="false"
-            ></Checkbox>
+        <!-- NVENC H264 CAVLC -->
+        <Checkbox
+          id="nvenc_h264_cavlc"
+          v-model="config.nvenc_h264_cavlc"
+          class="mb-3"
+          locale-prefix="config"
+          default="false"
+        />
 
-            <!-- NVENC Intra Refresh -->
-            <div>
-              <label for="nvenc_h264_cavlc" class="form-label">{{ $t('config.nvenc_intra_refresh') }}</label>
-              <select id="nvenc_h264_cavlc" class="form-select" v-model="config.nvenc_intra_refresh">
-                <option value="disabled">{{ $t('_common.auto') }}</option>
-                <option value="enabled">{{ $t('_common.enabled') }}</option>
-              </select>
-              <div class="form-text">{{ $t('config.nvenc_intra_refresh_desc') }}</div>
-            </div>
-          </div>
+        <!-- NVENC Intra Refresh -->
+        <div class="mb-4">
+          <label for="nvenc_intra_refresh" class="form-label">{{ $t('config.nvenc_intra_refresh') }}</label>
+          <n-select
+            id="nvenc_intra_refresh"
+            v-model:value="config.nvenc_intra_refresh"
+            :options="[
+              { label: $t('_common.auto'), value: 'disabled' },
+              { label: $t('_common.enabled'), value: 'enabled' }
+            ]"
+            :data-search-options="[$t('_common.auto') + '::disabled', $t('_common.enabled') + '::enabled'].join('|')"
+          />
+          <p class="text-[11px] opacity-60 mt-1">{{ $t('config.nvenc_intra_refresh_desc') }}</p>
         </div>
       </div>
     </div>
@@ -126,5 +176,7 @@ const config = ref(props.config)
 </template>
 
 <style scoped>
-
+.section-header {
+  @apply mb-4;
+}
 </style>

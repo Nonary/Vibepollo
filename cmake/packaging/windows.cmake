@@ -4,26 +4,26 @@ install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 
-# ViGEmBus installer
-set(VIGEMBUS_INSTALLER "${CMAKE_BINARY_DIR}/vigembus_installer.exe")
-file(DOWNLOAD
-        "https://github.com/nefarius/ViGEmBus/releases/download/v1.21.442.0/ViGEmBus_1.21.442_x64_x86_arm64.exe"
-        ${VIGEMBUS_INSTALLER}
-        SHOW_PROGRESS
-        EXPECTED_HASH SHA256=155c50f1eec07bdc28d2f61a3e3c2c6c132fee7328412de224695f89143316bc
-        TIMEOUT 60
-)
-install(FILES ${VIGEMBUS_INSTALLER}
-        DESTINATION "scripts"
-        RENAME "vigembus_installer.exe"
-        COMPONENT gamepad)
+# ViGEmBus installer is no longer bundled or managed by the installer
 
 # Adding tools
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
-# Mandatory tools
-install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
+
+# Helpers and tools
+# - Playnite launcher helper used for Playnite-managed app launches
+# - WGC capture helper used by the WGC display backend
+# - Display helper used for applying/reverting display settings
+if (TARGET playnite-launcher)
+    install(TARGETS playnite-launcher RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
+if (TARGET sunshine_wgc_capture)
+    install(TARGETS sunshine_wgc_capture RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
+if (TARGET sunshine_display_helper)
+    install(TARGETS sunshine_display_helper RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
 
 # Drivers
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda"
@@ -52,11 +52,16 @@ install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/firewall/"
         COMPONENT firewall)
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/gamepad/"
         DESTINATION "scripts"
-        COMPONENT gamepad)
+        COMPONENT assets)
 
 # Sunshine assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
         DESTINATION "${SUNSHINE_ASSETS_DIR}"
+        COMPONENT assets)
+
+# Plugins (copy plugin folders such as `plugins/playnite` into the package)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/plugins/"
+        DESTINATION "plugins"
         COMPONENT assets)
 
 # copy assets (excluding shaders) to build directory, for running without install
@@ -72,7 +77,8 @@ execute_process(COMMAND cmd.exe /c mklink /J "${shaders_in_build_dest_native}" "
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}\\\\apollo.ico")
 
 # The name of the directory that will be created in C:/Program files/
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "${CPACK_PACKAGE_NAME}")
+# Keep install directory as Sunshine regardless of displayed product name
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Sunshine")
 
 # Setting components groups and dependencies
 set(CPACK_COMPONENT_GROUP_CORE_EXPANDED true)
@@ -116,11 +122,7 @@ set(CPACK_COMPONENT_FIREWALL_DISPLAY_NAME "Add Firewall Exclusions")
 set(CPACK_COMPONENT_FIREWALL_DESCRIPTION "Scripts to enable or disable firewall rules.")
 set(CPACK_COMPONENT_FIREWALL_GROUP "Scripts")
 
-# gamepad scripts
-set(CPACK_COMPONENT_GAMEPAD_DISPLAY_NAME "Virtual Gamepad")
-set(CPACK_COMPONENT_GAMEPAD_DESCRIPTION "Scripts to install and uninstall Virtual Gamepad.")
-set(CPACK_COMPONENT_GAMEPAD_GROUP "Scripts")
+# gamepad scripts are bundled under assets and not exposed as a separate component
 
-# include specific packaging
-include(${CMAKE_MODULE_PATH}/packaging/windows_nsis.cmake)
+# include specific packaging (WiX only)
 include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)

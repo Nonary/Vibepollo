@@ -52,11 +52,31 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/process_handler.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/process_handler.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/display_settings_client.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/display_settings_client.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.cpp"
+        "${CMAKE_SOURCE_DIR}/src/config_playnite.h"
+        "${CMAKE_SOURCE_DIR}/src/config_playnite.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
@@ -65,6 +85,16 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda-ioctl.h"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
@@ -92,7 +122,10 @@ list(PREPEND PLATFORM_LIBRARIES
         ntdll
         setupapi
         shlwapi
+        shell32
+        crypt32
         synchronization.lib
+        Windowscodecs
         userenv
         ws2_32
         wsock32

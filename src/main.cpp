@@ -10,7 +10,6 @@
 
 // local includes
 #include "confighttp.h"
-#include "display_device.h"
 #include "entry_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -19,9 +18,13 @@
 #include "nvhttp.h"
 #include "process.h"
 #include "system_tray.h"
+#include "update.h"
 #include "upnp.h"
 #include "uuid.h"
 #include "video.h"
+#ifdef _WIN32
+  #include "src/platform/windows/playnite_integration.h"
+#endif
 
 #ifdef _WIN32
   #include "platform/windows/misc.h"
@@ -96,45 +99,6 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 }
 #endif
 
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-constexpr bool tray_is_enabled = true;
-#else
-constexpr bool tray_is_enabled = false;
-#endif
-
-void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event) {
-  bool run_loop = false;
-
-  // Conditions that would require the main thread event loop
-#ifndef _WIN32
-  run_loop = tray_is_enabled;  // On Windows, tray runs in separate thread, so no main loop needed for tray
-#endif
-
-  if (!run_loop) {
-    BOOST_LOG(info) << "No main thread features enabled, skipping event loop"sv;
-    return;
-  }
-
-  // Main thread event loop
-  BOOST_LOG(info) << "Starting main loop"sv;
-  while (true) {
-    if (shutdown_event->peek()) {
-      BOOST_LOG(info) << "Shutdown event detected, breaking main loop"sv;
-      if (tray_is_enabled && config::sunshine.system_tray) {
-        system_tray::end_tray();
-      }
-      break;
-    }
-
-    if (tray_is_enabled) {
-      system_tray::process_tray_events();
-    }
-
-    // Sleep to avoid busy waiting
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-}
-
 int main(int argc, char *argv[]) {
   lifetime::argv = argv;
 
@@ -168,6 +132,17 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Logging failed to initialize"sv;
   }
 
+#ifndef SUNSHINE_EXTERNAL_PROCESS
+  // Setup third-party library logging
+  logging::setup_av_logging(config::sunshine.min_log_level);
+  logging::setup_libdisplaydevice_logging(config::sunshine.min_log_level);
+#endif
+
+#ifdef __ANDROID__
+  // Setup Android-specific logging
+  logging::setup_android_logging();
+#endif
+
   // logging can begin at this point
   // if anything is logged prior to this point, it will appear in stdout, but not in the log viewer in the UI
   // the version should be printed to the log before anything else
@@ -198,15 +173,9 @@ int main(int argc, char *argv[]) {
     return fn->second(argv[0], config::sunshine.cmd.argc, config::sunshine.cmd.argv);
   }
 
-  // Adding guard here first as it also performs recovery after crash,
-  // otherwise people could theoretically end up without display output.
-  // It also should be destroyed before forced shutdown to expedite the cleanup.
-  auto display_device_deinit_guard = display_device::init(platf::appdata() / "display_device.state", config::video);
-  if (!display_device_deinit_guard) {
-    BOOST_LOG(error) << "Display device session failed to initialize"sv;
-  }
+  // Display configuration is managed by the external Windows helper; no in-process init.
 
-#ifdef _WIN32
+#ifdef WIN32
   // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
   if (nvprefs_instance.load()) {
     // Restore global settings to the undo file left by improper termination of sunshine.exe
@@ -295,9 +264,29 @@ int main(int argc, char *argv[]) {
 
   task_pool.start(1);
 
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+  // create tray thread and detach it
+  system_tray::run_tray();
+  // Schedule periodic update checks if configured
+  if (config::sunshine.update_check_interval_seconds > 0) {
+    // Trigger an immediate update check on startup so users don't wait
+    // a full interval before the first detection occurs.
+    update::trigger_check(true);
+
+    auto schedule_periodic = std::make_shared<std::function<void()>>();
+    *schedule_periodic = [schedule_periodic]() {
+      update::periodic();
+      if (config::sunshine.update_check_interval_seconds > 0) {
+        task_pool.pushDelayed(*schedule_periodic, std::chrono::seconds(config::sunshine.update_check_interval_seconds));
+      }
+    };
+    task_pool.pushDelayed(*schedule_periodic, std::chrono::seconds(config::sunshine.update_check_interval_seconds));
+  }
+#endif
+
   // Create signal handler after logging has been initialized
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  on_signal(SIGINT, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
+  on_signal(SIGINT, [&force_shutdown, shutdown_event]() {
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
     auto task = []() {
@@ -311,10 +300,9 @@ int main(int argc, char *argv[]) {
     force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
     shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
   });
 
-  on_signal(SIGTERM, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
+  on_signal(SIGTERM, [&force_shutdown, shutdown_event]() {
     BOOST_LOG(info) << "Terminate handler called"sv;
 
     auto task = []() {
@@ -325,7 +313,6 @@ int main(int argc, char *argv[]) {
     force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
     shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
   });
 
 #ifdef _WIN32
@@ -410,6 +397,11 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+#ifdef _WIN32
+  // Start Playnite integration (IPC + handlers)
+  auto playnite_integration_guard = platf::playnite::start();
+#endif
+
   std::unique_ptr<platf::deinit_t> mDNS;
   auto sync_mDNS = std::async(std::launch::async, [&mDNS]() {
     if (config::sunshine.enable_discovery) {
@@ -439,23 +431,7 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
-  if (tray_is_enabled && config::sunshine.system_tray) {
-    BOOST_LOG(info) << "Starting system tray"sv;
-#ifdef _WIN32
-    // TODO: Windows has a weird bug where when running as a service and on the first Windows boot,
-    // he tray icon would not appear even though Sunshine is running correctly otherwise.
-    // Restarting the service would allow the icon to appear normally.
-    // For now we will keep the Windows tray icon on a separate thread.
-    // Ideally, we would run the system tray on the main thread for all platforms.
-    system_tray::init_tray_threaded();
-#else
-    system_tray::init_tray();
-#endif
-  }
-
-  mainThreadLoop(shutdown_event);
-
-  // Wait for shutdown, this is not necessary when we're using the main event loop
+  // Wait for shutdown
   shutdown_event->view();
 
   httpThread.join();
@@ -465,16 +441,16 @@ int main(int argc, char *argv[]) {
   task_pool.stop();
   task_pool.join();
 
-#ifdef _WIN32
+  // stop system tray
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+  system_tray::end_tray();
+#endif
+
+#ifdef WIN32
   // Restore global NVIDIA control panel settings
   if (nvprefs_instance.owning_undo_file() && nvprefs_instance.load()) {
     nvprefs_instance.restore_global_profile();
     nvprefs_instance.unload();
-  }
-
-  // Stop the threaded tray if it was started
-  if (tray_is_enabled && config::sunshine.system_tray) {
-    system_tray::end_tray_threaded();
   }
 #endif
 

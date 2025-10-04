@@ -4,9 +4,9 @@ cmake_minimum_required(VERSION 3.20)
 # `cmake_path(CONVERT ... TO_NATIVE_PATH_LIST ...)` requires 3.20
 # todo - set this conditionally
 
-project(Apollo VERSION 0.0.0
-        DESCRIPTION "Self-hosted game stream host for Artemis"
-        HOMEPAGE_URL "https://github.com/ClassicOldSong/Apollo")
+project(Vibepollo VERSION 0.0.0
+        DESCRIPTION "Self-hosted game stream host for Moonlight"
+        HOMEPAGE_URL "https://github.com/Nonary/Vibepollo")
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
@@ -18,6 +18,14 @@ set(PROJECT_LONG_DESCRIPTION "Offering low latency, cloud gaming server capabili
 and Nvidia GPUs for hardware encoding. Software encoding is also available. You can connect to Apollo from any \
 Artemis client on a variety of devices. A web UI is provided to allow configuration, and client pairing, from \
 your favorite web browser. Pair from the local server or any mobile device.")
+
+# Ensure WiX-specific CPack variables are present early in config generation
+if (WIN32)
+    # WiX requires RTF license; also set stable Upgrade GUID
+    set(CPACK_WIX_LICENSE_RTF "${CMAKE_SOURCE_DIR}/packaging/windows/LICENSE.rtf")
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/packaging/windows/LICENSE.rtf")
+    set(CPACK_WIX_UPGRADE_GUID "{C2C36624-2D9C-4AFD-9C79-6B7861AE4A0D}")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'Release' as none was specified.")

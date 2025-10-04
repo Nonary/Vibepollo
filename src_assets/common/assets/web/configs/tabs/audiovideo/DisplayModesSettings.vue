@@ -1,28 +1,37 @@
-<script setup>
-import { ref } from 'vue'
-import { $tp } from '../../../platform-i18n'
-import PlatformLayout from '../../../PlatformLayout.vue'
+<script setup lang="ts">
+import { ref } from 'vue';
+import { $tp } from '@/platform-i18n';
+import PlatformLayout from '@/PlatformLayout.vue';
+import { useConfigStore } from '@/stores/config';
+import { NInputNumber } from 'naive-ui';
 
-const props = defineProps([
-  'platform',
-  'config',
-])
-const config = ref(props.config)
+const store = useConfigStore();
+const config = store.config;
 </script>
 
 <template>
   <!--max_bitrate-->
-  <div class="mb-3">
-    <label for="max_bitrate" class="form-label">{{ $t("config.max_bitrate") }}</label>
-    <input type="number" class="form-control" id="max_bitrate" placeholder="0" v-model="config.max_bitrate" />
-    <div class="form-text">{{ $t("config.max_bitrate_desc") }}</div>
+  <div class="mb-4">
+    <label for="max_bitrate" class="form-label">{{ $t('config.max_bitrate') }}</label>
+    <n-input-number id="max_bitrate" v-model:value="config.max_bitrate" placeholder="0" />
+    <p class="text-[11px] opacity-60 mt-1">
+      {{ $t('config.max_bitrate_desc') }}
+    </p>
   </div>
 
   <!--minimum_fps_target-->
-  <div class="mb-3">
-    <label for="minimum_fps_target" class="form-label">{{ $t("config.minimum_fps_target") }}</label>
-    <input type="number" min="0" max="1000" class="form-control" id="minimum_fps_target" placeholder="0" v-model="config.minimum_fps_target" />
-    <div class="form-text">{{ $t("config.minimum_fps_target_desc") }}</div>
+  <div class="mb-4">
+    <label for="minimum_fps_target" class="form-label">{{ $t('config.minimum_fps_target') }}</label>
+    <n-input-number
+      id="minimum_fps_target"
+      v-model:value="config.minimum_fps_target"
+      :min="0"
+      :max="1000"
+      placeholder="0"
+    />
+    <p class="text-[11px] opacity-60 mt-1">
+      {{ $t('config.minimum_fps_target_desc') }}
+    </p>
   </div>
 </template>
 

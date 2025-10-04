@@ -1,176 +1,84 @@
-# Apollo
+# Vibeshine
 
-Apollo is a self-hosted desktop stream host for [Artemis(Moonlight Noir)](https://github.com/ClassicOldSong/moonlight-android). Offering low latency, native client resolution, cloud gaming server capabilities with support for AMD, Intel, and Nvidia GPUs for hardware encoding. Software encoding is also available. A web UI is provided to allow configuration and client pairing from your favorite web browser. Pair from the local server or any mobile device.
+## What is Vibeshine?
 
-Major features:
+Vibeshine is a Windows-exclusive fork of *Sunshine* designed to introduce significant enhancements, including:
 
-- [x] Built-in Virtual Display with HDR support that matches the resolution/framerate config of your client automatically
-- [x] Permission management for clients
-- [x] Clipboard sync
-- [x] Commands for client connection/disconnection (checkout [Auto pause/resume games](https://github.com/ClassicOldSong/Apollo/wiki/Auto-pause-resume-games))
-- [x] Input only mode
+- **API token management**
+- **Session-based authentication**
+- **A fully redesigned frontend with complete mobile support**
+- **Playnite integration**
+- **Windows Graphics Capture running in service mode**
+- **Update notifications**
+- **Numerous bug fixes**
 
-## Usage
+Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibeshine as a standalone fork.
 
-Refer to LizardByte's documentation hosted on [Read the Docs](https://docs.lizardbyte.dev/projects/sunshine) for now.
+Currently, Vibeshine has already introduced over **30,000 new lines of code**, nearly matching the size of Sunshine’s original codebase.
 
-Currently Virtual Display support is Windows only, Linux support is planned and will be implemented in the future.
+---
 
-## About Permission System
+## Does Vibeshine aim to replace Sunshine?
 
-Check out the [Wiki](https://github.com/ClassicOldSong/Apollo/wiki/Permission-System)
+No. Vibeshine is intended as a **complementary fork**, not a replacement. It also intends to incorporate functionality from *Apollo* in the future.
 
-> [!NOTE]
-> The **FIRST** client paired with Apollo will be granted with FULL permissions, then other newly paired clients will only be granted with `View Streams` and `List Apps` permission. If you encounter `Permission Denied` error when trying to launch any app, go check the permission for that device and grant `Launch Apps` permission. The same applies to the situation when you find that you can't move mouse or type with keyboard on newly paired clients, grant the corresponding client `Mouse Input` and `Keyboard Input` permissions.
+---
 
-## About Virtual Display
+## Will Vibeshine's Features Merge Back Into Sunshine or Apollo?
 
-> [!WARNING]
-> ***It is highly recommend to remove any other virtual display solutions from your system and Apollo/Sunshine config, to reduce confusions and compatibility issues.***
+Short answer: Unlikely to be backported.
 
-> [!NOTE]
-> **TL;DR** Just treat your Artemis/Moonlight client like a dedicated PnP monitor with Apollo.
+Vibeshine is largely AI-generated. While it works well, it carries a kind of surface-level technical debt that many upstream projects want resolved before taking big changes. This includes inconsistent styling, thin or missing documentation, and some over-engineering. I personally see this type of debt as unimportant today. Modern AI tools make it easy to ask questions like “why does this function exist?”, “what does this parameter do?”, or “how do these classes interact?” and get immediate, accurate answers. Soon, AI will even be able to auto-fix these issues—re-style entire trees, write docstrings, and remove unused layers—without human effort.
 
-Apollo uses SudoVDA for virtual display. It features auto resolution and framerate matching for your Artemis/Moonlight clients. The virtual display is created upon the stream starts and removed once the app quits. **If you do not see a new virtual display added or removed when the stream starts or stops, there may be a driver misconfiguration, or another persistent virtual display might still be active.**
+So this “mess” is only cosmetic. It doesn’t break the code, create security risks, or block future maintenance. The only debt that truly matters is architectural decisions: API design, threading models, modularity, and performance. These are the parts that create long-term problems, and are much harder to fix even with AI tools. That’s why I focus on making those decisions up front, guiding the AI on how to build the code.
 
-The virtual display works just like any physically attached monitors with SudoVDA, there's completely no need for a super complicated solution to "fix" resolution configurations for your devices. Unlike all other solutions that reuses one identity or generate a random one each time for any virtual display sessions, **Apollo assigns a fixed identity for each Artemis/Moonlight client, so your display configuration will be automatically remembered and managed by Windows natively.**
+Because I define the architecture, I know how everything works. Whether the code looks polished or not doesn’t matter to me. 
 
-## Configuration for dual GPU laptops
+Bringing Vibeshine fully in line with upstream style and documentation standards would take a lot of engineering time for very little practical gain. For now, backporting is unlikely. The fork will continue to move quickly here, and over time, targeted refactors or added documentation may make selective upstreaming possible.
+---
 
-Apollo supports dual GPUs seamlessly.
 
-If you want to use your dGPU, just set the `Adapter Name` to your dGPU and enable `Headless mode` in `Audio/Video` tab, save and restart your computer. No dummy plug is needed any more, the image will be rendered and encoded directly from your dGPU.
+## Origin of the Name "Vibeshine"
 
-## About HDR
+The name arose as a playful suggestion from another developer who joked about the potential unmanageability of extensive AI-generated code. Given that approximately **99% of Vibeshine’s code is AI-generated**, the name seemed fitting.
 
-HDR starts supporting from Windows 11 23H2 and generally supported on 24H2. Some systems might not have HDR toggle on 23H2 and you just need to upgrade to 24H2. Any system lower than 23H2/Windows 10 will not have HDR option available.
+---
 
-> [!NOTE]
-> The below section is written for professional media workers. It doesn't stop you from enabling HDR if you know what you're doing and have deep understanding about how HDR works.
->
-> Apollo and SudoVDA can handle HDR just fine like any other streaming solutions.
->
-> If you have had good experience with HDR previously, you can safely ignore this section.
->
-> If you're curious, read on, but don't blame Apollo for poor HDR support.
+## Why Use AI-generated Code? Concerns About Technical Debt?
 
-Whether HDR streaming looks good, it depends completely on your client.
+AI significantly accelerates development by offloading much of the routine implementation work. Instead of spending hours writing boilerplate, wiring dependencies, or handling repetitive edge cases, I can focus on high-level architecture, long-term design decisions, and system direction. This shift doesn’t just speed things up—it fundamentally changes the role of the engineer, pushing us toward oversight, orchestration, and design rather than rote code production.
 
-In short, ICC color correction should be totally useless while streaming HDR. It's your client's job to get HDR content displayed right, not the host. But in fact, it does affect the captured video stream and reflect changes on devices that can handle HDR correctly. On other devices that can't, the info is not respected at all.
+What stands out most is that AI code works on the first try around 90% of the time. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
 
-It's very complicated to explain why HDR is a total mess, and why enabling HDR makes the image appear dark/yellow. If it's your first time got HDR streaming working, and thinks HDR looks awful, you're right, but that's not Apollo's fault, it's your device that tone mapped SDR content to the maximum of the capability of its screen, there's no headroom for anything beyond that actual peak brightness for HDR. For details, please take a look [here](https://github.com/ClassicOldSong/Apollo/issues/164).
+I’m not overly concerned about technical debt in this workflow, because the debt that truly matters stems from bad architecture and poor design choices, not from the code itself. As long as I guide the AI with clear structure and intent, the generated code ends up being maintainable. Problems like inconsistent naming, redundant code, or unused helpers are minor forms of debt—easily identified, cleaned up, or ignored. By contrast, deep architectural flaws, poor layering, or mismatched abstractions create lasting problems.
 
-For client devices, usually Apple products that have HDR capability can be trusted to have good results, other than that, your luck depends.
 
-<details>
-<summary>DEPRECATION ALERT</summary>
+In fact, compared to many traditional enterprise codebases I’ve maintained, AI-assisted code often comes out cleaner and easier to manage. Legacy systems are usually burdened with years of ad-hoc patches, inconsistent styles, and various bad practices due to knowledge level of contributor. AI-generated code doesn’t necessarily carry fewer design flaws than human code, but it does avoid accumulating those scars—especially when paired with an intentional architectural vision and it is less likely to do seriously bad practices that you typically find in enterprise codebases.
 
-Enabling HDR is **generally not recommended** with **ANY streaming solutions** at this moment, probably in the long term. The issue with **HDR itself** is huge, with loads of semi-incompatible standards, and massive variance between device configurations and capabilities. Game support for HDR is still choppy.
+Broadly speaking, AI-assisted development represents the future of software engineering. Just as compilers and IDEs once transformed programming, AI is now transforming how we design, implement, and maintain systems. Instead of fearing it, I view it as a force multiplier that complements professional judgment. Vibeshine is an example of what happens when you embrace that shift: rapid iteration, a massive expansion of features, and code that remains maintainable because the architecture is intentionally guided.
 
-SDR actually provides much more stable color accuracy, and are widely supported throughout most devices you can imagine. For games, art style can easily overcome the shortcoming with no HDR, and SDR has pretty standard workflows to ensure their visual performance. So HDR isn't *that* important in most of the cases.
+---
 
-</details>
+## AI Models Used by Vibeshine
 
-## How to run multiple instances of Apollo for multiple virtual displays
+Vibeshine primarily leverages:
 
-Follow the instructions in the [Wiki](https://github.com/ClassicOldSong/Apollo/wiki/How-to-start-multiple-instances-of-Apollo).
+- **GPT-5 (high/medium reasoning)** via Codex CLI on a ChatGPT Pro subscription:
+  - Medium reasoning for most code generation.
+  - High reasoning for complex or challenging features.
 
-## FAQ
-Moved to [WiKi](https://github.com/ClassicOldSong/Apollo/wiki/FAQ)
+- **GPT-5 mini** via Visual Studio Code:
+  - Handles minor tasks such as formatting and documentation.
+  - Fast and cost-effective, available with unlimited usage on the $10 GitHub Copilot plan.
+  - Nearly matches Claude Sonnet 4 in performance (only 6% lower on SWE Bench), surpassing GPT 4.1.
 
-## Stuttering Clinic
-Here're some common causes and solutions for stutters: [WiKi](https://github.com/ClassicOldSong/Apollo/wiki/Stuttering-Clinic).
+Previously, I relied heavily on **Claude Sonnet 4**, which had some limitations:
+- Frequently strayed off my architectural plan
+- Rarely challenged the developer on prompts, would do anything you told it even if you were wrong.
+- Fast paced, but often would write bad code and correct it as it is working.
 
-## Device specific setups
-- Pixel devices might not be able to use native resolution:
-  - Change the device resolution to High: https://github.com/ClassicOldSong/Apollo/issues/700
-
-## System Requirements
-
-> **Warning**: This table is a work in progress. Do not purchase hardware based on this.
-
-**Minimum Requirements**
-
-| **Component** | **Description** |
-|---------------|-----------------|
-| GPU           | AMD: VCE 1.0 or higher, see: [obs-amd hardware support](https://github.com/obsproject/obs-amd-encoder/wiki/Hardware-Support) |
-|               | Intel: VAAPI-compatible, see: [VAAPI hardware support](https://www.intel.com/content/www/us/en/developer/articles/technical/linuxmedia-vaapi.html) |
-|               | Nvidia: NVENC enabled cards, see: [nvenc support matrix](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new) |
-| CPU           | AMD: Ryzen 3 or higher |
-|               | Intel: Core i3 or higher |
-| RAM           | 4GB or more |
-| OS            | Windows: 10+ (Windows Server requires [manual installation](https://github.com/nefarius/ViGEmBus/issues/153) for gamepad support) |
-|               | macOS: 12+ |
-|               | Linux/Debian: 11 (bullseye) |
-|               | Linux/Fedora: 39+ |
-|               | Linux/Ubuntu: 22.04+ (jammy) |
-| Network       | Host: 5GHz, 802.11ac |
-|               | Client: 5GHz, 802.11ac |
-
-**4k Suggestions**
-
-| **Component** | **Description** |
-|---------------|-----------------|
-| GPU           | AMD: Video Coding Engine 3.1 or higher |
-|               | Intel: HD Graphics 510 or higher |
-|               | Nvidia: GeForce GTX 1080 or higher |
-| CPU           | AMD: Ryzen 5 or higher |
-|               | Intel: Core i5 or higher |
-| Network       | Host: CAT5e ethernet or better |
-|               | Client: CAT5e ethernet or better |
-
-**HDR Suggestions**
-
-| **Component** | **Description** |
-|---------------|-----------------|
-| GPU           | AMD: Video Coding Engine 3.4 or higher |
-|               | Intel: UHD Graphics 730 or higher |
-|               | Nvidia: Pascal-based GPU (GTX 10-series) or higher |
-| CPU           | AMD: todo |
-|               | Intel: todo |
-| Network       | Host: CAT5e ethernet or better |
-|               | Client: CAT5e ethernet or better |
-
-## Integrations
-
-SudoVDA: Virtual Display Adapter Driver used in Apollo
-
-[Artemis](https://github.com/ClassicOldSong/moonlight-android): Integrated Virtual Display options control from client side
-
-**NOTE**: Artemis currently supports Android only. Other platforms will come later.
-
-## Support
-
-Currently support is only provided via GitHub Issues/Discussions.
-
-No real time chat support will ever be provided for Apollo and Artemis. Including but not limited to:
-
-- Discord
-- Telegram
-- Whatsapp
-- QQ
-- WeChat 
-
-> When there's a chat, there're dramas. -- Confucius
-
-## Downloads
-
-[Releases](https://github.com/ClassicOldSong/Apollo/releases)
-
-## Disclaimer
-
-I got kicked from Moonlight and Sunshine's Discord server and banned from Sunshine's GitHub repo literally for helping people out.
-
-This is what I got for finding a bug, opened an issue, getting no response, troubleshoot myself, fixed the issue myself, shared it by PR to the main repo hoping my efforts can help someone else during the maintenance gap.
-
-Yes, I'm going away. [Apollo](https://github.com/ClassicOldSong/Apollo) and [Artemis(Moonlight Noir)](https://github.com/ClassicOldSong/moonlight-android) will no longer be compatible with OG Sunshine and OG Moonlight eventually, but they'll work even better with much more carefully designed features.
-
-The Moonlight repo had stayed silent for 5 months, with nobody actually responding to issues, and people are getting totally no help besides the limited FAQ in their Discord server. I tried to answer issues and questions, solve problems within my ability but I got kicked out just for helping others.
-
-**PRs for feature improvements are welcomed here unlike the main repo, your ideas are more likely to be appreciated and your efforts are actually being respected. We welcome people who can and willing to share their efforts, helping yourselves and other people in need.**
-
-**Update**: They have contacted me and apologized for this incident, but the fact it **happened** still motivated me to start my own fork.
-
-## License
-
-GPLv3
+In contrast, GPT-5:
+- Actively double checks your inquiry and confidently tells you you're wrong; making it feel like a true AI companion in development process.
+- Thinks much longer up front to ensure that the code it writes is accurate and bug free and fits requirements.
+- Holistically understands the codebase, puts thought to how requested changes can impact the existing codebase.
+- Is able to answer just about any question in a codebase, from how a feature works to how to add a new feature.

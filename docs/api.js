@@ -34,7 +34,7 @@ requests.${method.trim().toLowerCase()}(
   -Uri 'https://localhost:47990${endpoint.trim()}' \`
   -Method ${method.trim()} \`
   -Headers @{Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('user:pass'))}
-  ${psBodyString}`
+  ${psBodyString}`,
   };
 }
 
@@ -59,7 +59,10 @@ function createTabs(examples) {
     content += `<div id="${lang}" class="tabcontent" style="display: ${index === 0 ? 'block' : 'none'};">
                   <div class="doxygen-awesome-fragment-wrapper">
                     <div class="fragment">
-                      ${examples[lang].split('\n').map(line => `<div class="line">${line}</div>`).join('')}
+                      ${examples[lang]
+                        .split('\n')
+                        .map((line) => `<div class="line">${line}</div>`)
+                        .join('')}
                     </div>
                     <doxygen-awesome-fragment-copy-button id="copy-button-${lang}-${hash}" title="Copy to clipboard">
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
@@ -89,18 +92,18 @@ function copyContent() {
   const content = this.previousElementSibling.cloneNode(true);
   if (content instanceof Element) {
     // filter out line number from file listings
-    content.querySelectorAll(".lineno, .ttc").forEach((node) => {
+    content.querySelectorAll('.lineno, .ttc').forEach((node) => {
       node.remove();
     });
     let textContent = Array.from(content.querySelectorAll('.line'))
-      .map(line => line.innerText)
+      .map((line) => line.innerText)
       .join('\n')
       .trim(); // Join lines with newline characters and trim leading/trailing whitespace
     navigator.clipboard.writeText(textContent);
-    this.classList.add("success");
+    this.classList.add('success');
     this.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>`;
     window.setTimeout(() => {
-      this.classList.remove("success");
+      this.classList.remove('success');
       this.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
     }, 980);
   } else {
@@ -109,23 +112,23 @@ function copyContent() {
 }
 
 function openTab(evt, lang) {
-  const tabcontent = document.getElementsByClassName("tabcontent");
+  const tabcontent = document.getElementsByClassName('tabcontent');
   for (const content of tabcontent) {
-    content.style.display = "none";
+    content.style.display = 'none';
   }
 
-  const tablinks = document.getElementsByClassName("tab-button");
+  const tablinks = document.getElementsByClassName('tab-button');
   for (const link of tablinks) {
-    link.className = link.className.replace(" active", "");
+    link.className = link.className.replace(' active', '');
   }
 
   const selectedTabs = document.querySelectorAll(`#${lang}`);
   for (const tab of selectedTabs) {
-    tab.style.display = "block";
+    tab.style.display = 'block';
   }
 
   const selectedButtons = document.querySelectorAll(`.tab-button[onclick*="${lang}"]`);
   for (const button of selectedButtons) {
-    button.className += " active";
+    button.className += ' active';
   }
 }

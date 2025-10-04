@@ -32,9 +32,14 @@ if %ERRORLEVEL%==0 (
     echo !CONTENT!> "%SERVICE_CONFIG_FILE%"
 )
 
-rem Stop and delete the legacy SunshineSvc service
-net stop sunshinesvc
-sc delete sunshinesvc
+rem Stop and delete the legacy SunshineSvc service (best-effort)
+net stop sunshinesvc >nul 2>&1
+for /L %%i in (1,1,15) do (
+  sc query sunshinesvc | findstr /C:"STATE" | findstr /C:"STOPPED" >nul 2>&1 && goto :legacy_stopped
+  timeout /t 1 >nul
+)
+:legacy_stopped
+sc delete sunshinesvc >nul 2>&1
 
 rem Stop and delete the new ApolloService service
 net stop ApolloService

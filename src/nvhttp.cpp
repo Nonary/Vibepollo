@@ -22,7 +22,7 @@
 
 // local includes
 #include "config.h"
-#include "display_device.h"
+#include "display_helper_integration.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -34,6 +34,7 @@
 #include "rtsp.h"
 #include "stream.h"
 #include "system_tray.h"
+#include "update.h"
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
@@ -223,6 +224,8 @@ namespace nvhttp {
     root["root"] = nlohmann::json::object();
     root["root"]["uniqueid"] = http::unique_id;
 
+    // Persist update notification state
+    root["root"]["last_notified_version"] = update::state.last_notified_version;
     client_t &client = client_root;
     nlohmann::json named_cert_nodes = nlohmann::json::array();
 
@@ -312,6 +315,8 @@ namespace nvhttp {
     std::string uid = tree["root"]["uniqueid"];
     http::uuid = uuid_util::uuid_t::parse(uid);
     http::unique_id = uid;
+    update::state.last_notified_version = tree["root"].value("last_notified_version", "");
+
 
     nlohmann::json root = tree["root"];
     client_t client;  // Local client to load into
@@ -383,6 +388,12 @@ namespace nvhttp {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
+    launch_session->gen1_framegen_fix = false;
+    launch_session->gen2_framegen_fix = false;
+    launch_session->lossless_scaling_framegen = false;
+    launch_session->lossless_scaling_target_fps.reset();
+    launch_session->lossless_scaling_rtss_limit.reset();
+    launch_session->frame_generation_provider = "lossless-scaling";
 
     // If launched from client
     if (named_cert_p->uuid != http::unique_id) {
@@ -454,6 +465,26 @@ namespace nvhttp {
     launch_session->device_name = named_cert_p->name.empty() ? "ApolloDisplay"s : named_cert_p->name;
     launch_session->unique_id = named_cert_p->uuid;
     launch_session->perm = named_cert_p->perm;
+    launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
+    
+    if (launch_session->appid > 0) {
+      try {
+        auto apps_snapshot = proc::proc.get_apps();
+        const std::string app_id_str = std::to_string(launch_session->appid);
+        for (const auto &app_ctx : apps_snapshot) {
+          if (app_ctx.id == app_id_str) {
+            launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
+            launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
+            launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
+            launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
+            launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
+            launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
+            break;
+          }
+        }
+      } catch (...) {
+      }
+    }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));
@@ -668,22 +699,22 @@ namespace nvhttp {
 
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
-    BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
+    BOOST_LOG(verbose) << "HTTP "sv << request->method << ' ' << request->path << " tunnel="sv << tunnel<T>::to_string;
 
-    BOOST_LOG(debug) << "METHOD :: "sv << request->method;
-    BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
-
-    for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << val;
+    if (!request->header.empty()) {
+      BOOST_LOG(verbose) << "Headers:"sv;
+      for (auto &[name, val] : request->header) {
+        BOOST_LOG(verbose) << name << " -- " << val;
+      }
     }
 
-    BOOST_LOG(debug) << " [--] "sv;
-
-    for (auto &[name, val] : request->parse_query_string()) {
-      BOOST_LOG(debug) << name << " -- " << val;
+    auto query = request->parse_query_string();
+    if (!query.empty()) {
+      BOOST_LOG(verbose) << "Query Params:"sv;
+      for (auto &[name, val] : query) {
+        BOOST_LOG(verbose) << name << " -- " << val;
+      }
     }
-
-    BOOST_LOG(debug) << " [--] "sv;
   }
 
   template<class T>
@@ -746,7 +777,7 @@ namespace nvhttp {
         sess.client.name = std::move(deviceName);
         sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
 
-        BOOST_LOG(debug) << sess.client.cert;
+        BOOST_LOG(verbose) << sess.client.cert;
         auto ptr = map_id_sess.emplace(sess.client.uniqueID, std::move(sess)).first;
 
         ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
@@ -1158,6 +1189,10 @@ namespace nvhttp {
       pt::write_xml(data, tree);
       response->write(data.str());
       response->close_connection_after_response = true;
+
+      if (revert_display_configuration) {
+        display_helper_integration::revert();
+      }
     });
 
     auto args = request->parse_query_string();
@@ -1238,7 +1273,31 @@ namespace nvhttp {
     }
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+    // Prevent interleaving with hot-apply while we prep/start a session
+    auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
+
+    // The display should be restored in case something fails as there are no other sessions.
+    if (rtsp_stream::session_count() == 0) {
+      revert_display_configuration = true;
+
+      // We want to prepare display only if there are no active sessions at
+      // the moment. This should be done before probing encoders as it could
+      // change the active displays.
+      display_helper_integration::apply_from_session(config::video, *launch_session);
+
+      // Probe encoders again before streaming to ensure our chosen
+      // encoder matches the active GPU (which could have changed
+      // due to hotplugging, driver crash, primary monitor change,
+      // or any number of other factors).
+      if (video::probe_encoders()) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
+        tree.put("root.gamesession", 0);
+
+        return;
+      }
+    }
 
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
     if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
@@ -1396,6 +1455,8 @@ namespace nvhttp {
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
+    // Prevent interleaving with hot-apply while we prep/resume a session
+    auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, false, args, named_cert_p);
 
     if (!proc::proc.allow_client_commands || !named_cert_p->allow_client_commands) {
@@ -1411,8 +1472,7 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
       // This should be done before probing encoders as it could change the active displays.
-      display_device::configure_display(config::video, *launch_session);
-
+      display_helper_integration::apply_from_session(config::video, *launch_session);
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
@@ -1489,7 +1549,7 @@ namespace nvhttp {
     }
 
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-    display_device::revert_configuration();
+    display_helper_integration::revert();
   }
 
   void appasset(resp_https_t response, req_https_t request) {
@@ -1679,15 +1739,20 @@ namespace nvhttp {
 
         X509_NAME_oneline(X509_get_subject_name(x509.get()), subject_name, sizeof(subject_name));
 
-        if (verified) {
-          BOOST_LOG(debug) << subject_name << " -- "sv << "verified, device name: "sv << named_cert_p->name;
-        } else {
-          BOOST_LOG(debug) << subject_name << " -- "sv << "denied"sv;
-        }
-
+        BOOST_LOG(verbose) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
       });
 
-      auto err_str = cert_chain.verify(x509.get(), named_cert_p);
+      while (add_cert->peek()) {
+        char subject_name[256];
+
+        auto cert = add_cert->pop();
+        X509_NAME_oneline(X509_get_subject_name(cert.get()), subject_name, sizeof(subject_name));
+
+        BOOST_LOG(verbose) << "Added cert ["sv << subject_name << ']';
+        cert_chain.add(std::move(cert));
+      }
+
+      auto err_str = cert_chain.verify(x509.get());
       if (err_str) {
         BOOST_LOG(warning) << "SSL Verification error :: "sv << err_str;
         return verified;
@@ -1855,6 +1920,8 @@ namespace nvhttp {
 
     return false;
   }
+
+  // (Windows-only) display_helper_integration is included above
 
   bool unpair_client(const std::string_view uuid) {
     bool removed = false;

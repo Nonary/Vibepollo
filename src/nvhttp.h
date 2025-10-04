@@ -6,9 +6,9 @@
 #pragma once
 
 // standard includes
-#include <string>
 #include <chrono>
 #include <list>
+#include <string>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -63,14 +63,14 @@ namespace nvhttp {
   void start();
 
   std::string
-  get_arg(const args_t &args, const char *name, const char *default_value = nullptr);
+    get_arg(const args_t &args, const char *name, const char *default_value = nullptr);
 
   // Helper function to extract command entries
   cmd_list_t
-  extract_command_entries(const nlohmann::json& j, const std::string& key);
+    extract_command_entries(const nlohmann::json &j, const std::string &key);
 
   std::shared_ptr<rtsp_stream::launch_session_t>
-  make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p);
+    make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t *named_cert_p);
 
   /**
    * @brief Setup the nvhttp server.
@@ -195,7 +195,7 @@ namespace nvhttp {
    */
   bool pin(std::string pin, std::string name);
 
-  std::string request_otp(const std::string& passphrase, const std::string& deviceName);
+  std::string request_otp(const std::string &passphrase, const std::string &deviceName);
 
   /**
    * @brief Remove single client.
@@ -229,7 +229,7 @@ namespace nvhttp {
    * @param      session   The session
    * @param[in]  graceful  Whether to stop gracefully
    */
-  void stop_session(stream::session_t& session, bool graceful);
+  void stop_session(stream::session_t &session, bool graceful);
 
   /**
    * @brief      Finds and stop session.
@@ -237,7 +237,7 @@ namespace nvhttp {
    * @param[in]  uuid      The uuid string
    * @param[in]  graceful  Whether to stop gracefully
    */
-  bool find_and_stop_session(const std::string& uuid, bool graceful);
+  bool find_and_stop_session(const std::string &uuid, bool graceful);
 
   /**
    * @brief      Update device info associated to the session
@@ -246,7 +246,7 @@ namespace nvhttp {
    * @param[in]  name     New name
    * @param[in]  newPerm  New permission
    */
-  void update_session_info(stream::session_t& session, const std::string& name, const crypto::PERM newPerm);
+  void update_session_info(stream::session_t &session, const std::string &name, const crypto::PERM newPerm);
 
   /**
    * @brief      Finds and udpate session information.
@@ -255,7 +255,7 @@ namespace nvhttp {
    * @param[in]  name     New name
    * @param[in]  newPerm  New permission
    */
-  bool find_and_udpate_session_info(const std::string& uuid, const std::string& name, const crypto::PERM newPerm);
+  bool find_and_udpate_session_info(const std::string &uuid, const std::string &name, const crypto::PERM newPerm);
 
   /**
    * @brief      Update device info
@@ -268,18 +268,24 @@ namespace nvhttp {
    * @param[in]  enable_legacy_ordering  Enable legacy ordering
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
-   * 
+   *
    * @return     Whether the update is successful
    */
   bool update_device_info(
-    const std::string& uuid,
-    const std::string& name,
-    const std::string& display_mode,
-    const cmd_list_t& do_cmds,
-    const cmd_list_t& undo_cmds,
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const cmd_list_t &do_cmds,
+    const cmd_list_t &undo_cmds,
     const crypto::PERM newPerm,
     const bool enable_legacy_ordering,
     const bool allow_client_commands,
     const bool always_use_virtual_display
   );
+
+  /**
+   * @brief Persist current nvhttp-related state (paired clients, update subsystem markers, etc.).
+   * @note Exposed so subsystems (e.g. update) can trigger a save after mutating persisted fields.
+   */
+  void save_state();
 }  // namespace nvhttp

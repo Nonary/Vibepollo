@@ -8,6 +8,7 @@
 #include <bitset>
 #include <chrono>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,6 +19,8 @@
 namespace config {
   // track modified config options
   inline std::unordered_map<std::string, std::string> modified_config_settings;
+  // when a stream is active, we defer some settings until all sessions end
+  inline std::unordered_map<std::string, std::string> pending_config_settings;
 
   struct video_t {
     bool headless_mode;
@@ -90,7 +93,8 @@ namespace config {
 
     struct dd_t {
       struct workarounds_t {
-        std::chrono::milliseconds hdr_toggle_delay;  ///< Specify whether to apply HDR high-contrast color workaround and what delay to use.
+        bool hdr_toggle;  ///< Enable HDR high-contrast color workaround (async; fixed 1s delay).
+        bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC/ULLM override).
       };
 
       enum class config_option_e {
@@ -110,7 +114,8 @@ namespace config {
       enum class refresh_rate_option_e {
         disabled,  ///< Do not change refresh rate.
         automatic,  ///< Change refresh rate and use the one received from Moonlight.
-        manual  ///< Change refresh rate and use the manually provided one.
+        manual,  ///< Change refresh rate and use the manually provided one.
+        prefer_highest  ///< Prefer the highest available refresh rate for the selected resolution.
       };
 
       enum class hdr_option_e {
@@ -202,6 +207,8 @@ namespace config {
     bool ds4_back_as_touchpad_click;
     bool motion_as_ds4;
     bool touchpad_as_ds4;
+    // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC
+    // to avoid client-side config mixing when controllers are swapped.
     bool ds5_inputtino_randomize_mac;
 
     bool keyboard;
@@ -215,6 +222,32 @@ namespace config {
 
     bool enable_input_only_mode;
     bool forward_rumble;
+  };
+
+  struct frame_limiter_t {
+    bool enable {false};
+
+    // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
+    std::string provider;
+  };
+
+  // Windows-only: RTSS integration settings
+  struct rtss_t {
+    // RTSS install path. If empty, defaults to "%PROGRAMFILES%/RivaTuner Statistics Server"
+    std::string install_path;
+
+    // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
+    // If empty or unrecognized, SyncLimiter is not modified.
+    std::string frame_limit_type;
+
+    // When enabled, attempt to avoid driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM)
+    // engagement by forcing the display to run at the highest available refresh rate for the
+    // targeted resolution during the stream. Implemented via the Windows display helper.
+    bool disable_vsync_ullm {false};
+  };
+
+  struct lossless_scaling_t {
+    std::string exe_path;
   };
 
   namespace flag {
@@ -288,6 +321,9 @@ namespace config {
     std::vector<prep_cmd_t> prep_cmds;
     std::vector<prep_cmd_t> state_cmds;
     std::vector<server_cmd_t> server_cmds;
+    std::chrono::seconds session_token_ttl;  ///< Session token time-to-live (seconds)
+    // Interval in seconds between automatic update checks (0 disables periodic checks)
+    int update_check_interval_seconds {86400};
   };
 
   extern video_t video;
@@ -295,8 +331,19 @@ namespace config {
   extern stream_t stream;
   extern nvhttp_t nvhttp;
   extern input_t input;
+  extern frame_limiter_t frame_limiter;
+  extern rtss_t rtss;
+  extern lossless_scaling_t lossless_scaling;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
+
+  // Hot-reload helpers
+  void apply_config_now();
+  void mark_deferred_reload();
+  void maybe_apply_deferred();
+
+  // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
+  std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
 }  // namespace config

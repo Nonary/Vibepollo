@@ -1,126 +1,129 @@
-<script setup>
+<script setup lang="ts">
+import { computed } from 'vue';
+import { NCheckbox } from 'naive-ui';
+
 const model = defineModel({ required: true });
 const slots = defineSlots();
-const props = defineProps({
-  class: {
-    type: String,
-    default: ""
-  },
-  desc: {
-    type: String,
-    default: null
-  },
-  id: {
-    type: String,
-    required: true
-  },
-  label: {
-    type: String,
-    default: null
-  },
-  localePrefix: {
-    type: String,
-    default: "missing-prefix"
-  },
-  inverseValues: {
-    type: Boolean,
-    default: false,
-  },
-  default: {
-    type: undefined,
-    default: null,
-  }
+interface Props {
+  id: string;
+  label?: string | null;
+  desc?: string | null;
+  localePrefix?: string;
+  inverseValues?: boolean;
+  // Default backing value used to infer mapping when model is null/undefined
+  default?: any;
+}
+const props = withDefaults(defineProps<Props>(), {
+  label: null,
+  desc: null,
+  localePrefix: 'missing-prefix',
+  inverseValues: false,
+  default: null,
 });
 
-// Add the mandatory class values
-const extendedClassStr = (() => {
-  let values = props.class.split(" ");
-  if (!values.includes("form-check")) {
-    values.push("form-check");
-  }
-  return values.join(" ");
-})();
+// Always include the mandatory class on the wrapper; user-supplied class on the
+// component itself will be merged by Vue onto the root element automatically.
 
-// Map the value to boolean representation if possible, otherwise return null.
-const mapToBoolRepresentation = (value) => {
-  // Try literal values first
-  if (value === true || value === false) {
-    return { possibleValues: [true, false], value: value };
-  }
-  if (value === 1 || value === 0) {
-    return { possibleValues: [1, 0], value: value };
-  }
+// Map an arbitrary value into a boolean-pair representation if recognizable.
+// Returns null when the provided value cannot be interpreted.
+function mapToBoolRepresentation(value: any) {
+  if (value === true || value === false) return { possibleValues: [true, false], value };
+  if (value === 1 || value === 0) return { possibleValues: [1, 0], value };
 
   const stringPairs = [
-    ["true", "false"],
-    ["1", "0"],
-    ["enabled", "disabled"],
-    ["enable", "disable"],
-    ["yes", "no"],
-    ["on", "off"]
-  ];
+    ['true', 'false'],
+    ['1', '0'],
+    ['enabled', 'disabled'],
+    ['enable', 'disable'],
+    ['yes', 'no'],
+    ['on', 'off'],
+  ] as const;
 
-  value = `${value}`.toLowerCase().trim();
+  if (value === undefined || value === null) return null;
+  const norm = String(value).toLowerCase().trim();
   for (const pair of stringPairs) {
-    if (value === pair[0] || value === pair[1]) {
-      return { possibleValues: pair, value: value };
-    }
+    if (norm === pair[0] || norm === pair[1]) return { possibleValues: pair as any, value: norm };
   }
-
   return null;
 }
 
-// Determine the true/false values for the checkbox
-const checkboxValues = (() => {
-  const mappedValues = (() => {
-    const boolValues = mapToBoolRepresentation(model.value);
-    if (boolValues !== null) {
-      return boolValues.possibleValues;
-    }
+// Determine the backing truthy/falsy values this checkbox should write to the model
+const checkboxValues = computed(() => {
+  // Prefer explicit model mapping
+  const fromModel = mapToBoolRepresentation(model.value);
+  if (fromModel) {
+    const truthyIndex = props.inverseValues ? 1 : 0;
+    const falsyIndex = props.inverseValues ? 0 : 1;
+    return {
+      truthy: fromModel.possibleValues[truthyIndex],
+      falsy: fromModel.possibleValues[falsyIndex],
+    };
+  }
+  // Fall back to provided default mapping
+  const fromDefault = mapToBoolRepresentation(props.default);
+  if (fromDefault) {
+    const truthyIndex = props.inverseValues ? 1 : 0;
+    const falsyIndex = props.inverseValues ? 0 : 1;
+    return {
+      truthy: fromDefault.possibleValues[truthyIndex],
+      falsy: fromDefault.possibleValues[falsyIndex],
+    };
+  }
+  // Final fallback is boolean mapping
+  return { truthy: !props.inverseValues, falsy: !!props.inverseValues };
+});
 
-    // Return fallback if nothing matches
-    console.error(`Checkbox value ${model.value} for "${props.id}" did not match any acceptable pattern!`);
-    return ["true", "false"];
-  })();
+// Expose a real boolean for the UI, while mapping to the configured backend values
+const isChecked = computed<boolean>({
+  get() {
+    const { truthy, falsy } = checkboxValues.value;
+    const cur = model.value;
+    // Treat undefined/null as default if provided
+    const mapped = mapToBoolRepresentation(cur);
+    if (mapped)
+      return mapped.value === mapped.possibleValues[0]
+        ? !props.inverseValues
+        : !!props.inverseValues;
 
-  const truthyIndex = props.inverseValues ? 1 : 0;
-  const falsyIndex = props.inverseValues ? 0 : 1;
-  return { truthy: mappedValues[truthyIndex], falsy: mappedValues[falsyIndex] };
-})();
+    // If model is not recognizable, try default to decide visual state
+    const def = mapToBoolRepresentation(props.default);
+    if (def)
+      return def.value === def.possibleValues[0] ? !props.inverseValues : !!props.inverseValues;
+
+    // Fallback: only true if equals our truthy literal
+    return cur === truthy;
+  },
+  set(checked: boolean) {
+    const { truthy, falsy } = checkboxValues.value;
+    model.value = checked ? truthy : falsy;
+  },
+});
+
+// For helper text showing what the default resolves to (enabled/disabled)
 const parsedDefaultPropValue = (() => {
   const boolValues = mapToBoolRepresentation(props.default);
-  if (boolValues !== null) {
-    // Convert truthy to true/false.
-    return boolValues.value === boolValues.possibleValues[0];
-  }
-
-  return null;
+  if (boolValues) return boolValues.value === boolValues.possibleValues[0];
+  return null as boolean | null;
 })();
 
 const labelField = props.label ?? `${props.localePrefix}.${props.id}`;
 const descField = props.desc ?? `${props.localePrefix}.${props.id}_desc`;
-const showDesc = props.desc !== "" || Object.entries(slots).length > 0;
+const showDesc = props.desc !== '' || Object.entries(slots).length > 0;
 const showDefValue = parsedDefaultPropValue !== null;
-const defValue = parsedDefaultPropValue ? "_common.enabled_def_cbox" : "_common.disabled_def_cbox";
+const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.disabled_def_cbox';
 </script>
 
 <template>
-  <div :class="extendedClassStr">
-    <label :for="props.id" :class="`form-check-label${showDesc ? ' mb-2' : ''}`">
+  <div class="form-check">
+    <n-checkbox :id="props.id" v-model:checked="isChecked">
       {{ $t(labelField) }}
-      <div class="mt-0 form-text" v-if="showDefValue">
-        {{ $t(defValue) }}
-      </div>
-    </label>
-    <input type="checkbox"
-           class="form-check-input"
-           :id="props.id"
-           v-model="model"
-           :true-value="checkboxValues.truthy"
-           :false-value="checkboxValues.falsy" />
-    <div class="form-text" v-if="showDesc">
+    </n-checkbox>
+    <div v-if="showDefValue" class="mt-0 form-text">
+      {{ $t(defValue) }}
+    </div>
+    <div v-if="showDesc" class="form-text">
       {{ $t(descField) }}
-      <slot></slot>
+      <slot />
     </div>
   </div>
 </template>

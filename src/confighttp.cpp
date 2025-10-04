@@ -7,19 +7,25 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
+#include <boost/regex.hpp>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <thread>
 #include <numeric>
 #include <algorithm>
+#include <unordered_map>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/property_tree/json_parser.hpp>
 #include <nlohmann/json.hpp>
 #include <Simple-Web-Server/crypto.hpp>
 #include <Simple-Web-Server/server_https.hpp>
@@ -28,14 +34,36 @@
 #include "config.h"
 #include "confighttp.h"
 #include "crypto.h"
-#include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "http_auth.h"
 #include "httpcommon.h"
+#include "platform/common.h"
+#ifdef _WIN32
+  #include "src/platform/windows/image_convert.h"
+
+#endif
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+
+#include <nlohmann/json.hpp>
+#if defined(_WIN32)
+  #include "platform/windows/misc.h"
+  #include "src/platform/windows/ipc/misc_utils.h"
+  #include "src/platform/windows/playnite_integration.h"
+
+  #include <windows.h>
+#endif
+#if defined(_WIN32)
+  #include "platform/windows/misc.h"
+
+  #include <KnownFolders.h>
+  #include <ShlObj.h>
+  #include <windows.h>
+#endif
+#include "display_helper_integration.h"
 #include "process.h"
 #include "utility.h"
 #include "uuid.h"
@@ -45,16 +73,90 @@
 #endif
 
 using namespace std::literals;
+namespace pt = boost::property_tree;
 
 namespace confighttp {
+  // Global MIME type lookup used for static file responses
+  const std::map<std::string, std::string> mime_types = {
+    {"css", "text/css"},
+    {"gif", "image/gif"},
+    {"htm", "text/html"},
+    {"html", "text/html"},
+    {"ico", "image/x-icon"},
+    {"jpeg", "image/jpeg"},
+    {"jpg", "image/jpeg"},
+    {"js", "application/javascript"},
+    {"json", "application/json"},
+    {"png", "image/png"},
+    {"svg", "image/svg+xml"},
+    {"ttf", "font/ttf"},
+    {"txt", "text/plain"},
+    {"woff2", "font/woff2"},
+    {"xml", "text/xml"},
+  };
+
+  // Helper: sort apps by their 'name' field, if present
+  static void sort_apps_by_name(nlohmann::json &file_tree) {
+    try {
+      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+        return;
+      }
+      auto &apps_node = file_tree["apps"];
+      std::sort(apps_node.begin(), apps_node.end(), [](const nlohmann::json &a, const nlohmann::json &b) {
+        try {
+          return a.at("name").get<std::string>() < b.at("name").get<std::string>();
+        } catch (...) {
+          return false;
+        }
+      });
+    } catch (...) {}
+  }
+
+  bool refresh_client_apps_cache(nlohmann::json &file_tree) {
+    try {
+      sort_apps_by_name(file_tree);
+      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+      proc::refresh(config::stream.file_apps);
+      return true;
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "refresh_client_apps_cache: failed: " << e.what();
+    } catch (...) {
+      BOOST_LOG(warning) << "refresh_client_apps_cache: failed (unknown)";
+    }
+    return false;
+  }
   namespace fs = std::filesystem;
+  using enum confighttp::StatusCode;
 
   using https_server_t = SimpleWeb::Server<SimpleWeb::HTTPS>;
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
 
-  // Keep the base enum for client operations.
+  // Forward declaration for error helper implemented later
+  void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
+
+#ifdef _WIN32
+  // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
+  void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void installPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void uninstallPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  // Helper to keep confighttp.cpp free of Playnite details
+  void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
+  // New: download Playnite-related logs as a ZIP
+
+  // RTSS status endpoint (Windows-only)
+  void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getLosslessScalingStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  // Display helper: export current OS state as golden restore snapshot
+  void postExportGoldenDisplay(resp_https_t response, req_https_t request);
+#endif
+
   enum class op_e {
     ADD,    ///< Add client
     REMOVE  ///< Remove client
@@ -69,16 +171,42 @@ namespace confighttp {
    * @param request The HTTP request object.
    */
   void print_req(const req_https_t &request) {
-    BOOST_LOG(debug) << "METHOD :: "sv << request->method;
-    BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
-    for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << (name == "Authorization" ? "CREDENTIALS REDACTED" : val);
+    BOOST_LOG(debug) << "HTTP "sv << request->method << ' ' << request->path;
+
+    if (!request->header.empty()) {
+      BOOST_LOG(verbose) << "Headers:"sv;
+      for (auto &[name, val] : request->header) {
+        BOOST_LOG(verbose) << name << " -- "
+                           << (name == "Authorization" ? "CREDENTIALS REDACTED" : val);
+      }
     }
-    BOOST_LOG(debug) << " [--] "sv;
-    for (auto &[name, val] : request->parse_query_string()) {
-      BOOST_LOG(debug) << name << " -- " << val;
+
+    auto query = request->parse_query_string();
+    if (!query.empty()) {
+      BOOST_LOG(verbose) << "Query Params:"sv;
+      for (auto &[name, val] : query) {
+        BOOST_LOG(verbose) << name << " -- " << val;
+      }
     }
-    BOOST_LOG(debug) << " [--] "sv;
+  }
+
+  /**
+   * @brief Get the CORS origin for localhost (no wildcard).
+   * @return The CORS origin string.
+   */
+  static std::string get_cors_origin() {
+    std::uint16_t https_port = net::map_port(PORT_HTTPS);
+    return std::format("https://localhost:{}", https_port);
+  }
+
+  /**
+   * @brief Helper to add CORS headers for API responses.
+   * @param headers The headers to add CORS to.
+   */
+  void add_cors_headers(SimpleWeb::CaseInsensitiveMultimap &headers) {
+    headers.emplace("Access-Control-Allow-Origin", get_cors_origin());
+    headers.emplace("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    headers.emplace("Access-Control-Allow-Headers", "Content-Type, Authorization");
   }
 
   /**
@@ -88,10 +216,23 @@ namespace confighttp {
    */
   void send_response(resp_https_t response, const nlohmann::json &output_tree) {
     SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
+    add_cors_headers(headers);
+    response->write(success_ok, output_tree.dump(), headers);
+  }
+
+  /**
+   * @brief Write an APIResponse to an HTTP response object.
+   * @param response The HTTP response object.
+   * @param api_response The APIResponse containing the structured response data.
+   */
+  void write_api_response(resp_https_t response, const APIResponse &api_response) {
+    SimpleWeb::CaseInsensitiveMultimap headers = api_response.headers;
     headers.emplace("Content-Type", "application/json");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(output_tree.dump(), headers);
+    add_cors_headers(headers);
+    response->write(api_response.status_code, api_response.body, headers);
   }
 
   /**
@@ -102,7 +243,9 @@ namespace confighttp {
   void send_unauthorized(resp_https_t response, req_https_t request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
     BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
-    constexpr SimpleWeb::StatusCode code = SimpleWeb::StatusCode::client_error_unauthorized;
+
+    constexpr auto code = client_error_unauthorized;
+
     nlohmann::json tree;
     tree["status_code"] = code;
     tree["status"] = false;
@@ -110,7 +253,8 @@ namespace confighttp {
     const SimpleWeb::CaseInsensitiveMultimap headers {
       {"Content-Type", "application/json"},
       {"X-Frame-Options", "DENY"},
-      {"Content-Security-Policy", "frame-ancestors 'none';"}
+      {"Content-Security-Policy", "frame-ancestors 'none';"},
+      {"Access-Control-Allow-Origin", get_cors_origin()}
     };
     response->write(code, tree.dump(), headers);
   }
@@ -129,88 +273,93 @@ namespace confighttp {
       {"X-Frame-Options", "DENY"},
       {"Content-Security-Policy", "frame-ancestors 'none';"}
     };
-    response->write(SimpleWeb::StatusCode::redirection_temporary_redirect, headers);
+    response->write(redirection_temporary_redirect, headers);
   }
 
   /**
-   * @brief Retrieve the value of a key from a cookie string.
-   * @param cookieString The cookie header string.
-   * @param key The key to search.
-   * @return The value if found, empty string otherwise.
-   */
-  std::string getCookieValue(const std::string& cookieString, const std::string& key) {
-    std::string keyWithEqual = key + "=";
-    std::size_t startPos = cookieString.find(keyWithEqual);
-    if (startPos == std::string::npos)
-      return "";
-    startPos += keyWithEqual.length();
-    std::size_t endPos = cookieString.find(";", startPos);
-    if (endPos == std::string::npos)
-      return cookieString.substr(startPos);
-    return cookieString.substr(startPos, endPos - startPos);
-  }
-
-  /**
-   * @brief Check if the IP origin is allowed.
-   * @param response The HTTP response object.
+   * @brief Check authentication and authorization for an HTTP request.
    * @param request The HTTP request object.
-   * @return True if allowed, false otherwise.
+   * @return AuthResult with outcome and response details if not authorized.
    */
-  bool checkIPOrigin(resp_https_t response, req_https_t request) {
+  AuthResult check_auth(const req_https_t &request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
-    auto ip_type = net::from_address(address);
-    if (ip_type > http::origin_web_ui_allowed) {
-      BOOST_LOG(info) << "Web UI: ["sv << address << "] -- denied"sv;
-      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+    std::string auth_header;
+    // Try Authorization header
+    if (auto auth_it = request->header.find("authorization"); auth_it != request->header.end()) {
+      auth_header = auth_it->second;
+    } else {
+      std::string token = extract_session_token_from_cookie(request->header);
+      if (!token.empty()) {
+        auth_header = "Session " + token;
+      }
+    }
+    return check_auth(address, auth_header, request->path, request->method);
+  }
+
+  /**
+   * @brief Authenticate the user or API token for a specific path/method.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   * @return True if authenticated and authorized, false otherwise.
+   */
+  bool authenticate(resp_https_t response, req_https_t request) {
+    if (auto result = check_auth(request); !result.ok) {
+      if (result.code == StatusCode::redirection_temporary_redirect) {
+        response->write(result.code, result.headers);
+      } else if (!result.body.empty()) {
+        response->write(result.code, result.body, result.headers);
+      } else {
+        response->write(result.code);
+      }
       return false;
     }
     return true;
   }
 
   /**
-   * @brief Authenticate the request.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   * @param needsRedirect Whether to redirect on failure.
-   * @return True if authenticated, false otherwise.
-   *
-   * This function uses session cookies (if set) and ensures they have not expired.
+   * @brief Get the list of available display devices.
+   * @api_examples{/api/display-devices| GET| [{"device_id":"{...}","display_name":"\\\\.\\DISPLAY1","friendly_name":"Monitor"}, ...]}
    */
-  bool authenticate(resp_https_t response, req_https_t request, bool needsRedirect = false) {
-    if (!checkIPOrigin(response, request))
-      return false;
-    // If credentials not set, redirect to welcome.
-    if (config::sunshine.username.empty()) {
-      send_redirect(response, request, "/welcome");
-      return false;
+  void getDisplayDevices(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
     }
-    // Guard: on failure, redirect if requested.
-    auto fg = util::fail_guard([&]() {
-      if (needsRedirect) {
-        std::string redir_path = "/login?redir=.";
-        redir_path += request->path;
-        send_redirect(response, request, redir_path.c_str());
-      } else {
-        send_unauthorized(response, request);
-      }
-    });
-    if (sessionCookie.empty())
-      return false;
-    // Check for expiry
-    if (std::chrono::steady_clock::now() - cookie_creation_time > SESSION_EXPIRE_DURATION) {
-      sessionCookie.clear();
-      return false;
+
+    try {
+      const auto json_str = display_helper_integration::enumerate_devices_json();
+      nlohmann::json tree = nlohmann::json::parse(json_str);
+      send_response(response, tree);
+    } catch (const std::exception &e) {
+      nlohmann::json tree;
+      tree["status"] = false;
+      tree["error"] = std::string {"Failed to enumerate display devices: "} + e.what();
+      send_response(response, tree);
     }
-    auto cookies = request->header.find("cookie");
-    if (cookies == request->header.end())
-      return false;
-    auto authCookie = getCookieValue(cookies->second, "auth");
-    if (authCookie.empty() ||
-        util::hex(crypto::hash(authCookie + config::sunshine.salt)).to_string() != sessionCookie)
-      return false;
-    fg.disable();
-    return true;
   }
+
+#ifdef _WIN32
+  /**
+   * @brief Health check for ViGEm (Virtual Gamepad) installation on Windows.
+   * @api_examples{/api/health/vigem| GET| {"installed":true,"version":"<hint>"}}
+   */
+  void getVigemHealth(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      std::string version;
+      bool installed = platf::is_vigem_installed(&version);
+      nlohmann::json out;
+      out["installed"] = installed;
+      if (!version.empty()) {
+        out["version"] = version;
+      }
+      send_response(response, out);
+    } catch (...) {
+      bad_request(response, request, "Failed to evaluate ViGEm health");
+    }
+  }
+#endif
 
   /**
    * @brief Send a 404 Not Found response.
@@ -218,12 +367,14 @@ namespace confighttp {
    * @param request The HTTP request object.
    */
   void not_found(resp_https_t response, [[maybe_unused]] req_https_t request) {
-    constexpr SimpleWeb::StatusCode code = SimpleWeb::StatusCode::client_error_not_found;
+    constexpr auto code = client_error_not_found;
+
     nlohmann::json tree;
     tree["status_code"] = static_cast<int>(code);
     tree["error"] = "Not Found";
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
+    headers.emplace("Access-Control-Allow-Origin", get_cors_origin());
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
 
@@ -237,17 +388,13 @@ namespace confighttp {
    * @param error_message The error message.
    */
   void bad_request(resp_https_t response, [[maybe_unused]] req_https_t request, const std::string &error_message = "Bad Request") {
-    constexpr SimpleWeb::StatusCode code = SimpleWeb::StatusCode::client_error_bad_request;
-    nlohmann::json tree;
-    tree["status_code"] = static_cast<int>(code);
-    tree["status"] = false;
-    tree["error"] = error_message;
     SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "application/json");
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-
-    response->write(code, tree.dump(), headers);
+    add_cors_headers(headers);
+    nlohmann::json error = {{"error", error_message}};
+    response->write(client_error_bad_request, error.dump(), headers);
   }
 
 
@@ -287,18 +434,30 @@ namespace confighttp {
     return true;
   }
 
-  /**
-   * @brief Get the index page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getIndexPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
 
+  /**
+   * @brief SPA entry responder - serves the single-page app shell (index.html)
+   * for any non-API and non-static-asset GET requests. Allows unauthenticated
+   * access so the frontend can render login/first-run flows. Static and API
+   * routes are expected to be registered explicitly; this function returns
+   * a 404 for reserved prefixes to avoid accidentally exposing files.
+   */
+  void getSpaEntry(resp_https_t response, req_https_t request) {
     print_req(request);
 
+    const std::string &p = request->path;
+    // Reserved prefixes that should not be handled by the SPA entry
+    static const std::vector<std::string> reserved = {"/api", "/assets", "/covers", "/images", "/images/"};
+    for (const auto &r : reserved) {
+      if (p.rfind(r, 0) == 0) {
+        // Let explicit handlers or default not_found handle these
+        not_found(response, request);
+        return;
+      }
+    }
+
+    // Serve the SPA shell (index.html) without server-side auth so frontend
+    // can manage routing and authentication flows.
     std::string content = file_handler::read_file(WEB_DIR "index.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
@@ -307,172 +466,7 @@ namespace confighttp {
     response->write(content, headers);
   }
 
-  /**
-   * @brief Get the PIN page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getPinPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "pin.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the apps page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getAppsPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "apps.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    headers.emplace("Access-Control-Allow-Origin", "https://images.igdb.com/");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the clients page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getClientsPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "clients.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the configuration page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getConfigPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "config.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the password page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getPasswordPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "password.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the login page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   *
-   * @todo Combine this function with getWelcomePage if appropriate.
-   */
-  void getLoginPage(resp_https_t response, req_https_t request) {
-    if (!checkIPOrigin(response, request)) {
-      return;
-    }
-
-    if (config::sunshine.username.empty()) {
-      send_redirect(response, request, "/welcome");
-      return;
-    }
-
-    std::string content = file_handler::read_file(WEB_DIR "login.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the welcome page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getWelcomePage(resp_https_t response, req_https_t request) {
-    print_req(request);
-
-    if (!config::sunshine.username.empty()) {
-      send_redirect(response, request, "/");
-      return;
-    }
-
-    std::string content = file_handler::read_file(WEB_DIR "welcome.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
-
-  /**
-   * @brief Get the troubleshooting page.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getTroubleshootingPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request, true)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::string content = file_handler::read_file(WEB_DIR "troubleshooting.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
-  }
+  // legacy per-page handlers removed; SPA entry handles these routes
 
   /**
    * @brief Get the favicon image.
@@ -487,7 +481,7 @@ namespace confighttp {
     headers.emplace("Content-Type", "image/x-icon");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+    response->write(success_ok, in, headers);
   }
 
   /**
@@ -506,7 +500,7 @@ namespace confighttp {
     headers.emplace("Content-Type", "image/png");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+    response->write(success_ok, in, headers);
   }
 
   /**
@@ -559,7 +553,7 @@ namespace confighttp {
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
     std::ifstream in(filePath.string(), std::ios::binary);
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+    response->write(success_ok, in, headers);
   }
 
   /**
@@ -583,6 +577,127 @@ namespace confighttp {
       file_tree["current_app"] = proc::proc.get_running_app_uuid();
       file_tree["host_uuid"] = http::unique_id;
       file_tree["host_name"] = config::nvhttp.sunshine_name;
+#ifdef _WIN32
+      // No auto-insert here; controlled by config 'playnite_fullscreen_entry_enabled'.
+#endif
+
+      // Legacy versions of Sunshine used strings for boolean and integers, let's convert them
+      // List of keys to convert to boolean
+      std::vector<std::string> boolean_keys = {
+        "exclude-global-prep-cmd",
+        "elevated",
+        "auto-detach",
+        "wait-all",
+        "gen1-framegen-fix",
+        "gen2-framegen-fix",
+        "dlss-framegen-capture-fix",  // backward compatibility
+        "lossless-scaling-framegen"
+      };
+
+      // List of keys to convert to integers
+      std::vector<std::string> integer_keys = {
+        "exit-timeout",
+        "lossless-scaling-target-fps",
+        "lossless-scaling-rtss-limit"
+      };
+
+      bool mutated = false;
+      auto normalize_lossless_profile_overrides = [](nlohmann::json &node) -> bool {
+        if (!node.is_object()) {
+          return false;
+        }
+        bool changed = false;
+        auto convert_int = [&](const char *key) {
+          if (!node.contains(key)) {
+            return;
+          }
+          auto &value = node[key];
+          if (value.is_string()) {
+            try {
+              value = std::stoi(value.get<std::string>());
+              changed = true;
+            } catch (...) {
+            }
+          }
+        };
+        auto convert_bool = [&](const char *key) {
+          if (!node.contains(key)) {
+            return;
+          }
+          auto &value = node[key];
+          if (value.is_string()) {
+            auto text = value.get<std::string>();
+            if (text == "true" || text == "false") {
+              value = (text == "true");
+              changed = true;
+            } else if (text == "1" || text == "0") {
+              value = (text == "1");
+              changed = true;
+            }
+          }
+        };
+        convert_bool("performance-mode");
+        convert_int("flow-scale");
+        convert_int("resolution-scale");
+        convert_int("sharpening");
+        convert_bool("anime4k-vrs");
+        if (node.contains("scaling-type") && node["scaling-type"].is_string()) {
+          auto text = node["scaling-type"].get<std::string>();
+          boost::algorithm::to_lower(text);
+          node["scaling-type"] = text;
+          changed = true;
+        }
+        if (node.contains("anime4k-size") && node["anime4k-size"].is_string()) {
+          auto text = node["anime4k-size"].get<std::string>();
+          boost::algorithm::to_upper(text);
+          node["anime4k-size"] = text;
+          changed = true;
+        }
+        return changed;
+      };
+      // Walk fileTree and convert true/false strings to boolean or integer values
+      for (auto &app : file_tree["apps"]) {
+        for (const auto &key : boolean_keys) {
+          if (app.contains(key) && app[key].is_string()) {
+            app[key] = app[key] == "true";
+            mutated = true;
+          }
+        }
+        for (const auto &key : integer_keys) {
+          if (app.contains(key) && app[key].is_string()) {
+            app[key] = std::stoi(app[key].get<std::string>());
+            mutated = true;
+          }
+        }
+        if (app.contains("lossless-scaling-recommended")) {
+          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-recommended"]) || mutated;
+        }
+        if (app.contains("lossless-scaling-custom")) {
+          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-custom"]) || mutated;
+        }
+        if (app.contains("prep-cmd")) {
+          for (auto &prep : app["prep-cmd"]) {
+            if (prep.contains("elevated") && prep["elevated"].is_string()) {
+              prep["elevated"] = prep["elevated"] == "true";
+              mutated = true;
+            }
+          }
+        }
+        // Ensure each app has a UUID (auto-insert if missing/empty)
+        if (!app.contains("uuid") || app["uuid"].is_null() || (app["uuid"].is_string() && app["uuid"].get<std::string>().empty())) {
+          app["uuid"] = uuid_util::uuid_t::generate().string();
+          mutated = true;
+        }
+      }
+
+      // If any normalization occurred, persist back to disk
+      if (mutated) {
+        try {
+          file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+        } catch (std::exception &e) {
+          BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
+        }
+      }
 
       send_response(response, file_tree);
     } catch (std::exception &e) {
@@ -648,9 +763,63 @@ namespace confighttp {
       // Migrate/merge the new app into the file tree.
       proc::migrate_apps(&fileTree, &inputTree);
 
-      // Write the updated file tree back to disk.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
-      proc::refresh(config::stream.file_apps);
+
+      // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
+#ifdef _WIN32
+      enhance_app_with_playnite_cover(input_tree);
+#endif
+
+#ifndef _WIN32
+      if ((input_tree.contains("gen1-framegen-fix") && input_tree["gen1-framegen-fix"].is_boolean() && input_tree["gen1-framegen-fix"].get<bool>()) ||
+          (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>())) {
+        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
+        return;
+      }
+      if (input_tree.contains("gen2-framegen-fix") && input_tree["gen2-framegen-fix"].is_boolean() && input_tree["gen2-framegen-fix"].get<bool>()) {
+        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
+        return;
+      }
+#else
+      // Migrate old field name to new for backward compatibility
+      if (input_tree.contains("dlss-framegen-capture-fix") && !input_tree.contains("gen1-framegen-fix")) {
+        input_tree["gen1-framegen-fix"] = input_tree["dlss-framegen-capture-fix"];
+      }
+      // Remove old field to avoid duplication
+      input_tree.erase("dlss-framegen-capture-fix");
+#endif
+
+      auto &apps_node = file_tree["apps"];
+      int index = input_tree["index"].get<int>();  // this will intentionally cause exception if the provided value is the wrong type
+
+      input_tree.erase("index");
+
+      if (index == -1) {
+        // New app: generate a UUID if not provided
+        if (!input_tree.contains("uuid") || input_tree["uuid"].is_null() || (input_tree["uuid"].is_string() && input_tree["uuid"].get<std::string>().empty())) {
+          input_tree["uuid"] = uuid_util::uuid_t::generate().string();
+        }
+        apps_node.push_back(input_tree);
+      } else {
+        nlohmann::json newApps = nlohmann::json::array();
+        for (size_t i = 0; i < apps_node.size(); ++i) {
+          if (i == index) {
+            // Preserve existing UUID if present
+            try {
+              if ((!input_tree.contains("uuid") || input_tree["uuid"].is_null() || (input_tree["uuid"].is_string() && input_tree["uuid"].get<std::string>().empty())) &&
+                  apps_node[i].contains("uuid") && apps_node[i]["uuid"].is_string()) {
+                input_tree["uuid"] = apps_node[i]["uuid"].get<std::string>();
+              }
+            } catch (...) {}
+            newApps.push_back(input_tree);
+          } else {
+            newApps.push_back(apps_node[i]);
+          }
+        }
+        file_tree["apps"] = newApps;
+      }
+
+      // Update apps file and refresh client cache
+      confighttp::refresh_client_apps_cache(file_tree);
 
       // Prepare and send the output response.
       nlohmann::json outputTree;
@@ -662,6 +831,19 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
+
+  /**
+   * @brief Serve a specific application's cover image by UUID.
+   *        Looks for files named @c uuid with a supported image extension in the covers directory.
+   * @api_examples{/api/apps/@c uuid/cover| GET| null}
+   */
+
+  /**
+   * @brief Upload or set a specific application's cover image by UUID.
+   *        Accepts either a JSON body with {"url": "..."} (restricted to images.igdb.com) or {"data": base64}.
+   *        Saves to appdata/covers/@c uuid.@c ext where ext is derived from URL or defaults to .png for data.
+   * @api_examples{/api/apps/@c uuid/cover| POST| {"url":"https://images.igdb.com/.../abc.png"}}
+   */
 
   /**
    * @brief Close the currently running application.
@@ -823,31 +1005,61 @@ namespace confighttp {
       }
       auto uuid = input_tree["uuid"].get<std::string>();
 
-      // Read the apps file into a nlohmann::json object.
-      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
-      nlohmann::json fileTree = nlohmann::json::parse(content);
+      // Detect if the app being removed is the Playnite fullscreen launcher
+      auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
+        try {
+          if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+            return true;
+          }
+          if (app.contains("cmd") && app["cmd"].is_string()) {
+            auto s = app["cmd"].get<std::string>();
+            if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
+              return true;
+            }
+          }
+          if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
+            return true;
+          }
+        } catch (...) {}
+        return false;
+      };
 
-      // Remove any app with the matching uuid directly from the "apps" array.
-      if (fileTree.contains("apps") && fileTree["apps"].is_array()) {
-        auto& apps = fileTree["apps"];
-        apps.erase(
-          std::remove_if(apps.begin(), apps.end(), [&uuid](const nlohmann::json& app) {
-            return app.value("uuid", "") == uuid;
-          }),
-          apps.end()
-        );
+      bool disabled_fullscreen_flag = false;
+      for (size_t i = 0; i < apps_node.size(); ++i) {
+        if (i != index) {
+          new_apps.push_back(apps_node[i]);
+        } else {
+          // If user deletes the Playnite fullscreen app, turn off the config flag
+#ifdef _WIN32
+          try {
+            if (is_playnite_fullscreen(apps_node[i])) {
+              auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+              current_cfg["playnite_fullscreen_entry_enabled"] = "false";
+              std::stringstream config_stream;
+              for (const auto &kv : current_cfg) {
+                config_stream << kv.first << " = " << kv.second << std::endl;
+              }
+              file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+              config::apply_config_now();
+              disabled_fullscreen_flag = true;
+            }
+          } catch (...) {
+          }
+#endif
+        }
       }
 
       // Write the updated JSON back to the file.
       file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
       proc::refresh(config::stream.file_apps);
 
-      // Prepare and send the response.
-      nlohmann::json outputTree;
-      outputTree["status"] = true;
-      send_response(response, outputTree);
-    }
-    catch (std::exception &e) {
+      output_tree["status"] = true;
+      output_tree["result"] = std::format("application {} deleted", index);
+      if (disabled_fullscreen_flag) {
+        output_tree["playniteFullscreenDisabled"] = true;
+      }
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "DeleteApp: "sv << e.what();
       bad_request(response, request, e.what());
     }
@@ -876,6 +1088,10 @@ namespace confighttp {
     output_tree["status"] = true;
     send_response(response, output_tree);
   }
+
+#ifdef _WIN32
+  // removed unused forward declaration for default_playnite_ext_dir()
+#endif
 
   /**
    * @brief Update client information.
@@ -1016,7 +1232,101 @@ namespace confighttp {
   }
 
   /**
-   * @brief Get the locale setting.
+   * @brief Get immutables metadata about the server.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/meta| GET| null}
+   */
+  void getMetadata(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["platform"] = SUNSHINE_PLATFORM;
+    output_tree["version"] = PROJECT_VERSION;
+    output_tree["commit"] = PROJECT_VERSION_COMMIT;
+#ifdef PROJECT_VERSION_BRANCH
+    output_tree["branch"] = PROJECT_VERSION_BRANCH;
+#else
+    output_tree["branch"] = "unknown";
+#endif
+    // Build/release date provided by CMake (ISO 8601 when available)
+    output_tree["release_date"] = PROJECT_RELEASE_DATE;
+#if defined(_WIN32)
+    try {
+      const auto gpus = platf::enumerate_gpus();
+      if (!gpus.empty()) {
+        nlohmann::json gpu_array = nlohmann::json::array();
+        bool has_nvidia = false;
+        bool has_amd = false;
+        bool has_intel = false;
+
+        for (const auto &gpu : gpus) {
+          nlohmann::json gpu_entry;
+          gpu_entry["description"] = gpu.description;
+          gpu_entry["vendor_id"] = gpu.vendor_id;
+          gpu_entry["device_id"] = gpu.device_id;
+          gpu_entry["dedicated_video_memory"] = gpu.dedicated_video_memory;
+          gpu_array.push_back(std::move(gpu_entry));
+
+          switch (gpu.vendor_id) {
+            case 0x10DE:  // NVIDIA
+              has_nvidia = true;
+              break;
+            case 0x1002:  // AMD/ATI
+            case 0x1022:  // AMD alternative PCI vendor ID (APUs)
+              has_amd = true;
+              break;
+            case 0x8086:  // Intel
+              has_intel = true;
+              break;
+            default:
+              break;
+          }
+        }
+
+        output_tree["gpus"] = std::move(gpu_array);
+        output_tree["has_nvidia_gpu"] = has_nvidia;
+        output_tree["has_amd_gpu"] = has_amd;
+        output_tree["has_intel_gpu"] = has_intel;
+      }
+
+      const auto version = platf::query_windows_version();
+      if (!version.display_version.empty()) {
+        output_tree["windows_display_version"] = version.display_version;
+      }
+      if (!version.release_id.empty()) {
+        output_tree["windows_release_id"] = version.release_id;
+      }
+      if (!version.product_name.empty()) {
+        output_tree["windows_product_name"] = version.product_name;
+      }
+      if (!version.current_build.empty()) {
+        output_tree["windows_current_build"] = version.current_build;
+      }
+      if (version.build_number.has_value()) {
+        output_tree["windows_build_number"] = version.build_number.value();
+      }
+      if (version.major_version.has_value()) {
+        output_tree["windows_major_version"] = version.major_version.value();
+      }
+      if (version.minor_version.has_value()) {
+        output_tree["windows_minor_version"] = version.minor_version.value();
+      }
+    } catch (...) {
+      // Non-fatal; keep metadata response minimal if enumeration fails.
+    }
+#endif
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief Get the locale setting. This endpoint does not require authentication.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
@@ -1070,12 +1380,176 @@ namespace confighttp {
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
       file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+
+      // Detect restart-required keys
+      static const std::set<std::string> restart_required_keys = {
+        "port",
+        "address_family",
+        "upnp",
+        "pkey",
+        "cert"
+      };
+      bool restart_required = false;
+      for (const auto &[k, _] : input_tree.items()) {
+        if (restart_required_keys.count(k)) {
+          restart_required = true;
+          break;
+        }
+      }
+
+      bool applied_now = false;
+      bool deferred = false;
+
+      if (!restart_required) {
+        if (rtsp_stream::session_count() == 0) {
+          // Apply immediately
+          config::apply_config_now();
+          applied_now = true;
+        } else {
+          config::mark_deferred_reload();
+          deferred = true;
+        }
+      }
+
       output_tree["status"] = true;
+      output_tree["appliedNow"] = applied_now;
+      output_tree["deferred"] = deferred;
+      output_tree["restartRequired"] = restart_required;
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "SaveConfig: "sv << e.what();
       bad_request(response, request, e.what());
     }
+  }
+
+  /**
+   * @brief Partial update of configuration (PATCH /api/config).
+   * Merges provided JSON object into the existing key=value style config file.
+   * Removes keys when value is null or an empty string. Detects whether a
+   * restart is required and attempts to apply immediately when safe.
+   */
+  void patchConfig(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json output_tree;
+      nlohmann::json patch_tree = nlohmann::json::parse(ss);
+      if (!patch_tree.is_object()) {
+        bad_request(response, request, "PATCH body must be a JSON object");
+        return;
+      }
+
+      // Load existing config into a map
+      std::unordered_map<std::string, std::string> current = config::parse_config(
+        file_handler::read_file(config::sunshine.config_file.c_str())
+      );
+
+      // Track which keys are being modified to detect restart requirements
+      std::set<std::string> changed_keys;
+
+      for (auto it = patch_tree.begin(); it != patch_tree.end(); ++it) {
+        const std::string key = it.key();
+        const nlohmann::json &val = it.value();
+        changed_keys.insert(key);
+
+        // Remove key when explicitly null or empty string
+        if (val.is_null() || (val.is_string() && val.get<std::string>().empty())) {
+          auto curIt = current.find(key);
+          if (curIt != current.end()) {
+            current.erase(curIt);
+          }
+          continue;
+        }
+
+        // Persist value: strings are raw, non-strings are dumped as JSON
+        if (val.is_string()) {
+          current[key] = val.get<std::string>();
+        } else {
+          current[key] = val.dump();
+        }
+      }
+
+      // Write back full merged config file
+      std::stringstream config_stream;
+      for (const auto &kv : current) {
+        config_stream << kv.first << " = " << kv.second << std::endl;
+      }
+      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+
+      // Detect restart-required keys
+      static const std::set<std::string> restart_required_keys = {
+        "port",
+        "address_family",
+        "upnp",
+        "pkey",
+        "cert"
+      };
+      bool restart_required = false;
+      for (const auto &k : changed_keys) {
+        if (restart_required_keys.count(k)) {
+          restart_required = true;
+          break;
+        }
+      }
+
+      bool applied_now = false;
+      bool deferred = false;
+      if (!restart_required) {
+        // Determine if only Playnite-related keys were changed; these are safe to hot-apply
+        // even when a streaming session is active.
+        bool only_playnite = !changed_keys.empty();
+        for (const auto &k : changed_keys) {
+          if (k.rfind("playnite_", 0) != 0) {
+            only_playnite = false;
+            break;
+          }
+        }
+        if (only_playnite || rtsp_stream::session_count() == 0) {
+          // Apply immediately
+          config::apply_config_now();
+          applied_now = true;
+        } else {
+          config::mark_deferred_reload();
+          deferred = true;
+        }
+      }
+
+      output_tree["status"] = true;
+      output_tree["appliedNow"] = applied_now;
+      output_tree["deferred"] = deferred;
+      output_tree["restartRequired"] = restart_required;
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "PatchConfig: "sv << e.what();
+      bad_request(response, request, e.what());
+      return;
+    }
+  }
+
+  // Lightweight session status for UI messaging
+  void getSessionStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    nlohmann::json output_tree;
+    const int active = rtsp_stream::session_count();
+    const bool app_running = proc::proc.running() > 0;
+    output_tree["activeSessions"] = active;
+    output_tree["appRunning"] = app_running;
+    output_tree["paused"] = app_running && active == 0;
+    output_tree["status"] = true;
+    send_response(response, output_tree);
   }
 
   /**
@@ -1104,26 +1578,157 @@ namespace confighttp {
       std::string url = input_tree.value("url", "");
       const std::string coverdir = platf::appdata().string() + "/covers/";
       file_handler::make_directory(coverdir);
-      std::string path = coverdir + http::url_escape(key) + ".png";
+
+      // Final destination PNG path
+      const std::string dest_png = coverdir + http::url_escape(key) + ".png";
+
+      // Helper to check PNG magic header
+      auto file_is_png = [](const std::string &p) -> bool {
+        std::ifstream f(p, std::ios::binary);
+
+        if (!f) {
+          return false;
+        }
+        unsigned char sig[8] {};
+        f.read(reinterpret_cast<char *>(sig), 8);
+        static const unsigned char pngsig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+
+        return f.gcount() == 8 && std::equal(std::begin(sig), std::end(sig), std::begin(pngsig));
+      };
+
+      // Build a temp source path (extension based on URL if available)
+      auto ext_from_url = [](std::string u) -> std::string {
+        auto qpos = u.find_first_of("?#");
+
+        if (qpos != std::string::npos) {
+          u = u.substr(0, qpos);
+        }
+        auto slash = u.find_last_of('/');
+        if (slash != std::string::npos) {
+          u = u.substr(slash + 1);
+        }
+        auto dot = u.find_last_of('.');
+        if (dot == std::string::npos) {
+          return std::string {".img"};
+        }
+        std::string e = u.substr(dot);
+        // sanitize extension
+        if (e.size() > 8) {
+          return std::string {".img"};
+        }
+        for (char &c : e) {
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+
+        return e;
+      };
+
+      std::string src_tmp;
       if (!url.empty()) {
         if (http::url_get_host(url) != "images.igdb.com") {
           bad_request(response, request, "Only images.igdb.com is allowed");
           return;
         }
-        if (!http::download_file(url, path)) {
+        const std::string ext = ext_from_url(url);
+        src_tmp = coverdir + http::url_escape(key) + "_src" + ext;
+        if (!http::download_file(url, src_tmp)) {
           bad_request(response, request, "Failed to download cover");
           return;
         }
-      } else {
-        auto data = SimpleWeb::Crypto::Base64::decode(input_tree.value("data", ""));
-        std::ofstream imgfile(path);
-        imgfile.write(data.data(), static_cast<int>(data.size()));
       }
+
+      bool converted = false;
+#ifdef _WIN32
+      {
+        // Convert using WIC helper; falls back to copying if already PNG
+        std::wstring src_w(src_tmp.begin(), src_tmp.end());
+        std::wstring dst_w(dest_png.begin(), dest_png.end());
+        converted = platf::img::convert_to_png_96dpi(src_w, dst_w);
+        if (!converted && file_is_png(src_tmp)) {
+          std::error_code ec {};
+          std::filesystem::copy_file(src_tmp, dest_png, std::filesystem::copy_options::overwrite_existing, ec);
+          converted = !ec.operator bool();
+        }
+      }
+#else
+      // Non-Windows: we can’t transcode here; accept only already-PNG data
+      if (file_is_png(src_tmp)) {
+        std::error_code ec {};
+
+        std::filesystem::rename(src_tmp, dest_png, ec);
+        if (ec) {
+          // If rename fails (cross-device), try copy
+          std::filesystem::copy_file(src_tmp, dest_png, std::filesystem::copy_options::overwrite_existing, ec);
+          if (!ec) {
+            std::filesystem::remove(src_tmp);
+            converted = true;
+          }
+        } else {
+          converted = true;
+        }
+      } else {
+        // Leave a clear error on non-Windows when not PNG
+        bad_request(response, request, "Cover must be PNG on this platform");
+        return;
+      }
+#endif
+
+      // Cleanup temp source file when possible
+      if (!src_tmp.empty()) {
+        std::error_code del_ec {};
+
+        std::filesystem::remove(src_tmp, del_ec);
+      }
+
+      if (!converted) {
+        bad_request(response, request, "Failed to convert cover to PNG");
+        return;
+      }
+
       output_tree["status"] = true;
-      output_tree["path"] = path;
+      output_tree["path"] = dest_png;
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "UploadCover: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  /**
+   * @brief Purge all auto-synced Playnite applications (playnite-managed == "auto").
+   * @api_examples{/api/apps/purge_autosync| POST| null}
+   */
+  void purgeAutoSyncedApps(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      nlohmann::json output_tree;
+      nlohmann::json new_apps = nlohmann::json::array();
+      std::string file = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(file);
+      auto &apps_node = file_tree["apps"];
+
+      int removed = 0;
+      for (auto &app : apps_node) {
+        std::string managed = app.contains("playnite-managed") && app["playnite-managed"].is_string() ? app["playnite-managed"].get<std::string>() : std::string();
+        if (managed == "auto") {
+          ++removed;
+          continue;
+        }
+        new_apps.push_back(app);
+      }
+
+      file_tree["apps"] = new_apps;
+      confighttp::refresh_client_apps_cache(file_tree);
+
+      output_tree["status"] = true;
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "purgeAutoSyncedApps: "sv << e.what();
       bad_request(response, request, e.what());
     }
   }
@@ -1151,8 +1756,11 @@ namespace confighttp {
     headers.emplace("Content-Type", contentType);
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(SimpleWeb::StatusCode::success_ok, content, headers);
+    response->write(success_ok, content, headers);
   }
+
+#ifdef _WIN32
+#endif
 
   /**
    * @brief Update existing credentials.
@@ -1313,9 +1921,132 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    output_tree["status"] = display_device::reset_persistence();
+    output_tree["status"] = display_helper_integration::reset_persistence();
     send_response(response, output_tree);
   }
+
+#ifdef _WIN32
+  /**
+   * @brief Export the current Windows display settings as a golden restore snapshot.
+   * @api_examples{/api/display/export_golden| POST| {"status":true}}
+   */
+  void postExportGoldenDisplay(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    try {
+      const bool ok = display_helper_integration::export_golden_restore();
+      out["status"] = ok;
+    } catch (...) {
+      out["status"] = false;
+    }
+    send_response(response, out);
+  }
+#endif
+
+#ifdef _WIN32
+  // --- Golden snapshot helpers (Windows-only) ---
+  static bool file_exists_nofail(const std::filesystem::path &p) {
+    try {
+      std::error_code ec;
+      return std::filesystem::exists(p, ec);
+    } catch (...) {
+      return false;
+    }
+  }
+
+  // Return candidate paths where the helper writes the golden snapshot.
+  // We probe both the active user's Roaming/Local AppData and the current
+  // process's CSIDL paths, mirroring the log bundle collection logic.
+  static std::vector<std::filesystem::path> golden_snapshot_candidates() {
+    std::vector<std::filesystem::path> out;
+    auto add_if = [&](const std::filesystem::path &base) {
+      if (!base.empty()) {
+        out.emplace_back(base / L"Sunshine" / L"display_golden_restore.json");
+      }
+    };
+
+    try {
+      // Prefer the active user's known folders (impersonated) when available
+      try {
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+        auto add_known = [&](REFKNOWNFOLDERID id) {
+          PWSTR baseW = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
+            add_if(std::filesystem::path(baseW));
+            CoTaskMemFree(baseW);
+          }
+        };
+        add_known(FOLDERID_RoamingAppData);
+        add_known(FOLDERID_LocalAppData);
+      } catch (...) {
+        // ignore
+      }
+
+      // Also probe the current process's CSIDL APPDATA and LOCAL_APPDATA
+      auto add_csidl = [&](int csidl) {
+        wchar_t baseW[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
+          add_if(std::filesystem::path(baseW));
+        }
+      };
+      add_csidl(CSIDL_APPDATA);
+      add_csidl(CSIDL_LOCAL_APPDATA);
+    } catch (...) {
+      // best-effort
+    }
+    return out;
+  }
+
+  void getGoldenStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    bool exists = false;
+    try {
+      for (const auto &p : golden_snapshot_candidates()) {
+        if (file_exists_nofail(p)) {
+          exists = true;
+          break;
+        }
+      }
+    } catch (...) {
+    }
+    out["exists"] = exists;
+    send_response(response, out);
+  }
+
+  void deleteGolden(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    nlohmann::json out;
+    bool any_deleted = false;
+    try {
+      for (const auto &p : golden_snapshot_candidates()) {
+        if (file_exists_nofail(p)) {
+          std::error_code ec;
+          std::filesystem::remove(p, ec);
+          if (!ec) {
+            any_deleted = true;
+          }
+        }
+      }
+    } catch (...) {
+    }
+    out["deleted"] = any_deleted;
+    send_response(response, out);
+  }
+#endif
 
   /**
    * @brief Restart Apollo.
@@ -1372,7 +2103,100 @@ namespace confighttp {
   }
 
   /**
-   * @brief Launch an application.
+   * @brief Generate a new API token with specified scopes.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/token| POST| {"scopes":[{"path":"/api/apps","methods":["GET"]}]}}}
+   *
+   * Request body example:
+   * {
+   *   "scopes": [
+   *     { "path": "/api/apps", "methods": ["GET", "POST"] }
+   *   ]
+   * }
+   *
+   * Response example:
+   * { "token": "..." }
+   */
+  void generateApiToken(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    const std::string request_body = ss.str();
+    auto token_opt = api_token_manager.generate_api_token(request_body, config::sunshine.username);
+    nlohmann::json output_tree;
+    if (!token_opt) {
+      output_tree["error"] = "Invalid token request";
+      send_response(response, output_tree);
+      return;
+    }
+    output_tree["token"] = *token_opt;
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief List all active API tokens and their scopes.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/tokens| GET| null}
+   *
+   * Response example:
+   * [
+   *   {
+   *     "hash": "...",
+   *     "username": "admin",
+   *     "created_at": 1719000000,
+   *     "scopes": [
+   *       { "path": "/api/apps", "methods": ["GET"] }
+   *     ]
+   *   }
+   * ]
+   */
+  void listApiTokens(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    nlohmann::json output_tree = nlohmann::json::parse(api_token_manager.list_api_tokens_json());
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief Revoke (delete) an API token by its hash.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/token/abcdef1234567890| DELETE| null}
+   *
+   * Response example:
+   * { "status": true }
+   */
+  void revokeApiToken(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    std::string hash;
+    if (request->path_match.size() > 1) {
+      hash = request->path_match[1];
+    }
+    bool result = api_token_manager.revoke_api_token_by_hash(hash);
+    nlohmann::json output_tree;
+    if (result) {
+      output_tree["status"] = true;
+    } else {
+      output_tree["error"] = "Internal server error";
+    }
+    send_response(response, output_tree);
+  }
+
+  void listSessions(resp_https_t response, req_https_t request);
+  void revokeSession(resp_https_t response, req_https_t request);
+
+  * @brief Launch an application.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    */
@@ -1501,14 +2325,14 @@ namespace confighttp {
     }
   }
 
-  /**
-   * @brief Start the HTTPS server.
-   */
+  
+
   void start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-    https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
+
+    https_server_t server(config::nvhttp.cert, config::nvhttp.pkey);
     server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
       bad_request(response, request);
     };
@@ -1521,16 +2345,21 @@ namespace confighttp {
     server.default_resource["PUT"] = [](resp_https_t response, req_https_t request) {
       bad_request(response, request);
     };
-    server.default_resource["GET"] = not_found;
-    server.resource["^/$"]["GET"] = getIndexPage;
-    server.resource["^/pin/?$"]["GET"] = getPinPage;
-    server.resource["^/apps/?$"]["GET"] = getAppsPage;
-    server.resource["^/config/?$"]["GET"] = getConfigPage;
-    server.resource["^/password/?$"]["GET"] = getPasswordPage;
-    server.resource["^/welcome/?$"]["GET"] = getWelcomePage;
-    server.resource["^/login/?$"]["GET"] = getLoginPage;
-    server.resource["^/troubleshooting/?$"]["GET"] = getTroubleshootingPage;
-    server.resource["^/api/login"]["POST"] = login;
+
+    // Serve the SPA shell for any unmatched GET route. Explicit static and API
+    // routes are registered below; UI page routes are deprecated server-side
+    // and are handled by the SPA entry responder so frontend can manage
+    // authentication and routing.
+    server.default_resource["GET"] = getSpaEntry;
+    server.resource["^/$"]["GET"] = getSpaEntry;
+    server.resource["^/pin/?$"]["GET"] = getSpaEntry;
+    server.resource["^/apps/?$"]["GET"] = getSpaEntry;
+    server.resource["^/clients/?$"]["GET"] = getSpaEntry;
+    server.resource["^/config/?$"]["GET"] = getSpaEntry;
+    server.resource["^/password/?$"]["GET"] = getSpaEntry;
+    server.resource["^/welcome/?$"]["GET"] = getSpaEntry;
+    server.resource["^/login/?$"]["GET"] = getSpaEntry;
+    server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
     server.resource["^/api/pin$"]["POST"] = savePin;
     server.resource["^/api/otp$"]["POST"] = getOTP;
     server.resource["^/api/apps$"]["GET"] = getApps;
@@ -1542,20 +2371,60 @@ namespace confighttp {
     server.resource["^/api/logs$"]["GET"] = getLogs;
     server.resource["^/api/config$"]["GET"] = getConfig;
     server.resource["^/api/config$"]["POST"] = saveConfig;
+    // Partial updates for config settings; merges with existing file and
+    // removes keys when value is null or empty string.
+    server.resource["^/api/config$"]["PATCH"] = patchConfig;
+    server.resource["^/api/metadata$"]["GET"] = getMetadata;
     server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/quit$"]["POST"] = quit;
-    server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
+#if defined(_WIN32)
+    server.resource["^/api/display/export_golden$"]["POST"] = postExportGoldenDisplay;
+    server.resource["^/api/display/golden_status$"]["GET"] = getGoldenStatus;
+    server.resource["^/api/display/golden$"]["DELETE"] = deleteGolden;
+#endif
     server.resource["^/api/password$"]["POST"] = savePassword;
+    server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
+#ifdef _WIN32
+    server.resource["^/api/health/vigem$"]["GET"] = getVigemHealth;
+#endif
+    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
     server.resource["^/api/clients/update$"]["POST"] = updateClient;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
     server.resource["^/api/clients/disconnect$"]["POST"] = disconnect;
+    server.resource["^/api/apps/close$"]["POST"] = closeApp;
+    server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
+    // Keep legacy cover upload endpoint present in upstream master
     server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
-    server.resource["^/images/apollo.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
+    server.resource["^/api/apps/purge_autosync$"]["POST"] = purgeAutoSyncedApps;
+#ifdef _WIN32
+    server.resource["^/api/playnite/status$"]["GET"] = getPlayniteStatus;
+    server.resource["^/api/rtss/status$"]["GET"] = getRtssStatus;
+    server.resource["^/api/lossless_scaling/status$"]["GET"] = getLosslessScalingStatus;
+    server.resource["^/api/playnite/install$"]["POST"] = installPlaynite;
+    server.resource["^/api/playnite/uninstall$"]["POST"] = uninstallPlaynite;
+    server.resource["^/api/playnite/games$"]["GET"] = getPlayniteGames;
+    server.resource["^/api/playnite/categories$"]["GET"] = getPlayniteCategories;
+    server.resource["^/api/playnite/force_sync$"]["POST"] = postPlayniteForceSync;
+    server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
+    // Export logs bundle (Windows only)
+    server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
+#endif
+    server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
+    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getApolloLogoImage;
     server.resource["^/assets\\/.+$"]["GET"] = getNodeModules;
+    server.resource["^/api/token$"]["POST"] = generateApiToken;
+    server.resource["^/api/tokens$"]["GET"] = listApiTokens;
+    server.resource["^/api/token/([a-fA-F0-9]+)$"]["DELETE"] = revokeApiToken;
+    // Session validation endpoint used by the web UI to detect HttpOnly session cookies
+    server.resource["^/api-tokens/?$"]["GET"] = getTokenPage;
+    server.resource["^/api/auth/login$"]["POST"] = loginUser;
+    server.resource["^/api/auth/logout$"]["POST"] = logoutUser;
+    server.resource["^/api/auth/status$"]["GET"] = authStatus;
+    server.resource["^/api/auth/sessions$"]["GET"] = listSessions;
+    server.resource["^/api/auth/sessions/([A-Fa-f0-9]+)$"]["DELETE"] = revokeSession;
     server.config.reuse_address = true;
     server.config.address = net::af_to_any_address_string(address_family);
     server.config.port = port_https;
@@ -1576,11 +2445,283 @@ namespace confighttp {
     };
     std::thread tcp { accept_and_run, &server };
 
+    api_token_manager.load_api_tokens();
+    session_token_manager.load_session_tokens();
+
+    // Start a background task to clean up expired session tokens every hour
+    std::jthread cleanup_thread([shutdown_event]() {
+      while (!shutdown_event->view(std::chrono::hours(1))) {
+        if (session_token_manager.cleanup_expired_session_tokens()) {
+          session_token_manager.save_session_tokens();
+        }
+      }
+    });
+
     // Wait for any event
     shutdown_event->view();
 
     server.stop();
 
     tcp.join();
+    // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
+  }
+
+  /**
+   * @brief Handles the HTTP request to serve the API token management page.
+   *
+   * This function authenticates the incoming request and, if successful,
+   * reads the "api-tokens.html" file from the web directory and sends its
+   * contents as an HTTP response with the appropriate content type.
+   *
+   * @param response The HTTP response object used to send data back to the client.
+   * @param request The HTTP request object containing client request data.
+   */
+  void getTokenPage(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    std::string content = file_handler::read_file(WEB_DIR "api-tokens.html");
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "text/html; charset=utf-8");
+    response->write(content, headers);
+  }
+
+  /**
+   * @brief Converts a string representation of a token scope to its corresponding TokenScope enum value.
+   *
+   * This function takes a string view and returns the matching TokenScope enum value.
+   * Supported string values are "Read", "read", "Write", and "write".
+   * If the input string does not match any known scope, an std::invalid_argument exception is thrown.
+   *
+   * @param s The string view representing the token scope.
+   * @return TokenScope The corresponding TokenScope enum value.
+   * @throws std::invalid_argument If the input string does not match any known scope.
+   */
+  TokenScope scope_from_string(std::string_view s) {
+    if (s == "Read" || s == "read") {
+      return TokenScope::Read;
+    }
+    if (s == "Write" || s == "write") {
+      return TokenScope::Write;
+    }
+    throw std::invalid_argument("Unknown TokenScope: " + std::string(s));
+  }
+
+  /**
+   * @brief Converts a TokenScope enum value to its string representation.
+   * @param scope The TokenScope enum value to convert.
+   * @return The string representation of the scope.
+   */
+  std::string scope_to_string(TokenScope scope) {
+    switch (scope) {
+      case TokenScope::Read:
+        return "Read";
+      case TokenScope::Write:
+        return "Write";
+      default:
+        throw std::invalid_argument("Unknown TokenScope enum value");
+    }
+  }
+
+  /**
+   * @brief User login endpoint to generate session tokens.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * Expects JSON body:
+   * {
+   *   "username": "string",
+   *   "password": "string"
+   * }
+   *
+   * Returns:
+   * {
+   *   "status": true,
+   *   "token": "session_token_string",
+   *   "expires_in": 86400
+   * }
+   *
+   * @api_examples{/api/auth/login| POST| {"username": "admin", "password": "password"}}
+   */
+  void loginUser(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input_tree = nlohmann::json::parse(ss);
+      if (!input_tree.contains("username") || !input_tree.contains("password")) {
+        bad_request(response, request, "Missing username or password");
+        return;
+      }
+
+      std::string username = input_tree["username"].get<std::string>();
+      std::string password = input_tree["password"].get<std::string>();
+      std::string redirect_url = input_tree.value("redirect", "/");
+      bool remember_me = false;
+      if (auto it = input_tree.find("remember_me"); it != input_tree.end()) {
+        try {
+          remember_me = it->get<bool>();
+        } catch (const nlohmann::json::exception &) {
+          remember_me = false;
+        }
+      }
+
+      std::string user_agent;
+      if (auto ua = request->header.find("user-agent"); ua != request->header.end()) {
+        user_agent = ua->second;
+      }
+      std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
+
+      APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
+      write_api_response(response, api_response);
+
+    } catch (const nlohmann::json::exception &e) {
+      BOOST_LOG(warning) << "Login JSON error:"sv << e.what();
+      bad_request(response, request, "Invalid JSON format");
+    }
+  }
+
+  /**
+   * @brief User logout endpoint to revoke session tokens.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/auth/logout| POST| null}
+   */
+  void logoutUser(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    std::string session_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
+      session_token = auth->second.substr(8);
+    }
+    if (session_token.empty()) {
+      session_token = extract_session_token_from_cookie(request->header);
+    }
+
+    APIResponse api_response = session_token_api.logout(session_token);
+    write_api_response(response, api_response);
+  }
+
+  void listSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    std::string raw_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
+      raw_token = auth->second.substr(8);
+    }
+    if (raw_token.empty()) {
+      raw_token = extract_session_token_from_cookie(request->header);
+    }
+    std::string active_hash;
+    if (!raw_token.empty()) {
+      if (auto hash = session_token_manager.get_hash_for_token(raw_token)) {
+        active_hash = *hash;
+      }
+    }
+
+    APIResponse api_response = session_token_api.list_sessions(config::sunshine.username, active_hash);
+    write_api_response(response, api_response);
+  }
+
+  void revokeSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    if (request->path_match.size() < 2) {
+      bad_request(response, request, "Session id required");
+      return;
+    }
+    std::string session_hash = request->path_match[1].str();
+
+    std::string raw_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Session ", 0) == 0) {
+      raw_token = auth->second.substr(8);
+    }
+    if (raw_token.empty()) {
+      raw_token = extract_session_token_from_cookie(request->header);
+    }
+    bool is_current = false;
+    if (!raw_token.empty()) {
+      if (auto hash = session_token_manager.get_hash_for_token(raw_token)) {
+        is_current = boost::iequals(*hash, session_hash);
+      }
+    }
+
+    APIResponse api_response = session_token_api.revoke_session_by_hash(session_hash);
+    if (api_response.status_code == StatusCode::success_ok && is_current) {
+      std::string clear_cookie = std::string(session_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
+      api_response.headers.emplace("Set-Cookie", std::move(clear_cookie));
+    }
+    write_api_response(response, api_response);
+  }
+
+  /**
+   * @brief Authentication status endpoint.
+   * Returns whether credentials are configured and if authentication is required for protected API calls.
+   * This allows the frontend to avoid showing a login modal when not necessary.
+   *
+   * Response JSON shape:
+   * {
+   *   "credentials_configured": true|false,
+   *   "login_required": true|false,
+   *   "authenticated": true|false
+   * }
+   *
+   * login_required becomes true only when credentials are configured and the supplied
+   * request lacks valid authentication (session token or bearer token) for protected APIs.
+   */
+  void authStatus(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    bool credentials_configured = !config::sunshine.username.empty();
+
+    // Determine if current request has valid auth (session or bearer) using existing check_auth
+    bool authenticated = false;
+    if (credentials_configured) {
+      if (auto result = check_auth(request); result.ok) {
+        authenticated = true;  // check_auth returns ok for public routes; refine below
+        // We only consider it authenticated if an auth header or cookie was present and validated.
+        std::string auth_header;
+        if (auto auth_it = request->header.find("authorization"); auth_it != request->header.end()) {
+          auth_header = auth_it->second;
+        } else {
+          std::string token = extract_session_token_from_cookie(request->header);
+          if (!token.empty()) {
+            auth_header = "Session " + token;
+          }
+        }
+        if (auth_header.empty()) {
+          authenticated = false;  // public access granted but no credentials supplied
+        } else {
+          // Re-run only auth layer for supplied header specifically to ensure validity
+          auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
+          auto header_check = check_auth(address, auth_header, "/api/config", "GET");  // use protected path for validation
+          authenticated = header_check.ok;
+        }
+      }
+    }
+
+    bool login_required = credentials_configured && !authenticated;
+
+    nlohmann::json tree;
+    tree["credentials_configured"] = credentials_configured;
+    tree["login_required"] = login_required;
+    tree["authenticated"] = authenticated;
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
+    add_cors_headers(headers);
+    response->write(SimpleWeb::StatusCode::success_ok, tree.dump(), headers);
   }
 }  // namespace confighttp

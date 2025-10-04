@@ -4,11 +4,14 @@
  */
 
 // standard includes
+#include <cmath>
 #include <fstream>
 #include <future>
+#include <optional>
 #include <queue>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/endian/arithmetic.hpp>
 #include <openssl/err.h>
 
@@ -23,6 +26,7 @@ extern "C" {
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
+#include "display_helper_integration.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -33,7 +37,12 @@ extern "C" {
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
+#include "update.h"
 #include "utility.h"
+#ifdef _WIN32
+  #include "platform/windows/frame_limiter.h"
+  #include "platform/windows/misc.h"
+#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -2068,22 +2077,35 @@ namespace stream {
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
+        // Only revert on disconnect when explicitly enabled by config.
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
+
         if (proc::proc.running()) {
           proc::proc.pause();
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+#endif
         } else {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
         }
 
         if (revert_display_config) {
-          display_device::revert_configuration();
+          display_helper_integration::revert();
         }
 
+        // Restore any Windows-only integrations first
+#ifdef _WIN32
+        platf::rtss_set_sync_limiter_override(std::nullopt);
+        platf::frame_limiter_streaming_stop();
+#endif
         platf::streaming_will_stop();
+
+        // No active sessions now; apply any deferred config updates
+        config::maybe_apply_deferred();
       }
 
-      BOOST_LOG(debug) << "Session ended"sv;
+      BOOST_LOG(info) << "Session ended"sv;
     }
 
     int start(session_t &session, const std::string &addr_string) {
@@ -2119,6 +2141,31 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+#ifdef _WIN32
+        // Apply RTSS frame limit if enabled (Windows-only)
+        std::optional<int> lossless_rtss_limit;
+        const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
+                                             boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
+        const bool using_smooth_motion = session.config.lossless_scaling_framegen &&
+                                         boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
+        if (using_lossless_provider) {
+          if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
+            lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
+          } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
+            int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.6);
+            if (computed > 0) {
+              lossless_rtss_limit = computed;
+            }
+          }
+        }
+        platf::frame_limiter_streaming_start(
+          session.config.monitor.framerate,
+          session.config.gen1_framegen_fix,
+          session.config.gen2_framegen_fix,
+          lossless_rtss_limit,
+          using_smooth_motion
+        );
+#endif
         platf::streaming_will_start();
         proc::proc.resume();
       }
@@ -2141,6 +2188,21 @@ namespace stream {
 
         exec_thread.detach();
       }
+
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
+      update::on_stream_started();
+  #if defined(_WIN32)
+      // If ViGEm is not installed, notify the user that gamepad input won't work
+      try {
+        if (!platf::is_vigem_installed(nullptr)) {
+          system_tray::update_tray_vigem_missing();
+        }
+      } catch (...) {
+        // best-effort: ignore any unexpected errors while checking
+      }
+  #endif
+#endif
 
       return 0;
     }

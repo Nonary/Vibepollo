@@ -122,6 +122,21 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state, expected_value);
 }
 
+TEST(DisplayDeviceConfig, DummyPlugHdrWorkaroundForcesHdrEnabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::disabled;
+  video_config.dd.wa.dummy_plug_hdr10 = true;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = false;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
+}
+
 using ParseResolutionOption = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_option_e, sops_enabled_t, std::variant<client_resolution_t, std::string>>, std::variant<failed_to_parse_resolution_tag_t, no_resolution_tag_t, resolution_t>>>;
 INSTANTIATE_TEST_SUITE_P(
   DisplayDeviceConfigTest,
@@ -150,10 +165,10 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "1920x1080"s), resolution_t {1920, 1080}),
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "invalid_res"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "1920x1080"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "invalid_res"s), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {1920, 1080}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "1920x1080"s), resolution_t {1920, 1080}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "invalid_res"s), failed_to_parse_resolution_tag_t {}),
     //---- Both negative values from client are checked ----
     std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {0, 0}), resolution_t {0, 0}),
     std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {-1, 0}), failed_to_parse_resolution_tag_t {}),

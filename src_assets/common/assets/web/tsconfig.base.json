@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "types": ["vite/client", "node"],
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["./*"],
+      "@": ["./"]
+    },
+    "allowJs": true,
+    "noEmit": true
+  }
+}

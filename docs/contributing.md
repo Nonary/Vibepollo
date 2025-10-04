@@ -15,8 +15,30 @@ Read our contribution guide in our organization level
 * The HTML pages used by the Web UI are found in `./src_assets/common/assets/web`.
 * [EJS](https://www.npmjs.com/package/vite-plugin-ejs) is used as a templating system for the pages
   (check `template_header.html` and `template_header_main.html`).
-* The Style System is provided by [Bootstrap](https://getbootstrap.com).
-* The JS framework used by the more interactive pages is [Vue.js](https://vuejs.org).
+* The Style System is now powered by [Tailwind CSS](https://tailwindcss.com). (Bootstrap has been removed; a lightweight shim layer maps a few legacy classes like `btn` and `form-control` to Tailwind utilities for backward compatibility.)
+* The JS framework used by the more interactive pages is [Vus.js](https://vuejs.org).
+
+#### Routing Mode (History API)
+
+The Vue router is configured with `createWebHistory('/')` (no hash fragment). The C++ config HTTP server provides a SPA fallback (`getSpaEntry` in `src/confighttp.cpp`) that serves `index.html` for any non-API, non-static route so deep links and refreshes work. When adding a new top‑level UI path under `/`, no backend change is needed unless it conflicts with existing static prefixes (`/api`, `/assets`, `/covers`, `/images`).
+
+#### Tailwind CSS Integration
+
+Tailwind utilities are compiled via PostCSS. The entry stylesheet `src_assets/common/assets/web/styles/tailwind.css` includes:
+
+```
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+and is imported in `main.js`. The purge/content configuration lives in `tailwind.config.js`:
+
+```
+content: ['./src_assets/common/assets/web/**/*.{html,js,ts,vue}']
+```
+
+If you place Vue/HTML/TS files outside that tree, extend the glob so their class names are not purged. Tailwind `preflight` is enabled; any remaining Bootstrap-era markup should be updated to utilities. A shim layer in `styles/tailwind.css` defines legacy class aliases (`.btn`, variants, `.form-control`) to ease incremental refactors. Prefer replacing those with first-class Tailwind utilities over time. For dynamic class generation (string concatenation) add a `safelist` in `tailwind.config.js` instead of dummy elements.
 
 #### Building
 

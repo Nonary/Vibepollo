@@ -1,19 +1,24 @@
-<script setup>
-const props = defineProps({
-  platform: {
-    type: String,
-    required: true
-  }
-})
+<script setup lang="ts">
+import { computed } from 'vue';
+import { useConfigStore } from '@/stores/config';
+
+// Read platform from centralized config store metadata
+const store = useConfigStore();
+const platform = computed(() => (store.metadata && store.metadata.platform) || '');
 </script>
 
 <template>
-  <slot name="windows" v-if="$slots.windows && platform === 'windows'"></slot>
-  <slot name="linux" v-if="$slots.linux && platform === 'linux'"></slot>
-  <slot name="macos" v-if="$slots.macos && platform === 'macos'"></slot>
+  <template v-if="$slots['windows'] && platform === 'windows'">
+    <slot name="windows" />
+  </template>
+
+  <template v-if="$slots['linux'] && platform === 'linux'">
+    <slot name="linux" />
+  </template>
+
+  <template v-if="$slots['macos'] && platform === 'macos'">
+    <slot name="macos" />
+  </template>
 </template>
 
-
-<style scoped>
-
-</style>
+<style scoped></style>

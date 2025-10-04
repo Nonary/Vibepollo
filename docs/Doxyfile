@@ -30,7 +30,8 @@ PROJECT_LOGO = ../sunshine.png
 PROJECT_NAME = Sunshine
 
 # project specific settings
-DOT_GRAPH_MAX_NODES = 60
+# Allow large include/call graphs without erroring out
+DOT_GRAPH_MAX_NODES = 2048
 # IMAGE_PATH = ../docs/images
 PREDEFINED += SUNSHINE_BUILD_WAYLAND
 PREDEFINED += SUNSHINE_TRAY=1

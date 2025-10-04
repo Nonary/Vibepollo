@@ -42,27 +42,14 @@ using namespace std::literals;
 
 namespace video {
 
-  /**
-   * @brief Check if we can allow probing for the encoders.
-   * @return True if there should be no issues with the probing, false if we should prevent it.
-   */
-  bool allow_encoder_probing() {
-    const auto devices {display_device::enumerate_devices()};
-
-    // // If there are no devices, then either the API is not working correctly or OS does not support the lib.
-    // // Either way we should not block the probing in this case as we can't tell what's wrong.
-    // if (devices.empty()) {
-    //   return true;
-    // }
-
-    if (devices.empty()) {
-      #ifdef _WIN32
-      // We'll create a temporary virtual display for probing anyways.
-      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-        return false;
-      }
-      #endif
-        return true;
+  namespace {
+    /**
+     * @brief Check if we can allow probing for the encoders.
+     * @return True if there should be no issues with the probing, false if we should prevent it.
+     */
+    bool allow_encoder_probing() {
+      // Always allow probing; previous in-process display checks removed.
+      return true;
     }
 
     // Since Windows 11 24H2, it is possible that there will be no active devices present
@@ -1084,8 +1071,8 @@ namespace video {
    */
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index, std::string &preferred_display_name) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name { display_device::map_output_name(config::video.output_name) };
-    std::string current_display_name = preferred_display_name;
+    const auto output_name = display_device::map_output_name(config::video.output_name);
+    std::string current_display_name;
 
     // If we have a current display index, let's start with that
     if (current_display_name.empty() && current_display_index >= 0 && current_display_index < display_names.size()) {
@@ -2516,8 +2503,15 @@ namespace video {
     return flag;
   }
 
+  static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
+  static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
+
   bool validate_encoder(encoder_t &encoder, bool expect_failure) {
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    // During encoder probing, always use the current active display and do not
+    // attempt to select/swap displays based on configured output_name. Display
+    // swaps are now handled externally when a stream starts.
+    const std::string probe_display_name;  // empty selects the current active display
+    
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -2537,7 +2531,15 @@ namespace video {
     config_t config_autoselect {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 0};
 
     // If the encoder isn't supported at all (not even H.264), bail early
-    reset_display(disp, encoder.platform_formats->dev_type, output_name, config_autoselect);
+    // Try to reuse cached display if same device type
+    if (cached_probe_display && cached_display_type == encoder.platform_formats->dev_type) {
+      disp = cached_probe_display;
+    } else {
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
+      cached_probe_display = disp;
+      cached_display_type = encoder.platform_formats->dev_type;
+    }
+    
     if (!disp) {
       return false;
     }
@@ -2638,8 +2640,11 @@ namespace video {
 
       const config_t generic_hdr_config = {1920, 1080, 60, 1000, 1, 0, 3, 1, 1, 0};
 
-      // Reset the display since we're switching from SDR to HDR
-      reset_display(disp, encoder.platform_formats->dev_type, output_name, generic_hdr_config);
+      // Reset the display since we're switching from SDR to HDR. Keep probing on the
+      // current active display without attempting a display swap.
+      // Clear the cache since we need a fresh display for HDR testing
+      cached_probe_display.reset();
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
       if (!disp) {
         return false;
       }
@@ -2716,6 +2721,9 @@ namespace video {
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
+
+    // Clear any cached display from previous probes to ensure fresh start
+    cached_probe_display.reset();
 
     auto adjust_encoder_constraints = [&](encoder_t *encoder) {
       // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
@@ -2822,7 +2830,7 @@ namespace video {
     }
 
     if (chosen_encoder == nullptr) {
-      const auto output_name {display_device::map_output_name(config::video.output_name)};
+      const auto output_name = display_device::map_output_name(config::video.output_name);
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
       if (!config::video.adapter_name.empty() || !output_name.empty()) {
         BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;

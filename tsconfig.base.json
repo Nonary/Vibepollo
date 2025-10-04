@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "jsx": "preserve",
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "types": ["vite/client", "node"],
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src_assets/common/assets/web/*", "src/*"],
+      "@": ["src_assets/common/assets/web"]
+    },
+    "allowJs": true,
+    "noEmit": true
+  }
+}
