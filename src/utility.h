@@ -7,6 +7,7 @@
 // standard includes
 #include <algorithm>
 #include <condition_variable>
+#include <cctype>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -464,12 +465,33 @@ namespace util {
       return val.get<T>();
     if (val.is_string()) {
       std::string s = val.get<std::string>();
-      if constexpr (std::is_same_v<T, int>) {
-        return std::stoi(s);
-      } else if constexpr (std::is_same_v<T, double>) {
-        return std::stod(s);
-      } else if constexpr (std::is_same_v<T, bool>) {
-        return s == "true";
+      if constexpr (std::is_same_v<T, bool>) {
+        std::string lowered;
+        lowered.resize(s.size());
+        std::transform(s.begin(), s.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (lowered == "true" || lowered == "1" || lowered == "yes") {
+          return true;
+        }
+        if (lowered == "false" || lowered == "0" || lowered == "no") {
+          return false;
+        }
+        return default_value;
+      } else if constexpr (std::is_integral_v<T>) {
+        try {
+          if constexpr (std::is_signed_v<T>) {
+            return static_cast<T>(std::stoll(s));
+          } else {
+            return static_cast<T>(std::stoull(s));
+          }
+        } catch (...) {
+          return default_value;
+        }
+      } else if constexpr (std::is_floating_point_v<T>) {
+        try {
+          return static_cast<T>(std::stod(s));
+        } catch (...) {
+          return default_value;
+        }
       } else if constexpr (std::is_same_v<T, std::string>) {
         return s;
       } else {

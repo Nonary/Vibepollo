@@ -63,9 +63,36 @@ export const useAppsStore = defineStore('apps', () => {
     return apps.value;
   }
 
+  async function reorderApps(order: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const response = await http.post<{ status?: boolean; error?: string }>(
+        './api/apps/reorder',
+        { order },
+        { validateStatus: () => true },
+      );
+
+      if (response.status !== 200) {
+        const reason = typeof response.data?.error === 'string' ? response.data.error : undefined;
+        return { ok: false, error: reason || `Request failed (${response.status})` };
+      }
+
+      if (!response.data?.status) {
+        const reason = typeof response.data?.error === 'string' ? response.data.error : undefined;
+        return { ok: false, error: reason || 'Server rejected reorder request' };
+      }
+
+      await loadApps(true);
+      return { ok: true };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : undefined;
+      return { ok: false, error: reason || 'Failed to reorder applications' };
+    }
+  }
+
   return {
     apps,
     setApps,
     loadApps,
+    reorderApps,
   };
 });

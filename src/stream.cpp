@@ -2082,9 +2082,6 @@ namespace stream {
 
         if (proc::proc.running()) {
           proc::proc.pause();
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
         } else {
           // We have no app running and also no clients anymore.
           revert_display_config = true;

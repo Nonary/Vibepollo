@@ -73,7 +73,7 @@ namespace system_tray {
   void
   tray_force_stop_cb(struct tray_menu *item) {
     BOOST_LOG(info) << "Force stop from system tray"sv;
-    proc::proc.terminate();
+    proc::proc.terminate(true);
   }
 
 
@@ -260,19 +260,21 @@ namespace system_tray {
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON_PLAYING;
 
-    tray_update(&tray);
-    tray.icon = TRAY_ICON_PLAYING;
-    tray.notification_title = "App launched";
     char msg[256];
     static char force_close_msg[256];
     snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
     snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-    strncpy(force_close_msg, utf8ToAcp(force_close_msg).c_str(), std::size(force_close_msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    auto force_msg_acp = utf8ToAcp(force_close_msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+    strncpy(force_close_msg, force_msg_acp.c_str(), std::size(force_close_msg) - 1);
+    force_close_msg[std::size(force_close_msg) - 1] = '\0';
+#endif
     s_notification_text = msg;
     s_tooltip = "Streaming started for " + app_name;
+    tray.notification_title = "App launched";
     tray.notification_text = s_notification_text.c_str();
     tray.notification_icon = TRAY_ICON_PLAYING;
     tray.tooltip = s_tooltip.c_str();
@@ -285,19 +287,20 @@ namespace system_tray {
       return;
     }
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
     tray.notification_cb = nullptr;
     tray.notification_icon = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_title = nullptr;
     tray.icon = TRAY_ICON_PAUSING;
-    tray_update(&tray);
+
     char msg[256];
     snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+#endif
     s_notification_text = msg;
-    tray.icon = TRAY_ICON_PAUSING;
     tray.notification_title = "Stream Paused";
     tray.notification_text = s_notification_text.c_str();
     tray.notification_icon = TRAY_ICON_PAUSING;
@@ -310,19 +313,20 @@ namespace system_tray {
       return;
     }
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
     tray.notification_cb = nullptr;
     tray.notification_icon = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_title = nullptr;
     tray.icon = TRAY_ICON;
-    tray_update(&tray);
+
     char msg[256];
     snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+#endif
     s_notification_text = msg;
-    tray.icon = TRAY_ICON;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Application Stopped";
     tray.notification_text = s_notification_text.c_str();
@@ -337,19 +341,20 @@ namespace system_tray {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
-    tray_update(&tray);
+
     char msg[256];
     snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+#endif
     s_notification_text = msg;
-    tray.icon = TRAY_ICON;
     tray.notification_icon = TRAY_ICON;
     tray.notification_title = "Launch Error";
     tray.notification_text = s_notification_text.c_str();
@@ -371,8 +376,7 @@ namespace system_tray {
     tray.notification_cb = nullptr;
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
-    tray_update(&tray);
-    tray.icon = TRAY_ICON;
+
     tray.notification_title = "Incoming Pairing Request";
     tray.notification_text = "Click here to complete the pairing process";
     tray.notification_icon = TRAY_ICON_LOCKED;
@@ -389,16 +393,18 @@ namespace system_tray {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
-    tray_update(&tray);
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+
     char msg[256];
     snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+#endif
     tray.notification_title = "Device Paired Succesfully";
     tray.notification_text = msg;
     tray.notification_icon = TRAY_ICON;
@@ -412,17 +418,19 @@ namespace system_tray {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
-    tray_update(&tray);
+
     char msg[256];
     snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+#ifdef _WIN32
+    auto msg_acp = utf8ToAcp(msg);
+    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+    msg[std::size(msg) - 1] = '\0';
+#endif
     tray.notification_title = "Client Connected";
     tray.notification_text = msg;
     tray.notification_icon = TRAY_ICON;
@@ -440,15 +448,12 @@ namespace system_tray {
     tray.notification_cb = nullptr;
     tray.notification_icon = nullptr;
     tray.icon = TRAY_ICON;
-    tray_update(&tray);
 
-    tray.icon = TRAY_ICON;
     tray.notification_title = "Gamepad Input Unavailable";
     tray.notification_text = "ViGEm is not installed. Click for setup info";
     tray.notification_icon = TRAY_ICON;
     tray.tooltip = PROJECT_NAME;
     tray.notification_cb = []() {
-      // Open Dashboard for more information
       launch_ui("/");
     };
     tray_update(&tray);

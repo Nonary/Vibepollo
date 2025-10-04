@@ -2625,6 +2625,7 @@ namespace video {
 
       // Reset the display since we're switching from SDR to HDR. Keep probing on the
       // current active display without attempting a display swap.
+      auto sdr_disp = disp;
       // Clear the cache since we need a fresh display for HDR testing
       cached_probe_display.reset();
       reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
@@ -2669,6 +2670,12 @@ namespace video {
 
       test_hdr_and_yuv444(encoder.hevc, 1);
       test_hdr_and_yuv444(encoder.av1, 2);
+
+      disp = std::move(sdr_disp);
+      if (disp) {
+        cached_probe_display = disp;
+        cached_display_type = encoder.platform_formats->dev_type;
+      }
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
