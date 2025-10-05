@@ -5,7 +5,7 @@
     - Reset ACLs on install dir
     - Update PATH (add/remove)
     - Migrate config files
-    - Add/remove firewall rules
+    - Install firewall exceptions
     - Install/update SudoVDA virtual display driver
     - Install/uninstall Apollo service and autostart configuration
     - Optional prompts on uninstall for SudoVDA removal and deleting install dir
@@ -89,7 +89,6 @@
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="AddFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
     <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -104,7 +103,6 @@
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="RemoveFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
@@ -132,10 +130,6 @@
     <CustomAction Id="SetUpdatePathAdd"
                  Property="UpdatePathAdd"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; add&quot;"/>
-
-    <CustomAction Id="SetAddFirewallRule"
-                 Property="AddFirewallRule"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\add-firewall-rule.bat&quot;&quot;"/>
 
     <!-- Immediate setter for pruning installed web assets directory before file copy -->
     <CustomAction Id="SetPruneWebDir"
@@ -180,10 +174,6 @@
                  Property="UpdatePathRemove"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; remove&quot;"/>
 
-    <CustomAction Id="SetRemoveFirewallRule"
-                 Property="RemoveFirewallRule"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\delete-firewall-rule.bat&quot;&quot;"/>
-
     <CustomAction Id="SetRemoveServiceQuiet"
                  Property="RemoveServiceQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;&amp; { sc.exe delete 'ApolloService' | Out-Null; sc.exe delete 'SunshineService' | Out-Null; sc.exe delete 'sunshinesvc' | Out-Null }&quot;"/>
@@ -193,5 +183,25 @@
 
   </Fragment>
 
-  <!-- PATH and firewall management handled via scripted custom actions -->
+  <!-- PATH management handled via scripted custom actions -->
+
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="Fw_Exceptions" Guid="{7229349C-BC66-4A1D-8019-9546CBD2620B}">
+        <CreateFolder/>
+        <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
+                                    Id="FE_ApolloExe"
+                                    Name="Vibepollo"
+                                    Program="[INSTALL_ROOT]sunshine.exe"
+                                    Profile="all"
+                                    Scope="any" />
+        <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
+                                    Id="FE_ApolloSvcExe"
+                                    Name="Vibepollo Service"
+                                    Program="[INSTALL_ROOT]tools\sunshinesvc.exe"
+                                    Profile="all"
+                                    Scope="any" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
 </Wix>

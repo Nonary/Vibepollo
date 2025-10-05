@@ -40,7 +40,7 @@ if(WIN32)
     include(${CMAKE_MODULE_PATH}/packaging/windows.cmake)
     # WiX specifics: ensure license is RTF and set stable Upgrade GUID
     set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/packaging/windows/LICENSE.rtf)
-    set(CPACK_WIX_UPGRADE_GUID "{C2C36624-2D9C-4AFD-9C79-6B7861AE4A0D}")
+    set(CPACK_WIX_UPGRADE_GUID "{E3FA501A-85F8-4187-85A7-D6E6BDC7EDA1}")
 elseif(UNIX)
     include(${CMAKE_MODULE_PATH}/packaging/unix.cmake)
 
