@@ -29,12 +29,8 @@ TEST(PlayniteAutosync_Reconcile, AddsSelectedGamesToEmptyApps) {
                      matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 2u);  // A from recent, B from category
-  std::unordered_set<std::string> ids;
-  for (auto &a : root["apps"]) {
-    ids.insert(a["playnite-id"].get<std::string>());
-  }
-  EXPECT_TRUE(ids.contains("A"));
-  EXPECT_TRUE(ids.contains("B"));
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
+  EXPECT_EQ(root["apps"][1]["playnite-id"], "B");
 }
 
 TEST(PlayniteAutosync_Reconcile, HonorsExcludeIds) {
@@ -63,4 +59,26 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
   EXPECT_EQ(root["apps"][0]["playnite-managed"], "auto");
+}
+
+TEST(PlayniteAutosync_Reconcile, PreservesExistingOrderAndAppendsNew) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  nlohmann::json manual;
+  manual["name"] = "Manual Entry";
+  root["apps"].push_back(manual);
+  nlohmann::json autoA;
+  autoA["playnite-id"] = "A";
+  autoA["playnite-managed"] = "auto";
+  root["apps"].push_back(autoA);
+
+  std::vector<Game> all {G("A", "2025-01-05T00:00:00Z", true), G("D", "2025-01-02T00:00:00Z", true)};
+  bool changed = false;
+  std::size_t matched = 0;
+  autosync_reconcile(root, all, 2, 0, 0, true, {}, {}, changed, matched);
+  EXPECT_TRUE(changed);
+  ASSERT_EQ(root["apps"].size(), 3u);
+  EXPECT_FALSE(root["apps"][0].contains("playnite-id"));
+  EXPECT_EQ(root["apps"][1]["playnite-id"], "A");
+  EXPECT_EQ(root["apps"][2]["playnite-id"], "D");
 }

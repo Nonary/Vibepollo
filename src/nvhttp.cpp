@@ -11,6 +11,7 @@
 #include <format>
 #include <string>
 #include <utility>
+#include <vector>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
@@ -1139,29 +1140,40 @@ namespace nvhttp {
 
       auto app_list = proc::proc.get_apps();
 
-      bool enable_legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering;
-      size_t bits;
-      if (enable_legacy_ordering) {
-        bits = zwpad::pad_width_for_count(app_list.size());
-      }
+      std::vector<const proc::ctx_t *> visible_apps;
+      visible_apps.reserve(app_list.size());
 
-      for (size_t i = 0; i < app_list.size(); i++) {
-        auto &app = app_list[i];
+      for (const auto &app : app_list) {
         auto appid = util::from_view(app.id);
+        bool include = true;
         if (should_hide_inactive_apps) {
           if (
             appid != current_appid && appid != proc::input_only_app_id && appid != proc::terminate_app_id
           ) {
-            continue;
+            include = false;
           }
-        } else {
-          if (appid == proc::terminate_app_id) {
-            continue;
-          }
+        } else if (appid == proc::terminate_app_id) {
+          include = false;
         }
 
+        if (!include) {
+          continue;
+        }
+
+        visible_apps.push_back(&app);
+      }
+
+      bool enable_legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering;
+      size_t bits = 0;
+      if (enable_legacy_ordering && !visible_apps.empty()) {
+        bits = zwpad::pad_width_for_count(visible_apps.size());
+      }
+
+      for (size_t i = 0; i < visible_apps.size(); ++i) {
+        const auto &app = *visible_apps[i];
+
         std::string app_name;
-        if (enable_legacy_ordering) {
+        if (enable_legacy_ordering && bits > 0) {
           app_name = zwpad::pad_for_ordering(app.name, bits, i);
         } else {
           app_name = app.name;

@@ -28,7 +28,10 @@ namespace zwpad {
   inline std::string
     pad_for_ordering(std::string_view text, std::size_t padBits, std::size_t index) {
     if (padBits == 0) {
-      throw std::invalid_argument("padBits must be > 0");
+      if (index >= 1) {
+        throw std::out_of_range("index does not fit into padBits");
+      }
+      return std::string {text};
     }
     if (index >= (std::size_t {1} << padBits)) {
       throw std::out_of_range("index does not fit into padBits");
@@ -52,6 +55,7 @@ namespace zwpad {
     if (count == 0) {
       throw std::invalid_argument("count must be > 0");
     }
-    return std::bit_width(count - 1);  // e.g. count==8 → 3 bits
+    auto width = std::bit_width(count - 1);
+    return width == 0 ? std::size_t {1} : width;  // ensure at least 1 digit
   }
 }  // namespace zwpad

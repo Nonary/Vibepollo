@@ -344,34 +344,10 @@ namespace platf::playnite::sync {
 
   void write_and_refresh_apps(nlohmann::json &root, const std::string &apps_path) {
     file_handler::write_file(apps_path.c_str(), root.dump(4));
-    confighttp::refresh_client_apps_cache(root);
+    confighttp::refresh_client_apps_cache(root, false);
   }
 
-  std::unordered_set<std::string> current_auto_ids(const nlohmann::json &root) {
-    std::unordered_set<std::string> s;
-    for (auto &a : root["apps"]) {
-      try {
-        if (a.contains("playnite-managed") && a["playnite-managed"].get<std::string>() == "auto") {
-          s.insert(a.value("playnite-id", std::string()));
-        }
-      } catch (...) {}
-    }
-    return s;
-  }
-
-  std::size_t count_replacements_available(const std::unordered_set<std::string> &current_auto, const std::unordered_set<std::string> &selected_ids) {
-    std::size_t c = 0;
-    for (auto &id : selected_ids) {
-      if (!current_auto.contains(id)) {
-        ++c;
-      }
-    }
-    return c;
-  }
-
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, const std::unordered_set<std::string> &selected_ids, bool &changed) {
-    auto cur = current_auto_ids(root);
-    auto repl = count_replacements_available(cur, selected_ids);
+  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool &changed) {
     nlohmann::json kept = nlohmann::json::array();
     for (auto &app : root["apps"]) {
       bool is_auto = false;
@@ -387,11 +363,6 @@ namespace platf::playnite::sync {
           changed = true;
           continue;
         }
-        if (!selected_ids.contains(pid) && recent_mode && require_repl && repl > 0) {
-          --repl;
-          changed = true;
-          continue;
-        }
       }
       kept.push_back(app);
     }
@@ -402,7 +373,7 @@ namespace platf::playnite::sync {
 }  // namespace platf::playnite::sync
 
 namespace platf::playnite::sync {
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, const std::vector<std::string> &categories, const std::vector<std::string> &exclude_ids, bool &changed, std::size_t &matched_out) {
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, [[maybe_unused]] bool require_repl, const std::vector<std::string> &categories, const std::vector<std::string> &exclude_ids, bool &changed, std::size_t &matched_out) {
     if (!root.contains("apps") || !root["apps"].is_array()) {
       root["apps"] = nlohmann::json::array();
     }
@@ -427,24 +398,21 @@ namespace platf::playnite::sync {
     }
 
     // Merge selections by id, preserving first instance
-    std::unordered_map<std::string, const Game *> by_id;
-    for (const auto &g : sel_recent) {
-      if (!g.id.empty()) {
-        by_id.emplace(g.id, &g);
-      }
-    }
-    for (const auto &g : sel_cats) {
-      if (!g.id.empty()) {
-        if (!by_id.contains(g.id)) {
-          by_id.emplace(g.id, &g);
+    std::unordered_set<std::string> seen_ids;
+    std::vector<Game> selected;
+    selected.reserve(sel_recent.size() + sel_cats.size());
+    auto append_unique = [&](const std::vector<Game> &src) {
+      for (const auto &g : src) {
+        if (g.id.empty()) {
+          continue;
+        }
+        if (seen_ids.insert(g.id).second) {
+          selected.push_back(g);
         }
       }
-    }
-    std::vector<Game> selected;
-    selected.reserve(by_id.size());
-    for (auto &kv : by_id) {
-      selected.push_back(*kv.second);
-    }
+    };
+    append_unique(sel_recent);
+    append_unique(sel_cats);
 
     // Build indexes
     std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id_idx;
@@ -456,12 +424,7 @@ namespace platf::playnite::sync {
 
     // Purge
     auto last_played_map = build_last_played_map(installed);
-    std::unordered_set<std::string> selected_ids;
-    for (const auto &g : selected) {
-      selected_ids.insert(g.id);
-    }
-    const bool recent_mode = (recentN > 0);
-    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, selected_ids, changed);
+    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, changed);
 
     // Add missing
     add_missing_auto_entries(root, selected, matched_ids, source_flags, changed);

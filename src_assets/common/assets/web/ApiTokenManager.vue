@@ -137,7 +137,7 @@
             size="small"
             :loading="tokensLoading"
             aria-label="Refresh tokens"
-            @click="loadTokens"
+            @click="loadTokens()"
           >
             <n-icon class="mr-1" size="14"><i class="fas fa-rotate" /></n-icon>
             Refresh
@@ -347,31 +347,67 @@ type Scope = { path: string; methods: string[] };
 type TokenRecord = { hash: string; scopes: Scope[]; createdAt?: string | number | null };
 
 // Available API routes and methods
-const ROUTE_OPTIONS: RouteDef[] = [
+const DEFAULT_ROUTE_OPTIONS: RouteDef[] = [
   { path: '/api/pin', methods: ['POST'] },
+  { path: '/api/otp', methods: ['POST'] },
   { path: '/api/apps', methods: ['GET', 'POST'] },
-  { path: '/api/logs', methods: ['GET'] },
-  { path: '/api/config', methods: ['GET', 'POST'] },
-  { path: '/api/configLocale', methods: ['GET'] },
-  { path: '/api/restart', methods: ['POST'] },
-  { path: '/api/password', methods: ['POST'] },
+  { path: '/api/apps/reorder', methods: ['POST'] },
+  { path: '/api/apps/delete', methods: ['POST'] },
+  { path: '/api/apps/launch', methods: ['POST'] },
+  { path: '/api/apps/close', methods: ['POST'] },
+  { path: '/api/apps/purge_autosync', methods: ['POST'] },
   { path: '/api/apps/([0-9]+)', methods: ['DELETE'] },
-  { path: '/api/clients/unpair-all', methods: ['POST'] },
+  { path: '/api/apps/([^/]+)/cover', methods: ['GET'] },
+  { path: '/api/logs', methods: ['GET'] },
+  { path: '/api/logs/export', methods: ['GET'] },
+  { path: '/api/config', methods: ['GET', 'POST', 'PATCH'] },
+  { path: '/api/configLocale', methods: ['GET'] },
+  { path: '/api/metadata', methods: ['GET'] },
+  { path: '/api/restart', methods: ['POST'] },
+  { path: '/api/quit', methods: ['POST'] },
+  { path: '/api/password', methods: ['POST'] },
+  { path: '/api/session/status', methods: ['GET'] },
+  { path: '/api/display-devices', methods: ['GET'] },
+  { path: '/api/display/export_golden', methods: ['POST'] },
+  { path: '/api/display/golden_status', methods: ['GET'] },
+  { path: '/api/display/golden', methods: ['DELETE'] },
+  { path: '/api/health/vigem', methods: ['GET'] },
+  { path: '/api/covers/upload', methods: ['POST'] },
+  { path: '/api/playnite/status', methods: ['GET'] },
+  { path: '/api/playnite/install', methods: ['POST'] },
+  { path: '/api/playnite/uninstall', methods: ['POST'] },
+  { path: '/api/playnite/games', methods: ['GET'] },
+  { path: '/api/playnite/categories', methods: ['GET'] },
+  { path: '/api/playnite/force_sync', methods: ['POST'] },
+  { path: '/api/playnite/launch', methods: ['POST'] },
+  { path: '/api/rtss/status', methods: ['GET'] },
+  { path: '/api/lossless_scaling/status', methods: ['GET'] },
+  { path: '/api/auth/login', methods: ['POST'] },
+  { path: '/api/auth/logout', methods: ['POST'] },
+  { path: '/api/auth/status', methods: ['GET'] },
+  { path: '/api/auth/sessions', methods: ['GET'] },
+  { path: '/api/auth/sessions/([A-Fa-f0-9]+)', methods: ['DELETE'] },
   { path: '/api/clients/list', methods: ['GET'] },
   { path: '/api/clients/unpair', methods: ['POST'] },
-  { path: '/api/apps/close', methods: ['POST'] },
-  { path: '/api/covers/upload', methods: ['POST'] },
+  { path: '/api/clients/unpair-all', methods: ['POST'] },
+  { path: '/api/clients/update', methods: ['POST'] },
+  { path: '/api/clients/disconnect', methods: ['POST'] },
   { path: '/api/token', methods: ['POST'] },
   { path: '/api/tokens', methods: ['GET'] },
   { path: '/api/token/([a-fA-F0-9]+)', methods: ['DELETE'] },
 ];
 
-const GET_OPTIONS = computed(() => ROUTE_OPTIONS.filter((r) => r.methods.includes('GET')));
+const props = defineProps<{ routes?: RouteDef[] }>();
+
+const routeOptions = computed<RouteDef[]>(() =>
+  props.routes && props.routes.length > 0 ? props.routes : DEFAULT_ROUTE_OPTIONS,
+);
+const getOnlyRoutes = computed(() => routeOptions.value.filter((r) => r.methods.includes('GET')));
 const routeSelectOptions = computed(() =>
-  ROUTE_OPTIONS.map((r) => ({ label: r.path, value: r.path })),
+  routeOptions.value.map((r) => ({ label: r.path, value: r.path })),
 );
 const getRouteOptions = computed(() =>
-  GET_OPTIONS.value.map((r) => ({ label: r.path, value: r.path })),
+  getOnlyRoutes.value.map((r) => ({ label: r.path, value: r.path })),
 );
 const sortOptions = [
   { label: 'Newest', value: 'created' },
@@ -408,7 +444,7 @@ function releaseAbortController(ac: AbortController) {
 }
 
 const draftMethods = computed<string[]>(
-  () => ROUTE_OPTIONS.find((r) => r.path === draft.path)?.methods || [],
+  () => routeOptions.value.find((r) => r.path === draft.path)?.methods || [],
 );
 const canAddScope = computed(() => !!draft.path && draft.selectedMethods.length > 0);
 const canGenerate = computed(
@@ -474,7 +510,7 @@ async function createToken(): Promise<void> {
       if (typeof token === 'string' && token.length > 0) {
         createdToken.value = token;
         // refresh active list
-        await loadTokens();
+        await loadTokens({ waitForAuth: true });
         showTokenModal.value = true;
       } else {
         createError.value = 'Token created, but server returned no token string.';
@@ -544,12 +580,14 @@ function normalizeToken(rec: any): TokenRecord | null {
   return { hash, scopes, createdAt };
 }
 
-async function loadTokens(): Promise<void> {
+async function loadTokens(options: { waitForAuth?: boolean } = {}): Promise<void> {
   const auth = useAuthStore();
   if (!auth.isAuthenticated) {
-    // Not authenticated; do not poll or load
-    tokensLoading.value = false;
-    return;
+    if (!options.waitForAuth) {
+      tokensLoading.value = false;
+      return;
+    }
+    await auth.waitForAuthentication();
   }
   tokensLoading.value = true;
   tokensError.value = '';
@@ -716,7 +754,7 @@ function prettyPrint(data: any): string {
 onMounted(() => {
   const auth = useAuthStore();
   const start = () => {
-    loadTokens();
+    loadTokens({ waitForAuth: true });
   };
   if (auth.isAuthenticated) start();
   else {

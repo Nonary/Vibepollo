@@ -938,6 +938,7 @@ function normalizeFrameGenerationProvider(value: unknown): FrameGenerationProvid
 }
 interface AppForm {
   index: number;
+  uuid?: string;
   name: string;
   output: string;
   cmd: string;
@@ -1027,6 +1028,7 @@ const open = computed<boolean>(() => !!props.modelValue);
 function fresh(): AppForm {
   return {
     index: -1,
+    uuid: undefined,
     name: '',
     cmd: '',
     workingDir: '',
@@ -1225,6 +1227,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const useAppIdentity = !!src['use-app-identity'];
   return {
     index: idx,
+    uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
     name: String(src.name ?? ''),
     output: String(src.output ?? ''),
     cmd: String(cmdStr ?? ''),
@@ -1310,6 +1313,10 @@ function toServerPayload(f: AppForm): Record<string, any> {
     })),
     detached: Array.isArray(f.detached) ? f.detached : [],
   };
+  const trimmedUuid = typeof f.uuid === 'string' ? f.uuid.trim() : '';
+  if (trimmedUuid) {
+    payload.uuid = trimmedUuid;
+  }
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
   const provider = normalizeFrameGenerationProvider(f.frameGenerationProvider);

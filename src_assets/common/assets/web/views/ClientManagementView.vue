@@ -413,7 +413,7 @@
 
     <TrustedDevicesCard />
 
-    <ApiTokenManager />
+    <ApiTokenManager :routes="apiTokenRoutes" />
 
     <n-modal :show="showConfirmRemove" @update:show="(v) => (showConfirmRemove = v)">
       <n-card
@@ -489,6 +489,61 @@ import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import Checkbox from '@/Checkbox.vue';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
+
+interface ApiTokenRouteDef {
+  path: string;
+  methods: string[];
+}
+
+const apiTokenRoutes: ApiTokenRouteDef[] = [
+  { path: '/api/pin', methods: ['POST'] },
+  { path: '/api/otp', methods: ['POST'] },
+  { path: '/api/apps', methods: ['GET', 'POST'] },
+  { path: '/api/apps/reorder', methods: ['POST'] },
+  { path: '/api/apps/delete', methods: ['POST'] },
+  { path: '/api/apps/launch', methods: ['POST'] },
+  { path: '/api/apps/close', methods: ['POST'] },
+  { path: '/api/apps/purge_autosync', methods: ['POST'] },
+  { path: '/api/apps/([0-9]+)', methods: ['DELETE'] },
+  { path: '/api/apps/([^/]+)/cover', methods: ['GET'] },
+  { path: '/api/logs', methods: ['GET'] },
+  { path: '/api/logs/export', methods: ['GET'] },
+  { path: '/api/config', methods: ['GET', 'POST', 'PATCH'] },
+  { path: '/api/configLocale', methods: ['GET'] },
+  { path: '/api/metadata', methods: ['GET'] },
+  { path: '/api/restart', methods: ['POST'] },
+  { path: '/api/quit', methods: ['POST'] },
+  { path: '/api/password', methods: ['POST'] },
+  { path: '/api/session/status', methods: ['GET'] },
+  { path: '/api/display-devices', methods: ['GET'] },
+  { path: '/api/display/export_golden', methods: ['POST'] },
+  { path: '/api/display/golden_status', methods: ['GET'] },
+  { path: '/api/display/golden', methods: ['DELETE'] },
+  { path: '/api/health/vigem', methods: ['GET'] },
+  { path: '/api/covers/upload', methods: ['POST'] },
+  { path: '/api/playnite/status', methods: ['GET'] },
+  { path: '/api/playnite/install', methods: ['POST'] },
+  { path: '/api/playnite/uninstall', methods: ['POST'] },
+  { path: '/api/playnite/games', methods: ['GET'] },
+  { path: '/api/playnite/categories', methods: ['GET'] },
+  { path: '/api/playnite/force_sync', methods: ['POST'] },
+  { path: '/api/playnite/launch', methods: ['POST'] },
+  { path: '/api/rtss/status', methods: ['GET'] },
+  { path: '/api/lossless_scaling/status', methods: ['GET'] },
+  { path: '/api/auth/login', methods: ['POST'] },
+  { path: '/api/auth/logout', methods: ['POST'] },
+  { path: '/api/auth/status', methods: ['GET'] },
+  { path: '/api/auth/sessions', methods: ['GET'] },
+  { path: '/api/auth/sessions/([A-Fa-f0-9]+)', methods: ['DELETE'] },
+  { path: '/api/clients/list', methods: ['GET'] },
+  { path: '/api/clients/unpair', methods: ['POST'] },
+  { path: '/api/clients/unpair-all', methods: ['POST'] },
+  { path: '/api/clients/update', methods: ['POST'] },
+  { path: '/api/clients/disconnect', methods: ['POST'] },
+  { path: '/api/token', methods: ['POST'] },
+  { path: '/api/tokens', methods: ['GET'] },
+  { path: '/api/token/([a-fA-F0-9]+)', methods: ['DELETE'] },
+];
 
 type CommandType = 'do' | 'undo';
 

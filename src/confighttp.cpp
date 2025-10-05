@@ -13,10 +13,12 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <cstdint>
 #include <format>
 #include <fstream>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -118,9 +120,11 @@ namespace confighttp {
     } catch (...) {}
   }
 
-  bool refresh_client_apps_cache(nlohmann::json &file_tree) {
+  bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name) {
     try {
-      sort_apps_by_name(file_tree);
+      if (sort_by_name) {
+        sort_apps_by_name(file_tree);
+      }
       file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps, false);
       return true;
@@ -968,19 +972,43 @@ namespace confighttp {
 #endif
 
       auto &apps_node = file_tree["apps"];
+      if (!apps_node.is_array()) {
+        apps_node = nlohmann::json::array();
+      }
       input_tree.erase("index");
 
-      if (index == -1) {
-        // New app: generate a UUID if not provided
-        if (!input_tree.contains("uuid") || input_tree["uuid"].is_null() || (input_tree["uuid"].is_string() && input_tree["uuid"].get<std::string>().empty())) {
-          input_tree["uuid"] = uuid_util::uuid_t::generate().string();
+      std::string input_uuid;
+      try {
+        if (input_tree.contains("uuid") && input_tree["uuid"].is_string()) {
+          input_uuid = input_tree["uuid"].get<std::string>();
         }
-        apps_node.push_back(input_tree);
+      } catch (...) {}
+
+      bool replaced = false;
+      if (!input_uuid.empty()) {
+        for (auto it = apps_node.begin(); it != apps_node.end(); ++it) {
+          try {
+            if (it->contains("uuid") && (*it)["uuid"].is_string() && (*it)["uuid"].get<std::string>() == input_uuid) {
+              *it = input_tree;
+              replaced = true;
+              break;
+            }
+          } catch (...) {}
+        }
+      }
+
+      if (index == -1) {
+        if (input_uuid.empty()) {
+          input_uuid = uuid_util::uuid_t::generate().string();
+          input_tree["uuid"] = input_uuid;
+        }
+        if (!replaced) {
+          apps_node.push_back(input_tree);
+        }
       } else {
         nlohmann::json newApps = nlohmann::json::array();
         for (size_t i = 0; i < apps_node.size(); ++i) {
           if (i == index) {
-            // Preserve existing UUID if present
             try {
               if ((!input_tree.contains("uuid") || input_tree["uuid"].is_null() || (input_tree["uuid"].is_string() && input_tree["uuid"].get<std::string>().empty())) &&
                   apps_node[i].contains("uuid") && apps_node[i]["uuid"].is_string()) {
@@ -1216,43 +1244,74 @@ namespace confighttp {
    * @api_examples{/api/apps/delete | POST| { uuid: 'aaaa-bbbb' }}
    */
   void deleteApp(resp_https_t response, req_https_t request) {
-    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
+    if (!authenticate(response, request)) {
       return;
     }
 
     print_req(request);
 
-    try {
-      std::stringstream ss;
-      ss << request->content.rdbuf();
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+    const bool is_delete_method = request->method == "DELETE";
+    std::optional<size_t> index_from_path;
+    if (request->path_match.size() > 1) {
+      try {
+        index_from_path = static_cast<size_t>(std::stoul(request->path_match[1]));
+      } catch (...) {
+      }
+    }
 
-      // Check for required uuid field in body
-      if (!input_tree.contains("uuid") || !input_tree["uuid"].is_string()) {
-        bad_request(response, request, "Missing or invalid uuid in request body");
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    std::string raw_body = ss.str();
+
+    std::optional<std::string> uuid;
+    std::optional<size_t> index_from_body;
+
+    if (!raw_body.empty()) {
+      if (!validateContentType(response, request, "application/json")) {
         return;
       }
-      auto uuid = input_tree["uuid"].get<std::string>();
+      try {
+        nlohmann::json input_tree = nlohmann::json::parse(raw_body);
+        if (input_tree.contains("uuid") && input_tree["uuid"].is_string()) {
+          uuid = input_tree["uuid"].get<std::string>();
+        }
+        if (input_tree.contains("index") && input_tree["index"].is_number_integer()) {
+          auto idx = input_tree["index"].get<std::int64_t>();
+          if (idx >= 0) {
+            index_from_body = static_cast<size_t>(idx);
+          }
+        }
+      } catch (const std::exception &e) {
+        bad_request(response, request, e.what());
+        return;
+      }
+    } else if (!is_delete_method) {
+      bad_request(response, request, "Missing request body");
+      return;
+    }
 
-      // Detect if the app being removed is the Playnite fullscreen launcher
-      auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
-        try {
-          if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+    std::optional<size_t> target_index = index_from_body ? index_from_body : index_from_path;
+
+    // Detect if the app being removed is the Playnite fullscreen launcher
+    auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
+      try {
+        if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+          return true;
+        }
+        if (app.contains("cmd") && app["cmd"].is_string()) {
+          auto s = app["cmd"].get<std::string>();
+          if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
             return true;
           }
-          if (app.contains("cmd") && app["cmd"].is_string()) {
-            auto s = app["cmd"].get<std::string>();
-            if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
-              return true;
-            }
-          }
-          if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
-            return true;
-          }
-        } catch (...) {}
-        return false;
-      };
+        }
+        if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
+          return true;
+        }
+      } catch (...) {}
+      return false;
+    };
 
+    try {
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
       if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
@@ -1261,24 +1320,33 @@ namespace confighttp {
       }
 
       auto &apps_node = file_tree["apps"];
-      std::vector<nlohmann::json> new_apps;
+      nlohmann::json::array_t new_apps;
       new_apps.reserve(apps_node.size());
 
-      int index = -1;
+      bool removed = false;
       bool disabled_fullscreen_flag = false;
 
       for (size_t i = 0; i < apps_node.size(); ++i) {
         const auto &app_entry = apps_node[i];
         auto app_uuid = app_entry.contains("uuid") && app_entry["uuid"].is_string() ? app_entry["uuid"].get<std::string>() : std::string {};
 
-        if (app_uuid != uuid) {
+        bool match = false;
+        if (uuid && !uuid->empty()) {
+          match = app_uuid == *uuid;
+        } else if (!uuid && target_index && *target_index == i) {
+          match = true;
+          if (!app_uuid.empty()) {
+            uuid = app_uuid;
+          }
+        }
+
+        if (!match) {
           new_apps.push_back(app_entry);
           continue;
         }
 
-        index = static_cast<int>(i);
+        removed = true;
 
-        // If user deletes the Playnite fullscreen app, turn off the config flag
 #ifdef _WIN32
         try {
           if (is_playnite_fullscreen(app_entry)) {
@@ -1297,20 +1365,17 @@ namespace confighttp {
 #endif
       }
 
-      if (index < 0) {
-        bad_request(response, request, "Specified application UUID not found");
+      if (!removed) {
+        bad_request(response, request, "App to delete not found");
         return;
       }
 
       file_tree["apps"] = new_apps;
-
-      // Write the updated JSON back to the file.
       file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps, false);
 
       nlohmann::json output_tree;
       output_tree["status"] = true;
-      output_tree["result"] = std::format("application {} deleted", index);
       if (disabled_fullscreen_flag) {
         output_tree["playniteFullscreenDisabled"] = true;
       }
