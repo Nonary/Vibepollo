@@ -661,6 +661,7 @@
     "wrap": "Wrap",
     "no_wrap": "No Wrap",
     "new_logs_available": "New logs available — jump to latest",
+    "jump_to_latest": "Jump to latest logs",
     "copy_logs": "Copy Logs",
     "collect_playnite_logs": "Export Logs",
     "collect_playnite_logs_desc": "Export Sunshine log, Playnite/plugin logs, and display-helper logs.",
