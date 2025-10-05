@@ -24,9 +24,26 @@ if (TARGET sunshine_display_helper)
     install(TARGETS sunshine_display_helper RUNTIME DESTINATION "tools" COMPONENT application)
 endif()
 
-# Drivers
-install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda"
-        DESTINATION "drivers"
+# Drivers (SudoVDA virtual display)
+set(SUDOVDA_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda")
+set(SUDOVDA_DRIVER_FILES
+    "${SUDOVDA_SOURCE_DIR}/install.bat"
+    "${SUDOVDA_SOURCE_DIR}/uninstall.bat"
+    "${SUDOVDA_SOURCE_DIR}/SudoVDA.inf"
+    "${SUDOVDA_SOURCE_DIR}/SudoVDA.dll"
+    "${SUDOVDA_SOURCE_DIR}/sudovda.cat"
+    "${SUDOVDA_SOURCE_DIR}/sudovda.cer"
+    "${SUDOVDA_SOURCE_DIR}/nefconc.exe"
+)
+
+foreach(_sudovda_file IN LISTS SUDOVDA_DRIVER_FILES)
+    if (NOT EXISTS "${_sudovda_file}")
+        message(FATAL_ERROR "Required SudoVDA driver artifact missing: ${_sudovda_file}")
+    endif()
+endforeach()
+
+install(FILES ${SUDOVDA_DRIVER_FILES}
+        DESTINATION "drivers/sudovda"
         COMPONENT sudovda)
 
 # Mandatory scripts
