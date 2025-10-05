@@ -2,7 +2,7 @@
 
 ## What is Vibeshine?
 
-Vibeshine introduces major enhancements for stability, capture performance, and day-to-day usability on Windows.
+Vibeshine is an AI enhanced version of Sunshine, a popular remote streaming application. It intends to integrate all scripts from myself (Nonary) and more.
 
 ## Key Features
 
