@@ -1,0 +1,48 @@
+name: Bug Report
+description: Report a bug with symptoms, expected behavior, OS version, and logs.
+body:
+  - type: textarea
+    id: symptoms
+    attributes:
+      label: Bug Symptoms
+      description: Describe what happens (the symptoms of the bug).
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os-version
+    attributes:
+      label: Windows Version
+      description: Select the version of Windows you are using.
+      options:
+        - 22H2
+        - 23H2
+        - 24H2
+        - 25H2
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (Optional but Recommended)
+      description: |
+        If possible, attach your logs to help us diagnose the issue.  
+        Go to **Troubleshooting tab → Export Logs** and upload the **Vibeshine logs zip file** here.
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot (Optional)
+      description: Add a screenshot if it helps show the bug.
+      render: image
