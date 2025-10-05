@@ -1136,7 +1136,7 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
     if (!!(named_cert_p->perm & PERM::_all_actions)) {
       auto current_appid = proc::proc.running();
-      auto should_hide_inactive_apps = config::input.enable_input_only_mode && current_appid > 0 && current_appid != proc::input_only_app_id;
+      auto should_hide_inactive_apps = current_appid > 0 && current_appid != proc::input_only_app_id;
 
       auto app_list = proc::proc.get_apps();
 
@@ -1270,7 +1270,7 @@ namespace nvhttp {
     if (!is_input_only) {
       // Special handling for the "terminate" app
       if (
-        (config::input.enable_input_only_mode && appid == proc::terminate_app_id) || appuuid_str == TERMINATE_APP_UUID
+        (appid == proc::terminate_app_id && proc::terminate_app_id > 0) || appuuid_str == TERMINATE_APP_UUID
       ) {
         proc::proc.terminate();
 

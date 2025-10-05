@@ -18,6 +18,7 @@
 #ifdef _WIN32
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
+  #include "platform/windows/virtual_display.h"
 #endif
 
 namespace display_device {
@@ -545,6 +546,41 @@ namespace display_device {
     }
     return true;
   }
+
+  static std::string resolve_device_id(const std::string &output_name) {
+    if (output_name.empty()) {
+      return output_name;
+    }
+
+    if (iequals(output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      return output_name;
+    }
+
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices();
+
+      for (const auto &d : devices) {
+        if (d.m_device_id.empty()) {
+          continue;
+        }
+
+        if (iequals(d.m_device_id, output_name) ||
+            (!d.m_display_name.empty() && iequals(d.m_display_name, output_name)) ||
+            (!d.m_friendly_name.empty() && iequals(d.m_friendly_name, output_name))) {
+          return d.m_device_id;
+        }
+      }
+    } catch (...) {
+    }
+
+    return output_name;
+  }
+#else
+  static std::string resolve_device_id(const std::string &output_name) {
+    return output_name;
+  }
 #endif
 
   std::string map_output_name(const std::string &output_name) {
@@ -622,7 +658,7 @@ namespace display_device {
     }
 
     SingleDisplayConfiguration config;
-    config.m_device_id = video_config.output_name;
+    config.m_device_id = resolve_device_id(video_config.output_name);
     config.m_device_prep = *device_prep;
     config.m_hdr_state = parse_hdr_option(video_config, session);
 

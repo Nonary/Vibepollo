@@ -1025,11 +1025,7 @@ namespace video {
   int active_hevc_mode;
   int active_av1_mode;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
-  std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {
-    true,
-    true,
-    true
-  };
+  std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
 
   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
     // We try this twice, in case we still get an error on reinitialization
@@ -2625,7 +2621,6 @@ namespace video {
 
       // Reset the display since we're switching from SDR to HDR. Keep probing on the
       // current active display without attempting a display swap.
-      auto sdr_disp = disp;
       // Clear the cache since we need a fresh display for HDR testing
       cached_probe_display.reset();
       reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
@@ -2670,12 +2665,6 @@ namespace video {
 
       test_hdr_and_yuv444(encoder.hevc, 1);
       test_hdr_and_yuv444(encoder.av1, 2);
-
-      disp = std::move(sdr_disp);
-      if (disp) {
-        cached_probe_display = disp;
-        cached_display_type = encoder.platform_formats->dev_type;
-      }
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];

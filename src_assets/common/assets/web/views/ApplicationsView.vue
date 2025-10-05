@@ -183,7 +183,55 @@
                     {{ app['working-dir'] }}
                   </div>
                 </div>
-                <div class="shrink-0 text-dark/50 dark:text-light/70">
+                <div class="shrink-0 flex items-center gap-2 text-dark/50 dark:text-light/70">
+                  <n-button
+                    v-if="app.uuid"
+                    size="small"
+                    type="primary"
+                    strong
+                    class="h-8 px-3 rounded-md"
+                    :loading="isLaunching(app.uuid)"
+                    :disabled="isLaunching(app.uuid)"
+                    @click.stop="launch(app)"
+                    :aria-label="$t('apps.launch_now')"
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden
+                    >
+                      <path d="M8 5v14l11-7-11-7z" />
+                    </svg>
+                    <span class="ml-1 text-xs">{{ $t('apps.launch_now') }}</span>
+                  </n-button>
+                  <n-button
+                    v-if="isCurrentApp(app.uuid)"
+                    size="small"
+                    type="error"
+                    strong
+                    class="h-8 px-3 rounded-md"
+                    :loading="closingActive"
+                    :disabled="closingActive"
+                    @click.stop="closeActive(app)"
+                    :aria-label="$t('troubleshooting.force_close')"
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      aria-hidden
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="1.6"
+                        d="M7 7l10 10M17 7 7 17"
+                      />
+                    </svg>
+                    <span class="ml-1 text-xs">{{ $t('troubleshooting.force_close') }}</span>
+                  </n-button>
                   <svg
                     class="w-4 h-4"
                     viewBox="0 0 24 24"
@@ -266,7 +314,15 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed, watch, defineAsyncComponent } from 'vue';
+import {
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  computed,
+  watch,
+  defineAsyncComponent,
+  reactive,
+} from 'vue';
 const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
@@ -279,7 +335,7 @@ import type { App } from '@/stores/apps';
 import { useI18n } from 'vue-i18n';
 
 const appsStore = useAppsStore();
-const { apps } = storeToRefs(appsStore);
+const { apps, currentAppUuid } = storeToRefs(appsStore);
 const configStore = useConfigStore();
 const auth = useAuthStore();
 const router = useRouter();
@@ -293,6 +349,8 @@ const draggingIndex = ref<number | null>(null);
 const dragInsertIndex = ref<number | null>(null);
 const suppressClick = ref(false);
 const rowRefs = ref<(HTMLElement | null)[]>([]);
+const launching = reactive<Record<string, boolean>>({});
+const closingActive = ref(false);
 
 type PointerDragState = {
   pointerId: number;
@@ -366,6 +424,65 @@ const currentIndex = ref<number | null>(-1);
 
 function setRowRef(el: Element | null, index: number): void {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null;
+}
+
+function isLaunching(uuid?: string | null): boolean {
+  return !!(uuid && launching[uuid]);
+}
+
+function isCurrentApp(uuid?: string | null): boolean {
+  return typeof uuid === 'string' && uuid.length > 0 && currentAppUuid.value === uuid;
+}
+
+async function launch(app: App): Promise<void> {
+  const uuid = typeof app?.uuid === 'string' ? app.uuid : '';
+  if (!uuid) {
+    message.error(t('apps.launch_missing_uuid'));
+    return;
+  }
+  if (isLaunching(uuid)) {
+    return;
+  }
+  launching[uuid] = true;
+  try {
+    const result = await appsStore.launchApp(uuid);
+    if (result.ok) {
+      message.success(t('apps.launch_success'));
+      return;
+    }
+    if (result.canceled) {
+      if (!auth.isAuthenticated) {
+        auth.requireLogin({ bypassLogoutGuard: true });
+      }
+      return;
+    }
+    message.error(result.error || t('apps.launch_failed'));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : undefined;
+    message.error(reason || t('apps.launch_failed'));
+  } finally {
+    launching[uuid] = false;
+  }
+}
+
+async function closeActive(app: App): Promise<void> {
+  if (!isCurrentApp(app?.uuid) || closingActive.value) {
+    return;
+  }
+  closingActive.value = true;
+  try {
+    const result = await appsStore.closeActiveApp();
+    if (result.ok) {
+      message.success(t('troubleshooting.force_close_success'));
+    } else {
+      message.error(result.error || t('troubleshooting.force_close_error'));
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : undefined;
+    message.error(reason || t('troubleshooting.force_close_error'));
+  } finally {
+    closingActive.value = false;
+  }
 }
 
 function resetDragState(): void {

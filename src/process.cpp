@@ -629,8 +629,15 @@ namespace proc {
     if (!forced_sudavda_virtual_display && (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !config::video.headless_mode))) {
       dd_api_handled = display_helper_integration::apply_from_session(config::video, *launch_session);
       if (dd_api_handled) {
-        BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
-        should_use_virtual_display = false;
+        const bool virtual_display_requested = launch_session->virtual_display || _app.virtual_display;
+        const bool still_missing_active_display = !video::allow_encoder_probing();
+
+        if (!virtual_display_requested && !still_missing_active_display) {
+          BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
+          should_use_virtual_display = false;
+        } else {
+          BOOST_LOG(info) << "Display configuration handled by DD API but virtual display support remains required; keeping SudoVDA virtual display active.";
+        }
       }
     }
 
@@ -2204,41 +2211,41 @@ namespace proc {
 
         apps.emplace_back(std::move(ctx));
       }
+    }
 
-      // Terminate entry
-      {
-        proc::ctx_t ctx {};
-        ctx.idx = std::to_string(i);
-        ctx.uuid = TERMINATE_APP_UUID;
-        ctx.name = "Terminate";
-        ctx.image_path = parse_env_val(this_env, "terminate.png");
-        ctx.virtual_display = false;
-        ctx.scale_factor = 100;
-        ctx.use_app_identity = false;
-        ctx.per_client_app_identity = false;
-        ctx.allow_client_commands = false;
-        ctx.terminate_on_pause = false;
+    // Terminate entry
+    {
+      proc::ctx_t ctx {};
+      ctx.idx = std::to_string(i);
+      ctx.uuid = TERMINATE_APP_UUID;
+      ctx.name = "Terminate";
+      ctx.image_path = parse_env_val(this_env, "terminate.png");
+      ctx.virtual_display = false;
+      ctx.scale_factor = 100;
+      ctx.use_app_identity = false;
+      ctx.per_client_app_identity = false;
+      ctx.allow_client_commands = false;
+      ctx.terminate_on_pause = false;
 
-        ctx.elevated = false;
-        ctx.auto_detach = true;
-        ctx.wait_all = true;
-        ctx.exit_timeout = 5s;
+      ctx.elevated = false;
+      ctx.auto_detach = true;
+      ctx.wait_all = true;
+      ctx.exit_timeout = 5s;
 
-        auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
-        if (ids.count(std::get<0>(possible_ids)) == 0) {
-          // Avoid using index to generate id if possible
-          ctx.id = std::get<0>(possible_ids);
-        } else {
-          // Fallback to include index on collision
-          ctx.id = std::get<1>(possible_ids);
-        }
-        // ids.insert(ctx.id);
-
-        terminate_app_id_str = ctx.id;
-        terminate_app_id = util::from_view(ctx.id);
-
-        apps.emplace_back(std::move(ctx));
+      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
+      if (ids.count(std::get<0>(possible_ids)) == 0) {
+        // Avoid using index to generate id if possible
+        ctx.id = std::get<0>(possible_ids);
+      } else {
+        // Fallback to include index on collision
+        ctx.id = std::get<1>(possible_ids);
       }
+      // ids.insert(ctx.id);
+
+      terminate_app_id_str = ctx.id;
+      terminate_app_id = util::from_view(ctx.id);
+
+      apps.emplace_back(std::move(ctx));
     }
 
     return proc::proc_t {
