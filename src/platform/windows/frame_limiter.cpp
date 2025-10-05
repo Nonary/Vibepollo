@@ -16,6 +16,7 @@
   #include <array>
   #include <cctype>
   #include <optional>
+  #include <numeric>
   #include <string>
   #include <vector>
 
@@ -86,7 +87,7 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(int fps, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, bool smooth_motion) {
+  void frame_limiter_streaming_start(int fps, int fps_scaled, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, bool smooth_motion) {
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
     g_gen1_framegen_fix_active = gen1_framegen_fix;
@@ -126,6 +127,35 @@ namespace platf {
 
     bool nvcp_already_invoked = false;
     const int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
+    int rtss_limit_value = effective_limit;
+    int rtss_limit_denominator = 1;
+
+    if (!lossless_rtss_limit || *lossless_rtss_limit <= 0) {
+      if (fps_scaled > 0) {
+        rtss_limit_value = fps_scaled;
+        rtss_limit_denominator = 1000;
+
+        if (rtss_limit_value % 1000 == 0) {
+          rtss_limit_value /= 1000;
+          rtss_limit_denominator = 1;
+        } else if (rtss_limit_value % 100 == 0) {
+          rtss_limit_value /= 100;
+          rtss_limit_denominator = 10;
+        } else if (rtss_limit_value % 10 == 0) {
+          rtss_limit_value /= 10;
+          rtss_limit_denominator = 100;
+        }
+
+        int gcd_value = std::gcd(rtss_limit_value, rtss_limit_denominator);
+        if (gcd_value > 1) {
+          rtss_limit_value /= gcd_value;
+          rtss_limit_denominator /= gcd_value;
+        }
+      } else {
+        rtss_limit_value = effective_limit;
+        rtss_limit_denominator = 1;
+      }
+    }
 
     if (frame_limit_enabled) {
       auto configured = parse_provider(config::frame_limiter.provider);
@@ -169,7 +199,7 @@ namespace platf {
             break;
           }
         } else if (provider == frame_limiter_provider::rtss) {
-          bool ok = rtss_streaming_start(effective_limit);
+          bool ok = rtss_streaming_start(rtss_limit_value, rtss_limit_denominator);
           if (ok) {
             g_active_provider = frame_limiter_provider::rtss;
             applied = true;

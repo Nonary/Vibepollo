@@ -545,7 +545,7 @@ namespace platf {
     return g_sync_limiter_override;
   }
 
-  bool rtss_streaming_start(int fps) {
+  bool rtss_streaming_start(int scaled_limit, int denominator) {
     g_limit_active = false;
 
     if (!config::frame_limiter.enable) {
@@ -580,9 +580,11 @@ namespace platf {
       g_original_flags.reset();
     }
 
-    // Compute denominator and scaled limit (we have integer fps, so denominator=1)
-    int current_denominator = 1;
-    int scaled_limit = fps;
+    int current_denominator = denominator > 0 ? denominator : 1;
+    int applied_limit = scaled_limit;
+    if (applied_limit < 0) {
+      applied_limit = 0;
+    }
 
     // Update LimitDenominator in Global profile and remember previous value
     g_original_denominator = set_limit_denominator(g_rtss_root, current_denominator);
@@ -648,11 +650,13 @@ namespace platf {
 
     // Apply framerate limit
     if (g_hooks) {
-      set_profile_property_int("FramerateLimit", scaled_limit);
-      BOOST_LOG(info) << "RTSS applied framerate limit=" << scaled_limit << " (denominator=" << current_denominator << ")";
+      set_profile_property_int("FramerateLimit", applied_limit);
+      double limit_fps = current_denominator > 0 ? (double) applied_limit / current_denominator : 0.0;
+      BOOST_LOG(info) << "RTSS applied framerate limit=" << limit_fps << "Hz (raw=" << applied_limit << ", denominator=" << current_denominator << ")";
       g_limit_active = true;
-    } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", scaled_limit)) {
-      BOOST_LOG(info) << "RTSS profile framerate limit set to "sv << scaled_limit;
+    } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", applied_limit)) {
+      double limit_fps = current_denominator > 0 ? (double) applied_limit / current_denominator : 0.0;
+      BOOST_LOG(info) << "RTSS profile framerate limit set to "sv << applied_limit << " ("sv << limit_fps << "Hz)"sv;
       g_limit_active = true;
     }
     return g_limit_active;

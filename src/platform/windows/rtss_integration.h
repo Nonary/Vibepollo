@@ -23,8 +23,7 @@ namespace platf {
   };
 
   // Apply RTSS frame limit and related settings at stream start.
-  // fps is the integer client framerate.
-  bool rtss_streaming_start(int fps);
+  bool rtss_streaming_start(int scaled_limit, int denominator);
 
   // Restore any RTSS settings modified at stream start.
   void rtss_streaming_stop();

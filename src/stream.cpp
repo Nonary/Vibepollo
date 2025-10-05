@@ -2156,6 +2156,7 @@ namespace stream {
         }
         platf::frame_limiter_streaming_start(
           session.config.monitor.framerate,
+          session.config.monitor.encodingFramerate,
           session.config.gen1_framegen_fix,
           session.config.gen2_framegen_fix,
           lossless_rtss_limit,
