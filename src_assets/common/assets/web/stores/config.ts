@@ -73,6 +73,7 @@ const defaultGroups = [
       audio_sink: '',
       virtual_sink: '',
       install_steam_audio_drivers: 'enabled',
+      stream_audio: 'enabled',
       adapter_name: '',
       output_name: '',
       dd_configuration_option: 'disabled',
