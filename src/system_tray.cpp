@@ -248,9 +248,14 @@ namespace system_tray {
   // Persistent storage for tooltip/notification strings to avoid dangling pointers
   static std::string s_tooltip;
   static std::string s_notification_text;
+  static std::string s_last_playing_app;
 
   void update_tray_playing(std::string app_name) {
     if (!tray_initialized) {
+      return;
+    }
+
+    if (!app_name.empty() && app_name == s_last_playing_app && tray.icon == TRAY_ICON_PLAYING) {
       return;
     }
 
@@ -279,6 +284,7 @@ namespace system_tray {
     tray.notification_icon = TRAY_ICON_PLAYING;
     tray.tooltip = s_tooltip.c_str();
     tray.menu[2].text = force_close_msg;
+    s_last_playing_app = app_name;
     tray_update(&tray);
   }
 
@@ -332,6 +338,7 @@ namespace system_tray {
     tray.notification_text = s_notification_text.c_str();
     tray.tooltip = PROJECT_NAME;
     tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
+    s_last_playing_app.clear();
     tray_update(&tray);
   }
 
@@ -363,6 +370,7 @@ namespace system_tray {
       proc::proc.terminate();
     };
     tray.tooltip = PROJECT_NAME;
+    s_last_playing_app.clear();
     tray_update(&tray);
   }
 

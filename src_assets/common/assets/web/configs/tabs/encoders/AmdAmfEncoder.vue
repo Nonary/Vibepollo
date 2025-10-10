@@ -38,7 +38,7 @@ const coderOptions = [
       <label for="amf_quality" class="form-label">{{ $t('config.amf.quality') }}</label>
       <n-select
         id="amf_quality"
-        v-model:value="config.profile"
+        v-model:value="config.amd_usage"
         :options="usageOptions.map((o) => ({ label: $t(o.labelKey), value: o.value }))"
         :data-search-options="usageOptions.map((o) => `${$t(o.labelKey)}::${o.value}`).join('|')"
       />
@@ -62,7 +62,7 @@ const coderOptions = [
           }}</label>
           <n-select
             id="amf_rate_control"
-            v-model:value="config.rate_control"
+            v-model:value="config.amd_rc"
             :options="rateControlOptions.map((o) => ({ label: $t(o.labelKey), value: o.value }))"
             :data-search-options="
               rateControlOptions.map((o) => `${$t(o.labelKey)}::${o.value}`).join('|')

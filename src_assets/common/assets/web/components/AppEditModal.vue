@@ -357,14 +357,13 @@
                     Profile
                   </label>
                   <n-radio-group v-model:value="form.losslessScalingProfile">
-                    <n-radio value="recommended">Recommended (Lowest Latency)</n-radio>
-                    <n-radio value="custom">Use Lossless Scaling "Default"</n-radio>
+                    <n-radio value="recommended">Recommended (Lowest Latency & Frame Pacing)</n-radio>
+                    <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
                   </n-radio-group>
                   <p class="text-[11px] opacity-60">
-                    Recommended keeps Sunshine-tuned values for the lowest latency and best frame
-                    pacing, enabling WGC capture, HDR, and LSFG 3.1 adaptive defaults. Select Use
-                    Lossless Scaling "Default" to run the profile you maintain inside Lossless
-                    Scaling.
+                    Recommended keeps Sunshine-tuned values for lowest latency and consistent frame
+                    pacing, enabling WGC capture, HDR, and LSFG 3.1 adaptive defaults. Select
+                    Custom to run the default profile you maintain inside Lossless Scaling.
                   </p>
                 </div>
                 <div class="flex items-end justify-end">
@@ -484,7 +483,7 @@
                     Performance Mode
                   </div>
                   <p class="text-[11px] opacity-60">
-                    Prioritizes latency over quality. Customize per profile.
+                    Reduces GPU usage with minimal impact to quality. Customize per profile.
                   </p>
                 </div>
                 <n-switch v-model:value="losslessPerformanceModeModel" size="small" />
@@ -517,11 +516,11 @@
                     :max="360"
                     :step="1"
                     :precision="0"
-                    placeholder="72"
+                    placeholder="60"
                     @update:value="onLosslessRtssLimitChange"
                   />
                   <p class="text-[11px] opacity-60">
-                    Defaults to 60% of the target when not customized.
+                    Defaults to 50% of the target when not customized.
                   </p>
                 </div>
               </div>
@@ -1058,7 +1057,7 @@ function fresh(): AppForm {
     losslessScalingTargetFps: null,
     losslessScalingRtssLimit: null,
     losslessScalingRtssTouched: false,
-    losslessScalingProfile: 'custom',
+    losslessScalingProfile: 'recommended',
     losslessScalingProfiles: emptyLosslessProfileState(),
   };
 }
@@ -1147,10 +1146,16 @@ function defaultRtssFromTarget(target: number | null): number | null {
 }
 
 function parseLosslessProfileKey(value: unknown): LosslessProfileKey {
-  if (typeof value === 'string' && value.toLowerCase() === 'recommended') {
-    return 'recommended';
+  if (typeof value === 'string') {
+    const normalized = value.toLowerCase();
+    if (normalized === 'custom') {
+      return 'custom';
+    }
+    if (normalized === 'recommended') {
+      return 'recommended';
+    }
   }
-  return 'custom';
+  return 'recommended';
 }
 
 function parseLosslessOverrides(input: unknown): LosslessProfileOverrides {

@@ -113,6 +113,15 @@
           </span>
           <i class="fas fa-arrow-down ml-2" />
         </n-button>
+        <n-button
+          v-else-if="!autoScrollEnabled"
+          class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
+          type="primary"
+          @click="jumpToLatest"
+        >
+          {{ $t('troubleshooting.jump_to_latest') }}
+          <i class="fas fa-arrow-down ml-2" />
+        </n-button>
 
         <n-scrollbar
           ref="logScrollbar"
@@ -155,6 +164,7 @@ const logScrollbar = ref<ScrollbarInst | null>(null);
 const autoScrollEnabled = ref(true);
 const newLogsAvailable = ref(false);
 const unseenLines = ref(0);
+const lastObservedLine = ref('');
 
 let logInterval: number | null = null;
 let loginDisposer: (() => void) | null = null;
@@ -193,6 +203,7 @@ function onLogScroll() {
     autoScrollEnabled.value = true;
     newLogsAvailable.value = false;
     unseenLines.value = 0;
+    lastObservedLine.value = extractLastLine(logs.value);
   } else {
     autoScrollEnabled.value = false;
   }
@@ -207,6 +218,7 @@ function scrollToBottom() {
   const container = logScrollbar.value?.containerRef;
   if (!container) return;
   logScrollbar.value?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+  lastObservedLine.value = extractLastLine(logs.value);
 }
 
 async function refreshLogs() {
@@ -221,18 +233,26 @@ async function refreshLogs() {
     });
     if (r.status !== 200 || typeof r.data !== 'string') return;
     const prev = logs.value || '';
-    const prevCount = prev ? prev.split('\n').length : 0;
+    const prevLines = prev ? prev.split('\n') : [];
     const nextText = r.data;
-    const nextCount = nextText ? nextText.split('\n').length : 0;
 
     logs.value = nextText;
 
+    const nextLines = nextText ? nextText.split('\n') : [];
+
     if (!autoScrollEnabled.value) {
-      const delta = Math.max(nextCount - prevCount, 0);
-      if (delta > 0) {
-        unseenLines.value += delta;
-        newLogsAvailable.value = true;
+      const fallbackAnchor = lastLineOf(prevLines);
+      const anchor = lastObservedLine.value || fallbackAnchor;
+      let unseen = 0;
+      if (anchor) {
+        const anchorIndex = nextLines.lastIndexOf(anchor);
+        unseen = anchorIndex === -1 ? nextLines.length : Math.max(nextLines.length - anchorIndex - 1, 0);
+      } else {
+        unseen = nextLines.length;
       }
+
+      unseenLines.value = unseen;
+      newLogsAvailable.value = unseen > 0;
     }
 
     await nextTick();
@@ -240,6 +260,9 @@ async function refreshLogs() {
       scrollToBottom();
       newLogsAvailable.value = false;
       unseenLines.value = 0;
+      lastObservedLine.value = extractLastLine(nextText);
+    } else if (!lastObservedLine.value && nextLines.length) {
+      lastObservedLine.value = extractLastLine(nextText);
     }
   } catch {
     // ignore errors
@@ -257,6 +280,7 @@ function jumpToLatest() {
   autoScrollEnabled.value = true;
   newLogsAvailable.value = false;
   unseenLines.value = 0;
+  lastObservedLine.value = extractLastLine(logs.value);
 }
 
 async function copyLogs() {
@@ -303,6 +327,20 @@ onBeforeUnmount(() => {
   if (logInterval) window.clearInterval(logInterval);
   if (loginDisposer) loginDisposer();
 });
+
+function extractLastLine(text: string) {
+  if (!text) return '';
+  return lastLineOf(text.split('\n'));
+}
+
+function lastLineOf(lines: string[]) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]) {
+      return lines[i];
+    }
+  }
+  return '';
+}
 </script>
 
 <style scoped>

@@ -478,6 +478,7 @@
     "logs": "Logs",
     "logs_desc": "See the logs uploaded by Sunshine",
     "logs_find": "Find...",
+    "jump_to_latest": "Jump to latest logs",
     "restart_sunshine": "Restart Sunshine",
     "restart_sunshine_desc": "If Sunshine isn't working properly, you can try restarting it. This will terminate any running sessions.",
     "restart_sunshine_success": "Sunshine is restarting",

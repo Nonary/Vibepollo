@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
@@ -10,12 +10,15 @@ import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
 import { NCheckbox, NInput } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
+import { storeToRefs } from 'pinia';
 
 const { t } = useI18n();
 const store = useConfigStore();
-const config = store.config;
-const platform = computed(() => (config as any)?.platform || '');
-const ddConfigDisabled = computed(() => (config as any)?.dd_configuration_option === 'disabled');
+const { config } = storeToRefs(store);
+const platform = computed(() => (config.value as any)?.platform || '');
+const ddConfigDisabled = computed(
+  () => (config.value as any)?.dd_configuration_option === 'disabled',
+);
 const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
@@ -86,7 +89,12 @@ function boolProxy(key: string, defaultValue: string = 'true') {
       const pv = parsed ? parsed.possibleValues : ['true', 'false'];
       const next = v ? pv[0] : pv[1];
       // assign preserving original type if boolean/numeric pair
-      (config.value as any)[key] = next as any;
+      if (!config.value) return;
+      if (typeof store.updateOption === 'function') {
+        store.updateOption(key, next as any);
+      } else {
+        (config.value as any)[key] = next as any;
+      }
     },
   });
 }
