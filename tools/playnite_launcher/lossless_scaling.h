@@ -20,7 +20,7 @@ namespace playnite_launcher::lossless {
     std::optional<bool> hdr_enabled;
     std::optional<int> flow_scale;
     std::optional<bool> performance_mode;
-    std::optional<int> resolution_scale;
+    std::optional<double> resolution_scale_factor;
     std::optional<std::string> frame_generation_mode;
     std::optional<std::string> lsfg3_mode;
     std::optional<std::string> scaling_type;

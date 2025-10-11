@@ -7,7 +7,7 @@ import { NSelect, NInputNumber } from 'naive-ui';
 
 const store = useConfigStore();
 const config = store.config;
-const platform = computed(() => config.value?.platform || '');
+const platform = computed(() => config.platform || '');
 const { t } = useI18n();
 const presetOptions = [
   { label: () => `P1 ${t('config.nvenc_preset_1')}`, value: 1 },

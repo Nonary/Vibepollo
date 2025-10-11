@@ -156,49 +156,49 @@ function toOptions() {
           :placeholder="outputNameLabel"
         >
           <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
-          <template #option="slot">
+          <template #option="{ option }">
             <div class="leading-tight">
               <div class="flex items-center gap-2">
-                <span>{{ slot.option?.displayName || slot.option?.label }}</span>
+                <span>{{ option?.displayName || option?.label }}</span>
                 <span
-                  v-if="slot.option?.isVirtual"
+                  v-if="option?.isVirtual"
                   class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
                 >
                   Virtual
                 </span>
                 <span
-                  v-if="slot.option?.isIsolated"
+                  v-if="option?.isIsolated"
                   class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
                 >
                   Isolated
                 </span>
               </div>
-              <div v-if="!slot.option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
-                {{ slot.option?.id || slot.option?.value }}
+              <div v-if="!option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
+                {{ option?.id || option?.value }}
               </div>
             </div>
           </template>
 
           <!-- Show the selected value similarly: name then id -->
-          <template #value="slot">
+          <template #value="{ option }">
             <div class="leading-tight">
               <div class="flex items-center gap-2">
-                <span>{{ slot.option?.displayName || slot.option?.label }}</span>
+                <span>{{ option?.displayName || option?.label }}</span>
                 <span
-                  v-if="slot.option?.isVirtual"
+                  v-if="option?.isVirtual"
                   class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
                 >
                   Virtual
                 </span>
                 <span
-                  v-if="slot.option?.isIsolated"
+                  v-if="option?.isIsolated"
                   class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
                 >
                   Isolated
                 </span>
               </div>
-              <div v-if="!slot.option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
-                {{ slot.option?.id || slot.option?.value }}
+              <div v-if="!option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
+                {{ option?.id || option?.value }}
               </div>
             </div>
           </template>

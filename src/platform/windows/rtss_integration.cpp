@@ -569,9 +569,9 @@ namespace platf {
       DWORD current_flags = g_hooks.GetFlags();
       g_original_flags = current_flags;
       if (current_flags & k_rtss_flag_limiter_disabled) {
-        DWORD desired_flags = current_flags & ~k_rtss_flag_limiter_disabled;
-        DWORD updated_flags = g_hooks.SetFlags(desired_flags, k_rtss_flag_limiter_disabled);
-        if (updated_flags & k_rtss_flag_limiter_disabled) {
+        constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
+        DWORD updated_flags = g_hooks.SetFlags(~limiter_mask, 0);
+        if (updated_flags & limiter_mask) {
           BOOST_LOG(warning) << "Failed to enable RTSS limiter via SetFlags"sv;
         } else {
           BOOST_LOG(info) << "RTSS limiter enabled via hooks (originally disabled)"sv;
@@ -676,10 +676,11 @@ namespace platf {
     }
 
     if (g_hooks && g_original_flags.has_value()) {
-      bool limiter_disabled = (*g_original_flags & k_rtss_flag_limiter_disabled) != 0;
-      DWORD desired_flags = limiter_disabled ? k_rtss_flag_limiter_disabled : 0;
-      DWORD updated_flags = g_hooks.SetFlags(desired_flags, k_rtss_flag_limiter_disabled);
-      if ((updated_flags & k_rtss_flag_limiter_disabled) == (limiter_disabled ? k_rtss_flag_limiter_disabled : 0)) {
+      constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
+      bool limiter_disabled = (*g_original_flags & limiter_mask) != 0;
+      DWORD xor_mask = limiter_disabled ? limiter_mask : 0;
+      DWORD updated_flags = g_hooks.SetFlags(~limiter_mask, xor_mask);
+      if ((updated_flags & limiter_mask) == xor_mask) {
         BOOST_LOG(info) << "RTSS limiter flags restored"sv;
       } else {
         BOOST_LOG(warning) << "RTSS limiter flags restore mismatch"sv;

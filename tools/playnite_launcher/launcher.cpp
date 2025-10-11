@@ -149,7 +149,6 @@ namespace playnite_launcher {
         auto runtime = lossless::capture_lossless_scaling_state();
         if (!runtime.running_pids.empty()) {
           lossless::lossless_scaling_stop_processes(runtime);
-          lossless::lossless_scaling_restart_foreground(runtime, false);
         }
       }
       BOOST_LOG(info) << "Cleanup mode: done";
@@ -591,7 +590,6 @@ namespace playnite_launcher {
           lossless::lossless_scaling_stop_processes(runtime);
         }
         bool restored = lossless::lossless_scaling_restore_global_profile(fullscreen_lossless_backup);
-        lossless::lossless_scaling_restart_foreground(runtime, restored);
       }
       return 0;
     }
@@ -706,17 +704,16 @@ namespace playnite_launcher {
             game_focus_confirmed.store(false, std::memory_order_release);
             focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
             next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
-            if (lossless_profiles_applied) {
-              auto runtime = lossless::capture_lossless_scaling_state();
-              if (!runtime.running_pids.empty()) {
-                lossless::lossless_scaling_stop_processes(runtime);
-              }
-              bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
-              lossless::lossless_scaling_restart_foreground(runtime, restored);
-              active_lossless_backup = {};
-              lossless_profiles_applied = false;
+          if (lossless_profiles_applied) {
+            auto runtime = lossless::capture_lossless_scaling_state();
+            if (!runtime.running_pids.empty()) {
+              lossless::lossless_scaling_stop_processes(runtime);
             }
+            bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
+            active_lossless_backup = {};
+            lossless_profiles_applied = false;
           }
+        }
         }
       });
 
@@ -938,7 +935,6 @@ namespace playnite_launcher {
           lossless::lossless_scaling_stop_processes(runtime);
         }
         bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
-        lossless::lossless_scaling_restart_foreground(runtime, restored);
       }
       int exit_code = should_exit.load() ? 0 : 4;
       client.stop();
