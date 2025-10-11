@@ -61,106 +61,27 @@
           @submit.prevent="save"
           @keydown.ctrl.enter.stop.prevent="save"
         >
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="space-y-1 md:col-span-2">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">Name</label>
-              <!-- Unified combobox: type any name; suggestions from Playnite if available -->
-              <div class="flex items-center gap-2 mb-1">
-                <n-select
-                  v-model:value="nameSelectValue"
-                  :options="nameSelectOptions"
-                  :loading="gamesLoading"
-                  filterable
-                  clearable
-                  :placeholder="'Type to search or enter a custom name'"
-                  class="flex-1"
-                  :fallback-option="fallbackOption"
-                  @focus="onNameFocus"
-                  @search="onNameSearch"
-                  @update:value="onNamePicked"
-                />
-              </div>
-              <!-- When adding a new app on Windows, allow picking a Playnite game (disabled if plugin not installed) -->
-              <template v-if="isNew && isWindows && newAppSource === 'playnite'">
-                <div class="flex items-center gap-2">
-                  <n-select
-                    v-model:value="selectedPlayniteId"
-                    :options="playniteOptions"
-                    :loading="gamesLoading"
-                    filterable
-                    :disabled="lockPlaynite || !playniteInstalled"
-                    :placeholder="
-                      playniteInstalled ? 'Select a Playnite game…' : 'Playnite plugin not detected'
-                    "
-                    class="flex-1"
-                    @focus="loadPlayniteGames"
-                    @update:value="onPickPlaynite"
-                  />
-                  <n-button
-                    v-if="lockPlaynite"
-                    size="small"
-                    type="default"
-                    strong
-                    @click="unlockPlaynite"
-                  >
-                    Change
-                  </n-button>
-                </div>
-              </template>
-              <div class="text-[11px] opacity-60">
-                {{ isPlaynite ? 'Linked to Playnite' : 'Custom application' }}
-              </div>
-            </div>
-            <div v-if="!isPlaynite" class="space-y-1 md:col-span-2">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
-                >Command</label
-              >
-              <n-input
-                v-model:value="cmdText"
-                type="textarea"
-                :autosize="{ minRows: 4, maxRows: 8 }"
-                placeholder="Executable command line"
-              />
-              <p class="text-[11px] opacity-60">Enter the full command line (single string).</p>
-            </div>
-            <div v-if="!isPlaynite" class="space-y-1 md:col-span-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
-                >Working Dir</label
-              >
-              <n-input
-                v-model:value="form.workingDir"
-                class="font-mono"
-                placeholder="C:/Games/App"
-              />
-            </div>
-            <div class="space-y-1 md:col-span-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
-                >Exit Timeout</label
-              >
-              <div class="flex items-center gap-2">
-                <n-input-number v-model:value="form.exitTimeout" :min="0" class="w-28" />
-                <span class="text-xs opacity-60">seconds</span>
-              </div>
-            </div>
-            <div v-if="!isPlaynite" class="space-y-1 md:col-span-2">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70"
-                >Image Path</label
-              >
-              <div class="flex items-center gap-2">
-                <n-input
-                  v-model:value="form.imagePath"
-                  class="font-mono flex-1"
-                  placeholder="/path/to/image.png"
-                />
-                <n-button type="default" strong :disabled="!form.name" @click="openCoverFinder">
-                  <i class="fas fa-image" /> Find Cover
-                </n-button>
-              </div>
-              <p class="text-[11px] opacity-60">
-                Optional; stored only and not fetched by Sunshine.
-              </p>
-            </div>
-          </div>
+          <AppEditBasicsSection
+            v-model:form="form"
+            v-model:cmd-text="cmdText"
+            v-model:name-select-value="nameSelectValue"
+            v-model:selected-playnite-id="selectedPlayniteId"
+            :is-playnite="isPlaynite"
+            :show-playnite-picker="showPlaynitePicker"
+            :playnite-installed="playniteInstalled"
+            :name-select-options="nameSelectOptions"
+            :games-loading="gamesLoading"
+            :fallback-option="fallbackOption"
+            :playnite-options="playniteOptions"
+            :lock-playnite="lockPlaynite"
+            @name-focus="onNameFocus"
+            @name-search="onNameSearch"
+            @name-picked="onNamePicked"
+            @load-playnite-games="loadPlayniteGames"
+            @pick-playnite="onPickPlaynite"
+            @unlock-playnite="unlockPlaynite"
+            @open-cover-finder="openCoverFinder"
+          />
 
           <div class="grid grid-cols-2 gap-3">
             <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
@@ -188,7 +109,8 @@
               <div class="flex flex-col">
                 <span>1st Gen Frame Generation Capture Fix</span>
                 <span class="text-[11px] opacity-60"
-                  >For DLSS3, FSR3, NVIDIA Smooth Motion, and Lossless Scaling. Requires Windows Graphics Capture (WGC),
+                  >Required for DLSS3, FSR3, NVIDIA Smooth Motion (frame gen), and Lossless Scaling (frame gen). 
+                  Not needed if only using Lossless Scaling for upscaling. Requires Windows Graphics Capture (WGC),
                   a display capable of 240 Hz or higher (virtual display driver recommended), and
                   RTSS installed. Configure Display Device to activate only that monitor during
                   streams.</span
@@ -212,309 +134,35 @@
             </n-checkbox>
           </div>
           <p v-if="isWindows" class="text-[11px] opacity-60">
-            Frame generation capture fixes configure limiters to resolve issues with games being
-            stuck at lower frame rates when using frame generation.
+            Frame generation capture fixes are only needed when using frame generation technologies.
+            Lossless Scaling upscaling alone does not require these fixes.
           </p>
 
-          <div
+          <AppEditLosslessScalingSection
             v-if="isWindows"
-            class="mt-4 space-y-3 rounded-md border border-dark/10 p-3 dark:border-light/10"
-          >
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Frame Generation
-              </div>
-              <p class="text-[11px] opacity-60">
-                Enable per-app frame generation helpers. Choose NVIDIA Smooth Motion to toggle the
-                driver feature automatically, or Lossless Scaling to launch the external helper with
-                customized profiles.
-              </p>
-            </div>
-            <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
-          </div>
+            v-model:form="form"
+            v-model:frame-generation-provider="frameGenerationSelection"
+            v-model:lossless-performance-mode="losslessPerformanceModeModel"
+            v-model:lossless-flow-scale="losslessFlowScaleModel"
+            v-model:lossless-resolution-scale="losslessResolutionScaleModel"
+            v-model:lossless-scaling-mode="losslessScalingModeModel"
+            v-model:lossless-sharpening="losslessSharpeningModel"
+            v-model:lossless-anime-size="losslessAnimeSizeModel"
+            v-model:lossless-anime-vrs="losslessAnimeVrsModel"
+            :playnite-installed="playniteInstalled"
+            :show-lossless-resolution="showLosslessResolution"
+            :show-lossless-sharpening="showLosslessSharpening"
+            :show-lossless-anime-options="showLosslessAnimeOptions"
+            :has-active-lossless-overrides="hasActiveLosslessOverrides"
+            :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
+            :reset-active-lossless-profile="resetActiveLosslessProfile"
+          />
 
-          <div class="grid gap-3 md:grid-cols-2">
-            <div class="space-y-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Provider
-              </label>
-              <n-select
-                v-model:value="form.frameGenerationProvider"
-                :options="FRAME_GENERATION_PROVIDERS"
-                :disabled="!form.losslessScalingEnabled"
-                size="small"
-              />
-              <div class="space-y-2">
-                <p class="text-[11px] opacity-60">
-                  <strong>NVIDIA Smooth Motion:</strong> Recommended for RTX 40xx/50xx cards with driver 571.86 or higher. 
-                  Offers better performance and lower latency than Lossless Scaling.
-                </p>
-                <p class="text-[11px] opacity-60">
-                  <strong>Lossless Scaling:</strong> Use this if you don't have an RTX 40xx+ card, or if you prefer more customization options.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <n-alert
-            v-if="form.losslessScalingEnabled && usingLosslessProvider && !playniteInstalled"
-            type="warning"
-            :show-icon="true"
-            size="small"
-            class="text-xs"
-          >
-            Playnite integration is not installed. Install the Playnite plugin from the Settings →
-            Playnite tab to use Lossless Scaling integration.
-          </n-alert>
-
-          <n-alert
-            v-if="form.losslessScalingEnabled && usingSmoothMotionProvider"
-            type="info"
-            :show-icon="true"
-            size="small"
-            class="text-xs"
-          >
-            <div class="space-y-1">
-              <p>
-                <strong>Requirements:</strong> NVIDIA GeForce RTX 40xx or 50xx series GPU with driver version 571.86 or higher.
-              </p>
-              <p>
-                NVIDIA Smooth Motion will be enabled in the global profile when the stream starts and restored afterward. 
-                The 1st Gen Frame Generation Capture Fix will also be applied automatically for optimal streaming performance.
-              </p>
-            </div>
-          </n-alert>
-
-          <div v-if="form.losslessScalingEnabled && usingLosslessProvider" class="space-y-4">
-              <div class="grid gap-3 md:grid-cols-2">
-                <div class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Profile
-                  </label>
-                  <n-radio-group v-model:value="form.losslessScalingProfile">
-                    <n-radio value="recommended">Recommended (Lowest Latency & Frame Pacing)</n-radio>
-                    <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
-                  </n-radio-group>
-                  <p class="text-[11px] opacity-60">
-                    Recommended keeps Sunshine-tuned values for lowest latency and consistent frame
-                    pacing, enabling WGC capture, HDR, and LSFG 3.1 adaptive defaults. Select
-                    Custom to run the default profile you maintain inside Lossless Scaling.
-                  </p>
-                </div>
-                <div class="flex items-end justify-end">
-                  <n-button
-                    size="small"
-                    tertiary
-                    :disabled="!hasActiveLosslessOverrides"
-                    @click="resetActiveLosslessProfile"
-                  >
-                    Reset to Profile Defaults
-                  </n-button>
-                </div>
-              </div>
-
-              <div class="space-y-1">
-                <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  Scaling Type
-                </label>
-                <n-select
-                  v-model:value="losslessScalingModeModel"
-                  :options="LOSSLESS_SCALING_OPTIONS"
-                  size="small"
-                  :clearable="false"
-                />
-                <p class="text-[11px] opacity-60">
-                  Choose the Lossless Scaling algorithm. Options like LS1, FSR, NIS, and SGSR expose
-                  sharpening controls below. Anime4K unlocks size and VRS toggles.
-                </p>
-                <p class="text-[11px] opacity-60 text-warning">
-                  <strong>Note:</strong> Only use scaling if your game does not natively support FSR
-                  or DLSS, as it will cost additional performance.
-                </p>
-              </div>
-
-              <div v-if="showLosslessSharpening" class="space-y-1">
-                <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  Sharpening (1-10)
-                </label>
-                <n-input-number
-                  v-model:value="losslessSharpeningModel"
-                  :min="LOSSLESS_SHARPNESS_MIN"
-                  :max="LOSSLESS_SHARPNESS_MAX"
-                  :step="1"
-                  :precision="0"
-                  size="small"
-                />
-                <p class="text-[11px] opacity-60">
-                  Controls post-scale sharpening for the selected algorithm.
-                </p>
-              </div>
-
-              <div v-if="showLosslessAnimeOptions" class="grid gap-3 md:grid-cols-2">
-                <div class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Anime4K Size
-                  </label>
-                  <n-select
-                    v-model:value="losslessAnimeSizeModel"
-                    :options="LOSSLESS_ANIME_SIZES"
-                    size="small"
-                    :clearable="false"
-                  />
-                </div>
-                <div
-                  class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
-                >
-                  <div>
-                    <div class="text-xs font-semibold uppercase tracking-wide opacity-70">VRS</div>
-                    <p class="text-[11px] opacity-60">
-                      Enable Variable Rate Shading where supported.
-                    </p>
-                  </div>
-                  <n-switch v-model:value="losslessAnimeVrsModel" size="small" />
-                </div>
-              </div>
-
-              <div class="grid gap-3 md:grid-cols-2">
-                <div v-if="showLosslessResolution" class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Resolution Scaling (%)
-                  </label>
-                  <n-input-number
-                    v-model:value="losslessResolutionScaleModel"
-                    :min="LOSSLESS_RESOLUTION_MIN"
-                    :max="LOSSLESS_RESOLUTION_MAX"
-                    :step="1"
-                    :precision="0"
-                    placeholder="100"
-                  />
-                  <p class="text-[11px] opacity-60">
-                    Leave at 100% for no scaling. Overrides apply only to the selected profile.
-                  </p>
-                </div>
-                <div class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Flow Scale (%)
-                  </label>
-                  <n-input-number
-                    v-model:value="losslessFlowScaleModel"
-                    :min="LOSSLESS_FLOW_MIN"
-                    :max="LOSSLESS_FLOW_MAX"
-                    :step="1"
-                    :precision="0"
-                    placeholder="50"
-                  />
-                  <p class="text-[11px] opacity-60">
-                    Tunes frame generation blending (0–100). Recommended defaults to 50%.
-                  </p>
-                </div>
-              </div>
-
-              <div
-                class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
-              >
-                <div>
-                  <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Performance Mode
-                  </div>
-                  <p class="text-[11px] opacity-60">
-                    Reduces GPU usage with minimal impact to quality. Customize per profile.
-                  </p>
-                </div>
-                <n-switch v-model:value="losslessPerformanceModeModel" size="small" />
-              </div>
-
-              <div class="grid gap-3 md:grid-cols-2">
-                <div class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    Target Frame Rate
-                  </label>
-                  <n-input-number
-                    v-model:value="form.losslessScalingTargetFps"
-                    :min="1"
-                    :max="360"
-                    :step="1"
-                    :precision="0"
-                    placeholder="120"
-                  />
-                  <p class="text-[11px] opacity-60">
-                    Sets the Lossless Scaling frame generation target.
-                  </p>
-                </div>
-                <div class="space-y-1">
-                  <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                    RTSS Frame Limit
-                  </label>
-                  <n-input-number
-                    v-model:value="form.losslessScalingRtssLimit"
-                    :min="1"
-                    :max="360"
-                    :step="1"
-                    :precision="0"
-                    placeholder="60"
-                    @update:value="onLosslessRtssLimitChange"
-                  />
-                  <p class="text-[11px] opacity-60">
-                    Defaults to 50% of the target when not customized.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <section class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
-                Prep Commands
-              </h3>
-              <n-button size="small" type="primary" @click="addPrep">
-                <i class="fas fa-plus" /> Add
-              </n-button>
-            </div>
-            <div v-if="form.prepCmd.length === 0" class="text-[12px] opacity-60">None</div>
-            <div v-else class="space-y-2">
-              <div
-                v-for="(p, i) in form.prepCmd"
-                :key="i"
-                class="rounded-md border border-dark/10 dark:border-light/10 p-2"
-              >
-                <div class="flex items-center justify-between gap-2 mb-2">
-                  <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
-                  <div class="flex items-center gap-2">
-                    <n-checkbox v-if="isWindows" v-model:checked="p.elevated" size="small">
-                      {{ $t('_common.elevated') }}
-                    </n-checkbox>
-                    <n-button size="small" type="error" strong @click="form.prepCmd.splice(i, 1)">
-                      <i class="fas fa-trash" />
-                    </n-button>
-                  </div>
-                </div>
-                <div class="grid grid-cols-1 gap-2">
-                  <div>
-                    <label class="text-[11px] opacity-60">{{ $t('_common.do_cmd') }}</label>
-                    <n-input
-                      v-model:value="p.do"
-                      type="textarea"
-                      :autosize="{ minRows: 1, maxRows: 3 }"
-                      class="font-mono"
-                      placeholder="Command to run before start"
-                    />
-                  </div>
-                  <div>
-                    <label class="text-[11px] opacity-60">{{ $t('_common.undo_cmd') }}</label>
-                    <n-input
-                      v-model:value="p.undo"
-                      type="textarea"
-                      :autosize="{ minRows: 1, maxRows: 3 }"
-                      class="font-mono"
-                      placeholder="Command to run on stop"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
+          <AppEditPrepCommandsSection
+            v-model:form="form"
+            :is-windows="isWindows"
+            @add-prep="addPrep"
+          />
 
           <section v-if="!isPlaynite" class="space-y-3">
             <div class="flex items-center justify-between">
@@ -552,103 +200,21 @@
         </div>
       </template>
 
-      <n-modal
-        :show="showCoverModal"
-        :z-index="3300"
-        :mask-style="{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)' }"
-        @update:show="(v) => (showCoverModal = v)"
-      >
-        <n-card :bordered="false" style="max-width: 48rem; width: 100%">
-          <template #header>
-            <div class="flex items-center justify-between w-full">
-              <span class="font-semibold">Covers Found</span>
-              <n-button type="default" strong size="small" @click="showCoverModal = false">
-                Close
-              </n-button>
-            </div>
-          </template>
-          <div class="min-h-[160px]">
-            <div v-if="coverSearching" class="flex items-center justify-center py-10">
-              <n-spin size="large">Loading…</n-spin>
-            </div>
-            <div v-else>
-              <div
-                class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[420px] overflow-auto pr-1"
-              >
-                <div
-                  v-for="(cover, i) in coverCandidates"
-                  :key="i"
-                  class="cursor-pointer group"
-                  @click="useCover(cover)"
-                >
-                  <div
-                    class="relative rounded overflow-hidden aspect-[3/4] bg-black/5 dark:bg-white/5"
-                  >
-                    <img :src="cover.url" class="absolute inset-0 w-full h-full object-cover" />
-                    <div
-                      v-if="coverBusy"
-                      class="absolute inset-0 bg-black/20 dark:bg-white/10 flex items-center justify-center"
-                    >
-                      <n-spin size="small" />
-                    </div>
-                  </div>
-                  <div class="mt-1 text-xs text-center truncate" :title="cover.name">
-                    {{ cover.name }}
-                  </div>
-                </div>
-                <div
-                  v-if="!coverCandidates.length"
-                  class="col-span-full text-center opacity-70 py-8"
-                >
-                  No results. Try adjusting the app name.
-                </div>
-              </div>
-            </div>
-          </div>
-        </n-card>
-      </n-modal>
+      <AppEditCoverModal
+        v-model:visible="showCoverModal"
+        :cover-searching="coverSearching"
+        :cover-busy="coverBusy"
+        :cover-candidates="coverCandidates"
+        @pick="useCover"
+      />
 
-      <n-modal
-        :show="showDeleteConfirm"
-        :z-index="3300"
-        :mask-style="{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)' }"
-        @update:show="(v) => (showDeleteConfirm = v)"
-      >
-        <n-card
-          :title="
-            isPlayniteAuto
-              ? 'Remove and Exclude from Auto‑Sync?'
-              : ($t('apps.confirm_delete_title_named', { name: form.name || '' }) as any)
-          "
-          :bordered="false"
-          style="max-width: 32rem; width: 100%"
-        >
-          <div class="text-sm text-center space-y-2">
-            <template v-if="isPlayniteAuto">
-              <div>
-                This application is managed by Playnite. Removing it will also add it to the
-                Excluded Games list so it won’t be auto‑synced back.
-              </div>
-              <div class="opacity-80">
-                You can bring it back later by manually adding it in Applications, or by removing
-                the exclusion under Settings → Playnite.
-              </div>
-              <div class="opacity-70">Do you want to continue?</div>
-            </template>
-            <template v-else>
-              {{ $t('apps.confirm_delete_message_named', { name: form.name || '' }) }}
-            </template>
-          </div>
-          <template #footer>
-            <div class="w-full flex items-center justify-center gap-3">
-              <n-button type="default" strong @click="showDeleteConfirm = false">{{
-                $t('_common.cancel')
-              }}</n-button>
-              <n-button type="error" strong @click="del">{{ $t('apps.delete') }}</n-button>
-            </div>
-          </template>
-        </n-card>
-      </n-modal>
+      <AppEditDeleteConfirmModal
+        v-model:visible="showDeleteConfirm"
+        :is-playnite-auto="isPlayniteAuto"
+        :name="form.name || ''"
+        @cancel="showDeleteConfirm = false"
+        @confirm="del"
+      />
     </n-card>
   </n-modal>
 </template>
@@ -657,214 +223,39 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
-import {
-  NModal,
-  NCard,
-  NButton,
-  NInput,
-  NInputNumber,
-  NCheckbox,
-  NSelect,
-  NSpin,
-  NSwitch,
-  NRadioGroup,
-  NRadio,
-  NAlert,
-} from 'naive-ui';
+import { NModal, NCard, NButton, NCheckbox } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
-
-// Types for form and server payload
-interface PrepCmd {
-  do: string;
-  undo: string;
-  elevated?: boolean;
-}
-
-type LosslessProfileKey = 'recommended' | 'custom';
-type LosslessScalingMode =
-  | 'off'
-  | 'ls1'
-  | 'fsr'
-  | 'nis'
-  | 'sgsr'
-  | 'bcas'
-  | 'anime4k'
-  | 'xbr'
-  | 'sharp-bilinear'
-  | 'integer'
-  | 'nearest';
-type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
-
-interface LosslessProfileOverrides {
-  performanceMode: boolean | null;
-  flowScale: number | null;
-  resolutionScale: number | null;
-  scalingMode: LosslessScalingMode | null;
-  sharpening: number | null;
-  anime4kSize: Anime4kSize | null;
-  anime4kVrs: boolean | null;
-}
-
-interface LosslessProfileDefaults {
-  performanceMode: boolean;
-  flowScale: number;
-  resolutionScale: number;
-  scalingMode: LosslessScalingMode;
-  sharpening: number;
-  anime4kSize: Anime4kSize;
-  anime4kVrs: boolean;
-}
-
-const LOSSLESS_FLOW_MIN = 0;
-const LOSSLESS_FLOW_MAX = 100;
-const LOSSLESS_RESOLUTION_MIN = 50;
-const LOSSLESS_RESOLUTION_MAX = 100;
-const LOSSLESS_SHARPNESS_MIN = 1;
-const LOSSLESS_SHARPNESS_MAX = 10;
-
-const LOSSLESS_SCALING_OPTIONS: { label: string; value: LosslessScalingMode }[] = [
-  { label: 'Off', value: 'off' },
-  { label: 'LS1', value: 'ls1' },
-  { label: 'FSR', value: 'fsr' },
-  { label: 'NIS', value: 'nis' },
-  { label: 'SGSR', value: 'sgsr' },
-  { label: 'Bicubic CAS', value: 'bcas' },
-  { label: 'Anime4K', value: 'anime4k' },
-  { label: 'xBR', value: 'xbr' },
-  { label: 'Sharp Bilinear', value: 'sharp-bilinear' },
-  { label: 'Integer', value: 'integer' },
-  { label: 'Nearest Neighbor', value: 'nearest' },
-];
-
-const LOSSLESS_SCALING_SHARPENING = new Set<LosslessScalingMode>(['ls1', 'fsr', 'nis', 'sgsr']);
-const LOSSLESS_ANIME_SIZES: { label: string; value: Anime4kSize }[] = [
-  { label: 'Small', value: 'S' },
-  { label: 'Medium', value: 'M' },
-  { label: 'Large', value: 'L' },
-  { label: 'Very Large', value: 'VL' },
-  { label: 'Ultra Large', value: 'UL' },
-];
-
-const LOSSLESS_PROFILE_DEFAULTS: Record<LosslessProfileKey, LosslessProfileDefaults> = {
-  recommended: {
-    performanceMode: true,
-    flowScale: 50,
-    resolutionScale: 100,
-    scalingMode: 'off',
-    sharpening: 5,
-    anime4kSize: 'S',
-    anime4kVrs: false,
-  },
-  custom: {
-    performanceMode: false,
-    flowScale: 50,
-    resolutionScale: 100,
-    scalingMode: 'off',
-    sharpening: 5,
-    anime4kSize: 'S',
-    anime4kVrs: false,
-  },
-};
-
-type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion';
-
-const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> = [
-  { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
-  { label: 'Lossless Scaling', value: 'lossless-scaling' },
-];
-
-function emptyLosslessOverrides(): LosslessProfileOverrides {
-  return {
-    performanceMode: null,
-    flowScale: null,
-    resolutionScale: null,
-    scalingMode: null,
-    sharpening: null,
-    anime4kSize: null,
-    anime4kVrs: null,
-  };
-}
-
-function emptyLosslessProfileState(): Record<LosslessProfileKey, LosslessProfileOverrides> {
-  return {
-    recommended: emptyLosslessOverrides(),
-    custom: emptyLosslessOverrides(),
-  };
-}
-
-function normalizeFrameGenerationProvider(value: unknown): FrameGenerationProvider {
-  if (typeof value !== 'string') {
-    return 'lossless-scaling';
-  }
-  const compact = value
-    .toLowerCase()
-    .split('')
-    .filter((ch) => /[a-z0-9]/.test(ch))
-    .join('');
-  if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
-    return 'nvidia-smooth-motion';
-  }
-  if (compact === 'losslessscaling' || compact === 'lossless') {
-    return 'lossless-scaling';
-  }
-  return 'lossless-scaling';
-}
-interface AppForm {
-  index: number;
-  name: string;
-  output: string;
-  cmd: string;
-  workingDir: string;
-  imagePath: string;
-  excludeGlobalPrepCmd: boolean;
-  elevated: boolean;
-  autoDetach: boolean;
-  waitAll: boolean;
-  frameGenLimiterFix: boolean;
-  exitTimeout: number;
-  prepCmd: PrepCmd[];
-  detached: string[];
-  gen1FramegenFix: boolean;
-  gen2FramegenFix: boolean;
-  frameGenerationProvider: FrameGenerationProvider;
-  losslessScalingEnabled: boolean;
-  losslessScalingTargetFps: number | null;
-  losslessScalingRtssLimit: number | null;
-  losslessScalingRtssTouched: boolean;
-  losslessScalingProfile: LosslessProfileKey;
-  losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
-  // With exactOptionalPropertyTypes, allow explicit undefined when clearing selection
-  playniteId?: string | undefined;
-  playniteManaged?: 'manual' | string | undefined;
-}
-interface ServerApp {
-  name?: string;
-  output?: string;
-  cmd?: string | string[];
-  uuid?: string;
-  'working-dir'?: string;
-  'image-path'?: string;
-  'exclude-global-prep-cmd'?: boolean;
-  elevated?: boolean;
-  'auto-detach'?: boolean;
-  'wait-all'?: boolean;
-  'frame-gen-limiter-fix'?: boolean;
-  'exit-timeout'?: number;
-  'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
-  detached?: string[];
-  'playnite-id'?: string | undefined;
-  'playnite-managed'?: 'manual' | string | undefined;
-  'gen1-framegen-fix'?: boolean;
-  'gen2-framegen-fix'?: boolean;
-  'dlss-framegen-capture-fix'?: boolean; // backward compatibility
-  'frame-generation-provider'?: string;
-  'lossless-scaling-framegen'?: boolean;
-  'lossless-scaling-target-fps'?: number | string | null;
-  'lossless-scaling-rtss-limit'?: number | string | null;
-  'lossless-scaling-profile'?: string;
-  'lossless-scaling-recommended'?: Record<string, unknown>;
-  'lossless-scaling-custom'?: Record<string, unknown>;
-}
+import type {
+  AppForm,
+  ServerApp,
+  PrepCmd,
+  LosslessProfileKey,
+  LosslessScalingMode,
+  LosslessProfileOverrides,
+  Anime4kSize,
+  FrameGenerationProvider,
+  FrameGenerationMode,
+} from './app-edit/types';
+import {
+  FRAME_GENERATION_PROVIDERS,
+  LOSSLESS_PROFILE_DEFAULTS,
+  LOSSLESS_SCALING_SHARPENING,
+  clampFlow,
+  clampResolution,
+  clampSharpness,
+  defaultRtssFromTarget,
+  emptyLosslessOverrides,
+  emptyLosslessProfileState,
+  normalizeFrameGenerationProvider,
+  parseLosslessOverrides,
+  parseLosslessProfileKey,
+  parseNumeric,
+} from './app-edit/lossless';
+import AppEditBasicsSection from './app-edit/AppEditBasicsSection.vue';
+import AppEditLosslessScalingSection from './app-edit/AppEditLosslessScalingSection.vue';
+import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vue';
+import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
+import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
 
 interface AppEditModalProps {
   modelValue: boolean;
@@ -908,9 +299,6 @@ function fresh(): AppForm {
 }
 const form = ref<AppForm>(fresh());
 
-// Keep Playnite default exit-timeout logic centralized:
-// When a Playnite link is present and the timeout hasn't been customized
-// (i.e., still at the default 5 or unset), use 10 seconds by default.
 watch(
   () => form.value.playniteId,
   () => {
@@ -920,98 +308,6 @@ watch(
     }
   },
 );
-
-function parseNumeric(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return null;
-    const parsed = Number(trimmed);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return null;
-}
-
-function clampFlow(value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_FLOW_MAX, Math.max(LOSSLESS_FLOW_MIN, rounded));
-}
-
-function clampResolution(value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_RESOLUTION_MAX, Math.max(LOSSLESS_RESOLUTION_MIN, rounded));
-}
-
-function clampSharpness(value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_SHARPNESS_MAX, Math.max(LOSSLESS_SHARPNESS_MIN, rounded));
-}
-
-function defaultRtssFromTarget(target: number | null): number | null {
-  if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) {
-    return null;
-  }
-  return Math.min(360, Math.max(1, Math.round(target / 2)));
-}
-
-function parseLosslessProfileKey(value: unknown): LosslessProfileKey {
-  if (typeof value === 'string') {
-    const normalized = value.toLowerCase();
-    if (normalized === 'custom') {
-      return 'custom';
-    }
-    if (normalized === 'recommended') {
-      return 'recommended';
-    }
-  }
-  return 'recommended';
-}
-
-function parseLosslessOverrides(input: unknown): LosslessProfileOverrides {
-  const overrides = emptyLosslessOverrides();
-  if (!input || typeof input !== 'object') {
-    return overrides;
-  }
-  const source = input as Record<string, unknown>;
-  if (typeof source['performance-mode'] === 'boolean') {
-    overrides.performanceMode = source['performance-mode'] as boolean;
-  }
-  const rawFlow = clampFlow(parseNumeric(source['flow-scale']));
-  if (rawFlow !== null) {
-    overrides.flowScale = rawFlow;
-  }
-  const rawResolution = clampResolution(parseNumeric(source['resolution-scale']));
-  if (rawResolution !== null) {
-    overrides.resolutionScale = rawResolution;
-  }
-  const modeRaw = typeof source['scaling-type'] === 'string' ? source['scaling-type'] : null;
-  if (modeRaw) {
-    const normalized = modeRaw.toLowerCase() as LosslessScalingMode;
-    if (LOSSLESS_SCALING_OPTIONS.some((o) => o.value === normalized)) {
-      overrides.scalingMode = normalized;
-    }
-  }
-  const rawSharpness = clampSharpness(parseNumeric(source['sharpening']));
-  if (rawSharpness !== null) {
-    overrides.sharpening = rawSharpness;
-  }
-  const animeSizeRaw =
-    typeof source['anime4k-size'] === 'string' ? source['anime4k-size'].toUpperCase() : null;
-  if (animeSizeRaw && LOSSLESS_ANIME_SIZES.some((o) => o.value === animeSizeRaw)) {
-    overrides.anime4kSize = animeSizeRaw as Anime4kSize;
-  }
-  if (typeof source['anime4k-vrs'] === 'boolean') {
-    overrides.anime4kVrs = source['anime4k-vrs'] as boolean;
-  }
-  return overrides;
-}
 
 function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const base = fresh();
@@ -1158,12 +454,65 @@ const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
   () => isPlaynite.value && form.value.playniteManaged !== 'manual',
 );
-const usingLosslessProvider = computed<boolean>(
-  () => form.value.frameGenerationProvider === 'lossless-scaling',
-);
-const usingSmoothMotionProvider = computed<boolean>(
-  () => form.value.frameGenerationProvider === 'nvidia-smooth-motion',
-);
+
+const frameGenerationSelection = computed<FrameGenerationMode>({
+  get: () => {
+    if (form.value.frameGenerationProvider === 'nvidia-smooth-motion') {
+      return 'nvidia-smooth-motion';
+    }
+    const hasLosslessFrameGen =
+      form.value.losslessScalingTargetFps !== null ||
+      form.value.losslessScalingRtssLimit !== null;
+    return hasLosslessFrameGen ? 'lossless-scaling' : 'off';
+  },
+  set: (mode) => {
+    if (mode === 'nvidia-smooth-motion') {
+      form.value.frameGenerationProvider = 'nvidia-smooth-motion';
+    } else if (mode === 'lossless-scaling') {
+      form.value.frameGenerationProvider = 'lossless-scaling';
+      if (!form.value.losslessScalingEnabled) {
+        form.value.losslessScalingEnabled = true;
+      }
+      if (!form.value.losslessScalingTargetFps) {
+        form.value.losslessScalingTargetFps = 120;
+      }
+      if (!form.value.losslessScalingRtssLimit && !form.value.losslessScalingRtssTouched) {
+        form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
+          parseNumeric(form.value.losslessScalingTargetFps),
+        );
+      }
+    } else {
+      form.value.losslessScalingTargetFps = null;
+      form.value.losslessScalingRtssLimit = null;
+      form.value.losslessScalingRtssTouched = false;
+      if (form.value.frameGenerationProvider !== 'lossless-scaling') {
+        form.value.frameGenerationProvider = 'lossless-scaling';
+      }
+    }
+  },
+});
+
+const nvidiaFrameGenEnabled = computed<boolean>({
+  get: () => frameGenerationSelection.value === 'nvidia-smooth-motion',
+  set: (enabled: boolean) => {
+    if (enabled) {
+      frameGenerationSelection.value = 'nvidia-smooth-motion';
+    } else if (frameGenerationSelection.value === 'nvidia-smooth-motion') {
+      frameGenerationSelection.value = 'off';
+    }
+  },
+});
+
+const losslessFrameGenEnabled = computed<boolean>({
+  get: () => frameGenerationSelection.value === 'lossless-scaling',
+  set: (enabled: boolean) => {
+    if (enabled) {
+      frameGenerationSelection.value = 'lossless-scaling';
+    } else if (frameGenerationSelection.value === 'lossless-scaling') {
+      frameGenerationSelection.value = 'off';
+    }
+  },
+});
 watch(
   () => form.value.frameGenerationProvider,
   (provider) => {
@@ -1172,9 +521,10 @@ watch(
       form.value.frameGenerationProvider = normalized;
       return;
     }
+    // Update FPS/RTSS if using lossless and frame gen is enabled
     if (
       normalized === 'lossless-scaling' &&
-      form.value.losslessScalingEnabled &&
+      losslessFrameGenEnabled.value &&
       !form.value.losslessScalingRtssTouched
     ) {
       form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
@@ -1183,23 +533,7 @@ watch(
     }
   },
 );
-watch(
-  () => form.value.losslessScalingEnabled,
-  (enabled) => {
-    if (!enabled) {
-      form.value.losslessScalingRtssTouched = false;
-      return;
-    }
-    if (!usingLosslessProvider.value) {
-      return;
-    }
-    if (!form.value.losslessScalingRtssTouched) {
-      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
-        parseNumeric(form.value.losslessScalingTargetFps),
-      );
-    }
-  },
-);
+
 watch(
   () => form.value.losslessScalingTargetFps,
   (value) => {
@@ -1208,10 +542,8 @@ watch(
       form.value.losslessScalingTargetFps = normalized;
       return;
     }
-    if (!form.value.losslessScalingEnabled || !usingLosslessProvider.value) {
-      return;
-    }
-    if (!form.value.losslessScalingRtssTouched) {
+    // Only auto-update RTSS if frame gen is enabled and user hasn't manually set it
+    if (losslessFrameGenEnabled.value && !form.value.losslessScalingRtssTouched) {
       form.value.losslessScalingRtssLimit = defaultRtssFromTarget(normalized);
     }
   },
@@ -1379,6 +711,21 @@ const showLosslessResolution = computed(() => {
 });
 const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
 
+// Watch for scaling mode changes to manage lossless enabled state
+watch(
+  () => losslessScalingModeModel.value,
+  (mode) => {
+    // If user sets scaling to something other than 'off', ensure lossless is enabled
+    if (mode !== 'off' && !form.value.losslessScalingEnabled) {
+      form.value.losslessScalingEnabled = true;
+    }
+    // If user sets scaling to 'off' and frame gen is also off, disable lossless entirely
+    if (mode === 'off' && !losslessFrameGenEnabled.value) {
+      form.value.losslessScalingEnabled = false;
+    }
+  }
+);
+
 const hasActiveLosslessOverrides = computed<boolean>(() => {
   const overrides = form.value.losslessScalingProfiles[activeLosslessProfile.value];
   return (
@@ -1486,7 +833,6 @@ const saving = ref(false);
 const showDeleteConfirm = ref(false);
 
 // Cover finder state (disabled for Playnite-managed apps)
-type CoverCandidate = { name: string; key: string; url: string; saveUrl: string };
 const showCoverModal = ref(false);
 const coverSearching = ref(false);
 const coverBusy = ref(false);
@@ -1585,6 +931,9 @@ const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
 const newAppSource = ref<'custom' | 'playnite'>('custom');
+const showPlaynitePicker = computed(
+  () => isNew.value && isWindows.value && newAppSource.value === 'playnite',
+);
 
 // Playnite picker state
 const gamesLoading = ref(false);
@@ -1650,6 +999,15 @@ watch(newAppSource, (v) => {
 });
 // Track if Gen1 is being auto-enabled by Lossless Scaling to prevent alert spam
 let autoEnablingGen1 = false;
+
+watch(
+  () => form.value.losslessScalingEnabled,
+  (enabled) => {
+    if (!enabled && losslessFrameGenEnabled.value) {
+      frameGenerationSelection.value = 'off';
+    }
+  },
+);
 
 watch(
   () => form.value.gen1FramegenFix,
@@ -1728,24 +1086,30 @@ watch(
 
 // Automatically enable Gen1 Frame Generation fix when Frame Generation is enabled
 watch(
-  () => [form.value.losslessScalingEnabled, form.value.frameGenerationProvider] as const,
-  ([enabled, provider]) => {
-    if (enabled && !form.value.gen1FramegenFix) {
+  () => [nvidiaFrameGenEnabled.value, losslessFrameGenEnabled.value] as const,
+  ([nvidia, lossless], [prevNvidia, prevLossless]) => {
+    const anyFrameGenEnabled = nvidia || lossless;
+    const wasFrameGenEnabled = prevNvidia || prevLossless;
+    if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
       autoEnablingGen1 = true;
       form.value.gen1FramegenFix = true;
-      // Show appropriate message based on provider
-      if (provider === 'nvidia-smooth-motion') {
+      if (nvidia) {
         message?.info(
           '1st Gen Frame Generation Capture Fix has been automatically enabled for optimal NVIDIA Smooth Motion performance.',
           { duration: 8000 },
         );
-      } else {
+      } else if (lossless) {
         message?.info(
-          '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling integration.',
+          '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling frame generation.',
           { duration: 8000 },
         );
       }
-      // Reset flag after Vue updates to avoid race conditions
+      setTimeout(() => {
+        autoEnablingGen1 = false;
+      }, 100);
+    } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
+      autoEnablingGen1 = true;
+      form.value.gen1FramegenFix = false;
       setTimeout(() => {
         autoEnablingGen1 = false;
       }, 100);
