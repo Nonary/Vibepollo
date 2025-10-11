@@ -40,8 +40,8 @@ namespace playnite_launcher::lossless {
     constexpr int k_sharpness_max = 10;
     constexpr int k_flow_scale_min = 0;
     constexpr int k_flow_scale_max = 100;
-    constexpr int k_resolution_scale_min = 10;
-    constexpr int k_resolution_scale_max = 500;
+    constexpr double k_resolution_factor_min = 1.0;
+    constexpr double k_resolution_factor_max = 10.0;
 
     bool parse_env_flag(const char *value) {
       if (!value) {
@@ -99,6 +99,27 @@ namespace playnite_launcher::lossless {
     }
 
     std::optional<int> clamp_optional_int(std::optional<int> value, int min_value, int max_value) {
+      if (!value) {
+        return std::nullopt;
+      }
+      return std::clamp(*value, min_value, max_value);
+    }
+
+    std::optional<double> parse_env_double(const char *value) {
+      if (!value || !*value) {
+        return std::nullopt;
+      }
+      try {
+        double v = std::stod(value);
+        if (std::isfinite(v) && v > 0.0) {
+          return v;
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    std::optional<double> clamp_optional_double(std::optional<double> value, double min_value, double max_value) {
       if (!value) {
         return std::nullopt;
       }
@@ -741,14 +762,13 @@ namespace playnite_launcher::lossless {
         int target = std::clamp(*options.target_fps, 1, 480);
         profile.put("LSFG3Target", target);
       }
-      if (options.resolution_scale) {
-        int resolution = std::clamp(*options.resolution_scale, k_resolution_scale_min, k_resolution_scale_max);
-        double scale_factor = resolution > 0 ? 100.0 / static_cast<double>(resolution) : 1.0;
-        profile.put("ScaleFactor", scale_factor);
+      if (options.resolution_scale_factor) {
+        double factor = std::clamp(*options.resolution_scale_factor, k_resolution_factor_min, k_resolution_factor_max);
+        profile.put("ScaleFactor", factor);
         if (options.scaling_type) {
           profile.put("ScalingType", *options.scaling_type);
         } else {
-          profile.put("ScalingType", resolution == 100 ? "Off" : "Auto");
+          profile.put("ScalingType", std::abs(factor - 1.0) < 0.01 ? "Off" : "Auto");
         }
       } else if (options.scaling_type) {
         profile.put("ScalingType", *options.scaling_type);
@@ -890,7 +910,7 @@ namespace playnite_launcher::lossless {
     opt.hdr_enabled = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_HDR"));
     opt.flow_scale = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_FLOW_SCALE")), k_flow_scale_min, k_flow_scale_max);
     opt.performance_mode = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_PERFORMANCE_MODE"));
-    opt.resolution_scale = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_RESOLUTION_SCALE")), k_resolution_scale_min, k_resolution_scale_max);
+    opt.resolution_scale_factor = clamp_optional_double(parse_env_double(std::getenv("SUNSHINE_LOSSLESS_SCALING_RESOLUTION_SCALE")), k_resolution_factor_min, k_resolution_factor_max);
     opt.frame_generation_mode = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN_MODE"));
     opt.lsfg3_mode = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_LSFG3_MODE"));
     opt.scaling_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_SCALING_TYPE"));

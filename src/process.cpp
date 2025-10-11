@@ -9,10 +9,13 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <vector>
+#include <sstream>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -62,7 +65,7 @@ namespace proc {
     constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
     constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
     constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
-    constexpr int LOSSLESS_MAX_RESOLUTION_SCALE = 500;
+    constexpr int LOSSLESS_MAX_RESOLUTION_SCALE = 100;
     constexpr int LOSSLESS_SHARPNESS_MIN = 1;
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
 
@@ -208,7 +211,7 @@ namespace proc {
       std::string profile;
       std::optional<bool> performance_mode;
       std::optional<int> flow_scale;
-      std::optional<int> resolution_scale;
+      std::optional<double> resolution_scale_factor;
       std::optional<std::string> capture_api;
       std::optional<int> queue_target;
       std::optional<bool> hdr_enabled;
@@ -331,10 +334,13 @@ namespace proc {
       if (*normalized_mode != "off") {
         int resolution_scale = overrides.resolution_scale.value_or(defaults.resolution_scale);
         resolution_scale = std::clamp(resolution_scale, LOSSLESS_MIN_RESOLUTION_SCALE, LOSSLESS_MAX_RESOLUTION_SCALE);
-        result.resolution_scale = resolution_scale;
+        double factor = 100.0 / static_cast<double>(resolution_scale);
+        factor = std::clamp(factor, 1.0, 10.0);
+        factor = std::round(factor * 100.0) / 100.0;
+        result.resolution_scale_factor = factor;
       } else {
-        // When scaling is off, use default/100% - don't apply custom resolution scaling
-        result.resolution_scale = LOSSLESS_DEFAULT_RESOLUTION_SCALE;
+        // When scaling is off, use unity scale factor to disable custom scaling
+        result.resolution_scale_factor = 1.0;
       }
 
       if (auto mapped = scaling_mode_to_lossless_value(*normalized_mode)) {
@@ -586,6 +592,16 @@ namespace proc {
           _env[key] = "";
         }
       };
+      auto set_double = [&](const char *key, const std::optional<double> &value) {
+        if (value.has_value()) {
+          std::ostringstream stream;
+          stream.setf(std::ios::fixed);
+          stream << std::setprecision(2) << *value;
+          _env[key] = stream.str();
+        } else {
+          _env[key] = "";
+        }
+      };
       auto set_bool = [&](const char *key, const std::optional<bool> &value) {
         if (value.has_value()) {
           _env[key] = *value ? "1" : "0";
@@ -600,7 +616,7 @@ namespace proc {
       set_bool(ENV_LOSSLESS_HDR, runtime.hdr_enabled);
       set_int(ENV_LOSSLESS_FLOW_SCALE, runtime.flow_scale);
       set_bool(ENV_LOSSLESS_PERFORMANCE_MODE, runtime.performance_mode);
-      set_int(ENV_LOSSLESS_RESOLUTION, runtime.resolution_scale);
+      set_double(ENV_LOSSLESS_RESOLUTION, runtime.resolution_scale_factor);
       set_string(ENV_LOSSLESS_FRAMEGEN_MODE, runtime.frame_generation);
       set_string(ENV_LOSSLESS_LSFG3_MODE, runtime.lsfg3_mode);
       set_string(ENV_LOSSLESS_SCALING_TYPE, runtime.scaling_type);

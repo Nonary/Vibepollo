@@ -377,11 +377,38 @@ const resolutionFactorModel = computed<number>({
   },
   set: (factor) => {
     const normalized = Math.min(10, Math.max(1, factor || 1));
-    const percent = Math.min(
-      LOSSLESS_RESOLUTION_MAX,
-      Math.max(LOSSLESS_RESOLUTION_MIN, Math.round((100 / normalized) / 5) * 5),
-    );
-    resolutionPercentModel.value = percent;
+    const currentPercent = resolutionPercentModel.value;
+    const currentFactor = Number((100 / currentPercent).toFixed(2));
+    const basePercent = 100 / normalized;
+    const clampToRange = (value: number) =>
+      Math.max(LOSSLESS_RESOLUTION_MIN, Math.min(LOSSLESS_RESOLUTION_MAX, value));
+    const snapDown = (value: number) => clampToRange(Math.floor(value / 5) * 5);
+    const snapUp = (value: number) => clampToRange(Math.ceil(value / 5) * 5);
+    const snapNearest = (value: number) => clampToRange(Math.round(value / 5) * 5);
+    const EPSILON = 1e-3;
+
+    let nextPercent: number;
+
+    if (normalized > currentFactor + EPSILON) {
+      nextPercent = snapDown(basePercent);
+    } else if (normalized < currentFactor - EPSILON) {
+      nextPercent = snapUp(basePercent);
+    } else {
+      nextPercent = snapNearest(basePercent);
+    }
+
+    if (nextPercent === currentPercent) {
+      if (normalized > currentFactor + EPSILON && currentPercent > LOSSLESS_RESOLUTION_MIN) {
+        nextPercent = clampToRange(currentPercent - 5);
+      } else if (
+        normalized < currentFactor - EPSILON &&
+        currentPercent < LOSSLESS_RESOLUTION_MAX
+      ) {
+        nextPercent = clampToRange(currentPercent + 5);
+      }
+    }
+
+    resolutionPercentModel.value = nextPercent;
   },
 });
 
