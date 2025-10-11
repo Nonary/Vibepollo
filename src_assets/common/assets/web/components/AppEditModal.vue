@@ -164,16 +164,6 @@
             @add-prep="addPrep"
           />
 
-          <section v-if="!isPlaynite" class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
-                Detached Commands
-              </h3>
-              <n-button size="small" type="primary" @click="addDetached">
-                <i class="fas fa-plus" /> Add
-              </n-button>
-            </div>
-          </section>
           <section class="sr-only">
             <!-- hidden submit to allow Enter to save within fields -->
             <button type="submit" tabindex="-1" aria-hidden="true"></button>
@@ -1116,11 +1106,6 @@ watch(
     }
   },
 );
-function addDetached() {
-  form.value.detached.push('');
-  requestAnimationFrame(() => updateShadows());
-}
-
 // Scroll affordance logic for modal body
 const bodyRef = ref<HTMLElement | null>(null);
 const showTopShadow = ref(false);
