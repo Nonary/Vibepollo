@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { NSelect, NInput, NInputNumber } from 'naive-ui';
 
 const store = useConfigStore();
-const defaultMoonlightPort = 47989;
 const config = store.config;
+const defaultMoonlightPort = 47989;
 // Ensure a valid numeric base port even if server returns string/undefined
-const effectivePort = computed(() => Number(config.value?.port ?? defaultMoonlightPort));
+const effectivePort = computed(() => Number(config.port ?? defaultMoonlightPort));
 
 const addressFamilyOptions = [
   { label: 'IPv4', value: 'ipv4' },

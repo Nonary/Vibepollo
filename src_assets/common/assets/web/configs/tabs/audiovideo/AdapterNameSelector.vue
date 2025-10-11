@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
 import { NInput } from 'naive-ui';
@@ -8,7 +7,7 @@ import { useConfigStore } from '@/stores/config';
 import { computed } from 'vue';
 const store = useConfigStore();
 const config = store.config;
-const platform = computed(() => config.value?.platform || '');
+const platform = computed(() => config.platform || '');
 </script>
 
 <template>

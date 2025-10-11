@@ -151,21 +151,21 @@ function toOptions() {
           :placeholder="outputNameLabel"
         >
           <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
-          <template #option="slot">
+          <template #option="{ option }">
             <div class="leading-tight">
-              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="">{{ option?.displayName || option?.label }}</div>
               <div class="text-[12px] opacity-60 font-mono">
-                {{ slot.option?.id || slot.option?.value }}
+                {{ option?.id || option?.value }}
               </div>
             </div>
           </template>
 
           <!-- Show the selected value similarly: name then id -->
-          <template #value="slot">
+          <template #value="{ option }">
             <div class="leading-tight">
-              <div class="">{{ slot.option?.displayName || slot.option?.label }}</div>
+              <div class="">{{ option?.displayName || option?.label }}</div>
               <div class="text-[12px] opacity-60 font-mono">
-                {{ slot.option?.id || slot.option?.value }}
+                {{ option?.id || option?.value }}
               </div>
             </div>
           </template>

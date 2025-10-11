@@ -31,6 +31,30 @@ export interface MetaInfo {
 // --- Defaults (flat) -------------------------------------------------------
 // Keep these separate from runtime state so reading defaults does NOT mutate
 // the actual config object that will be POSTed back to the server.
+
+type UnionToIntersection<U> = (U extends unknown ? (arg: U) => void : never) extends (
+  arg: infer I,
+) => void
+  ? I
+  : never;
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+type WidenLiteral<T> = T extends string
+  ? string
+  : T extends number
+  ? number
+  : T extends boolean
+  ? boolean
+  : T extends null
+  ? null
+  : T extends undefined
+  ? undefined
+  : T extends ReadonlyArray<infer U>
+  ? Array<WidenLiteral<U>>
+  : T extends Record<string, unknown>
+  ? { [K in keyof Mutable<T>]: WidenLiteral<Mutable<T>[K]> }
+  : T;
 const defaultGroups = [
   {
     id: 'general',
@@ -39,10 +63,11 @@ const defaultGroups = [
       locale: 'en',
       sunshine_name: '',
       min_log_level: 2,
-      global_prep_cmd: [],
+      global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
+      system_tray: true,
     },
   },
   {
@@ -64,6 +89,7 @@ const defaultGroups = [
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
       keybindings: '[0x10,0xA0,0x11,0xA2,0x12,0xA4]',
+      ds5_inputtino_randomize_mac: true,
     },
   },
   {
@@ -84,7 +110,11 @@ const defaultGroups = [
       dd_hdr_option: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
-      dd_mode_remapping: { mixed: [], resolution_only: [], refresh_rate_only: [] },
+      dd_mode_remapping: {
+        mixed: [] as Array<Record<string, string>>,
+        resolution_only: [] as Array<Record<string, string>>,
+        refresh_rate_only: [] as Array<Record<string, string>>,
+      },
       dd_wa_hdr_toggle: false,
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
@@ -131,8 +161,8 @@ const defaultGroups = [
       playnite_focus_timeout_secs: 15,
       playnite_focus_exit_on_first: false,
       playnite_fullscreen_entry_enabled: false,
-      playnite_sync_categories: [],
-      playnite_exclude_games: [],
+      playnite_sync_categories: [] as Array<{ id: string; name: string }>,
+      playnite_exclude_games: [] as Array<{ id: string; name: string }>,
       playnite_install_dir: '',
       playnite_extensions_dir: '',
     },
@@ -221,24 +251,50 @@ const defaultGroups = [
       sw_tune: 'zerolatency',
     },
   },
-];
+] as const satisfies ReadonlyArray<{
+  id: string;
+  name: string;
+  options: Record<string, unknown>;
+}>;
 
 // Flatten for easy lookup
-const defaultMap: Record<string, any> = {};
-for (const g of defaultGroups) Object.assign(defaultMap, g.options);
+type DefaultGroups = typeof defaultGroups;
+type ConfigDefaults = WidenLiteral<UnionToIntersection<DefaultGroups[number]['options']>>;
+type ConfigKey = keyof ConfigDefaults;
+type ConfigData = Record<string, unknown>;
+export type ConfigState = ConfigDefaults & { platform: string } & Record<string, any>;
 
-function deepClone(v: any) {
-  return v === undefined ? v : JSON.parse(JSON.stringify(v));
+function createDefaultMap<T extends readonly { options: Record<string, unknown> }[]>(
+  groups: T,
+) {
+  type Result = WidenLiteral<UnionToIntersection<T[number]['options']>>;
+  const map = {} as Result;
+  for (const g of groups) {
+    Object.assign(map as Record<string, unknown>, g.options);
+  }
+  return map;
 }
 
-function deepEqual(a: any, b: any): boolean {
+const defaultMap: ConfigDefaults = createDefaultMap(defaultGroups);
+
+function hasDefaultKey(key: string): key is ConfigKey {
+  return Object.prototype.hasOwnProperty.call(defaultMap, key);
+}
+
+function deepClone<T>(v: T): T {
+  return v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T);
+}
+
+function deepEqual<T>(a: T, b: T): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
 export const useConfigStore = defineStore('config', () => {
   const tabs = ref(defaultGroups); // keep existing export shape
-  const _data = ref<Record<string, any> | null>(null); // only user/server values
-  const config = ref<any>(null); // wrapper with getters/setters for UI binding
+  const _data = ref<ConfigData | null>(null); // only user/server values
+  // Single meta object kept completely separate from user config
+  const metadata = ref<MetaInfo>({});
+  const config = ref<ConfigState>(buildWrapper()); // wrapper with getters/setters for UI binding
   const version = ref(0); // increments only on real user changes
   // Track keys that should require manual save (no autosave)
   const manualSaveKeys = new Set<string>([
@@ -259,14 +315,12 @@ export const useConfigStore = defineStore('config', () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const validationError = ref<string | null>(null);
-  // Single meta object kept completely separate from user config
-  const metadata = ref<MetaInfo>({});
 
   // --- Autosave (PATCH) queue ------------------------------------------------
   // Holds only non-manual changes since last flush. Keys are replaced with
   // the most recent value. Values equal to defaults are converted to null
   // so the server removes them to fall back to default behavior.
-  const patchQueue = ref<Record<string, any>>({});
+  const patchQueue = ref<Record<string, unknown>>({});
   let flushTimer: any = null; // one-shot timer
   let flushInFlight = false;
   const autosaveIntervalMs = 3000;
@@ -277,8 +331,8 @@ export const useConfigStore = defineStore('config', () => {
     restartRequired?: boolean;
   } | null>(null);
 
-  function buildWrapper() {
-    const target: any = {};
+  function buildWrapper(): ConfigState {
+    const target = {} as ConfigState;
     // union of keys (defaults + current data)
     const keys = new Set<string>([
       ...Object.keys(defaultMap),
@@ -293,23 +347,30 @@ export const useConfigStore = defineStore('config', () => {
         enumerable: true,
         configurable: true,
         get() {
-          if (_data.value && Object.prototype.hasOwnProperty.call(_data.value, k)) {
-            return _data.value[k];
+          const current = _data.value;
+          if (current && Object.prototype.hasOwnProperty.call(current, k)) {
+            return current[k];
           }
           // For objects/arrays return a fresh clone so accidental mutation
           // does not silently diverge from persistence. To support in-place
           // mutation (e.g. push) we lazily materialize object/array defaults
           // into _data WITHOUT bumping version (not a user change yet).
-          const dv = defaultMap[k];
-          if (dv && typeof dv === 'object') {
-            if (!_data.value) _data.value = {};
-            _data.value[k] = deepClone(dv);
-            return _data.value[k];
+          if (hasDefaultKey(k)) {
+            const dv = defaultMap[k];
+            if (dv && typeof dv === 'object') {
+              if (!_data.value) _data.value = {} as ConfigData;
+              const storeData = _data.value;
+              if (storeData && !Object.prototype.hasOwnProperty.call(storeData, k)) {
+                (storeData as Record<string, unknown>)[k] = deepClone(dv);
+              }
+              return storeData ? storeData[k] : dv;
+            }
+            return dv;
           }
-          return dv;
+          return undefined;
         },
         set(v) {
-          if (!_data.value) _data.value = {};
+          if (!_data.value) _data.value = {} as ConfigData;
           const prev = _data.value[k];
           if (deepEqual(prev, v)) return; // ignore no-op
           _data.value[k] = v;
@@ -322,8 +383,10 @@ export const useConfigStore = defineStore('config', () => {
             version.value++;
             savingState.value = 'dirty';
             // queue for patch: send null when value matches default
-            const dv = (defaultMap as any)[k];
-            const toSend = deepEqual(v, dv) ? null : v;
+            let toSend: unknown = v;
+            if (hasDefaultKey(k) && deepEqual(v, defaultMap[k])) {
+              toSend = null;
+            }
             patchQueue.value = { ...patchQueue.value, [k]: toSend };
             // reset autosave timer to full interval on any pending change
             scheduleAutosave();
@@ -345,20 +408,21 @@ export const useConfigStore = defineStore('config', () => {
     return target;
   }
 
-  function setConfig(obj: any) {
+  function setConfig(obj: unknown) {
     // config payload should not include metadata anymore; just clone
-    _data.value = obj ? JSON.parse(JSON.stringify(obj)) : {};
+    _data.value = (obj ? JSON.parse(JSON.stringify(obj)) : {}) as ConfigData;
+    const data = _data.value;
 
     // decode known JSON string fields
-    const specialOptions = ['dd_mode_remapping', 'global_prep_cmd'];
+    const specialOptions: Array<keyof ConfigDefaults> = ['dd_mode_remapping', 'global_prep_cmd'];
     for (const key of specialOptions) {
       if (
-        _data.value &&
-        Object.prototype.hasOwnProperty.call(_data.value, key) &&
-        typeof _data.value[key] === 'string'
+        data &&
+        Object.prototype.hasOwnProperty.call(data, key) &&
+        typeof data[key] === 'string'
       ) {
         try {
-          _data.value[key] = JSON.parse(_data.value[key]);
+          data[key] = JSON.parse(data[key] as string);
         } catch {
           /* ignore */
         }
@@ -368,39 +432,40 @@ export const useConfigStore = defineStore('config', () => {
     // Coerce primitive types based on defaults so UI widgets match options.
     // This fixes cases where server returns numeric fields as strings, causing
     // selects to show raw values instead of their friendly labels.
-    if (_data.value) {
-      for (const key of Object.keys(_data.value)) {
-        const dv = (defaultMap as any)[key];
-        const cur = (_data.value as any)[key];
+    if (data) {
+      for (const key of Object.keys(data)) {
+        if (!hasDefaultKey(key)) continue;
+        const dv = defaultMap[key];
+        const cur = data[key];
         // If default is a number, coerce string numerics to numbers
         if (typeof dv === 'number' && typeof cur === 'string') {
           const n = Number(cur);
           if (Number.isFinite(n)) {
-            (_data.value as any)[key] = n;
+            data[key] = n;
           }
         }
       }
     }
 
     // Migrate legacy HDR workaround delay -> boolean toggle (enabled if delay>0)
-    if (_data.value) {
-      const hasNew = Object.prototype.hasOwnProperty.call(_data.value, 'dd_wa_hdr_toggle');
-      const hasLegacy = Object.prototype.hasOwnProperty.call(_data.value, 'dd_wa_hdr_toggle_delay');
+    if (data) {
+      const hasNew = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle');
+      const hasLegacy = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle_delay');
       if (!hasNew && hasLegacy) {
-        const v = Number((_data.value as any)['dd_wa_hdr_toggle_delay']);
+        const v = Number((data as Record<string, unknown>)['dd_wa_hdr_toggle_delay']);
         if (Number.isFinite(v) && v > 0) {
-          (_data.value as any)['dd_wa_hdr_toggle'] = true;
+          (data as Record<string, unknown>)['dd_wa_hdr_toggle'] = true;
         }
       }
     }
 
     // Keep frame limiter legacy and new flags in sync so toggles work across versions.
-    if (_data.value) {
-      if (!Object.prototype.hasOwnProperty.call(_data.value, 'frame_limiter_enable')) {
-        (_data.value as any)['frame_limiter_enable'] = false;
+    if (data) {
+      if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_enable')) {
+        (data as Record<string, unknown>)['frame_limiter_enable'] = false;
       }
-      if (!Object.prototype.hasOwnProperty.call(_data.value, 'frame_limiter_provider')) {
-        (_data.value as any)['frame_limiter_provider'] = 'auto';
+      if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
+        (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
     }
 
@@ -431,18 +496,18 @@ export const useConfigStore = defineStore('config', () => {
       if (['false', 'no', 'disable', 'disabled', 'off', '0'].includes(s)) return false;
       return null;
     };
-    for (const k of allBoolKeys) {
-      if (!_data.value) break;
-      if (Object.prototype.hasOwnProperty.call(_data.value, k)) {
-        const b = toBool((_data.value as any)[k]);
+    if (data) {
+      for (const k of allBoolKeys) {
+        if (!Object.prototype.hasOwnProperty.call(data, k)) continue;
+        const b = toBool(data[k]);
         if (b !== null) {
-          (_data.value as any)[k] = b;
+          data[k] = b;
         }
       }
     }
 
-    if (_data.value && (_data.value as any).dd_wa_dummy_plug_hdr10) {
-      (_data.value as any).rtss_disable_vsync_ullm = true;
+    if (data && Boolean((data as Record<string, unknown>)['dd_wa_dummy_plug_hdr10'])) {
+      (data as Record<string, unknown>)['rtss_disable_vsync_ullm'] = true;
     }
 
     // Normalize Playnite category/exclusion lists to arrays of {id,name}
@@ -481,16 +546,17 @@ export const useConfigStore = defineStore('config', () => {
       }
       return out;
     };
-    if (_data.value) {
-      if (Object.prototype.hasOwnProperty.call(_data.value, 'playnite_sync_categories')) {
-        (_data.value as any).playnite_sync_categories = normalizeIdNameArray(
-          (_data.value as any).playnite_sync_categories,
+    if (data) {
+      const record = data as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_categories')) {
+        record['playnite_sync_categories'] = normalizeIdNameArray(
+          record['playnite_sync_categories'],
           false,
         );
       }
-      if (Object.prototype.hasOwnProperty.call(_data.value, 'playnite_exclude_games')) {
-        (_data.value as any).playnite_exclude_games = normalizeIdNameArray(
-          (_data.value as any).playnite_exclude_games,
+      if (Object.prototype.hasOwnProperty.call(record, 'playnite_exclude_games')) {
+        record['playnite_exclude_games'] = normalizeIdNameArray(
+          record['playnite_exclude_games'],
           true,
         );
       }
@@ -499,9 +565,10 @@ export const useConfigStore = defineStore('config', () => {
     config.value = buildWrapper();
   }
 
-  function updateOption(key: string, value: any) {
-    if (!config.value) return;
-    config.value[key] = value; // triggers setter (handles manual/auto)
+  function updateOption<K extends ConfigKey>(key: K, value: ConfigDefaults[K]): void;
+  function updateOption(key: string, value: unknown): void;
+  function updateOption(key: string, value: unknown) {
+    (config.value as Record<string, unknown>)[key] = value; // triggers setter (handles manual/auto)
   }
 
   // Explicitly mark a manual-dirty change (e.g., when mutating nested fields)
@@ -515,29 +582,38 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   function validateManualSave(): { ok: true } | { ok: false; message: string } {
-    // Only validate when manualDirty is set; otherwise no manual changes to gate
     if (!manualDirty.value) return { ok: true };
-    const data = _data.value || {};
-    // Validate manual resolution override when enabled
-    const resOpt = Object.prototype.hasOwnProperty.call(data, 'dd_resolution_option')
-      ? data['dd_resolution_option']
-      : (defaultMap as any)['dd_resolution_option'];
+    const data = (_data.value ?? {}) as Record<string, unknown>;
+
+    const resolutionOptionKey = 'dd_resolution_option' as const;
+    const defaultResolutionOption = hasDefaultKey(resolutionOptionKey)
+      ? defaultMap[resolutionOptionKey]
+      : undefined;
+    const resOpt = Object.prototype.hasOwnProperty.call(data, resolutionOptionKey)
+      ? data[resolutionOptionKey]
+      : defaultResolutionOption;
     if (resOpt === 'manual') {
-      const raw = String((data as any)['dd_manual_resolution'] || '').trim();
-      const pat = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
-      if (!pat.test(raw)) {
+      const manualResolutionKey = 'dd_manual_resolution' as const;
+      const raw = String(data[manualResolutionKey] ?? '').trim();
+      const resolutionPattern = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
+      if (!resolutionPattern.test(raw)) {
         return {
           ok: false,
           message: 'Invalid manual resolution. Use WIDTHxHEIGHT (e.g., 2560x1440).',
         };
       }
     }
-    // Validate manual refresh rate option
-    const rrOpt = Object.prototype.hasOwnProperty.call(data, 'dd_refresh_rate_option')
-      ? data['dd_refresh_rate_option']
-      : (defaultMap as any)['dd_refresh_rate_option'];
+
+    const refreshOptionKey = 'dd_refresh_rate_option' as const;
+    const defaultRefreshOption = hasDefaultKey(refreshOptionKey)
+      ? defaultMap[refreshOptionKey]
+      : undefined;
+    const rrOpt = Object.prototype.hasOwnProperty.call(data, refreshOptionKey)
+      ? data[refreshOptionKey]
+      : defaultRefreshOption;
     if (rrOpt === 'manual') {
-      const raw = String((data as any)['dd_manual_refresh_rate'] || '').trim();
+      const manualRefreshKey = 'dd_manual_refresh_rate' as const;
+      const raw = String(data[manualRefreshKey] ?? '').trim();
       const valid = /^\d+(?:\.\d+)?$/.test(raw) && Number(raw) > 0;
       if (!valid) {
         return {
@@ -546,19 +622,25 @@ export const useConfigStore = defineStore('config', () => {
         };
       }
     }
-    // Validate display mode remapping resolution fields (allow empty, else WIDTHxHEIGHT)
-    const remap = (data as any)['dd_mode_remapping'];
+
+    const remap = data['dd_mode_remapping'];
     if (remap && typeof remap === 'object') {
-      const pat = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
-      const check = (s: any) => !s || String(s).trim() === '' || pat.test(String(s));
-      const checkNum = (s: any) =>
-        !s || String(s).trim() === '' || (/^\d+(?:\.\d+)?$/.test(String(s)) && Number(s) > 0);
-      const buckets = ['mixed', 'resolution_only'] as const;
-      for (const b of buckets) {
-        const arr = Array.isArray(remap[b]) ? remap[b] : [];
-        for (let i = 0; i < arr.length; i++) {
-          const e = arr[i] || {};
-          if (!check((e as any).requested_resolution) || !check((e as any).final_resolution)) {
+      const remapObj = remap as Record<string, unknown>;
+      const resolutionPattern = /^\d{2,5}\s*[xX]\s*\d{2,5}$/;
+      const checkResolution = (value: unknown) =>
+        !value || String(value).trim() === '' || resolutionPattern.test(String(value));
+      const checkNumber = (value: unknown) =>
+        !value || String(value).trim() === '' || (/^\d+(?:\.\d+)?$/.test(String(value)) && Number(value) > 0);
+
+      const resolutionBuckets = ['mixed', 'resolution_only'] as const;
+      for (const bucket of resolutionBuckets) {
+        const entries = Array.isArray(remapObj[bucket]) ? (remapObj[bucket] as unknown[]) : [];
+        for (const entry of entries) {
+          const item = entry as Record<string, unknown>;
+          if (
+            !checkResolution(item?.['requested_resolution']) ||
+            !checkResolution(item?.['final_resolution'])
+          ) {
             return {
               ok: false,
               message:
@@ -567,64 +649,69 @@ export const useConfigStore = defineStore('config', () => {
           }
         }
       }
-      // Validate refresh_rate_only bucket and numeric fields in mixed
-      if (Array.isArray(remap['refresh_rate_only'])) {
-        for (let i = 0; i < remap['refresh_rate_only'].length; i++) {
-          const e = remap['refresh_rate_only'][i] || {};
-          if (!checkNum((e as any).requested_fps) || !checkNum((e as any).final_refresh_rate)) {
-            return {
-              ok: false,
-              message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
-            };
-          }
-          // final refresh rate required for refresh_rate_only entries
-          if (
-            !((e as any).final_refresh_rate && String((e as any).final_refresh_rate).trim() !== '')
-          ) {
-            return {
-              ok: false,
-              message: 'For refresh-rate-only mappings, Final refresh rate is required.',
-            };
-          }
+
+      const refreshOnly = Array.isArray(remapObj['refresh_rate_only'])
+        ? (remapObj['refresh_rate_only'] as unknown[])
+        : [];
+      for (const entry of refreshOnly) {
+        const item = entry as Record<string, unknown>;
+        if (
+          !checkNumber(item?.['requested_fps']) ||
+          !checkNumber(item?.['final_refresh_rate'])
+        ) {
+          return {
+            ok: false,
+            message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
+          };
+        }
+        const finalRate = item?.['final_refresh_rate'];
+        if (!finalRate || String(finalRate).trim() === '') {
+          return {
+            ok: false,
+            message: 'For refresh-rate-only mappings, Final refresh rate is required.',
+          };
         }
       }
-      if (Array.isArray(remap['mixed'])) {
-        for (let i = 0; i < remap['mixed'].length; i++) {
-          const e = remap['mixed'][i] || {};
-          if (!checkNum((e as any).requested_fps) || !checkNum((e as any).final_refresh_rate)) {
-            return {
-              ok: false,
-              message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
-            };
-          }
-          // At least one final field required for mixed entries
-          const hasFinalRes = !!(
-            (e as any).final_resolution && String((e as any).final_resolution).trim() !== ''
-          );
-          const hasFinalFps = !!(
-            (e as any).final_refresh_rate && String((e as any).final_refresh_rate).trim() !== ''
-          );
-          if (!hasFinalRes && !hasFinalFps) {
-            return {
-              ok: false,
-              message: 'For mixed mappings, specify at least one Final field.',
-            };
-          }
+
+      const mixed = Array.isArray(remapObj['mixed']) ? (remapObj['mixed'] as unknown[]) : [];
+      for (const entry of mixed) {
+        const item = entry as Record<string, unknown>;
+        if (
+          !checkNumber(item?.['requested_fps']) ||
+          !checkNumber(item?.['final_refresh_rate'])
+        ) {
+          return {
+            ok: false,
+            message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
+          };
+        }
+        const finalRes = item?.['final_resolution'];
+        const finalFps = item?.['final_refresh_rate'];
+        const hasFinalRes = !!finalRes && String(finalRes).trim() !== '';
+        const hasFinalFps = !!finalFps && String(finalFps).trim() !== '';
+        if (!hasFinalRes && !hasFinalFps) {
+          return {
+            ok: false,
+            message: 'For mixed mappings, specify at least one Final field.',
+          };
         }
       }
-      if (Array.isArray(remap['resolution_only'])) {
-        for (let i = 0; i < remap['resolution_only'].length; i++) {
-          const e = remap['resolution_only'][i] || {};
-          // final resolution required for resolution_only entries
-          if (!((e as any).final_resolution && String((e as any).final_resolution).trim() !== '')) {
-            return {
-              ok: false,
-              message: 'For resolution-only mappings, Final resolution is required.',
-            };
-          }
+
+      const resolutionOnly = Array.isArray(remapObj['resolution_only'])
+        ? (remapObj['resolution_only'] as unknown[])
+        : [];
+      for (const entry of resolutionOnly) {
+        const item = entry as Record<string, unknown>;
+        const finalRes = item?.['final_resolution'];
+        if (!finalRes || String(finalRes).trim() === '') {
+          return {
+            ok: false,
+            message: 'For resolution-only mappings, Final resolution is required.',
+          };
         }
       }
     }
+
     return { ok: true };
   }
 
@@ -675,15 +762,15 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  function serialize(): Record<string, any> | null {
+  function serialize(): Record<string, unknown> | null {
     if (!_data.value) return null;
-    const out: Record<string, any> = JSON.parse(JSON.stringify(_data.value));
+    const out: Record<string, unknown> = JSON.parse(JSON.stringify(_data.value));
     // prune defaults (value exactly equals default)
     for (const k of Object.keys(out)) {
-      if (k in defaultMap && deepEqual(out[k], defaultMap[k])) delete out[k];
+      if (hasDefaultKey(k) && deepEqual(out[k], defaultMap[k])) delete out[k];
     }
     // never persist virtual keys
-    delete (out as any).platform;
+    delete out['platform'];
     return out;
   }
 
@@ -809,7 +896,7 @@ export const useConfigStore = defineStore('config', () => {
     // state
     tabs,
     defaults: defaultMap,
-    config, // ref to wrapper for template access
+    config: config as unknown as ConfigState, // exposed as value for direct usage
     version, // increments only on user mutation
     manualDirty,
     savingState,

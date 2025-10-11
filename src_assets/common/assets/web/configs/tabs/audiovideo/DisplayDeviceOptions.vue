@@ -15,7 +15,7 @@ const section = computed(() => props.section ?? 'pre');
 const store = useConfigStore();
 const config = store.config;
 watch(
-  () => (config as any)?.dd_wa_dummy_plug_hdr10,
+  () => config.dd_wa_dummy_plug_hdr10,
   (value) => {
     if (value && !config.rtss_disable_vsync_ullm) {
       config.rtss_disable_vsync_ullm = true;
@@ -73,13 +73,13 @@ function isRemapping(obj: unknown): obj is DdModeRemapping {
 }
 
 function getRemapping(): DdModeRemapping | null {
-  const v = (config as any)?.dd_mode_remapping;
+  const v = config.dd_mode_remapping;
   return isRemapping(v) ? v : null;
 }
 
 function canBeRemapped(): boolean {
   // Always show remapper UI as long as the display device configuration isn't disabled
-  return !!config && (config as any).dd_configuration_option !== 'disabled';
+  return config.dd_configuration_option !== 'disabled';
 }
 
 function getRemappingType(): RemapType {
@@ -133,7 +133,7 @@ function removeRemappingEntry(idx: number): void {
 // Safe accessor for the currently selected remapping list
 const remappingArray = computed(() => {
   const type = getRemappingType();
-  const dd = (config as any)?.dd_mode_remapping as any;
+  const dd = config.dd_mode_remapping as Record<string, unknown>;
   const arr = dd?.[type];
   return Array.isArray(arr) ? arr : [];
 });
@@ -224,8 +224,8 @@ const ddHdrOptions = computed(() => [
 // Validate formats like 1920x1080 (optionally allowing spaces around x)
 const manualResolutionPattern = /^(\s*\d{2,5}\s*[xX]\s*\d{2,5}\s*)$/;
 const manualResolutionValid = computed(() => {
-  if (!config || (config as any).dd_resolution_option !== 'manual') return true;
-  const v = String((config as any).dd_manual_resolution || '');
+  if (config.dd_resolution_option !== 'manual') return true;
+  const v = String(config.dd_manual_resolution || '');
   return manualResolutionPattern.test(v);
 });
 
@@ -699,7 +699,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                     />
                     <Checkbox
                       id="dd_wa_dummy_plug_hdr10"
-                      v-model="(config as any).dd_wa_dummy_plug_hdr10"
+                      v-model="config.dd_wa_dummy_plug_hdr10"
                       locale-prefix="config"
                       :default="false"
                     >
