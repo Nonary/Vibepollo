@@ -187,6 +187,8 @@
     "dd_options_header": "Advanced display device options",
     "dd_display_setup_title": "Display Setup (Before Stream)",
     "dd_display_setup_intro": "Choose the display to capture and how Sunshine should prepare Windows just before a stream starts (turn on a monitor, switch primary, set resolution/refresh rate, HDR).",
+    "dd_automation_label": "Display automation",
+    "dd_automation_desc": "Automatically adjust the host display to match the client's requested resolution and refresh rate before streaming.",
     "dd_step_1": "Step 1",
     "dd_step_2": "Step 2",
     "dd_step_3": "Step 3",

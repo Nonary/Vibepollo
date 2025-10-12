@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
@@ -8,7 +8,7 @@ import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelect
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
-import { NCheckbox, NInput } from 'naive-ui';
+import { NCheckbox, NInput, NSwitch } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 
@@ -22,6 +22,45 @@ const ddConfigDisabled = computed(
 const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
+
+const lastAutomationOption = ref('verify_only');
+watch(
+  () => config.value?.dd_configuration_option,
+  (next) => {
+    if (typeof next === 'string' && next !== 'disabled') {
+      lastAutomationOption.value = next;
+    }
+  },
+  { immediate: true },
+);
+
+const displayAutomationEnabled = computed<boolean>({
+  get() {
+    return config.value?.dd_configuration_option !== 'disabled';
+  },
+  set(enabled) {
+    if (!config.value) return;
+    if (!enabled) {
+      const next = 'disabled';
+      if (typeof store.updateOption === 'function') {
+        store.updateOption('dd_configuration_option', next as any);
+      } else {
+        (config.value as any).dd_configuration_option = next as any;
+      }
+      return;
+    }
+
+    if (config.value.dd_configuration_option === 'disabled') {
+      const fallback = lastAutomationOption.value || 'verify_only';
+      const next = fallback === 'disabled' ? 'verify_only' : fallback;
+      if (typeof store.updateOption === 'function') {
+        store.updateOption('dd_configuration_option', next as any);
+      } else {
+        (config.value as any).dd_configuration_option = next as any;
+      }
+    }
+  },
+});
 
 // Replace custom Checkbox with Naive UI using compatibility mapping
 function mapToBoolRepresentation(value: any) {
@@ -156,6 +195,26 @@ const streamAudio = boolProxy('stream_audio', 'true');
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
             <DisplayOutputSelector />
+            <div
+              class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+            >
+              <div>
+                <div class="text-sm font-medium">
+                  {{ $t('config.dd_automation_label') }}
+                </div>
+                <p class="text-[11px] opacity-70 mt-1 max-w-xl">
+                  {{ $t('config.dd_automation_desc') }}
+                </p>
+              </div>
+              <n-switch
+                v-model:value="displayAutomationEnabled"
+                size="medium"
+                class="self-start sm:self-center"
+              >
+                <template #checked>{{ $t('_common.enabled') }}</template>
+                <template #unchecked>{{ $t('_common.disabled') }}</template>
+              </n-switch>
+            </div>
           </fieldset>
 
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />

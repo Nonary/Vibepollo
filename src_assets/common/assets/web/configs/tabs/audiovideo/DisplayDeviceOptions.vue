@@ -196,7 +196,7 @@ onMounted(() => {
 
 // Build translated option lists as computeds so they react to locale changes
 const ddConfigurationOptions = computed(() => [
-  { label: t('_common.disabled_def') as string, value: 'disabled' },
+  { label: t('_common.disabled') as string, value: 'disabled' },
   { label: t('config.dd_config_verify_only') as string, value: 'verify_only' },
   { label: t('config.dd_config_ensure_active') as string, value: 'ensure_active' },
   { label: t('config.dd_config_ensure_primary') as string, value: 'ensure_primary' },
