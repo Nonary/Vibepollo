@@ -653,7 +653,6 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                       type="text"
                       class="font-mono w-full"
                       placeholder="59.9558"
-                      @update:value="store.markManualDirty?.('dd_manual_refresh_rate')"
                       v-bind="
                         isRefreshFieldValid(config.dd_manual_refresh_rate)
                           ? {}

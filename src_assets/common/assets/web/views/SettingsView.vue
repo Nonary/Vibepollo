@@ -9,6 +9,15 @@
           <p class="text-[11px] opacity-60">
             Configuration auto-saves; restart to apply runtime changes.
           </p>
+          <transition name="fade">
+            <div
+              v-if="manualUnsaved"
+              class="mt-2 inline-flex items-center gap-2 rounded-md border border-warning/35 bg-warning/15 px-2.5 py-1 text-[11px] font-medium text-warning dark:border-warning/40 dark:bg-warning/10 dark:text-warning/90"
+            >
+              <i class="fas fa-circle-exclamation text-[10px]" />
+              <span>{{ unsavedLabel }}</span>
+            </div>
+          </transition>
         </div>
 
         <div class="relative flex-1 max-w-2xl min-w-[260px]">
@@ -150,16 +159,28 @@
       </transition>
     </div>
     <transition name="slide-fade">
-      <div
-        v-if="(dirty && !autoSave) || store.manualDirty === true"
-        class="fixed bottom-4 right-6 z-30"
-      >
+      <div v-if="(dirty && !autoSave) || manualUnsaved" class="fixed bottom-4 right-6 z-30">
         <div
-          class="bg-light/90 dark:bg-surface/90 backdrop-blur rounded-lg shadow border border-dark/10 dark:border-light/10 px-4 py-2"
+          :class="[
+            'backdrop-blur rounded-lg shadow px-4 py-2 border transition-colors duration-200 ease-out',
+            manualUnsaved
+              ? 'bg-warning/95 text-dark border-warning/60 dark:bg-warning/20 dark:text-warning dark:border-warning/40'
+              : 'bg-light/90 dark:bg-surface/90 border-dark/10 dark:border-light/10',
+          ]"
         >
           <div class="flex items-center gap-3">
-            <span class="text-[11px] font-medium">Unsaved changes</span>
-            <n-button type="primary" strong :disabled="saveState === 'saving'" @click="save"
+            <span class="text-[11px] font-medium inline-flex items-center gap-2">
+              <i
+                v-if="manualUnsaved"
+                class="fas fa-circle-exclamation text-[12px] text-warning dark:text-warning"
+              />
+              <span>{{ unsavedLabel }}</span>
+            </span>
+            <n-button
+              :type="manualUnsaved ? 'warning' : 'primary'"
+              strong
+              :disabled="saveState === 'saving'"
+              @click="save"
               >Save</n-button
             >
           </div>
@@ -215,7 +236,11 @@ const saveState = computed(() => store.savingState || 'idle');
 const restarted = ref(false);
 const dirty = ref(false);
 const autoSave = ref(true);
-const showSave = computed(() => store.manualDirty === true || !autoSave.value);
+const manualUnsaved = computed(() => store.manualDirty === true);
+const showSave = computed(() => manualUnsaved.value || !autoSave.value);
+const unsavedLabel = computed(() =>
+  manualUnsaved.value ? 'Manual save required for display overrides' : 'Unsaved changes',
+);
 
 const mainEl = ref(null);
 const searchQuery = ref('');

@@ -299,15 +299,8 @@ export const useConfigStore = defineStore('config', () => {
   // Track keys that should require manual save (no autosave)
   const manualSaveKeys = new Set<string>([
     'global_prep_cmd',
-    'dd_configuration_option',
     'dd_resolution_option',
     'dd_manual_resolution',
-    'dd_refresh_rate_option',
-    'dd_manual_refresh_rate',
-    'dd_hdr_option',
-    'dd_wa_hdr_toggle',
-    'dd_config_revert_delay',
-    'dd_config_revert_on_disconnect',
     'dd_mode_remapping',
   ]);
   const manualDirty = ref(false);
