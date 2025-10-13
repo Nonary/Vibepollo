@@ -68,6 +68,7 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_undo_cmds;
 
 #ifdef _WIN32
+    bool display_helper_applied {};
     GUID display_guid {};
 #endif
   };

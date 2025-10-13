@@ -1090,9 +1090,15 @@ namespace proc {
     }
 
     // Try DD API first if enabled and not in headless mode
-    bool dd_api_handled = false;
+    bool dd_api_handled = launch_session->display_helper_applied;
     if (!forced_sudavda_virtual_display && (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !config::video.headless_mode))) {
-      dd_api_handled = display_helper_integration::apply_from_session(config::video, *launch_session);
+      if (!dd_api_handled) {
+        dd_api_handled = display_helper_integration::apply_from_session(config::video, *launch_session);
+        if (dd_api_handled) {
+          launch_session->display_helper_applied = true;
+        }
+      }
+
       if (dd_api_handled) {
         const bool virtual_display_requested = launch_session->virtual_display || _app.virtual_display;
         const bool still_missing_active_display = !video::allow_encoder_probing();
@@ -1204,7 +1210,10 @@ namespace proc {
 
     // Call DD API again if it wasn't already called above
     if (!dd_api_handled && !this->virtual_display) {
-      display_helper_integration::apply_from_session(config::video, *launch_session);
+      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+        launch_session->display_helper_applied = true;
+        dd_api_handled = true;
+      }
     }
 
     // We should not preserve display state when using virtual display.

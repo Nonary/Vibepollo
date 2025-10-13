@@ -397,6 +397,9 @@ namespace nvhttp {
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
     launch_session->frame_generation_provider = "lossless-scaling";
+#ifdef _WIN32
+    launch_session->display_helper_applied = false;
+#endif
 
     // If launched from client
     if (named_cert_p->uuid != http::unique_id) {
@@ -1304,7 +1307,11 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_helper_integration::apply_from_session(config::video, *launch_session);
+      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+#ifdef _WIN32
+        launch_session->display_helper_applied = true;
+#endif
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1362,7 +1369,11 @@ namespace nvhttp {
         }
 
         if (no_active_sessions && !proc::proc.virtual_display) {
-          display_helper_integration::apply_from_session(config::video, *launch_session);
+          if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+#ifdef _WIN32
+            launch_session->display_helper_applied = true;
+#endif
+          }
           if (video::probe_encoders()) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 503);
@@ -1492,7 +1503,11 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
       // This should be done before probing encoders as it could change the active displays.
-      display_helper_integration::apply_from_session(config::video, *launch_session);
+      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+#ifdef _WIN32
+        launch_session->display_helper_applied = true;
+#endif
+      }
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,

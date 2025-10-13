@@ -329,6 +329,9 @@ interface AppEditModalProps {
   index?: number;
 }
 
+const SCALE_FACTOR_MIN = 20;
+const SCALE_FACTOR_MAX = 200;
+
 const props = defineProps<AppEditModalProps>();
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
