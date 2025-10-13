@@ -745,6 +745,8 @@ namespace playnite_launcher::lossless {
         std::string frame_mode = *options.frame_generation_mode;
         boost::algorithm::to_upper(frame_mode);
         profile.put("FrameGeneration", frame_mode);
+      } else {
+        profile.put("FrameGeneration", "OFF");
       }
       if (options.lsfg3_mode) {
         std::string lsfg_mode = *options.lsfg3_mode;
