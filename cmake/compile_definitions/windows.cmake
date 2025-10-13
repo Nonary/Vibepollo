@@ -95,6 +95,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/focus_utils.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"

@@ -2142,8 +2142,8 @@ namespace stream {
         std::optional<int> lossless_rtss_limit;
         const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
                                              boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
-        const bool using_smooth_motion = session.config.lossless_scaling_framegen &&
-                                         boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
+        const bool using_smooth_motion =
+          boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
         if (using_lossless_provider) {
           if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
             lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;

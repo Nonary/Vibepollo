@@ -13,9 +13,12 @@
 #endif
 
 // standard includes
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
+#include <thread>
 
 // lib includes
 #include <boost/process/v1/child.hpp>
@@ -33,13 +36,13 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
+  #include "tools/playnite_launcher/lossless_scaling.h"
 #endif
 
 #define VIRTUAL_DISPLAY_UUID "8902CB19-674A-403D-A587-41B092E900BA"
 #define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
 #define REMOTE_INPUT_UUID "8CB5C136-DA67-4F99-B4A1-F9CD35005CF4"
 #define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
-
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
@@ -199,6 +202,19 @@ namespace proc {
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
     std::vector<cmd_t>::const_iterator _app_prep_begin;
+
+#ifdef _WIN32
+    void start_lossless_scaling_support(std::unordered_set<DWORD> baseline_pids, const playnite_launcher::lossless::lossless_scaling_app_metadata &metadata, std::string install_dir_hint_utf8, DWORD root_pid);
+    void stop_lossless_scaling_support();
+
+    std::thread _lossless_thread;
+    std::atomic_bool _lossless_stop_requested {false};
+    std::mutex _lossless_mutex;
+    bool _lossless_profile_applied {false};
+    playnite_launcher::lossless::lossless_scaling_profile_backup _lossless_backup {};
+    std::string _lossless_last_install_dir;
+    std::string _lossless_last_exe_path;
+#endif
   };
 
   boost::filesystem::path

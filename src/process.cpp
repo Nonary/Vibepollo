@@ -8,15 +8,20 @@
   #define BOOST_PROCESS_VERSION 1
 #endif
 // standard includes
+#include <atomic>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <iomanip>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <sstream>
 
@@ -42,6 +47,9 @@
   #include "config_playnite.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/playnite_integration.h"
+  #include "tools/playnite_launcher/focus_utils.h"
+  #include "tools/playnite_launcher/lossless_scaling.h"
+  #include <Psapi.h>
 #endif
 #include "httpcommon.h"
 #include "process.h"
@@ -305,7 +313,7 @@ namespace proc {
       }
     }
 
-    lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx) {
+    lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx, bool frame_gen_enabled) {
       lossless_runtime_values_t result;
       const lossless_profile_defaults_t &defaults = boost::iequals(ctx.lossless_scaling_profile, LOSSLESS_PROFILE_RECOMMENDED) ?
                                                       LOSSLESS_DEFAULTS_RECOMMENDED :
@@ -320,10 +328,15 @@ namespace proc {
         result.capture_api = "WGC";
         result.queue_target = 0;
         result.hdr_enabled = true;
-        result.frame_generation = "LSFG3";
-        result.lsfg3_mode = "ADAPTIVE";
+        if (frame_gen_enabled) {
+          result.frame_generation = "LSFG3";
+          result.lsfg3_mode = "ADAPTIVE";
+        }
       } else {
         result.profile = LOSSLESS_PROFILE_CUSTOM;
+        if (frame_gen_enabled) {
+          result.frame_generation = "LSFG3";
+        }
       }
 
       bool performance_mode = overrides.performance_mode.value_or(defaults.performance_mode);
@@ -375,6 +388,308 @@ namespace proc {
 
       return result;
     }
+
+#ifdef _WIN32
+    constexpr auto k_lossless_observation_duration = std::chrono::seconds(10);
+    constexpr auto k_lossless_poll_interval = std::chrono::milliseconds(250);
+
+    struct lossless_process_candidate {
+      DWORD pid = 0;
+      ULONGLONG start_cpu = 0;
+      ULONGLONG last_cpu = 0;
+      SIZE_T peak_working_set = 0;
+      std::wstring path;
+      std::chrono::steady_clock::time_point first_seen;
+      std::chrono::steady_clock::time_point last_seen;
+    };
+
+    struct lossless_selection {
+      DWORD pid = 0;
+      std::wstring path_wide;
+      std::string path_utf8;
+      std::string directory_utf8;
+    };
+
+    std::vector<DWORD> enumerate_process_ids_snapshot() {
+      DWORD needed = 0;
+      std::vector<DWORD> pids(1024);
+      while (true) {
+        if (!EnumProcesses(pids.data(), static_cast<DWORD>(pids.size() * sizeof(DWORD)), &needed)) {
+          return {};
+        }
+        if (needed < pids.size() * sizeof(DWORD)) {
+          pids.resize(needed / sizeof(DWORD));
+          break;
+        }
+        pids.resize(pids.size() * 2);
+      }
+      return pids;
+    }
+
+    std::unordered_set<DWORD> capture_process_baseline_for_lossless() {
+      std::unordered_set<DWORD> result;
+      auto snapshot = enumerate_process_ids_snapshot();
+      result.reserve(snapshot.size());
+      for (auto pid : snapshot) {
+        if (pid != 0) {
+          result.insert(pid);
+        }
+      }
+      return result;
+    }
+
+    bool sample_process_usage(DWORD pid, ULONGLONG &cpu_time, SIZE_T &working_set) {
+      HANDLE handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+      if (!handle) {
+        handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+      }
+      if (!handle) {
+        return false;
+      }
+      FILETIME creation {}, exit_time {}, kernel {}, user {};
+      BOOL got_times = GetProcessTimes(handle, &creation, &exit_time, &kernel, &user);
+      PROCESS_MEMORY_COUNTERS_EX pmc {};
+      BOOL got_mem = GetProcessMemoryInfo(handle, reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc), sizeof(pmc));
+      CloseHandle(handle);
+      if (!got_times) {
+        return false;
+      }
+      ULARGE_INTEGER kernel_int {};
+      kernel_int.HighPart = kernel.dwHighDateTime;
+      kernel_int.LowPart = kernel.dwLowDateTime;
+      ULARGE_INTEGER user_int {};
+      user_int.HighPart = user.dwHighDateTime;
+      user_int.LowPart = user.dwLowDateTime;
+      cpu_time = kernel_int.QuadPart + user_int.QuadPart;
+      working_set = got_mem ? pmc.WorkingSetSize : 0;
+      return true;
+    }
+
+    std::optional<std::wstring> query_process_image_path_optional(DWORD pid) {
+      std::wstring path;
+      if (playnite_launcher::focus::get_process_image_path(pid, path)) {
+        return path;
+      }
+      return std::nullopt;
+    }
+
+    std::wstring normalize_lowercase_path(const std::wstring &path) {
+      std::wstring normalized = path;
+      for (auto &ch : normalized) {
+        if (ch == L'/') {
+          ch = L'\\';
+        }
+        ch = static_cast<wchar_t>(std::towlower(ch));
+      }
+      return normalized;
+    }
+
+    bool path_matches_preferred(const std::wstring &path, const std::wstring &preferred_normalized) {
+      if (preferred_normalized.empty()) {
+        return false;
+      }
+      auto normalized = normalize_lowercase_path(path);
+      if (normalized.size() < preferred_normalized.size()) {
+        return false;
+      }
+      if (normalized.compare(0, preferred_normalized.size(), preferred_normalized) != 0) {
+        return false;
+      }
+      if (normalized.size() == preferred_normalized.size()) {
+        return true;
+      }
+      return normalized[preferred_normalized.size()] == L'\\';
+    }
+
+    std::optional<lossless_selection> detect_lossless_candidate(const std::unordered_set<DWORD> &baseline, DWORD root_pid, const std::wstring &preferred_normalized, std::atomic_bool &stop_flag) {
+      std::unordered_map<DWORD, lossless_process_candidate> candidates;
+      auto deadline = std::chrono::steady_clock::now() + k_lossless_observation_duration;
+
+      SYSTEM_INFO sys_info {};
+      GetSystemInfo(&sys_info);
+      double cpu_count = sys_info.dwNumberOfProcessors > 0 ? static_cast<double>(sys_info.dwNumberOfProcessors) : 1.0;
+
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (stop_flag.load(std::memory_order_acquire)) {
+          return std::nullopt;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        auto snapshot = enumerate_process_ids_snapshot();
+        for (auto pid : snapshot) {
+          if (pid == 0 || baseline.find(pid) != baseline.end()) {
+            continue;
+          }
+          auto &entry = candidates[pid];
+          if (entry.pid == 0) {
+            entry.pid = pid;
+            entry.first_seen = now;
+            entry.last_seen = now;
+          }
+          ULONGLONG cpu_time = 0;
+          SIZE_T working_set = 0;
+          if (!sample_process_usage(pid, cpu_time, working_set)) {
+            if (entry.start_cpu == 0) {
+              candidates.erase(pid);
+            }
+            continue;
+          }
+          if (entry.start_cpu == 0) {
+            entry.start_cpu = cpu_time;
+          }
+          entry.last_cpu = cpu_time;
+          entry.last_seen = now;
+          if (working_set > entry.peak_working_set) {
+            entry.peak_working_set = working_set;
+          }
+          if (entry.path.empty()) {
+            if (auto path = query_process_image_path_optional(pid)) {
+              entry.path = std::move(*path);
+            }
+          }
+        }
+
+        std::this_thread::sleep_for(k_lossless_poll_interval);
+      }
+
+      if (stop_flag.load(std::memory_order_acquire)) {
+        return std::nullopt;
+      }
+
+      if (candidates.empty()) {
+        return std::nullopt;
+      }
+
+      double max_cpu_ratio = 0.0;
+      double max_mem = 0.0;
+
+      struct candidate_score {
+        DWORD pid;
+        std::wstring path;
+        double cpu_ratio;
+        double mem_mb;
+        bool preferred_match;
+      };
+
+      std::vector<candidate_score> scores;
+      scores.reserve(candidates.size());
+
+      for (auto &[pid, candidate] : candidates) {
+        if (candidate.start_cpu == 0 || candidate.last_cpu < candidate.start_cpu) {
+          continue;
+        }
+        if (candidate.last_seen <= candidate.first_seen) {
+          continue;
+        }
+        if (candidate.path.empty()) {
+          if (auto refreshed = query_process_image_path_optional(pid)) {
+            candidate.path = std::move(*refreshed);
+          }
+        }
+        if (candidate.path.empty()) {
+          continue;
+        }
+        double elapsed = std::chrono::duration<double>(candidate.last_seen - candidate.first_seen).count();
+        if (elapsed <= 0.1) {
+          elapsed = 0.1;
+        }
+        double cpu_seconds = static_cast<double>(candidate.last_cpu - candidate.start_cpu) / 10000000.0;
+        if (cpu_seconds < 0.0) {
+          cpu_seconds = 0.0;
+        }
+        double cpu_ratio = cpu_seconds / (elapsed * cpu_count);
+        if (cpu_ratio < 0.0) {
+          cpu_ratio = 0.0;
+        }
+        double mem_mb = static_cast<double>(candidate.peak_working_set) / (1024.0 * 1024.0);
+        bool matches = path_matches_preferred(candidate.path, preferred_normalized);
+        scores.push_back({pid, candidate.path, cpu_ratio, mem_mb, matches});
+        max_cpu_ratio = std::max(max_cpu_ratio, cpu_ratio);
+        max_mem = std::max(max_mem, mem_mb);
+      }
+
+      if (scores.empty()) {
+        return std::nullopt;
+      }
+
+      bool cpu_low = max_cpu_ratio < 0.08;
+      double cpu_weight = cpu_low ? 0.5 : 0.7;
+      double mem_weight = 1.0 - cpu_weight;
+
+      auto ensure_dir_prefix = [](std::wstring value) {
+        if (!value.empty() && value.back() != L'\\') {
+          value.push_back(L'\\');
+        }
+        return normalize_lowercase_path(value);
+      };
+
+      std::wstring windows_dir_norm;
+      {
+        wchar_t windows_dir[MAX_PATH] = {};
+        UINT len = GetWindowsDirectoryW(windows_dir, ARRAYSIZE(windows_dir));
+        if (len > 0 && len < ARRAYSIZE(windows_dir)) {
+          windows_dir_norm = ensure_dir_prefix(std::wstring(windows_dir, len));
+        }
+      }
+
+      auto has_prefix = [](const std::wstring &value, const std::wstring &prefix) {
+        return !prefix.empty() && value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+      };
+
+      const candidate_score *best = nullptr;
+      double best_score = -1.0;
+
+      for (const auto &score : scores) {
+        double cpu_norm = max_cpu_ratio > 0.0 ? score.cpu_ratio / max_cpu_ratio : 0.0;
+        double mem_norm = max_mem > 0.0 ? score.mem_mb / max_mem : 0.0;
+        double combined = (cpu_weight * cpu_norm) + (mem_weight * mem_norm);
+        if (score.preferred_match) {
+          combined += 0.2;
+        }
+        if (score.pid == root_pid) {
+          combined += score.preferred_match ? 0.05 : -0.05;
+        }
+        combined += std::min(score.cpu_ratio, 1.0) * 0.15;
+
+        if (!windows_dir_norm.empty()) {
+          auto normalized_path = normalize_lowercase_path(score.path);
+          bool system_path = has_prefix(normalized_path, windows_dir_norm);
+          if (system_path) {
+            combined -= 0.2;
+          }
+          if (system_path && score.cpu_ratio < 0.02 && score.mem_mb < 48.0) {
+            combined -= 0.05;
+          }
+        } else if (score.cpu_ratio < 0.015 && score.mem_mb < 32.0) {
+          combined -= 0.05;
+        }
+
+        if (combined > best_score) {
+          best_score = combined;
+          best = &score;
+        }
+      }
+
+      if (!best) {
+        return std::nullopt;
+      }
+
+      lossless_selection selection;
+      selection.pid = best->pid;
+      selection.path_wide = best->path;
+      selection.path_utf8 = platf::dxgi::wide_to_utf8(best->path);
+      std::filesystem::path fs_path(best->path);
+      auto parent = fs_path.parent_path();
+      if (!parent.empty()) {
+        selection.directory_utf8 = platf::dxgi::wide_to_utf8(parent.wstring());
+      }
+
+      BOOST_LOG(debug) << "Lossless Scaling: candidate PID=" << selection.pid << " exe=" << selection.path_utf8
+                       << " cpu=" << best->cpu_ratio << " memMB=" << best->mem_mb;
+
+      return selection;
+    }
+#endif
   }  // namespace
 
   proc_t proc;
@@ -415,12 +730,28 @@ namespace proc {
       _process_group(std::move(other._process_group)),
       _pipe(std::move(other._pipe)),
       _app_prep_it(other._app_prep_it),
-      _app_prep_begin(other._app_prep_begin) {
+      _app_prep_begin(other._app_prep_begin)
+#ifdef _WIN32
+      ,
+      _lossless_thread(std::move(other._lossless_thread)),
+      _lossless_profile_applied(other._lossless_profile_applied),
+      _lossless_backup(other._lossless_backup),
+      _lossless_last_install_dir(std::move(other._lossless_last_install_dir)),
+      _lossless_last_exe_path(std::move(other._lossless_last_exe_path))
+#endif
+  {
+#ifdef _WIN32
+    _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
+    other._lossless_profile_applied = false;
+#endif
   }
 
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
     if (this != &other) {
       std::scoped_lock lk(_apps_mutex, other._apps_mutex);
+#ifdef _WIN32
+      stop_lossless_scaling_support();
+#endif
       _app_id = other._app_id;
       _env = std::move(other._env);
       _apps = std::move(other._apps);
@@ -432,9 +763,131 @@ namespace proc {
       _pipe = std::move(other._pipe);
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
+#ifdef _WIN32
+      _lossless_thread = std::move(other._lossless_thread);
+      _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
+      _lossless_profile_applied = other._lossless_profile_applied;
+      _lossless_backup = other._lossless_backup;
+      _lossless_last_install_dir = std::move(other._lossless_last_install_dir);
+      _lossless_last_exe_path = std::move(other._lossless_last_exe_path);
+      other._lossless_profile_applied = false;
+#endif
     }
     return *this;
   }
+
+#ifdef _WIN32
+  void proc_t::start_lossless_scaling_support(std::unordered_set<DWORD> baseline_pids, const playnite_launcher::lossless::lossless_scaling_app_metadata &metadata, std::string install_dir_hint_utf8, DWORD root_pid) {
+    stop_lossless_scaling_support();
+    _lossless_stop_requested.store(false, std::memory_order_release);
+
+    _lossless_thread = std::thread([this,
+                                    baseline = std::move(baseline_pids),
+                                    metadata,
+                                    install_dir_hint = std::move(install_dir_hint_utf8),
+                                    root_pid]() mutable {
+      try {
+        std::wstring preferred_directory;
+        if (!install_dir_hint.empty()) {
+          preferred_directory = platf::dxgi::utf8_to_wide(install_dir_hint);
+          preferred_directory = normalize_lowercase_path(preferred_directory);
+          while (!preferred_directory.empty() && preferred_directory.back() == L'\\') {
+            preferred_directory.pop_back();
+          }
+        }
+
+        BOOST_LOG(debug) << "Lossless Scaling: monitoring for new processes (baseline=" << baseline.size() << ", root_pid=" << root_pid << ")";
+
+        auto selection = detect_lossless_candidate(baseline, root_pid, preferred_directory, _lossless_stop_requested);
+        if (!selection || _lossless_stop_requested.load(std::memory_order_acquire)) {
+          BOOST_LOG(debug) << "Lossless Scaling: no candidate detected within bootstrap window";
+          return;
+        }
+
+        auto options = playnite_launcher::lossless::read_lossless_scaling_options(metadata);
+        if (!options.enabled) {
+          BOOST_LOG(debug) << "Lossless Scaling: disabled by configuration, skipping auto launch";
+          return;
+        }
+
+        auto runtime = playnite_launcher::lossless::capture_lossless_scaling_state();
+#ifdef _WIN32
+        if (!runtime.exe_path && metadata.configured_path) {
+          try {
+            runtime.exe_path = metadata.configured_path->wstring();
+          } catch (...) {
+          }
+        }
+#endif
+        if (_lossless_stop_requested.load(std::memory_order_acquire)) {
+          return;
+        }
+        if (!runtime.running_pids.empty()) {
+          playnite_launcher::lossless::lossless_scaling_stop_processes(runtime);
+        }
+
+        playnite_launcher::lossless::lossless_scaling_profile_backup backup;
+        std::string install_dir = install_dir_hint.empty() ? selection->directory_utf8 : install_dir_hint;
+        bool changed = playnite_launcher::lossless::lossless_scaling_apply_global_profile(options, install_dir, selection->path_utf8, backup);
+
+        {
+          std::lock_guard lk(_lossless_mutex);
+          _lossless_backup = backup;
+          _lossless_profile_applied = backup.valid;
+          if (_lossless_profile_applied) {
+            _lossless_last_install_dir = install_dir;
+            _lossless_last_exe_path = selection->path_utf8;
+          } else {
+            _lossless_last_install_dir.clear();
+            _lossless_last_exe_path.clear();
+          }
+        }
+
+        if (_lossless_stop_requested.load(std::memory_order_acquire)) {
+          return;
+        }
+
+        playnite_launcher::lossless::lossless_scaling_restart_foreground(runtime, changed, install_dir, selection->path_utf8, selection->pid);
+        BOOST_LOG(info) << "Lossless Scaling: launched helper for PID=" << selection->pid << " (" << selection->path_utf8 << ')';
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Lossless Scaling: exception during auto launch: " << e.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Lossless Scaling: unknown exception during auto launch";
+      }
+    });
+  }
+
+  void proc_t::stop_lossless_scaling_support() {
+    _lossless_stop_requested.store(true, std::memory_order_release);
+    if (_lossless_thread.joinable()) {
+      _lossless_thread.join();
+    }
+    _lossless_stop_requested.store(false, std::memory_order_release);
+
+    bool restore = false;
+    playnite_launcher::lossless::lossless_scaling_profile_backup backup;
+    {
+      std::lock_guard lk(_lossless_mutex);
+      if (_lossless_profile_applied) {
+        backup = _lossless_backup;
+        restore = backup.valid;
+        _lossless_profile_applied = false;
+      }
+      _lossless_last_install_dir.clear();
+      _lossless_last_exe_path.clear();
+    }
+
+    if (restore) {
+      auto runtime = playnite_launcher::lossless::capture_lossless_scaling_state();
+      if (!runtime.running_pids.empty()) {
+        playnite_launcher::lossless::lossless_scaling_stop_processes(runtime);
+      }
+      if (playnite_launcher::lossless::lossless_scaling_restore_global_profile(backup)) {
+        BOOST_LOG(info) << "Lossless Scaling: restored previous profile";
+      }
+    }
+  }
+#endif
 
   class deinit_t: public platf::deinit_t {
   public:
@@ -532,8 +985,14 @@ namespace proc {
     system_tray::update_tray_playing(_app_name);
 #endif
   }
-
   int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+#ifdef _WIN32
+    std::unordered_set<DWORD> lossless_baseline_pids;
+    playnite_launcher::lossless::lossless_scaling_app_metadata lossless_metadata;
+    bool should_start_lossless_support = false;
+    bool lossless_monitor_started = false;
+    std::string lossless_install_dir_hint;
+#endif
     if (_app_id == input_only_app_id) {
       terminate(false, false);
       std::this_thread::sleep_for(1s);
@@ -861,7 +1320,36 @@ namespace proc {
         _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
       }
 
-      auto runtime = compute_lossless_runtime(_app);
+      const bool wants_lossless_framegen = using_lossless_provider &&
+                                           (_app.lossless_scaling_target_fps.has_value() || _app.lossless_scaling_rtss_limit.has_value());
+      auto runtime = compute_lossless_runtime(_app, wants_lossless_framegen);
+#ifdef _WIN32
+      bool has_launch_commands = !_app.cmd.empty() || !_app.detached.empty();
+      should_start_lossless_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
+      if (should_start_lossless_support) {
+        lossless_metadata.enabled = true;
+        lossless_metadata.target_fps = _app.lossless_scaling_target_fps;
+        lossless_metadata.rtss_limit = _app.lossless_scaling_rtss_limit;
+        if (!config::lossless_scaling.exe_path.empty()) {
+          lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
+        }
+        lossless_metadata.active_profile = runtime.profile;
+        lossless_metadata.capture_api = runtime.capture_api;
+        lossless_metadata.queue_target = runtime.queue_target;
+        lossless_metadata.hdr_enabled = runtime.hdr_enabled;
+        lossless_metadata.flow_scale = runtime.flow_scale;
+        lossless_metadata.performance_mode = runtime.performance_mode;
+        lossless_metadata.resolution_scale_factor = runtime.resolution_scale_factor;
+        lossless_metadata.frame_generation_mode = runtime.frame_generation;
+        lossless_metadata.lsfg3_mode = runtime.lsfg3_mode;
+        lossless_metadata.scaling_type = runtime.scaling_type;
+        lossless_metadata.sharpness = runtime.sharpness;
+        lossless_metadata.ls1_sharpness = runtime.ls1_sharpness;
+        lossless_metadata.anime4k_type = runtime.anime4k_type;
+        lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
+      }
+#endif
+
       auto set_string = [&](const char *key, const std::optional<std::string> &value) {
         if (value && !value->empty()) {
           _env[key] = *value;
@@ -972,12 +1460,43 @@ namespace proc {
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
                                               find_working_directory(cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
+#ifdef _WIN32
+      if (should_start_lossless_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
+        lossless_baseline_pids = capture_process_baseline_for_lossless();
+      }
+      if (should_start_lossless_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
+        try {
+          lossless_install_dir_hint = platf::dxgi::wide_to_utf8(working_dir.wstring());
+        } catch (...) {
+          lossless_install_dir_hint.clear();
+        }
+      }
+#endif
       BOOST_LOG(info) << "Spawning ["sv << cmd << "] in ["sv << working_dir << ']';
       auto child = platf::run_command(_app.elevated, true, cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+#ifdef _WIN32
+      DWORD detached_pid = 0;
+      if (!ec) {
+        try {
+          detached_pid = static_cast<DWORD>(child.id());
+        } catch (...) {
+          detached_pid = 0;
+        }
+      }
+#endif
       if (ec) {
         BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd << "]: System: "sv << ec.message();
       } else {
         child.detach();
+#ifdef _WIN32
+        if (should_start_lossless_support && !lossless_monitor_started) {
+          if (lossless_baseline_pids.empty()) {
+            lossless_baseline_pids = capture_process_baseline_for_lossless();
+          }
+          start_lossless_scaling_support(std::move(lossless_baseline_pids), lossless_metadata, std::move(lossless_install_dir_hint), detached_pid);
+          lossless_monitor_started = true;
+        }
+#endif
       }
     }
 
@@ -1150,6 +1669,18 @@ namespace proc {
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
                                               find_working_directory(_app.cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
+#ifdef _WIN32
+      if (should_start_lossless_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
+        lossless_baseline_pids = capture_process_baseline_for_lossless();
+      }
+      if (should_start_lossless_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
+        try {
+          lossless_install_dir_hint = platf::dxgi::wide_to_utf8(working_dir.wstring());
+        } catch (...) {
+          lossless_install_dir_hint.clear();
+        }
+      }
+#endif
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
       _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
@@ -1157,6 +1688,30 @@ namespace proc {
         return -1;
       }
     }
+
+#ifdef _WIN32
+    if (should_start_lossless_support && !lossless_monitor_started) {
+      if (lossless_baseline_pids.empty()) {
+        lossless_baseline_pids = capture_process_baseline_for_lossless();
+      }
+      if (lossless_install_dir_hint.empty() && !_app.working_dir.empty()) {
+        lossless_install_dir_hint = _app.working_dir;
+      }
+      if (lossless_baseline_pids.empty()) {
+        // still proceed; detection handles empty baseline
+      }
+      DWORD candidate_pid = 0;
+      if (_process) {
+        try {
+          candidate_pid = static_cast<DWORD>(_process.id());
+        } catch (...) {
+          candidate_pid = 0;
+        }
+      }
+      start_lossless_scaling_support(std::move(lossless_baseline_pids), lossless_metadata, std::move(lossless_install_dir_hint), candidate_pid);
+      lossless_monitor_started = true;
+    }
+#endif
 
     _app_launch_time = std::chrono::steady_clock::now();
 
@@ -1371,6 +1926,9 @@ namespace proc {
   void proc_t::terminate(bool immediate, bool needs_refresh) {
     std::error_code ec;
     placebo = false;
+#ifdef _WIN32
+    stop_lossless_scaling_support();
+#endif
     // For Playnite-managed apps, request a graceful stop via Playnite first
 #ifdef _WIN32
     std::chrono::seconds remaining_timeout = _app.exit_timeout;

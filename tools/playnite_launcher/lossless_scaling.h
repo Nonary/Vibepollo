@@ -75,11 +75,53 @@ namespace playnite_launcher::lossless {
     bool stopped = false;
   };
 
+  struct lossless_scaling_app_metadata {
+    bool enabled = false;
+    std::optional<int> target_fps;
+    std::optional<int> rtss_limit;
+    std::optional<std::filesystem::path> configured_path;
+    std::optional<std::string> active_profile;
+    std::optional<std::string> capture_api;
+    std::optional<int> queue_target;
+    std::optional<bool> hdr_enabled;
+    std::optional<int> flow_scale;
+    std::optional<bool> performance_mode;
+    std::optional<double> resolution_scale_factor;
+    std::optional<std::string> frame_generation_mode;
+    std::optional<std::string> lsfg3_mode;
+    std::optional<std::string> scaling_type;
+    std::optional<int> sharpness;
+    std::optional<int> ls1_sharpness;
+    std::optional<std::string> anime4k_type;
+    std::optional<bool> anime4k_vrs;
+  };
+
+  class lossless_scaling_options_loader {
+  public:
+    virtual ~lossless_scaling_options_loader() = default;
+    virtual lossless_scaling_options load() const = 0;
+  };
+
+  class lossless_scaling_env_loader: public lossless_scaling_options_loader {
+  public:
+    lossless_scaling_options load() const override;
+  };
+
+  class lossless_scaling_metadata_loader: public lossless_scaling_options_loader {
+  public:
+    explicit lossless_scaling_metadata_loader(lossless_scaling_app_metadata metadata);
+    lossless_scaling_options load() const override;
+
+  private:
+    lossless_scaling_app_metadata _metadata;
+  };
+
   lossless_scaling_options read_lossless_scaling_options();
+  lossless_scaling_options read_lossless_scaling_options(const lossless_scaling_app_metadata &metadata);
   lossless_scaling_runtime_state capture_lossless_scaling_state();
   void lossless_scaling_stop_processes(lossless_scaling_runtime_state &state);
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup);
   bool lossless_scaling_restore_global_profile(const lossless_scaling_profile_backup &backup);
-  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8 = std::string(), const std::string &exe_path_utf8 = std::string());
+  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8 = std::string(), const std::string &exe_path_utf8 = std::string(), DWORD focused_game_pid = 0);
 
 }  // namespace playnite_launcher::lossless

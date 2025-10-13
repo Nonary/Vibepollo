@@ -323,7 +323,7 @@ namespace display_helper_integration {
           BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
         }
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
-        if (!cfg_effective.m_resolution && session.enable_sops && session.width >= 0 && session.height >= 0) {
+        if (!cfg_effective.m_resolution && session.width >= 0 && session.height >= 0) {
           cfg_effective.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(session.width),
             static_cast<unsigned int>(session.height)
@@ -357,7 +357,7 @@ namespace display_helper_integration {
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
         cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
-        if (session.enable_sops && session.width >= 0 && session.height >= 0) {
+        if (session.width >= 0 && session.height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(session.width),
             static_cast<unsigned int>(session.height)
@@ -398,7 +398,7 @@ namespace display_helper_integration {
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
         cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
-        if (session.enable_sops && session.width >= 0 && session.height >= 0) {
+        if (session.width >= 0 && session.height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(session.width),
             static_cast<unsigned int>(session.height)

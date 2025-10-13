@@ -1100,7 +1100,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
+            verify_only
             @endcode</td>
     </tr>
     <tr>

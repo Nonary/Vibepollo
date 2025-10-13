@@ -2,6 +2,8 @@
 
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
+#include "src/platform/windows/misc.h"
+#include "src/utility.h"
 #include "tools/playnite_launcher/focus_utils.h"
 
 #include <algorithm>
@@ -19,14 +21,18 @@
 #include <fstream>
 #include <limits>
 #include <locale>
+#include <memory>
 #include <optional>
 #include <shlobj.h>
+#include <system_error>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <UserEnv.h>
+#include <winrt/base.h>
 
 using namespace std::chrono_literals;
 
@@ -42,6 +48,48 @@ namespace playnite_launcher::lossless {
     constexpr int k_flow_scale_max = 100;
     constexpr double k_resolution_factor_min = 1.0;
     constexpr double k_resolution_factor_max = 10.0;
+
+    template <typename Fn>
+    auto run_with_user_context(Fn &&fn) -> decltype(fn()) {
+      if (platf::dxgi::is_running_as_system()) {
+        winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
+        if (user_token) {
+          if (!ImpersonateLoggedOnUser(user_token.get())) {
+            BOOST_LOG(warning) << "Lossless Scaling: impersonation failed, error=" << GetLastError();
+          } else {
+            auto revert_guard = util::fail_guard([&]() {
+              if (!RevertToSelf()) {
+                DWORD err = GetLastError();
+                BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation, error=" << err;
+                DebugBreak();
+              }
+            });
+            auto result = fn();
+            return result;
+          }
+        } else {
+          BOOST_LOG(debug) << "Lossless Scaling: no active user token, using service context";
+        }
+      }
+      return fn();
+    }
+
+    std::filesystem::path known_folder_path_for_token(HANDLE token) {
+      PWSTR local = nullptr;
+      std::filesystem::path path;
+      HRESULT hr = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, token, &local);
+      if (FAILED(hr) || !local) {
+        if (local) {
+          CoTaskMemFree(local);
+        }
+        return path;
+      }
+      path = std::filesystem::path(local);
+      CoTaskMemFree(local);
+      path /= L"Lossless Scaling";
+      path /= L"settings.xml";
+      return path;
+    }
 
     bool parse_env_flag(const char *value) {
       if (!value) {
@@ -124,6 +172,18 @@ namespace playnite_launcher::lossless {
         return std::nullopt;
       }
       return std::clamp(*value, min_value, max_value);
+    }
+
+    void finalize_lossless_options(lossless_scaling_options &options) {
+      if (options.enabled && !options.rtss_limit && options.target_fps && *options.target_fps > 0) {
+        int computed = *options.target_fps / 2;
+        if (computed > 0) {
+          options.rtss_limit = computed;
+        }
+      }
+      if (options.anime4k_type) {
+        boost::algorithm::to_upper(*options.anime4k_type);
+      }
     }
 
     void lowercase_inplace(std::wstring &value) {
@@ -331,17 +391,17 @@ namespace playnite_launcher::lossless {
     }
 
     std::filesystem::path lossless_scaling_settings_path() {
-      PWSTR local = nullptr;
-      std::filesystem::path p;
-      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)) && local) {
-        p = std::filesystem::path(local);
-        p /= L"Lossless Scaling";
-        p /= L"settings.xml";
+      if (platf::dxgi::is_running_as_system()) {
+        winrt::handle token {platf::dxgi::retrieve_users_token(false)};
+        if (token) {
+          auto user_path = known_folder_path_for_token(token.get());
+          if (!user_path.empty()) {
+            return user_path;
+          }
+          BOOST_LOG(debug) << "Lossless Scaling: failed to resolve LocalAppData via user token, falling back";
+        }
       }
-      if (local) {
-        CoTaskMemFree(local);
-      }
-      return p;
+      return known_folder_path_for_token(nullptr);
     }
 
     std::optional<std::wstring> exe_from_settings() {
@@ -745,6 +805,8 @@ namespace playnite_launcher::lossless {
         std::string frame_mode = *options.frame_generation_mode;
         boost::algorithm::to_upper(frame_mode);
         profile.put("FrameGeneration", frame_mode);
+      } else {
+        profile.put("FrameGeneration", "Off");
       }
       if (options.lsfg3_mode) {
         std::string lsfg_mode = *options.lsfg3_mode;
@@ -893,17 +955,11 @@ namespace playnite_launcher::lossless {
 
   }  // namespace
 
-  lossless_scaling_options read_lossless_scaling_options() {
+  lossless_scaling_options lossless_scaling_env_loader::load() const {
     lossless_scaling_options opt;
     opt.enabled = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"));
     opt.target_fps = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
     opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
-    if (opt.enabled && !opt.rtss_limit && opt.target_fps && *opt.target_fps > 0) {
-      int computed = *opt.target_fps / 2;
-      if (computed > 0) {
-        opt.rtss_limit = computed;
-      }
-    }
     opt.active_profile = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE"));
     opt.capture_api = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_CAPTURE_API"));
     opt.queue_target = parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET"));
@@ -918,15 +974,51 @@ namespace playnite_launcher::lossless {
     opt.ls1_sharpness = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS")), k_sharpness_min, k_sharpness_max);
     opt.anime4k_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE"));
     opt.anime4k_vrs = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS"));
-    if (opt.anime4k_type) {
-      boost::algorithm::to_upper(*opt.anime4k_type);
-    }
     if (auto configured = get_lossless_scaling_env_path()) {
       if (!configured->empty()) {
         opt.configured_path = configured;
       }
     }
+    finalize_lossless_options(opt);
     return opt;
+  }
+
+  lossless_scaling_metadata_loader::lossless_scaling_metadata_loader(lossless_scaling_app_metadata metadata):
+      _metadata(std::move(metadata)) {
+  }
+
+  lossless_scaling_options lossless_scaling_metadata_loader::load() const {
+    lossless_scaling_options opt;
+    opt.enabled = _metadata.enabled;
+    opt.target_fps = _metadata.target_fps;
+    opt.rtss_limit = _metadata.rtss_limit;
+    opt.configured_path = _metadata.configured_path;
+    opt.active_profile = _metadata.active_profile;
+    opt.capture_api = _metadata.capture_api;
+    opt.queue_target = _metadata.queue_target;
+    opt.hdr_enabled = _metadata.hdr_enabled;
+    opt.flow_scale = clamp_optional_int(_metadata.flow_scale, k_flow_scale_min, k_flow_scale_max);
+    opt.performance_mode = _metadata.performance_mode;
+    opt.resolution_scale_factor = clamp_optional_double(_metadata.resolution_scale_factor, k_resolution_factor_min, k_resolution_factor_max);
+    opt.frame_generation_mode = _metadata.frame_generation_mode;
+    opt.lsfg3_mode = _metadata.lsfg3_mode;
+    opt.scaling_type = _metadata.scaling_type;
+    opt.sharpness = clamp_optional_int(_metadata.sharpness, k_sharpness_min, k_sharpness_max);
+    opt.ls1_sharpness = clamp_optional_int(_metadata.ls1_sharpness, k_sharpness_min, k_sharpness_max);
+    opt.anime4k_type = _metadata.anime4k_type;
+    opt.anime4k_vrs = _metadata.anime4k_vrs;
+    finalize_lossless_options(opt);
+    return opt;
+  }
+
+  lossless_scaling_options read_lossless_scaling_options() {
+    lossless_scaling_env_loader loader;
+    return loader.load();
+  }
+
+  lossless_scaling_options read_lossless_scaling_options(const lossless_scaling_app_metadata &metadata) {
+    lossless_scaling_metadata_loader loader(metadata);
+    return loader.load();
   }
 
   lossless_scaling_runtime_state capture_lossless_scaling_state() {
@@ -979,14 +1071,47 @@ namespace playnite_launcher::lossless {
     return state.stopped || state.previously_running;
   }
 
-  std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi) {
+  static bool focus_with_retry(DWORD pid, int attempts, std::chrono::milliseconds delay) {
+    if (!pid) {
+      return false;
+    }
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+      if (lossless_scaling_focus_window(pid)) {
+        return true;
+      }
+      std::this_thread::sleep_for(delay);
+    }
+    return false;
+  }
+
+  std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi, DWORD game_pid) {
     bool focused = false;
     bool minimized = false;
     if (pi.hProcess) {
       WaitForInputIdle(pi.hProcess, 5000);
-      // Single focus attempt only
-      focused = lossless_scaling_focus_window(pi.dwProcessId);
+      constexpr int kFocusRetries = 4;
+      constexpr auto kRetryDelay = std::chrono::milliseconds(120);
+      if (game_pid) {
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+        std::this_thread::sleep_for(150ms);
+        bool first_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+        focused = focused || first_lossless;
+        std::this_thread::sleep_for(150ms);
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+        std::this_thread::sleep_for(150ms);
+        bool second_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+        focused = focused || second_lossless;
+      } else {
+        focused = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+      }
       minimized = lossless_scaling_minimize_window(pi.dwProcessId);
+      if (!focused) {
+        focused = lossless_scaling_focus_window(pi.dwProcessId);
+      }
+      if (game_pid) {
+        std::this_thread::sleep_for(150ms);
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+      }
       CloseHandle(pi.hProcess);
       pi.hProcess = nullptr;
     }
@@ -997,91 +1122,165 @@ namespace playnite_launcher::lossless {
     return {focused, minimized};
   }
 
-  bool launch_lossless_executable(const std::wstring &exe) {
+  bool launch_lossless_executable(const std::wstring &exe, DWORD game_pid) {
+    if (exe.empty()) {
+      return false;
+    }
     STARTUPINFOW si {sizeof(si)};
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_SHOWNORMAL;
     PROCESS_INFORMATION pi {};
-    std::wstring cmd =
-      L""
-      " + exe + L"
-      "";
+    std::wstring cmd = L"\"" + exe + L"\"";
     std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
     cmdline.push_back(L'\0');
-    BOOL ok = CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi);
-    if (!ok) {
-      return false;
+
+    auto finalize_launch = [&](PROCESS_INFORMATION &proc_info) {
+      auto [focused, minimized] = focus_and_minimize_new_process(proc_info, game_pid);
+      if (!focused) {
+        BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+      }
+      if (!minimized) {
+        BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
+      }
+      return true;
+    };
+
+    auto close_process_handles = [&]() {
+      if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+        pi.hProcess = nullptr;
+      }
+      if (pi.hThread) {
+        CloseHandle(pi.hThread);
+        pi.hThread = nullptr;
+      }
+    };
+
+    bool launched = false;
+    if (platf::dxgi::is_running_as_system()) {
+      winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
+      if (user_token) {
+        LPVOID raw_env = nullptr;
+        if (!CreateEnvironmentBlock(&raw_env, user_token.get(), FALSE)) {
+          raw_env = nullptr;
+        }
+        std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)> env_block(raw_env, DestroyEnvironmentBlock);
+        BOOL ok = FALSE;
+        if (ImpersonateLoggedOnUser(user_token.get())) {
+          auto revert_guard = util::fail_guard([&]() {
+            if (!RevertToSelf()) {
+              DWORD err = GetLastError();
+              BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation after launch, error=" << err;
+              DebugBreak();
+            }
+          });
+          ok = CreateProcessAsUserW(
+            user_token.get(),
+            exe.c_str(),
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CREATE_UNICODE_ENVIRONMENT,
+            env_block.get(),
+            nullptr,
+            &si,
+            &pi
+          );
+          if (!ok) {
+            BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
+          }
+        } else {
+          BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
+        }
+        if (ok) {
+          launched = true;
+        } else {
+          close_process_handles();
+        }
+      } else {
+        BOOST_LOG(debug) << "Lossless Scaling: no user token available for impersonated launch";
+      }
     }
-    auto [focused, minimized] = focus_and_minimize_new_process(pi);
-    if (!focused) {
-      BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+    if (!launched) {
+      if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
+        BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
+        close_process_handles();
+        return false;
+      }
+      launched = true;
     }
-    if (!minimized) {
-      BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
-    }
-    return true;
+    bool result = launched && finalize_launch(pi);
+    close_process_handles();
+    return result;
   }
 
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup) {
     backup = {};
-    auto settings_path = lossless_scaling_settings_path();
-    if (settings_path.empty()) {
-      return false;
-    }
-    boost::property_tree::ptree tree;
-    try {
-      boost::property_tree::read_xml(settings_path.string(), tree);
-    } catch (...) {
-      BOOST_LOG(warning) << "Lossless Scaling: failed to read settings";
-      return false;
-    }
-    auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
-    if (!profiles_opt) {
-      BOOST_LOG(warning) << "Lossless Scaling: GameProfiles missing";
-      return false;
-    }
-    auto &profiles = *profiles_opt;
-    bool removed = remove_vibeshine_profiles(profiles);
-    ProfileTemplates templates = find_profile_templates(profiles);
-    capture_backup_fields(templates, backup);
-    auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
-    auto explicit_exe = resolve_explicit_executable(exe_path_utf8);
-    std::string filter_utf8 = build_executable_filter(base_dir, explicit_exe);
-    bool inserted = insert_vibeshine_profile(templates, options, filter_utf8, profiles, backup);
-    if (!removed && !inserted) {
-      return false;
-    }
-    return write_settings_tree(tree, settings_path);
+    auto worker = [&]() -> bool {
+      auto settings_path = lossless_scaling_settings_path();
+      if (settings_path.empty()) {
+        return false;
+      }
+      boost::property_tree::ptree tree;
+      try {
+        boost::property_tree::read_xml(settings_path.string(), tree);
+      } catch (...) {
+        BOOST_LOG(warning) << "Lossless Scaling: failed to read settings";
+        return false;
+      }
+      auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
+      if (!profiles_opt) {
+        BOOST_LOG(warning) << "Lossless Scaling: GameProfiles missing";
+        return false;
+      }
+      auto &profiles = *profiles_opt;
+      bool removed = remove_vibeshine_profiles(profiles);
+      ProfileTemplates templates = find_profile_templates(profiles);
+      capture_backup_fields(templates, backup);
+      auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
+      auto explicit_exe = resolve_explicit_executable(exe_path_utf8);
+      std::string filter_utf8 = build_executable_filter(base_dir, explicit_exe);
+      bool inserted = insert_vibeshine_profile(templates, options, filter_utf8, profiles, backup);
+      if (!removed && !inserted) {
+        return false;
+      }
+      return write_settings_tree(tree, settings_path);
+    };
+    return run_with_user_context(worker);
   }
 
   bool lossless_scaling_restore_global_profile(const lossless_scaling_profile_backup &backup) {
-    auto settings_path = lossless_scaling_settings_path();
-    if (settings_path.empty()) {
-      return false;
-    }
-    boost::property_tree::ptree tree;
-    try {
-      boost::property_tree::read_xml(settings_path.string(), tree);
-    } catch (...) {
-      return false;
-    }
-    auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
-    if (!profiles_opt) {
-      return false;
-    }
-    auto &profiles = *profiles_opt;
-    bool changed = remove_vibeshine_profiles(profiles);
-    ProfileTemplates templates = find_profile_templates(profiles);
-    if (templates.defaults && backup.valid) {
-      changed |= apply_backup_to_profile(*templates.defaults, backup);
-    }
-    if (!changed) {
-      return false;
-    }
-    return write_settings_tree(tree, settings_path);
+    auto worker = [&]() -> bool {
+      auto settings_path = lossless_scaling_settings_path();
+      if (settings_path.empty()) {
+        return false;
+      }
+      boost::property_tree::ptree tree;
+      try {
+        boost::property_tree::read_xml(settings_path.string(), tree);
+      } catch (...) {
+        return false;
+      }
+      auto profiles_opt = tree.get_child_optional("Settings.GameProfiles");
+      if (!profiles_opt) {
+        return false;
+      }
+      auto &profiles = *profiles_opt;
+      bool changed = remove_vibeshine_profiles(profiles);
+      ProfileTemplates templates = find_profile_templates(profiles);
+      if (templates.defaults && backup.valid) {
+        changed |= apply_backup_to_profile(*templates.defaults, backup);
+      }
+      if (!changed) {
+        return false;
+      }
+      return write_settings_tree(tree, settings_path);
+    };
+    return run_with_user_context(worker);
   }
 
-  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8) {
+  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8, DWORD focused_game_pid) {
     if (focus_and_minimize_existing_instances(state)) {
       return;
     }
@@ -1115,7 +1314,7 @@ namespace playnite_launcher::lossless {
       BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
       return;
     }
-    if (launch_lossless_executable(*exe)) {
+    if (launch_lossless_executable(*exe, focused_game_pid)) {
       BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
     } else {
       BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << GetLastError();

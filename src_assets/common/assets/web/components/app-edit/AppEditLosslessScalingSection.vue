@@ -13,14 +13,16 @@
     </div>
 
     <n-alert
-      v-if="form.losslessScalingEnabled && !playniteInstalled"
+      v-if="form.losslessScalingEnabled && !isPlayniteManaged"
       type="warning"
       :show-icon="true"
       size="small"
       class="text-xs"
     >
-      Playnite integration is not installed. Install the Playnite plugin from Settings → Playnite to
-      use Lossless Scaling integration.
+      This application isn't managed by Playnite. Sunshine will try to guess which game executable
+      is running and apply the Lossless Scaling profile automatically, but that detection is
+      best-effort and may not always succeed. Configure Playnite integration for more reliable
+      results.
     </n-alert>
 
     <div v-if="form.losslessScalingEnabled" class="space-y-4">
@@ -324,7 +326,7 @@ const losslessAnimeSizeModel = defineModel<Anime4kSize>('losslessAnimeSize', { r
 const losslessAnimeVrsModel = defineModel<boolean>('losslessAnimeVrs', { required: true });
 
 const props = defineProps<{
-  playniteInstalled: boolean;
+  isPlayniteManaged: boolean;
   showLosslessResolution: boolean;
   showLosslessSharpening: boolean;
   showLosslessAnimeOptions: boolean;
@@ -333,7 +335,7 @@ const props = defineProps<{
   resetActiveLosslessProfile: () => void;
 }>();
 
-const playniteInstalled = toRef(props, 'playniteInstalled');
+const isPlayniteManaged = toRef(props, 'isPlayniteManaged');
 const showLosslessResolution = toRef(props, 'showLosslessResolution');
 const showLosslessSharpening = toRef(props, 'showLosslessSharpening');
 const showLosslessAnimeOptions = toRef(props, 'showLosslessAnimeOptions');
