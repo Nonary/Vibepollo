@@ -183,6 +183,7 @@ namespace config {
     std::string sunshine_name;
 
     std::string file_state;
+    std::string vibeshine_file_state;
 
     std::string external_ip;
   };

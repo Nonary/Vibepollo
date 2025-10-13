@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "state_storage.h"
 #include "utility.h"
 
 #include <algorithm>
@@ -288,6 +289,9 @@ namespace confighttp {
   }
 
   void ApiTokenManager::save_api_tokens() const {
+    statefile::migrate_recent_state_keys();
+    const auto &state_path = statefile::vibeshine_state_path();
+
     nlohmann::json j;
     {
       std::scoped_lock lock(_mutex);
@@ -304,8 +308,8 @@ namespace confighttp {
       }
     }
     pt::ptree root;
-    if (_dependencies.file_exists(config::nvhttp.file_state)) {
-      _dependencies.read_json(config::nvhttp.file_state, root);
+    if (_dependencies.file_exists(state_path)) {
+      _dependencies.read_json(state_path, root);
     }
     pt::ptree tokens_pt;
     for (const auto &tok : j) {
@@ -328,7 +332,7 @@ namespace confighttp {
       tokens_pt.push_back({"", t});
     }
     root.put_child("root.api_tokens", tokens_pt);
-    _dependencies.write_json(config::nvhttp.file_state, root);
+    _dependencies.write_json(state_path, root);
   }
 
   std::optional<std::pair<std::string, std::set<std::string, std::less<>>>> ApiTokenManager::parse_scope(const pt::ptree &scope_tree) const {
@@ -360,14 +364,17 @@ namespace confighttp {
   }
 
   void ApiTokenManager::load_api_tokens() {
+    statefile::migrate_recent_state_keys();
+    const auto &state_path = statefile::vibeshine_state_path();
+
     std::scoped_lock lock(_mutex);
     _api_tokens.clear();
-    if (!_dependencies.file_exists(config::nvhttp.file_state)) {
+    if (!_dependencies.file_exists(state_path)) {
       return;
     }
     pt::ptree root;
     try {
-      _dependencies.read_json(config::nvhttp.file_state, root);
+      _dependencies.read_json(state_path, root);
     } catch (...) {
       return;  // unable to load tokens; ignore
     }
@@ -573,6 +580,9 @@ namespace confighttp {
   }
 
   void SessionTokenManager::save_session_tokens() const {
+    statefile::migrate_recent_state_keys();
+    const auto &state_path = statefile::vibeshine_state_path();
+
     std::vector<std::pair<std::string, SessionToken>> snapshot;
     bool had_dirty = false;
     {
@@ -589,9 +599,9 @@ namespace confighttp {
     }
 
     pt::ptree root;
-    if (_dependencies.file_exists(config::nvhttp.file_state)) {
+    if (_dependencies.file_exists(state_path)) {
       try {
-        _dependencies.read_json(config::nvhttp.file_state, root);
+        _dependencies.read_json(state_path, root);
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "SessionTokenManager: failed reading state file: " << e.what();
         root = {};
@@ -624,7 +634,7 @@ namespace confighttp {
     root.put_child("root.session_tokens", sessions_pt);
 
     try {
-      _dependencies.write_json(config::nvhttp.file_state, root);
+      _dependencies.write_json(state_path, root);
       if (had_dirty) {
         std::scoped_lock lock(_mutex);
         if (!_dirty) {
@@ -641,11 +651,14 @@ namespace confighttp {
   }
 
   void SessionTokenManager::load_session_tokens() {
+    statefile::migrate_recent_state_keys();
+    const auto &state_path = statefile::vibeshine_state_path();
+
     bool needs_resave = false;
     {
       std::scoped_lock lock(_mutex);
       _session_tokens.clear();
-      if (!_dependencies.file_exists(config::nvhttp.file_state)) {
+      if (!_dependencies.file_exists(state_path)) {
         _dirty = false;
         _last_persist = _dependencies.now();
         return;
@@ -653,7 +666,7 @@ namespace confighttp {
 
       pt::ptree root;
       try {
-        _dependencies.read_json(config::nvhttp.file_state, root);
+        _dependencies.read_json(state_path, root);
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "SessionTokenManager: failed loading state file: " << e.what();
         _dirty = false;

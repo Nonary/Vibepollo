@@ -540,6 +540,7 @@ namespace config {
 
     platf::get_host_name(),  // sunshine_name,
     "sunshine_state.json"s,  // file_state
+    "vibeshine_state.json"s,  // vibeshine_file_state
     {},  // external_ip
   };
 
@@ -1238,6 +1239,7 @@ namespace config {
     string_f(vars, "sunshine_name", nvhttp.sunshine_name);
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
+    path_f(vars, "vibeshine_file_state", nvhttp.vibeshine_file_state);
 
     // Must be run after "file_state"
     config::sunshine.credentials_file = config::nvhttp.file_state;

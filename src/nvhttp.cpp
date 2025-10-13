@@ -28,6 +28,7 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "state_storage.h"
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
@@ -166,13 +167,17 @@ namespace nvhttp {
   }
 
   void save_state() {
+    statefile::migrate_recent_state_keys();
+    const auto &sunshine_path = statefile::sunshine_state_path();
+    const auto &vibeshine_path = statefile::vibeshine_state_path();
+
     pt::ptree root;
 
-    if (fs::exists(config::nvhttp.file_state)) {
+    if (fs::exists(sunshine_path)) {
       try {
-        pt::read_json(config::nvhttp.file_state, root);
+        pt::read_json(sunshine_path, root);
       } catch (std::exception &e) {
-        BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
+        BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
         return;
       }
     }
@@ -180,10 +185,7 @@ namespace nvhttp {
     root.erase("root"s);
 
     root.put("root.uniqueid", http::unique_id);
-    // Persist update notification state
-    root.put("root.last_notified_version", update::state.last_notified_version);
     client_t &client = client_root;
-    pt::ptree node;
 
     pt::ptree named_cert_nodes;
     for (auto &named_cert : client.named_devices) {
@@ -196,25 +198,60 @@ namespace nvhttp {
     root.add_child("root.named_devices"s, named_cert_nodes);
 
     try {
-      pt::write_json(config::nvhttp.file_state, root);
+      pt::write_json(sunshine_path, root);
     } catch (std::exception &e) {
-      BOOST_LOG(error) << "Couldn't write "sv << config::nvhttp.file_state << ": "sv << e.what();
+      BOOST_LOG(error) << "Couldn't write "sv << sunshine_path << ": "sv << e.what();
       return;
+    }
+
+    if (!vibeshine_path.empty()) {
+      auto ensure_root = [](pt::ptree &tree) -> pt::ptree & {
+        auto it = tree.find("root");
+        if (it == tree.not_found()) {
+          auto inserted = tree.insert(tree.end(), std::make_pair(std::string("root"), pt::ptree {}));
+          return inserted->second;
+        }
+        return it->second;
+      };
+
+      pt::ptree vibeshine_tree;
+      if (fs::exists(vibeshine_path)) {
+        try {
+          pt::read_json(vibeshine_path, vibeshine_tree);
+        } catch (std::exception &e) {
+          BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
+          vibeshine_tree = {};
+        }
+      }
+
+      auto &vibe_root = ensure_root(vibeshine_tree);
+      vibe_root.put("last_notified_version", update::state.last_notified_version);
+
+      try {
+        pt::write_json(vibeshine_path, vibeshine_tree);
+      } catch (std::exception &e) {
+        BOOST_LOG(error) << "Couldn't write "sv << vibeshine_path << ": "sv << e.what();
+      }
     }
   }
 
   void load_state() {
-    if (!fs::exists(config::nvhttp.file_state)) {
-      BOOST_LOG(info) << "File "sv << config::nvhttp.file_state << " doesn't exist"sv;
+    statefile::migrate_recent_state_keys();
+    const auto &sunshine_path = statefile::sunshine_state_path();
+    const auto &vibeshine_path = statefile::vibeshine_state_path();
+
+    if (!fs::exists(sunshine_path)) {
+      BOOST_LOG(info) << "File "sv << sunshine_path << " doesn't exist"sv;
       http::unique_id = uuid_util::uuid_t::generate().string();
+      update::state.last_notified_version.clear();
       return;
     }
 
     pt::ptree tree;
     try {
-      pt::read_json(config::nvhttp.file_state, tree);
+      pt::read_json(sunshine_path, tree);
     } catch (std::exception &e) {
-      BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
+      BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
 
       return;
     }
@@ -227,8 +264,18 @@ namespace nvhttp {
     }
     http::unique_id = std::move(*unique_id_p);
 
-    // Load update notification state (optional fields)
-    update::state.last_notified_version = tree.get("root.last_notified_version", "");
+    if (!vibeshine_path.empty() && fs::exists(vibeshine_path)) {
+      try {
+        pt::ptree vibeshine_tree;
+        pt::read_json(vibeshine_path, vibeshine_tree);
+        update::state.last_notified_version = vibeshine_tree.get("root.last_notified_version", "");
+      } catch (std::exception &e) {
+        BOOST_LOG(warning) << "Couldn't read "sv << vibeshine_path << " for notification state: "sv << e.what();
+        update::state.last_notified_version.clear();
+      }
+    } else {
+      update::state.last_notified_version.clear();
+    }
 
     auto root = tree.get_child("root");
     client_t client;
