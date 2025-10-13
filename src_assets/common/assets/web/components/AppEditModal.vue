@@ -32,7 +32,7 @@
           </div>
           <div class="shrink-0">
             <span
-              v-if="isPlaynite"
+              v-if="isPlayniteManaged"
               class="inline-flex items-center px-2 py-0.5 rounded bg-primary/15 text-primary text-[11px] font-semibold"
             >
               Playnite
@@ -66,7 +66,7 @@
             v-model:cmd-text="cmdText"
             v-model:name-select-value="nameSelectValue"
             v-model:selected-playnite-id="selectedPlayniteId"
-            :is-playnite="isPlaynite"
+            :is-playnite="isPlayniteManaged"
             :show-playnite-picker="showPlaynitePicker"
             :playnite-installed="playniteInstalled"
             :name-select-options="nameSelectOptions"
@@ -87,14 +87,14 @@
             <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
               Exclude Global Prep
             </n-checkbox>
-            <n-checkbox v-if="!isPlaynite" v-model:checked="form.autoDetach" size="small">
+            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.autoDetach" size="small">
               Auto Detach
             </n-checkbox>
-            <n-checkbox v-if="!isPlaynite" v-model:checked="form.waitAll" size="small"
+            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small"
               >Wait All</n-checkbox
             >
             <n-checkbox
-              v-if="isWindows && !isPlaynite"
+              v-if="isWindows && !isPlayniteManaged"
               v-model:checked="form.elevated"
               size="small"
             >
@@ -149,7 +149,7 @@
             v-model:lossless-sharpening="losslessSharpeningModel"
             v-model:lossless-anime-size="losslessAnimeSizeModel"
             v-model:lossless-anime-vrs="losslessAnimeVrsModel"
-            :playnite-installed="playniteInstalled"
+            :is-playnite-managed="isPlayniteManaged"
             :show-lossless-resolution="showLosslessResolution"
             :show-lossless-sharpening="showLosslessSharpening"
             :show-lossless-anime-options="showLosslessAnimeOptions"
@@ -440,9 +440,9 @@ const cmdText = computed<string>({
     form.value.cmd = v;
   },
 });
-const isPlaynite = computed<boolean>(() => !!form.value.playniteId);
+const isPlayniteManaged = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
-  () => isPlaynite.value && form.value.playniteManaged !== 'manual',
+  () => isPlayniteManaged.value && form.value.playniteManaged !== 'manual',
 );
 
 const frameGenerationSelection = computed<FrameGenerationMode>({
@@ -879,7 +879,7 @@ async function searchCovers(name: string): Promise<CoverCandidate[]> {
 }
 
 async function openCoverFinder() {
-  if (isPlaynite.value) return;
+  if (isPlayniteManaged.value) return;
   coverCandidates.value = [];
   showCoverModal.value = true;
   coverSearching.value = true;

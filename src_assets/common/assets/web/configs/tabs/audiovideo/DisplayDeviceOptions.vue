@@ -406,6 +406,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                   <p>{{ $t('config.dd_mode_remapping_desc_1') }}</p>
                   <p>{{ $t('config.dd_mode_remapping_desc_2') }}</p>
                   <p>{{ $t('config.dd_mode_remapping_desc_3') }}</p>
+                  <p>{{ $t('config.dd_mode_remapping_desc_example') }}</p>
                   <p>
                     {{
                       $t(
@@ -414,12 +415,6 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                           : 'config.dd_mode_remapping_desc_4_final_values_non_mixed',
                       )
                     }}
-                  </p>
-                  <p v-if="getRemappingType() === MIXED">
-                    {{ $t('config.dd_mode_remapping_desc_5_sops_mixed_only') }}
-                  </p>
-                  <p v-if="getRemappingType() === RESOLUTION_ONLY">
-                    {{ $t('config.dd_mode_remapping_desc_5_sops_resolution_only') }}
                   </p>
                 </div>
               </div>
@@ -439,11 +434,18 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                         v-if="getRemappingType() !== REFRESH_RATE_ONLY"
                         class="remap-col lg:col-span-3"
                       >
+                        <label
+                          :for="`dd-remap-${idx}-requested-resolution`"
+                          class="remap-label text-xs font-semibold text-dark dark:text-light"
+                        >
+                          {{ $t('config.dd_mode_remapping_requested_resolution') }}
+                        </label>
                         <n-input
                           v-model:value="value.requested_resolution"
                           type="text"
                           class="font-mono w-full"
                           :placeholder="'1920x1080'"
+                          :input-props="{ id: `dd-remap-${idx}-requested-resolution` }"
                           @update:value="store.markManualDirty?.('dd_mode_remapping')"
                           v-bind="
                             isResolutionFieldValid(value.requested_resolution)
@@ -456,11 +458,18 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                         v-if="getRemappingType() !== RESOLUTION_ONLY"
                         class="remap-col lg:col-span-2"
                       >
+                        <label
+                          :for="`dd-remap-${idx}-requested-fps`"
+                          class="remap-label text-xs font-semibold text-dark dark:text-light"
+                        >
+                          {{ $t('config.dd_mode_remapping_requested_fps') }}
+                        </label>
                         <n-input
                           v-model:value="value.requested_fps"
                           type="text"
                           class="font-mono w-full"
                           :placeholder="'60'"
+                          :input-props="{ id: `dd-remap-${idx}-requested-fps` }"
                           @update:value="store.markManualDirty?.('dd_mode_remapping')"
                           v-bind="
                             isRefreshFieldValid(value.requested_fps) ? {} : { status: 'error' }
@@ -472,11 +481,18 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                         v-if="getRemappingType() !== REFRESH_RATE_ONLY"
                         class="remap-col lg:col-span-3"
                       >
+                        <label
+                          :for="`dd-remap-${idx}-final-resolution`"
+                          class="remap-label text-xs font-semibold text-dark dark:text-light"
+                        >
+                          {{ $t('config.dd_mode_remapping_final_resolution') }}
+                        </label>
                         <n-input
                           v-model:value="value.final_resolution"
                           type="text"
                           class="font-mono w-full"
                           :placeholder="'2560x1440'"
+                          :input-props="{ id: `dd-remap-${idx}-final-resolution` }"
                           @update:value="store.markManualDirty?.('dd_mode_remapping')"
                           v-bind="
                             isResolutionFieldValid(value.final_resolution)
@@ -489,11 +505,18 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                         v-if="getRemappingType() !== RESOLUTION_ONLY"
                         class="remap-col lg:col-span-2"
                       >
+                        <label
+                          :for="`dd-remap-${idx}-final-refresh`"
+                          class="remap-label text-xs font-semibold text-dark dark:text-light"
+                        >
+                          {{ $t('config.dd_mode_remapping_final_refresh_rate') }}
+                        </label>
                         <n-input
                           v-model:value="value.final_refresh_rate"
                           type="text"
                           class="font-mono w-full"
                           :placeholder="'119.95'"
+                          :input-props="{ id: `dd-remap-${idx}-final-refresh` }"
                           @update:value="store.markManualDirty?.('dd_mode_remapping')"
                           v-bind="
                             isRefreshFieldValid(value.final_refresh_rate) ? {} : { status: 'error' }
@@ -588,15 +611,6 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                       "
                       class="w-full"
                     />
-                    <p
-                      v-if="
-                        config.dd_resolution_option === 'auto' ||
-                        config.dd_resolution_option === 'manual'
-                      "
-                      class="text-[11px] opacity-60"
-                    >
-                      {{ $t('config.dd_resolution_option_ogs_desc') }}
-                    </p>
                   </div>
 
                   <div
@@ -806,6 +820,11 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 
 .remap-actions {
   flex: 1 1 160px;
+}
+
+.remap-label {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .remap-message {

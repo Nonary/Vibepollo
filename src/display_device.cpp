@@ -217,9 +217,7 @@ namespace display_device {
       switch (video_config.dd.resolution_option) {
         case resolution_option_e::automatic:
           {
-            if (!session.enable_sops) {
-              BOOST_LOG(warning) << R"(Sunshine is configured to change resolution automatically, but the "Optimize game settings" is not set in the client! Resolution will not be changed.)";
-            } else if (session.width >= 0 && session.height >= 0) {
+            if (session.width >= 0 && session.height >= 0) {
               config.m_resolution = Resolution {
                 static_cast<unsigned int>(session.width),
                 static_cast<unsigned int>(session.height)
@@ -232,18 +230,14 @@ namespace display_device {
           }
         case resolution_option_e::manual:
           {
-            if (!session.enable_sops) {
-              BOOST_LOG(warning) << R"(Sunshine is configured to change resolution manually, but the "Optimize game settings" is not set in the client! Resolution will not be changed.)";
-            } else {
-              if (!parse_resolution_string(video_config.dd.manual_resolution, config.m_resolution)) {
-                BOOST_LOG(error) << "Failed to parse manual resolution string!";
-                return false;
-              }
+            if (!parse_resolution_string(video_config.dd.manual_resolution, config.m_resolution)) {
+              BOOST_LOG(error) << "Failed to parse manual resolution string!";
+              return false;
+            }
 
-              if (!config.m_resolution) {
-                BOOST_LOG(error) << "Manual resolution must be specified!";
-                return false;
-              }
+            if (!config.m_resolution) {
+              BOOST_LOG(error) << "Manual resolution must be specified!";
+              return false;
             }
             break;
           }
@@ -491,12 +485,6 @@ namespace display_device {
           BOOST_LOG(error) << "At least one final value must be set for remapping display modes! Entry:\n"
                            << entry_to_string(entry);
           return false;
-        }
-
-        if (!session.enable_sops && (parsed_entry->requested_resolution || parsed_entry->final_resolution)) {
-          BOOST_LOG(warning) << R"(Skipping remapping entry, because the "Optimize game settings" is not set in the client! Entry:\n)"
-                             << entry_to_string(entry);
-          continue;
         }
 
         // Note: at this point config should already have parsed resolution set.
