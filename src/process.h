@@ -9,9 +9,12 @@
 #endif
 
 // standard includes
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
+#include <thread>
 
 // lib includes
 #include <boost/process/v1.hpp>
@@ -21,6 +24,10 @@
 #include "platform/common.h"
 #include "rtsp.h"
 #include "utility.h"
+
+#ifdef _WIN32
+  #include "tools/playnite_launcher/lossless_scaling.h"
+#endif
 
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
@@ -149,6 +156,19 @@ namespace proc {
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
     std::vector<cmd_t>::const_iterator _app_prep_begin;
+
+#ifdef _WIN32
+    void start_lossless_scaling_support(std::unordered_set<DWORD> baseline_pids, const playnite_launcher::lossless::lossless_scaling_app_metadata &metadata, std::string install_dir_hint_utf8, DWORD root_pid);
+    void stop_lossless_scaling_support();
+
+    std::thread _lossless_thread;
+    std::atomic_bool _lossless_stop_requested {false};
+    std::mutex _lossless_mutex;
+    bool _lossless_profile_applied {false};
+    playnite_launcher::lossless::lossless_scaling_profile_backup _lossless_backup {};
+    std::string _lossless_last_install_dir;
+    std::string _lossless_last_exe_path;
+#endif
   };
 
   /**
