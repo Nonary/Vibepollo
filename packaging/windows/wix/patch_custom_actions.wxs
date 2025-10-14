@@ -2,6 +2,14 @@
 <CPackWiXPatch>
   <CPackWiXFragment Id="#PRODUCT">
     <Property Id="ALLUSERS" Value="1"/>
+    <Property Id="LEGACY_SUNSHINE_PRESENT" Secure="yes">
+      <RegistrySearch Id="SearchLegacySunshine64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw" Win64="yes"/>
+      <RegistrySearch Id="SearchLegacySunshine32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw"/>
+    </Property>
+    <Property Id="LEGACY_SUNSHINE_UNINSTALL" Secure="yes">
+      <RegistrySearch Id="SearchLegacySunshineUninstall64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw" Win64="yes"/>
+      <RegistrySearch Id="SearchLegacySunshineUninstall32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw"/>
+    </Property>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
@@ -63,6 +71,19 @@
     <!-- We can't remove the reboot required message on repairs, but we can tell users it's not needed.
          Restrict strictly to repair by requiring REINSTALL to be set, so it won't fire on uninstall or upgrade. -->
     <InstallUISequence>
+      <!-- Legacy Sunshine handling flow -->
+      <!-- 1. Ask user if they want to uninstall legacy Sunshine (and launch if they agree) -->
+      <Custom Action="AskUninstallLegacySunshine" After="AppSearch">LEGACY_SUNSHINE_PRESENT AND UILevel &gt; 2 AND NOT Installed</Custom>
+      
+      <!-- 2. Wait for uninstall to complete and verify it's gone -->
+      <Custom Action="WaitForLegacyUninstall" After="AskUninstallLegacySunshine">UNINSTALL_LEGACY_SUNSHINE = "1" AND NOT USER_CANCELLED_LEGACY_UNINSTALL</Custom>
+      
+      <!-- 3. Block if user cancelled at any point -->
+      <Custom Action="BlockUserCancelledLegacy" Before="LaunchConditions">USER_CANCELLED_LEGACY_UNINSTALL = "1"</Custom>
+      
+      <!-- 4. Block if legacy Sunshine is still present after user claimed to uninstall it -->
+      <Custom Action="BlockLegacySunshineStillPresent" Before="LaunchConditions">LEGACY_SUNSHINE_STILL_PRESENT = "1"</Custom>
+      
       <Custom Action="RepairCompletePrompt" After="ExecuteAction">REINSTALL AND NOT REMOVE AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
     </InstallUISequence>
   </CPackWiXFragment>
