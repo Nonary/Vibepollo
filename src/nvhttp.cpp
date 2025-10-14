@@ -9,7 +9,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -30,6 +33,7 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "state_storage.h"
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
@@ -181,17 +185,12 @@ namespace nvhttp {
   cmd_list_t extract_command_entries(const nlohmann::json &j, const std::string &key) {
     cmd_list_t commands;
 
-    // Check if the key exists in the JSON.
     if (j.contains(key)) {
-      // Ensure that the value for the key is an array.
       try {
         for (const auto &item : j.at(key)) {
           try {
-            // Extract "cmd" and "elevated" fields from the JSON object.
             std::string cmd = item.at("cmd").get<std::string>();
             bool elevated = util::get_non_string_json_value<bool>(item, "elevated", false);
-
-            // Add the command entry to the list.
             commands.push_back({cmd, elevated});
           } catch (const std::exception &e) {
             BOOST_LOG(warning) << "Error parsing command entry: " << e.what();
@@ -208,27 +207,28 @@ namespace nvhttp {
   }
 
   void save_state() {
+    statefile::migrate_recent_state_keys();
+    const auto &sunshine_path = statefile::sunshine_state_path();
+    const auto &vibeshine_path = statefile::vibeshine_state_path();
+    const bool share_state_file = sunshine_path == vibeshine_path;
+
     nlohmann::json root = nlohmann::json::object();
-    // If the state file exists, try to read it.
-    if (fs::exists(config::nvhttp.file_state)) {
+    if (fs::exists(sunshine_path)) {
       try {
-        std::ifstream in(config::nvhttp.file_state);
+        std::ifstream in(sunshine_path);
         in >> root;
-      } catch (std::exception &e) {
-        BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
-        return;
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
+        root = nlohmann::json::object();
       }
     }
 
-    // Erase any previous "root" key.
-    root.erase("root");
-
-    // Create a new "root" object and set the unique id.
     root["root"] = nlohmann::json::object();
     root["root"]["uniqueid"] = http::unique_id;
+    if (share_state_file) {
+      root["root"]["last_notified_version"] = update::state.last_notified_version;
+    }
 
-    // Persist update notification state
-    root["root"]["last_notified_version"] = update::state.last_notified_version;
     client_t &client = client_root;
     nlohmann::json named_cert_nodes = nlohmann::json::array();
 
@@ -236,11 +236,9 @@ namespace nvhttp {
     std::unordered_map<std::string, int> name_counts;
 
     for (auto &named_cert_p : client.named_devices) {
-      // Only add each unique certificate once.
       if (unique_certs.insert(named_cert_p->cert).second) {
         nlohmann::json named_cert_node = nlohmann::json::object();
         std::string base_name = named_cert_p->name;
-        // Remove any pending id suffix (e.g., " (2)") if present.
         size_t pos = base_name.find(" (");
         if (pos != std::string::npos) {
           base_name = base_name.substr(0, pos);
@@ -259,7 +257,6 @@ namespace nvhttp {
         named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
         named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
 
-        // Add "do" commands if available.
         if (!named_cert_p->do_cmds.empty()) {
           nlohmann::json do_cmds_node = nlohmann::json::array();
           for (const auto &cmd : named_cert_p->do_cmds) {
@@ -268,7 +265,6 @@ namespace nvhttp {
           named_cert_node["do"] = do_cmds_node;
         }
 
-        // Add "undo" commands if available.
         if (!named_cert_p->undo_cmds.empty()) {
           nlohmann::json undo_cmds_node = nlohmann::json::array();
           for (const auto &cmd : named_cert_p->undo_cmds) {
@@ -284,49 +280,105 @@ namespace nvhttp {
     root["root"]["named_devices"] = named_cert_nodes;
 
     try {
-      std::ofstream out(config::nvhttp.file_state);
-      out << root.dump(4);  // Pretty-print with an indent of 4 spaces.
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "Couldn't write "sv << config::nvhttp.file_state << ": "sv << e.what();
+      auto sunshine_dir = fs::path(sunshine_path).parent_path();
+      if (!sunshine_dir.empty() && !fs::exists(sunshine_dir)) {
+        fs::create_directories(sunshine_dir);
+      }
+      std::ofstream out(sunshine_path);
+      out << root.dump(4);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "Couldn't write "sv << sunshine_path << ": "sv << e.what();
       return;
+    }
+
+    if (!share_state_file) {
+      auto ensure_root = [](pt::ptree &tree) -> pt::ptree & {
+        auto it = tree.find("root");
+        if (it == tree.not_found()) {
+          auto inserted = tree.insert(tree.end(), std::make_pair(std::string("root"), pt::ptree {}));
+          return inserted->second;
+        }
+        return it->second;
+      };
+
+      pt::ptree vibeshine_tree;
+      if (fs::exists(vibeshine_path)) {
+        try {
+          pt::read_json(vibeshine_path, vibeshine_tree);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
+          vibeshine_tree = {};
+        }
+      }
+
+      auto &vibe_root = ensure_root(vibeshine_tree);
+      vibe_root.put("last_notified_version", update::state.last_notified_version);
+
+      try {
+        auto vibe_dir = fs::path(vibeshine_path).parent_path();
+        if (!vibe_dir.empty() && !fs::exists(vibe_dir)) {
+          fs::create_directories(vibe_dir);
+        }
+        pt::write_json(vibeshine_path, vibeshine_tree);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Couldn't write "sv << vibeshine_path << ": "sv << e.what();
+      }
     }
   }
 
   void load_state() {
-    if (!fs::exists(config::nvhttp.file_state)) {
-      BOOST_LOG(info) << "File "sv << config::nvhttp.file_state << " doesn't exist"sv;
+    statefile::migrate_recent_state_keys();
+    const auto &sunshine_path = statefile::sunshine_state_path();
+    const auto &vibeshine_path = statefile::vibeshine_state_path();
+    const bool share_state_file = sunshine_path == vibeshine_path;
+
+    if (!fs::exists(sunshine_path)) {
+      BOOST_LOG(info) << "File "sv << sunshine_path << " doesn't exist"sv;
       http::unique_id = uuid_util::uuid_t::generate().string();
+      update::state.last_notified_version.clear();
       return;
     }
 
     nlohmann::json tree;
     try {
-      std::ifstream in(config::nvhttp.file_state);
+      std::ifstream in(sunshine_path);
       in >> tree;
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
       return;
     }
 
-    // Check that the file contains a "root.uniqueid" value.
-    if (!tree.contains("root") || !tree["root"].contains("uniqueid")) {
+    nlohmann::json root = tree.contains("root") ? tree["root"] : nlohmann::json::object();
+
+    if (share_state_file) {
+      update::state.last_notified_version = root.value("last_notified_version", "");
+    } else if (fs::exists(vibeshine_path)) {
+      try {
+        pt::ptree vibeshine_tree;
+        pt::read_json(vibeshine_path, vibeshine_tree);
+        update::state.last_notified_version = vibeshine_tree.get("root.last_notified_version", "");
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Couldn't read "sv << vibeshine_path << " for notification state: "sv << e.what();
+        update::state.last_notified_version.clear();
+      }
+    } else {
+      update::state.last_notified_version.clear();
+    }
+
+    if (!root.contains("uniqueid")) {
       http::uuid = uuid_util::uuid_t::generate();
       http::unique_id = http::uuid.string();
       return;
     }
 
-    std::string uid = tree["root"]["uniqueid"];
+    std::string uid = root["uniqueid"];
     http::uuid = uuid_util::uuid_t::parse(uid);
     http::unique_id = uid;
-    update::state.last_notified_version = tree["root"].value("last_notified_version", "");
 
-    nlohmann::json root = tree["root"];
-    client_t client;  // Local client to load into
+    client_t client;
 
-    // Import from the old format if available.
     if (root.contains("devices")) {
       for (auto &device_node : root["devices"]) {
-        // For each device, if there is a "certs" array, add a named certificate.
         if (device_node.contains("certs")) {
           for (auto &el : device_node["certs"]) {
             auto named_cert_p = std::make_shared<crypto::named_cert_t>();
@@ -344,7 +396,6 @@ namespace nvhttp {
       }
     }
 
-    // Import from the new format.
     if (root.contains("named_devices")) {
       for (auto &el : root["named_devices"]) {
         auto named_cert_p = std::make_shared<crypto::named_cert_t>();
@@ -356,14 +407,12 @@ namespace nvhttp {
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
         named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
-        // Load command entries for "do" and "undo" keys.
         named_cert_p->do_cmds = extract_command_entries(el, "do");
         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
         client.named_devices.emplace_back(named_cert_p);
       }
     }
 
-    // Clear any existing certificate chain and add the imported certificates.
     cert_chain.clear();
     for (auto &named_cert : client.named_devices) {
       cert_chain.add(named_cert);

@@ -26,6 +26,9 @@
     <Binary Id="AskDelInstDirVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_delete_install_dir.vbs"/>
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
+    <!-- VBScripts for existing Apollo handling -->
+    <Binary Id="AskUninstallApolloVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_apollo.vbs"/>
+    <Binary Id="WaitForApolloUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_apollo_uninstall.vbs"/>
 
   </Fragment>
 
@@ -177,6 +180,13 @@
     <CustomAction Id="SetRemoveServiceQuiet"
                  Property="RemoveServiceQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;&amp; { sc.exe delete 'ApolloService' | Out-Null; sc.exe delete 'SunshineService' | Out-Null; sc.exe delete 'sunshinesvc' | Out-Null }&quot;"/>
+
+    <!-- Existing Apollo handling actions -->
+    <CustomAction Id="AskUninstallApollo" BinaryKey="AskUninstallApolloVbs" VBScriptCall="AskUninstallApollo" Execute="immediate" Return="check" />
+    <CustomAction Id="WaitForApolloUninstall" BinaryKey="WaitForApolloUninstallVbs" VBScriptCall="WaitForApolloUninstall" Execute="immediate" Return="check" />
+    
+    <CustomAction Id="BlockApolloStillPresent" Error="An existing Apollo installation is still detected. It must be removed before installing Vibeshine; click OK to start the uninstallation." />
+    <CustomAction Id="BlockUserCancelledApollo" Error="Installation cancelled. Apollo must be removed before installing Vibeshine." />
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />

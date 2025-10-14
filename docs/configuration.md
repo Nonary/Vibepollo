@@ -1939,6 +1939,30 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### vibeshine_file_state
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The file used by new Vibeshine features to persist web authentication tokens and notification state.
+            If left unset, it defaults to <code>vibeshine_state.json</code> in the same directory as other Sunshine data.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            vibeshine_state.json
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            vibeshine_file_state = vibeshine_state.json
+            @endcode</td>
+    </tr>
+</table>
+
 ## Advanced
 
 ### fec_percentage
