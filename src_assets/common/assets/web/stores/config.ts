@@ -110,6 +110,7 @@ const defaultGroups = [
       dd_hdr_option: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_activate_virtual_display: true,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
         resolution_only: [] as Array<Record<string, string>>,

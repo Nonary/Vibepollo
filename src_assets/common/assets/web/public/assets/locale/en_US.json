@@ -199,6 +199,8 @@
     "dd_pre_stream_setup": "Pre-stream setup",
     "dd_pre_stream_intro": "Sunshine applies these settings automatically when starting a stream. Use them to activate a display, make it primary, and optionally adjust resolution, refresh rate, and HDR.",
     "dd_config_hint": "Choose how Sunshine prepares the display before streaming.",
+    "dd_activate_virtual_display": "Auto-activate Sunshine virtual display",
+    "dd_activate_virtual_display_desc": "When using Sunshine's virtual display driver, turn the virtual monitor on and temporarily make it the only active display while a stream is starting.",
     "dd_optional_adjustments": "Optional adjustments",
     "dd_advanced_remapping_title": "Advanced: Mode remapping",
     "dd_display_overrides": "Display overrides",

@@ -63,7 +63,12 @@ namespace {
 
   bool dd_feature_enabled() {
     using config_option_e = config::video_t::dd_t::config_option_e;
-    return config::video.dd.configuration_option != config_option_e::disabled;
+    if (config::video.dd.configuration_option != config_option_e::disabled) {
+      return true;
+    }
+
+    const bool virtual_display_selected = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+    return virtual_display_selected && config::video.dd.activate_virtual_display;
   }
 
   bool ensure_helper_started() {
