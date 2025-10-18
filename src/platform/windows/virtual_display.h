@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <optional>
+#include <string>
 #include <vector>
 #include <windows.h>
 
@@ -38,6 +40,9 @@ namespace VDISPLAY {
     const GUID &guid
   );
   bool removeVirtualDisplay(const GUID &guid);
+
+  std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
+  std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch);
 

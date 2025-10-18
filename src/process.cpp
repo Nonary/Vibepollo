@@ -1049,6 +1049,7 @@ namespace proc {
           launch_session->virtual_display = false;
           launch_session->virtual_display_detach_with_app = false;
           launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_device_id.clear();
         }
       }
     } else {
@@ -1111,24 +1112,32 @@ namespace proc {
             _virtual_display_active = true;
             launch_session->virtual_display = true;
             launch_session->virtual_display_detach_with_app = true;
+            if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
+              launch_session->virtual_display_device_id = *resolved_device;
+            } else {
+              launch_session->virtual_display_device_id.clear();
+            }
             BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
           } else {
             launch_session->virtual_display = false;
             launch_session->virtual_display_detach_with_app = false;
             launch_session->virtual_display_guid_bytes.fill(0);
             std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
+            launch_session->virtual_display_device_id.clear();
             BOOST_LOG(warning) << "Virtual display creation failed.";
           }
         } else {
           launch_session->virtual_display = false;
           launch_session->virtual_display_detach_with_app = false;
           launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_device_id.clear();
           BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
         }
       } else {
         launch_session->virtual_display = false;
         launch_session->virtual_display_detach_with_app = false;
         launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
       }
     }
 #endif

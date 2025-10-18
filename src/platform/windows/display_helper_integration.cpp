@@ -146,12 +146,14 @@ namespace {
     int fps = -1;
     bool enable_hdr = false;
     bool enable_sops = false;
+    bool virtual_display = false;
+    std::string virtual_display_device_id;
   };
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
 
-  static void set_active_session(const rtsp_stream::launch_session_t &session) {
+  static void set_active_session(const rtsp_stream::launch_session_t &session, std::optional<std::string> device_id_override = std::nullopt) {
     std::lock_guard<std::mutex> lg(g_session_mutex);
     g_active_session_dd = session_dd_fields_t {
       .width = session.width,
@@ -159,6 +161,8 @@ namespace {
       .fps = session.fps,
       .enable_hdr = session.enable_hdr,
       .enable_sops = session.enable_sops,
+      .virtual_display = session.virtual_display,
+      .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
     };
   }
 
@@ -226,6 +230,8 @@ namespace {
           tmp_session.fps = session_opt->fps;
           tmp_session.enable_hdr = session_opt->enable_hdr;
           tmp_session.enable_sops = session_opt->enable_sops;
+          tmp_session.virtual_display = session_opt->virtual_display;
+          tmp_session.virtual_display_device_id = session_opt->virtual_display_device_id;
           bool reapplied = display_helper_integration::apply_from_session(config::video, tmp_session);
           BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
           if (!reapplied) {
@@ -260,7 +266,16 @@ namespace display_helper_integration {
       BOOST_LOG(info) << "Display helper: Virtual display detected with auto-activation enabled. Activating virtual display via EnsureOnly mode.";
 
       display_device::SingleDisplayConfiguration vd_cfg;
-      vd_cfg.m_device_id = video_config.output_name;
+      std::string target_device_id = session.virtual_display_device_id;
+      if (target_device_id.empty()) {
+        if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+          target_device_id = *resolved;
+        }
+      }
+      if (target_device_id.empty()) {
+        target_device_id = video_config.output_name;
+      }
+      vd_cfg.m_device_id = target_device_id;
       vd_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
 
       if (session.width >= 0 && session.height >= 0) {
@@ -288,7 +303,7 @@ namespace display_helper_integration {
       BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
 
       if (ok) {
-        set_active_session(session);
+        set_active_session(session, target_device_id);
       }
       return ok;
     }

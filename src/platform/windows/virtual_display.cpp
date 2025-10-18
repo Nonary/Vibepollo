@@ -21,6 +21,50 @@
 using namespace SUDOVDA;
 
 namespace VDISPLAY {
+  namespace {
+    bool equals_ci(const std::string &lhs, const std::string &rhs) {
+      if (lhs.size() != rhs.size()) {
+        return false;
+      }
+      for (size_t i = 0; i < lhs.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(lhs[i])) != std::tolower(static_cast<unsigned char>(rhs[i]))) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    std::string normalize_display_name(std::string name) {
+      auto trim = [](std::string &inout) {
+        size_t start = 0;
+        while (start < inout.size() && std::isspace(static_cast<unsigned char>(inout[start]))) {
+          ++start;
+        }
+        size_t end = inout.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(inout[end - 1]))) {
+          --end;
+        }
+        if (start > 0 || end < inout.size()) {
+          inout = inout.substr(start, end - start);
+        }
+      };
+
+      trim(name);
+
+      std::string upper;
+      upper.reserve(name.size());
+      for (char ch : name) {
+        upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+      }
+
+      if (upper.size() >= 4 && upper[0] == '\\' && upper[1] == '\\' && upper[2] == '.' && upper[3] == '\\') {
+        upper.erase(0, 4);
+      }
+
+      return upper;
+    }
+  }  // namespace
+
   // {dff7fd29-5b75-41d1-9731-b32a17a17104}
   // static const GUID DEFAULT_DISPLAY_GUID = { 0xdff7fd29, 0x5b75, 0x41d1, { 0x97, 0x31, 0xb3, 0x2a, 0x17, 0xa1, 0x71, 0x04 } };
 
@@ -200,6 +244,63 @@ namespace VDISPLAY {
     return false;
   }
 
+  std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
+    if (display_name.empty()) {
+      return std::nullopt;
+    }
+
+    auto devices = display_helper_integration::enumerate_devices();
+    if (!devices) {
+      return std::nullopt;
+    }
+
+    const auto utf8_name = platf::to_utf8(display_name);
+    const auto target = normalize_display_name(utf8_name);
+    if (target.empty()) {
+      return std::nullopt;
+    }
+
+    for (const auto &device : *devices) {
+      const auto device_name = normalize_display_name(device.m_display_name);
+      if (!device_name.empty() && device_name == target) {
+        return device.m_device_id;
+      }
+    }
+
+    return resolveAnyVirtualDisplayDeviceId();
+  }
+
+  std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
+    auto devices = display_helper_integration::enumerate_devices();
+    if (!devices) {
+      return std::nullopt;
+    }
+
+    const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+    std::optional<std::string> active_match;
+    std::optional<std::string> any_match;
+
+    for (const auto &device : *devices) {
+      const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+      const bool is_virtual_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
+      if (!is_virtual_id && !is_virtual_friendly) {
+        continue;
+      }
+
+      if (!any_match) {
+        any_match = device.m_device_id;
+      }
+      if (device.m_info && !active_match) {
+        active_match = device.m_device_id;
+      }
+    }
+
+    if (active_match) {
+      return active_match;
+    }
+    return any_match;
+  }
+
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays() {
     std::vector<SudaVDADisplayInfo> result;
 
@@ -213,18 +314,6 @@ namespace VDISPLAY {
     }
 
     const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
-    auto equals_ci = [](const std::string &lhs, const std::string &rhs) {
-      if (lhs.size() != rhs.size()) {
-        return false;
-      }
-      for (size_t i = 0; i < lhs.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(lhs[i])) != std::tolower(static_cast<unsigned char>(rhs[i]))) {
-          return false;
-        }
-      }
-      return true;
-    };
-
     for (const auto &device : *devices) {
       const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
       const bool is_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
