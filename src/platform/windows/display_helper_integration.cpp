@@ -429,16 +429,22 @@ namespace display_helper_integration {
     return ok;
   }
 
-  std::string enumerate_devices_json() {
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
     try {
-      // Enumerate devices directly via libdisplaydevice
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      const auto devices = dd.enumAvailableDevices();
-      return display_device::toJson(devices);
+      return dd.enumAvailableDevices();
     } catch (...) {
-      return "[]";  // Fail-safe: empty list
+      return std::nullopt;
     }
+  }
+
+  std::string enumerate_devices_json() {
+    auto devices = enumerate_devices();
+    if (!devices) {
+      return "[]";
+    }
+    return display_device::toJson(*devices);
   }
 
   void start_watchdog() {

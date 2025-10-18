@@ -5,7 +5,9 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -27,15 +29,27 @@ namespace rtsp_stream {
 
     bool host_audio;
     std::string unique_id;
+    std::string device_name;
     int width;
     int height;
     int fps;
     int gcmap;
     int appid;
+    struct app_metadata_t {
+      std::string id;
+      std::string name;
+      bool virtual_screen;
+      bool has_command;
+      bool has_playnite;
+    };
+    std::optional<app_metadata_t> app_metadata;
     int surround_info;
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
+    bool virtual_display;
+    bool virtual_display_detach_with_app;
+    std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool lossless_scaling_framegen;

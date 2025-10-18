@@ -5,7 +5,9 @@
 #pragma once
 
 // standard includes
+#include <cstdio>
 #include <random>
+#include <stdexcept>
 
 /**
  * @brief UUID utilities.
@@ -37,6 +39,42 @@ namespace uuid_util {
       std::default_random_engine engine {r()};
 
       return generate(engine);
+    }
+
+    static uuid_t parse(const std::string &uuid_str) {
+      if (uuid_str.length() != 36) {
+        throw std::invalid_argument("Invalid UUID string length");
+      }
+
+      uuid_t uuid;
+      unsigned int temp16_1;
+      unsigned int temp32_1, temp32_2;
+
+      unsigned int data1, data2;
+      std::sscanf(
+        uuid_str.c_str(),
+        "%8x-%4x-%4x-%4x-%8x%4x",
+        &uuid.b32[0],
+        &data1,
+        &data2,
+        &temp16_1,
+        &temp32_1,
+        &temp32_2
+      );
+
+      uuid.b16[2] = static_cast<std::uint16_t>(data1);
+      uuid.b16[3] = static_cast<std::uint16_t>(data2);
+
+      uuid.b8[8] = (temp16_1 >> 8) & 0xFF;
+      uuid.b8[9] = temp16_1 & 0xFF;
+      uuid.b8[10] = (temp32_1 >> 24) & 0xFF;
+      uuid.b8[11] = (temp32_1 >> 16) & 0xFF;
+      uuid.b8[12] = (temp32_1 >> 8) & 0xFF;
+      uuid.b8[13] = temp32_1 & 0xFF;
+      uuid.b8[14] = (temp32_2 >> 8) & 0xFF;
+      uuid.b8[15] = temp32_2 & 0xFF;
+
+      return uuid;
     }
 
     [[nodiscard]] std::string string() const {

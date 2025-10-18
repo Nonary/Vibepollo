@@ -8,12 +8,15 @@
 // standard includes
 #include <filesystem>
 #include <format>
+#include <cstring>
+#include <algorithm>
 #include <string>
 #include <utility>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
@@ -30,6 +33,10 @@
 #include "nvhttp.h"
 #include "state_storage.h"
 #include "platform/common.h"
+#ifdef _WIN32
+  #include "platform/windows/virtual_display.h"
+  #include "platform/windows/misc.h"
+#endif
 #include "process.h"
 #include "rtsp.h"
 #include "system_tray.h"
@@ -340,6 +347,16 @@ namespace nvhttp {
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
     launch_session->frame_generation_provider = "lossless-scaling";
+    launch_session->device_name = config::nvhttp.sunshine_name;
+    launch_session->virtual_display = false;
+    launch_session->virtual_display_detach_with_app = false;
+    launch_session->virtual_display_guid_bytes.fill(0);
+    launch_session->app_metadata.reset();
+
+    auto client_name_arg = get_arg(args, "clientName", "");
+    if (!client_name_arg.empty()) {
+      launch_session->device_name = client_name_arg;
+    }
 
     auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
     std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
@@ -375,6 +392,13 @@ namespace nvhttp {
             launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
             launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
             launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
+            rtsp_stream::launch_session_t::app_metadata_t metadata;
+            metadata.id = app_ctx.id;
+            metadata.name = app_ctx.name;
+            metadata.virtual_screen = app_ctx.virtual_screen;
+            metadata.has_command = !app_ctx.cmd.empty();
+            metadata.has_playnite = !app_ctx.playnite_id.empty();
+            launch_session->app_metadata = std::move(metadata);
             break;
           }
         }
@@ -931,6 +955,87 @@ namespace nvhttp {
     auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, args);
 
+#ifdef _WIN32
+    bool request_virtual_display = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    if (!request_virtual_display) {
+      if (launch_session->app_metadata && launch_session->app_metadata->virtual_screen) {
+        request_virtual_display = true;
+      }
+    }
+    if (request_virtual_display) {
+      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        proc::initVDisplayDriver();
+      }
+      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+        if (!config::video.adapter_name.empty()) {
+          (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        }
+
+        uuid_util::uuid_t parsed_uuid {};
+        bool parsed = false;
+        std::string display_uuid_source = launch_session->unique_id;
+        if (!display_uuid_source.empty()) {
+          try {
+            parsed_uuid = uuid_util::uuid_t::parse(display_uuid_source);
+            parsed = true;
+          } catch (...) {
+            parsed = false;
+          }
+        }
+        if (!parsed) {
+          parsed_uuid = uuid_util::uuid_t::generate();
+          display_uuid_source = parsed_uuid.string();
+          launch_session->unique_id = display_uuid_source;
+        }
+
+        GUID virtual_display_guid {};
+        std::memcpy(&virtual_display_guid, parsed_uuid.b8, sizeof(virtual_display_guid));
+        std::copy_n(std::cbegin(parsed_uuid.b8), sizeof(parsed_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+
+        uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
+        uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+        uint32_t vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 60000u;
+        if (vd_fps < 1000u) {
+          vd_fps *= 1000u;
+        }
+
+        std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+        if (client_label.empty()) {
+          client_label = "Sunshine";
+        }
+
+        auto display_name_wide = VDISPLAY::createVirtualDisplay(
+          display_uuid_source.c_str(),
+          client_label.c_str(),
+          vd_width,
+          vd_height,
+          vd_fps,
+          virtual_display_guid
+        );
+
+        if (!display_name_wide.empty()) {
+          launch_session->virtual_display = true;
+          launch_session->virtual_display_detach_with_app = launch_session->appid > 0;
+          BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_detach_with_app = false;
+          BOOST_LOG(warning) << "Virtual display creation failed.";
+        }
+      } else {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_detach_with_app = false;
+        BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus) << ")";
+      }
+    } else {
+      launch_session->virtual_display = false;
+      launch_session->virtual_display_guid_bytes.fill(0);
+      launch_session->virtual_display_detach_with_app = false;
+    }
+#endif
+
     // The display should be restored in case something fails as there are no other sessions.
     if (rtsp_stream::session_count() == 0) {
       revert_display_configuration = true;
@@ -986,6 +1091,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
+    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
 
@@ -1078,6 +1184,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
   }

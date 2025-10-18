@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
@@ -47,8 +48,12 @@
   #include <Psapi.h>
 #endif
 #include "process.h"
+#ifdef _WIN32
+  #include "platform/windows/virtual_display.h"
+#endif
 #include "system_tray.h"
 #include "utility.h"
+#include "uuid.h"
 
 #ifdef _WIN32
   // from_utf8() string conversion function
@@ -683,6 +688,24 @@ namespace proc {
 #endif
   }  // namespace
 
+#ifdef _WIN32
+  VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
+
+  void onVDisplayWatchdogFailed() {
+    vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
+    VDISPLAY::closeVDisplayDevice();
+  }
+
+  void initVDisplayDriver() {
+    vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
+    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
+        onVDisplayWatchdogFailed();
+      }
+    }
+  }
+#endif
+
   proc_t proc;
 
   // Custom move operations to allow global proc replacement if ever needed
@@ -704,7 +727,9 @@ namespace proc {
       _lossless_profile_applied(other._lossless_profile_applied),
       _lossless_backup(other._lossless_backup),
       _lossless_last_install_dir(std::move(other._lossless_last_install_dir)),
-      _lossless_last_exe_path(std::move(other._lossless_last_exe_path))
+      _lossless_last_exe_path(std::move(other._lossless_last_exe_path)),
+      _virtual_display_guid(other._virtual_display_guid),
+      _virtual_display_active(other._virtual_display_active)
 #endif
   {
 #ifdef _WIN32
@@ -737,6 +762,8 @@ namespace proc {
       _lossless_backup = other._lossless_backup;
       _lossless_last_install_dir = std::move(other._lossless_last_install_dir);
       _lossless_last_exe_path = std::move(other._lossless_last_exe_path);
+      _virtual_display_guid = other._virtual_display_guid;
+      _virtual_display_active = other._virtual_display_active;
       other._lossless_profile_applied = false;
 #endif
     }
@@ -950,6 +977,8 @@ namespace proc {
     bool should_start_lossless_support = false;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
+    _virtual_display_active = false;
+    _virtual_display_guid = GUID {};
 #endif
 
     auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
@@ -1001,6 +1030,107 @@ namespace proc {
     } catch (...) {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
+
+#ifdef _WIN32
+    if (launch_session->virtual_display) {
+      if (launch_session->virtual_display_detach_with_app) {
+        const bool has_guid = std::any_of(
+          launch_session->virtual_display_guid_bytes.begin(),
+          launch_session->virtual_display_guid_bytes.end(),
+          [](std::uint8_t b) {
+            return b != 0;
+          }
+        );
+        if (has_guid) {
+          std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
+          _virtual_display_active = true;
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_detach_with_app = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+        }
+      }
+    } else {
+      bool request_virtual_display = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+      if (!request_virtual_display && _app.virtual_screen) {
+        request_virtual_display = true;
+      }
+      if (request_virtual_display) {
+        if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+          initVDisplayDriver();
+        }
+
+        if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+          if (!config::video.adapter_name.empty()) {
+            (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+          }
+
+          uuid_util::uuid_t parsed_uuid {};
+          bool parsed = false;
+          std::string display_uuid_source = launch_session->unique_id;
+          if (!display_uuid_source.empty()) {
+            try {
+              parsed_uuid = uuid_util::uuid_t::parse(display_uuid_source);
+              parsed = true;
+            } catch (...) {
+              parsed = false;
+            }
+          }
+          if (!parsed) {
+            parsed_uuid = uuid_util::uuid_t::generate();
+            display_uuid_source = parsed_uuid.string();
+            launch_session->unique_id = display_uuid_source;
+          }
+
+          std::memcpy(&_virtual_display_guid, parsed_uuid.b8, sizeof(_virtual_display_guid));
+          std::copy(parsed_uuid.b8, parsed_uuid.b8 + 16, launch_session->virtual_display_guid_bytes.begin());
+
+          uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
+          uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+          uint32_t vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 60000u;
+          if (vd_fps < 1000u) {
+            vd_fps *= 1000u;
+          }
+
+          std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          if (client_label.empty()) {
+            client_label = "Sunshine";
+          }
+
+          auto display_name_wide = VDISPLAY::createVirtualDisplay(
+            display_uuid_source.c_str(),
+            client_label.c_str(),
+            vd_width,
+            vd_height,
+            vd_fps,
+            _virtual_display_guid
+          );
+
+          if (!display_name_wide.empty()) {
+            _virtual_display_active = true;
+            launch_session->virtual_display = true;
+            launch_session->virtual_display_detach_with_app = true;
+            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+          } else {
+            launch_session->virtual_display = false;
+            launch_session->virtual_display_detach_with_app = false;
+            launch_session->virtual_display_guid_bytes.fill(0);
+            std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
+            BOOST_LOG(warning) << "Virtual display creation failed.";
+          }
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_detach_with_app = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+          BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
+        }
+      } else {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_detach_with_app = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+      }
+    }
+#endif
 
     auto clear_lossless_runtime_env = [&]() {
       _env[ENV_LOSSLESS_PROFILE] = "";
@@ -1527,6 +1657,18 @@ namespace proc {
 
     _pipe.reset();
 
+#ifdef _WIN32
+    if (_virtual_display_active) {
+      if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) {
+        BOOST_LOG(warning) << "Failed to remove virtual display.";
+      } else {
+        BOOST_LOG(info) << "Virtual display removed.";
+      }
+      std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
+      _virtual_display_active = false;
+    }
+#endif
+
     bool has_run = _app_id > 0;
 
     // Only show the Stopped notification if we actually have an app to stop
@@ -1922,6 +2064,7 @@ namespace proc {
         }
 
         ctx.elevated = elevated.value_or(false);
+        ctx.virtual_screen = app_node.get_optional<bool>("virtual-screen"s).value_or(false);
         ctx.auto_detach = auto_detach.value_or(true);
         ctx.wait_all = wait_all.value_or(true);
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)

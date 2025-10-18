@@ -4,6 +4,10 @@
  */
 #pragma once
 
+#include <optional>
+
+#include <display_device/types.h>
+
 #include "src/config.h"
 #include "src/rtsp.h"
 
@@ -48,6 +52,10 @@ namespace display_helper_integration {
 
   inline std::string enumerate_devices_json() {
     return "[]";
+  }
+
+  inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
+    return std::nullopt;
   }
 }  // namespace display_helper_integration
 
