@@ -28,9 +28,7 @@
               class="cursor-pointer group"
               @click="emit('pick', cover)"
             >
-              <div
-                class="relative rounded overflow-hidden aspect-[3/4] bg-black/5 dark:bg-white/5"
-              >
+              <div class="relative rounded overflow-hidden aspect-[3/4] bg-black/5 dark:bg-white/5">
                 <img :src="cover.url" class="absolute inset-0 w-full h-full object-cover" />
                 <div
                   v-if="coverBusy"

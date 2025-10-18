@@ -12,9 +12,9 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <thread>
 
 // lib includes
 #include <boost/process/v1.hpp>
@@ -28,9 +28,9 @@
 #ifdef _WIN32
   #include "tools/playnite_launcher/lossless_scaling.h"
 
-  namespace VDISPLAY {
-    enum class DRIVER_STATUS;
-  }
+namespace VDISPLAY {
+  enum class DRIVER_STATUS;
+}
 
 #endif
 

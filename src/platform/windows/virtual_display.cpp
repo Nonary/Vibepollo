@@ -1,7 +1,10 @@
 #include "virtual_display.h"
 
-#include <combaseapi.h>
+#include "src/display_helper_integration.h"
+#include "src/platform/windows/misc.h"
+
 #include <cctype>
+#include <combaseapi.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
 #include <highlevelmonitorconfigurationapi.h>
@@ -14,9 +17,6 @@
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h>
-
-#include "src/display_helper_integration.h"
-#include "src/platform/windows/misc.h"
 
 using namespace SUDOVDA;
 
@@ -233,12 +233,8 @@ namespace VDISPLAY {
       }
 
       SudaVDADisplayInfo info;
-      info.device_name = !device.m_display_name.empty()
-                           ? platf::from_utf8(device.m_display_name)
-                           : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
-      info.friendly_name = !device.m_friendly_name.empty()
-                             ? platf::from_utf8(device.m_friendly_name)
-                             : info.device_name;
+      info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
+      info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
       info.is_active = device.m_info.has_value();
       info.width = 0;
       info.height = 0;

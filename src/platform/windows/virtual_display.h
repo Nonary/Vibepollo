@@ -8,8 +8,8 @@
   #define FILE_DEVICE_UNKNOWN 0x00000022
 #endif
 
-#include <ddk/d4iface.h>
 #include <ddk/d4drvif.h>
+#include <ddk/d4iface.h>
 #include <sudovda/sudovda.h>
 
 namespace VDISPLAY {

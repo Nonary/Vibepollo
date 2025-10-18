@@ -85,7 +85,10 @@
             </n-button>
           </div>
 
-          <div v-if="form.detached.length === 0" class="rounded-lg border border-dashed border-dark/15 dark:border-light/15 px-3 py-4 text-xs text-center opacity-60">
+          <div
+            v-if="form.detached.length === 0"
+            class="rounded-lg border border-dashed border-dark/15 dark:border-light/15 px-3 py-4 text-xs text-center opacity-60"
+          >
             No detached commands yet. Use Add to set up prep scripts or launchers.
           </div>
           <ol v-else class="space-y-3">
@@ -99,12 +102,7 @@
                   <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
                     Detached Command #{{ index + 1 }}
                   </span>
-                  <n-button
-                    size="tiny"
-                    secondary
-                    type="error"
-                    @click="removeDetached(index)"
-                  >
+                  <n-button size="tiny" secondary type="error" @click="removeDetached(index)">
                     <i class="fas fa-trash" /> Delete
                   </n-button>
                 </header>
@@ -152,9 +150,7 @@
           <i class="fas fa-image" /> Find Cover
         </n-button>
       </div>
-      <p class="text-[11px] opacity-60">
-        Optional; stored only and not fetched by Sunshine.
-      </p>
+      <p class="text-[11px] opacity-60">Optional; stored only and not fetched by Sunshine.</p>
     </div>
   </div>
 </template>

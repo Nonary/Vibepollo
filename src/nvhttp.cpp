@@ -6,17 +6,17 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <format>
-#include <cstring>
-#include <algorithm>
 #include <string>
 #include <utility>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
@@ -31,11 +31,11 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
-#include "state_storage.h"
 #include "platform/common.h"
+#include "state_storage.h"
 #ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display.h"
 #endif
 #include "process.h"
 #include "rtsp.h"

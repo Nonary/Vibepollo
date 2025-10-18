@@ -4,12 +4,11 @@
  */
 #pragma once
 
-#include <optional>
-
-#include <display_device/types.h>
-
 #include "src/config.h"
 #include "src/rtsp.h"
+
+#include <display_device/types.h>
+#include <optional>
 
 namespace display_helper_integration {
   // Launch the helper (if needed) and send APPLY derived from (video_config, session).

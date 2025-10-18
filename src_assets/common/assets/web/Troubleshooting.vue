@@ -246,7 +246,8 @@ async function refreshLogs() {
       let unseen = 0;
       if (anchor) {
         const anchorIndex = nextLines.lastIndexOf(anchor);
-        unseen = anchorIndex === -1 ? nextLines.length : Math.max(nextLines.length - anchorIndex - 1, 0);
+        unseen =
+          anchorIndex === -1 ? nextLines.length : Math.max(nextLines.length - anchorIndex - 1, 0);
       } else {
         unseen = nextLines.length;
       }

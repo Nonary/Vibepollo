@@ -27,9 +27,7 @@ watch(
 const dummyPlugWikiUrl =
   'https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions';
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
-const usingVirtualDisplay = computed(
-  () => config.output_name === VIRTUAL_DISPLAY_SELECTION,
-);
+const usingVirtualDisplay = computed(() => config.output_name === VIRTUAL_DISPLAY_SELECTION);
 
 // ----- Types -----
 type RefreshRateOnly = {
@@ -280,6 +278,18 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
           <div class="text-[11px] opacity-60 mt-1">
             {{ $t('config.dd_config_hint') }}
           </div>
+
+          <!-- Virtual Display Auto-Activation -->
+          <template v-if="usingVirtualDisplay">
+            <div class="mt-4 space-y-2">
+              <Checkbox
+                id="dd_activate_virtual_display"
+                v-model="config.dd_activate_virtual_display"
+                locale-prefix="config"
+                :default="true"
+              />
+            </div>
+          </template>
 
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />
 

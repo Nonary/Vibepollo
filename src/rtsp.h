@@ -35,6 +35,7 @@ namespace rtsp_stream {
     int fps;
     int gcmap;
     int appid;
+
     struct app_metadata_t {
       std::string id;
       std::string name;
@@ -42,6 +43,7 @@ namespace rtsp_stream {
       bool has_command;
       bool has_playnite;
     };
+
     std::optional<app_metadata_t> app_metadata;
     int surround_info;
     std::string surround_params;

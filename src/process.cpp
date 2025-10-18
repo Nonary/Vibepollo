@@ -5,23 +5,23 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
-#include <atomic>
 #include <algorithm>
 #include <array>
-#include <chrono>
+#include <atomic>
 #include <cctype>
-#include <cstdint>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <sstream>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -45,6 +45,7 @@
   #include "platform/windows/playnite_integration.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
+
   #include <Psapi.h>
 #endif
 #include "process.h"
@@ -805,14 +806,14 @@ namespace proc {
         }
 
         auto runtime = playnite_launcher::lossless::capture_lossless_scaling_state();
-#ifdef _WIN32
+  #ifdef _WIN32
         if (!runtime.exe_path && metadata.configured_path) {
           try {
             runtime.exe_path = metadata.configured_path->wstring();
           } catch (...) {
           }
         }
-#endif
+  #endif
         if (_lossless_stop_requested.load(std::memory_order_acquire)) {
           return;
         }
@@ -1149,9 +1150,7 @@ namespace proc {
       _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
     };
 
-    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = _app.lossless_scaling_framegen
-                                                    ? _app.frame_generation_provider
-                                                    : "";
+    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = _app.lossless_scaling_framegen ? _app.frame_generation_provider : "";
 
     const bool using_lossless_provider = _app.lossless_scaling_framegen &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
@@ -1952,9 +1951,7 @@ namespace proc {
         auto frame_generation_provider = app_node.get_optional<std::string>("frame-generation-provider"s);
 
         ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
-        ctx.frame_generation_provider = frame_generation_provider
-                                            ? normalize_frame_generation_provider(*frame_generation_provider)
-                                            : "lossless-scaling";
+        ctx.frame_generation_provider = frame_generation_provider ? normalize_frame_generation_provider(*frame_generation_provider) : "lossless-scaling";
         ctx.lossless_scaling_target_fps.reset();
         ctx.lossless_scaling_rtss_limit.reset();
         if (auto ls_target = app_node.get_optional<int>("lossless-scaling-target-fps"s)) {

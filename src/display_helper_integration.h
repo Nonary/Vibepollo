@@ -4,12 +4,11 @@
  */
 #pragma once
 
-#include <optional>
-
-#include <display_device/types.h>
-
 #include "src/config.h"
 #include "src/rtsp.h"
+
+#include <display_device/types.h>
+#include <optional>
 
 #ifdef _WIN32
   // Bring in the Windows implementation in the correct namespace

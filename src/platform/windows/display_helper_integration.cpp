@@ -27,6 +27,7 @@
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
 
 namespace {
@@ -246,6 +247,45 @@ namespace display_helper_integration {
       BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
       platf::display_helper_client::reset_connection();
       (void) platf::display_helper_client::send_ping();
+    }
+
+    // Check if virtual display auto-activation is enabled
+    const bool is_virtual_display = (video_config.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    if (is_virtual_display && video_config.dd.activate_virtual_display) {
+      BOOST_LOG(info) << "Display helper: Virtual display detected with auto-activation enabled. Activating virtual display via EnsureOnly mode.";
+
+      display_device::SingleDisplayConfiguration vd_cfg;
+      vd_cfg.m_device_id = video_config.output_name;
+      vd_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+
+      if (session.width >= 0 && session.height >= 0) {
+        vd_cfg.m_resolution = display_device::Resolution {
+          static_cast<unsigned int>(session.width),
+          static_cast<unsigned int>(session.height)
+        };
+      }
+
+      if (session.fps >= 0) {
+        vd_cfg.m_refresh_rate = display_device::Rational {
+          static_cast<unsigned int>(session.fps),
+          1u
+        };
+      }
+
+      if (session.enable_hdr) {
+        vd_cfg.m_hdr_state = display_device::HdrState::Enabled;
+      }
+
+      std::string json = display_device::toJson(vd_cfg);
+      BOOST_LOG(info) << "Display helper: sending APPLY for virtual display activation with configuration:\n"
+                      << json;
+      const bool ok = platf::display_helper_client::send_apply_json(json);
+      BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
+
+      if (ok) {
+        set_active_session(session);
+      }
+      return ok;
     }
 
     const bool dummy_plug_mode = video_config.dd.wa.dummy_plug_hdr10;
