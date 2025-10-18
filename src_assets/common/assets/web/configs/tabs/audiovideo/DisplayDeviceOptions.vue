@@ -26,6 +26,10 @@ watch(
 
 const dummyPlugWikiUrl =
   'https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions';
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const usingVirtualDisplay = computed(
+  () => config.output_name === VIRTUAL_DISPLAY_SELECTION,
+);
 
 // ----- Types -----
 type RefreshRateOnly = {
@@ -263,7 +267,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
           </legend>
           <!-- Configuration option -->
           <div class="text-sm font-medium mb-2">{{ $t('config.dd_config_label') }}</div>
-          <n-radio-group v-model:value="config.dd_configuration_option">
+          <n-radio-group v-if="!usingVirtualDisplay" v-model:value="config.dd_configuration_option">
             <div class="grid gap-2">
               <n-radio
                 v-for="opt in ddConfigurationOptions"

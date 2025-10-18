@@ -8,7 +8,7 @@ import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelect
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
-import { NCheckbox, NInput, NSwitch } from 'naive-ui';
+import { NCheckbox, NInput, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 
@@ -114,6 +114,43 @@ function boolProxy(key: string, defaultValue: string = 'true') {
 
 const installSteamDrivers = boolProxy('install_steam_audio_drivers', 'true');
 const streamAudio = boolProxy('stream_audio', 'true');
+
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const lastPhysicalOutputName = ref('');
+
+watch(
+  () => config.value?.output_name,
+  (next) => {
+    if (typeof next === 'string' && next && next !== VIRTUAL_DISPLAY_SELECTION) {
+      lastPhysicalOutputName.value = next;
+    }
+    if (typeof next === 'string' && next === '') {
+      lastPhysicalOutputName.value = '';
+    }
+  },
+  { immediate: true },
+);
+
+const displayMode = computed<'virtualized' | 'physical'>({
+  get() {
+    return config.value?.output_name === VIRTUAL_DISPLAY_SELECTION ? 'virtualized' : 'physical';
+  },
+  set(mode) {
+    if (!config.value) return;
+    if (mode === 'virtualized') {
+      const current = config.value.output_name;
+      if (typeof current === 'string' && current && current !== VIRTUAL_DISPLAY_SELECTION) {
+        lastPhysicalOutputName.value = current;
+      }
+      store.updateOption('output_name', VIRTUAL_DISPLAY_SELECTION);
+      return;
+    }
+
+    if (config.value.output_name === VIRTUAL_DISPLAY_SELECTION) {
+      store.updateOption('output_name', lastPhysicalOutputName.value);
+    }
+  },
+});
 </script>
 
 <template>
@@ -194,7 +231,17 @@ const streamAudio = boolProxy('stream_audio', 'true');
             <legend class="px-2 text-sm font-medium">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
-            <DisplayOutputSelector />
+            <n-radio-group v-model:value="displayMode" class="grid gap-2 sm:grid-cols-2">
+              <n-radio value="virtualized">
+                {{ $t('config.dd_virtual_display_choice_virtual') }}
+              </n-radio>
+              <n-radio value="physical">
+                {{ $t('config.dd_virtual_display_choice_physical') }}
+              </n-radio>
+            </n-radio-group>
+            <div v-if="displayMode === 'physical'" class="mt-3">
+              <DisplayOutputSelector />
+            </div>
             <div
               class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >
