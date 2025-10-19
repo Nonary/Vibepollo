@@ -1,8 +1,17 @@
 #include "virtual_display.h"
 
 #include "src/display_helper_integration.h"
+#include "src/platform/common.h"
 #include "src/platform/windows/misc.h"
+#include "src/uuid.h"
 
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <optional>
+#include <system_error>
 #include <cctype>
 #include <combaseapi.h>
 #include <dxgi.h>
@@ -17,6 +26,10 @@
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h>
+
+#include <nlohmann/json.hpp>
+
+namespace fs = std::filesystem;
 
 using namespace SUDOVDA;
 
@@ -63,6 +76,156 @@ namespace VDISPLAY {
 
       return upper;
     }
+
+    std::string guid_to_string(const GUID &guid) {
+      wchar_t buffer[64] {};
+      if (StringFromGUID2(guid, buffer, static_cast<int>(_countof(buffer))) <= 0) {
+        return {};
+      }
+      return platf::to_utf8(std::wstring(buffer));
+    }
+
+    std::optional<GUID> string_to_guid(const std::string &text) {
+      if (text.empty()) {
+        return std::nullopt;
+      }
+      auto wide = platf::from_utf8(text);
+      GUID parsed {};
+      if (FAILED(CLSIDFromString(wide.c_str(), &parsed))) {
+        return std::nullopt;
+      }
+      return parsed;
+    }
+
+    bool force_remove_virtual_display() {
+      static const bool force = []() {
+        const char *env = std::getenv("SUNSHINE_VDISPLAY_FORCE_REMOVE");
+        return env && env[0] != '\0' && env[0] != '0';
+      }();
+      return force;
+    }
+
+    struct VirtualDisplayCache {
+      struct entry_t {
+        std::wstring display_name;
+        std::string device_id;
+        std::optional<GUID> guid;
+      };
+
+      std::mutex mutex;
+      bool loaded = false;
+      std::optional<entry_t> entry;
+
+      static VirtualDisplayCache &instance() {
+        static VirtualDisplayCache cache;
+        return cache;
+      }
+
+      static fs::path storage_path() {
+        return platf::appdata() / "virtual_display_cache.json";
+      }
+
+      void ensure_loaded_locked() {
+        if (loaded) {
+          return;
+        }
+        loaded = true;
+        entry.reset();
+
+        const auto path = storage_path();
+        try {
+          if (!fs::exists(path)) {
+            return;
+          }
+          std::ifstream stream(path, std::ios::binary);
+          if (!stream) {
+            return;
+          }
+          nlohmann::json json = nlohmann::json::parse(stream, nullptr, false);
+          if (!json.is_object()) {
+            return;
+          }
+
+          entry_t tmp;
+          if (auto disp = json.find("display_name"); disp != json.end() && disp->is_string()) {
+            tmp.display_name = platf::from_utf8(disp->get<std::string>());
+          }
+          if (auto devid = json.find("device_id"); devid != json.end() && devid->is_string()) {
+            tmp.device_id = devid->get<std::string>();
+          }
+          if (auto guid_it = json.find("guid"); guid_it != json.end() && guid_it->is_string()) {
+            if (auto parsed = string_to_guid(guid_it->get<std::string>())) {
+              tmp.guid = *parsed;
+            }
+          }
+
+          if (!tmp.display_name.empty() || tmp.guid) {
+            entry = std::move(tmp);
+          }
+        } catch (...) {
+          entry.reset();
+        }
+      }
+
+      void save_locked() {
+        const auto path = storage_path();
+        try {
+          if (!entry) {
+            std::error_code ec;
+            fs::remove(path, ec);
+            return;
+          }
+
+          nlohmann::json json = nlohmann::json::object();
+          if (!entry->display_name.empty()) {
+            json["display_name"] = platf::to_utf8(entry->display_name);
+          }
+          if (!entry->device_id.empty()) {
+            json["device_id"] = entry->device_id;
+          }
+          if (entry->guid) {
+            json["guid"] = guid_to_string(*entry->guid);
+          }
+
+          fs::create_directories(path.parent_path());
+          std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+          if (!stream) {
+            return;
+          }
+          stream << json.dump(2);
+        } catch (...) {
+        }
+      }
+
+      std::optional<entry_t> get_entry() {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        return entry;
+      }
+
+      void set_entry(entry_t value) {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        entry = std::move(value);
+        save_locked();
+      }
+
+      void clear_entry() {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        entry.reset();
+        save_locked();
+      }
+
+      std::optional<GUID> cached_guid() {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        if (entry && entry->guid) {
+          return entry->guid;
+        }
+        return std::nullopt;
+      }
+    };
   }  // namespace
 
   // {dff7fd29-5b75-41d1-9731-b32a17a17104}
@@ -190,7 +353,31 @@ namespace VDISPLAY {
 
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
-      printf("[SUDOVDA] Failed to add virtual display.\n");
+      const DWORD error_code = GetLastError();
+      if (!force_remove_virtual_display()) {
+        if (auto cached = VirtualDisplayCache::instance().get_entry()) {
+          if (!cached->display_name.empty()) {
+            auto reuse_name = cached->display_name;
+            auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
+
+            VirtualDisplayCache::entry_t updated;
+            updated.display_name = reuse_name;
+            if (device_id && !device_id->empty()) {
+              updated.device_id = *device_id;
+            }
+            updated.guid = guid;
+            VirtualDisplayCache::instance().set_entry(std::move(updated));
+
+            wprintf(
+              L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
+              static_cast<unsigned long>(error_code),
+              reuse_name.c_str()
+            );
+            return reuse_name;
+          }
+        }
+      }
+      printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
       return std::wstring();
     }
 
@@ -208,20 +395,39 @@ namespace VDISPLAY {
     wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", deviceName);
     printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, fps);
 
+    std::optional<std::string> device_id;
+    if (auto resolved = resolveVirtualDisplayDeviceId(deviceName)) {
+      device_id = *resolved;
+    }
+
+    VirtualDisplayCache::entry_t cache_entry;
+    cache_entry.display_name = deviceName;
+    if (device_id && !device_id->empty()) {
+      cache_entry.device_id = *device_id;
+    }
+    cache_entry.guid = guid;
+    VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
+
     return std::wstring(deviceName);
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    if (!force_remove_virtual_display()) {
+      printf("[SUDOVDA] Keeping virtual display active to preserve Windows settings.\n");
+      return true;
+    }
+
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return false;
     }
 
     if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
+      VirtualDisplayCache::instance().clear_entry();
       printf("[SUDOVDA] Virtual display removed successfully.\n");
       return true;
-    } else {
-      return false;
     }
+
+    return false;
   }
 
   bool isSudaVDADriverInstalled() {
@@ -341,3 +547,23 @@ namespace VDISPLAY {
 
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY
+
+std::optional<uuid_util::uuid_t> VDISPLAY::cachedVirtualDisplayUuid() {
+  if (force_remove_virtual_display()) {
+    return std::nullopt;
+  }
+
+  const auto cached_guid = VirtualDisplayCache::instance().cached_guid();
+  if (!cached_guid) {
+    return std::nullopt;
+  }
+
+  uuid_util::uuid_t out {};
+  static_assert(sizeof(out.b8) == sizeof(GUID), "GUID size mismatch");
+  std::memcpy(out.b8, &*cached_guid, sizeof(GUID));
+  return out;
+}
+
+bool VDISPLAY::shouldForceVirtualDisplayRemove() {
+  return force_remove_virtual_display();
+}

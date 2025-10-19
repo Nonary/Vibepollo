@@ -1088,6 +1088,14 @@ namespace proc {
               parsed = false;
             }
           }
+          if (!VDISPLAY::shouldForceVirtualDisplayRemove()) {
+            if (auto cached_uuid = VDISPLAY::cachedVirtualDisplayUuid()) {
+              parsed_uuid = *cached_uuid;
+              display_uuid_source = parsed_uuid.string();
+              launch_session->unique_id = display_uuid_source;
+              parsed = true;
+            }
+          }
           if (!parsed) {
             parsed_uuid = uuid_util::uuid_t::generate();
             display_uuid_source = parsed_uuid.string();

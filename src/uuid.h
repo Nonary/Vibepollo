@@ -116,4 +116,6 @@ namespace uuid_util {
       return (b64[0] > other.b64[0] || (b64[0] == other.b64[0] && b64[1] > other.b64[1]));
     }
   };
+
+  using UUID = uuid_t;
 }  // namespace uuid_util

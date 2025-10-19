@@ -6,6 +6,9 @@
 #include <vector>
 #include <windows.h>
 
+#include "src/utility.h"
+#include "src/uuid.h"
+
 #ifndef FILE_DEVICE_UNKNOWN
   #define FILE_DEVICE_UNKNOWN 0x00000022
 #endif
@@ -56,4 +59,7 @@ namespace VDISPLAY {
 
   bool isSudaVDADriverInstalled();
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
+
+  std::optional<uuid_util::uuid_t> cachedVirtualDisplayUuid();
+  bool shouldForceVirtualDisplayRemove();
 }  // namespace VDISPLAY
