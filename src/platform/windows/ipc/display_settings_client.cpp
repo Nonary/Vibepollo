@@ -24,6 +24,7 @@ namespace platf::display_helper_client {
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
     ExportGolden = 4,  ///< Export current OS settings as golden snapshot
+    Blacklist = 5,  ///< Blacklist a display device_id from topology exports (string payload).
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
@@ -158,6 +159,21 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Reset, payload)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool send_blacklist(const std::string &device_id) {
+    BOOST_LOG(debug) << "Display helper IPC: BLACKLIST request queued for device_id=" << device_id;
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
+      BOOST_LOG(warning) << "Display helper IPC: BLACKLIST aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload(device_id.begin(), device_id.end());
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::Blacklist, payload)) {
       return true;
     }
     return false;

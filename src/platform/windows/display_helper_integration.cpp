@@ -314,6 +314,10 @@ namespace display_helper_integration {
       BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
 
       if (ok) {
+        // Blacklist the virtual display device_id so it won't be saved in topology snapshots
+        BOOST_LOG(info) << "Display helper: blacklisting virtual display device_id from topology exports: " << target_device_id;
+        platf::display_helper_client::send_blacklist(target_device_id);
+        
         set_active_session(session, target_device_id, display_fps);
       }
       return ok;

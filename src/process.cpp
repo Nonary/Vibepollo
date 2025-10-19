@@ -1116,10 +1116,6 @@ namespace proc {
             client_label = "Sunshine";
           }
 
-          const bool snapshot_ok = display_helper_integration::ensure_session_snapshot();
-          if (!snapshot_ok) {
-            BOOST_LOG(warning) << "Failed to snapshot display configuration before creating virtual display.";
-          }
 
           auto display_name_wide = VDISPLAY::createVirtualDisplay(
             display_uuid_source.c_str(),
