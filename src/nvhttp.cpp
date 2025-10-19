@@ -982,6 +982,8 @@ namespace nvhttp {
       if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
         if (!config::video.adapter_name.empty()) {
           (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        } else {
+          (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
         }
 
         uuid_util::uuid_t parsed_uuid {};

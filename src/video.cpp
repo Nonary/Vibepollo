@@ -3,12 +3,16 @@
  * @brief Definitions for video.
  */
 // standard includes
+#include <algorithm>
 #include <atomic>
 #include <bitset>
+#include <chrono>
 #include <list>
+#include <optional>
 #include <thread>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/pointer_cast.hpp>
 
 extern "C" {
@@ -31,6 +35,8 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+  #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/virtual_display.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -48,6 +54,110 @@ namespace video {
     bool allow_encoder_probing() {
       // Always allow probing; previous in-process display checks removed.
       return true;
+    }
+
+#ifdef _WIN32
+    bool should_prefer_virtual_display() {
+      if (!VDISPLAY::isSudaVDADriverInstalled()) {
+        return false;
+      }
+
+      auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      if (virtual_displays.empty()) {
+        return false;
+      }
+
+      const bool explicit_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+      const bool auto_activate = config::video.dd.activate_virtual_display;
+      if (explicit_virtual || auto_activate) {
+        return true;
+      }
+
+      const bool any_active = std::any_of(
+        virtual_displays.begin(),
+        virtual_displays.end(),
+        [](const VDISPLAY::SudaVDADisplayInfo &info) {
+          return info.is_active;
+        }
+      );
+
+      if (!any_active) {
+        return false;
+      }
+
+      if (!VDISPLAY::has_active_physical_display()) {
+        return true;
+      }
+
+      return false;
+    }
+
+    std::optional<std::string> active_virtual_display_dxgi_name() {
+      auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      for (const auto &info : virtual_displays) {
+        if (info.is_active && !info.device_name.empty()) {
+          return platf::to_utf8(info.device_name);
+        }
+      }
+
+      for (const auto &info : virtual_displays) {
+        if (!info.device_name.empty()) {
+          return platf::to_utf8(info.device_name);
+        }
+      }
+
+      return std::nullopt;
+    }
+#endif
+
+    bool ensure_virtual_display_ready(std::vector<std::string> &display_names, int &display_index) {
+#ifdef _WIN32
+      static thread_local std::chrono::steady_clock::time_point wait_start {};
+
+      if (display_names.empty()) {
+        display_index = 0;
+        wait_start = {};
+        return false;
+      }
+
+      display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
+
+      if (!should_prefer_virtual_display()) {
+        wait_start = {};
+        return true;
+      }
+
+      if (auto desired_name = active_virtual_display_dxgi_name()) {
+        for (int i = 0; i < static_cast<int>(display_names.size()); ++i) {
+          if (boost::iequals(display_names[i], *desired_name)) {
+            display_index = i;
+            wait_start = {};
+            return true;
+          }
+        }
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      if (wait_start == std::chrono::steady_clock::time_point {}) {
+        wait_start = now;
+      }
+
+      constexpr auto max_wait = std::chrono::seconds(3);
+      if (now - wait_start >= max_wait) {
+        wait_start = {};
+        return true;
+      }
+
+      return false;
+#else
+      if (display_names.empty()) {
+        display_index = 0;
+        return false;
+      }
+
+      display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
+      return true;
+#endif
     }
   }  // namespace
 
@@ -1128,11 +1238,28 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
-    auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+    std::shared_ptr<platf::display_t> disp;
+
+    while (capture_ctx_queue->running()) {
+      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+
+      if (!ensure_virtual_display_ready(display_names, display_p)) {
+        std::this_thread::sleep_for(50ms);
+        continue;
+      }
+
+      disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+      if (disp) {
+        break;
+      }
+
+      std::this_thread::sleep_for(50ms);
+    }
+
     if (!disp) {
       return;
     }
+
     display_wp = disp;
 
     constexpr auto capture_buffer_size = 12;
@@ -1318,6 +1445,11 @@ namespace video {
 
               // Refresh display names since a display removal might have caused the reinitialization
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+
+              if (!ensure_virtual_display_ready(display_names, display_p)) {
+                std::this_thread::sleep_for(50ms);
+                continue;
+              }
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -2100,6 +2232,11 @@ namespace video {
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+
+      if (!ensure_virtual_display_ready(display_names, display_p)) {
+        std::this_thread::sleep_for(50ms);
+        continue;
+      }
 
       // Process any pending display switch with the new list of displays
       if (switch_display_event->peek()) {

@@ -339,6 +339,67 @@ namespace VDISPLAY {
     return false;
   }
 
+  bool setRenderAdapterWithMostDedicatedMemory() {
+    if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (!SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+      return false;
+    }
+
+    SIZE_T best_dedicated = 0;
+    SIZE_T best_shared = 0;
+    LUID best_luid {};
+    std::wstring best_name;
+    bool found = false;
+
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      SIZE_T dedicated = desc.DedicatedVideoMemory;
+      SIZE_T shared = desc.SharedSystemMemory;
+      if (!found || dedicated > best_dedicated || (dedicated == best_dedicated && shared > best_shared)) {
+        best_dedicated = dedicated;
+        best_shared = shared;
+        best_luid = desc.AdapterLuid;
+        best_name.assign(desc.Description);
+        found = true;
+      }
+    }
+
+    if (!found) {
+      return false;
+    }
+
+    if (!SetRenderAdapter(SUDOVDA_DRIVER_HANDLE, best_luid)) {
+      printf("[SUDOVDA] Failed to set render adapter with most dedicated memory.\n");
+      return false;
+    }
+
+    const unsigned long long dedicated_mib = static_cast<unsigned long long>(best_dedicated / (1024ull * 1024ull));
+    const unsigned long long shared_mib = static_cast<unsigned long long>(best_shared / (1024ull * 1024ull));
+    wprintf(
+      L"[SUDOVDA] Auto-selected render adapter: %ls (dedicated=%llu MiB, shared=%llu MiB)\n",
+      best_name.c_str(),
+      dedicated_mib,
+      shared_mib
+    );
+    return true;
+  }
+
   std::wstring createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
