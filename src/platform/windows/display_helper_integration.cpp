@@ -22,6 +22,7 @@
   // sunshine
   #include "display_helper_integration.h"
   #include "src/display_device.h"  // For configuration parsing only
+  #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -71,10 +72,23 @@ namespace {
     return virtual_display_selected && config::video.dd.activate_virtual_display;
   }
 
+  bool shutdown_requested() {
+    if (!mail::man) {
+      return false;
+    }
+    try {
+      auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+      return shutdown_event && shutdown_event->peek();
+    } catch (...) {
+      return false;
+    }
+  }
+
   bool ensure_helper_started() {
     if (!dd_feature_enabled()) {
       return false;
     }
+    const bool shutting_down = shutdown_requested();
     std::lock_guard<std::mutex> lg(helper_mutex());
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
@@ -104,6 +118,9 @@ namespace {
         GetExitCodeProcess(h, &exit_code);
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
+    }
+    if (shutting_down) {
+      return false;
     }
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};

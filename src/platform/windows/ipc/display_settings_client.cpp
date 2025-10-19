@@ -11,10 +11,37 @@
 
   // local
   #include "display_settings_client.h"
+  #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/ipc/pipes.h"
 
 namespace platf::display_helper_client {
+
+  namespace {
+    constexpr int kConnectTimeoutMs = 8000;
+    constexpr int kSendTimeoutMs = 5000;
+    constexpr int kShutdownIpcTimeoutMs = 500;
+
+    bool shutdown_requested() {
+      if (!mail::man) {
+        return false;
+      }
+      try {
+        auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+        return shutdown_event && shutdown_event->peek();
+      } catch (...) {
+        return false;
+      }
+    }
+
+    int effective_connect_timeout() {
+      return shutdown_requested() ? kShutdownIpcTimeoutMs : kConnectTimeoutMs;
+    }
+
+    int effective_send_timeout() {
+      return shutdown_requested() ? kShutdownIpcTimeoutMs : kSendTimeoutMs;
+    }
+  }  // namespace
 
   /**
    * @brief IPC message types used by the display settings helper protocol.
@@ -37,9 +64,9 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> out;
     out.reserve(1 + payload.size());
-    out.push_back(static_cast<uint8_t>(type));
-    out.insert(out.end(), payload.begin(), payload.end());
-    const bool ok = pipe.send(out, 5000);
+   out.push_back(static_cast<uint8_t>(type));
+   out.insert(out.end(), payload.begin(), payload.end());
+    const bool ok = pipe.send(out, effective_send_timeout());
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: send result=" << (ok ? "true" : "false");
     }
@@ -74,7 +101,7 @@ namespace platf::display_helper_client {
     pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_anon);
     bool ok = false;
     if (pipe) {
-      pipe->wait_for_client_connection(8000);
+      pipe->wait_for_client_connection(effective_connect_timeout());
       ok = pipe->is_connected();
     }
     if (!ok) {
@@ -85,7 +112,7 @@ namespace platf::display_helper_client {
       };
       pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_named);
       if (pipe) {
-        pipe->wait_for_client_connection(8000);
+        pipe->wait_for_client_connection(effective_connect_timeout());
         ok = pipe->is_connected();
       } else {
         ok = false;
