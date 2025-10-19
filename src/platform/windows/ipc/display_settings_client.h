@@ -17,7 +17,7 @@ namespace platf::display_helper_client {
 
   // Export current OS display settings as a golden restore snapshot
   bool send_export_golden();
-
+  
   // Reset helper-side persistence/state (best-effort)
   bool send_reset();
 

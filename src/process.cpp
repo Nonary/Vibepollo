@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwctype>
+#include <limits>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -999,6 +1000,15 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
+    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
+      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
+        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
+      } else {
+        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+      }
+    } else {
+      launch_session->framegen_refresh_rate.reset();
+    }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -1089,7 +1099,14 @@ namespace proc {
 
           uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
           uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-          uint32_t vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 60000u;
+          uint32_t vd_fps = 0;
+          if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+            vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
+          } else if (launch_session->fps > 0) {
+            vd_fps = static_cast<uint32_t>(launch_session->fps);
+          } else {
+            vd_fps = 60000u;
+          }
           if (vd_fps < 1000u) {
             vd_fps *= 1000u;
           }
@@ -1097,6 +1114,11 @@ namespace proc {
           std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
           if (client_label.empty()) {
             client_label = "Sunshine";
+          }
+
+          const bool snapshot_ok = display_helper_integration::ensure_session_snapshot();
+          if (!snapshot_ok) {
+            BOOST_LOG(warning) << "Failed to snapshot display configuration before creating virtual display.";
           }
 
           auto display_name_wide = VDISPLAY::createVirtualDisplay(

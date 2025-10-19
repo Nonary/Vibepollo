@@ -148,21 +148,28 @@ namespace {
     bool enable_sops = false;
     bool virtual_display = false;
     std::string virtual_display_device_id;
+    std::optional<int> framegen_refresh_rate;
+    bool gen1_framegen_fix = false;
+    bool gen2_framegen_fix = false;
   };
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
 
-  static void set_active_session(const rtsp_stream::launch_session_t &session, std::optional<std::string> device_id_override = std::nullopt) {
+  static void set_active_session(const rtsp_stream::launch_session_t &session, std::optional<std::string> device_id_override = std::nullopt, std::optional<int> fps_override = std::nullopt) {
     std::lock_guard<std::mutex> lg(g_session_mutex);
+    const int effective_fps = fps_override ? *fps_override : (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps);
     g_active_session_dd = session_dd_fields_t {
       .width = session.width,
       .height = session.height,
-      .fps = session.fps,
+      .fps = effective_fps,
       .enable_hdr = session.enable_hdr,
       .enable_sops = session.enable_sops,
       .virtual_display = session.virtual_display,
       .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
+      .framegen_refresh_rate = session.framegen_refresh_rate,
+      .gen1_framegen_fix = session.gen1_framegen_fix,
+      .gen2_framegen_fix = session.gen2_framegen_fix,
     };
   }
 
@@ -232,6 +239,9 @@ namespace {
           tmp_session.enable_sops = session_opt->enable_sops;
           tmp_session.virtual_display = session_opt->virtual_display;
           tmp_session.virtual_display_device_id = session_opt->virtual_display_device_id;
+          tmp_session.framegen_refresh_rate = session_opt->framegen_refresh_rate;
+          tmp_session.gen1_framegen_fix = session_opt->gen1_framegen_fix;
+          tmp_session.gen2_framegen_fix = session_opt->gen2_framegen_fix;
           bool reapplied = display_helper_integration::apply_from_session(config::video, tmp_session);
           BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
           if (!reapplied) {
@@ -262,6 +272,7 @@ namespace display_helper_integration {
 
     // Check if virtual display auto-activation is enabled
     const bool is_virtual_display = (video_config.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const int display_fps = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps;
     if (is_virtual_display && video_config.dd.activate_virtual_display) {
       BOOST_LOG(info) << "Display helper: Virtual display detected with auto-activation enabled. Activating virtual display via EnsureOnly mode.";
 
@@ -285,9 +296,9 @@ namespace display_helper_integration {
         };
       }
 
-      if (session.fps >= 0) {
+      if (display_fps >= 0) {
         vd_cfg.m_refresh_rate = display_device::Rational {
-          static_cast<unsigned int>(session.fps),
+          static_cast<unsigned int>(display_fps),
           1u
         };
       }
@@ -303,7 +314,7 @@ namespace display_helper_integration {
       BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
 
       if (ok) {
-        set_active_session(session, target_device_id);
+        set_active_session(session, target_device_id, display_fps);
       }
       return ok;
     }
@@ -367,7 +378,7 @@ namespace display_helper_integration {
       const bool ok = platf::display_helper_client::send_apply_json(json);
       BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
       if (ok) {
-        set_active_session(session);
+        set_active_session(session, std::nullopt, display_fps);
       }
       return ok;
     }
@@ -399,7 +410,7 @@ namespace display_helper_integration {
         const bool ok = platf::display_helper_client::send_apply_json(json);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok) {
-          set_active_session(session);
+          set_active_session(session, std::nullopt, display_fps);
         }
         return ok;
       }
@@ -439,7 +450,7 @@ namespace display_helper_integration {
         const bool ok = platf::display_helper_client::send_apply_json(json);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok) {
-          set_active_session(session);
+          set_active_session(session, std::nullopt, display_fps);
         }
         return ok;
       }

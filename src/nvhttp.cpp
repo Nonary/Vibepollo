@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -344,6 +345,7 @@ namespace nvhttp {
     launch_session->gen1_framegen_fix = false;
     launch_session->gen2_framegen_fix = false;
     launch_session->lossless_scaling_framegen = false;
+    launch_session->framegen_refresh_rate.reset();
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
     launch_session->frame_generation_provider = "lossless-scaling";
@@ -405,6 +407,16 @@ namespace nvhttp {
         }
       } catch (...) {
       }
+    }
+
+    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
+      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
+        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
+      } else {
+        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+      }
+    } else {
+      launch_session->framegen_refresh_rate.reset();
     }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
@@ -995,7 +1007,14 @@ namespace nvhttp {
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-        uint32_t vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 60000u;
+        uint32_t vd_fps = 0;
+        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+          vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
+        } else if (launch_session->fps > 0) {
+          vd_fps = static_cast<uint32_t>(launch_session->fps);
+        } else {
+          vd_fps = 60000u;
+        }
         if (vd_fps < 1000u) {
           vd_fps *= 1000u;
         }
