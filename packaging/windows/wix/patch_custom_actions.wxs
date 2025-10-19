@@ -27,6 +27,12 @@
       <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
 
+      <!-- Pre-validate stop/kill when UI can't prompt -->
+      <Custom Action="SetKillProcsQuietImmediate" Before="InstallValidate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="KillProcsQuietImmediate" After="SetKillProcsQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="SetStopSvcQuietImmediate" After="KillProcsQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="StopSvcQuietImmediate" After="SetStopSvcQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+
       <!-- Stop service proactively on repair or uninstall -->
       <Custom Action="SetStopSvcQuiet" After="InstallInitialize">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
       <Custom Action="StopSvcQuiet" After="SetStopSvcQuiet">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>

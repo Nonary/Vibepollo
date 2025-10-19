@@ -88,10 +88,12 @@
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
+    <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
     <CustomAction Id="StopSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Quiet start after repair for non-full UI; run at commit to avoid FilesInUse/reboot prompts -->
     <CustomAction Id="StartSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
     <!-- Quiet process kill and service removal for manual uninstalls -->
+    <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
@@ -143,6 +145,9 @@
                  Property="DeleteInstallDir"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT].&quot;"/>
     <!-- Immediate setter for quiet stop service -->
+    <CustomAction Id="SetStopSvcQuietImmediate"
+                 Property="StopSvcQuietImmediate"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
@@ -156,6 +161,9 @@
                  Property="StartSvcQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Running') { Start-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } } }&quot;"/>
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
+    <CustomAction Id="SetKillProcsQuietImmediate"
+                 Property="KillProcsQuietImmediate"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>

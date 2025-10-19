@@ -23,6 +23,7 @@
 #include "video.h"
 #ifdef _WIN32
   #include "src/platform/windows/playnite_integration.h"
+  #include "src/platform/windows/virtual_display.h"
 #endif
 
 extern "C" {
@@ -321,6 +322,14 @@ int main(int argc, char *argv[]) {
   if (!proc_deinit_guard) {
     BOOST_LOG(error) << "Proc failed to initialize"sv;
   }
+
+#ifdef _WIN32
+  // Check if virtual display should be auto-enabled due to no physical monitors
+  if (VDISPLAY::should_auto_enable_virtual_display()) {
+    BOOST_LOG(info) << "No physical monitors detected at initialization. Initializing virtual display driver.";
+    proc::initVDisplayDriver();
+  }
+#endif
 
   reed_solomon_init();
   auto input_deinit_guard = input::init();

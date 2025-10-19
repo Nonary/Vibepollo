@@ -975,6 +975,11 @@ namespace nvhttp {
         request_virtual_display = true;
       }
     }
+    // Auto-enable virtual display if no physical monitors are attached
+    if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+      BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
+      request_virtual_display = true;
+    }
     if (request_virtual_display) {
       if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
         proc::initVDisplayDriver();

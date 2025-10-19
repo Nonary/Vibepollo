@@ -678,6 +678,18 @@ bool VDISPLAY::has_active_physical_display() {
   return false;
 }
 
+bool VDISPLAY::should_auto_enable_virtual_display() {
+  if (!isSudaVDADriverInstalled()) {
+    return false;
+  }
+
+  if (has_active_physical_display()) {
+    return false;
+  }
+
+  return true;
+}
+
 std::optional<uuid_util::uuid_t> VDISPLAY::cachedVirtualDisplayUuid() {
   if (force_remove_virtual_display()) {
     return std::nullopt;
