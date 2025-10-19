@@ -1,13 +1,13 @@
 #pragma once
 
+#include "src/utility.h"
+#include "src/uuid.h"
+
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 #include <windows.h>
-
-#include "src/utility.h"
-#include "src/uuid.h"
 
 #ifndef FILE_DEVICE_UNKNOWN
   #define FILE_DEVICE_UNKNOWN 0x00000022

@@ -298,7 +298,7 @@ namespace display_helper_integration {
       if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
         // Start with the parsed configuration that includes all overrides
         display_device::SingleDisplayConfiguration vd_cfg = *cfg;
-        
+
         // Override device ID and device prep for virtual display
         std::string target_device_id = session.virtual_display_device_id;
         if (target_device_id.empty()) {
@@ -322,12 +322,11 @@ namespace display_helper_integration {
           // Blacklist the virtual display device_id so it won't be saved in topology snapshots
           BOOST_LOG(info) << "Display helper: blacklisting virtual display device_id from topology exports: " << target_device_id;
           platf::display_helper_client::send_blacklist(target_device_id);
-          
+
           set_active_session(session, target_device_id, display_fps);
         }
         return ok;
-      }
-      else {
+      } else {
         BOOST_LOG(error) << "Display helper: Failed to parse configuration for virtual display.";
         return false;
       }

@@ -5,29 +5,29 @@
 #include "src/platform/windows/misc.h"
 #include "src/uuid.h"
 
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <optional>
-#include <system_error>
 #include <cctype>
 #include <combaseapi.h>
+#include <cstdlib>
+#include <cstring>
 #include <dxgi.h>
 #include <dxgi1_6.h>
+#include <filesystem>
+#include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
 #include <initguid.h>
 #include <iostream>
+#include <limits>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <physicalmonitorenumerationapi.h>
 #include <setupapi.h>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h>
-
-#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -110,6 +110,7 @@ namespace VDISPLAY {
         std::wstring display_name;
         std::string device_id;
         std::optional<GUID> guid;
+        std::optional<uint32_t> fps;
       };
 
       std::mutex mutex;
@@ -158,6 +159,16 @@ namespace VDISPLAY {
               tmp.guid = *parsed;
             }
           }
+          if (auto fps_it = json.find("fps"); fps_it != json.end() && fps_it->is_number()) {
+            try {
+              const auto value = fps_it->get<int64_t>();
+              if (value > 0 && value <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                tmp.fps = static_cast<uint32_t>(value);
+              }
+            } catch (...) {
+              tmp.fps.reset();
+            }
+          }
 
           if (!tmp.display_name.empty() || tmp.guid) {
             entry = std::move(tmp);
@@ -185,6 +196,9 @@ namespace VDISPLAY {
           }
           if (entry->guid) {
             json["guid"] = guid_to_string(*entry->guid);
+          }
+          if (entry->fps) {
+            json["fps"] = *entry->fps;
           }
 
           fs::create_directories(path.parent_path());
@@ -412,12 +426,47 @@ namespace VDISPLAY {
       return std::wstring();
     }
 
+    auto cached_entry = VirtualDisplayCache::instance().get_entry();
+    if (cached_entry && cached_entry->guid && IsEqualGUID(*cached_entry->guid, guid)) {
+      const bool fps_known = cached_entry->fps.has_value();
+      const uint32_t cached_fps = cached_entry->fps.value_or(0u);
+      if (!fps_known || cached_fps != fps) {
+        printf(
+          "[SUDOVDA] Virtual display refresh change detected (cached=%u, requested=%u); recreating instance.\n",
+          static_cast<unsigned int>(cached_fps),
+          static_cast<unsigned int>(fps)
+        );
+        if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
+          VirtualDisplayCache::instance().clear_entry();
+          cached_entry.reset();
+          Sleep(50);
+        } else {
+          const DWORD remove_error = GetLastError();
+          printf(
+            "[SUDOVDA] Failed to remove virtual display for refresh change (error=%lu).\n",
+            static_cast<unsigned long>(remove_error)
+          );
+        }
+      }
+    }
+
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
       if (!force_remove_virtual_display()) {
         if (auto cached = VirtualDisplayCache::instance().get_entry()) {
-          if (!cached->display_name.empty()) {
+          const bool guid_matches = cached->guid && IsEqualGUID(*cached->guid, guid);
+          const bool fps_known = cached->fps.has_value();
+          const bool fps_matches = fps_known && *cached->fps == fps;
+          if (guid_matches && (!fps_known || !fps_matches)) {
+            printf("[SUDOVDA] Skipping reuse of virtual display due to refresh mismatch.\n");
+          } else if (fps_known && !fps_matches) {
+            printf(
+              "[SUDOVDA] Skipping reuse of cached virtual display with mismatched refresh (%u != %u).\n",
+              static_cast<unsigned int>(*cached->fps),
+              static_cast<unsigned int>(fps)
+            );
+          } else if (!cached->display_name.empty() && (!fps_known || fps_matches)) {
             auto reuse_name = cached->display_name;
             auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
 
@@ -427,6 +476,7 @@ namespace VDISPLAY {
               updated.device_id = *device_id;
             }
             updated.guid = guid;
+            updated.fps = cached->fps;
             VirtualDisplayCache::instance().set_entry(std::move(updated));
 
             wprintf(
@@ -467,6 +517,7 @@ namespace VDISPLAY {
       cache_entry.device_id = *device_id;
     }
     cache_entry.guid = guid;
+    cache_entry.fps = fps;
     VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
 
     return std::wstring(deviceName);
