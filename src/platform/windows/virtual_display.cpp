@@ -427,9 +427,12 @@ namespace VDISPLAY {
     }
 
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
+    std::optional<VirtualDisplayCache::entry_t> previous_entry;
+    bool cache_cleared_for_refresh_change = false;
     if (cached_entry && cached_entry->guid && IsEqualGUID(*cached_entry->guid, guid)) {
       const bool fps_known = cached_entry->fps.has_value();
       const uint32_t cached_fps = cached_entry->fps.value_or(0u);
+      previous_entry = *cached_entry;
       if (!fps_known || cached_fps != fps) {
         printf(
           "[SUDOVDA] Virtual display refresh change detected (cached=%u, requested=%u); recreating instance.\n",
@@ -439,6 +442,7 @@ namespace VDISPLAY {
         if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
           VirtualDisplayCache::instance().clear_entry();
           cached_entry.reset();
+          cache_cleared_for_refresh_change = true;
           Sleep(50);
         } else {
           const DWORD remove_error = GetLastError();
@@ -453,6 +457,9 @@ namespace VDISPLAY {
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
+      if (cache_cleared_for_refresh_change && previous_entry) {
+        VirtualDisplayCache::instance().set_entry(*previous_entry);
+      }
       if (!force_remove_virtual_display()) {
         if (auto cached = VirtualDisplayCache::instance().get_entry()) {
           const bool guid_matches = cached->guid && IsEqualGUID(*cached->guid, guid);
