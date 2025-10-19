@@ -1968,25 +1968,32 @@ namespace stream {
 
 #ifdef _WIN32
       if (session.virtual_display.active && !session.virtual_display.detach_with_app) {
-        const bool has_guid = std::any_of(
-          session.virtual_display.guid_bytes.begin(),
-          session.virtual_display.guid_bytes.end(),
-          [](std::uint8_t b) {
-            return b != 0;
+        const bool has_physical_display = VDISPLAY::has_active_physical_display();
+        if (has_physical_display) {
+          const bool has_guid = std::any_of(
+            session.virtual_display.guid_bytes.begin(),
+            session.virtual_display.guid_bytes.end(),
+            [](std::uint8_t b) {
+              return b != 0;
+            }
+          );
+          if (has_guid) {
+            GUID guid {};
+            std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
+            if (!VDISPLAY::removeVirtualDisplay(guid)) {
+              BOOST_LOG(warning) << "Failed to remove virtual display.";
+            } else {
+              BOOST_LOG(info) << "Virtual display removed.";
+            }
           }
-        );
-        if (has_guid) {
-          GUID guid {};
-          std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
-          if (!VDISPLAY::removeVirtualDisplay(guid)) {
-            BOOST_LOG(warning) << "Failed to remove virtual display.";
-          } else {
-            BOOST_LOG(info) << "Virtual display removed.";
-          }
+        } else {
+          BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
         }
         session.virtual_display.active = false;
         session.virtual_display.detach_with_app = false;
-        session.virtual_display.guid_bytes.fill(0);
+        if (has_physical_display) {
+          session.virtual_display.guid_bytes.fill(0);
+        }
       }
 #endif
 

@@ -61,5 +61,6 @@ namespace VDISPLAY {
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
 
   std::optional<uuid_util::uuid_t> cachedVirtualDisplayUuid();
+  bool has_active_physical_display();
   bool shouldForceVirtualDisplayRemove();
 }  // namespace VDISPLAY

@@ -548,6 +548,24 @@ namespace VDISPLAY {
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY
 
+bool VDISPLAY::has_active_physical_display() {
+  auto devices = display_helper_integration::enumerate_devices();
+  if (!devices) {
+    return true;
+  }
+
+  const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+  for (const auto &device : *devices) {
+    const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool is_virtual_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
+    if (device.m_info && !is_virtual_id && !is_virtual_friendly) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 std::optional<uuid_util::uuid_t> VDISPLAY::cachedVirtualDisplayUuid() {
   if (force_remove_virtual_display()) {
     return std::nullopt;
