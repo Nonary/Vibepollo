@@ -276,51 +276,44 @@ namespace display_helper_integration {
     if (is_virtual_display && video_config.dd.activate_virtual_display) {
       BOOST_LOG(info) << "Display helper: Virtual display detected with auto-activation enabled. Activating virtual display via EnsureOnly mode.";
 
-      display_device::SingleDisplayConfiguration vd_cfg;
-      std::string target_device_id = session.virtual_display_device_id;
-      if (target_device_id.empty()) {
-        if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
-          target_device_id = *resolved;
-        }
-      }
-      if (target_device_id.empty()) {
-        target_device_id = video_config.output_name;
-      }
-      vd_cfg.m_device_id = target_device_id;
-      vd_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-
-      if (session.width >= 0 && session.height >= 0) {
-        vd_cfg.m_resolution = display_device::Resolution {
-          static_cast<unsigned int>(session.width),
-          static_cast<unsigned int>(session.height)
-        };
-      }
-
-      if (display_fps >= 0) {
-        vd_cfg.m_refresh_rate = display_device::Rational {
-          static_cast<unsigned int>(display_fps),
-          1u
-        };
-      }
-
-      if (session.enable_hdr) {
-        vd_cfg.m_hdr_state = display_device::HdrState::Enabled;
-      }
-
-      std::string json = display_device::toJson(vd_cfg);
-      BOOST_LOG(info) << "Display helper: sending APPLY for virtual display activation with configuration:\n"
-                      << json;
-      const bool ok = platf::display_helper_client::send_apply_json(json);
-      BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
-
-      if (ok) {
-        // Blacklist the virtual display device_id so it won't be saved in topology snapshots
-        BOOST_LOG(info) << "Display helper: blacklisting virtual display device_id from topology exports: " << target_device_id;
-        platf::display_helper_client::send_blacklist(target_device_id);
+      // Use parse_configuration to get the properly overridden values
+      const auto parsed = display_device::parse_configuration(video_config, session);
+      if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
+        // Start with the parsed configuration that includes all overrides
+        display_device::SingleDisplayConfiguration vd_cfg = *cfg;
         
-        set_active_session(session, target_device_id, display_fps);
+        // Override device ID and device prep for virtual display
+        std::string target_device_id = session.virtual_display_device_id;
+        if (target_device_id.empty()) {
+          if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+            target_device_id = *resolved;
+          }
+        }
+        if (target_device_id.empty()) {
+          target_device_id = video_config.output_name;
+        }
+        vd_cfg.m_device_id = target_device_id;
+        vd_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+
+        std::string json = display_device::toJson(vd_cfg);
+        BOOST_LOG(info) << "Display helper: sending APPLY for virtual display activation with configuration:\n"
+                        << json;
+        const bool ok = platf::display_helper_client::send_apply_json(json);
+        BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
+
+        if (ok) {
+          // Blacklist the virtual display device_id so it won't be saved in topology snapshots
+          BOOST_LOG(info) << "Display helper: blacklisting virtual display device_id from topology exports: " << target_device_id;
+          platf::display_helper_client::send_blacklist(target_device_id);
+          
+          set_active_session(session, target_device_id, display_fps);
+        }
+        return ok;
       }
-      return ok;
+      else {
+        BOOST_LOG(error) << "Display helper: Failed to parse configuration for virtual display.";
+        return false;
+      }
     }
 
     const bool dummy_plug_mode = video_config.dd.wa.dummy_plug_hdr10;

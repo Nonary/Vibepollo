@@ -329,9 +329,11 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
-  if (video::probe_encoders()) {
-    BOOST_LOG(error) << "Video failed to find working encoder"sv;
-  }
+  // Note: Encoder probing is deferred until stream start to ensure DD_API
+  // display settings are applied first. Probing at startup could trigger
+  // display enumeration before the user's configured display topology is active.
+  // Encoder probing happens in nvhttp.cpp:launch() and nvhttp.cpp:resume()
+  // after display_helper_integration::apply_from_session() has been called.
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
