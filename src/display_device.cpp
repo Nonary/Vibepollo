@@ -270,10 +270,13 @@ namespace display_device {
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
           {
-            if (session.fps >= 0) {
-              config.m_refresh_rate = Rational {static_cast<unsigned int>(session.fps), 1000};
+            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
+                                     ? *session.framegen_refresh_rate
+                                     : session.fps;
+            if (target_fps >= 0) {
+              config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
             } else {
-              BOOST_LOG(error) << "FPS value provided by client session config is invalid: " << session.fps;
+              BOOST_LOG(error) << "FPS value provided by client session config is invalid: " << target_fps;
               return false;
             }
             break;

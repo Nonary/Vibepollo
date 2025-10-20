@@ -32,7 +32,9 @@
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
-          <n-button type="default" strong @click="emit('cancel')">{{ $t('_common.cancel') }}</n-button>
+          <n-button type="default" strong @click="emit('cancel')">{{
+            $t('_common.cancel')
+          }}</n-button>
           <n-button type="error" strong @click="emit('confirm')">{{ $t('apps.delete') }}</n-button>
         </div>
       </template>

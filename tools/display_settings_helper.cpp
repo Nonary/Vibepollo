@@ -174,6 +174,7 @@ namespace {
     Revert = 2,  // no payload
     Reset = 3,  // clear persistence (best-effort)
     ExportGolden = 4,  // no payload; export current settings snapshot as golden restore
+    Blacklist = 5,  // payload: device_id string to blacklist from topology exports
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -201,6 +202,23 @@ namespace {
         std::make_unique<display_device::PersistentState>(std::make_shared<display_device::NoopSettingsPersistence>()),
         display_device::WinWorkarounds {}
       );
+    }
+
+    void add_blacklisted_display(const std::string &device_id) {
+      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
+      m_blacklisted_device_ids.insert(device_id);
+      BOOST_LOG(info) << "Blacklisted display device_id from topology exports: " << device_id;
+    }
+
+    void clear_blacklist() {
+      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
+      m_blacklisted_device_ids.clear();
+      BOOST_LOG(info) << "Cleared display device_id blacklist";
+    }
+
+    bool is_device_blacklisted(const std::string &device_id) const {
+      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
+      return m_blacklisted_device_ids.count(device_id) > 0;
     }
 
     // Enumerate all currently available display device IDs (active or inactive).
@@ -251,7 +269,29 @@ namespace {
       display_device::DisplaySettingsSnapshot snap;
       try {
         // Topology
-        snap.m_topology = m_dd->getCurrentTopology();
+        auto raw_topology = m_dd->getCurrentTopology();
+        
+        // Filter out blacklisted devices from topology
+        {
+          std::lock_guard<std::mutex> lg(m_blacklist_mutex);
+          if (!m_blacklisted_device_ids.empty()) {
+            for (auto &grp : raw_topology) {
+              grp.erase(
+                std::remove_if(grp.begin(), grp.end(), [this](const std::string &device_id) {
+                  return m_blacklisted_device_ids.count(device_id) > 0;
+                }),
+                grp.end()
+              );
+            }
+            raw_topology.erase(
+              std::remove_if(raw_topology.begin(), raw_topology.end(), [](const std::vector<std::string> &grp) {
+                return grp.empty();
+              }),
+              raw_topology.end()
+            );
+          }
+        }
+        snap.m_topology = raw_topology;
 
         // Flatten device ids present in topology
         std::set<std::string> device_ids;
@@ -535,6 +575,11 @@ namespace {
 
   private:
     std::shared_ptr<display_device::WinApiLayer> m_wapi;
+    std::shared_ptr<display_device::WinDisplayDevice> m_dd;
+    std::unique_ptr<display_device::SettingsManager> m_sm;
+    
+    mutable std::mutex m_blacklist_mutex;
+    std::set<std::string> m_blacklisted_device_ids;
 
     // Collect devices from full enumeration
     void collect_all_device_ids(std::set<std::string> &out) const {
@@ -711,9 +756,6 @@ namespace {
         }
       }
     }
-
-    std::unique_ptr<display_device::SettingsManagerInterface> m_sm;
-    std::shared_ptr<display_device::WinDisplayDeviceInterface> m_dd;
   };
 
   constexpr std::chrono::milliseconds kApplyDisconnectGrace {5000};
@@ -2324,7 +2366,7 @@ namespace {
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 
-  void handle_misc(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type) {
+  void handle_misc(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type, std::span<const uint8_t> payload) {
     if (type == MsgType::ExportGolden) {
       const bool saved = state.controller.save_display_settings_snapshot_to_file(state.golden_path);
       BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");
@@ -2332,6 +2374,9 @@ namespace {
       (void) state.controller.reset_persistence();
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
+    } else if (type == MsgType::Blacklist) {
+      std::string device_id(payload.begin(), payload.end());
+      state.controller.add_blacklisted_display(device_id);
     } else if (type == MsgType::Ping) {
       send_framed_content(async_pipe, MsgType::Ping);
     } else {
@@ -2347,7 +2392,7 @@ namespace {
     } else if (type == MsgType::Stop) {
       running.store(false, std::memory_order_release);
     } else {
-      handle_misc(state, async_pipe, type);
+      handle_misc(state, async_pipe, type, payload);
     }
   }
 

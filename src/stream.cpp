@@ -4,7 +4,10 @@
  */
 
 // standard includes
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <future>
 #include <optional>
@@ -42,6 +45,7 @@ extern "C" {
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display.h"
 #endif
 
 #define IDX_START_A 0
@@ -432,6 +436,14 @@ namespace stream {
     safe::signal_t controlEnd;
 
     std::atomic<session::state_e> state;
+
+#ifdef _WIN32
+    struct {
+      bool active = false;
+      bool detach_with_app = false;
+      std::array<std::uint8_t, 16> guid_bytes {};
+    } virtual_display;
+#endif
   };
 
   /**
@@ -2101,6 +2113,37 @@ namespace stream {
         config::maybe_apply_deferred();
       }
 
+#ifdef _WIN32
+      if (session.virtual_display.active && !session.virtual_display.detach_with_app) {
+        const bool has_physical_display = VDISPLAY::has_active_physical_display();
+        if (has_physical_display) {
+          const bool has_guid = std::any_of(
+            session.virtual_display.guid_bytes.begin(),
+            session.virtual_display.guid_bytes.end(),
+            [](std::uint8_t b) {
+              return b != 0;
+            }
+          );
+          if (has_guid) {
+            GUID guid {};
+            std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
+            if (!VDISPLAY::removeVirtualDisplay(guid)) {
+              BOOST_LOG(warning) << "Failed to remove virtual display.";
+            } else {
+              BOOST_LOG(info) << "Virtual display removed.";
+            }
+          }
+        } else {
+          BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
+        }
+        session.virtual_display.active = false;
+        session.virtual_display.detach_with_app = false;
+        if (has_physical_display) {
+          session.virtual_display.guid_bytes.fill(0);
+        }
+      }
+#endif
+
       BOOST_LOG(info) << "Session ended"sv;
     }
 
@@ -2219,6 +2262,12 @@ namespace stream {
       session->undo_cmds = std::move(launch_session.client_undo_cmds);
 
       session->config = config;
+
+#ifdef _WIN32
+      session->virtual_display.active = launch_session.virtual_display;
+      session->virtual_display.detach_with_app = launch_session.virtual_display_detach_with_app;
+      session->virtual_display.guid_bytes = launch_session.virtual_display_guid_bytes;
+#endif
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

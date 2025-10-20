@@ -10,6 +10,7 @@
       <RegistrySearch Id="SearchApolloUninstall64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Apollo" Name="UninstallString" Type="raw" Win64="yes"/>
       <RegistrySearch Id="SearchApolloUninstall32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Apollo" Name="UninstallString" Type="raw"/>
     </Property>
+    <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
@@ -25,6 +26,12 @@
       <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
       <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
+
+      <!-- Pre-validate stop/kill when UI can't prompt -->
+      <Custom Action="SetKillProcsQuietImmediate" Before="InstallValidate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="KillProcsQuietImmediate" After="SetKillProcsQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="SetStopSvcQuietImmediate" After="KillProcsQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+      <Custom Action="StopSvcQuietImmediate" After="SetStopSvcQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
 
       <!-- Stop service proactively on repair or uninstall -->
       <Custom Action="SetStopSvcQuiet" After="InstallInitialize">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
@@ -56,12 +63,14 @@
       <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
       <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
 
-      <!-- Prompt (VBS) to remove SudoVDA driver; only on manual uninstalls with full UI -->
+      <!-- Prompts (VBS) to remove ViGEm and optionally delete install dir; only on manual uninstalls with full UI -->
       <Custom Action="AskRemoveSudovda" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
-      <Custom Action="SetUninstallSudovda" After="AskRemoveSudovda">REMOVE="ALL" AND REMOVESUDOVDA = "1"</Custom>
-      <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND REMOVESUDOVDA = "1"</Custom>
-      <!-- Prompt (VBS) to delete install dir; only on manual uninstalls with full UI -->
-      <Custom Action="AskDeleteInstallDir" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+      <Custom Action="SetUninstallSudovda" After="AskRemoveSudovda">REMOVE="ALL" AND UILevel &gt; 2 AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND UILevel &gt; 2 AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="AskRemoveGamepad" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
+      <Custom Action="SetUninstallGamepad" After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="UninstallGamepad" After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
+      <Custom Action="AskDeleteInstallDir" After="UninstallGamepad">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
       <Custom Action="SetUpdatePathRemove" After="AskDeleteInstallDir">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="UpdatePathRemove" After="SetUpdatePathRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 

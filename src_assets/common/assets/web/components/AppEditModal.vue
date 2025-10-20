@@ -132,13 +132,13 @@
             >
               <div class="flex flex-col">
                 <span>1st Gen Frame Generation Capture Fix</span>
-                <span class="text-[11px] opacity-60">
-                  Required for DLSS3, FSR3, NVIDIA Smooth Motion (frame gen), and Lossless Scaling
-                  frame generation. Not needed if only using Lossless Scaling for upscaling.
-                  Requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher
-                  (virtual display driver recommended), and RTSS installed. Configure Display Device
-                  to activate only that monitor during streams.
-                </span>
+                <span class="text-[11px] opacity-60"
+                  >Required for DLSS3, FSR3, NVIDIA Smooth Motion (frame gen), and Lossless Scaling
+                  (frame gen). Not needed if only using Lossless Scaling for upscaling. Requires
+                  Windows Graphics Capture (WGC), a display capable of 240 Hz or higher (virtual
+                  display driver recommended), and RTSS installed. Configure Display Device to
+                  activate only that monitor during streams.</span
+                >
               </div>
             </n-checkbox>
             <n-checkbox
@@ -622,8 +622,7 @@ const frameGenerationSelection = computed<FrameGenerationMode>({
       return 'nvidia-smooth-motion';
     }
     const hasLosslessFrameGen =
-      form.value.losslessScalingTargetFps !== null ||
-      form.value.losslessScalingRtssLimit !== null;
+      form.value.losslessScalingTargetFps !== null || form.value.losslessScalingRtssLimit !== null;
     return hasLosslessFrameGen ? 'lossless-scaling' : 'off';
   },
   set: (mode) => {
@@ -884,7 +883,7 @@ watch(
     if (mode === 'off' && !losslessFrameGenEnabled.value) {
       form.value.losslessScalingEnabled = false;
     }
-  }
+  },
 );
 
 const hasActiveLosslessOverrides = computed<boolean>(() => {

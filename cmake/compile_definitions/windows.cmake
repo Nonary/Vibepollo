@@ -32,6 +32,7 @@ file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
 
 # vigem
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/sudovda")
 
 # apollo icon
 if(NOT DEFINED PROJECT_ICON_PATH)
@@ -81,6 +82,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_legacy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_legacy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda-ioctl.h"

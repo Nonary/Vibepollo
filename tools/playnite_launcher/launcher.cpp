@@ -704,16 +704,16 @@ namespace playnite_launcher {
             game_focus_confirmed.store(false, std::memory_order_release);
             focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
             next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
-          if (lossless_profiles_applied) {
-            auto runtime = lossless::capture_lossless_scaling_state();
-            if (!runtime.running_pids.empty()) {
-              lossless::lossless_scaling_stop_processes(runtime);
+            if (lossless_profiles_applied) {
+              auto runtime = lossless::capture_lossless_scaling_state();
+              if (!runtime.running_pids.empty()) {
+                lossless::lossless_scaling_stop_processes(runtime);
+              }
+              bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
+              active_lossless_backup = {};
+              lossless_profiles_applied = false;
             }
-            bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
-            active_lossless_backup = {};
-            lossless_profiles_applied = false;
           }
-        }
         }
       });
 

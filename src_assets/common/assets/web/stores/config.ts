@@ -43,18 +43,18 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type WidenLiteral<T> = T extends string
   ? string
   : T extends number
-  ? number
-  : T extends boolean
-  ? boolean
-  : T extends null
-  ? null
-  : T extends undefined
-  ? undefined
-  : T extends ReadonlyArray<infer U>
-  ? Array<WidenLiteral<U>>
-  : T extends Record<string, unknown>
-  ? { [K in keyof Mutable<T>]: WidenLiteral<Mutable<T>[K]> }
-  : T;
+    ? number
+    : T extends boolean
+      ? boolean
+      : T extends null
+        ? null
+        : T extends undefined
+          ? undefined
+          : T extends ReadonlyArray<infer U>
+            ? Array<WidenLiteral<U>>
+            : T extends Record<string, unknown>
+              ? { [K in keyof Mutable<T>]: WidenLiteral<Mutable<T>[K]> }
+              : T;
 const defaultGroups = [
   {
     id: 'general',
@@ -117,6 +117,7 @@ const defaultGroups = [
       dd_hdr_option: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_activate_virtual_display: true,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
         resolution_only: [] as Array<Record<string, string>>,
@@ -129,6 +130,7 @@ const defaultGroups = [
       headless_mode: 'disabled',
       double_refreshrate: 'disabled',
       isolated_virtual_display_option: 'disabled',
+      legacy_virtual_display_mode: 'disabled',
       fallback_mode: '1920x1080x60',
       max_bitrate: 0,
       minimum_fps_target: 20,
@@ -281,9 +283,7 @@ type ConfigKey = keyof ConfigDefaults;
 type ConfigData = Record<string, unknown>;
 export type ConfigState = ConfigDefaults & { platform: string } & Record<string, any>;
 
-function createDefaultMap<T extends readonly { options: Record<string, unknown> }[]>(
-  groups: T,
-) {
+function createDefaultMap<T extends readonly { options: Record<string, unknown> }[]>(groups: T) {
   type Result = WidenLiteral<UnionToIntersection<T[number]['options']>>;
   const map = {} as Result;
   for (const g of groups) {
@@ -654,7 +654,9 @@ export const useConfigStore = defineStore('config', () => {
       const checkResolution = (value: unknown) =>
         !value || String(value).trim() === '' || resolutionPattern.test(String(value));
       const checkNumber = (value: unknown) =>
-        !value || String(value).trim() === '' || (/^\d+(?:\.\d+)?$/.test(String(value)) && Number(value) > 0);
+        !value ||
+        String(value).trim() === '' ||
+        (/^\d+(?:\.\d+)?$/.test(String(value)) && Number(value) > 0);
 
       const resolutionBuckets = ['mixed', 'resolution_only'] as const;
       for (const bucket of resolutionBuckets) {
@@ -679,10 +681,7 @@ export const useConfigStore = defineStore('config', () => {
         : [];
       for (const entry of refreshOnly) {
         const item = entry as Record<string, unknown>;
-        if (
-          !checkNumber(item?.['requested_fps']) ||
-          !checkNumber(item?.['final_refresh_rate'])
-        ) {
+        if (!checkNumber(item?.['requested_fps']) || !checkNumber(item?.['final_refresh_rate'])) {
           return {
             ok: false,
             message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',
@@ -700,10 +699,7 @@ export const useConfigStore = defineStore('config', () => {
       const mixed = Array.isArray(remapObj['mixed']) ? (remapObj['mixed'] as unknown[]) : [];
       for (const entry of mixed) {
         const item = entry as Record<string, unknown>;
-        if (
-          !checkNumber(item?.['requested_fps']) ||
-          !checkNumber(item?.['final_refresh_rate'])
-        ) {
+        if (!checkNumber(item?.['requested_fps']) || !checkNumber(item?.['final_refresh_rate'])) {
           return {
             ok: false,
             message: 'Invalid refresh rate in remapping. Use a positive number or leave blank.',

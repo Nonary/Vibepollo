@@ -24,14 +24,14 @@
 #include <memory>
 #include <optional>
 #include <shlobj.h>
-#include <system_error>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
+#include <UserEnv.h>
 #include <utility>
 #include <vector>
 #include <windows.h>
-#include <UserEnv.h>
 #include <winrt/base.h>
 
 using namespace std::chrono_literals;
@@ -49,7 +49,7 @@ namespace playnite_launcher::lossless {
     constexpr double k_resolution_factor_min = 1.0;
     constexpr double k_resolution_factor_max = 10.0;
 
-    template <typename Fn>
+    template<typename Fn>
     auto run_with_user_context(Fn &&fn) -> decltype(fn()) {
       if (platf::dxgi::is_running_as_system()) {
         winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};

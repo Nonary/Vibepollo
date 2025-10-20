@@ -5,9 +5,11 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <atomic>
 #include <list>
 #include <memory>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -47,15 +49,29 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+
+    struct app_metadata_t {
+      std::string id;
+      std::string name;
+      bool virtual_screen;
+      bool has_command;
+      bool has_playnite;
+    };
+
+    std::optional<app_metadata_t> app_metadata;
     int surround_info;
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
     bool virtual_display;
     uint32_t scale_factor;
+    bool virtual_display_detach_with_app;
+    std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
+    std::string virtual_display_device_id;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
+    std::optional<int> framegen_refresh_rate;
     std::string frame_generation_provider;
     std::optional<int> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;

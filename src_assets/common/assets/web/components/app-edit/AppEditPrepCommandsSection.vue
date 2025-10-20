@@ -1,9 +1,7 @@
 <template>
   <section class="space-y-3">
     <div class="flex items-center justify-between">
-      <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
-        Prep Commands
-      </h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">Prep Commands</h3>
       <n-button size="small" type="primary" @click="emit('add-prep')">
         <i class="fas fa-plus" /> Add
       </n-button>

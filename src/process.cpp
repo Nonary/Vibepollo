@@ -8,22 +8,24 @@
   #define BOOST_PROCESS_VERSION 1
 #endif
 // standard includes
-#include <atomic>
 #include <algorithm>
 #include <array>
-#include <chrono>
+#include <atomic>
 #include <cctype>
-#include <cstdint>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <cwctype>
+#include <limits>
 #include <filesystem>
 #include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <sstream>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -49,10 +51,15 @@
   #include "platform/windows/playnite_integration.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
+
   #include <Psapi.h>
 #endif
 #include "httpcommon.h"
 #include "process.h"
+#ifdef _WIN32
+  #include "platform/windows/virtual_display.h"
+  #include "platform/windows/virtual_display_legacy.h"
+#endif
 #include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
@@ -286,32 +293,60 @@ namespace proc {
       return std::nullopt;
     }
 
-    void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
-      if (auto perf = pt_get_optional_bool(node, "performance-mode")) {
-        target.performance_mode = *perf;
-      }
-      if (auto flow = pt_get_optional_int(node, "flow-scale")) {
-        target.flow_scale = *flow;
-      }
-      if (auto res = pt_get_optional_int(node, "resolution-scale")) {
-        target.resolution_scale = *res;
-      }
-      if (auto scaling = node.get_optional<std::string>("scaling-type")) {
-        if (auto normalized = normalize_scaling_mode(*scaling)) {
-          target.scaling_type = *normalized;
-        }
-      }
-      if (auto sharp = pt_get_optional_int(node, "sharpening")) {
-        target.sharpening = clamp_sharpness(*sharp);
-      }
-      if (auto anime = node.get_optional<std::string>("anime4k-size")) {
-        std::string value = boost::algorithm::to_upper_copy(*anime);
-        target.anime4k_size = std::move(value);
-      }
-      if (auto vrs = pt_get_optional_bool(node, "anime4k-vrs")) {
-        target.anime4k_vrs = *vrs;
+  void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
+    if (auto perf = pt_get_optional_bool(node, "performance-mode")) {
+      target.performance_mode = *perf;
+    }
+    if (auto flow = pt_get_optional_int(node, "flow-scale")) {
+      target.flow_scale = *flow;
+    }
+    if (auto res = pt_get_optional_int(node, "resolution-scale")) {
+      target.resolution_scale = *res;
+    }
+    if (auto scaling = node.get_optional<std::string>("scaling-type")) {
+      if (auto normalized = normalize_scaling_mode(*scaling)) {
+        target.scaling_type = *normalized;
       }
     }
+    if (auto sharp = pt_get_optional_int(node, "sharpening")) {
+      target.sharpening = clamp_sharpness(*sharp);
+    }
+    if (auto anime = node.get_optional<std::string>("anime4k-size")) {
+      std::string value = boost::algorithm::to_upper_copy(*anime);
+      target.anime4k_size = std::move(value);
+    }
+    if (auto vrs = pt_get_optional_bool(node, "anime4k-vrs")) {
+      target.anime4k_vrs = *vrs;
+    }
+  }
+
+  void populate_lossless_overrides(const nlohmann::json &node, lossless_scaling_profile_overrides_t &target) {
+    if (!node.is_object()) {
+      return;
+    }
+
+    if (node.contains("performance-mode")) {
+      target.performance_mode = util::get_non_string_json_value<bool>(node, "performance-mode", false);
+    }
+    if (node.contains("flow-scale")) {
+      target.flow_scale = util::get_non_string_json_value<int>(node, "flow-scale", 0);
+    }
+    if (node.contains("resolution-scale")) {
+      target.resolution_scale = util::get_non_string_json_value<int>(node, "resolution-scale", 0);
+    }
+    if (auto it = node.find("scaling-type"); it != node.end() && it->is_string()) {
+      target.scaling_type = it->get<std::string>();
+    }
+    if (node.contains("sharpening")) {
+      target.sharpening = util::get_non_string_json_value<int>(node, "sharpening", 0);
+    }
+    if (auto it = node.find("anime4k-size"); it != node.end() && it->is_string()) {
+      target.anime4k_size = it->get<std::string>();
+    }
+    if (node.contains("anime4k-vrs")) {
+      target.anime4k_vrs = util::get_non_string_json_value<bool>(node, "anime4k-vrs", false);
+    }
+  }
 
     lossless_runtime_values_t compute_lossless_runtime(const ctx_t &ctx, bool frame_gen_enabled) {
       lossless_runtime_values_t result;
@@ -737,7 +772,9 @@ namespace proc {
       _lossless_profile_applied(other._lossless_profile_applied),
       _lossless_backup(other._lossless_backup),
       _lossless_last_install_dir(std::move(other._lossless_last_install_dir)),
-      _lossless_last_exe_path(std::move(other._lossless_last_exe_path))
+      _lossless_last_exe_path(std::move(other._lossless_last_exe_path)),
+      _virtual_display_guid(other._virtual_display_guid),
+      _virtual_display_active(other._virtual_display_active)
 #endif
   {
 #ifdef _WIN32
@@ -770,6 +807,8 @@ namespace proc {
       _lossless_backup = other._lossless_backup;
       _lossless_last_install_dir = std::move(other._lossless_last_install_dir);
       _lossless_last_exe_path = std::move(other._lossless_last_exe_path);
+      _virtual_display_guid = other._virtual_display_guid;
+      _virtual_display_active = other._virtual_display_active;
       other._lossless_profile_applied = false;
 #endif
     }
@@ -811,14 +850,14 @@ namespace proc {
         }
 
         auto runtime = playnite_launcher::lossless::capture_lossless_scaling_state();
-#ifdef _WIN32
+  #ifdef _WIN32
         if (!runtime.exe_path && metadata.configured_path) {
           try {
             runtime.exe_path = metadata.configured_path->wstring();
           } catch (...) {
           }
         }
-#endif
+  #endif
         if (_lossless_stop_requested.load(std::memory_order_acquire)) {
           return;
         }
@@ -992,6 +1031,8 @@ namespace proc {
     bool should_start_lossless_support = false;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
+    _virtual_display_active = false;
+    _virtual_display_guid = GUID {};
 #endif
     if (_app_id == input_only_app_id) {
       terminate(false, false);
@@ -1012,6 +1053,15 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
+    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
+      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
+        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
+      } else {
+        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+      }
+    } else {
+      launch_session->framegen_refresh_rate.reset();
+    }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -1178,16 +1228,16 @@ namespace proc {
         if (!vdisplayName.empty()) {
           BOOST_LOG(info) << "Virtual Display created at " << vdisplayName;
 
-          // Don't change display settings when no params are given
-          if (launch_session->width && launch_session->height && launch_session->fps) {
-            // Apply display settings
-            VDISPLAY::changeDisplaySettings(vdisplayName.c_str(), render_width, render_height, target_fps);
-          }
+          if (config::video.legacy_virtual_display_mode) {
+            if (launch_session->width && launch_session->height && launch_session->fps) {
+              VDISPLAY::legacy::changeDisplaySettings(vdisplayName.c_str(), render_width, render_height, target_fps);
+            }
 
-          // Check the ISOLATED DISPLAY configuration setting and rearrange the displays
-          if (config::video.isolated_virtual_display_option == true) {
-            // Apply the isolated display settings
-            VDISPLAY::changeDisplaySettings2(vdisplayName.c_str(), render_width, render_height, target_fps, true);
+            if (config::video.isolated_virtual_display_option) {
+              VDISPLAY::legacy::changeDisplaySettings2(vdisplayName.c_str(), render_width, render_height, target_fps, true);
+            }
+          } else if (config::video.isolated_virtual_display_option) {
+            BOOST_LOG(info) << "Skipping isolated virtual display adjustments because legacy mode is disabled.";
           }
 
           // Set virtual_display to true when everything went fine
@@ -1294,6 +1344,116 @@ namespace proc {
     } catch (...) {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
+
+#ifdef _WIN32
+    if (launch_session->virtual_display) {
+      if (launch_session->virtual_display_detach_with_app) {
+        const bool has_guid = std::any_of(
+          launch_session->virtual_display_guid_bytes.begin(),
+          launch_session->virtual_display_guid_bytes.end(),
+          [](std::uint8_t b) {
+            return b != 0;
+          }
+        );
+        if (has_guid) {
+          std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
+          _virtual_display_active = true;
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_detach_with_app = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_device_id.clear();
+        }
+      }
+    } else {
+      const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+      const bool app_requests_virtual = _app.virtual_screen;
+      bool request_virtual_display = config_requests_virtual || app_requests_virtual;
+
+      if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+        request_virtual_display = true;
+      }
+      if (request_virtual_display) {
+        if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+          initVDisplayDriver();
+        }
+
+        if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+          if (!config::video.adapter_name.empty()) {
+            (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+          } else {
+            (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
+          }
+
+          const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+          std::string display_uuid_source = persistent_uuid.string();
+          launch_session->unique_id = display_uuid_source;
+
+          std::memcpy(&_virtual_display_guid, persistent_uuid.b8, sizeof(_virtual_display_guid));
+          std::copy(persistent_uuid.b8, persistent_uuid.b8 + 16, launch_session->virtual_display_guid_bytes.begin());
+
+          uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
+          uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+          uint32_t vd_fps = 0;
+          if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+            vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
+          } else if (launch_session->fps > 0) {
+            vd_fps = static_cast<uint32_t>(launch_session->fps);
+          } else {
+            vd_fps = 60000u;
+          }
+          if (vd_fps < 1000u) {
+            vd_fps *= 1000u;
+          }
+
+          std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          if (client_label.empty()) {
+            client_label = "Sunshine";
+          }
+
+
+          auto display_name_wide = VDISPLAY::createVirtualDisplay(
+            display_uuid_source.c_str(),
+            client_label.c_str(),
+            vd_width,
+            vd_height,
+            vd_fps,
+            _virtual_display_guid
+          );
+
+          if (!display_name_wide.empty()) {
+            _virtual_display_active = true;
+            launch_session->virtual_display = true;
+            launch_session->virtual_display_detach_with_app = true;
+            if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
+              launch_session->virtual_display_device_id = *resolved_device;
+            } else {
+              launch_session->virtual_display_device_id.clear();
+            }
+            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+          } else {
+            launch_session->virtual_display = false;
+            launch_session->virtual_display_detach_with_app = false;
+            launch_session->virtual_display_guid_bytes.fill(0);
+            std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
+            launch_session->virtual_display_device_id.clear();
+            BOOST_LOG(warning) << "Virtual display creation failed.";
+          }
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_detach_with_app = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_device_id.clear();
+          BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
+        }
+      } else {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_detach_with_app = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+      }
+    }
+#endif
 
     auto clear_lossless_runtime_env = [&]() {
       _env[ENV_LOSSLESS_PROFILE] = "";
@@ -1725,7 +1885,8 @@ namespace proc {
     _app_launch_time = std::chrono::steady_clock::now();
 
 #ifdef _WIN32
-    auto resetHDRThread = std::thread([this, enable_hdr = launch_session->enable_hdr] {
+    if (config::video.legacy_virtual_display_mode) {
+      auto resetHDRThread = std::thread([this, enable_hdr = launch_session->enable_hdr] {
       // Windows doesn't seem to be able to set HDR correctly when a display is just connected / changed resolution,
       // so we have tooggle HDR for the virtual display manually after a delay.
       auto retryInterval = 200ms;
@@ -1752,24 +1913,24 @@ namespace proc {
       std::string currentDisplay = this->display_name;
       auto currentDisplayW = platf::from_utf8(currentDisplay);
 
-      initial_hdr = VDISPLAY::getDisplayHDRByName(currentDisplayW.c_str());
+      initial_hdr = VDISPLAY::legacy::getDisplayHDRByName(currentDisplayW.c_str());
 
       if (config::video.dd.hdr_option == config::video_t::dd_t::hdr_option_e::automatic) {
         mode_changed_display = currentDisplay;
 
         // Try turn off HDR whatever
         // As we always have to apply the workaround by turining off HDR first
-        VDISPLAY::setDisplayHDRByName(currentDisplayW.c_str(), false);
+        VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), false);
 
         if (enable_hdr) {
-          if (VDISPLAY::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
+          if (VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
             BOOST_LOG(info) << "HDR enabled for display " << currentDisplay;
           } else {
             BOOST_LOG(info) << "HDR enable failed for display " << currentDisplay;
           }
         }
       } else if (initial_hdr) {
-        if (VDISPLAY::setDisplayHDRByName(currentDisplayW.c_str(), false) && VDISPLAY::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
+        if (VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), false) && VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
           BOOST_LOG(info) << "HDR toggled successfully for display " << currentDisplay;
         } else {
           BOOST_LOG(info) << "HDR toggle failed for display " << currentDisplay;
@@ -1777,7 +1938,8 @@ namespace proc {
       }
     });
 
-    resetHDRThread.detach();
+      resetHDRThread.detach();
+    }
 #endif
 
     fg.disable();
@@ -1986,13 +2148,25 @@ namespace proc {
 
     _pipe.reset();
 
+#ifdef _WIN32
+    if (_virtual_display_active) {
+      if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) {
+        BOOST_LOG(warning) << "Failed to remove virtual display.";
+      } else {
+        BOOST_LOG(info) << "Virtual display removed.";
+      }
+      std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
+      _virtual_display_active = false;
+    }
+#endif
+
     bool has_run = _app_id > 0;
 
 #ifdef _WIN32
     // Revert HDR state
-    if (has_run && !mode_changed_display.empty()) {
+    if (config::video.legacy_virtual_display_mode && has_run && !mode_changed_display.empty()) {
       auto displayNameW = platf::from_utf8(mode_changed_display);
-      if (VDISPLAY::setDisplayHDRByName(displayNameW.c_str(), initial_hdr)) {
+      if (VDISPLAY::legacy::setDisplayHDRByName(displayNameW.c_str(), initial_hdr)) {
         BOOST_LOG(info) << "HDR reverted for display " << mode_changed_display;
       } else {
         BOOST_LOG(info) << "HDR revert failed for display " << mode_changed_display;
@@ -2597,22 +2771,27 @@ namespace proc {
             boost::erase_all(ctx.working_dir, "\"");
             ctx.working_dir += '\\';
 #endif
-          }
-          if (app_node.contains("image-path")) {
-            ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
-          }
+        }
+        if (app_node.contains("image-path")) {
+          ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
+        }
 
-          ctx.elevated = app_node.value("elevated", false);
-          ctx.auto_detach = app_node.value("auto-detach", true);
-          ctx.wait_all = app_node.value("wait-all", true);
-          ctx.exit_timeout = std::chrono::seconds {app_node.value("exit-timeout", 5)};
-          ctx.virtual_display = app_node.value("virtual-display", false);
-          ctx.scale_factor = app_node.value("scale-factor", 100);
-          ctx.use_app_identity = app_node.value("use-app-identity", false);
-          ctx.per_client_app_identity = app_node.value("per-client-app-identity", false);
-          ctx.allow_client_commands = app_node.value("allow-client-commands", true);
-          ctx.terminate_on_pause = app_node.value("terminate-on-pause", false);
-          ctx.gamepad = app_node.value("gamepad", "");
+        ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
+        ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
+        ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);
+        ctx.auto_detach = util::get_non_string_json_value<bool>(app_node, "auto-detach", true);
+        ctx.wait_all = util::get_non_string_json_value<bool>(app_node, "wait-all", true);
+        ctx.exit_timeout = std::chrono::seconds {util::get_non_string_json_value<int>(app_node, "exit-timeout", 10)};
+        ctx.virtual_display = util::get_non_string_json_value<bool>(app_node, "virtual-display", false);
+        ctx.virtual_display_primary = util::get_non_string_json_value<bool>(app_node, "virtual-display-primary", false);
+        ctx.scale_factor = util::get_non_string_json_value<int>(app_node, "scale-factor", 100);
+        ctx.use_app_identity = util::get_non_string_json_value<bool>(app_node, "use-app-identity", false);
+        ctx.per_client_app_identity = util::get_non_string_json_value<bool>(app_node, "per-client-app-identity", false);
+        ctx.allow_client_commands = util::get_non_string_json_value<bool>(app_node, "allow-client-commands", true);
+        ctx.terminate_on_pause = util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false);
+        ctx.gamepad = app_node.value("gamepad", "");
+        ctx.gen1_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false));
+        ctx.gen2_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen2-framegen-fix", false);
 
           ctx.playnite_id.clear();
           if (app_node.contains("playnite-id") && app_node["playnite-id"].is_string()) {
@@ -2639,6 +2818,38 @@ namespace proc {
             } catch (...) {
               ctx.playnite_fullscreen = false;
             }
+          }
+
+          ctx.lossless_scaling_framegen = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-framegen", false);
+          ctx.frame_generation_provider = "lossless-scaling";
+          if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
+            ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
+          }
+          ctx.lossless_scaling_target_fps.reset();
+          int lossless_target_fps = util::get_non_string_json_value<int>(app_node, "lossless-scaling-target-fps", 0);
+          if (lossless_target_fps > 0) {
+            ctx.lossless_scaling_target_fps = lossless_target_fps;
+          }
+          ctx.lossless_scaling_rtss_limit.reset();
+          int lossless_rtss_limit = util::get_non_string_json_value<int>(app_node, "lossless-scaling-rtss-limit", 0);
+          if (lossless_rtss_limit > 0) {
+            ctx.lossless_scaling_rtss_limit = lossless_rtss_limit;
+          }
+          ctx.lossless_scaling_profile = LOSSLESS_PROFILE_CUSTOM;
+          if (auto it = app_node.find("lossless-scaling-profile"); it != app_node.end() && it->is_string()) {
+            if (boost::iequals(it->get<std::string>(), LOSSLESS_PROFILE_RECOMMENDED)) {
+              ctx.lossless_scaling_profile = LOSSLESS_PROFILE_RECOMMENDED;
+            }
+          }
+          if (auto it = app_node.find("lossless-scaling-recommended"); it != app_node.end()) {
+            populate_lossless_overrides(*it, ctx.lossless_scaling_recommended);
+          }
+          if (auto it = app_node.find("lossless-scaling-custom"); it != app_node.end()) {
+            populate_lossless_overrides(*it, ctx.lossless_scaling_custom);
+          }
+          if (!ctx.lossless_scaling_framegen) {
+            ctx.lossless_scaling_target_fps.reset();
+            ctx.lossless_scaling_rtss_limit.reset();
           }
 
           // Calculate a unique application id.

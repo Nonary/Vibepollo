@@ -7,6 +7,9 @@
 #include "src/config.h"
 #include "src/rtsp.h"
 
+#include <display_device/types.h>
+#include <optional>
+
 #ifdef _WIN32
   // Bring in the Windows implementation in the correct namespace
   #include "src/platform/windows/display_helper_integration.h"
@@ -48,6 +51,10 @@ namespace display_helper_integration {
 
   inline std::string enumerate_devices_json() {
     return "[]";
+  }
+
+  inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
+    return std::nullopt;
   }
 }  // namespace display_helper_integration
 

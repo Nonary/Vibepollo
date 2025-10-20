@@ -29,6 +29,7 @@
     <!-- VBScripts for existing Apollo handling -->
     <Binary Id="AskUninstallApolloVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_apollo.vbs"/>
     <Binary Id="WaitForApolloUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_apollo_uninstall.vbs"/>
+    <Binary Id="AskRmGamepadVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_gamepad.vbs"/>
 
   </Fragment>
 
@@ -92,6 +93,7 @@
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
     <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
     <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -99,14 +101,16 @@
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
+    <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
     <CustomAction Id="StopSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Quiet start after repair for non-full UI; run at commit to avoid FilesInUse/reboot prompts -->
     <CustomAction Id="StartSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
     <!-- Quiet process kill and service removal for manual uninstalls -->
+    <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="UninstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
     <CustomAction Id="PruneButConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -120,11 +124,9 @@
                  Property="MigrateConfig"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\migrate-config.bat&quot;&quot;"/>
 
-
     <CustomAction Id="SetInstallSudovda"
                  Property="InstallSudovda"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\install.bat&quot;&quot;"/>
-
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
 
     <CustomAction Id="SetInstallGamepad"
                  Property="InstallGamepad"
@@ -145,17 +147,23 @@
                  Property="RestoreNvPrefsUndo"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C if exist &quot;[INSTALL_ROOT]sunshine.exe&quot; ( &quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo ) else ( exit /b 0 )"/>
 
-    <CustomAction Id="AskRemoveSudovda" BinaryKey="AskRmSudovdaVbs" VBScriptCall="AskRemoveSudoVda" Execute="immediate" Return="check" />
+    <CustomAction Id="AskRemoveSudovda" BinaryKey="AskRmSudovdaVbs" VBScriptCall="AskRemoveSudovda" Execute="immediate" Return="check" />
+    <CustomAction Id="AskRemoveGamepad" BinaryKey="AskRmGamepadVbs" VBScriptCall="AskRemoveGamepad" Execute="immediate" Return="check" />
     <CustomAction Id="SetUninstallSudovda"
                  Property="UninstallSudovda"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\uninstall.bat&quot;&quot;"/>
-
+    <CustomAction Id="SetUninstallGamepad"
+                 Property="UninstallGamepad"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;"/>
 
     <CustomAction Id="AskDeleteInstallDir" BinaryKey="AskDelInstDirVbs" VBScriptCall="AskDeleteInstallDir" Execute="immediate" Return="check" />
     <CustomAction Id="SetDeleteInstallDir"
                  Property="DeleteInstallDir"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT].&quot;"/>
     <!-- Immediate setter for quiet stop service -->
+    <CustomAction Id="SetStopSvcQuietImmediate"
+                 Property="StopSvcQuietImmediate"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $names=@('ApolloService','SunshineService','sunshinesvc'); foreach($n in $names){ $svc=Get-Service -Name $n -ErrorAction SilentlyContinue; if($svc){ if($svc.Status -ne 'Stopped'){ Stop-Service -Name $n -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
@@ -169,6 +177,9 @@
                  Property="StartSvcQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue; if(-not $svc){ $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue } if($svc -and $svc.Status -ne 'Running'){ Start-Service -Name $svc.Name -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } }&quot;"/>
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
+    <CustomAction Id="SetKillProcsQuietImmediate"
+                 Property="KillProcsQuietImmediate"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>

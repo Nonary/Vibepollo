@@ -7,9 +7,11 @@
 
 // standard includes
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,6 +19,7 @@
 #include <vector>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -33,8 +36,12 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
-#include "state_storage.h"
 #include "platform/common.h"
+#include "state_storage.h"
+#ifdef _WIN32
+  #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display.h"
+#endif
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -443,12 +450,24 @@ namespace nvhttp {
     launch_session->gen1_framegen_fix = false;
     launch_session->gen2_framegen_fix = false;
     launch_session->lossless_scaling_framegen = false;
+    launch_session->framegen_refresh_rate.reset();
     launch_session->lossless_scaling_target_fps.reset();
     launch_session->lossless_scaling_rtss_limit.reset();
     launch_session->frame_generation_provider = "lossless-scaling";
 #ifdef _WIN32
     launch_session->display_helper_applied = false;
 #endif
+    launch_session->device_name = named_cert_p->name.empty() ? config::nvhttp.sunshine_name : named_cert_p->name;
+    launch_session->virtual_display = false;
+    launch_session->virtual_display_detach_with_app = false;
+    launch_session->virtual_display_guid_bytes.fill(0);
+    launch_session->virtual_display_device_id.clear();
+    launch_session->app_metadata.reset();
+
+    auto client_name_arg = get_arg(args, "clientName", "");
+    if (launch_session->device_name.empty() && !client_name_arg.empty()) {
+      launch_session->device_name = client_name_arg;
+    }
 
     // If launched from client
     if (named_cert_p->uuid != http::unique_id) {
@@ -535,11 +554,28 @@ namespace nvhttp {
             launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
             launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
             launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
+            rtsp_stream::launch_session_t::app_metadata_t metadata;
+            metadata.id = app_ctx.id;
+            metadata.name = app_ctx.name;
+            metadata.virtual_screen = app_ctx.virtual_screen;
+            metadata.has_command = !app_ctx.cmd.empty();
+            metadata.has_playnite = !app_ctx.playnite_id.empty();
+            launch_session->app_metadata = std::move(metadata);
             break;
           }
         }
       } catch (...) {
       }
+    }
+
+    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
+      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
+        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
+      } else {
+        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+      }
+    } else {
+      launch_session->framegen_refresh_rate.reset();
     }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
@@ -1349,6 +1385,94 @@ namespace nvhttp {
     auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
 
+#ifdef _WIN32
+    const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    bool request_virtual_display = config_requests_virtual || metadata_requests_virtual;
+
+    // Auto-enable virtual display if no physical monitors are attached
+    if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+      BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
+      request_virtual_display = true;
+    }
+    if (request_virtual_display) {
+      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        proc::initVDisplayDriver();
+      }
+      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+        if (!config::video.adapter_name.empty()) {
+          (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        } else {
+          (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
+        }
+
+        const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+        std::string display_uuid_source = persistent_uuid.string();
+        launch_session->unique_id = display_uuid_source;
+
+        GUID virtual_display_guid {};
+        std::memcpy(&virtual_display_guid, persistent_uuid.b8, sizeof(virtual_display_guid));
+        std::copy_n(std::cbegin(persistent_uuid.b8), sizeof(persistent_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+
+        uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
+        uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+        uint32_t vd_fps = 0;
+        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+          vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
+        } else if (launch_session->fps > 0) {
+          vd_fps = static_cast<uint32_t>(launch_session->fps);
+        } else {
+          vd_fps = 60000u;
+        }
+        if (vd_fps < 1000u) {
+          vd_fps *= 1000u;
+        }
+
+        std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+        if (client_label.empty()) {
+          client_label = "Sunshine";
+        }
+
+        auto display_name_wide = VDISPLAY::createVirtualDisplay(
+          display_uuid_source.c_str(),
+          client_label.c_str(),
+          vd_width,
+          vd_height,
+          vd_fps,
+          virtual_display_guid
+        );
+
+        if (!display_name_wide.empty()) {
+          launch_session->virtual_display = true;
+          launch_session->virtual_display_detach_with_app = launch_session->appid > 0;
+          if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
+            launch_session->virtual_display_device_id = *resolved_device;
+          } else {
+            launch_session->virtual_display_device_id.clear();
+          }
+          BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+        } else {
+          launch_session->virtual_display = false;
+          launch_session->virtual_display_guid_bytes.fill(0);
+          launch_session->virtual_display_detach_with_app = false;
+          launch_session->virtual_display_device_id.clear();
+          BOOST_LOG(warning) << "Virtual display creation failed.";
+        }
+      } else {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_detach_with_app = false;
+        launch_session->virtual_display_device_id.clear();
+        BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus) << ")";
+      }
+    } else {
+      launch_session->virtual_display = false;
+      launch_session->virtual_display_guid_bytes.fill(0);
+      launch_session->virtual_display_detach_with_app = false;
+      launch_session->virtual_display_device_id.clear();
+    }
+#endif
+
     // The display should be restored in case something fails as there are no other sessions.
     if (rtsp_stream::session_count() == 0) {
       revert_display_configuration = true;
@@ -1479,6 +1603,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
+    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
     revert_display_configuration = false;
@@ -1592,6 +1717,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
 

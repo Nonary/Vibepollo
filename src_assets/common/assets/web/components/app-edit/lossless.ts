@@ -28,7 +28,12 @@ export const LOSSLESS_SCALING_OPTIONS: { label: string; value: LosslessScalingMo
   { label: 'Nearest Neighbour', value: 'nearest' },
 ];
 
-export const LOSSLESS_SCALING_SHARPENING = new Set<LosslessScalingMode>(['ls1', 'fsr', 'nis', 'sgsr']);
+export const LOSSLESS_SCALING_SHARPENING = new Set<LosslessScalingMode>([
+  'ls1',
+  'fsr',
+  'nis',
+  'sgsr',
+]);
 
 export const LOSSLESS_ANIME_SIZES: { label: string; value: Anime4kSize }[] = [
   { label: 'Small', value: 'S' },
@@ -38,10 +43,11 @@ export const LOSSLESS_ANIME_SIZES: { label: string; value: Anime4kSize }[] = [
   { label: 'Ultra Large', value: 'UL' },
 ];
 
-export const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> = [
-  { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
-  { label: 'Lossless Scaling', value: 'lossless-scaling' },
-];
+export const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> =
+  [
+    { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
+    { label: 'Lossless Scaling', value: 'lossless-scaling' },
+  ];
 
 export const LOSSLESS_PROFILE_DEFAULTS: Record<LosslessProfileKey, LosslessProfileDefaults> = {
   recommended: {

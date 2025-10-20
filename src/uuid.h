@@ -7,6 +7,7 @@
 // standard includes
 #include <cstdio>
 #include <random>
+#include <stdexcept>
 
 /**
  * @brief UUID utilities.
@@ -40,8 +41,7 @@ namespace uuid_util {
       return generate(engine);
     }
 
-    static uuid_t
-      parse(std::string &uuid_str) {
+    static uuid_t parse(const std::string &uuid_str) {
       if (uuid_str.length() != 36) {
         throw std::invalid_argument("Invalid UUID string length");
       }
@@ -50,7 +50,6 @@ namespace uuid_util {
       unsigned int temp16_1;
       unsigned int temp32_1, temp32_2;
 
-      // Parse UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
       unsigned int data1, data2;
       std::sscanf(
         uuid_str.c_str(),
@@ -63,11 +62,9 @@ namespace uuid_util {
         &temp32_2
       );
 
-      // Assign parsed values into uuid_t structure
       uuid.b16[2] = static_cast<std::uint16_t>(data1);
       uuid.b16[3] = static_cast<std::uint16_t>(data2);
 
-      // Manually splitting the last segments into bytes
       uuid.b8[8] = (temp16_1 >> 8) & 0xFF;
       uuid.b8[9] = temp16_1 & 0xFF;
       uuid.b8[10] = (temp32_1 >> 24) & 0xFF;
@@ -119,4 +116,6 @@ namespace uuid_util {
       return (b64[0] > other.b64[0] || (b64[0] == other.b64[0] && b64[1] > other.b64[1]));
     }
   };
+
+  using UUID = uuid_t;
 }  // namespace uuid_util

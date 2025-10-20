@@ -1870,6 +1870,7 @@ namespace confighttp {
     output_tree["appRunning"] = app_running;
     output_tree["paused"] = app_running && active == 0;
     output_tree["status"] = true;
+    output_tree["vdisplayStatus"] = static_cast<int>(proc::vDisplayDriverStatus);
     send_response(response, output_tree);
   }
 

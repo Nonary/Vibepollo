@@ -26,6 +26,8 @@ watch(
 
 const dummyPlugWikiUrl =
   'https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions';
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const usingVirtualDisplay = computed(() => config.output_name === VIRTUAL_DISPLAY_SELECTION);
 
 // ----- Types -----
 type RefreshRateOnly = {
@@ -247,6 +249,12 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
   if (s === '') return true; // empty allowed in some contexts
   return /^\d+(?:\.\d+)?$/.test(s) && isPositiveNumber(s);
 }
+
+// ----- Manual Enforcement Check -----
+// Check if manual resolution or refresh rate is enforced (which disables display overrides)
+const isManualEnforcementActive = computed(() => {
+  return config.dd_resolution_option === 'manual' || config.dd_refresh_rate_option === 'manual';
+});
 </script>
 
 <template>
@@ -263,7 +271,7 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
           </legend>
           <!-- Configuration option -->
           <div class="text-sm font-medium mb-2">{{ $t('config.dd_config_label') }}</div>
-          <n-radio-group v-model:value="config.dd_configuration_option">
+          <n-radio-group v-if="!usingVirtualDisplay" v-model:value="config.dd_configuration_option">
             <div class="grid gap-2">
               <n-radio
                 v-for="opt in ddConfigurationOptions"
@@ -402,6 +410,21 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
                 >
                   {{ $t('config.dd_display_overrides') }}
                 </label>
+
+                <transition name="fade">
+                  <div
+                    v-if="isManualEnforcementActive"
+                    class="rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3"
+                  >
+                    <p class="text-[11px] text-blue-900 dark:text-blue-100 space-y-1.5">
+                      <span class="flex items-start gap-2">
+                        <i class="fas fa-info-circle text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                        <span class="block">Overrides below are disabled while manual resolution or refresh rate is enforced. The manual settings always take priority.</span>
+                      </span>
+                    </p>
+                  </div>
+                </transition>
+
                 <div class="text-[11px] opacity-60 space-y-1">
                   <p>{{ $t('config.dd_mode_remapping_desc_1') }}</p>
                   <p>{{ $t('config.dd_mode_remapping_desc_2') }}</p>
@@ -615,11 +638,16 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 
                   <div
                     v-if="config.dd_resolution_option === 'manual'"
-                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                    class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
                   >
-                    <p class="text-[11px] opacity-60">
-                      {{ $t('config.dd_resolution_option_manual_desc') }}
-                    </p>
+                    <div class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                      <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
+                        <span class="flex items-start gap-2">
+                          <i class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                          <span class="block">{{ $t('config.dd_resolution_option_manual_desc') }}</span>
+                        </span>
+                      </p>
+                    </div>
                     <n-input
                       id="dd_manual_resolution"
                       v-model:value="config.dd_manual_resolution"
@@ -656,11 +684,16 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 
                   <div
                     v-if="config.dd_refresh_rate_option === 'manual'"
-                    class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                    class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
                   >
-                    <p class="text-[11px] opacity-60">
-                      {{ $t('config.dd_refresh_rate_option_manual_desc') }}
-                    </p>
+                    <div class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                      <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
+                        <span class="flex items-start gap-2">
+                          <i class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                          <span class="block">{{ $t('config.dd_refresh_rate_option_manual_desc') }}</span>
+                        </span>
+                      </p>
+                    </div>
                     <n-input
                       id="dd_manual_refresh_rate"
                       v-model:value="config.dd_manual_refresh_rate"

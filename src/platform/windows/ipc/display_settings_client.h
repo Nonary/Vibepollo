@@ -18,6 +18,9 @@ namespace platf::display_helper_client {
   // Export current OS display settings as a golden restore snapshot
   bool send_export_golden();
 
+  // Blacklist a display device_id from topology exports (prevents virtual display from being saved in topology)
+  bool send_blacklist(const std::string &device_id);
+  
   // Reset helper-side persistence/state (best-effort)
   bool send_reset();
 

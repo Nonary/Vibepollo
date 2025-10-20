@@ -7,6 +7,9 @@
 #include "src/config.h"
 #include "src/rtsp.h"
 
+#include <display_device/types.h>
+#include <optional>
+
 namespace display_helper_integration {
   // Launch the helper (if needed) and send APPLY derived from (video_config, session).
   // Returns true if the helper accepted the command; false to allow fallback.
@@ -21,6 +24,9 @@ namespace display_helper_integration {
 
   // Request the helper to reset its persistence/state.
   bool reset_persistence();
+
+  // Enumerate display devices via helper (or return nullopt on failure).
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices();
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json();

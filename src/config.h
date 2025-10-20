@@ -144,6 +144,7 @@ namespace config {
       hdr_option_e hdr_option;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
+      bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       mode_remapping_t mode_remapping;
       workarounds_t wa;
     } dd;
@@ -153,6 +154,7 @@ namespace config {
 
     std::string fallback_mode;
     bool isolated_virtual_display_option;
+    bool legacy_virtual_display_mode;
     bool ignore_encoder_probe_failure;
   };
 

@@ -16,9 +16,9 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <thread>
 
 // lib includes
 #include <boost/process/v1/child.hpp>
@@ -37,6 +37,11 @@
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
+
+namespace VDISPLAY {
+  enum class DRIVER_STATUS;
+}
+
 #endif
 
 #define VIRTUAL_DISPLAY_UUID "8902CB19-674A-403D-A587-41B092E900BA"
@@ -48,6 +53,7 @@ namespace proc {
 
 #ifdef _WIN32
   extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+  void initVDisplayDriver();
 #endif
 
   typedef config::prep_cmd_t cmd_t;
@@ -107,6 +113,7 @@ namespace proc {
     bool playnite_fullscreen;
     bool frame_gen_limiter_fix;
     bool elevated;
+    bool virtual_screen {false};
     bool auto_detach;
     bool wait_all;
     bool virtual_display;
@@ -198,6 +205,11 @@ namespace proc {
 
     boost::process::v1::child _process;
     boost::process::v1::group _process_group;
+
+#ifdef _WIN32
+    GUID _virtual_display_guid {};
+    bool _virtual_display_active {false};
+#endif
 
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;

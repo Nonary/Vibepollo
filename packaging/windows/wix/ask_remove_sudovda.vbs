@@ -1,7 +1,7 @@
 Function AskRemoveSudoVda()
     Dim resp
-resp = MsgBox("Do you want to remove the SudoVDA Virtual Display Driver?", vbQuestion + vbYesNo + vbDefaultButton2 + vbSystemModal + vbMsgBoxSetForeground, "Apollo")
+resp = MsgBox("Do you want to remove the Virtual Display Driver (SudoVDA)?", vbQuestion + vbYesNo + vbDefaultButton2 + vbSystemModal + vbMsgBoxSetForeground, "Apollo")
     If resp = vbYes Then
-        Session.Property("REMOVESUDOVDA") = "1"
+        Session.Property("REMOVEVIRTUALDISPLAYDRIVER") = "1"
     End If
 End Function

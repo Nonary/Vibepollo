@@ -515,6 +515,7 @@ namespace config {
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
+      true,  // activate_virtual_display
       {},  // mode_remapping
       {false, false}  // wa
     },  // display_device
@@ -524,6 +525,7 @@ namespace config {
 
     "1920x1080x60",  // fallback_mode
     false,  // isolated Display
+    false,  // legacy virtual display mode
     false,  // ignore_encoder_probe_failure
   };
 
@@ -1261,6 +1263,7 @@ namespace config {
       }
     }
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
+    bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
     // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
     bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
@@ -1279,6 +1282,7 @@ namespace config {
 
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
+    bool_f(vars, "legacy_virtual_display_mode", video.legacy_virtual_display_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
 
     // Windows-only frame limiter options
@@ -1669,6 +1673,7 @@ namespace config {
       const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
+      const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
 
@@ -1701,6 +1706,7 @@ namespace config {
                                      (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                     (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                      (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
 
