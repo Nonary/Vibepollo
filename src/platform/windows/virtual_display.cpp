@@ -12,6 +12,7 @@
 #include <combaseapi.h>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <dxgi.h>
 #include <dxgi1_6.h>
 #include <filesystem>
@@ -30,6 +31,7 @@
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <winreg.h>
 #include <wrl/client.h>
 
 namespace fs = std::filesystem;
@@ -80,10 +82,105 @@ namespace VDISPLAY {
       return upper;
     }
 
+    std::optional<uint32_t> read_virtual_display_dpi_value() {
+      HKEY root = nullptr;
+      if (RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            L"Control Panel\\Desktop\\PerMonitorSettings",
+            0,
+            KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
+            &root
+          ) != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      std::optional<uint32_t> result;
+      wchar_t name[256];
+      for (DWORD index = 0;; ++index) {
+        DWORD name_len = _countof(name);
+        const LSTATUS enum_status = RegEnumKeyExW(root, index, name, &name_len, nullptr, nullptr, nullptr, nullptr);
+        if (enum_status == ERROR_NO_MORE_ITEMS) {
+          break;
+        }
+        if (enum_status != ERROR_SUCCESS) {
+          continue;
+        }
+        if (name_len < 3 || std::wcsncmp(name, L"SMK", 3) != 0) {
+          continue;
+        }
+
+        DWORD value = 0;
+        DWORD value_size = sizeof(value);
+        const LSTATUS query_status = RegGetValueW(root, name, L"DpiValue", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
+        if (query_status == ERROR_SUCCESS) {
+          result = value;
+          break;
+        }
+      }
+
+      RegCloseKey(root);
+      return result;
+    }
+
+    bool apply_virtual_display_dpi_value(uint32_t value) {
+      HKEY root = nullptr;
+      if (RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            L"Control Panel\\Desktop\\PerMonitorSettings",
+            0,
+            KEY_ENUMERATE_SUB_KEYS | KEY_SET_VALUE,
+            &root
+          ) != ERROR_SUCCESS) {
+        return false;
+      }
+
+      bool applied = false;
+      wchar_t name[256];
+      for (DWORD index = 0;; ++index) {
+        DWORD name_len = _countof(name);
+        const LSTATUS enum_status = RegEnumKeyExW(root, index, name, &name_len, nullptr, nullptr, nullptr, nullptr);
+        if (enum_status == ERROR_NO_MORE_ITEMS) {
+          break;
+        }
+        if (enum_status != ERROR_SUCCESS) {
+          continue;
+        }
+        if (name_len < 3 || std::wcsncmp(name, L"SMK", 3) != 0) {
+          continue;
+        }
+
+        HKEY subkey = nullptr;
+        if (RegOpenKeyExW(root, name, 0, KEY_SET_VALUE, &subkey) != ERROR_SUCCESS) {
+          continue;
+        }
+
+        const DWORD data = value;
+        const auto status = RegSetValueExW(
+          subkey,
+          L"DpiValue",
+          0,
+          REG_DWORD,
+          reinterpret_cast<const BYTE *>(&data),
+          sizeof(data)
+        );
+        RegCloseKey(subkey);
+        if (status == ERROR_SUCCESS) {
+          applied = true;
+        }
+      }
+
+      RegCloseKey(root);
+      if (applied) {
+        printf("[SUDOVDA] Applied cached virtual display DPI value: %u\n", static_cast<unsigned int>(value));
+      }
+      return applied;
+    }
+
     struct VirtualDisplayCache {
       struct entry_t {
         std::wstring display_name;
         std::string device_id;
+        std::optional<uint32_t> dpi_value;
       };
 
       std::mutex mutex;
@@ -127,6 +224,9 @@ namespace VDISPLAY {
           if (auto devid = json.find("device_id"); devid != json.end() && devid->is_string()) {
             tmp.device_id = devid->get<std::string>();
           }
+          if (auto dpi = json.find("dpi_value"); dpi != json.end() && dpi->is_number_unsigned()) {
+            tmp.dpi_value = static_cast<uint32_t>(dpi->get<uint64_t>());
+          }
 
           if (!tmp.display_name.empty() || !tmp.device_id.empty()) {
             entry = std::move(tmp);
@@ -151,6 +251,9 @@ namespace VDISPLAY {
           }
           if (!entry->device_id.empty()) {
             json["device_id"] = entry->device_id;
+          }
+          if (entry->dpi_value) {
+            json["dpi_value"] = *entry->dpi_value;
           }
 
           fs::create_directories(path.parent_path());
@@ -487,6 +590,9 @@ namespace VDISPLAY {
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
       if (cached_entry && !cached_entry->display_name.empty()) {
+        if (cached_entry->dpi_value) {
+          (void) apply_virtual_display_dpi_value(*cached_entry->dpi_value);
+        }
         auto reuse_name = cached_entry->display_name;
         auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
 
@@ -494,6 +600,11 @@ namespace VDISPLAY {
         updated.display_name = std::move(reuse_name);
         if (device_id && !device_id->empty()) {
           updated.device_id = *device_id;
+        }
+        if (auto dpi = read_virtual_display_dpi_value()) {
+          updated.dpi_value = *dpi;
+        } else {
+          updated.dpi_value = cached_entry->dpi_value;
         }
         VirtualDisplayCache::instance().set_entry(std::move(updated));
 
@@ -522,6 +633,10 @@ namespace VDISPLAY {
     wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", deviceName);
     printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, fps);
 
+    if (cached_entry && cached_entry->dpi_value) {
+      (void) apply_virtual_display_dpi_value(*cached_entry->dpi_value);
+    }
+
     std::optional<std::string> device_id;
     if (auto resolved = resolveVirtualDisplayDeviceId(deviceName)) {
       device_id = *resolved;
@@ -531,6 +646,11 @@ namespace VDISPLAY {
     cache_entry.display_name = deviceName;
     if (device_id && !device_id->empty()) {
       cache_entry.device_id = *device_id;
+    }
+    if (auto dpi = read_virtual_display_dpi_value()) {
+      cache_entry.dpi_value = *dpi;
+    } else if (cached_entry && cached_entry->dpi_value) {
+      cache_entry.dpi_value = cached_entry->dpi_value;
     }
     VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
 
