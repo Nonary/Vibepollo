@@ -155,11 +155,7 @@ namespace video {
       }
 
       void ensure_guid() {
-        if (auto cached = VDISPLAY::cachedVirtualDisplayUuid()) {
-          std::memcpy(&display_guid_, cached->b8, sizeof(display_guid_));
-          return;
-        }
-        auto uuid = uuid_util::uuid_t::generate();
+        auto uuid = VDISPLAY::persistentVirtualDisplayUuid();
         std::memcpy(&display_guid_, uuid.b8, sizeof(display_guid_));
       }
 

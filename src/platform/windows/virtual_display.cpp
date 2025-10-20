@@ -1,11 +1,14 @@
 #include "virtual_display.h"
 
 #include "src/display_helper_integration.h"
+#include "src/state_storage.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/misc.h"
 #include "src/uuid.h"
 
 #include <cctype>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 #include <combaseapi.h>
 #include <cstdlib>
 #include <cstring>
@@ -77,40 +80,10 @@ namespace VDISPLAY {
       return upper;
     }
 
-    std::string guid_to_string(const GUID &guid) {
-      wchar_t buffer[64] {};
-      if (StringFromGUID2(guid, buffer, static_cast<int>(_countof(buffer))) <= 0) {
-        return {};
-      }
-      return platf::to_utf8(std::wstring(buffer));
-    }
-
-    std::optional<GUID> string_to_guid(const std::string &text) {
-      if (text.empty()) {
-        return std::nullopt;
-      }
-      auto wide = platf::from_utf8(text);
-      GUID parsed {};
-      if (FAILED(CLSIDFromString(wide.c_str(), &parsed))) {
-        return std::nullopt;
-      }
-      return parsed;
-    }
-
-    bool force_remove_virtual_display() {
-      static const bool force = []() {
-        const char *env = std::getenv("SUNSHINE_VDISPLAY_FORCE_REMOVE");
-        return env && env[0] != '\0' && env[0] != '0';
-      }();
-      return force;
-    }
-
     struct VirtualDisplayCache {
       struct entry_t {
         std::wstring display_name;
         std::string device_id;
-        std::optional<GUID> guid;
-        std::optional<uint32_t> fps;
       };
 
       std::mutex mutex;
@@ -154,23 +127,8 @@ namespace VDISPLAY {
           if (auto devid = json.find("device_id"); devid != json.end() && devid->is_string()) {
             tmp.device_id = devid->get<std::string>();
           }
-          if (auto guid_it = json.find("guid"); guid_it != json.end() && guid_it->is_string()) {
-            if (auto parsed = string_to_guid(guid_it->get<std::string>())) {
-              tmp.guid = *parsed;
-            }
-          }
-          if (auto fps_it = json.find("fps"); fps_it != json.end() && fps_it->is_number()) {
-            try {
-              const auto value = fps_it->get<int64_t>();
-              if (value > 0 && value <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-                tmp.fps = static_cast<uint32_t>(value);
-              }
-            } catch (...) {
-              tmp.fps.reset();
-            }
-          }
 
-          if (!tmp.display_name.empty() || tmp.guid) {
+          if (!tmp.display_name.empty() || !tmp.device_id.empty()) {
             entry = std::move(tmp);
           }
         } catch (...) {
@@ -193,12 +151,6 @@ namespace VDISPLAY {
           }
           if (!entry->device_id.empty()) {
             json["device_id"] = entry->device_id;
-          }
-          if (entry->guid) {
-            json["guid"] = guid_to_string(*entry->guid);
-          }
-          if (entry->fps) {
-            json["fps"] = *entry->fps;
           }
 
           fs::create_directories(path.parent_path());
@@ -223,23 +175,127 @@ namespace VDISPLAY {
         entry = std::move(value);
         save_locked();
       }
+    };
 
-      void clear_entry() {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        entry.reset();
-        save_locked();
-      }
+    namespace pt = boost::property_tree;
 
-      std::optional<GUID> cached_guid() {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        if (entry && entry->guid) {
-          return entry->guid;
-        }
+    std::optional<uuid_util::uuid_t> parse_uuid_string(const std::string &value) {
+      if (value.empty()) {
         return std::nullopt;
       }
-    };
+      try {
+        return uuid_util::uuid_t::parse(value);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    std::optional<uuid_util::uuid_t> load_guid_from_state_locked() {
+      statefile::migrate_recent_state_keys();
+      const auto &path_str = statefile::vibeshine_state_path();
+      if (path_str.empty()) {
+        return std::nullopt;
+      }
+
+      const fs::path path(path_str);
+      if (!fs::exists(path)) {
+        return std::nullopt;
+      }
+
+      try {
+        pt::ptree tree;
+        pt::read_json(path.string(), tree);
+        if (auto guid_str = tree.get_optional<std::string>("root.virtual_display_guid")) {
+          if (auto parsed = parse_uuid_string(*guid_str)) {
+            return parsed;
+          }
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    std::optional<uuid_util::uuid_t> load_guid_from_legacy_cache_locked() {
+      const auto path = VirtualDisplayCache::storage_path();
+      if (!fs::exists(path)) {
+        return std::nullopt;
+      }
+
+      try {
+        std::ifstream stream(path, std::ios::binary);
+        if (!stream) {
+          return std::nullopt;
+        }
+        nlohmann::json json = nlohmann::json::parse(stream, nullptr, false);
+        if (!json.is_object()) {
+          return std::nullopt;
+        }
+        if (auto guid_it = json.find("guid"); guid_it != json.end() && guid_it->is_string()) {
+          if (auto parsed = parse_uuid_string(guid_it->get<std::string>())) {
+            return parsed;
+          }
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    void write_guid_to_state_locked(const uuid_util::uuid_t &uuid) {
+      const auto &path_str = statefile::vibeshine_state_path();
+      if (path_str.empty()) {
+        return;
+      }
+
+      const fs::path path(path_str);
+      pt::ptree tree;
+      try {
+        if (fs::exists(path)) {
+          pt::read_json(path.string(), tree);
+        }
+      } catch (...) {
+        tree = pt::ptree {};
+      }
+
+      tree.put("root.virtual_display_guid", uuid.string());
+
+      try {
+        if (!path.empty()) {
+          auto dir = path;
+          dir.remove_filename();
+          if (!dir.empty()) {
+            fs::create_directories(dir);
+          }
+        }
+        pt::write_json(path.string(), tree);
+      } catch (...) {
+      }
+    }
+
+    uuid_util::uuid_t ensure_persistent_guid() {
+      static std::mutex guid_mutex;
+      static std::optional<uuid_util::uuid_t> cached;
+
+      std::lock_guard<std::mutex> lg(guid_mutex);
+      if (cached) {
+        return *cached;
+      }
+
+      if (auto existing = load_guid_from_state_locked()) {
+        cached = *existing;
+        return *cached;
+      }
+
+      if (auto legacy = load_guid_from_legacy_cache_locked()) {
+        cached = *legacy;
+        write_guid_to_state_locked(*legacy);
+        return *cached;
+      }
+
+      auto generated = uuid_util::uuid_t::generate();
+      cached = generated;
+      write_guid_to_state_locked(generated);
+      return *cached;
+    }
   }  // namespace
 
   // {dff7fd29-5b75-41d1-9731-b32a17a17104}
@@ -427,73 +483,26 @@ namespace VDISPLAY {
     }
 
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
-    std::optional<VirtualDisplayCache::entry_t> previous_entry;
-    bool cache_cleared_for_refresh_change = false;
-    if (cached_entry && cached_entry->guid && IsEqualGUID(*cached_entry->guid, guid)) {
-      const bool fps_known = cached_entry->fps.has_value();
-      const uint32_t cached_fps = cached_entry->fps.value_or(0u);
-      previous_entry = *cached_entry;
-      if (!fps_known || cached_fps != fps) {
-        printf(
-          "[SUDOVDA] Virtual display refresh change detected (cached=%u, requested=%u); recreating instance.\n",
-          static_cast<unsigned int>(cached_fps),
-          static_cast<unsigned int>(fps)
-        );
-        if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
-          VirtualDisplayCache::instance().clear_entry();
-          cached_entry.reset();
-          cache_cleared_for_refresh_change = true;
-          Sleep(50);
-        } else {
-          const DWORD remove_error = GetLastError();
-          printf(
-            "[SUDOVDA] Failed to remove virtual display for refresh change (error=%lu).\n",
-            static_cast<unsigned long>(remove_error)
-          );
-        }
-      }
-    }
-
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
-      if (cache_cleared_for_refresh_change && previous_entry) {
-        VirtualDisplayCache::instance().set_entry(*previous_entry);
-      }
-      if (!force_remove_virtual_display()) {
-        if (auto cached = VirtualDisplayCache::instance().get_entry()) {
-          const bool guid_matches = cached->guid && IsEqualGUID(*cached->guid, guid);
-          const bool fps_known = cached->fps.has_value();
-          const bool fps_matches = fps_known && *cached->fps == fps;
-          if (guid_matches && (!fps_known || !fps_matches)) {
-            printf("[SUDOVDA] Skipping reuse of virtual display due to refresh mismatch.\n");
-          } else if (fps_known && !fps_matches) {
-            printf(
-              "[SUDOVDA] Skipping reuse of cached virtual display with mismatched refresh (%u != %u).\n",
-              static_cast<unsigned int>(*cached->fps),
-              static_cast<unsigned int>(fps)
-            );
-          } else if (!cached->display_name.empty() && (!fps_known || fps_matches)) {
-            auto reuse_name = cached->display_name;
-            auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
+      if (cached_entry && !cached_entry->display_name.empty()) {
+        auto reuse_name = cached_entry->display_name;
+        auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
 
-            VirtualDisplayCache::entry_t updated;
-            updated.display_name = reuse_name;
-            if (device_id && !device_id->empty()) {
-              updated.device_id = *device_id;
-            }
-            updated.guid = guid;
-            updated.fps = cached->fps;
-            VirtualDisplayCache::instance().set_entry(std::move(updated));
-
-            wprintf(
-              L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
-              static_cast<unsigned long>(error_code),
-              reuse_name.c_str()
-            );
-            return reuse_name;
-          }
+        VirtualDisplayCache::entry_t updated;
+        updated.display_name = std::move(reuse_name);
+        if (device_id && !device_id->empty()) {
+          updated.device_id = *device_id;
         }
+        VirtualDisplayCache::instance().set_entry(std::move(updated));
+
+        wprintf(
+          L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
+          static_cast<unsigned long>(error_code),
+          cached_entry->display_name.c_str()
+        );
+        return cached_entry->display_name;
       }
       printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
       return std::wstring();
@@ -523,16 +532,14 @@ namespace VDISPLAY {
     if (device_id && !device_id->empty()) {
       cache_entry.device_id = *device_id;
     }
-    cache_entry.guid = guid;
-    cache_entry.fps = fps;
     VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
 
     return std::wstring(deviceName);
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
-    if (!force_remove_virtual_display()) {
-      printf("[SUDOVDA] Keeping virtual display active to preserve Windows settings.\n");
+    if (!has_active_physical_display()) {
+      printf("[SUDOVDA] No physical displays detected; keeping virtual display active.\n");
       return true;
     }
 
@@ -541,11 +548,11 @@ namespace VDISPLAY {
     }
 
     if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
-      VirtualDisplayCache::instance().clear_entry();
       printf("[SUDOVDA] Virtual display removed successfully.\n");
       return true;
     }
 
+    printf("[SUDOVDA] Failed to remove virtual display (error=%lu).\n", static_cast<unsigned long>(GetLastError()));
     return false;
   }
 
@@ -697,22 +704,6 @@ bool VDISPLAY::should_auto_enable_virtual_display() {
   return true;
 }
 
-std::optional<uuid_util::uuid_t> VDISPLAY::cachedVirtualDisplayUuid() {
-  if (force_remove_virtual_display()) {
-    return std::nullopt;
-  }
-
-  const auto cached_guid = VirtualDisplayCache::instance().cached_guid();
-  if (!cached_guid) {
-    return std::nullopt;
-  }
-
-  uuid_util::uuid_t out {};
-  static_assert(sizeof(out.b8) == sizeof(GUID), "GUID size mismatch");
-  std::memcpy(out.b8, &*cached_guid, sizeof(GUID));
-  return out;
-}
-
-bool VDISPLAY::shouldForceVirtualDisplayRemove() {
-  return force_remove_virtual_display();
+uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
+  return ensure_persistent_guid();
 }

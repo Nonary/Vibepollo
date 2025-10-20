@@ -969,12 +969,10 @@ namespace nvhttp {
     auto launch_session = make_launch_session(host_audio, args);
 
 #ifdef _WIN32
-    bool request_virtual_display = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-    if (!request_virtual_display) {
-      if (launch_session->app_metadata && launch_session->app_metadata->virtual_screen) {
-        request_virtual_display = true;
-      }
-    }
+    const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    bool request_virtual_display = config_requests_virtual || metadata_requests_virtual;
+
     // Auto-enable virtual display if no physical monitors are attached
     if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
       BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
@@ -991,34 +989,13 @@ namespace nvhttp {
           (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
         }
 
-        uuid_util::uuid_t parsed_uuid {};
-        bool parsed = false;
-        std::string display_uuid_source = launch_session->unique_id;
-        if (!display_uuid_source.empty()) {
-          try {
-            parsed_uuid = uuid_util::uuid_t::parse(display_uuid_source);
-            parsed = true;
-          } catch (...) {
-            parsed = false;
-          }
-        }
-        if (!VDISPLAY::shouldForceVirtualDisplayRemove()) {
-          if (auto cached_uuid = VDISPLAY::cachedVirtualDisplayUuid()) {
-            parsed_uuid = *cached_uuid;
-            display_uuid_source = parsed_uuid.string();
-            launch_session->unique_id = display_uuid_source;
-            parsed = true;
-          }
-        }
-        if (!parsed) {
-          parsed_uuid = uuid_util::uuid_t::generate();
-          display_uuid_source = parsed_uuid.string();
-          launch_session->unique_id = display_uuid_source;
-        }
+        const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+        std::string display_uuid_source = persistent_uuid.string();
+        launch_session->unique_id = display_uuid_source;
 
         GUID virtual_display_guid {};
-        std::memcpy(&virtual_display_guid, parsed_uuid.b8, sizeof(virtual_display_guid));
-        std::copy_n(std::cbegin(parsed_uuid.b8), sizeof(parsed_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        std::memcpy(&virtual_display_guid, persistent_uuid.b8, sizeof(virtual_display_guid));
+        std::copy_n(std::cbegin(persistent_uuid.b8), sizeof(persistent_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
