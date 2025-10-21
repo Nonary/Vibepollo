@@ -356,7 +356,42 @@ namespace nvhttp {
     }
   }
 
-  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args) {
+  // Thread-local storage for peer certificate during SSL verification
+  thread_local crypto::x509_t tl_peer_certificate;
+
+  std::string get_client_uuid_from_peer_cert(const crypto::x509_t &client_cert, std::string *client_name_out = nullptr) {
+    if (!client_cert) {
+      BOOST_LOG(debug) << "No client certificate available";
+      return {};
+    }
+
+    auto client_cert_signature = crypto::signature(const_cast<X509 *>(client_cert.get()));
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      auto stored_x509 = crypto::x509(named_cert.cert);
+      if (stored_x509) {
+        auto stored_signature = crypto::signature(stored_x509.get());
+        if (stored_signature == client_cert_signature) {
+          BOOST_LOG(debug) << "Found matching client UUID: " << named_cert.uuid << " for client: " << named_cert.name;
+          if (client_name_out) {
+            *client_name_out = named_cert.name;
+          }
+          return named_cert.uuid;
+        }
+      }
+    }
+
+    BOOST_LOG(debug) << "No matching client UUID found for certificate";
+    return {};
+  }
+
+  std::string get_client_uuid_from_request(req_https_t request, std::string *client_name_out = nullptr) {
+    // Try to use the peer certificate that was stored during SSL verification
+    return get_client_uuid_from_peer_cert(tl_peer_certificate, client_name_out);
+  }
+
+  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args, req_https_t request = nullptr) {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
@@ -372,6 +407,12 @@ namespace nvhttp {
     launch_session->virtual_display_guid_bytes.fill(0);
     launch_session->virtual_display_device_id.clear();
     launch_session->app_metadata.reset();
+    launch_session->client_uuid.clear();
+    launch_session->client_name.clear();
+
+    if (request) {
+      launch_session->client_uuid = get_client_uuid_from_request(request, &launch_session->client_name);
+    }
 
     auto client_name_arg = get_arg(args, "clientName", "");
     if (!client_name_arg.empty()) {
@@ -998,7 +1039,7 @@ namespace nvhttp {
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
-    auto launch_session = make_launch_session(host_audio, args);
+    auto launch_session = make_launch_session(host_audio, args, request);
 
 #ifdef _WIN32
     const auto config_mode = config::video.virtual_display_mode;
@@ -1059,11 +1100,28 @@ namespace nvhttp {
           launch_session->unique_id = session_uuid.string();
         }
 
-        const std::string display_uuid_source = session_uuid.string();
+        std::string display_uuid_source;
+        if (!shared_mode && !launch_session->client_uuid.empty()) {
+          display_uuid_source = launch_session->client_uuid;
+          BOOST_LOG(debug) << "Using client UUID for virtual display: " << display_uuid_source;
+        } else {
+          display_uuid_source = session_uuid.string();
+          BOOST_LOG(debug) << "Using session UUID for virtual display: " << display_uuid_source;
+        }
 
         GUID virtual_display_guid {};
-        std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
-        std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        if (!shared_mode && !launch_session->client_uuid.empty()) {
+          if (auto client_uuid_parsed = parse_uuid(launch_session->client_uuid)) {
+            std::memcpy(&virtual_display_guid, client_uuid_parsed->b8, sizeof(virtual_display_guid));
+            std::copy_n(std::cbegin(client_uuid_parsed->b8), sizeof(client_uuid_parsed->b8), launch_session->virtual_display_guid_bytes.begin());
+          } else {
+            std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+            std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+          }
+        } else {
+          std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+          std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        }
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
@@ -1083,7 +1141,14 @@ namespace nvhttp {
         if (shared_mode) {
           client_label = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
         } else {
-          client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          // Prefer client name if available (from paired client)
+          if (!launch_session->client_name.empty()) {
+            client_label = launch_session->client_name;
+          } else if (!launch_session->device_name.empty()) {
+            client_label = launch_session->device_name;
+          } else {
+            client_label = config::nvhttp.sunshine_name;
+          }
           if (client_label.empty()) {
             client_label = "Sunshine";
           }
@@ -1230,7 +1295,7 @@ namespace nvhttp {
     }
     // Prevent interleaving with hot-apply while we prep/resume a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
-    const auto launch_session = make_launch_session(host_audio, args);
+    const auto launch_session = make_launch_session(host_audio, args, request);
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at
@@ -1356,7 +1421,22 @@ namespace nvhttp {
         SSL_get_peer_certificate(ssl)
 #endif
       };
-      if (!x509) {
+      
+      // Store peer certificate in thread-local storage for use in request handlers
+      if (x509) {
+        tl_peer_certificate = std::move(x509);
+      }
+      
+      // Re-fetch for verification logic
+      crypto::x509_t x509_verify {
+#if OPENSSL_VERSION_MAJOR >= 3
+        SSL_get1_peer_certificate(ssl)
+#else
+        SSL_get_peer_certificate(ssl)
+#endif
+      };
+      
+      if (!x509_verify) {
         BOOST_LOG(info) << "unknown -- denied"sv;
         return 0;
       }
@@ -1366,7 +1446,7 @@ namespace nvhttp {
       auto fg = util::fail_guard([&]() {
         char subject_name[256];
 
-        X509_NAME_oneline(X509_get_subject_name(x509.get()), subject_name, sizeof(subject_name));
+        X509_NAME_oneline(X509_get_subject_name(x509_verify.get()), subject_name, sizeof(subject_name));
 
         BOOST_LOG(verbose) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
       });
@@ -1381,7 +1461,7 @@ namespace nvhttp {
         cert_chain.add(std::move(cert));
       }
 
-      auto err_str = cert_chain.verify(x509.get());
+      auto err_str = cert_chain.verify(x509_verify.get());
       if (err_str) {
         BOOST_LOG(warning) << "SSL Verification error :: "sv << err_str;
 
