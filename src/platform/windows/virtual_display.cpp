@@ -7,6 +7,7 @@
 #include "src/uuid.h"
 
 #include <cctype>
+#include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <combaseapi.h>
@@ -40,6 +41,76 @@ using namespace SUDOVDA;
 
 namespace VDISPLAY {
   namespace {
+    struct ActiveVirtualDisplayTracker {
+      void add(const uuid_util::uuid_t &guid) {
+        std::lock_guard<std::mutex> lg(mutex);
+        if (std::find(guids.begin(), guids.end(), guid) == guids.end()) {
+          guids.push_back(guid);
+        }
+      }
+
+      void remove(const uuid_util::uuid_t &guid) {
+        std::lock_guard<std::mutex> lg(mutex);
+        auto it = std::remove(guids.begin(), guids.end(), guid);
+        if (it != guids.end()) {
+          guids.erase(it, guids.end());
+        }
+      }
+
+      std::vector<uuid_util::uuid_t> other_than(const uuid_util::uuid_t &guid) {
+        std::lock_guard<std::mutex> lg(mutex);
+        std::vector<uuid_util::uuid_t> result;
+        result.reserve(guids.size());
+        for (const auto &entry : guids) {
+          if (!(entry == guid)) {
+            result.push_back(entry);
+          }
+        }
+        return result;
+      }
+
+     private:
+      std::mutex mutex;
+      std::vector<uuid_util::uuid_t> guids;
+    };
+
+    ActiveVirtualDisplayTracker &active_virtual_display_tracker() {
+      static ActiveVirtualDisplayTracker tracker;
+      return tracker;
+    }
+
+    uuid_util::uuid_t guid_to_uuid(const GUID &guid) {
+      uuid_util::uuid_t uuid {};
+      std::memcpy(uuid.b8, &guid, sizeof(uuid.b8));
+      return uuid;
+    }
+
+    GUID uuid_to_guid(const uuid_util::uuid_t &uuid) {
+      GUID guid {};
+      std::memcpy(&guid, uuid.b8, sizeof(guid));
+      return guid;
+    }
+
+    void track_virtual_display_created(const uuid_util::uuid_t &guid) {
+      active_virtual_display_tracker().add(guid);
+    }
+
+    void track_virtual_display_removed(const uuid_util::uuid_t &guid) {
+      active_virtual_display_tracker().remove(guid);
+    }
+
+    std::vector<uuid_util::uuid_t> collect_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
+      return active_virtual_display_tracker().other_than(guid);
+    }
+
+    void teardown_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
+      auto conflicts = collect_conflicting_virtual_displays(guid);
+      for (const auto &entry : conflicts) {
+        GUID native_guid = uuid_to_guid(entry);
+        (void) removeVirtualDisplay(native_guid);
+      }
+    }
+
     bool equals_ci(const std::string &lhs, const std::string &rhs) {
       if (lhs.size() != rhs.size()) {
         return false;
@@ -622,6 +693,8 @@ namespace VDISPLAY {
     uuid_util::uuid_t requested_uuid {};
     std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
 
+    teardown_conflicting_virtual_displays(requested_uuid);
+
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
@@ -651,6 +724,7 @@ namespace VDISPLAY {
           static_cast<unsigned long>(error_code),
           cached_entry->display_name.c_str()
         );
+        track_virtual_display_created(requested_uuid);
         return cached_entry->display_name;
       }
       printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
@@ -692,6 +766,7 @@ namespace VDISPLAY {
     }
     VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
     write_guid_to_state_locked(requested_uuid);
+    track_virtual_display_created(requested_uuid);
 
     return std::wstring(deviceName);
   }
@@ -711,12 +786,18 @@ namespace VDISPLAY {
       return false;
     }
 
-    if (RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid)) {
+    const bool removed = RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid);
+    if (removed) {
       printf("[SUDOVDA] Virtual display removed successfully.\n");
+      track_virtual_display_removed(guid_to_uuid(guid));
       return true;
     }
 
-    printf("[SUDOVDA] Failed to remove virtual display (error=%lu).\n", static_cast<unsigned long>(GetLastError()));
+    const DWORD error_code = GetLastError();
+    if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_INVALID_PARAMETER) {
+      track_virtual_display_removed(guid_to_uuid(guid));
+    }
+    printf("[SUDOVDA] Failed to remove virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
     return false;
   }
 
