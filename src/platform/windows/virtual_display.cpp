@@ -777,26 +777,59 @@ namespace VDISPLAY {
       VirtualDisplayCache::instance().update_dpi(current_dpi);
     }
 
-    if (!has_active_physical_display()) {
-      printf("[SUDOVDA] No physical displays detected; keeping virtual display active.\n");
-      return true;
-    }
+    const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
+    bool opened_handle = false;
 
-    if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
+    auto ensure_handle = [&]() -> bool {
+      if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
+        return true;
+      }
+      if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+        printf("[SUDOVDA] Failed to open driver while removing virtual display.\n");
+        return false;
+      }
+      opened_handle = true;
+      return true;
+    };
+
+    auto perform_remove = [&]() -> std::pair<bool, DWORD> {
+      const bool removed = RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid);
+      DWORD error_code = removed ? ERROR_SUCCESS : GetLastError();
+      if (removed) {
+        track_virtual_display_removed(guid_to_uuid(guid));
+      } else if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_INVALID_PARAMETER) {
+        track_virtual_display_removed(guid_to_uuid(guid));
+      }
+      return {removed, error_code};
+    };
+
+    if (!ensure_handle()) {
       return false;
     }
 
-    const bool removed = RemoveVirtualDisplay(SUDOVDA_DRIVER_HANDLE, guid);
+    auto [removed, error_code] = perform_remove();
+    if (!removed && !initial_handle_invalid && error_code == ERROR_INVALID_HANDLE) {
+      printf("[SUDOVDA] Driver handle became invalid while removing virtual display; retrying.\n");
+      closeVDisplayDevice();
+      if (openVDisplayDevice() == DRIVER_STATUS::OK) {
+        opened_handle = true;
+        auto retry_result = perform_remove();
+        removed = retry_result.first;
+        error_code = retry_result.second;
+      } else {
+        error_code = ERROR_INVALID_HANDLE;
+      }
+    }
+
+    if (opened_handle && initial_handle_invalid) {
+      closeVDisplayDevice();
+    }
+
     if (removed) {
       printf("[SUDOVDA] Virtual display removed successfully.\n");
-      track_virtual_display_removed(guid_to_uuid(guid));
       return true;
     }
 
-    const DWORD error_code = GetLastError();
-    if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_INVALID_PARAMETER) {
-      track_virtual_display_removed(guid_to_uuid(guid));
-    }
     printf("[SUDOVDA] Failed to remove virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
     return false;
   }

@@ -1054,14 +1054,32 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
-    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
-      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
-        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
-      } else {
-        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+
+    const auto apply_refresh_override = [&](int candidate) {
+      if (candidate <= 0) {
+        return;
       }
-    } else {
-      launch_session->framegen_refresh_rate.reset();
+      if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
+        launch_session->framegen_refresh_rate = candidate;
+      }
+    };
+
+    launch_session->framegen_refresh_rate.reset();
+    if (launch_session->fps > 0) {
+      const auto saturating_double = [](int value) -> int {
+        if (value > std::numeric_limits<int>::max() / 2) {
+          return std::numeric_limits<int>::max();
+        }
+        return value * 2;
+      };
+
+      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
+        apply_refresh_override(saturating_double(launch_session->fps));
+      }
+
+      if (config::video.double_refreshrate) {
+        apply_refresh_override(saturating_double(launch_session->fps));
+      }
     }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
@@ -1116,11 +1134,13 @@ namespace proc {
                                           config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
+    const bool session_requests_virtual = launch_session->virtual_display;
 
     const bool should_use_virtual_display =
       forced_virtual_display ||
       app_requests_virtual ||
       metadata_requests_virtual ||
+      session_requests_virtual ||
       !VDISPLAY::has_active_physical_display() ||
       VDISPLAY::should_auto_enable_virtual_display();
 
@@ -1192,14 +1212,17 @@ namespace proc {
         std::memcpy(&launch_session->display_guid, &device_uuid, sizeof(GUID));
         std::memcpy(launch_session->virtual_display_guid_bytes.data(), device_uuid.b8, sizeof(device_uuid.b8));
 
-        int target_fps = launch_session->fps ? launch_session->fps : 60000;
+        int target_fps = 0;
+        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+          target_fps = *launch_session->framegen_refresh_rate;
+        } else if (launch_session->fps > 0) {
+          target_fps = launch_session->fps;
+        } else {
+          target_fps = 60000;
+        }
 
         if (target_fps < 1000) {
           target_fps *= 1000;
-        }
-
-        if (config::video.double_refreshrate) {
-          target_fps *= 2;
         }
 
         std::wstring vdisplay_name = VDISPLAY::createVirtualDisplay(

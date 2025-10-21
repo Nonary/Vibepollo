@@ -578,7 +578,7 @@ namespace nvhttp {
             rtsp_stream::launch_session_t::app_metadata_t metadata;
             metadata.id = app_ctx.id;
             metadata.name = app_ctx.name;
-            metadata.virtual_screen = app_ctx.virtual_screen;
+            metadata.virtual_screen = app_ctx.virtual_screen || app_ctx.virtual_display;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
             launch_session->app_metadata = std::move(metadata);
@@ -589,14 +589,31 @@ namespace nvhttp {
       }
     }
 
-    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
-      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
-        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
-      } else {
-        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+    const auto apply_refresh_override = [&](int candidate) {
+      if (candidate <= 0) {
+        return;
       }
-    } else {
-      launch_session->framegen_refresh_rate.reset();
+      if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
+        launch_session->framegen_refresh_rate = candidate;
+      }
+    };
+
+    launch_session->framegen_refresh_rate.reset();
+    if (launch_session->fps > 0) {
+      const auto saturating_double = [](int value) -> int {
+        if (value > std::numeric_limits<int>::max() / 2) {
+          return std::numeric_limits<int>::max();
+        }
+        return value * 2;
+      };
+
+      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
+        apply_refresh_override(saturating_double(launch_session->fps));
+      }
+
+      if (config::video.double_refreshrate) {
+        apply_refresh_override(saturating_double(launch_session->fps));
+      }
     }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
@@ -1411,7 +1428,8 @@ namespace nvhttp {
     const bool config_requests_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client ||
                                            config_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-    bool request_virtual_display = config_requests_virtual || metadata_requests_virtual;
+    const bool session_requests_virtual = launch_session->virtual_display;
+    bool request_virtual_display = config_requests_virtual || metadata_requests_virtual || session_requests_virtual;
 
     // Auto-enable virtual display if no physical monitors are attached
     if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
