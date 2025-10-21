@@ -28,7 +28,6 @@ endif()
 # Drivers (SudoVDA virtual display)
 set(SUDOVDA_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda")
 set(SUDOVDA_DRIVER_FILES
-    "${SUDOVDA_SOURCE_DIR}/install.bat"
     "${SUDOVDA_SOURCE_DIR}/install.ps1"
     "${SUDOVDA_SOURCE_DIR}/uninstall.bat"
     "${SUDOVDA_SOURCE_DIR}/SudoVDA.inf"

@@ -74,7 +74,8 @@ namespace video {
         return false;
       }
 
-      const bool explicit_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+      const bool explicit_virtual = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
+                                      config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
       const bool auto_activate = config::video.dd.activate_virtual_display;
       if (explicit_virtual || auto_activate) {
         return true;

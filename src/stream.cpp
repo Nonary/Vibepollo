@@ -426,7 +426,6 @@ namespace stream {
 #ifdef _WIN32
     struct {
       bool active = false;
-      bool detach_with_app = false;
       std::array<std::uint8_t, 16> guid_bytes {};
     } virtual_display;
 #endif
@@ -1967,7 +1966,7 @@ namespace stream {
       }
 
 #ifdef _WIN32
-      if (session.virtual_display.active && !session.virtual_display.detach_with_app) {
+      if (session.virtual_display.active) {
         const bool has_physical_display = VDISPLAY::has_active_physical_display();
         if (has_physical_display) {
           const bool has_guid = std::any_of(
@@ -1986,13 +1985,10 @@ namespace stream {
               BOOST_LOG(info) << "Virtual display removed.";
             }
           }
+          session.virtual_display.active = false;
+          session.virtual_display.guid_bytes.fill(0);
         } else {
           BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
-        }
-        session.virtual_display.active = false;
-        session.virtual_display.detach_with_app = false;
-        if (has_physical_display) {
-          session.virtual_display.guid_bytes.fill(0);
         }
       }
 #endif
@@ -2090,7 +2086,6 @@ namespace stream {
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;
-      session->virtual_display.detach_with_app = launch_session.virtual_display_detach_with_app;
       session->virtual_display.guid_bytes = launch_session.virtual_display_guid_bytes;
 #endif
 

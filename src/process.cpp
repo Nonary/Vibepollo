@@ -1000,14 +1000,29 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
-    if (launch_session->fps > 0 && (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix)) {
-      if (launch_session->fps > std::numeric_limits<int>::max() / 2) {
-        launch_session->framegen_refresh_rate = std::numeric_limits<int>::max();
-      } else {
-        launch_session->framegen_refresh_rate = launch_session->fps * 2;
+
+    const auto apply_refresh_override = [&](int candidate) {
+      if (candidate <= 0) {
+        return;
       }
-    } else {
-      launch_session->framegen_refresh_rate.reset();
+      if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
+        launch_session->framegen_refresh_rate = candidate;
+      }
+    };
+
+    launch_session->framegen_refresh_rate.reset();
+    if (launch_session->fps > 0) {
+      const auto saturating_double = [](int value) -> int {
+        if (value > std::numeric_limits<int>::max() / 2) {
+          return std::numeric_limits<int>::max();
+        }
+        return value * 2;
+      };
+
+      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
+        apply_refresh_override(saturating_double(launch_session->fps));
+      }
+
     }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
@@ -1041,116 +1056,6 @@ namespace proc {
     } catch (...) {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
-
-#ifdef _WIN32
-    if (launch_session->virtual_display) {
-      if (launch_session->virtual_display_detach_with_app) {
-        const bool has_guid = std::any_of(
-          launch_session->virtual_display_guid_bytes.begin(),
-          launch_session->virtual_display_guid_bytes.end(),
-          [](std::uint8_t b) {
-            return b != 0;
-          }
-        );
-        if (has_guid) {
-          std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
-          _virtual_display_active = true;
-        } else {
-          launch_session->virtual_display = false;
-          launch_session->virtual_display_detach_with_app = false;
-          launch_session->virtual_display_guid_bytes.fill(0);
-          launch_session->virtual_display_device_id.clear();
-        }
-      }
-    } else {
-      const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-      const bool app_requests_virtual = _app.virtual_screen;
-      bool request_virtual_display = config_requests_virtual || app_requests_virtual;
-
-      if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
-        request_virtual_display = true;
-      }
-      if (request_virtual_display) {
-        if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-          initVDisplayDriver();
-        }
-
-        if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-          if (!config::video.adapter_name.empty()) {
-            (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
-          } else {
-            (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
-          }
-
-          const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-          std::string display_uuid_source = persistent_uuid.string();
-          launch_session->unique_id = display_uuid_source;
-
-          std::memcpy(&_virtual_display_guid, persistent_uuid.b8, sizeof(_virtual_display_guid));
-          std::copy(persistent_uuid.b8, persistent_uuid.b8 + 16, launch_session->virtual_display_guid_bytes.begin());
-
-          uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
-          uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-          uint32_t vd_fps = 0;
-          if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-            vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
-          } else if (launch_session->fps > 0) {
-            vd_fps = static_cast<uint32_t>(launch_session->fps);
-          } else {
-            vd_fps = 60000u;
-          }
-          if (vd_fps < 1000u) {
-            vd_fps *= 1000u;
-          }
-
-          std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
-          if (client_label.empty()) {
-            client_label = "Sunshine";
-          }
-
-
-          auto display_name_wide = VDISPLAY::createVirtualDisplay(
-            display_uuid_source.c_str(),
-            client_label.c_str(),
-            vd_width,
-            vd_height,
-            vd_fps,
-            _virtual_display_guid
-          );
-
-          if (!display_name_wide.empty()) {
-            _virtual_display_active = true;
-            launch_session->virtual_display = true;
-            launch_session->virtual_display_detach_with_app = true;
-            if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
-              launch_session->virtual_display_device_id = *resolved_device;
-            } else {
-              launch_session->virtual_display_device_id.clear();
-            }
-            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
-          } else {
-            launch_session->virtual_display = false;
-            launch_session->virtual_display_detach_with_app = false;
-            launch_session->virtual_display_guid_bytes.fill(0);
-            std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
-            launch_session->virtual_display_device_id.clear();
-            BOOST_LOG(warning) << "Virtual display creation failed.";
-          }
-        } else {
-          launch_session->virtual_display = false;
-          launch_session->virtual_display_detach_with_app = false;
-          launch_session->virtual_display_guid_bytes.fill(0);
-          launch_session->virtual_display_device_id.clear();
-          BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
-        }
-      } else {
-        launch_session->virtual_display = false;
-        launch_session->virtual_display_detach_with_app = false;
-        launch_session->virtual_display_guid_bytes.fill(0);
-        launch_session->virtual_display_device_id.clear();
-      }
-    }
-#endif
 
     auto clear_lossless_runtime_env = [&]() {
       _env[ENV_LOSSLESS_PROFILE] = "";

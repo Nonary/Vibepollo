@@ -23,6 +23,21 @@ const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
 
+// SudoVDA status mapping (Apollo-specific)
+const sudovdaStatus = {
+  '1': 'Unknown',
+  '0': 'Ready',
+  '-1': 'Uninitialized',
+  '-2': 'Version Incompatible',
+  '-3': 'Watchdog Failed',
+};
+
+const vdisplay = computed(() => (config as any)?.vdisplay || 0);
+const currentDriverStatus = computed(
+  () => sudovdaStatus[String(vdisplay.value) as keyof typeof sudovdaStatus] || 'Unknown',
+);
+
+
 const lastAutomationOption = ref('verify_only');
 watch(
   () => config.value?.dd_configuration_option,
@@ -115,40 +130,19 @@ function boolProxy(key: string, defaultValue: string = 'true') {
 const installSteamDrivers = boolProxy('install_steam_audio_drivers', 'true');
 const streamAudio = boolProxy('stream_audio', 'true');
 
-const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
-const lastPhysicalOutputName = ref('');
-
-watch(
-  () => config.value?.output_name,
-  (next) => {
-    if (typeof next === 'string' && next && next !== VIRTUAL_DISPLAY_SELECTION) {
-      lastPhysicalOutputName.value = next;
-    }
-    if (typeof next === 'string' && next === '') {
-      lastPhysicalOutputName.value = '';
-    }
-  },
-  { immediate: true },
-);
-
-const displayMode = computed<'virtualized' | 'physical'>({
+const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
-    return config.value?.output_name === VIRTUAL_DISPLAY_SELECTION ? 'virtualized' : 'physical';
+    const mode = config.value?.['virtual_display_mode'];
+    if (typeof mode === 'string') {
+      if (mode === 'disabled' || mode === 'per_client' || mode === 'shared') {
+        return mode;
+      }
+    }
+    return 'per_client';
   },
   set(mode) {
     if (!config.value) return;
-    if (mode === 'virtualized') {
-      const current = config.value.output_name;
-      if (typeof current === 'string' && current && current !== VIRTUAL_DISPLAY_SELECTION) {
-        lastPhysicalOutputName.value = current;
-      }
-      store.updateOption('output_name', VIRTUAL_DISPLAY_SELECTION);
-      return;
-    }
-
-    if (config.value.output_name === VIRTUAL_DISPLAY_SELECTION) {
-      store.updateOption('output_name', lastPhysicalOutputName.value);
-    }
+    store.updateOption('virtual_display_mode', mode);
   },
 });
 </script>
@@ -231,17 +225,41 @@ const displayMode = computed<'virtualized' | 'physical'>({
             <legend class="px-2 text-sm font-medium">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
-            <n-radio-group v-model:value="displayMode" class="grid gap-2 sm:grid-cols-2">
-              <n-radio value="virtualized">
-                {{ $t('config.dd_virtual_display_choice_virtual') }}
+            <!-- Highlight driver health before picking a mode -->
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-3">
+                  <div
+                    class="px-4 py-3 rounded-md"
+                    :class="[vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success']"
+                  >
+                    <i class="fa-solid fa-circle-info mr-2"></i>
+                    {{ t('config.virtual_display_status_label') }} {{ currentDriverStatus }}
+                  </div>
+                  <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
+                    {{ t('config.virtual_display_status_hint') }}
+                  </p>
+                </div>
+              </template>
+            </PlatformLayout>
+            <p class="text-[11px] opacity-70 mt-2 leading-snug">
+              {{ $t('config.virtual_display_mode_step_hint') }}
+            </p>
+            <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
+              <n-radio value="disabled">
+                {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>
-              <n-radio value="physical">
-                {{ $t('config.dd_virtual_display_choice_physical') }}
+              <n-radio value="per_client">
+                {{ $t('config.virtual_display_mode_per_client') }}
+              </n-radio>
+              <n-radio value="shared">
+                {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
-            <div v-if="displayMode === 'physical'" class="mt-3">
+            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
+
             <div
               class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >

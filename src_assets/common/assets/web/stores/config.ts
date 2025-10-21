@@ -102,6 +102,7 @@ const defaultGroups = [
       stream_audio: 'enabled',
       adapter_name: '',
       output_name: '',
+      virtual_display_mode: 'per_client',
       dd_configuration_option: 'disabled',
       dd_resolution_option: 'auto',
       dd_manual_resolution: '',

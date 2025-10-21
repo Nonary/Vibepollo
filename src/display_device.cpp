@@ -536,6 +536,37 @@ namespace display_device {
     }
     return true;
   }
+
+  static std::string resolve_device_id(const std::string &output_name) {
+    if (output_name.empty()) {
+      return output_name;
+    }
+
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices();
+
+      for (const auto &d : devices) {
+        if (d.m_device_id.empty()) {
+          continue;
+        }
+
+        if (iequals(d.m_device_id, output_name) ||
+            (!d.m_display_name.empty() && iequals(d.m_display_name, output_name)) ||
+            (!d.m_friendly_name.empty() && iequals(d.m_friendly_name, output_name))) {
+          return d.m_device_id;
+        }
+      }
+    } catch (...) {
+    }
+
+    return output_name;
+  }
+#else
+  static std::string resolve_device_id(const std::string &output_name) {
+    return output_name;
+  }
 #endif
 
   std::string map_output_name(const std::string &output_name) {

@@ -113,7 +113,7 @@
 
     <CustomAction Id="SetInstallSudovda"
                  Property="InstallSudovda"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\install.bat&quot;&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
 
     <CustomAction Id="SetInstallGamepad"
                  Property="InstallGamepad"
