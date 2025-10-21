@@ -39,14 +39,12 @@ const currentDriverStatus = computed(
 
 // Fallback mode validation
 const validateFallbackMode = (event: Event) => {
-  const target = event.target as HTMLInputElement;
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
   const value = target.value;
-  if (!value.match(/^\d+x\d+x\d+(\.\d+)?$/)) {
-    target.setCustomValidity(t('config.fallback_mode_error'));
-  } else {
-    target.setCustomValidity('');
-  }
-  target.reportValidity();
+  const valid = /^\d+x\d+x\d+(\.\d+)?$/.test(value);
+  target.setCustomValidity(valid ? '' : t('config.fallback_mode_error'));
+  window.requestAnimationFrame(() => target.reportValidity());
 };
 const lastAutomationOption = ref('verify_only');
 watch(
@@ -146,40 +144,19 @@ const doubleRefreshrate = boolProxy('double_refreshrate', 'false');
 const isolatedVirtualDisplay = boolProxy('isolated_virtual_display_option', 'false');
 const legacyVirtualDisplay = boolProxy('legacy_virtual_display_mode', 'false');
 
-const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
-const lastPhysicalOutputName = ref('');
-
-watch(
-  () => config.value?.output_name,
-  (next) => {
-    if (typeof next === 'string' && next && next !== VIRTUAL_DISPLAY_SELECTION) {
-      lastPhysicalOutputName.value = next;
-    }
-    if (typeof next === 'string' && next === '') {
-      lastPhysicalOutputName.value = '';
-    }
-  },
-  { immediate: true },
-);
-
-const displayMode = computed<'virtualized' | 'physical'>({
+const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
-    return config.value?.output_name === VIRTUAL_DISPLAY_SELECTION ? 'virtualized' : 'physical';
+    const mode = config.value?.['virtual_display_mode'];
+    if (typeof mode === 'string') {
+      if (mode === 'disabled' || mode === 'per_client' || mode === 'shared') {
+        return mode;
+      }
+    }
+    return 'per_client';
   },
   set(mode) {
     if (!config.value) return;
-    if (mode === 'virtualized') {
-      const current = config.value.output_name;
-      if (typeof current === 'string' && current && current !== VIRTUAL_DISPLAY_SELECTION) {
-        lastPhysicalOutputName.value = current;
-      }
-      store.updateOption('output_name', VIRTUAL_DISPLAY_SELECTION);
-      return;
-    }
-
-    if (config.value.output_name === VIRTUAL_DISPLAY_SELECTION) {
-      store.updateOption('output_name', lastPhysicalOutputName.value);
-    }
+    store.updateOption('virtual_display_mode', mode);
   },
 });
 </script>
@@ -269,15 +246,21 @@ const displayMode = computed<'virtualized' | 'physical'>({
             <legend class="px-2 text-sm font-medium">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
-            <n-radio-group v-model:value="displayMode" class="grid gap-2 sm:grid-cols-2">
-              <n-radio value="virtualized">
-                {{ $t('config.dd_virtual_display_choice_virtual') }}
+            <p class="text-[11px] opacity-70 mt-2 leading-snug">
+              {{ $t('config.virtual_display_mode_step_hint') }}
+            </p>
+            <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
+              <n-radio value="disabled">
+                {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>
-              <n-radio value="physical">
-                {{ $t('config.dd_virtual_display_choice_physical') }}
+              <n-radio value="per_client">
+                {{ $t('config.virtual_display_mode_per_client') }}
+              </n-radio>
+              <n-radio value="shared">
+                {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
-            <div v-if="displayMode === 'physical'" class="mt-3">
+            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
             <div
@@ -334,7 +317,7 @@ const displayMode = computed<'virtualized' | 'physical'>({
         v-model:value="config.fallback_mode"
         type="text"
         placeholder="1920x1080x60"
-        @input="validateFallbackMode"
+        @blur="validateFallbackMode"
       />
       <div class="text-[11px] opacity-60 mt-1">{{ t('config.fallback_mode_desc') }}</div>
     </div>

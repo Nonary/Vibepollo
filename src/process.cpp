@@ -55,6 +55,7 @@
   #include <Psapi.h>
 #endif
 #include "httpcommon.h"
+#include "nvhttp.h"
 #include "process.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
@@ -1111,7 +1112,8 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    const bool forced_virtual_display = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool forced_virtual_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
+                                          config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
 
@@ -1144,7 +1146,26 @@ namespace proc {
         std::string device_uuid_str;
         uuid_util::uuid_t device_uuid;
 
-        if (_app.use_app_identity) {
+        const bool use_shared_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+
+        if (use_shared_display) {
+          // Shared virtual display mode: reuse or create a shared GUID
+          if (http::shared_virtual_display_guid.empty()) {
+            // Generate a new shared GUID and save it
+            device_uuid = uuid_util::uuid_t::generate();
+            device_uuid_str = device_uuid.string();
+            http::shared_virtual_display_guid = device_uuid_str;
+            nvhttp::save_state();
+            BOOST_LOG(info) << "Generated new shared virtual display GUID: " << device_uuid_str;
+          } else {
+            // Reuse existing shared GUID
+            device_uuid_str = http::shared_virtual_display_guid;
+            device_uuid = uuid_util::uuid_t::parse(device_uuid_str);
+            BOOST_LOG(info) << "Reusing shared virtual display GUID: " << device_uuid_str;
+          }
+          device_name = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
+        } else if (_app.use_app_identity) {
+          // Per-client mode with app identity
           device_name = _app.name;
           if (_app.per_client_app_identity) {
             device_uuid = uuid_util::uuid_t::parse(launch_session->unique_id);
@@ -1159,6 +1180,7 @@ namespace proc {
             device_uuid = uuid_util::uuid_t::parse(_app.uuid);
           }
         } else {
+          // Per-client mode with unique client ID
           device_name = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
           if (device_name.empty()) {
             device_name = "Sunshine";
@@ -2003,6 +2025,10 @@ namespace proc {
         BOOST_LOG(warning) << "Failed to remove virtual display.";
       } else {
         BOOST_LOG(info) << "Virtual display removed.";
+        if (_launch_session) {
+          _launch_session->virtual_display = false;
+          _launch_session->virtual_display_guid_bytes.fill(0);
+        }
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;

@@ -445,6 +445,17 @@ namespace config {
     }
   }  // namespace dd
 
+  video_t::virtual_display_mode_e virtual_display_mode_from_view(const ::std::string_view value) {
+#define _CONVERT_(x) \
+  if (value == #x##sv) \
+  return video_t::virtual_display_mode_e::x
+    _CONVERT_(disabled);
+    _CONVERT_(per_client);
+    _CONVERT_(shared);
+#undef _CONVERT_
+    return video_t::virtual_display_mode_e::per_client;  // Default to per_client for backwards compatibility
+  }
+
   video_t video {
     false,  // headless_mode
     true,  // limit_framerate
@@ -505,6 +516,8 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
+
+    video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
 
     {
       video_t::dd_t::config_option_e::verify_only,  // configuration_option
@@ -1248,6 +1261,8 @@ namespace config {
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
+
+    generic_f(vars, "virtual_display_mode", video.virtual_display_mode, virtual_display_mode_from_view);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);

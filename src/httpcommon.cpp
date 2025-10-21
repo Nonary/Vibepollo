@@ -206,6 +206,10 @@ namespace http {
   uuid_util::uuid_t uuid;
   net::net_e origin_web_ui_allowed;
 
+#ifdef _WIN32
+  std::string shared_virtual_display_guid;
+#endif
+
   int init() {
     ensure_curl_global_init();
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];

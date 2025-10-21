@@ -543,10 +543,6 @@ namespace display_device {
       return output_name;
     }
 
-    if (iequals(output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
-      return output_name;
-    }
-
     try {
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);

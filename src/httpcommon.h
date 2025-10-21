@@ -35,6 +35,10 @@ namespace http {
   extern uuid_util::uuid_t uuid;
   extern net::net_e origin_web_ui_allowed;
 
+#ifdef _WIN32
+  extern std::string shared_virtual_display_guid;
+#endif
+
   // Update origin ACL from current config
   void refresh_origin_acl();
 

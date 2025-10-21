@@ -23,6 +23,12 @@ namespace config {
   inline std::unordered_map<std::string, std::string> pending_config_settings;
 
   struct video_t {
+    enum class virtual_display_mode_e {
+      disabled,  ///< Use physical display (output_name)
+      per_client,  ///< Create unique virtual display per client
+      shared  ///< Use single shared virtual display for all clients
+    };
+
     bool headless_mode;
     bool limit_framerate;
     bool double_refreshrate;
@@ -90,6 +96,8 @@ namespace config {
     std::string encoder;
     std::string adapter_name;
     std::string output_name;
+
+    virtual_display_mode_e virtual_display_mode;
 
     struct dd_t {
       struct workarounds_t {

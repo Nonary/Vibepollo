@@ -88,7 +88,8 @@ namespace {
       return true;
     }
 
-    const bool virtual_display_selected = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+    const bool virtual_display_selected = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
+                                            config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
     if (virtual_display_selected && config::video.dd.activate_virtual_display) {
       return true;
     }
@@ -330,7 +331,8 @@ namespace display_helper_integration {
     }
 
     // Check if virtual display auto-activation is enabled
-    const bool config_selects_virtual = (video_config.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool config_selects_virtual = (video_config.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
+                                          video_config.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
     const bool session_requests_virtual = session.virtual_display || config_selects_virtual;
     const bool legacy_virtual_mode = video_config.legacy_virtual_display_mode;
     const int display_fps = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps;
@@ -344,11 +346,12 @@ namespace display_helper_integration {
         display_device::SingleDisplayConfiguration vd_cfg = *cfg;
 
         // Override device ID and device prep for virtual display
-        std::string target_device_id = session.virtual_display_device_id;
+        std::string target_device_id;
+        if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+          target_device_id = *resolved;
+        }
         if (target_device_id.empty()) {
-          if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
-            target_device_id = *resolved;
-          }
+          target_device_id = session.virtual_display_device_id;
         }
         if (target_device_id.empty()) {
           target_device_id = video_config.output_name;

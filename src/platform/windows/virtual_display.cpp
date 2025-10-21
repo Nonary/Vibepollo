@@ -278,9 +278,43 @@ namespace VDISPLAY {
         entry = std::move(value);
         save_locked();
       }
+
+      void update_dpi(const std::optional<uint32_t> &value) {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        if (!entry || !value) {
+          return;
+        }
+        entry->dpi_value = *value;
+        save_locked();
+      }
     };
 
     namespace pt = boost::property_tree;
+
+    bool is_virtual_display_device(
+      const display_device::EnumeratedDevice &device,
+      const std::optional<VirtualDisplayCache::entry_t> &cached_entry
+    ) {
+      static const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+      if (equals_ci(device.m_friendly_name, sudoMakerDeviceString)) {
+        return true;
+      }
+
+      if (cached_entry && !cached_entry->device_id.empty() && equals_ci(device.m_device_id, cached_entry->device_id)) {
+        return true;
+      }
+
+      if (device.m_edid) {
+        static const std::string manufacturer = "SMK";
+        static const std::string product = "D1CE";
+        if (equals_ci(device.m_edid->m_manufacturer_id, manufacturer) && equals_ci(device.m_edid->m_product_code, product)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
 
     std::optional<uuid_util::uuid_t> parse_uuid_string(const std::string &value) {
       if (value.empty()) {
@@ -585,6 +619,9 @@ namespace VDISPLAY {
       return std::wstring();
     }
 
+    uuid_util::uuid_t requested_uuid {};
+    std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
+
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
     VIRTUAL_DISPLAY_ADD_OUT output;
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
@@ -607,6 +644,7 @@ namespace VDISPLAY {
           updated.dpi_value = cached_entry->dpi_value;
         }
         VirtualDisplayCache::instance().set_entry(std::move(updated));
+        write_guid_to_state_locked(requested_uuid);
 
         wprintf(
           L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
@@ -653,11 +691,17 @@ namespace VDISPLAY {
       cache_entry.dpi_value = cached_entry->dpi_value;
     }
     VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
+    write_guid_to_state_locked(requested_uuid);
 
     return std::wstring(deviceName);
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    auto current_dpi = read_virtual_display_dpi_value();
+    if (current_dpi) {
+      VirtualDisplayCache::instance().update_dpi(current_dpi);
+    }
+
     if (!has_active_physical_display()) {
       printf("[SUDOVDA] No physical displays detected; keeping virtual display active.\n");
       return true;
@@ -697,60 +741,94 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
+    auto cached_entry = VirtualDisplayCache::instance().get_entry();
+
     if (display_name.empty()) {
-      return std::nullopt;
+      if (cached_entry && !cached_entry->device_id.empty()) {
+        return cached_entry->device_id;
+      }
+      return resolveAnyVirtualDisplayDeviceId();
     }
 
     auto devices = display_helper_integration::enumerate_devices();
     if (!devices) {
+      if (cached_entry && !cached_entry->device_id.empty()) {
+        return cached_entry->device_id;
+      }
       return std::nullopt;
     }
 
     const auto utf8_name = platf::to_utf8(display_name);
     const auto target = normalize_display_name(utf8_name);
     if (target.empty()) {
+      if (cached_entry && !cached_entry->device_id.empty()) {
+        return cached_entry->device_id;
+      }
       return std::nullopt;
     }
 
+    std::optional<std::string> fallback;
     for (const auto &device : *devices) {
+      if (!fallback && is_virtual_display_device(device, cached_entry) && !device.m_device_id.empty()) {
+        fallback = device.m_device_id;
+      }
+
       const auto device_name = normalize_display_name(device.m_display_name);
-      if (!device_name.empty() && device_name == target) {
+      if (!device_name.empty() && device_name == target && !device.m_device_id.empty()) {
         return device.m_device_id;
       }
     }
 
-    return resolveAnyVirtualDisplayDeviceId();
+    if (fallback) {
+      return fallback;
+    }
+
+    if (cached_entry && !cached_entry->device_id.empty()) {
+      return cached_entry->device_id;
+    }
+
+    return std::nullopt;
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
+    auto cached_entry = VirtualDisplayCache::instance().get_entry();
     auto devices = display_helper_integration::enumerate_devices();
-    if (!devices) {
-      return std::nullopt;
-    }
-
-    const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+    std::optional<std::string> cached_match;
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
-    for (const auto &device : *devices) {
-      const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-      const bool is_virtual_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
-      if (!is_virtual_id && !is_virtual_friendly) {
-        continue;
-      }
+    if (devices) {
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device, cached_entry) || device.m_device_id.empty()) {
+          continue;
+        }
 
-      if (!any_match) {
-        any_match = device.m_device_id;
-      }
-      if (device.m_info && !active_match) {
-        active_match = device.m_device_id;
+        if (!any_match) {
+          any_match = device.m_device_id;
+        }
+        if (cached_entry && !cached_entry->device_id.empty() && equals_ci(device.m_device_id, cached_entry->device_id)) {
+          cached_match = device.m_device_id;
+        }
+        if (device.m_info) {
+          active_match = device.m_device_id;
+          break;
+        }
       }
     }
 
     if (active_match) {
       return active_match;
     }
-    return any_match;
+    if (cached_match) {
+      return cached_match;
+    }
+    if (any_match) {
+      return any_match;
+    }
+    if (cached_entry && !cached_entry->device_id.empty()) {
+      return cached_entry->device_id;
+    }
+    return std::nullopt;
   }
 
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays() {
@@ -765,11 +843,9 @@ namespace VDISPLAY {
       return result;
     }
 
-    const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+    auto cached_entry = VirtualDisplayCache::instance().get_entry();
     for (const auto &device : *devices) {
-      const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-      const bool is_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
-      if (!is_virtual_id && !is_friendly) {
+      if (!is_virtual_display_device(device, cached_entry)) {
         continue;
       }
 
@@ -800,11 +876,9 @@ bool VDISPLAY::has_active_physical_display() {
     return true;
   }
 
-  const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
+  auto cached_entry = VirtualDisplayCache::instance().get_entry();
   for (const auto &device : *devices) {
-    const bool is_virtual_id = equals_ci(device.m_device_id, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-    const bool is_virtual_friendly = equals_ci(device.m_friendly_name, sudoMakerDeviceString);
-    if (device.m_info && !is_virtual_id && !is_virtual_friendly) {
+    if (device.m_info && !is_virtual_display_device(device, cached_entry)) {
       return true;
     }
   }

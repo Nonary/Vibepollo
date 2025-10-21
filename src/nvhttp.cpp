@@ -12,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -321,6 +322,12 @@ namespace nvhttp {
       auto &vibe_root = ensure_root(vibeshine_tree);
       vibe_root.put("last_notified_version", update::state.last_notified_version);
 
+#ifdef _WIN32
+      if (!http::shared_virtual_display_guid.empty()) {
+        vibe_root.put("shared_virtual_display_guid", http::shared_virtual_display_guid);
+      }
+#endif
+
       try {
         auto vibe_dir = fs::path(vibeshine_path).parent_path();
         if (!vibe_dir.empty() && !fs::exists(vibe_dir)) {
@@ -364,12 +371,21 @@ namespace nvhttp {
         pt::ptree vibeshine_tree;
         pt::read_json(vibeshine_path, vibeshine_tree);
         update::state.last_notified_version = vibeshine_tree.get("root.last_notified_version", "");
+#ifdef _WIN32
+        http::shared_virtual_display_guid = vibeshine_tree.get("root.shared_virtual_display_guid", "");
+#endif
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Couldn't read "sv << vibeshine_path << " for notification state: "sv << e.what();
         update::state.last_notified_version.clear();
+#ifdef _WIN32
+        http::shared_virtual_display_guid.clear();
+#endif
       }
     } else {
       update::state.last_notified_version.clear();
+#ifdef _WIN32
+      http::shared_virtual_display_guid.clear();
+#endif
     }
 
     if (!root.contains("uniqueid")) {
@@ -381,6 +397,12 @@ namespace nvhttp {
     std::string uid = root["uniqueid"];
     http::uuid = uuid_util::uuid_t::parse(uid);
     http::unique_id = uid;
+
+#ifdef _WIN32
+    if (share_state_file && !root.contains("shared_virtual_display_guid")) {
+      http::shared_virtual_display_guid.clear();
+    }
+#endif
 
     client_t client;
 
@@ -1385,7 +1407,9 @@ namespace nvhttp {
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
 
 #ifdef _WIN32
-    const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const auto config_mode = config::video.virtual_display_mode;
+    const bool config_requests_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client ||
+                                           config_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     bool request_virtual_display = config_requests_virtual || metadata_requests_virtual;
 
@@ -1405,13 +1429,46 @@ namespace nvhttp {
           (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
         }
 
-        const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-        std::string display_uuid_source = persistent_uuid.string();
-        launch_session->unique_id = display_uuid_source;
+        auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
+          if (value.empty()) {
+            return std::nullopt;
+          }
+          try {
+            return uuid_util::uuid_t::parse(value);
+          } catch (...) {
+            return std::nullopt;
+          }
+        };
+
+        auto ensure_shared_guid = [&]() -> uuid_util::uuid_t {
+          if (!http::shared_virtual_display_guid.empty()) {
+            if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
+              return *parsed;
+            }
+          }
+          auto generated = VDISPLAY::persistentVirtualDisplayUuid();
+          http::shared_virtual_display_guid = generated.string();
+          nvhttp::save_state();
+          return generated;
+        };
+
+        const bool shared_mode = (config_mode == config::video_t::virtual_display_mode_e::shared);
+        uuid_util::uuid_t session_uuid;
+        if (shared_mode) {
+          session_uuid = ensure_shared_guid();
+          launch_session->unique_id = session_uuid.string();
+        } else if (auto parsed = parse_uuid(launch_session->unique_id)) {
+          session_uuid = *parsed;
+        } else {
+          session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+          launch_session->unique_id = session_uuid.string();
+        }
+
+        const std::string display_uuid_source = session_uuid.string();
 
         GUID virtual_display_guid {};
-        std::memcpy(&virtual_display_guid, persistent_uuid.b8, sizeof(virtual_display_guid));
-        std::copy_n(std::cbegin(persistent_uuid.b8), sizeof(persistent_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+        std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
@@ -1427,9 +1484,14 @@ namespace nvhttp {
           vd_fps *= 1000u;
         }
 
-        std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
-        if (client_label.empty()) {
-          client_label = "Sunshine";
+        std::string client_label;
+        if (shared_mode) {
+          client_label = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
+        } else {
+          client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          if (client_label.empty()) {
+            client_label = "Sunshine";
+          }
         }
 
         auto display_name_wide = VDISPLAY::createVirtualDisplay(
