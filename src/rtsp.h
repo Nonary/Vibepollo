@@ -65,7 +65,6 @@ namespace rtsp_stream {
     bool enable_sops;
     bool virtual_display;
     uint32_t scale_factor;
-    bool virtual_display_detach_with_app;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     bool gen1_framegen_fix;

@@ -44,6 +44,26 @@ namespace {
     return h;
   }
 
+  struct session_dd_fields_t {
+    int width = -1;
+    int height = -1;
+    int fps = -1;
+    bool enable_hdr = false;
+    bool enable_sops = false;
+    bool virtual_display = false;
+    std::string virtual_display_device_id;
+    std::optional<int> framegen_refresh_rate;
+    bool gen1_framegen_fix = false;
+    bool gen2_framegen_fix = false;
+  };
+
+  static std::mutex g_session_mutex;
+  static std::optional<session_dd_fields_t> g_active_session_dd;
+  // Active session display parameters snapshot for re-apply on reconnect.
+  // We do NOT cache serialized JSON, only the subset of session fields that
+  // affect display configuration. On reconnect, we rebuild the full
+  // SingleDisplayConfiguration from current Sunshine config + these fields.
+
   bool session_targets_desktop(const rtsp_stream::launch_session_t &session) {
     const auto apps = proc::proc.get_apps();
     if (apps.empty()) {
@@ -69,7 +89,12 @@ namespace {
     }
 
     const bool virtual_display_selected = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
-    return virtual_display_selected && config::video.dd.activate_virtual_display;
+    if (virtual_display_selected && config::video.dd.activate_virtual_display) {
+      return true;
+    }
+
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    return g_active_session_dd && g_active_session_dd->virtual_display && config::video.dd.activate_virtual_display;
   }
 
   bool shutdown_requested() {
@@ -190,26 +215,6 @@ namespace {
   static std::atomic<bool> g_watchdog_running {false};
   static std::jthread g_watchdog_thread;
 
-  // Active session display parameters snapshot for re-apply on reconnect.
-  // We do NOT cache serialized JSON, only the subset of session fields that
-  // affect display configuration. On reconnect, we rebuild the full
-  // SingleDisplayConfiguration from current Sunshine config + these fields.
-  struct session_dd_fields_t {
-    int width = -1;
-    int height = -1;
-    int fps = -1;
-    bool enable_hdr = false;
-    bool enable_sops = false;
-    bool virtual_display = false;
-    std::string virtual_display_device_id;
-    std::optional<int> framegen_refresh_rate;
-    bool gen1_framegen_fix = false;
-    bool gen2_framegen_fix = false;
-  };
-
-  static std::mutex g_session_mutex;
-  static std::optional<session_dd_fields_t> g_active_session_dd;
-
   static void set_active_session(const rtsp_stream::launch_session_t &session, std::optional<std::string> device_id_override = std::nullopt, std::optional<int> fps_override = std::nullopt) {
     std::lock_guard<std::mutex> lg(g_session_mutex);
     const int effective_fps = fps_override ? *fps_override : (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps);
@@ -325,10 +330,12 @@ namespace display_helper_integration {
     }
 
     // Check if virtual display auto-activation is enabled
-    const bool is_virtual_display = (video_config.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool config_selects_virtual = (video_config.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool session_requests_virtual = session.virtual_display || config_selects_virtual;
+    const bool legacy_virtual_mode = video_config.legacy_virtual_display_mode;
     const int display_fps = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps;
-    if (is_virtual_display && video_config.dd.activate_virtual_display) {
-      BOOST_LOG(info) << "Display helper: Virtual display detected with auto-activation enabled. Activating virtual display via EnsureOnly mode.";
+    if (session_requests_virtual && video_config.dd.activate_virtual_display && !legacy_virtual_mode) {
+      BOOST_LOG(info) << "Display helper: Virtual display requested with auto-activation enabled. Activating via EnsureOnly mode.";
 
       // Use parse_configuration to get the properly overridden values
       const auto parsed = display_device::parse_configuration(video_config, session);

@@ -1111,68 +1111,33 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    using dd_config_option_e = config::video_t::dd_t::config_option_e;
-    const auto dd_config_option = config::video.dd.configuration_option;
-    const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
-    const bool dd_conflicts_with_virtual_display =
-      dd_config_option == dd_config_option_e::ensure_only_display &&
-      dd_config_option != dd_config_option_e::disabled &&
-      !config::video.headless_mode;
+    const bool forced_virtual_display = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
 
-    if (forced_sudavda_virtual_display) {
-      launch_session->virtual_display = true;
-    }
+    const bool should_use_virtual_display =
+      forced_virtual_display ||
+      app_requests_virtual ||
+      metadata_requests_virtual ||
+      !VDISPLAY::has_active_physical_display() ||
+      VDISPLAY::should_auto_enable_virtual_display();
 
-    bool should_use_virtual_display =
-      config::video.headless_mode  // Headless mode
-      || launch_session->virtual_display  // User requested virtual display
-      || _app.virtual_display  // App is configured to use virtual display
-      || !video::allow_encoder_probing();  // No active display presents
+    const bool already_has_virtual_guid = std::any_of(
+      launch_session->virtual_display_guid_bytes.begin(),
+      launch_session->virtual_display_guid_bytes.end(),
+      [](std::uint8_t b) { return b != 0; }
+    );
 
-    if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
-      if (launch_session->virtual_display || _app.virtual_display) {
-        BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
-      }
-      launch_session->virtual_display = false;
-      should_use_virtual_display =
-        config::video.headless_mode  // Headless mode still forces virtual display
-        || !video::allow_encoder_probing();  // No active display presents
-    }
-
-    // Try DD API first if enabled and not in headless mode
-    bool dd_api_handled = launch_session->display_helper_applied;
-    if (!forced_sudavda_virtual_display && (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !config::video.headless_mode))) {
-      if (!dd_api_handled) {
-        dd_api_handled = display_helper_integration::apply_from_session(config::video, *launch_session);
-        if (dd_api_handled) {
-          launch_session->display_helper_applied = true;
-        }
-      }
-
-      if (dd_api_handled) {
-        const bool virtual_display_requested = launch_session->virtual_display || _app.virtual_display;
-        const bool still_missing_active_display = !video::allow_encoder_probing();
-
-        if (!virtual_display_requested && !still_missing_active_display) {
-          BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
-          should_use_virtual_display = false;
-        } else {
-          BOOST_LOG(info) << "Display configuration handled by DD API but virtual display support remains required; keeping SudoVDA virtual display active.";
-        }
-      }
-    }
-
-    // Use SudoVDA as fallback only if DD API didn't handle it or is disabled
-    if (should_use_virtual_display && !dd_api_handled) {
+    if (should_use_virtual_display && !already_has_virtual_guid) {
       if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-        // Try init driver again
         initVDisplayDriver();
       }
 
       if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-        // Try set the render adapter matching the capture adapter if user has specified one
         if (!config::video.adapter_name.empty()) {
-          VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+          (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        } else {
+          (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
         }
 
         std::string device_name;
@@ -1185,7 +1150,6 @@ namespace proc {
             device_uuid = uuid_util::uuid_t::parse(launch_session->unique_id);
             auto app_uuid = uuid_util::uuid_t::parse(_app.uuid);
 
-            // Use XOR to mix the two UUIDs
             device_uuid.b64[0] ^= app_uuid.b64[0];
             device_uuid.b64[1] ^= app_uuid.b64[1];
 
@@ -1195,12 +1159,16 @@ namespace proc {
             device_uuid = uuid_util::uuid_t::parse(_app.uuid);
           }
         } else {
-          device_name = launch_session->device_name;
+          device_name = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          if (device_name.empty()) {
+            device_name = "Sunshine";
+          }
           device_uuid_str = launch_session->unique_id;
           device_uuid = uuid_util::uuid_t::parse(launch_session->unique_id);
         }
 
-        memcpy(&launch_session->display_guid, &device_uuid, sizeof(GUID));
+        std::memcpy(&launch_session->display_guid, &device_uuid, sizeof(GUID));
+        std::memcpy(launch_session->virtual_display_guid_bytes.data(), device_uuid.b8, sizeof(device_uuid.b8));
 
         int target_fps = launch_session->fps ? launch_session->fps : 60000;
 
@@ -1212,7 +1180,7 @@ namespace proc {
           target_fps *= 2;
         }
 
-        std::wstring vdisplayName = VDISPLAY::createVirtualDisplay(
+        std::wstring vdisplay_name = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
           device_name.c_str(),
           render_width,
@@ -1221,57 +1189,48 @@ namespace proc {
           launch_session->display_guid
         );
 
-        // No matter we get the display name or not, the virtual display might still be created.
-        // We need to track it properly to remove the display when the session terminates.
-        launch_session->virtual_display = true;
-
-        if (!vdisplayName.empty()) {
-          BOOST_LOG(info) << "Virtual Display created at " << vdisplayName;
+        if (!vdisplay_name.empty()) {
+          BOOST_LOG(info) << "Virtual display created at " << vdisplay_name;
 
           if (config::video.legacy_virtual_display_mode) {
             if (launch_session->width && launch_session->height && launch_session->fps) {
-              VDISPLAY::legacy::changeDisplaySettings(vdisplayName.c_str(), render_width, render_height, target_fps);
+              VDISPLAY::legacy::changeDisplaySettings(vdisplay_name.c_str(), render_width, render_height, target_fps);
             }
 
             if (config::video.isolated_virtual_display_option) {
-              VDISPLAY::legacy::changeDisplaySettings2(vdisplayName.c_str(), render_width, render_height, target_fps, true);
+              VDISPLAY::legacy::changeDisplaySettings2(vdisplay_name.c_str(), render_width, render_height, target_fps, true);
             }
           } else if (config::video.isolated_virtual_display_option) {
             BOOST_LOG(info) << "Skipping isolated virtual display adjustments because legacy mode is disabled.";
           }
 
-          // Set virtual_display to true when everything went fine
+          launch_session->virtual_display = true;
           this->virtual_display = true;
-          this->display_name = platf::to_utf8(vdisplayName);
-
-          // When using virtual display, we don't care which display user configured to use.
-          // So we always set output_name to the newly created virtual display as a workaround for
-          // empty name when probing graphics cards.
-
+          this->display_name = platf::to_utf8(vdisplay_name);
           config::video.output_name = this->display_name;
+
+          if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(vdisplay_name)) {
+            launch_session->virtual_display_device_id = *resolved_device;
+          } else {
+            launch_session->virtual_display_device_id.clear();
+          }
+
+          std::memcpy(&_virtual_display_guid, &launch_session->display_guid, sizeof(_virtual_display_guid));
+          _virtual_display_active = true;
         } else {
-          BOOST_LOG(warning) << "Virtual Display creation failed, or cannot get created display name in time!";
+          BOOST_LOG(warning) << "Virtual display creation failed, or cannot get created display name in time!";
         }
       } else {
-        // Driver isn't working so we don't need to track virtual display.
-        launch_session->virtual_display = false;
+        BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
       }
+    } else if (already_has_virtual_guid) {
+      std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
+      _virtual_display_active = true;
     }
 
-    // Call DD API again if it wasn't already called above
-    if (!dd_api_handled && !this->virtual_display) {
-      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
-        launch_session->display_helper_applied = true;
-        dd_api_handled = true;
-      }
+    if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+      launch_session->display_helper_applied = true;
     }
-
-    // We should not preserve display state when using virtual display.
-    // It is already handled by Windows properly.
-    if (this->virtual_display) {
-      display_helper_integration::reset_persistence();
-    }
-
 #endif  // _WIN32
 
     // Probe encoders again before streaming to ensure our chosen
@@ -1344,116 +1303,6 @@ namespace proc {
     } catch (...) {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
-
-#ifdef _WIN32
-    if (launch_session->virtual_display) {
-      if (launch_session->virtual_display_detach_with_app) {
-        const bool has_guid = std::any_of(
-          launch_session->virtual_display_guid_bytes.begin(),
-          launch_session->virtual_display_guid_bytes.end(),
-          [](std::uint8_t b) {
-            return b != 0;
-          }
-        );
-        if (has_guid) {
-          std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
-          _virtual_display_active = true;
-        } else {
-          launch_session->virtual_display = false;
-          launch_session->virtual_display_detach_with_app = false;
-          launch_session->virtual_display_guid_bytes.fill(0);
-          launch_session->virtual_display_device_id.clear();
-        }
-      }
-    } else {
-      const bool config_requests_virtual = boost::iequals(config::video.output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
-      const bool app_requests_virtual = _app.virtual_screen;
-      bool request_virtual_display = config_requests_virtual || app_requests_virtual;
-
-      if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
-        request_virtual_display = true;
-      }
-      if (request_virtual_display) {
-        if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-          initVDisplayDriver();
-        }
-
-        if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-          if (!config::video.adapter_name.empty()) {
-            (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
-          } else {
-            (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
-          }
-
-          const auto persistent_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-          std::string display_uuid_source = persistent_uuid.string();
-          launch_session->unique_id = display_uuid_source;
-
-          std::memcpy(&_virtual_display_guid, persistent_uuid.b8, sizeof(_virtual_display_guid));
-          std::copy(persistent_uuid.b8, persistent_uuid.b8 + 16, launch_session->virtual_display_guid_bytes.begin());
-
-          uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
-          uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-          uint32_t vd_fps = 0;
-          if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-            vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
-          } else if (launch_session->fps > 0) {
-            vd_fps = static_cast<uint32_t>(launch_session->fps);
-          } else {
-            vd_fps = 60000u;
-          }
-          if (vd_fps < 1000u) {
-            vd_fps *= 1000u;
-          }
-
-          std::string client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
-          if (client_label.empty()) {
-            client_label = "Sunshine";
-          }
-
-
-          auto display_name_wide = VDISPLAY::createVirtualDisplay(
-            display_uuid_source.c_str(),
-            client_label.c_str(),
-            vd_width,
-            vd_height,
-            vd_fps,
-            _virtual_display_guid
-          );
-
-          if (!display_name_wide.empty()) {
-            _virtual_display_active = true;
-            launch_session->virtual_display = true;
-            launch_session->virtual_display_detach_with_app = true;
-            if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
-              launch_session->virtual_display_device_id = *resolved_device;
-            } else {
-              launch_session->virtual_display_device_id.clear();
-            }
-            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
-          } else {
-            launch_session->virtual_display = false;
-            launch_session->virtual_display_detach_with_app = false;
-            launch_session->virtual_display_guid_bytes.fill(0);
-            std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
-            launch_session->virtual_display_device_id.clear();
-            BOOST_LOG(warning) << "Virtual display creation failed.";
-          }
-        } else {
-          launch_session->virtual_display = false;
-          launch_session->virtual_display_detach_with_app = false;
-          launch_session->virtual_display_guid_bytes.fill(0);
-          launch_session->virtual_display_device_id.clear();
-          BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
-        }
-      } else {
-        launch_session->virtual_display = false;
-        launch_session->virtual_display_detach_with_app = false;
-        launch_session->virtual_display_guid_bytes.fill(0);
-        launch_session->virtual_display_device_id.clear();
-      }
-    }
-#endif
 
     auto clear_lossless_runtime_env = [&]() {
       _env[ENV_LOSSLESS_PROFILE] = "";
