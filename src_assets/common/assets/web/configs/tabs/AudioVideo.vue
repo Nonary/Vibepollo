@@ -246,6 +246,23 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
             <legend class="px-2 text-sm font-medium">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
+            <!-- Highlight driver health before picking a mode -->
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-3">
+                  <div
+                    class="px-4 py-3 rounded-md"
+                    :class="[vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success']"
+                  >
+                    <i class="fa-solid fa-circle-info mr-2"></i>
+                    {{ t('config.virtual_display_status_label') }} {{ currentDriverStatus }}
+                  </div>
+                  <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
+                    {{ t('config.virtual_display_status_hint') }}
+                  </p>
+                </div>
+              </template>
+            </PlatformLayout>
             <p class="text-[11px] opacity-70 mt-2 leading-snug">
               {{ $t('config.virtual_display_mode_step_hint') }}
             </p>
@@ -263,6 +280,21 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
+
+            <!-- Double Refresh Rate -->
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-4 space-y-1">
+                  <n-checkbox v-model:checked="doubleRefreshrate">
+                    {{ t('config.double_refreshrate') }}
+                  </n-checkbox>
+                  <p class="text-[11px] opacity-70 leading-snug">
+                    {{ t('config.double_refreshrate_desc') }}
+                  </p>
+                </div>
+              </template>
+            </PlatformLayout>
+
             <div
               class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >
@@ -322,7 +354,7 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
       <div class="text-[11px] opacity-60 mt-1">{{ t('config.fallback_mode_desc') }}</div>
     </div>
 
-    <!-- Windows-specific options -->
+    <!-- Windows-specific legacy options -->
     <PlatformLayout>
       <template #windows>
         <fieldset class="mb-6 border border-dark/20 dark:border-light/15 rounded-xl p-4 space-y-4">
@@ -335,15 +367,6 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
 
           <div class="space-y-3">
             <div class="space-y-1">
-              <n-checkbox v-model:checked="headlessMode">
-                {{ t('config.headless_mode') }}
-              </n-checkbox>
-              <p class="text-[11px] opacity-70 leading-snug">
-                {{ t('config.headless_mode_desc') }}
-              </p>
-            </div>
-
-            <div class="space-y-1">
               <n-checkbox v-model:checked="legacyVirtualDisplay">
                 {{ t('config.legacy_virtual_display_mode') }}
               </n-checkbox>
@@ -352,36 +375,25 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
               </p>
             </div>
 
-            <div class="space-y-1">
-              <n-checkbox v-model:checked="isolatedVirtualDisplay">
-                {{ t('config.isolated_virtual_display_option') }}
-              </n-checkbox>
-              <p class="text-[11px] opacity-70 leading-snug">
-                {{ t('config.isolated_virtual_display_option_desc') }}
-              </p>
-            </div>
+            <template v-if="legacyVirtualDisplay">
+              <div class="space-y-1 pl-6">
+                <n-checkbox v-model:checked="headlessMode">
+                  {{ t('config.headless_mode') }}
+                </n-checkbox>
+                <p class="text-[11px] opacity-70 leading-snug">
+                  {{ t('config.headless_mode_desc') }}
+                </p>
+              </div>
 
-            <div class="space-y-1">
-              <n-checkbox v-model:checked="doubleRefreshrate">
-                {{ t('config.double_refreshrate') }}
-              </n-checkbox>
-              <p class="text-[11px] opacity-70 leading-snug">
-                {{ t('config.double_refreshrate_desc') }}
-              </p>
-            </div>
-          </div>
-
-          <div>
-            <div
-              class="px-4 py-3 rounded-md"
-              :class="[vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success']"
-            >
-              <i class="fa-solid fa-circle-info mr-2"></i>
-              {{ t('config.virtual_display_status_label') }} {{ currentDriverStatus }}
-            </div>
-            <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
-              {{ t('config.virtual_display_status_hint') }}
-            </p>
+              <div class="space-y-1 pl-6">
+                <n-checkbox v-model:checked="isolatedVirtualDisplay">
+                  {{ t('config.isolated_virtual_display_option') }}
+                </n-checkbox>
+                <p class="text-[11px] opacity-70 leading-snug">
+                  {{ t('config.isolated_virtual_display_option_desc') }}
+                </p>
+              </div>
+            </template>
           </div>
         </fieldset>
       </template>
