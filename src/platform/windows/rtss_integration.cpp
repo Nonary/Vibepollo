@@ -545,6 +545,15 @@ namespace platf {
     return g_sync_limiter_override;
   }
 
+  bool rtss_warmup_process() {
+    g_rtss_root = resolve_rtss_root();
+    if (!fs::exists(g_rtss_root)) {
+      BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
+      return false;
+    }
+    return ensure_rtss_running(g_rtss_root);
+  }
+
   bool rtss_streaming_start(int fps) {
     g_limit_active = false;
 
