@@ -31,9 +31,25 @@ TEST(PlayniteSync_Select, RecentSelectionHonorsAgeAndExclude) {
     make_game("B", "2020-01-01T00:00:00Z", true)
   };
   std::unordered_set<std::string> excl {to_lower_copy(std::string("a"))};
+  std::unordered_set<std::string> excl_categories;
   std::unordered_map<std::string, int> flags;
-  auto sel = select_recent_installed_games(installed, 1, 30, excl, flags);
+  auto sel = select_recent_installed_games(installed, 1, 30, excl, excl_categories, flags);
   ASSERT_EQ(sel.size(), 0u);  // recent candidate excluded; no fallback
+}
+
+TEST(PlayniteSync_Select, RecentSelectionSkipsExcludedCategories) {
+  auto now_iso = now_iso8601_utc();
+  std::vector<Game> installed {
+    make_game("A", now_iso, true, {"Steam"}),
+    make_game("B", now_iso, true, {"Indie"})
+  };
+  std::unordered_set<std::string> excl_ids;
+  std::unordered_set<std::string> excl_categories {to_lower_copy(std::string("steam"))};
+  std::unordered_map<std::string, int> flags;
+  auto sel = select_recent_installed_games(installed, 2, 0, excl_ids, excl_categories, flags);
+  ASSERT_EQ(sel.size(), 1u);
+  EXPECT_EQ(sel[0].id, "B");
+  EXPECT_EQ(flags["B"] & 0x1, 0x1);
 }
 
 TEST(PlayniteSync_Select, CategorySelectionMatchesAnyCategory) {
@@ -42,9 +58,10 @@ TEST(PlayniteSync_Select, CategorySelectionMatchesAnyCategory) {
     make_game("B", "2024-08-01T00:00:00Z", true, {"Action"})
   };
   std::unordered_set<std::string> excl;
+  std::unordered_set<std::string> excl_categories;
   std::unordered_map<std::string, int> flags;
   std::vector<std::string> cats {"indie"};
-  auto sel = select_category_games(installed, cats, excl, flags);
+  auto sel = select_category_games(installed, cats, excl, excl_categories, flags);
   ASSERT_EQ(sel.size(), 1u);
   EXPECT_EQ(sel[0].id, "A");
   EXPECT_EQ(flags["A"] & 0x2, 0x2);

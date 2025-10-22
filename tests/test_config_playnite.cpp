@@ -49,10 +49,17 @@ TEST_F(PlayniteConfigFixture, Integers_InvalidStringsAreIgnored) {
 }
 
 TEST_F(PlayniteConfigFixture, Lists_ParseJsonArrayAndCsv) {
-  std::unordered_map<std::string, std::string> vars {{"playnite_sync_categories", "[\"A\",\"B\"]"}, {"playnite_exclude_games", " x , y, z "}};
+  std::unordered_map<std::string, std::string> vars {
+    {"playnite_sync_categories", "[\"A\",\"B\"]"},
+    {"playnite_exclude_categories", "[{\"id\":\"deck\",\"name\":\"Steam Deck\"},\"Indie\"]"},
+    {"playnite_exclude_games", " x , y, z "}
+  };
   config::apply_playnite(vars);
   ASSERT_EQ(config::playnite.sync_categories.size(), 2u);
   EXPECT_EQ(config::playnite.sync_categories[0], "A");
+  ASSERT_EQ(config::playnite.exclude_categories.size(), 2u);
+  EXPECT_EQ(config::playnite.exclude_categories[0], "Steam Deck");
+  EXPECT_EQ(config::playnite.exclude_categories[1], "Indie");
   ASSERT_EQ(config::playnite.exclude_games.size(), 3u);
   EXPECT_EQ(config::playnite.exclude_games[0], "x");
   EXPECT_EQ(config::playnite.exclude_games[2], "z");

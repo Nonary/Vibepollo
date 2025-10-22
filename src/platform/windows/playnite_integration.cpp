@@ -335,6 +335,33 @@ namespace platf::playnite {
         if (stats.file_size != 0) {
           os << " apps_bytes=" << stats.file_size;
         }
+        const auto &excluded = config::playnite.exclude_categories;
+        if (!excluded.empty()) {
+          os << " excluded_categories=[";
+          std::size_t shown = 0;
+          for (const auto &name : excluded) {
+            if (shown >= 5) {
+              break;
+            }
+            if (shown > 0) {
+              os << ',';
+            }
+            std::string sanitized = name;
+            for (auto &ch : sanitized) {
+              if (ch == '\n' || ch == '\r') {
+                ch = ' ';
+              } else if (ch == '"') {
+                ch = '\'';
+              }
+            }
+            os << '"' << sanitized << '"';
+            ++shown;
+          }
+          if (excluded.size() > shown) {
+            os << ",+" << (excluded.size() - shown) << " more";
+          }
+          os << ']';
+        }
       } else if (!stats.error.empty()) {
         std::string sanitized = stats.error;
         for (auto &ch : sanitized) {
@@ -500,7 +527,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_categories, config::playnite.exclude_games, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_categories, config::playnite.exclude_categories, config::playnite.exclude_games, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -885,6 +912,17 @@ namespace platf::playnite {
           return;
         }
         // Not resolvable: leave as-is
+      });
+      // Excluded categories: mirror resolution behavior so offline labels stay fresh
+      update_array("playnite_exclude_categories", /*treat_strings_as_ids=*/false, [&](std::string &id, std::string &name) {
+        if (!id.empty() && cat_by_id.count(id)) {
+          name = cat_by_id[id];
+          return;
+        }
+        if (!name.empty() && cat_id_by_name.count(name)) {
+          id = cat_id_by_name[name];
+          return;
+        }
       });
       // Excluded games: ensure names match latest snapshot
       update_array("playnite_exclude_games", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name) {

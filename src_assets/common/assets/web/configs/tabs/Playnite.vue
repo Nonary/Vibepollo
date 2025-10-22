@@ -360,6 +360,43 @@
         </div>
         <div class="px-4 pb-4">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 items-start">
+            <div>
+              <label for="playnite_exclude_categories" class="form-label">{{
+                $t('playnite.exclude_categories') || 'Exclude categories'
+              }}</label>
+              <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
+                <template #trigger>
+                  <n-select
+                    id="playnite_exclude_categories"
+                    v-model:value="excludedCategories"
+                    multiple
+                    :options="categoryOptions"
+                    filterable
+                    tag
+                    clearable
+                    :placeholder="
+                      $t('playnite.categories_placeholder') || 'All categories (default)'
+                    "
+                    :loading="categoriesLoading"
+                    :disabled="disablePlayniteSelection || !autoSyncEnabled"
+                    @focus="() => loadCategories()"
+                    class="w-full"
+                  />
+                </template>
+                <span>{
+                  !autoSyncEnabled
+                    ? $t('playnite.enable_autosync_hint') ||
+                      'Enable Auto-sync to edit these settings.'
+                    : disabledHint
+                }}</span>
+              </n-tooltip>
+              <div class="form-text">
+                {{
+                  $t('playnite.exclude_categories_help') ||
+                    'Games tagged with these categories will never be auto-synced.'
+                }}
+              </div>
+            </div>
             <div class="md:col-span-2">
               <div class="flex flex-col gap-2">
                 <label class="form-label">{{
@@ -595,6 +632,24 @@ const selectedCategories = computed<string[]>({
       name: mapByVal.get(val) || val,
     }));
     store.updateOption('playnite_sync_categories', next);
+  },
+});
+
+const excludedCategories = computed<string[]>({
+  get() {
+    const arr = (config.value?.playnite_exclude_categories || []) as Array<{
+      id: string;
+      name: string;
+    }>;
+    return (arr || []).map((o) => o.id || o.name || '').filter(Boolean);
+  },
+  set(v: string[]) {
+    const mapByVal = new Map(categoryOptions.value.map((o) => [o.value, o.label] as const));
+    const next = (v || []).map((val) => ({
+      id: val && mapByVal.has(val) ? val : '',
+      name: mapByVal.get(val) || val,
+    }));
+    store.updateOption('playnite_exclude_categories', next);
   },
 });
 
@@ -988,6 +1043,28 @@ const policySummary = computed<string>(() => {
         `Also remove games never launched after ${pruneDays} days.`,
     );
   }
+  const excluded = ((config.value?.playnite_exclude_categories || []) as Array<{
+    id: string;
+    name: string;
+  }>).map((o) => (o?.name || o?.id || '').toString().trim()).filter(Boolean);
+  if (excluded.length) {
+    const shown = excluded.slice(0, 3);
+    const sample = shown.join(', ');
+    const more = excluded.length > shown.length ? excluded.length - shown.length : 0;
+    if (more > 0) {
+      parts.push(
+        (t('playnite.summary_excluded_categories_more', {
+          categories: sample,
+          count: more,
+        }) as any) || `Excluded categories: ${sample} (+${more} more).`,
+      );
+    } else {
+      parts.push(
+        (t('playnite.summary_excluded_categories', { categories: sample }) as any) ||
+          `Excluded categories: ${sample}.`,
+      );
+    }
+  }
   return parts.join(' ');
 });
 
@@ -1042,6 +1119,7 @@ function resetLaunchSection() {
 
 function resetFiltersSection() {
   const d = store.defaults as any;
+  store.updateOption('playnite_exclude_categories', d.playnite_exclude_categories);
   store.updateOption('playnite_exclude_games', d.playnite_exclude_games);
   notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
 }

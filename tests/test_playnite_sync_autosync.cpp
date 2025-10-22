@@ -23,8 +23,9 @@ TEST(PlayniteSync_Recent, SortsByLastPlayedAndRespectsLimit) {
   // older than B, newer than C
   std::vector<Game> in {G("A", "2024-01-01T00:00:00Z"), G("B", "2025-01-01T00:00:00Z"), G("C", "2023-01-01T00:00:00Z")};
   std::unordered_set<std::string> excl;
+  std::unordered_set<std::string> excl_categories;
   std::unordered_map<std::string, int> flags;
-  auto out = select_recent_installed_games(in, 2, 0, excl, flags);
+  auto out = select_recent_installed_games(in, 2, 0, excl, excl_categories, flags);
   ASSERT_EQ(out.size(), 2u);
   EXPECT_EQ(out[0].id, "B");
   EXPECT_EQ(out[1].id, "A");
@@ -35,8 +36,9 @@ TEST(PlayniteSync_Recent, AgeFilterSkipsInvalidTimestamps) {
   // One invalid last_played, one valid recent
   std::vector<Game> in {G("A", "not-a-date"), G("B", now_iso8601_utc())};
   std::unordered_set<std::string> excl;
+  std::unordered_set<std::string> excl_categories;
   std::unordered_map<std::string, int> flags;
-  auto out = select_recent_installed_games(in, 5, 30, excl, flags);
+  auto out = select_recent_installed_games(in, 5, 30, excl, excl_categories, flags);
   ASSERT_EQ(out.size(), 1u);
   EXPECT_EQ(out[0].id, "B");
 }

@@ -24,6 +24,7 @@ TEST(PlayniteAutosync_Reconcile, AddsSelectedGamesToEmptyApps) {
   std::size_t matched = 0;
   autosync_reconcile(root, all, /*recentN*/ 1, /*recentAgeDays*/ 0, /*delete_after_days*/ 0, /*require_repl*/ true,
                      /*categories*/ std::vector<std::string> {"RPG"},
+                     /*exclude_categories*/ std::vector<std::string> {},
                      /*exclude*/ {},
                      changed,
                      matched);
@@ -43,9 +44,33 @@ TEST(PlayniteAutosync_Reconcile, HonorsExcludeIds) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, {}, {"a"}, changed, matched);
+  autosync_reconcile(root, all, 1, 0, 0, true, {}, {}, {"a"}, changed, matched);
   EXPECT_FALSE(changed);
   EXPECT_EQ(root["apps"].size(), 0u);
+}
+
+TEST(PlayniteAutosync_Reconcile, HonorsExcludeCategories) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  std::vector<Game> all {
+    G("A", "2025-01-01T00:00:00Z", true, {"Steam"}),
+    G("B", "2024-12-01T00:00:00Z", true, {"Indie"})
+  };
+  bool changed = false;
+  std::size_t matched = 0;
+  autosync_reconcile(root, all,
+                     /*recentN*/ 2,
+                     /*recentAgeDays*/ 0,
+                     /*delete_after_days*/ 0,
+                     /*require_repl*/ true,
+                     /*categories*/ std::vector<std::string> {},
+                     /*exclude_categories*/ std::vector<std::string> {"Steam"},
+                     /*exclude_ids*/ {},
+                     changed,
+                     matched);
+  EXPECT_TRUE(changed);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "B");
 }
 
 TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
@@ -58,7 +83,7 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, {}, {}, changed, matched);
+  autosync_reconcile(root, all, 1, 0, 0, true, {}, {}, {}, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");

@@ -162,6 +162,7 @@ const defaultGroups = [
       playnite_focus_exit_on_first: false,
       playnite_fullscreen_entry_enabled: false,
       playnite_sync_categories: [] as Array<{ id: string; name: string }>,
+      playnite_exclude_categories: [] as Array<{ id: string; name: string }>,
       playnite_exclude_games: [] as Array<{ id: string; name: string }>,
       playnite_install_dir: '',
       playnite_extensions_dir: '',
@@ -544,6 +545,12 @@ export const useConfigStore = defineStore('config', () => {
       if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_categories')) {
         record['playnite_sync_categories'] = normalizeIdNameArray(
           record['playnite_sync_categories'],
+          false,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(record, 'playnite_exclude_categories')) {
+        record['playnite_exclude_categories'] = normalizeIdNameArray(
+          record['playnite_exclude_categories'],
           false,
         );
       }
