@@ -102,6 +102,19 @@
             </n-checkbox>
             <n-checkbox
               v-if="isWindows"
+              v-model:checked="virtualScreenEnabled"
+              size="small"
+              class="md:col-span-2"
+            >
+              <div class="flex flex-col">
+                <span>Use Virtual Screen</span>
+                <span class="text-[11px] opacity-60"
+                  >Launch the app on an isolated virtualized display, deactivating all other monitors.</span
+                >
+              </div>
+            </n-checkbox>
+            <n-checkbox
+              v-if="isWindows"
               v-model:checked="form.gen1FramegenFix"
               size="small"
               class="md:col-span-2"
@@ -916,6 +929,39 @@ const ddConfigOption = computed(
   () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
 );
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const virtualDisplayMode = computed(() => {
+  const mode = (configStore.config as any)?.virtual_display_mode;
+  return typeof mode === 'string' ? mode : 'disabled';
+});
+const virtualOutputName = computed(() => {
+  const outputName = (configStore.config as any)?.output_name;
+  return typeof outputName === 'string' ? outputName : '';
+});
+const usingVirtualDisplay = computed(() => {
+  if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
+    return true;
+  }
+  const mode = virtualDisplayMode.value;
+  if (mode === 'per_client' || mode === 'shared') {
+    return true;
+  }
+  if (mode === 'disabled') {
+    return virtualOutputName.value === VIRTUAL_DISPLAY_SELECTION;
+  }
+  return false;
+});
+const virtualScreenEnabled = computed<boolean>({
+  get: () => form.value.output === VIRTUAL_DISPLAY_SELECTION,
+  set: (enabled) => {
+    if (enabled) {
+      form.value.output = VIRTUAL_DISPLAY_SELECTION;
+    } else if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
+      form.value.output = '';
+    }
+  },
+});
+const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
 const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
@@ -1013,19 +1059,21 @@ watch(
       return;
     }
     message?.info(
-      '1st Gen Frame Generation Capture Fix requires Windows Graphics Capture (WGC), a display capable of 240 Hz or higher, and RTSS installed. A virtual display driver (such as VDD by MikeTheTech, 244 Hz by default) is recommended.',
+      "1st Gen Frame Generation Capture Fix requires Windows Graphics Capture (WGC), RTSS, and a display capable of 240 Hz or higher. Sunshine's virtual screen or any display that satisfies the doubled refresh requirement will work.",
       { duration: 8000 },
     );
-    if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
-      message?.warning(
-        'Enable Display Device configuration and set it to "Deactivate all other displays" so the Frame Generation capture fix can take effect.',
-        { duration: 8000 },
-      );
-    } else if (ddConfigOption.value !== 'ensure_only_display') {
-      message?.warning(
-        'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
-        { duration: 8000 },
-      );
+    if (!skipDisplayWarnings.value) {
+      if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
+        message?.warning(
+          'Configure Step 1 for Sunshine\'s virtual screen or enable Display Device and set it to "Deactivate all other displays" so the doubled refresh requirement is met during the stream.',
+          { duration: 8000 },
+        );
+      } else if (ddConfigOption.value !== 'ensure_only_display') {
+        message?.warning(
+          'Set Step 1 to use Sunshine\'s virtual screen or adjust Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active.',
+          { duration: 8000 },
+        );
+      }
     }
     try {
       const rtss = await http.get('/api/rtss/status', { validateStatus: () => true });
@@ -1056,19 +1104,21 @@ watch(
       form.value.gen1FramegenFix = false;
     }
     message?.info(
-      '2nd Gen Frame Generation Capture Fix (for DLSS 4) forces NVIDIA Control Panel frame limiter. Requires Windows Graphics Capture (WGC) and an NVIDIA GPU.',
+      "2nd Gen Frame Generation Capture Fix (for DLSS 4) forces the NVIDIA Control Panel frame limiter and needs Windows Graphics Capture (WGC) plus an NVIDIA GPU. Sunshine's virtual screen guarantees support, but any display that satisfies the doubled refresh requirement also works.",
       { duration: 8000 },
     );
-    if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
-      message?.warning(
-        'Enable Display Device configuration and set it to "Deactivate all other displays" for best results.',
-        { duration: 8000 },
-      );
-    } else if (ddConfigOption.value !== 'ensure_only_display') {
-      message?.warning(
-        'Set Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active during the stream.',
-        { duration: 8000 },
-      );
+    if (!skipDisplayWarnings.value) {
+      if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
+        message?.warning(
+          'Configure Step 1 for Sunshine\'s virtual screen or enable Display Device and set it to "Deactivate all other displays" so the doubled refresh requirement is met during the stream.',
+          { duration: 8000 },
+        );
+      } else if (ddConfigOption.value !== 'ensure_only_display') {
+        message?.warning(
+          'Set Step 1 to use Sunshine\'s virtual screen or adjust Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active.',
+          { duration: 8000 },
+        );
+      }
     }
   },
 );

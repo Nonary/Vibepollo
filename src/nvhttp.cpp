@@ -1154,7 +1154,7 @@ namespace nvhttp {
           }
         }
 
-        auto display_name_wide = VDISPLAY::createVirtualDisplay(
+        auto display_info = VDISPLAY::createVirtualDisplay(
           display_uuid_source.c_str(),
           client_label.c_str(),
           vd_width,
@@ -1163,14 +1163,20 @@ namespace nvhttp {
           virtual_display_guid
         );
 
-        if (!display_name_wide.empty()) {
+        if (display_info) {
           launch_session->virtual_display = true;
-          if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
+          if (display_info->device_id && !display_info->device_id->empty()) {
+            launch_session->virtual_display_device_id = *display_info->device_id;
+          } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
             launch_session->virtual_display_device_id = *resolved_device;
           } else {
             launch_session->virtual_display_device_id.clear();
           }
-          BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+          if (display_info->display_name && !display_info->display_name->empty()) {
+            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
+          } else {
+            BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
+          }
         } else {
           launch_session->virtual_display = false;
           launch_session->virtual_display_guid_bytes.fill(0);

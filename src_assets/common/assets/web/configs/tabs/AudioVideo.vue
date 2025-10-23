@@ -24,17 +24,18 @@ const frameLimiterStepLabel = computed(() =>
 );
 
 // SudoVDA status mapping (Apollo-specific)
-const sudovdaStatus = {
-  '1': 'Unknown',
-  '0': 'Ready',
-  '-1': 'Uninitialized',
-  '-2': 'Version Incompatible',
-  '-3': 'Watchdog Failed',
-};
-
+const sudovdaStatus = computed(() => ({
+  '1': t('config.sudovda_status_unknown'),
+  '0': t('config.sudovda_status_ready'),
+  '-1': t('config.sudovda_status_uninitialized'),
+  '-2': t('config.sudovda_status_version_incompatible'),
+  '-3': t('config.sudovda_status_watchdog_failed'),
+}));
 const vdisplay = computed(() => (config as any)?.vdisplay || 0);
 const currentDriverStatus = computed(
-  () => sudovdaStatus[String(vdisplay.value) as keyof typeof sudovdaStatus] || 'Unknown',
+  () =>
+    sudovdaStatus.value[String(vdisplay.value) as keyof typeof sudovdaStatus.value] ||
+    t('config.sudovda_status_unknown'),
 );
 
 

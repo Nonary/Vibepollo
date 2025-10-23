@@ -27,7 +27,16 @@ watch(
 const dummyPlugWikiUrl =
   'https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions';
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
-const usingVirtualDisplay = computed(() => config.output_name === VIRTUAL_DISPLAY_SELECTION);
+const usingVirtualDisplay = computed(() => {
+  const mode = config.virtual_display_mode;
+  if (mode === 'per_client' || mode === 'shared') {
+    return true;
+  }
+  if (mode === 'disabled') {
+    return false;
+  }
+  return config.output_name === VIRTUAL_DISPLAY_SELECTION;
+});
 
 // ----- Types -----
 type RefreshRateOnly = {
