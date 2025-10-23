@@ -240,7 +240,7 @@ namespace platf {
 
       std::wstring exe_path = exe->wstring();
       std::wstring working_dir = root.wstring();
-      std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\" -s";
+      std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\"";
 
       std::error_code startup_ec;
       STARTUPINFOEXW startup_info = create_startup_info(nullptr, nullptr, startup_ec);

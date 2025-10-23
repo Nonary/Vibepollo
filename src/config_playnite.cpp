@@ -213,6 +213,8 @@ namespace config {
     playnite.sync_categories.clear();
     playnite.exclude_categories_meta.clear();
     playnite.exclude_categories.clear();
+    playnite.exclude_plugins_meta.clear();
+    playnite.exclude_plugins.clear();
     playnite.exclude_games_meta.clear();
     playnite.exclude_games.clear();
 
@@ -220,6 +222,8 @@ namespace config {
     parse_id_name_array(vars, "playnite_sync_categories", playnite.sync_categories_meta, &playnite.sync_categories, /*treat_strings_as_ids=*/false);
     // Excluded categories: accept JSON array of {id,name} or strings (names). Maintain runtime names list.
     parse_id_name_array(vars, "playnite_exclude_categories", playnite.exclude_categories_meta, &playnite.exclude_categories, /*treat_strings_as_ids=*/false);
+    // Excluded plugins: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.
+    parse_id_name_array(vars, "playnite_exclude_plugins", playnite.exclude_plugins_meta, &playnite.exclude_plugins, /*treat_strings_as_ids=*/true);
     // Exclusions: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.
     parse_id_name_array(vars, "playnite_exclude_games", playnite.exclude_games_meta, &playnite.exclude_games, /*treat_strings_as_ids=*/true);
 

@@ -162,7 +162,9 @@ namespace platf::playnite {
   }
 
   // Forward declaration: refresh config id/name fields using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games);
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
+                                            const std::vector<platf::playnite::Game> &games,
+                                            const std::vector<platf::playnite::Plugin> &plugins);
 
   class deinit_t_impl;  // forward
   static std::atomic<deinit_t_impl *> g_instance {nullptr};
@@ -251,6 +253,11 @@ namespace platf::playnite {
       out = last_categories_;
     }
 
+    void snapshot_plugins(std::vector<platf::playnite::Plugin> &out) {
+      std::scoped_lock lk(mutex_);
+      out = last_plugins_;
+    }
+
     // Hot-toggle helpers: stop or start the IPC client without destroying the instance
     void stop_client() {
       try {
@@ -265,6 +272,7 @@ namespace platf::playnite {
           last_games_.clear();
           game_ids_.clear();
           last_categories_.clear();
+          last_plugins_.clear();
           new_snapshot_ = true;
         } catch (...) {}
         {
@@ -401,16 +409,54 @@ namespace platf::playnite {
         {
           std::vector<platf::playnite::Category> cats_copy;
           std::vector<platf::playnite::Game> games_copy;
+          std::vector<platf::playnite::Plugin> plugins_copy;
           {
             std::scoped_lock lk(mutex_);
             cats_copy = last_categories_;
             games_copy = last_games_;
+            plugins_copy = last_plugins_;
           }
-          refresh_config_id_name_fields(cats_copy, games_copy);
+          refresh_config_id_name_fields(cats_copy, games_copy, plugins_copy);
         }
         {
           std::scoped_lock lk(progress_mutex_);
           snapshot_progress_ = {};
+        }
+      } else if (msg.type == MT::Plugins) {
+        BOOST_LOG(debug) << "Playnite: received " << msg.plugins.size() << " plugins";
+        {
+          std::scoped_lock lk(mutex_);
+          std::unordered_set<std::string> seen;
+          last_plugins_.clear();
+          for (const auto &p : msg.plugins) {
+            std::string key;
+            if (!p.id.empty()) {
+              key = platf::playnite::sync::to_lower_copy(p.id);
+            } else if (!p.name.empty()) {
+              key = "name:" + platf::playnite::sync::to_lower_copy(p.name);
+            }
+            if (key.empty()) {
+              continue;
+            }
+            if (seen.insert(key).second) {
+              last_plugins_.push_back(p);
+            }
+          }
+          std::sort(last_plugins_.begin(), last_plugins_.end(), [](const auto &a, const auto &b) {
+            return a.name < b.name;
+          });
+        }
+        {
+          std::vector<platf::playnite::Category> cats_copy;
+          std::vector<platf::playnite::Game> games_copy;
+          std::vector<platf::playnite::Plugin> plugins_copy;
+          {
+            std::scoped_lock lk(mutex_);
+            cats_copy = last_categories_;
+            games_copy = last_games_;
+            plugins_copy = last_plugins_;
+          }
+          refresh_config_id_name_fields(cats_copy, games_copy, plugins_copy);
         }
       } else if (msg.type == MT::Games) {
         size_t added = 0;
@@ -445,12 +491,14 @@ namespace platf::playnite {
         {
           std::vector<platf::playnite::Category> cats_copy;
           std::vector<platf::playnite::Game> games_copy;
+          std::vector<platf::playnite::Plugin> plugins_copy;
           {
             std::scoped_lock lk(mutex_);
             cats_copy = last_categories_;
             games_copy = last_games_;
+            plugins_copy = last_plugins_;
           }
-          refresh_config_id_name_fields(cats_copy, games_copy);
+          refresh_config_id_name_fields(cats_copy, games_copy, plugins_copy);
         }
         if (config::playnite.auto_sync) {
           sync_stats = sync_apps_metadata();
@@ -527,7 +575,18 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_categories, config::playnite.exclude_categories, config::playnite.exclude_games, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root,
+                                                all,
+                                                recentN,
+                                                recent_age_days,
+                                                delete_after_days,
+                                                config::playnite.autosync_require_replacement,
+                                                config::playnite.sync_categories,
+                                                config::playnite.exclude_categories,
+                                                config::playnite.exclude_games,
+                                                config::playnite.exclude_plugins,
+                                                changed,
+                                                matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -548,6 +607,7 @@ namespace platf::playnite {
     }
 
     std::vector<platf::playnite::Game> last_games_;
+    std::vector<platf::playnite::Plugin> last_plugins_;
     std::mutex mutex_;
 
     struct SnapshotProgress {
@@ -755,6 +815,8 @@ namespace platf::playnite {
       j["name"] = g.name;
       j["categories"] = g.categories;
       j["installed"] = g.installed;
+      j["pluginId"] = g.plugin_id;
+      j["pluginName"] = g.plugin_name;
       arr.push_back(std::move(j));
     }
     out_json = arr.dump();
@@ -797,8 +859,50 @@ namespace platf::playnite {
     return true;
   }
 
+  bool get_plugins_list_json(std::string &out_json) {
+    auto inst = g_instance.load(std::memory_order_acquire);
+    if (!inst) {
+      return false;
+    }
+    std::vector<platf::playnite::Plugin> plugins;
+    inst->snapshot_plugins(plugins);
+    if (plugins.empty()) {
+      std::vector<platf::playnite::Game> games;
+      inst->snapshot_games(games);
+      std::unordered_map<std::string, std::string> by_id;
+      for (const auto &g : games) {
+        if (!g.plugin_id.empty()) {
+          if (!by_id.count(g.plugin_id) || by_id[g.plugin_id].empty()) {
+            by_id[g.plugin_id] = g.plugin_name;
+          }
+        }
+      }
+      plugins.reserve(by_id.size());
+      for (const auto &kv : by_id) {
+        platf::playnite::Plugin p;
+        p.id = kv.first;
+        p.name = kv.second;
+        plugins.push_back(std::move(p));
+      }
+      std::sort(plugins.begin(), plugins.end(), [](const auto &a, const auto &b) {
+        return a.name < b.name;
+      });
+    }
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &p : plugins) {
+      nlohmann::json j;
+      j["id"] = p.id;
+      j["name"] = p.name;
+      arr.push_back(std::move(j));
+    }
+    out_json = arr.dump();
+    return true;
+  }
+
   // Reconcile persisted config names for categories/exclusions using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games) {
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
+                                            const std::vector<platf::playnite::Game> &games,
+                                            const std::vector<platf::playnite::Plugin> &plugins) {
     try {
       // Build lookup maps
       std::unordered_map<std::string, std::string> cat_by_id;  // id->name
@@ -812,9 +916,15 @@ namespace platf::playnite {
         }
       }
       std::unordered_map<std::string, std::string> game_name_by_id;
+      std::unordered_map<std::string, std::string> plugin_name_by_id;
       for (const auto &g : games) {
         if (!g.id.empty()) {
           game_name_by_id[g.id] = g.name;
+        }
+      }
+      for (const auto &p : plugins) {
+        if (!p.id.empty()) {
+          plugin_name_by_id[p.id] = p.name;
         }
       }
 
@@ -928,6 +1038,12 @@ namespace platf::playnite {
       update_array("playnite_exclude_games", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name) {
         if (!id.empty() && game_name_by_id.count(id)) {
           name = game_name_by_id[id];
+        }
+      });
+      // Excluded plugins: ensure names match latest snapshot
+      update_array("playnite_exclude_plugins", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name) {
+        if (!id.empty() && plugin_name_by_id.count(id)) {
+          name = plugin_name_by_id[id];
         }
       });
 

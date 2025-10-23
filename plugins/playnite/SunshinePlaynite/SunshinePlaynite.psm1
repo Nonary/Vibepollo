@@ -992,6 +992,58 @@ function Get-CategoryNamesMap {
   return $map
 }
 
+function Get-LibraryPluginMap {
+  $map = @{}
+  try {
+    if (-not $PlayniteApi) { return $map }
+    $addons = $null
+    try { $addons = $PlayniteApi.Addons } catch {}
+    if (-not $addons) { return $map }
+    $plugins = $null
+    try { $plugins = $addons.Plugins } catch {}
+    if (-not $plugins) { return $map }
+    foreach ($plugin in $plugins) {
+      $isLibrary = $false
+      try {
+        if ($plugin -is [Playnite.SDK.Plugins.LibraryPlugin]) {
+          $isLibrary = $true
+        }
+      } catch {
+        try {
+          $type = $plugin.GetType()
+          while ($type) {
+            if ($type.FullName -eq 'Playnite.SDK.Plugins.LibraryPlugin') { $isLibrary = $true; break }
+            $type = $type.BaseType
+          }
+        } catch {}
+      }
+      if (-not $isLibrary) { continue }
+      $id = ''
+      try { if ($plugin.Id) { $id = $plugin.Id.ToString() } } catch {}
+      if (-not $id) { continue }
+      $name = ''
+      try { $name = [string]$plugin.Name } catch {}
+      $map[$id] = $name
+    }
+  } catch {}
+  return $map
+}
+
+function Get-PlaynitePlugins {
+  $map = Get-LibraryPluginMap
+  $plugins = @()
+  try {
+    foreach ($entry in ($map.GetEnumerator() | Sort-Object -Property Value, Key)) {
+      $plugins += @{ id = $entry.Key; name = $entry.Value }
+    }
+  } catch {
+    foreach ($key in $map.Keys) {
+      $plugins += @{ id = $key; name = $map[$key] }
+    }
+  }
+  return $plugins
+}
+
 function Get-GameActionInfo {
   param([object]$Game)
   # Best-effort extraction of primary play action
@@ -1029,6 +1081,7 @@ function Get-BoxArtPath {
 function Get-PlayniteGames {
   if (-not $PlayniteApi) { return @() }
   $catMap = Get-CategoryNamesMap
+  $pluginMap = Get-LibraryPluginMap
   $games = @()
   foreach ($g in $PlayniteApi.Database.Games) {
     $act = Get-GameActionInfo -Game $g
@@ -1045,6 +1098,10 @@ function Get-PlayniteGames {
       if ($null -ne $g.IsInstalled) { $installed = [bool]$g.IsInstalled }
       elseif ($g.InstallDirectory) { $installed = $true }
     } catch {}
+    $pluginId = ''
+    try { if ($g.PluginId) { $pluginId = $g.PluginId.ToString() } } catch {}
+    $pluginName = ''
+    if ($pluginId -and $pluginMap.ContainsKey($pluginId)) { $pluginName = $pluginMap[$pluginId] }
     $games += @{
       id              = $g.Id.ToString()
       name            = $g.Name
@@ -1052,6 +1109,8 @@ function Get-PlayniteGames {
       args            = $act.args
       workingDir      = $act.workingDir
       categories      = $catNames
+      pluginId        = $pluginId
+      pluginName      = $pluginName
       playtimeMinutes = $playtimeMin
       lastPlayed      = $lastPlayed
       boxArtPath      = $boxArt
@@ -1070,6 +1129,11 @@ function Get-PlayniteGames {
 
 function Send-InitialSnapshot {
   Write-Log "Building initial snapshot"
+  $plugins = @(Get-PlaynitePlugins)
+  $jsonPlugins = @{ type = 'plugins'; payload = $plugins } | ConvertTo-Json -Depth 6 -Compress
+  Send-JsonMessage -Json $jsonPlugins -AllowConnectIfMissing
+  $pluginCount = 0; try { $pluginCount = [int]$plugins.Count } catch { $pluginCount = 0 }
+  Write-Log ("Sent plugins snapshot ({0})" -f $pluginCount)
   # Force array to avoid null Count() semantics if provider returns $null
   $categories = @(Get-PlayniteCategories)
   $json = @{ type = 'categories'; payload = $categories } | ConvertTo-Json -Depth 6 -Compress

@@ -36,12 +36,14 @@ namespace platf::playnite::sync {
                                                   int recentAgeDays,
                                                   const std::unordered_set<std::string> &exclude_ids_lower,
                                                   const std::unordered_set<std::string> &exclude_categories_lower,
+                                                  const std::unordered_set<std::string> &exclude_plugin_ids_lower,
                                                   std::unordered_map<std::string, int> &out_source_flags);
 
   std::vector<Game> select_category_games(const std::vector<Game> &installed,
                                           const std::vector<std::string> &categories,
                                           const std::unordered_set<std::string> &exclude_ids_lower,
                                           const std::unordered_set<std::string> &exclude_categories_lower,
+                                          const std::unordered_set<std::string> &exclude_plugin_ids_lower,
                                           std::unordered_map<std::string, int> &out_source_flags);
 
   // Index helpers
@@ -79,6 +81,7 @@ namespace platf::playnite::sync {
                           const std::vector<std::string> &categories,
                           const std::vector<std::string> &exclude_categories,
                           const std::vector<std::string> &exclude_ids,
+                          const std::vector<std::string> &exclude_plugins,
                           bool &changed,
                           std::size_t &matched_out);
 
