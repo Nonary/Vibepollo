@@ -56,6 +56,18 @@ namespace platf::playnite {
             m.categories.emplace_back(std::move(cat));
           }
         }
+      } else if (type == "plugins") {
+        m.type = MessageType::Plugins;
+        auto arr = j.value("payload", json::array());
+        BOOST_LOG(debug) << "Playnite protocol: plugins count=" << arr.size();
+        for (auto &p : arr) {
+          Plugin plug;
+          plug.id = p.value("id", "");
+          plug.name = p.value("name", "");
+          if (!plug.id.empty() || !plug.name.empty()) {
+            m.plugins.emplace_back(std::move(plug));
+          }
+        }
       } else if (type == "games") {
         m.type = MessageType::Games;
         auto arr = j.value("payload", json::array());
@@ -68,6 +80,8 @@ namespace platf::playnite {
           game.args = g.value("args", "");
           game.working_dir = g.value("workingDir", "");
           game.categories = to_string_list(g.value("categories", json::array()));
+          game.plugin_id = g.value("pluginId", "");
+          game.plugin_name = g.value("pluginName", "");
           // playtimeMinutes may arrive as number or string
           try {
             game.playtime_minutes = g.value("playtimeMinutes", (uint64_t) 0);

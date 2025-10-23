@@ -17,6 +17,7 @@ namespace platf::playnite {
   enum class MessageType {
     Unknown,  ///< Unknown / unsupported message.
     Categories,  ///< Message contains a list of categories.
+    Plugins,  ///< Message contains a list of library plugins.
     Games,  ///< Message contains a list of games.
     Status  ///< Message contains a status update for a specific game / session.
   };
@@ -27,6 +28,14 @@ namespace platf::playnite {
   struct Category {
     std::string id;  ///< Category identifier.
     std::string name;  ///< Display name.
+  };
+
+  /**
+   * @brief Playnite library plugin description.
+   */
+  struct Plugin {
+    std::string id;  ///< Plugin identifier (GUID string).
+    std::string name;  ///< Display name (e.g. "Steam").
   };
 
   /**
@@ -42,6 +51,8 @@ namespace platf::playnite {
     std::string args;  ///< Arguments passed on launch.
     std::string working_dir;  ///< Working directory (Playnite JSON key: workingDir).
     std::vector<std::string> categories;  ///< Category names attached to the game.
+    std::string plugin_id;  ///< Library plugin identifier that owns the game.
+    std::string plugin_name;  ///< Library plugin display name (best effort).
     uint64_t playtime_minutes = 0;  ///< Total playtime in minutes (playtimeMinutes).
     std::string last_played;  ///< Last played timestamp (ISO8601) (lastPlayed).
     std::string box_art_path;  ///< Path/URL to cover art (boxArtPath).
@@ -56,6 +67,7 @@ namespace platf::playnite {
   struct Message {
     MessageType type = MessageType::Unknown;  ///< Parsed message type.
     std::vector<Category> categories;  ///< Categories payload (if type == Categories).
+    std::vector<Plugin> plugins;  ///< Plugins payload (if type == Plugins).
     std::vector<Game> games;  ///< Games payload (if type == Games).
     // Status payload (if type == Status)
     std::string status_name;  ///< Status event name (e.g. gameStarted, gameStopped).

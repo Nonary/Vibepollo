@@ -42,6 +42,7 @@
 #include "platform/common.h"
 #ifdef _WIN32
   #include "config_playnite.h"
+  #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/playnite_integration.h"
   #include "tools/playnite_launcher/focus_utils.h"
@@ -1119,6 +1120,21 @@ namespace proc {
         lossless_metadata.anime4k_type = runtime.anime4k_type;
         lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
       }
+#endif
+
+#ifdef _WIN32
+      std::optional<int> rtss_warmup_limit;
+      if (using_lossless_provider) {
+        if (_app.lossless_scaling_rtss_limit && *_app.lossless_scaling_rtss_limit > 0) {
+          rtss_warmup_limit = *_app.lossless_scaling_rtss_limit;
+        } else if (_app.lossless_scaling_target_fps && *_app.lossless_scaling_target_fps > 0) {
+          int computed_limit = (int) std::lround(*_app.lossless_scaling_target_fps * 0.6);
+          if (computed_limit > 0) {
+            rtss_warmup_limit = computed_limit;
+          }
+        }
+      }
+      platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
 #endif
 
       auto set_string = [&](const char *key, const std::optional<std::string> &value) {

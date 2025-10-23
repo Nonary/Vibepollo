@@ -2233,6 +2233,13 @@ namespace {
     return success;
   }
 
+  void hide_console_window() {
+    HWND console = GetConsoleWindow();
+    if (console) {
+      ShowWindow(console, SW_HIDE);
+    }
+  }
+
   void handle_apply(ServiceState &state, std::span<const uint8_t> payload) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
@@ -2485,6 +2492,10 @@ int main(int argc, char *argv[]) {
         break;
       }
     }
+  }
+
+  if (restore_mode) {
+    hide_console_window();
   }
 
   HANDLE singleton = nullptr;

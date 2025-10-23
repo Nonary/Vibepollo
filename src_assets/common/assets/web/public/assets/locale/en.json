@@ -572,7 +572,12 @@
     "policy_explainer": "Choose how Sunshine removes old auto-synced games.",
     "sync_categories": "Categories to sync",
     "sync_categories_help": "Select categories to auto-sync. Leaving empty means all categories.",
+    "exclude_categories": "Exclude categories",
+    "exclude_categories_help": "Games tagged with these categories will never be auto-synced.",
+    "exclude_plugins": "Exclude library plugins",
+    "exclude_plugins_help": "Games imported from these plugins will never be auto-synced.",
     "categories_placeholder": "All categories (default)",
+    "plugins_placeholder": "Pick library plugins to exclude",
     "extensions_dir": "Extensions directory",
     "install_dir": "Installation path override",
     "save_success": "Settings saved.",
@@ -614,7 +619,9 @@
     "summary_activity_ignored": "Activity window is ignored.",
     "summary_keep_until_replaced": "Games stay until a newer game replaces them.",
     "summary_prune_immediately": "Games are pruned when they no longer qualify.",
-    "summary_delete_after": "Also remove games never launched after {days} days."
+    "summary_delete_after": "Also remove games never launched after {days} days.",
+    "summary_excluded_categories": "Excluded categories: {categories}.",
+    "summary_excluded_categories_more": "Excluded categories: {categories} (+{count} more)."
   },
   "password": {
     "confirm_password": "Confirm Password",

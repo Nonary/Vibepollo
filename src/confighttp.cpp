@@ -139,6 +139,7 @@ namespace confighttp {
   void uninstallPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getPlaynitePlugins(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Helper to keep confighttp.cpp free of Playnite details
@@ -2073,6 +2074,7 @@ namespace confighttp {
     server.resource["^/api/playnite/uninstall$"]["POST"] = uninstallPlaynite;
     server.resource["^/api/playnite/games$"]["GET"] = getPlayniteGames;
     server.resource["^/api/playnite/categories$"]["GET"] = getPlayniteCategories;
+    server.resource["^/api/playnite/plugins$"]["GET"] = getPlaynitePlugins;
     server.resource["^/api/playnite/force_sync$"]["POST"] = postPlayniteForceSync;
     server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
     // Export logs bundle (Windows only)

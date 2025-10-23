@@ -26,6 +26,14 @@ namespace config {
     std::vector<std::string> sync_categories;
     // Persisted/meta: selected categories with id+name (for offline labeling)
     std::vector<id_name_t> sync_categories_meta;
+    // Runtime: category names to exclude from sync
+    std::vector<std::string> exclude_categories;
+    // Persisted/meta: excluded categories with id+name (for offline labeling)
+    std::vector<id_name_t> exclude_categories_meta;
+    // Runtime: plugin IDs to exclude from sync (Playnite library plugin GUIDs)
+    std::vector<std::string> exclude_plugins;
+    // Persisted/meta: excluded plugins with id+name (for offline labeling)
+    std::vector<id_name_t> exclude_plugins_meta;
 
     // Focus behavior
     int focus_attempts = 3;  // Count of confirmed re-applies of focus

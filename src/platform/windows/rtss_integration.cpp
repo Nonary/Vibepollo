@@ -240,7 +240,7 @@ namespace platf {
 
       std::wstring exe_path = exe->wstring();
       std::wstring working_dir = root.wstring();
-      std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\" -s";
+      std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\"";
 
       std::error_code startup_ec;
       STARTUPINFOEXW startup_info = create_startup_info(nullptr, nullptr, startup_ec);
@@ -543,6 +543,15 @@ namespace platf {
 
   std::optional<std::string> rtss_get_sync_limiter_override() {
     return g_sync_limiter_override;
+  }
+
+  bool rtss_warmup_process() {
+    g_rtss_root = resolve_rtss_root();
+    if (!fs::exists(g_rtss_root)) {
+      BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
+      return false;
+    }
+    return ensure_rtss_running(g_rtss_root);
   }
 
   bool rtss_streaming_start(int fps) {
