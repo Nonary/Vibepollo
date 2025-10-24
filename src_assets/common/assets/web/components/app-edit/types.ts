@@ -100,3 +100,41 @@ export interface ServerApp {
   'lossless-scaling-recommended'?: Record<string, unknown>;
   'lossless-scaling-custom'?: Record<string, unknown>;
 }
+
+export type FrameGenRequirementStatus = 'pass' | 'warn' | 'fail' | 'unknown';
+
+export interface FrameGenDisplayTarget {
+  fps: number;
+  requiredHz: number;
+  supported: boolean | null;
+}
+
+export interface FrameGenHealth {
+  checkedAt: number;
+  capture: {
+    status: FrameGenRequirementStatus;
+    method: string;
+    message: string;
+  };
+  rtss: {
+    status: FrameGenRequirementStatus;
+    installed: boolean;
+    running: boolean;
+    hooksDetected: boolean;
+    message: string;
+  };
+  display: {
+    status: FrameGenRequirementStatus;
+    deviceLabel: string;
+    deviceId: string;
+    currentHz: number | null;
+    targets: FrameGenDisplayTarget[];
+    virtualActive: boolean;
+    message: string;
+    error?: string | null;
+  };
+  suggestion?: {
+    message: string;
+    emphasis: 'info' | 'warning';
+  };
+}

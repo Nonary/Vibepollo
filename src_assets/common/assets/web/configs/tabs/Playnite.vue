@@ -646,7 +646,7 @@ function notify(type: 'success' | 'error' | 'info' | 'warning', content: string)
 const NULL_GUID = '00000000-0000-0000-0000-000000000000';
 const categoriesLoading = ref(false);
 const pluginsLoading = ref(false);
-const gamesLoading = ref(false);
+const gamesLoading = ref(false);0
 const categoryOptions = ref<{ label: string; value: string }[]>([]);
 const pluginOptions = ref<{ label: string; value: string }[]>([]);
 type GameRow = {

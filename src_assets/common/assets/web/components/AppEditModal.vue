@@ -108,48 +108,26 @@
             >
               <div class="flex flex-col">
                 <span>Use Virtual Screen</span>
-                <span class="text-[11px] opacity-60"
-                  >Launch the app on an isolated virtualized display, deactivating all other monitors.</span
-                >
-              </div>
-            </n-checkbox>
-            <n-checkbox
-              v-if="isWindows"
-              v-model:checked="form.gen1FramegenFix"
-              size="small"
-              class="md:col-span-2"
-            >
-              <div class="flex flex-col">
-                <span>1st Gen Frame Generation Capture Fix</span>
-                <span class="text-[11px] opacity-60"
-                  >Required for DLSS3, FSR3, NVIDIA Smooth Motion (frame gen), and Lossless Scaling
-                  (frame gen). Not needed if only using Lossless Scaling for upscaling. Requires
-                  Windows Graphics Capture (WGC), a display capable of 240 Hz or higher (virtual
-                  display driver recommended), and RTSS installed. Configure Display Device to
-                  activate only that monitor during streams.</span
-                >
-              </div>
-            </n-checkbox>
-            <n-checkbox
-              v-if="isWindows"
-              v-model:checked="form.gen2FramegenFix"
-              size="small"
-              class="md:col-span-2"
-            >
-              <div class="flex flex-col">
-                <span>2nd Gen Frame Generation Capture Fix</span>
-                <span class="text-[11px] opacity-60"
-                  >For DLSS 4 with 2nd generation frame generation. Forces NVIDIA Control Panel
-                  frame limiter. Requires Windows Graphics Capture (WGC) and a high refresh rate
-                  display.</span
-                >
+                <span class="text-[11px] opacity-60">
+                  Launch the app on an isolated virtualized display, deactivating all other monitors.
+                </span>
               </div>
             </n-checkbox>
           </div>
-          <p v-if="isWindows" class="text-[11px] opacity-60">
-            Frame generation capture fixes are only needed when using frame generation technologies.
-            Lossless Scaling upscaling alone does not require these fixes.
-          </p>
+
+          <AppEditFrameGenSection
+            v-if="isWindows"
+            v-model:gen1="form.gen1FramegenFix"
+            v-model:gen2="form.gen2FramegenFix"
+            :health="frameGenHealth"
+            :health-loading="frameGenHealthLoading"
+            :health-error="frameGenHealthError"
+            :lossless-active="losslessFrameGenEnabled"
+            :nvidia-active="nvidiaFrameGenEnabled"
+            :using-virtual-display="usingVirtualDisplay"
+            @refresh-health="handleFrameGenHealthRequest"
+            @enable-virtual-screen="handleEnableVirtualScreen"
+          />
 
           <AppEditLosslessScalingSection
             v-if="isWindows"
@@ -238,6 +216,7 @@ import type {
   Anime4kSize,
   FrameGenerationProvider,
   FrameGenerationMode,
+  FrameGenHealth,
 } from './app-edit/types';
 import {
   FRAME_GENERATION_PROVIDERS,
@@ -257,6 +236,7 @@ import {
 import AppEditBasicsSection from './app-edit/AppEditBasicsSection.vue';
 import AppEditLosslessScalingSection from './app-edit/AppEditLosslessScalingSection.vue';
 import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vue';
+import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
 import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
 
@@ -273,6 +253,7 @@ const emit = defineEmits<{
   (e: 'deleted'): void;
 }>();
 const open = computed<boolean>(() => !!props.modelValue);
+const message = useMessage();
 function fresh(): AppForm {
   return {
     index: -1,
@@ -811,6 +792,15 @@ watch(open, (o) => {
     requestAnimationFrame(() => updateShadows());
     // Initialize unified name combobox selection
     ensureNameSelectionFromForm();
+    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
+      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
+    } else {
+      frameGenHealth.value = null;
+      frameGenHealthError.value = null;
+    }
+  } else {
+    frameGenHealth.value = null;
+    frameGenHealthError.value = null;
   }
 });
 function close() {
@@ -927,6 +917,32 @@ const virtualDisplayMode = computed(() => {
   const mode = (configStore.config as any)?.virtual_display_mode;
   return typeof mode === 'string' ? mode : 'disabled';
 });
+const windowsDisplayVersion = computed(() => {
+  const v = (configStore.metadata as any)?.windows_display_version;
+  return typeof v === 'string' ? v : '';
+});
+const windowsBuildNumber = computed<number | null>(() => {
+  const raw = (configStore.metadata as any)?.windows_build_number;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+});
+const autoCaptureUsesWgc = computed(() => {
+  if (!isWindows.value) return false;
+  const displayVersion = windowsDisplayVersion.value.toUpperCase();
+  if (displayVersion.includes('23H2') || displayVersion.includes('24H1') || displayVersion.includes('24H2')) {
+    return true;
+  }
+  const build = windowsBuildNumber.value;
+  if (build !== null) {
+    // Windows 11 23H2 corresponds to build 22631; treat newer builds as equivalent or better
+    return build >= 22631;
+  }
+  return false;
+});
 const virtualOutputName = computed(() => {
   const outputName = (configStore.config as any)?.output_name;
   return typeof outputName === 'string' ? outputName : '';
@@ -955,6 +971,475 @@ const virtualScreenEnabled = computed<boolean>({
   },
 });
 const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
+const globalOutputName = computed(() => {
+  const name = (configStore.config as any)?.output_name;
+  return typeof name === 'string' ? name : '';
+});
+
+const frameGenHealth = ref<FrameGenHealth | null>(null);
+const frameGenHealthLoading = ref(false);
+const frameGenHealthError = ref<string | null>(null);
+let frameGenHealthPromise: Promise<void> | null = null;
+
+type FrameGenHealthReason =
+  | 'gen1'
+  | 'gen2'
+  | 'manual'
+  | 'auto'
+  | 'virtual-toggle'
+  | 'capture-change'
+  | 'output-change'
+  | 'open';
+
+interface FrameGenHealthOptions {
+  reason?: FrameGenHealthReason;
+  silent?: boolean;
+}
+
+function normalizeDeviceId(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function parseRefreshHz(raw: any): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const candidate = parseRefreshHz(item);
+      if (candidate !== null) return candidate;
+    }
+    return null;
+  }
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const sanitized = trimmed.replace(/(hz|fps|frames|refresh)/gi, '').trim();
+    const fractionMatch = sanitized.match(/^([-+]?\d+(?:\.\d+)?)\s*\/\s*([-+]?\d+(?:\.\d+)?)/);
+    if (fractionMatch) {
+      const numerator = Number(fractionMatch[1]);
+      const denominator = Number(fractionMatch[2]);
+      if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+        return numerator / denominator;
+      }
+    }
+    const valueMatch = sanitized.match(/[-+]?\d+(?:\.\d+)?/);
+    if (valueMatch) {
+      const num = Number(valueMatch[0]);
+      if (Number.isFinite(num)) return num;
+    }
+    return null;
+  }
+  if (typeof raw === 'object') {
+    if ('hz' in raw) {
+      const hzCandidate = parseRefreshHz((raw as any).hz);
+      if (hzCandidate !== null) return hzCandidate;
+    }
+    if ('value' in raw) {
+      const valueCandidate = parseRefreshHz((raw as any).value);
+      if (valueCandidate !== null) return valueCandidate;
+    }
+    if (typeof raw.type === 'string' && raw.value !== undefined) {
+      const typed = (raw as { type: string; value: unknown });
+      if (typed.type === 'double') {
+        return parseRefreshHz(typed.value);
+      }
+      if (typed.type === 'rational') {
+        const val = typed.value ?? {};
+        const numerator = Number(
+          (val as any)?.numerator ?? (val as any)?.m_numerator ?? (val as any)?.num,
+        );
+        const denominator = Number(
+          (val as any)?.denominator ?? (val as any)?.m_denominator ?? (val as any)?.den ?? 1,
+        );
+        if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+          return numerator / denominator;
+        }
+      }
+    }
+    const numerator = Number(
+      (raw as any)?.numerator ??
+        (raw as any)?.m_numerator ??
+        (raw as any)?.num ??
+        (raw as any)?.n ??
+        null,
+    );
+    const denominator = Number(
+      (raw as any)?.denominator ?? (raw as any)?.m_denominator ?? (raw as any)?.den ?? 1,
+    );
+    if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+      return numerator / denominator;
+    }
+  }
+  return null;
+}
+
+function parseRefreshList(raw: unknown): number[] {
+  const values: number[] = [];
+  const collect = (entry: unknown) => {
+    const hz = parseRefreshHz(entry);
+    if (hz !== null && Number.isFinite(hz)) {
+      values.push(hz);
+    }
+  };
+  if (Array.isArray(raw)) {
+    raw.forEach(collect);
+  } else if (raw !== null && raw !== undefined) {
+    collect(raw);
+  }
+  const seen = new Set<string>();
+  const result: number[] = [];
+  for (const hz of values) {
+    if (hz <= 0) continue;
+    const key = hz.toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(hz);
+  }
+  result.sort((a, b) => a - b);
+  return result;
+}
+
+async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promise<void> {
+  if (!isWindows.value) return;
+  if (frameGenHealthPromise) return frameGenHealthPromise;
+  const run = async () => {
+    frameGenHealthLoading.value = true;
+    frameGenHealthError.value = null;
+    try {
+      const [rtssResult, displayResult] = await Promise.allSettled([
+        http.get('/api/rtss/status', { validateStatus: () => true }),
+        http.get('/api/display-devices', { validateStatus: () => true }),
+      ]);
+
+      const captureValue = (captureMethod.value || '').toString().toLowerCase();
+      let captureStatus: FrameGenHealth['capture']['status'];
+      let captureMessage: string;
+      const autoTreatsAsWgc = captureValue === '' && autoCaptureUsesWgc.value;
+      if (captureValue === 'wgc' || captureValue === 'wgcc' || autoTreatsAsWgc) {
+        captureStatus = 'pass';
+        captureMessage = autoTreatsAsWgc
+          ? 'Automatic capture uses Windows Graphics Capture on this Windows build.'
+          : 'Windows Graphics Capture is active for this system.';
+      } else if (captureValue === '') {
+        captureStatus = 'warn';
+        captureMessage =
+          'Autodetect may fall back to Desktop Duplication. Select Windows Graphics Capture in Settings -> Capture.';
+      } else {
+        captureStatus = 'fail';
+        captureMessage =
+          'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
+      }
+
+      let rtssInstalled = false;
+      let rtssHooks = false;
+      let rtssRunning = false;
+      let rtssStatus: FrameGenHealth['rtss']['status'] = 'unknown';
+      let rtssMessage = 'Unable to verify RTSS.';
+      if (rtssResult.status === 'fulfilled') {
+        const res = rtssResult.value;
+        const ok = res.status >= 200 && res.status < 300;
+        if (ok) {
+          const data = res.data as any;
+          rtssInstalled = !!data?.path_exists;
+          rtssHooks = !!data?.hooks_found;
+          rtssRunning = !!data?.process_running;
+          if (rtssInstalled && rtssHooks) {
+            rtssStatus = 'pass';
+            rtssMessage = 'RTSS hooks detected. Sunshine can control the frame limiter.';
+          } else if (rtssInstalled) {
+            rtssStatus = 'warn';
+            rtssMessage =
+              'RTSS is installed but hooks were not detected. Launch RTSS and ensure the Sunshine profile is active.';
+          } else {
+            rtssStatus = 'fail';
+            rtssMessage = 'Install RTSS to avoid microstutter when frame generation is enabled.';
+          }
+        } else {
+          rtssStatus = 'unknown';
+          rtssMessage = 'RTSS status endpoint returned an error.';
+        }
+      } else {
+        rtssStatus = 'unknown';
+        rtssMessage = 'Unable to reach the RTSS status endpoint.';
+      }
+
+      const usingVirtual = usingVirtualDisplay.value;
+      const fpsTargets = [60, 90, 120, 144];
+      const tolerance = 0.5;
+      let displayStatus: FrameGenHealth['display']['status'] = 'unknown';
+      let displayMessage = 'Unable to determine display refresh capabilities.';
+      let displayLabel = usingVirtual ? 'Sunshine Virtual Screen' : 'Active display';
+      let displayId = usingVirtual ? VIRTUAL_DISPLAY_SELECTION : '';
+      let displayHz: number | null = null;
+      let displayError: string | null = null;
+      let displayTargets = fpsTargets.map((fps) => ({
+        fps,
+        requiredHz: fps * 2,
+        supported: usingVirtual ? true : null,
+      }));
+      let highestFailUnder144: number | null = null;
+      let only144Fails = false;
+
+      if (!usingVirtual) {
+        if (displayResult.status === 'fulfilled') {
+          const res = displayResult.value;
+          const ok = res.status >= 200 && res.status < 300;
+          if (ok && Array.isArray(res.data)) {
+            const devices = res.data as any[];
+            const appOutput = form.value.output;
+            const globalOutput = globalOutputName.value;
+            const candidates = [
+              appOutput && appOutput !== VIRTUAL_DISPLAY_SELECTION ? appOutput : '',
+              globalOutput && globalOutput !== VIRTUAL_DISPLAY_SELECTION ? globalOutput : '',
+            ].filter(Boolean) as string[];
+            const normalizedCandidates = candidates.map((c) => normalizeDeviceId(c));
+            let target = devices.find((item) => {
+              const id = normalizeDeviceId(item?.device_id);
+              const displayName = normalizeDeviceId(item?.display_name);
+              return normalizedCandidates.includes(id) || normalizedCandidates.includes(displayName);
+            });
+            if (!target) {
+              target = devices.find((item) => item && item.info) || devices[0];
+            }
+            if (target) {
+              displayLabel =
+                (typeof target.friendly_name === 'string' && target.friendly_name) ||
+                (typeof target.display_name === 'string' && target.display_name) ||
+                'Active display';
+              displayId =
+                (typeof target.device_id === 'string' && target.device_id) ||
+                (typeof target.display_name === 'string' && target.display_name) ||
+                '';
+              const info = target.info as any;
+              const refreshRaw = info?.refresh_rate ?? info?.refreshRate;
+              const activeRefresh = parseRefreshHz(refreshRaw);
+              const supportedRatesRaw =
+                (target as any)?.supported_refresh_rates ??
+                (target as any)?.supportedRefreshRates;
+              const supportedRates = parseRefreshList(supportedRatesRaw);
+              const highestSupported =
+                supportedRates.length > 0 ? supportedRates[supportedRates.length - 1] : null;
+
+              displayHz = activeRefresh;
+              displayTargets = fpsTargets.map((fps) => {
+                const required = fps * 2;
+                let supported: boolean | null;
+                if (supportedRates.length > 0) {
+                  supported = supportedRates.some((rate) => rate >= required - tolerance);
+                } else if (activeRefresh !== null) {
+                  supported = activeRefresh >= required - tolerance;
+                } else {
+                  supported = null;
+                }
+                return { fps, requiredHz: required, supported };
+              });
+
+              const failingUnder144 = displayTargets.filter(
+                (entry) => entry.supported === false && entry.fps < 144,
+              );
+              highestFailUnder144 = failingUnder144.length
+                ? Math.max(...failingUnder144.map((entry) => entry.fps))
+                : null;
+              only144Fails =
+                displayTargets.some(
+                  (entry) => entry.fps === 144 && entry.supported === false,
+                ) && highestFailUnder144 === null;
+
+              const evaluationHz = highestSupported ?? activeRefresh;
+              const hasActive = activeRefresh !== null;
+              const deltaSupported =
+                highestSupported !== null &&
+                hasActive &&
+                Math.abs(highestSupported - activeRefresh) > tolerance;
+
+              if (evaluationHz === null) {
+                displayStatus = 'unknown';
+                displayMessage =
+                  'Unable to read the refresh rate from the configured display. Double-check Display Device Step 1.';
+              } else if (evaluationHz >= 240 - tolerance) {
+                displayStatus = 'pass';
+                if (only144Fails) {
+                  const baseHz = hasActive ? activeRefresh ?? evaluationHz : evaluationHz;
+                  displayMessage = `Current refresh is ${Math.round(baseHz)} Hz. Streams up to 120 FPS are covered. Only 144 FPS streams require the Sunshine virtual screen or a higher-refresh display.`;
+                  if (!hasActive && highestSupported !== null) {
+                    displayMessage = `Display supports up to ${Math.round(highestSupported)} Hz. Streams up to 120 FPS are covered. Only 144 FPS streams require the Sunshine virtual screen or a higher-refresh display.`;
+                  } else if (deltaSupported && highestSupported !== null) {
+                    displayMessage += ` Sunshine can switch to ${Math.round(highestSupported)} Hz when a stream starts if Display Device Step 1 keeps that monitor active.`;
+                  }
+                } else if (!hasActive && highestSupported !== null) {
+                  displayMessage = `Display supports up to ${Math.round(highestSupported)} Hz. Sunshine can double 120 FPS streams.`;
+                } else if (deltaSupported && highestSupported !== null) {
+                  displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Sunshine can switch to ${Math.round(highestSupported)} Hz during streams to keep frame generation smooth.`;
+                } else {
+                  displayMessage = 'Display refresh is high enough to double 120 FPS streams.';
+                }
+              } else if (evaluationHz >= 180 - tolerance) {
+                displayStatus = 'warn';
+                if (!hasActive && highestSupported !== null) {
+                  displayMessage = `Display supports up to ${Math.round(evaluationHz)} Hz. Configure Display Device Step 1 to enforce the higher refresh or use the "Use Virtual Screen" action below.`;
+                } else if (hasActive) {
+                  if (highestFailUnder144 !== null) {
+                    displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Streams targeting up to ${highestFailUnder144} FPS need the Sunshine virtual screen or a higher-refresh display.`;
+                  } else {
+                    displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. 120 FPS frame generation may stutter without a higher refresh display. Use the "Use Virtual Screen" action below or move the stream to a higher-refresh monitor.`;
+                  }
+                  if (deltaSupported && highestSupported !== null) {
+                    displayMessage += ` Sunshine can switch up to ${Math.round(highestSupported)} Hz if Display Device Step 1 keeps only that monitor active.`;
+                  }
+                } else {
+                  displayMessage =
+                    'Unable to read the current refresh rate, but the display may not reach the required 240 Hz. Use the "Use Virtual Screen" action below or move the stream to a higher-refresh monitor.';
+                }
+              } else {
+                displayStatus = 'fail';
+                if (!hasActive && highestSupported !== null) {
+                  displayMessage = `Display tops out at ${Math.round(evaluationHz)} Hz. Use the "Use Virtual Screen" action below or switch to a 240 Hz display for frame generation.`;
+                } else if (hasActive) {
+                  const mention = highestFailUnder144 ?? 120;
+                  displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Streams targeting up to ${mention} FPS need the Sunshine virtual screen or a higher-refresh display.`;
+                  if (deltaSupported && highestSupported !== null) {
+                    displayMessage += ` Sunshine can switch up to ${Math.round(highestSupported)} Hz if configured in Display Device Step 1.`;
+                  }
+                } else {
+                  displayMessage =
+                    'Display refresh information was unavailable. Use the "Use Virtual Screen" action below or switch to a 240 Hz display for frame generation.';
+                }
+              }
+            } else {
+              displayStatus = 'unknown';
+              displayMessage =
+                'No display devices were returned by Sunshine’s helper. Frame generation may not be able to enforce refresh changes.';
+              displayError = 'Display helper returned no devices.';
+            }
+          } else {
+            displayStatus = 'unknown';
+            displayMessage = 'Display helper did not respond with device information.';
+            displayError = 'Display device enumeration failed.';
+          }
+        } else {
+          displayStatus = 'unknown';
+          displayMessage = 'Unable to reach the display helper.';
+          displayError = 'Display helper request failed.';
+        }
+      } else {
+        displayStatus = 'pass';
+        displayMessage =
+          'Sunshine virtual screen guarantees a high refresh surface for frame generation.';
+      }
+
+      if (usingVirtual) {
+        displayTargets = fpsTargets.map((fps) => ({
+          fps,
+          requiredHz: fps * 2,
+          supported: true,
+        }));
+      }
+
+      const health: FrameGenHealth = {
+        checkedAt: Date.now(),
+        capture: {
+          status: captureStatus,
+          method: captureValue,
+          message: captureMessage,
+        },
+        rtss: {
+          status: rtssStatus,
+          installed: rtssInstalled,
+          running: rtssRunning,
+          hooksDetected: rtssHooks,
+          message: rtssMessage,
+        },
+        display: {
+          status: displayStatus,
+          deviceLabel: displayLabel,
+          deviceId: displayId,
+          currentHz: displayHz,
+          targets: displayTargets,
+          virtualActive: usingVirtual,
+          message: displayMessage,
+          error: displayError,
+        },
+        suggestion: undefined,
+      };
+
+      if (highestFailUnder144 !== null) {
+        health.suggestion = {
+          message:
+            `Enable the "Use Virtual Screen" checkbox above or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+          emphasis: 'warning',
+        };
+      } else if (captureStatus === 'warn' || captureStatus === 'fail') {
+        health.suggestion = {
+          message:
+            'Set Capture -> Method to Windows Graphics Capture so frame generation stays stable.',
+          emphasis: 'info',
+        };
+      }
+
+      frameGenHealth.value = health;
+      frameGenHealthError.value = null;
+    } catch (error) {
+      frameGenHealth.value = null;
+      frameGenHealthError.value =
+        error instanceof Error ? error.message : 'Unable to run frame generation health check.';
+      if (!options.silent) {
+        message?.error('Unable to run frame generation health check.');
+      }
+    } finally {
+      frameGenHealthLoading.value = false;
+      frameGenHealthPromise = null;
+    }
+  };
+  frameGenHealthPromise = run();
+  return frameGenHealthPromise;
+}
+
+function handleFrameGenHealthRequest() {
+  refreshFrameGenHealth({ reason: 'manual' }).catch(() => {});
+}
+
+function handleEnableVirtualScreen() {
+  if (!isWindows.value) return;
+  if (!virtualScreenEnabled.value) {
+    virtualScreenEnabled.value = true;
+  }
+  refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
+}
+
+function warnIfHealthIssues(reason: FrameGenHealthReason) {
+  if (reason === 'auto' || reason === 'virtual-toggle' || reason === 'capture-change' || reason === 'output-change' || reason === 'open') {
+    return;
+  }
+  if (!message) return;
+  const health = frameGenHealth.value;
+  if (!health) return;
+  if (health.capture.status === 'warn' || health.capture.status === 'fail') {
+    message.warning(
+      'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.',
+      { duration: 8000 },
+    );
+  }
+  if (health.rtss.status === 'warn' || health.rtss.status === 'fail') {
+    message.warning(
+      'RTSS is required for this fix. Install and launch RTSS to avoid microstutter.',
+      { duration: 8000 },
+    );
+  }
+  if (!skipDisplayWarnings.value && !health.display.virtualActive) {
+    const requiresHigh = health.display.targets.some(
+      (target) => target.fps < 144 && target.supported === false,
+    );
+    if (requiresHigh) {
+      message.warning(
+        'Use the "Use Virtual Screen" action below or adjust Display Device Step 1 to keep only the high-refresh monitor active.',
+        { duration: 8000 },
+      );
+    }
+  }
+}
+
 const playniteInstalled = ref(false);
 const isNew = computed(() => form.value.index === -1);
 // New app source: 'custom' or 'playnite' (Windows only)
@@ -1068,21 +1553,8 @@ watch(
         );
       }
     }
-    try {
-      const rtss = await http.get('/api/rtss/status', { validateStatus: () => true });
-      const data = rtss?.data as any;
-      if (!data || !data.path_exists || !data.hooks_found) {
-        message?.warning(
-          'RTSS is required for this fix. Install RTSS to ensure the stream remains perfectly smooth and avoid microstuttering.',
-          { duration: 8000 },
-        );
-      }
-    } catch {
-      message?.warning(
-        'Unable to verify RTSS installation. Install RTSS to avoid microstuttering.',
-        { duration: 8000 },
-      );
-    }
+    await refreshFrameGenHealth({ reason: 'gen1' });
+    warnIfHealthIssues('gen1');
   },
 );
 
@@ -1113,6 +1585,45 @@ watch(
         );
       }
     }
+    await refreshFrameGenHealth({ reason: 'gen2' });
+    warnIfHealthIssues('gen2');
+  },
+);
+
+watch(
+  () => virtualScreenEnabled.value,
+  () => {
+    if (!isWindows.value) return;
+    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
+  },
+);
+
+watch(
+  () => captureMethod.value,
+  () => {
+    if (!isWindows.value) return;
+    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
+  },
+);
+
+watch(
+  () => autoCaptureUsesWgc.value,
+  (enabled, prev) => {
+    if (enabled === prev) return;
+    if (!isWindows.value) return;
+    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
+  },
+);
+
+watch(
+  () => [form.value.output, globalOutputName.value],
+  () => {
+    if (!isWindows.value) return;
+    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    refreshFrameGenHealth({ reason: 'output-change', silent: true }).catch(() => {});
   },
 );
 
@@ -1136,6 +1647,7 @@ watch(
           { duration: 8000 },
         );
       }
+      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
       setTimeout(() => {
         autoEnablingGen1 = false;
       }, 100);
@@ -1282,7 +1794,6 @@ async function save() {
     saving.value = false;
   }
 }
-const message = useMessage();
 
 async function del() {
   saving.value = true;
@@ -1322,7 +1833,7 @@ async function del() {
         } catch {}
         try {
           message?.info(
-            'Playnite Fullscreen entry removed. The Playnite Desktop option was turned off in Settings → Playnite.',
+            'Playnite Fullscreen entry removed. The Playnite Desktop option was turned off in Settings -> Playnite.',
           );
         } catch {}
       }
