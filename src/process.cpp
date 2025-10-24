@@ -111,6 +111,9 @@ namespace proc {
       if (normalized == "nvidia" || normalized == "smoothmotion" || normalized == "nvidiasmoothmotion") {
         return "nvidia-smooth-motion";
       }
+      if (normalized == "game" || normalized == "gameprovided" || normalized == "gameprovider") {
+        return "game-provided";
+      }
       if (normalized == "lossless" || normalized == "losslessscaling") {
         return "lossless-scaling";
       }

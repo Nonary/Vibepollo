@@ -21,7 +21,7 @@ export type LosslessScalingMode =
 
 export type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
 
-export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion';
+export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion' | 'game-provided';
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
 
 export interface LosslessProfileOverrides {
@@ -63,6 +63,7 @@ export interface AppForm {
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
   frameGenerationProvider: FrameGenerationProvider;
+  frameGenerationMode: FrameGenerationMode;
   losslessScalingEnabled: boolean;
   losslessScalingTargetFps: number | null;
   losslessScalingRtssLimit: number | null;

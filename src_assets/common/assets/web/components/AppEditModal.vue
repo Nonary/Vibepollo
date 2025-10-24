@@ -117,14 +117,22 @@
 
           <AppEditFrameGenSection
             v-if="isWindows"
+            v-model:mode="frameGenerationSelection"
             v-model:gen1="form.gen1FramegenFix"
             v-model:gen2="form.gen2FramegenFix"
+            v-model:lossless-profile="form.losslessScalingProfile"
+            v-model:lossless-target-fps="form.losslessScalingTargetFps"
+            v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
+            v-model:lossless-flow-scale="losslessFlowScaleModel"
             :health="frameGenHealth"
             :health-loading="frameGenHealthLoading"
             :health-error="frameGenHealthError"
             :lossless-active="losslessFrameGenEnabled"
             :nvidia-active="nvidiaFrameGenEnabled"
             :using-virtual-display="usingVirtualDisplay"
+            :has-active-lossless-overrides="hasActiveLosslessOverrides"
+            :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
+            :reset-active-lossless-profile="resetActiveLosslessProfile"
             @refresh-health="handleFrameGenHealthRequest"
             @enable-virtual-screen="handleEnableVirtualScreen"
           />
@@ -132,9 +140,7 @@
           <AppEditLosslessScalingSection
             v-if="isWindows"
             v-model:form="form"
-            v-model:frame-generation-provider="frameGenerationSelection"
             v-model:lossless-performance-mode="losslessPerformanceModeModel"
-            v-model:lossless-flow-scale="losslessFlowScaleModel"
             v-model:lossless-resolution-scale="losslessResolutionScaleModel"
             v-model:lossless-scaling-mode="losslessScalingModeModel"
             v-model:lossless-sharpening="losslessSharpeningModel"
@@ -145,7 +151,6 @@
             :show-lossless-sharpening="showLosslessSharpening"
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
-            :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
@@ -273,7 +278,8 @@ function fresh(): AppForm {
     gen1FramegenFix: false,
     gen2FramegenFix: false,
     output: '',
-    frameGenerationProvider: 'lossless-scaling',
+    frameGenerationProvider: 'game-provided',
+    frameGenerationMode: 'off',
     losslessScalingEnabled: false,
     losslessScalingTargetFps: null,
     losslessScalingRtssLimit: null,
@@ -319,6 +325,16 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const losslessProfiles = emptyLosslessProfileState();
   losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
   losslessProfiles.custom = parseLosslessOverrides(src['lossless-scaling-custom']);
+  const normalizedProvider = normalizeFrameGenerationProvider(src['frame-generation-provider']);
+  let frameGenerationMode: FrameGenerationMode = 'off';
+  if (normalizedProvider === 'nvidia-smooth-motion') {
+    frameGenerationMode = 'nvidia-smooth-motion';
+  } else if (normalizedProvider === 'lossless-scaling') {
+    const hasLosslessFrameGen = lsEnabled || lsTarget !== null || lsLimit !== null;
+    frameGenerationMode = hasLosslessFrameGen ? 'lossless-scaling' : 'off';
+  } else if (normalizedProvider === 'game-provided') {
+    frameGenerationMode = 'game-provided';
+  }
   const rawOutput = String(src.output ?? '');
   const rawVirtualScreen = (src as any)?.['virtual-screen'];
   const virtualScreen =
@@ -348,7 +364,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     gen2FramegenFix: !!src['gen2-framegen-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
-    frameGenerationProvider: normalizeFrameGenerationProvider(src['frame-generation-provider']),
+    frameGenerationProvider: normalizedProvider,
+    frameGenerationMode,
     losslessScalingEnabled: lsEnabled,
     losslessScalingTargetFps: lsTarget,
     losslessScalingRtssLimit: lsLimit,
@@ -385,12 +402,24 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
   const provider = normalizeFrameGenerationProvider(f.frameGenerationProvider);
-  payload['frame-generation-provider'] = provider;
+  const mode = f.frameGenerationMode ?? 'off';
+  let resolvedProvider: FrameGenerationProvider = provider;
+  if (mode === 'nvidia-smooth-motion') {
+    resolvedProvider = 'nvidia-smooth-motion';
+  } else if (mode === 'lossless-scaling') {
+    resolvedProvider = 'lossless-scaling';
+  } else if (mode === 'game-provided') {
+    resolvedProvider = 'game-provided';
+  } else {
+    resolvedProvider = 'game-provided';
+  }
+  payload['frame-generation-provider'] = resolvedProvider;
   const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
   const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
-  payload['lossless-scaling-framegen'] = !!f.losslessScalingEnabled;
-  payload['lossless-scaling-target-fps'] = f.losslessScalingEnabled ? payloadLosslessTarget : null;
-  payload['lossless-scaling-rtss-limit'] = f.losslessScalingEnabled ? payloadLosslessLimit : null;
+  const losslessRuntimeActive = !!f.losslessScalingEnabled || mode === 'lossless-scaling';
+  payload['lossless-scaling-framegen'] = losslessRuntimeActive;
+  payload['lossless-scaling-target-fps'] = mode === 'lossless-scaling' ? payloadLosslessTarget : null;
+  payload['lossless-scaling-rtss-limit'] = mode === 'lossless-scaling' ? payloadLosslessLimit : null;
   payload['lossless-scaling-profile'] =
     f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
   const buildLosslessProfilePayload = (profile: LosslessProfileOverrides) => {
@@ -449,22 +478,16 @@ const isPlayniteAuto = computed<boolean>(
 );
 
 const frameGenerationSelection = computed<FrameGenerationMode>({
-  get: () => {
-    if (form.value.frameGenerationProvider === 'nvidia-smooth-motion') {
-      return 'nvidia-smooth-motion';
-    }
-    const hasLosslessFrameGen =
-      form.value.losslessScalingTargetFps !== null || form.value.losslessScalingRtssLimit !== null;
-    return hasLosslessFrameGen ? 'lossless-scaling' : 'off';
-  },
+  get: () => form.value.frameGenerationMode ?? 'off',
   set: (mode) => {
+    form.value.frameGenerationMode = mode;
     if (mode === 'nvidia-smooth-motion') {
       form.value.frameGenerationProvider = 'nvidia-smooth-motion';
+      form.value.losslessScalingTargetFps = null;
+      form.value.losslessScalingRtssLimit = null;
+      form.value.losslessScalingRtssTouched = false;
     } else if (mode === 'lossless-scaling') {
       form.value.frameGenerationProvider = 'lossless-scaling';
-      if (!form.value.losslessScalingEnabled) {
-        form.value.losslessScalingEnabled = true;
-      }
       if (!form.value.losslessScalingTargetFps) {
         form.value.losslessScalingTargetFps = 120;
       }
@@ -473,13 +496,16 @@ const frameGenerationSelection = computed<FrameGenerationMode>({
           parseNumeric(form.value.losslessScalingTargetFps),
         );
       }
-    } else {
+    } else if (mode === 'game-provided') {
+      form.value.frameGenerationProvider = 'game-provided';
       form.value.losslessScalingTargetFps = null;
       form.value.losslessScalingRtssLimit = null;
       form.value.losslessScalingRtssTouched = false;
-      if (form.value.frameGenerationProvider !== 'lossless-scaling') {
-        form.value.frameGenerationProvider = 'lossless-scaling';
-      }
+    } else {
+      form.value.frameGenerationProvider = 'game-provided';
+      form.value.losslessScalingTargetFps = null;
+      form.value.losslessScalingRtssLimit = null;
+      form.value.losslessScalingRtssTouched = false;
     }
   },
 });
@@ -512,6 +538,23 @@ watch(
     if (provider !== normalized) {
       form.value.frameGenerationProvider = normalized;
       return;
+    }
+    if (normalized === 'nvidia-smooth-motion') {
+      if (form.value.frameGenerationMode !== 'nvidia-smooth-motion') {
+        form.value.frameGenerationMode = 'nvidia-smooth-motion';
+      }
+    } else if (normalized === 'lossless-scaling') {
+      if (form.value.frameGenerationMode === 'off' || form.value.frameGenerationMode === 'game-provided') {
+        const hasLosslessFrameGen =
+          form.value.losslessScalingTargetFps !== null || form.value.losslessScalingRtssLimit !== null;
+        if (hasLosslessFrameGen) {
+          form.value.frameGenerationMode = 'lossless-scaling';
+        }
+      }
+    } else if (normalized === 'game-provided') {
+      if (form.value.frameGenerationMode === 'lossless-scaling' || form.value.frameGenerationMode === 'nvidia-smooth-motion') {
+        form.value.frameGenerationMode = 'game-provided';
+      }
     }
     // Update FPS/RTSS if using lossless and frame gen is enabled
     if (
@@ -1525,15 +1568,6 @@ watch(newAppSource, (v) => {
 let autoEnablingGen1 = false;
 
 watch(
-  () => form.value.losslessScalingEnabled,
-  (enabled) => {
-    if (!enabled && losslessFrameGenEnabled.value) {
-      frameGenerationSelection.value = 'off';
-    }
-  },
-);
-
-watch(
   () => form.value.gen1FramegenFix,
   async (enabled) => {
     if (!enabled) {
@@ -1640,21 +1674,26 @@ watch(
 
 // Automatically enable Gen1 Frame Generation fix when Frame Generation is enabled
 watch(
-  () => [nvidiaFrameGenEnabled.value, losslessFrameGenEnabled.value] as const,
-  ([nvidia, lossless], [prevNvidia, prevLossless]) => {
-    const anyFrameGenEnabled = nvidia || lossless;
-    const wasFrameGenEnabled = prevNvidia || prevLossless;
+  () => frameGenerationSelection.value,
+  (mode, prevMode) => {
+    const anyFrameGenEnabled = mode !== 'off';
+    const wasFrameGenEnabled = prevMode !== 'off';
     if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
       autoEnablingGen1 = true;
       form.value.gen1FramegenFix = true;
-      if (nvidia) {
+      if (mode === 'nvidia-smooth-motion') {
         message?.info(
           '1st Gen Frame Generation Capture Fix has been automatically enabled for optimal NVIDIA Smooth Motion performance.',
           { duration: 8000 },
         );
-      } else if (lossless) {
+      } else if (mode === 'lossless-scaling') {
         message?.info(
           '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling frame generation.',
+          { duration: 8000 },
+        );
+      } else if (mode === 'game-provided') {
+        message?.info(
+          '1st Gen Frame Generation Capture Fix has been automatically enabled to keep in-game frame generation tear-free.',
           { duration: 8000 },
         );
       }
