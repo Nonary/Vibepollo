@@ -239,7 +239,9 @@ const autoSave = ref(true);
 const manualUnsaved = computed(() => store.manualDirty === true);
 const showSave = computed(() => manualUnsaved.value || !autoSave.value);
 const unsavedLabel = computed(() =>
-  manualUnsaved.value ? 'Manual save required for display overrides' : 'Unsaved changes',
+  manualUnsaved.value
+    ? 'Manual save required for recent changes; these settings will not auto-save.'
+    : 'Unsaved changes',
 );
 
 const mainEl = ref(null);

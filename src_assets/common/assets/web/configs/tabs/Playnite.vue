@@ -643,6 +643,7 @@ function notify(type: 'success' | 'error' | 'info' | 'warning', content: string)
   notification.create({ type, content, duration: 5000 });
 }
 
+const NULL_GUID = '00000000-0000-0000-0000-000000000000';
 const categoriesLoading = ref(false);
 const pluginsLoading = ref(false);
 const gamesLoading = ref(false);
@@ -842,7 +843,7 @@ function ensurePluginOptionsIncludeSelection() {
   let changed = false;
   for (const entry of selected || []) {
     const value = entry?.id || entry?.name || '';
-    if (!value) continue;
+    if (!value || value === NULL_GUID) continue;
     const label = entry?.name || entry?.id || value;
     if (!byValue.has(value)) {
       current.push({ value, label });
@@ -878,11 +879,11 @@ async function loadPlugins() {
               const id = String((p as any).id || '');
               const name = String((p as any).name || '');
               const value = id || name;
-              if (!value) return null;
+              if (!value || value === NULL_GUID) return null;
               return { value, label: name || value };
             }
             const s = String(p || '');
-            return s ? { value: s, label: s } : null;
+            return s && s !== NULL_GUID ? { value: s, label: s } : null;
           })
           .filter((x): x is { label: string; value: string } => !!x)
           .sort((a, b) => a.label.localeCompare(b.label));
@@ -898,7 +899,7 @@ async function loadPlugins() {
         if (!g) continue;
         const pid = g.pluginId ? String(g.pluginId) : '';
         const pname = g.pluginName ? String(g.pluginName) : '';
-        if (!pid) continue;
+        if (!pid || pid === NULL_GUID) continue;
         if (!map.has(pid)) {
           map.set(pid, pname || pid);
         } else if (!map.get(pid) && pname) {
