@@ -269,6 +269,7 @@ function fresh(): AppForm {
     exitTimeout: 5,
     prepCmd: [],
     detached: [],
+    virtualScreen: false,
     gen1FramegenFix: false,
     gen2FramegenFix: false,
     output: '',
@@ -318,10 +319,16 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const losslessProfiles = emptyLosslessProfileState();
   losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
   losslessProfiles.custom = parseLosslessOverrides(src['lossless-scaling-custom']);
+  const rawOutput = String(src.output ?? '');
+  const rawVirtualScreen = (src as any)?.['virtual-screen'];
+  const virtualScreen =
+    typeof rawVirtualScreen === 'boolean' ? rawVirtualScreen : rawOutput === VIRTUAL_DISPLAY_SELECTION;
+  const sanitizedOutput =
+    virtualScreen && rawOutput === VIRTUAL_DISPLAY_SELECTION ? '' : rawOutput;
   return {
     index: idx,
     name: String(src.name ?? ''),
-    output: String(src.output ?? ''),
+    output: sanitizedOutput,
     cmd: String(cmdStr ?? ''),
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
@@ -336,6 +343,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     exitTimeout: derivedExitTimeout,
     prepCmd: prep,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
+    virtualScreen,
     gen1FramegenFix: !!(src['gen1-framegen-fix'] ?? src['dlss-framegen-capture-fix']),
     gen2FramegenFix: !!src['gen2-framegen-fix'],
     playniteId: src['playnite-id'] || undefined,
@@ -372,6 +380,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
       ...(isWindows.value ? { elevated: !!p.elevated } : {}),
     })),
     detached: Array.isArray(f.detached) ? f.detached : [],
+    'virtual-screen': !!f.virtualScreen,
   };
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
@@ -948,6 +957,9 @@ const virtualOutputName = computed(() => {
   return typeof outputName === 'string' ? outputName : '';
 });
 const usingVirtualDisplay = computed(() => {
+  if (form.value.virtualScreen) {
+    return true;
+  }
   if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
     return true;
   }
@@ -961,11 +973,10 @@ const usingVirtualDisplay = computed(() => {
   return false;
 });
 const virtualScreenEnabled = computed<boolean>({
-  get: () => form.value.output === VIRTUAL_DISPLAY_SELECTION,
+  get: () => !!form.value.virtualScreen || form.value.output === VIRTUAL_DISPLAY_SELECTION,
   set: (enabled) => {
-    if (enabled) {
-      form.value.output = VIRTUAL_DISPLAY_SELECTION;
-    } else if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
+    form.value.virtualScreen = !!enabled;
+    if (!enabled && form.value.output === VIRTUAL_DISPLAY_SELECTION) {
       form.value.output = '';
     }
   },

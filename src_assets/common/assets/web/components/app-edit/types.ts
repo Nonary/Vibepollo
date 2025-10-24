@@ -59,6 +59,7 @@ export interface AppForm {
   exitTimeout: number;
   prepCmd: PrepCmd[];
   detached: string[];
+  virtualScreen: boolean;
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
   frameGenerationProvider: FrameGenerationProvider;
@@ -87,6 +88,7 @@ export interface ServerApp {
   'exit-timeout'?: number;
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
+  'virtual-screen'?: boolean;
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
   'gen1-framegen-fix'?: boolean;
