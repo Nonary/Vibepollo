@@ -617,6 +617,14 @@ function setScalingMode(profile: LosslessProfileKey, value: LosslessScalingMode)
   if (value === 'off') {
     overrides.resolutionScale = null;
   }
+  if (profile === activeLosslessProfile.value) {
+    if (value !== 'off' && !form.value.losslessScalingEnabled) {
+      form.value.losslessScalingEnabled = true;
+    }
+    if (value === 'off' && !losslessFrameGenEnabled.value) {
+      form.value.losslessScalingEnabled = false;
+    }
+  }
 }
 
 function getEffectiveSharpening(profile: LosslessProfileKey): number {
@@ -712,21 +720,6 @@ const showLosslessResolution = computed(() => {
   return mode !== null && mode !== 'off';
 });
 const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
-
-// Watch for scaling mode changes to manage lossless enabled state
-watch(
-  () => losslessScalingModeModel.value,
-  (mode) => {
-    // If user sets scaling to something other than 'off', ensure lossless is enabled
-    if (mode !== 'off' && !form.value.losslessScalingEnabled) {
-      form.value.losslessScalingEnabled = true;
-    }
-    // If user sets scaling to 'off' and frame gen is also off, disable lossless entirely
-    if (mode === 'off' && !losslessFrameGenEnabled.value) {
-      form.value.losslessScalingEnabled = false;
-    }
-  },
-);
 
 const hasActiveLosslessOverrides = computed<boolean>(() => {
   const overrides = form.value.losslessScalingProfiles[activeLosslessProfile.value];
