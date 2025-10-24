@@ -1034,11 +1034,92 @@ namespace {
     std::atomic<uint64_t> next_connection_epoch {1};
     std::atomic<uint64_t> active_connection_epoch {0};
     std::atomic<uint64_t> restore_origin_epoch {0};
+    std::atomic<bool> heartbeat_monitor_active {false};
+    std::atomic<long long> heartbeat_optional_until_ms {0};
+    std::atomic<long long> last_heartbeat_ms {0};
+    std::atomic<bool> heartbeat_revert_armed {false};
+    std::atomic<long long> heartbeat_revert_deadline_ms {0};
 
     static constexpr auto kRestoreWindowPrimary = std::chrono::minutes(2);
     static constexpr auto kRestoreWindowEvent = std::chrono::seconds(30);
     static constexpr auto kRestoreEventDebounce = std::chrono::milliseconds(500);
     static constexpr int kMaxRestoreStages = 3;
+    static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
+    static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
+    static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
+
+    static long long steady_now_ms() {
+      return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()
+      )
+        .count();
+    }
+
+    void begin_heartbeat_monitoring() {
+      const auto now = steady_now_ms();
+      heartbeat_monitor_active.store(true, std::memory_order_release);
+      last_heartbeat_ms.store(now, std::memory_order_release);
+      heartbeat_optional_until_ms.store(
+        now + std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatOptionalWindow).count(),
+        std::memory_order_release
+      );
+      heartbeat_revert_armed.store(false, std::memory_order_release);
+      heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+    }
+
+    void end_heartbeat_monitoring() {
+      heartbeat_monitor_active.store(false, std::memory_order_release);
+      heartbeat_revert_armed.store(false, std::memory_order_release);
+      heartbeat_optional_until_ms.store(0, std::memory_order_release);
+      heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+      last_heartbeat_ms.store(0, std::memory_order_release);
+    }
+
+    void record_heartbeat_ping() {
+      if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
+        return;
+      }
+      const auto now = steady_now_ms();
+      last_heartbeat_ms.store(now, std::memory_order_release);
+      if (heartbeat_revert_armed.exchange(false, std::memory_order_acq_rel)) {
+        heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+        BOOST_LOG(info) << "Heartbeat restored; cancelling pending revert countdown.";
+      }
+    }
+
+    bool check_heartbeat_timeout() {
+      if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
+        return false;
+      }
+      const auto now = steady_now_ms();
+      const auto optional_until = heartbeat_optional_until_ms.load(std::memory_order_acquire);
+      if (optional_until > 0 && now < optional_until) {
+        return false;
+      }
+      const auto last_ping = last_heartbeat_ms.load(std::memory_order_acquire);
+      const auto since_last = now - last_ping;
+      const auto miss_threshold = std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatMissWindow).count();
+      if (!heartbeat_revert_armed.load(std::memory_order_acquire)) {
+        if (since_last < miss_threshold) {
+          return false;
+        }
+        const auto recovery_ms = std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatRecoveryWindow).count();
+        heartbeat_revert_deadline_ms.store(now + recovery_ms, std::memory_order_release);
+        heartbeat_revert_armed.store(true, std::memory_order_release);
+        BOOST_LOG(warning) << "Heartbeat missing for " << (since_last / 1000.0)
+                           << "s; allowing up to " << (recovery_ms / 1000.0)
+                           << "s for Sunshine to reconnect before restoring display configuration.";
+        return false;
+      }
+      const auto deadline = heartbeat_revert_deadline_ms.load(std::memory_order_acquire);
+      if (deadline != 0 && now >= deadline) {
+        heartbeat_monitor_active.store(false, std::memory_order_release);
+        heartbeat_revert_armed.store(false, std::memory_order_release);
+        heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+        return true;
+      }
+      return false;
+    }
 
     void prepare_session_topology() {
       if (session_saved.load(std::memory_order_acquire)) {
@@ -2385,6 +2466,7 @@ namespace {
       std::string device_id(payload.begin(), payload.end());
       state.controller.add_blacklisted_display(device_id);
     } else if (type == MsgType::Ping) {
+      state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);
     } else {
       BOOST_LOG(warning) << "Unknown message type: " << static_cast<int>(type);
@@ -2627,6 +2709,7 @@ int main(int argc, char *argv[]) {
 
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
+    state.begin_heartbeat_monitoring();
 
     auto on_message = [&, connection_epoch](std::span<const uint8_t> bytes) {
       if (!state.is_connection_epoch_current(connection_epoch)) {
@@ -2671,10 +2754,17 @@ int main(int argc, char *argv[]) {
     // Stay in this inner loop until the client disconnects or service told to exit
     while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(200ms);
+      if (state.check_heartbeat_timeout() && state.is_connection_epoch_current(connection_epoch)) {
+        BOOST_LOG(warning) << "Heartbeat timeout exceeded; applying revert policy.";
+        broken.store(true, std::memory_order_release);
+        attempt_revert_after_disconnect(state, running, connection_epoch);
+        break;
+      }
     }
 
     // Ensure the worker thread is stopped and the server handle is
     // disconnected before looping to accept a new session.
+    state.end_heartbeat_monitoring();
     async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop
