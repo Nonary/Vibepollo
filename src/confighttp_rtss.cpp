@@ -181,7 +181,7 @@ namespace confighttp {
     }
 
     const std::string configured_utf8 = config::lossless_scaling.exe_path;
-    const std::string default_hint = "C\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
+    const std::string default_hint = "C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
 
     auto to_path = [](const std::string &utf8) -> std::optional<std::filesystem::path> {
       if (utf8.empty()) {

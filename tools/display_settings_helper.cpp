@@ -11,6 +11,7 @@
   #include <chrono>
   #include <condition_variable>
   #include <cstdint>
+  #include <array>
   #include <cstdio>
   #include <cstdlib>
   #include <cstring>
@@ -1034,11 +1035,146 @@ namespace {
     std::atomic<uint64_t> next_connection_epoch {1};
     std::atomic<uint64_t> active_connection_epoch {0};
     std::atomic<uint64_t> restore_origin_epoch {0};
+    std::atomic<bool> heartbeat_monitor_active {false};
+    std::atomic<long long> heartbeat_optional_until_ms {0};
+    std::atomic<long long> last_heartbeat_ms {0};
+    std::atomic<bool> heartbeat_revert_armed {false};
+    std::atomic<long long> heartbeat_revert_deadline_ms {0};
 
     static constexpr auto kRestoreWindowPrimary = std::chrono::minutes(2);
     static constexpr auto kRestoreWindowEvent = std::chrono::seconds(30);
     static constexpr auto kRestoreEventDebounce = std::chrono::milliseconds(500);
-    static constexpr int kMaxRestoreStages = 3;
+    static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
+    static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
+    static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
+    std::atomic<size_t> restore_backoff_index {0};
+    std::atomic<long long> restore_next_allowed_ms {0};
+    static constexpr std::array<std::chrono::seconds, 8> kRestoreBackoffProfile {
+      std::chrono::seconds(0),
+      std::chrono::seconds(1),
+      std::chrono::seconds(3),
+      std::chrono::seconds(5),
+      std::chrono::seconds(10),
+      std::chrono::seconds(15),
+      std::chrono::seconds(20),
+      std::chrono::seconds(30)
+    };
+
+    static long long steady_now_ms() {
+      return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()
+      )
+        .count();
+    }
+
+    void begin_heartbeat_monitoring() {
+      const auto now = steady_now_ms();
+      heartbeat_monitor_active.store(true, std::memory_order_release);
+      last_heartbeat_ms.store(now, std::memory_order_release);
+      heartbeat_optional_until_ms.store(
+        now + std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatOptionalWindow).count(),
+        std::memory_order_release
+      );
+      heartbeat_revert_armed.store(false, std::memory_order_release);
+      heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+    }
+
+    void end_heartbeat_monitoring() {
+      heartbeat_monitor_active.store(false, std::memory_order_release);
+      heartbeat_revert_armed.store(false, std::memory_order_release);
+      heartbeat_optional_until_ms.store(0, std::memory_order_release);
+      heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+      last_heartbeat_ms.store(0, std::memory_order_release);
+    }
+
+    void record_heartbeat_ping() {
+      if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
+        return;
+      }
+      const auto now = steady_now_ms();
+      last_heartbeat_ms.store(now, std::memory_order_release);
+      if (heartbeat_revert_armed.exchange(false, std::memory_order_acq_rel)) {
+        heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+        BOOST_LOG(info) << "Heartbeat restored; cancelling pending revert countdown.";
+      }
+    }
+
+    bool check_heartbeat_timeout() {
+      if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
+        return false;
+      }
+      const auto now = steady_now_ms();
+      const auto optional_until = heartbeat_optional_until_ms.load(std::memory_order_acquire);
+      if (optional_until > 0 && now < optional_until) {
+        return false;
+      }
+      const auto last_ping = last_heartbeat_ms.load(std::memory_order_acquire);
+      const auto since_last = now - last_ping;
+      const auto miss_threshold = std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatMissWindow).count();
+      if (!heartbeat_revert_armed.load(std::memory_order_acquire)) {
+        if (since_last < miss_threshold) {
+          return false;
+        }
+        const auto recovery_ms = std::chrono::duration_cast<std::chrono::milliseconds>(kHeartbeatRecoveryWindow).count();
+        heartbeat_revert_deadline_ms.store(now + recovery_ms, std::memory_order_release);
+        heartbeat_revert_armed.store(true, std::memory_order_release);
+        BOOST_LOG(warning) << "Heartbeat missing for " << (since_last / 1000.0)
+                           << "s; allowing up to " << (recovery_ms / 1000.0)
+                           << "s for Sunshine to reconnect before restoring display configuration.";
+        return false;
+      }
+      const auto deadline = heartbeat_revert_deadline_ms.load(std::memory_order_acquire);
+      if (deadline != 0 && now >= deadline) {
+        heartbeat_monitor_active.store(false, std::memory_order_release);
+        heartbeat_revert_armed.store(false, std::memory_order_release);
+        heartbeat_revert_deadline_ms.store(0, std::memory_order_release);
+        return true;
+      }
+      return false;
+    }
+
+    void reset_restore_backoff() {
+      restore_backoff_index.store(0, std::memory_order_release);
+      restore_next_allowed_ms.store(0, std::memory_order_release);
+    }
+
+    void register_restore_failure() {
+      size_t idx = restore_backoff_index.load(std::memory_order_acquire);
+      if (idx + 1 < kRestoreBackoffProfile.size()) {
+        ++idx;
+      }
+      const auto delay = kRestoreBackoffProfile[idx];
+      const auto now = steady_now_ms();
+      restore_backoff_index.store(idx, std::memory_order_release);
+      restore_next_allowed_ms.store(
+        now + std::chrono::duration_cast<std::chrono::milliseconds>(delay).count(),
+        std::memory_order_release
+      );
+      if (delay.count() > 0) {
+        BOOST_LOG(info) << "Restore polling: scheduling next attempt in " << delay.count() << "s.";
+      }
+    }
+
+    bool await_restore_backoff(std::stop_token st) {
+      constexpr auto kStep = std::chrono::milliseconds(200);
+      while (!st.stop_requested()) {
+        if (!restore_requested.load(std::memory_order_acquire)) {
+          return false;
+        }
+        const auto allowed = restore_next_allowed_ms.load(std::memory_order_acquire);
+        if (allowed == 0) {
+          return true;
+        }
+        const auto now = steady_now_ms();
+        if (now >= allowed) {
+          return true;
+        }
+        const auto remaining = allowed - now;
+        const auto sleep_ms = std::clamp<long long>(remaining, 1, kStep.count());
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+      }
+      return false;
+    }
 
     void prepare_session_topology() {
       if (session_saved.load(std::memory_order_acquire)) {
@@ -1250,6 +1386,10 @@ namespace {
     ) {
       if (!restore_requested.load(std::memory_order_acquire)) {
         return;
+      }
+
+      if (force_start || reason) {
+        reset_restore_backoff();
       }
 
       if (!force_start && reason && restore_stage_running.load(std::memory_order_acquire)) {
@@ -1579,6 +1719,7 @@ namespace {
       event_pump.stop();
       event_pump_running.store(false, std::memory_order_release);
       signal_restore_event(nullptr);
+      reset_restore_backoff();
       restore_active_until_ms.store(0, std::memory_order_release);
       last_restore_event_ms.store(0, std::memory_order_release);
       restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
@@ -1645,31 +1786,43 @@ namespace {
       }
 
       // Initial one-shot attempt before entering the loop
+      bool initial_attempted = false;
+      bool initial_success = false;
       try {
-        if (!st.stop_requested() && self->try_restore_once_if_valid(st)) {
-          self->retry_revert_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
-
-          delete_restore_scheduled_task();
-
-          const bool exit_helper = self->should_exit_after_restore();
-          if (exit_helper && self->running_flag) {
-            BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-            self->running_flag->store(false, std::memory_order_release);
-          } else if (!exit_helper) {
-            BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
-          }
-          self->event_pump.stop();
-          self->event_pump_running.store(false, std::memory_order_release);
-          self->restore_poll_active.store(false, std::memory_order_release);
-          self->restore_active_until_ms.store(0, std::memory_order_release);
-          self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
-          self->last_restore_event_ms.store(0, std::memory_order_release);
-          self->restore_requested.store(false, std::memory_order_release);
-          self->clear_restore_origin();
-          return;
+        if (!st.stop_requested() && self->await_restore_backoff(st)) {
+          initial_attempted = true;
+          initial_success = self->try_restore_once_if_valid(st);
         }
       } catch (...) {}
+
+      if (initial_success) {
+        self->reset_restore_backoff();
+        self->retry_revert_on_topology.store(false, std::memory_order_release);
+        refresh_shell_after_display_change();
+
+        delete_restore_scheduled_task();
+
+        const bool exit_helper = self->should_exit_after_restore();
+        if (exit_helper && self->running_flag) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+          self->running_flag->store(false, std::memory_order_release);
+        } else if (!exit_helper) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
+        }
+        self->event_pump.stop();
+        self->event_pump_running.store(false, std::memory_order_release);
+        self->restore_poll_active.store(false, std::memory_order_release);
+        self->restore_active_until_ms.store(0, std::memory_order_release);
+        self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+        self->last_restore_event_ms.store(0, std::memory_order_release);
+        self->restore_requested.store(false, std::memory_order_release);
+        self->clear_restore_origin();
+        return;
+      }
+
+      if (initial_attempted && !initial_success) {
+        self->register_restore_failure();
+      }
 
       bool exit_due_to_timeout = false;
       while (!st.stop_requested()) {
@@ -1714,28 +1867,24 @@ namespace {
           continue;
         }
 
+        if (!self->await_restore_backoff(st)) {
+          break;
+        }
+
+        const auto window_deadline_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
         self->restore_stage_running.store(true, std::memory_order_release);
         bool success = false;
-        int stages_attempted = 0;
-        const auto window_deadline_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
-
-        for (; stages_attempted < kMaxRestoreStages && !st.stop_requested(); ++stages_attempted) {
-          if (self->try_restore_once_if_valid(st)) {
-            success = true;
-            break;
-          }
-          const auto stage_now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                      std::chrono::steady_clock::now().time_since_epoch()
-          )
-                                      .count();
-          if (window_deadline_ms != 0 && stage_now_ms > window_deadline_ms) {
-            break;
-          }
+        try {
+          success = self->try_restore_once_if_valid(st);
+        } catch (...) {
+          self->restore_stage_running.store(false, std::memory_order_release);
+          throw;
         }
 
         self->restore_stage_running.store(false, std::memory_order_release);
 
         if (success) {
+          self->reset_restore_backoff();
           self->retry_revert_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
 
@@ -1759,6 +1908,8 @@ namespace {
           return;
         }
 
+        self->register_restore_failure();
+
         const auto post_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now().time_since_epoch()
         )
@@ -1768,16 +1919,13 @@ namespace {
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
         }
 
-        if (stages_attempted >= kMaxRestoreStages && active_window_kind == RestoreWindow::Event) {
-          BOOST_LOG(info) << "Restore polling: staged event attempts exhausted (" << kMaxRestoreStages
-                          << "); awaiting next trigger.";
-        }
       }
       self->restore_stage_running.store(false, std::memory_order_release);
       self->restore_poll_active.store(false, std::memory_order_release);
       self->restore_active_until_ms.store(0, std::memory_order_release);
       self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
       self->last_restore_event_ms.store(0, std::memory_order_release);
+      self->reset_restore_backoff();
 
       if (exit_due_to_timeout) {
         return;
@@ -2233,6 +2381,13 @@ namespace {
     return success;
   }
 
+  void hide_console_window() {
+    HWND console = GetConsoleWindow();
+    if (console) {
+      ShowWindow(console, SW_HIDE);
+    }
+  }
+
   void handle_apply(ServiceState &state, std::span<const uint8_t> payload) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
@@ -2378,6 +2533,7 @@ namespace {
       std::string device_id(payload.begin(), payload.end());
       state.controller.add_blacklisted_display(device_id);
     } else if (type == MsgType::Ping) {
+      state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);
     } else {
       BOOST_LOG(warning) << "Unknown message type: " << static_cast<int>(type);
@@ -2485,6 +2641,10 @@ int main(int argc, char *argv[]) {
         break;
       }
     }
+  }
+
+  if (restore_mode) {
+    hide_console_window();
   }
 
   HANDLE singleton = nullptr;
@@ -2616,6 +2776,7 @@ int main(int argc, char *argv[]) {
 
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
+    state.begin_heartbeat_monitoring();
 
     auto on_message = [&, connection_epoch](std::span<const uint8_t> bytes) {
       if (!state.is_connection_epoch_current(connection_epoch)) {
@@ -2660,10 +2821,17 @@ int main(int argc, char *argv[]) {
     // Stay in this inner loop until the client disconnects or service told to exit
     while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(200ms);
+      if (state.check_heartbeat_timeout() && state.is_connection_epoch_current(connection_epoch)) {
+        BOOST_LOG(warning) << "Heartbeat timeout exceeded; applying revert policy.";
+        broken.store(true, std::memory_order_release);
+        attempt_revert_after_disconnect(state, running, connection_epoch);
+        break;
+      }
     }
 
     // Ensure the worker thread is stopped and the server handle is
     // disconnected before looping to accept a new session.
+    state.end_heartbeat_monitoring();
     async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop

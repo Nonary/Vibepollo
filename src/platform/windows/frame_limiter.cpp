@@ -239,6 +239,39 @@ namespace platf {
     }
   }
 
+  bool frame_limiter_prepare_launch(bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit) {
+    const bool frame_limit_enabled = config::frame_limiter.enable || gen1_framegen_fix || gen2_framegen_fix || (lossless_rtss_limit && *lossless_rtss_limit > 0);
+    if (!frame_limit_enabled || gen2_framegen_fix) {
+      return false;
+    }
+
+    const bool rtss_available = rtss_is_configured();
+    bool want_rtss = false;
+
+    if (gen1_framegen_fix) {
+      want_rtss = rtss_available;
+    } else {
+      auto configured = parse_provider(config::frame_limiter.provider);
+      switch (configured) {
+        case frame_limiter_provider::rtss:
+          want_rtss = rtss_available;
+          break;
+        case frame_limiter_provider::auto_detect:
+          want_rtss = rtss_available;
+          break;
+        default:
+          want_rtss = false;
+          break;
+      }
+    }
+
+    if (!want_rtss) {
+      return false;
+    }
+
+    return rtss_warmup_process();
+  }
+
   void frame_limiter_streaming_stop() {
     if (g_gen1_framegen_fix_active || g_gen2_framegen_fix_active) {
       config::frame_limiter.enable = g_prev_frame_limiter_enabled;

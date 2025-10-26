@@ -47,6 +47,7 @@
 #include "platform/common.h"
 #ifdef _WIN32
   #include "config_playnite.h"
+  #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/playnite_integration.h"
   #include "tools/playnite_launcher/focus_utils.h"
@@ -119,6 +120,9 @@ namespace proc {
       }
       if (normalized == "nvidia" || normalized == "smoothmotion" || normalized == "nvidiasmoothmotion") {
         return "nvidia-smooth-motion";
+      }
+      if (normalized == "game" || normalized == "gameprovided" || normalized == "gameprovider") {
+        return "game-provided";
       }
       if (normalized == "lossless" || normalized == "losslessscaling") {
         return "lossless-scaling";
@@ -1225,7 +1229,7 @@ namespace proc {
           target_fps *= 1000;
         }
 
-        std::wstring vdisplay_name = VDISPLAY::createVirtualDisplay(
+        auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
           device_name.c_str(),
           render_width,
@@ -1234,27 +1238,53 @@ namespace proc {
           launch_session->display_guid
         );
 
-        if (!vdisplay_name.empty()) {
-          BOOST_LOG(info) << "Virtual display created at " << vdisplay_name;
+        if (display_info) {
+          const std::wstring *display_name_w = display_info->display_name && !display_info->display_name->empty()
+                                                ? &*display_info->display_name
+                                                : nullptr;
 
-          if (config::video.legacy_virtual_display_mode) {
+          if (display_name_w) {
+            BOOST_LOG(info) << "Virtual display created at " << *display_name_w;
+          } else if (display_info->reused_existing) {
+            BOOST_LOG(info) << "Virtual display reused; device name pending enumeration.";
+          } else {
+            BOOST_LOG(info) << "Virtual display created; device name pending enumeration.";
+          }
+
+          if (config::video.legacy_virtual_display_mode && display_name_w) {
             if (launch_session->width && launch_session->height && launch_session->fps) {
-              VDISPLAY::legacy::changeDisplaySettings(vdisplay_name.c_str(), render_width, render_height, target_fps);
+              VDISPLAY::legacy::changeDisplaySettings(display_name_w->c_str(), render_width, render_height, target_fps);
             }
 
             if (config::video.isolated_virtual_display_option) {
-              VDISPLAY::legacy::changeDisplaySettings2(vdisplay_name.c_str(), render_width, render_height, target_fps, true);
+              VDISPLAY::legacy::changeDisplaySettings2(display_name_w->c_str(), render_width, render_height, target_fps, true);
             }
+          } else if (config::video.legacy_virtual_display_mode && !display_name_w) {
+            BOOST_LOG(info) << "Skipping legacy virtual display adjustments until device name is available.";
           } else if (config::video.isolated_virtual_display_option) {
             BOOST_LOG(info) << "Skipping isolated virtual display adjustments because legacy mode is disabled.";
           }
 
           launch_session->virtual_display = true;
           this->virtual_display = true;
-          this->display_name = platf::to_utf8(vdisplay_name);
-          config::video.output_name = this->display_name;
 
-          if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(vdisplay_name)) {
+          if (display_name_w) {
+            this->display_name = platf::to_utf8(*display_name_w);
+            config::video.output_name = this->display_name;
+          } else {
+            this->display_name.clear();
+            config::video.output_name.clear();
+          }
+
+          if (display_info->device_id && !display_info->device_id->empty()) {
+            launch_session->virtual_display_device_id = *display_info->device_id;
+          } else if (display_name_w) {
+            if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(*display_name_w)) {
+              launch_session->virtual_display_device_id = *resolved_device;
+            } else {
+              launch_session->virtual_display_device_id.clear();
+            }
+          } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
             launch_session->virtual_display_device_id = *resolved_device;
           } else {
             launch_session->virtual_display_device_id.clear();
@@ -1263,7 +1293,7 @@ namespace proc {
           std::memcpy(&_virtual_display_guid, &launch_session->display_guid, sizeof(_virtual_display_guid));
           _virtual_display_active = true;
         } else {
-          BOOST_LOG(warning) << "Virtual display creation failed, or cannot get created display name in time!";
+          BOOST_LOG(warning) << "Virtual display creation failed.";
         }
       } else {
         BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
@@ -1411,6 +1441,21 @@ namespace proc {
         lossless_metadata.anime4k_type = runtime.anime4k_type;
         lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
       }
+#endif
+
+#ifdef _WIN32
+      std::optional<int> rtss_warmup_limit;
+      if (using_lossless_provider) {
+        if (_app.lossless_scaling_rtss_limit && *_app.lossless_scaling_rtss_limit > 0) {
+          rtss_warmup_limit = *_app.lossless_scaling_rtss_limit;
+        } else if (_app.lossless_scaling_target_fps && *_app.lossless_scaling_target_fps > 0) {
+          int computed_limit = (int) std::lround(*_app.lossless_scaling_target_fps * 0.6);
+          if (computed_limit > 0) {
+            rtss_warmup_limit = computed_limit;
+          }
+        }
+      }
+      platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
 #endif
 
       auto set_string = [&](const char *key, const std::optional<std::string> &value) {

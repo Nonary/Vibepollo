@@ -2,9 +2,11 @@
   <div class="mt-4 space-y-4 rounded-md border border-dark/10 p-3 dark:border-light/10">
     <div class="flex items-center justify-between gap-3">
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wide opacity-70">Lossless Scaling</div>
+        <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+          Lossless Scaling Upscaling
+        </div>
         <p class="text-[11px] opacity-60">
-          Enable Lossless Scaling for upscaling or to prepare Lossless frame generation.
+          Enable Lossless Scaling when you want Sunshine to manage upscaling before encoding.
         </p>
       </div>
       <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
@@ -171,92 +173,6 @@
       </div>
     </div>
 
-    <div class="border-t border-dark/10 dark:border-light/10 pt-4 space-y-3">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-            Frame Generation
-          </div>
-          <p class="text-[11px] opacity-60">
-            Choose Off, NVIDIA Smooth Motion, or Lossless Scaling frame generation.
-          </p>
-        </div>
-      </div>
-      <n-select
-        v-model:value="frameGenerationProviderModel"
-        :options="frameGenerationOptions"
-        size="small"
-        :clearable="false"
-      />
-
-      <n-alert v-if="isNvidiaFrameGen" type="info" :show-icon="true" size="small" class="text-xs">
-        <div class="space-y-1">
-          <p>
-            <strong>Requirements:</strong> NVIDIA GeForce RTX 40xx or 50xx series GPU with driver
-            version 571.86 or higher.
-          </p>
-          <p>
-            Sunshine enables NVIDIA Smooth Motion during the stream and restores your previous
-            settings afterward.
-          </p>
-        </div>
-      </n-alert>
-
-      <div v-if="isLosslessFrameGen" class="space-y-3">
-        <div class="grid gap-3 md:grid-cols-2">
-          <div class="space-y-1">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Target Frame Rate
-            </label>
-            <n-input-number
-              v-model:value="form.losslessScalingTargetFps"
-              :min="1"
-              :max="360"
-              :step="1"
-              :precision="0"
-              placeholder="120"
-              size="small"
-            />
-            <p class="text-[11px] opacity-60">Target FPS for frame generation.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              RTSS Frame Limit
-            </label>
-            <n-input-number
-              v-model:value="form.losslessScalingRtssLimit"
-              :min="1"
-              :max="360"
-              :step="1"
-              :precision="0"
-              placeholder="60"
-              size="small"
-              @update:value="onLosslessRtssLimitChange"
-            />
-            <p class="text-[11px] opacity-60">
-              Defaults to 50% of target when not set. Requires RTSS installed.
-            </p>
-          </div>
-        </div>
-
-        <div class="space-y-1">
-          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-            Flow Scale (%)
-          </label>
-          <n-input-number
-            v-model:value="losslessFlowScaleModel"
-            :min="LOSSLESS_FLOW_MIN"
-            :max="LOSSLESS_FLOW_MAX"
-            :step="1"
-            :precision="0"
-            placeholder="50"
-            size="small"
-          />
-          <p class="text-[11px] opacity-60">Frame blending strength (0–100). Recommended: 50%.</p>
-        </div>
-      </div>
-    </div>
-
     <div
       v-if="form.losslessScalingEnabled"
       class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
@@ -272,12 +188,9 @@
 
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue';
-import type { Anime4kSize, AppForm, FrameGenerationMode, LosslessScalingMode } from './types';
+import type { Anime4kSize, AppForm, LosslessScalingMode } from './types';
 import {
-  FRAME_GENERATION_PROVIDERS,
   LOSSLESS_ANIME_SIZES,
-  LOSSLESS_FLOW_MAX,
-  LOSSLESS_FLOW_MIN,
   LOSSLESS_RESOLUTION_MAX,
   LOSSLESS_RESOLUTION_MIN,
   LOSSLESS_SCALING_OPTIONS,
@@ -297,13 +210,9 @@ import {
 } from 'naive-ui';
 
 const form = defineModel<AppForm>('form', { required: true });
-const frameGenerationProviderModel = defineModel<FrameGenerationMode>('frameGenerationProvider', {
-  required: true,
-});
 const losslessPerformanceModeModel = defineModel<boolean>('losslessPerformanceMode', {
   required: true,
 });
-const losslessFlowScaleModel = defineModel<number | null>('losslessFlowScale', { required: true });
 const losslessResolutionScaleModel = defineModel<number | null>('losslessResolutionScale', {
   required: true,
 });
@@ -320,7 +229,6 @@ const props = defineProps<{
   showLosslessSharpening: boolean;
   showLosslessAnimeOptions: boolean;
   hasActiveLosslessOverrides: boolean;
-  onLosslessRtssLimitChange: (value: number | null) => void;
   resetActiveLosslessProfile: () => void;
 }>();
 
@@ -329,20 +237,7 @@ const showLosslessResolution = toRef(props, 'showLosslessResolution');
 const showLosslessSharpening = toRef(props, 'showLosslessSharpening');
 const showLosslessAnimeOptions = toRef(props, 'showLosslessAnimeOptions');
 const hasActiveLosslessOverrides = toRef(props, 'hasActiveLosslessOverrides');
-const onLosslessRtssLimitChange = props.onLosslessRtssLimitChange;
 const resetActiveLosslessProfile = props.resetActiveLosslessProfile;
-
-const frameGenerationOptions = [
-  { label: 'Off', value: 'off' as const },
-  ...FRAME_GENERATION_PROVIDERS,
-];
-
-const isLosslessFrameGen = computed(
-  () => frameGenerationProviderModel.value === 'lossless-scaling',
-);
-const isNvidiaFrameGen = computed(
-  () => frameGenerationProviderModel.value === 'nvidia-smooth-motion',
-);
 
 const resolutionInputMode = ref<'factor' | 'percent'>('factor');
 

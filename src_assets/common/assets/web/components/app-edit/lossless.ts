@@ -45,8 +45,9 @@ export const LOSSLESS_ANIME_SIZES: { label: string; value: Anime4kSize }[] = [
 
 export const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> =
   [
-    { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
+    { label: 'Game Provided', value: 'game-provided' },
     { label: 'Lossless Scaling', value: 'lossless-scaling' },
+    { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
   ];
 
 export const LOSSLESS_PROFILE_DEFAULTS: Record<LosslessProfileKey, LosslessProfileDefaults> = {
@@ -100,6 +101,9 @@ export function normalizeFrameGenerationProvider(value: unknown): FrameGeneratio
     .join('');
   if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
     return 'nvidia-smooth-motion';
+  }
+  if (compact === 'gameprovided' || compact === 'game') {
+    return 'game-provided';
   }
   if (compact === 'losslessscaling' || compact === 'lossless') {
     return 'lossless-scaling';

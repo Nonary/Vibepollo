@@ -2090,14 +2090,21 @@ namespace stream {
         // Only revert on disconnect when explicitly enabled by config.
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
 
-        if (proc::proc.running()) {
-          proc::proc.pause();
-        } else {
-          // We have no app running and also no clients anymore.
-          revert_display_config = true;
+        const bool is_paused = proc::proc.running();
+        if (is_paused) {
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+#endif
         }
 
-        if (revert_display_config) {
+        bool skip_display_revert = false;
+#ifdef _WIN32
+        if (is_paused && session.virtual_display.active) {
+          skip_display_revert = true;
+        }
+#endif
+
+        if (revert_display_config && !skip_display_revert) {
           display_helper_integration::revert();
         }
 
@@ -2110,35 +2117,36 @@ namespace stream {
 
         // No active sessions now; apply any deferred config updates
         config::maybe_apply_deferred();
-      }
 
 #ifdef _WIN32
-      if (session.virtual_display.active) {
-        const bool has_physical_display = VDISPLAY::has_active_physical_display();
-        if (has_physical_display) {
-          const bool has_guid = std::any_of(
-            session.virtual_display.guid_bytes.begin(),
-            session.virtual_display.guid_bytes.end(),
-            [](std::uint8_t b) {
-              return b != 0;
+        // Only tear down virtual display when stream truly ends (not paused)
+        if (!is_paused && session.virtual_display.active) {
+          const bool has_physical_display = VDISPLAY::has_active_physical_display();
+          if (has_physical_display) {
+            const bool has_guid = std::any_of(
+              session.virtual_display.guid_bytes.begin(),
+              session.virtual_display.guid_bytes.end(),
+              [](std::uint8_t b) {
+                return b != 0;
+              }
+            );
+            if (has_guid) {
+              GUID guid {};
+              std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
+              if (!VDISPLAY::removeVirtualDisplay(guid)) {
+                BOOST_LOG(warning) << "Failed to remove virtual display.";
+              } else {
+                BOOST_LOG(info) << "Virtual display removed.";
+              }
             }
-          );
-          if (has_guid) {
-            GUID guid {};
-            std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
-            if (!VDISPLAY::removeVirtualDisplay(guid)) {
-              BOOST_LOG(warning) << "Failed to remove virtual display.";
-            } else {
-              BOOST_LOG(info) << "Virtual display removed.";
-            }
+            session.virtual_display.active = false;
+            session.virtual_display.guid_bytes.fill(0);
+          } else {
+            BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
           }
-          session.virtual_display.active = false;
-          session.virtual_display.guid_bytes.fill(0);
-        } else {
-          BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
         }
-      }
 #endif
+      }
 
       BOOST_LOG(info) << "Session ended"sv;
     }

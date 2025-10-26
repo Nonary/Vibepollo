@@ -199,8 +199,8 @@ namespace video {
         constexpr uint32_t fps = 480000u;
 
         BOOST_LOG(info) << "Creating Sunshine virtual display for encoder probing.";
-        auto display_name = VDISPLAY::createVirtualDisplay("sunshine-probe", "Sunshine Probe", width, height, fps, display_guid_);
-        if (display_name.empty()) {
+        auto display_info = VDISPLAY::createVirtualDisplay("sunshine-probe", "Sunshine Probe", width, height, fps, display_guid_);
+        if (!display_info) {
           BOOST_LOG(warning) << "Failed to create Sunshine virtual display for encoder probing.";
           return false;
         }

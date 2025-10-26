@@ -1870,7 +1870,6 @@ namespace confighttp {
     output_tree["appRunning"] = app_running;
     output_tree["paused"] = app_running && active == 0;
     output_tree["status"] = true;
-    output_tree["vdisplayStatus"] = static_cast<int>(proc::vDisplayDriverStatus);
     send_response(response, output_tree);
   }
 
@@ -2768,10 +2767,9 @@ namespace confighttp {
         return;
       }
     };
-    std::thread tcp {accept_and_run, &server};
-
     api_token_manager.load_api_tokens();
     session_token_manager.load_session_tokens();
+    std::thread tcp {accept_and_run, &server};
 
     // Start a background task to clean up expired session tokens every hour
     std::jthread cleanup_thread([shutdown_event]() {

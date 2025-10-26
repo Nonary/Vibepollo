@@ -3155,9 +3155,35 @@ They appear in the Frame Limiter section of the settings UI.
         <td>fastdecode</td>
         <td>allows faster decoding by disabling certain filters</td>
     </tr>
-    <tr>
+<tr>
         <td>zerolatency</td>
         <td>good for fast encoding and low-latency streaming</td>
+    </tr>
+</table>
+
+## Playnite Integration
+
+### playnite_exclude_categories
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            List of Playnite categories to omit from Sunshine's auto-sync. Accepts a JSON array of objects
+            with <code>id</code>/<code>name</code> pairs or a comma-separated list of category names. Any
+            game tagged with one of these categories is skipped even if it matches recent-activity or
+            inclusion-category rules.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}
+playnite_exclude_categories = ["Steam", {"id": "deck", "name": "Steam Deck"}]
+@endcode</td>
     </tr>
 </table>
 

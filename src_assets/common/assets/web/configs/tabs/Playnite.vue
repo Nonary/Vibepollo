@@ -360,6 +360,79 @@
         </div>
         <div class="px-4 pb-4">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 items-start">
+            <div>
+              <label for="playnite_exclude_categories" class="form-label">{{
+                $t('playnite.exclude_categories') || 'Exclude categories'
+              }}</label>
+              <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
+                <template #trigger>
+                  <n-select
+                    id="playnite_exclude_categories"
+                    v-model:value="excludedCategories"
+                    multiple
+                    :options="categoryOptions"
+                    filterable
+                    tag
+                    clearable
+                    :placeholder="
+                      $t('playnite.categories_placeholder') || 'All categories (default)'
+                    "
+                    :loading="categoriesLoading"
+                    :disabled="disablePlayniteSelection || !autoSyncEnabled"
+                    @focus="() => loadCategories()"
+                    class="w-full"
+                  />
+                </template>
+                <span>{
+                  !autoSyncEnabled
+                    ? $t('playnite.enable_autosync_hint') ||
+                      'Enable Auto-sync to edit these settings.'
+                    : disabledHint
+                }}</span>
+              </n-tooltip>
+              <div class="form-text">
+                {{
+                  $t('playnite.exclude_categories_help') ||
+                    'Games tagged with these categories will never be auto-synced.'
+                }}
+              </div>
+            </div>
+            <div>
+              <label for="playnite_exclude_plugins" class="form-label">{{
+                $t('playnite.exclude_plugins') || 'Exclude library plugins'
+              }}</label>
+              <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
+                <template #trigger>
+                  <n-select
+                    id="playnite_exclude_plugins"
+                    v-model:value="excludedPlugins"
+                    multiple
+                    :options="pluginOptions"
+                    filterable
+                    clearable
+                    :placeholder="
+                      $t('playnite.plugins_placeholder') || 'All library plugins (default)'
+                    "
+                    :loading="pluginsLoading"
+                    :disabled="disablePlayniteSelection || !autoSyncEnabled"
+                    @focus="() => loadPlugins()"
+                    class="w-full"
+                  />
+                </template>
+                <span>{
+                  !autoSyncEnabled
+                    ? $t('playnite.enable_autosync_hint') ||
+                      'Enable Auto-sync to edit these settings.'
+                    : disabledHint
+                }}</span>
+              </n-tooltip>
+              <div class="form-text">
+                {{
+                  $t('playnite.exclude_plugins_help') ||
+                    'Games imported from these plugins will never be auto-synced.'
+                }}
+              </div>
+            </div>
             <div class="md:col-span-2">
               <div class="flex flex-col gap-2">
                 <label class="form-label">{{
@@ -570,23 +643,38 @@ function notify(type: 'success' | 'error' | 'info' | 'warning', content: string)
   notification.create({ type, content, duration: 5000 });
 }
 
+const NULL_GUID = '00000000-0000-0000-0000-000000000000';
 const categoriesLoading = ref(false);
-const gamesLoading = ref(false);
+const pluginsLoading = ref(false);
+const gamesLoading = ref(false);0
 const categoryOptions = ref<{ label: string; value: string }[]>([]);
-type GameRow = { id: string; name: string; installed?: boolean; categories?: string[] };
+const pluginOptions = ref<{ label: string; value: string }[]>([]);
+type GameRow = {
+  id: string;
+  name: string;
+  installed?: boolean;
+  categories?: string[];
+  pluginId?: string;
+  pluginName?: string;
+};
 const gamesList = ref<GameRow[]>([]);
 const gamesSource = ref<'live' | 'cache' | 'none'>('none');
 const gamesCacheTime = ref<number | null>(null);
 // Dual-list transfer value mirrors the excluded IDs
 const transferValue = ref<string[]>([]);
 
+type IdNameEntry = { id?: string; name?: string };
+
+function normalizeIdNameEntries(value: unknown): IdNameEntry[] {
+  if (Array.isArray(value)) return value as IdNameEntry[];
+  if (value && typeof value === 'object') return [value as IdNameEntry];
+  return [];
+}
+
 const selectedCategories = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_sync_categories || []) as Array<{
-      id: string;
-      name: string;
-    }>;
-    return (arr || []).map((o) => o.id || o.name || '').filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_sync_categories);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
   },
   set(v: string[]) {
     const mapByVal = new Map(categoryOptions.value.map((o) => [o.value, o.label] as const));
@@ -598,10 +686,40 @@ const selectedCategories = computed<string[]>({
   },
 });
 
+const excludedCategories = computed<string[]>({
+  get() {
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_categories);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
+  },
+  set(v: string[]) {
+    const mapByVal = new Map(categoryOptions.value.map((o) => [o.value, o.label] as const));
+    const next = (v || []).map((val) => ({
+      id: val && mapByVal.has(val) ? val : '',
+      name: mapByVal.get(val) || val,
+    }));
+    store.updateOption('playnite_exclude_categories', next);
+  },
+});
+
+const excludedPlugins = computed<string[]>({
+  get() {
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_plugins);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
+  },
+  set(v: string[]) {
+    const mapByVal = new Map(pluginOptions.value.map((o) => [o.value, o.label] as const));
+    const next = (v || []).map((val) => ({
+      id: val && mapByVal.has(val) ? val : '',
+      name: mapByVal.get(val) || val,
+    }));
+    store.updateOption('playnite_exclude_plugins', next);
+  },
+});
+
 const excludedIds = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_exclude_games || []) as Array<{ id: string; name: string }>;
-    return (arr || []).map((o) => o.id).filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_games);
+    return arr.map((o) => o.id || '').filter(Boolean);
   },
   set(v: string[]) {
     const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
@@ -612,7 +730,7 @@ const excludedIds = computed<string[]>({
 
 // Build the display list of current exclusions, resolving names from cache if missing
 const excludedDisplayList = computed<Array<{ id: string; name: string }>>(() => {
-  const arr = (config.value?.playnite_exclude_games || []) as Array<{ id: string; name: string }>;
+  const arr = normalizeIdNameEntries(config.value?.playnite_exclude_games);
   const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
   return (arr || []).map(({ id, name }) => ({ id, name: name || nameById.get(id) || '' }));
 });
@@ -714,7 +832,109 @@ async function loadCategories() {
   categoriesLoading.value = false;
 }
 
-const GAMES_CACHE_KEY = 'playnite_games_cache_v1';
+function ensurePluginOptionsIncludeSelection() {
+  const current = pluginOptions.value.slice();
+  const byValue = new Map(current.map((o) => [o.value, o] as const));
+  const selected = (config.value?.playnite_exclude_plugins || []) as Array<{
+    id: string;
+    name: string;
+  }>;
+  let changed = false;
+  for (const entry of selected || []) {
+    const value = entry?.id || entry?.name || '';
+    if (!value || value === NULL_GUID) continue;
+    const label = entry?.name || entry?.id || value;
+    if (!byValue.has(value)) {
+      current.push({ value, label });
+      byValue.set(value, current[current.length - 1]);
+      changed = true;
+    } else {
+      const existing = byValue.get(value);
+      if (existing && !existing.label && label) {
+        existing.label = label;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    pluginOptions.value = current.sort((a, b) => a.label.localeCompare(b.label));
+  }
+}
+
+async function loadPlugins() {
+  if (platform.value !== 'windows') return;
+  if (pluginsLoading.value || pluginOptions.value.length) {
+    ensurePluginOptionsIncludeSelection();
+    return;
+  }
+  pluginsLoading.value = true;
+  try {
+    try {
+      const rp = await http.get('/api/playnite/plugins', { validateStatus: () => true });
+      if (rp.status >= 200 && rp.status < 300 && Array.isArray(rp.data) && rp.data.length) {
+        const opts = (rp.data as any[])
+          .map((p) => {
+            if (p && typeof p === 'object') {
+              const id = String((p as any).id || '');
+              const name = String((p as any).name || '');
+              const value = id || name;
+              if (!value || value === NULL_GUID) return null;
+              return { value, label: name || value };
+            }
+            const s = String(p || '');
+            return s && s !== NULL_GUID ? { value: s, label: s } : null;
+          })
+          .filter((x): x is { label: string; value: string } => !!x)
+          .sort((a, b) => a.label.localeCompare(b.label));
+        pluginOptions.value = opts;
+        ensurePluginOptionsIncludeSelection();
+        return;
+      }
+    } catch {}
+
+    const map = new Map<string, string>();
+    const ingestGames = (rows: GameRow[]) => {
+      for (const g of rows) {
+        if (!g) continue;
+        const pid = g.pluginId ? String(g.pluginId) : '';
+        const pname = g.pluginName ? String(g.pluginName) : '';
+        if (!pid || pid === NULL_GUID) continue;
+        if (!map.has(pid)) {
+          map.set(pid, pname || pid);
+        } else if (!map.get(pid) && pname) {
+          map.set(pid, pname);
+        }
+      }
+    };
+    if (gamesList.value.length) {
+      ingestGames(gamesList.value);
+    }
+    if (!map.size) {
+      try {
+        const rg = await http.get('/api/playnite/games', { validateStatus: () => true });
+        if (rg.status >= 200 && rg.status < 300 && Array.isArray(rg.data)) {
+          ingestGames(
+            (rg.data as any[]).map((g) => ({
+              id: String(g?.id || ''),
+              name: String(g?.name || g?.id || ''),
+              pluginId: g?.pluginId ? String(g.pluginId) : '',
+              pluginName: g?.pluginName ? String(g.pluginName) : '',
+            }))
+          );
+        }
+      } catch {}
+    }
+    const opts = Array.from(map.entries())
+      .map(([value, label]) => ({ value, label: label || value }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    pluginOptions.value = opts;
+    ensurePluginOptionsIncludeSelection();
+  } finally {
+    pluginsLoading.value = false;
+  }
+}
+
+const GAMES_CACHE_KEY = 'playnite_games_cache_v2';
 function saveGamesCache(list: GameRow[]) {
   try {
     const payload = {
@@ -724,6 +944,8 @@ function saveGamesCache(list: GameRow[]) {
         name: g.name,
         installed: !!g.installed,
         categories: Array.isArray(g.categories) ? g.categories : [],
+        pluginId: g.pluginId || '',
+        pluginName: g.pluginName || '',
       })),
     };
     localStorage.setItem(GAMES_CACHE_KEY, JSON.stringify(payload));
@@ -735,7 +957,17 @@ function loadGamesCache(): { t: number; games: GameRow[] } | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.games)) return null;
-    return { t: Number(parsed.t) || Date.now(), games: parsed.games as GameRow[] };
+    return {
+      t: Number(parsed.t) || Date.now(),
+      games: (parsed.games as any[]).map((g) => ({
+        id: String(g?.id || ''),
+        name: String(g?.name || g?.id || ''),
+        installed: !!g?.installed,
+        categories: Array.isArray(g?.categories) ? g.categories : [],
+        pluginId: g?.pluginId ? String(g.pluginId) : '',
+        pluginName: g?.pluginName ? String(g.pluginName) : '',
+      })) as GameRow[],
+    };
   } catch {
     return null;
   }
@@ -764,6 +996,8 @@ async function loadGames(useCacheFirst = true) {
           name: String(g.name || g.id),
           installed: !!g.installed,
           categories: Array.isArray(g.categories) ? g.categories : [],
+          pluginId: g.pluginId ? String(g.pluginId) : '',
+          pluginName: g.pluginName ? String(g.pluginName) : '',
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
       gamesList.value = list;
@@ -852,6 +1086,8 @@ onMounted(async () => {
   // Preload lists so existing selections display with names immediately
   loadGames();
   loadCategories();
+  loadPlugins();
+  ensurePluginOptionsIncludeSelection();
   // Periodically refresh Playnite status while on Windows
   if (platform.value === 'windows') {
     statusTimer.value = window.setInterval(() => {
@@ -863,6 +1099,13 @@ onMounted(async () => {
   watch(excludedIds, (v) => {
     transferValue.value = (v || []).slice();
   });
+  watch(
+    () => config.value?.playnite_exclude_plugins,
+    () => {
+      ensurePluginOptionsIncludeSelection();
+    },
+    { deep: true }
+  );
   // no screen-size watchers needed for exclusions table
 });
 onUnmounted(() => {
@@ -988,6 +1231,28 @@ const policySummary = computed<string>(() => {
         `Also remove games never launched after ${pruneDays} days.`,
     );
   }
+  const excluded = ((config.value?.playnite_exclude_categories || []) as Array<{
+    id: string;
+    name: string;
+  }>).map((o) => (o?.name || o?.id || '').toString().trim()).filter(Boolean);
+  if (excluded.length) {
+    const shown = excluded.slice(0, 3);
+    const sample = shown.join(', ');
+    const more = excluded.length > shown.length ? excluded.length - shown.length : 0;
+    if (more > 0) {
+      parts.push(
+        (t('playnite.summary_excluded_categories_more', {
+          categories: sample,
+          count: more,
+        }) as any) || `Excluded categories: ${sample} (+${more} more).`,
+      );
+    } else {
+      parts.push(
+        (t('playnite.summary_excluded_categories', { categories: sample }) as any) ||
+          `Excluded categories: ${sample}.`,
+      );
+    }
+  }
   return parts.join(' ');
 });
 
@@ -1042,6 +1307,8 @@ function resetLaunchSection() {
 
 function resetFiltersSection() {
   const d = store.defaults as any;
+  store.updateOption('playnite_exclude_categories', d.playnite_exclude_categories);
+  store.updateOption('playnite_exclude_plugins', d.playnite_exclude_plugins);
   store.updateOption('playnite_exclude_games', d.playnite_exclude_games);
   notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
 }

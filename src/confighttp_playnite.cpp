@@ -234,6 +234,35 @@ namespace confighttp {
     }
   }
 
+  void getPlaynitePlugins(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      if (!is_plugin_installed()) {
+        SimpleWeb::CaseInsensitiveMultimap headers;
+        headers.emplace("Content-Type", "application/json");
+        headers.emplace("X-Frame-Options", "DENY");
+        headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+        response->write(SimpleWeb::StatusCode::success_ok, "[]", headers);
+        return;
+      }
+      std::string json;
+      if (!platf::playnite::get_plugins_list_json(json)) {
+        json = "[]";
+      }
+      BOOST_LOG(debug) << "Playnite plugins: json length=" << json.size();
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(SimpleWeb::StatusCode::success_ok, json, headers);
+    } catch (std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
   void installPlaynite(resp_https_t response, req_https_t request) {
     if (!check_content_type(response, request, "application/json")) {
       return;

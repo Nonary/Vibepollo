@@ -1482,11 +1482,22 @@ namespace nvhttp {
           launch_session->unique_id = session_uuid.string();
         }
 
-        const std::string display_uuid_source = session_uuid.string();
+        std::string display_uuid_source = session_uuid.string();
+        if (!shared_mode && !launch_session->unique_id.empty()) {
+          display_uuid_source = launch_session->unique_id;
+          BOOST_LOG(debug) << "Using client UUID for virtual display: " << display_uuid_source;
+        } else {
+          BOOST_LOG(debug) << "Using session UUID for virtual display: " << display_uuid_source;
+        }
 
         GUID virtual_display_guid {};
-        std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
-        std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        if (auto parsed_uuid = parse_uuid(display_uuid_source)) {
+          std::memcpy(&virtual_display_guid, parsed_uuid->b8, sizeof(virtual_display_guid));
+          std::copy_n(std::cbegin(parsed_uuid->b8), sizeof(parsed_uuid->b8), launch_session->virtual_display_guid_bytes.begin());
+        } else {
+          std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+          std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+        }
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
@@ -1502,17 +1513,26 @@ namespace nvhttp {
           vd_fps *= 1000u;
         }
 
+        const auto client_name_arg = get_arg(args, "clientName", "");
+
         std::string client_label;
         if (shared_mode) {
           client_label = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
         } else {
-          client_label = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
+          // Prefer client name if available (from paired client)
+          if (!client_name_arg.empty()) {
+            client_label = client_name_arg;
+          } else if (!launch_session->device_name.empty()) {
+            client_label = launch_session->device_name;
+          } else {
+            client_label = config::nvhttp.sunshine_name;
+          }
           if (client_label.empty()) {
             client_label = "Sunshine";
           }
         }
 
-        auto display_name_wide = VDISPLAY::createVirtualDisplay(
+        auto display_info = VDISPLAY::createVirtualDisplay(
           display_uuid_source.c_str(),
           client_label.c_str(),
           vd_width,
@@ -1521,14 +1541,20 @@ namespace nvhttp {
           virtual_display_guid
         );
 
-        if (!display_name_wide.empty()) {
+        if (display_info) {
           launch_session->virtual_display = true;
-          if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceId(display_name_wide)) {
+          if (display_info->device_id && !display_info->device_id->empty()) {
+            launch_session->virtual_display_device_id = *display_info->device_id;
+          } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
             launch_session->virtual_display_device_id = *resolved_device;
           } else {
             launch_session->virtual_display_device_id.clear();
           }
-          BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(display_name_wide);
+          if (display_info->display_name && !display_info->display_name->empty()) {
+            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
+          } else {
+            BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
+          }
         } else {
           launch_session->virtual_display = false;
           launch_session->virtual_display_guid_bytes.fill(0);
@@ -2009,7 +2035,16 @@ namespace nvhttp {
         SSL_get_peer_certificate(ssl)
 #endif
       };
-      if (!x509) {
+      // Re-fetch for verification logic
+      crypto::x509_t x509_verify {
+#if OPENSSL_VERSION_MAJOR >= 3
+        SSL_get1_peer_certificate(ssl)
+#else
+        SSL_get_peer_certificate(ssl)
+#endif
+      };
+      
+      if (!x509_verify) {
         BOOST_LOG(info) << "unknown -- denied"sv;
         return false;
       }
@@ -2020,7 +2055,7 @@ namespace nvhttp {
       auto fg = util::fail_guard([&]() {
         char subject_name[256];
 
-        X509_NAME_oneline(X509_get_subject_name(x509.get()), subject_name, sizeof(subject_name));
+        X509_NAME_oneline(X509_get_subject_name(x509_verify.get()), subject_name, sizeof(subject_name));
 
         BOOST_LOG(verbose) << subject_name << " -- "sv << (verified ? "verified"sv : "denied"sv);
       });

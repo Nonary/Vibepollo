@@ -21,7 +21,7 @@ export type LosslessScalingMode =
 
 export type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
 
-export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion';
+export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion' | 'game-provided';
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
 
 export interface LosslessProfileOverrides {
@@ -69,9 +69,11 @@ export interface AppForm {
   prepCmd: PrepCmd[];
   stateCmd: PrepCmd[];
   detached: string[];
+  virtualScreen: boolean;
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
   frameGenerationProvider: FrameGenerationProvider;
+  frameGenerationMode: FrameGenerationMode;
   losslessScalingEnabled: boolean;
   losslessScalingTargetFps: number | null;
   losslessScalingRtssLimit: number | null;
@@ -106,6 +108,7 @@ export interface ServerApp {
   'exit-timeout'?: number;
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
+  'virtual-screen'?: boolean;
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
   'gen1-framegen-fix'?: boolean;
@@ -118,4 +121,42 @@ export interface ServerApp {
   'lossless-scaling-profile'?: string;
   'lossless-scaling-recommended'?: Record<string, unknown>;
   'lossless-scaling-custom'?: Record<string, unknown>;
+}
+
+export type FrameGenRequirementStatus = 'pass' | 'warn' | 'fail' | 'unknown';
+
+export interface FrameGenDisplayTarget {
+  fps: number;
+  requiredHz: number;
+  supported: boolean | null;
+}
+
+export interface FrameGenHealth {
+  checkedAt: number;
+  capture: {
+    status: FrameGenRequirementStatus;
+    method: string;
+    message: string;
+  };
+  rtss: {
+    status: FrameGenRequirementStatus;
+    installed: boolean;
+    running: boolean;
+    hooksDetected: boolean;
+    message: string;
+  };
+  display: {
+    status: FrameGenRequirementStatus;
+    deviceLabel: string;
+    deviceId: string;
+    currentHz: number | null;
+    targets: FrameGenDisplayTarget[];
+    virtualActive: boolean;
+    message: string;
+    error?: string | null;
+  };
+  suggestion?: {
+    message: string;
+    emphasis: 'info' | 'warning';
+  };
 }

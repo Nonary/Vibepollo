@@ -31,9 +31,20 @@ namespace platf::playnite::sync {
   std::string now_iso8601_utc();
 
   // Selection helpers
-  std::vector<Game> select_recent_installed_games(const std::vector<Game> &installed, int recentN, int recentAgeDays, const std::unordered_set<std::string> &exclude_lower, std::unordered_map<std::string, int> &out_source_flags);
+  std::vector<Game> select_recent_installed_games(const std::vector<Game> &installed,
+                                                  int recentN,
+                                                  int recentAgeDays,
+                                                  const std::unordered_set<std::string> &exclude_ids_lower,
+                                                  const std::unordered_set<std::string> &exclude_categories_lower,
+                                                  const std::unordered_set<std::string> &exclude_plugin_ids_lower,
+                                                  std::unordered_map<std::string, int> &out_source_flags);
 
-  std::vector<Game> select_category_games(const std::vector<Game> &installed, const std::vector<std::string> &categories, const std::unordered_set<std::string> &exclude_lower, std::unordered_map<std::string, int> &out_source_flags);
+  std::vector<Game> select_category_games(const std::vector<Game> &installed,
+                                          const std::vector<std::string> &categories,
+                                          const std::unordered_set<std::string> &exclude_ids_lower,
+                                          const std::unordered_set<std::string> &exclude_categories_lower,
+                                          const std::unordered_set<std::string> &exclude_plugin_ids_lower,
+                                          std::unordered_map<std::string, int> &out_source_flags);
 
   // Index helpers
   struct GameRef {
@@ -59,6 +70,17 @@ namespace platf::playnite::sync {
 
   // Orchestration helper: performs full autosync reconciliation into root["apps"].
   // Combines recent and category selections, merges source flags, purges, and adds missing entries.
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, [[maybe_unused]] bool require_repl, const std::vector<std::string> &categories, const std::vector<std::string> &exclude_ids, bool &changed, std::size_t &matched_out);
+  void autosync_reconcile(nlohmann::json &root,
+                          const std::vector<Game> &all_games,
+                          int recentN,
+                          int recentAgeDays,
+                          int delete_after_days,
+                          bool require_repl,
+                          const std::vector<std::string> &categories,
+                          const std::vector<std::string> &exclude_categories,
+                          const std::vector<std::string> &exclude_ids,
+                          const std::vector<std::string> &exclude_plugins,
+                          bool &changed,
+                          std::size_t &matched_out);
 
 }  // namespace platf::playnite::sync

@@ -35,7 +35,12 @@ namespace VDISPLAY {
   bool startPingThread(std::function<void()> failCb);
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
-  std::wstring createVirtualDisplay(
+  struct VirtualDisplayCreationResult {
+    std::optional<std::wstring> display_name;
+    std::optional<std::string> device_id;
+    bool reused_existing;
+  };
+  std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
     uint32_t width,
