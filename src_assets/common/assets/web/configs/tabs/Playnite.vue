@@ -663,13 +663,18 @@ const gamesCacheTime = ref<number | null>(null);
 // Dual-list transfer value mirrors the excluded IDs
 const transferValue = ref<string[]>([]);
 
+type IdNameEntry = { id?: string; name?: string };
+
+function normalizeIdNameEntries(value: unknown): IdNameEntry[] {
+  if (Array.isArray(value)) return value as IdNameEntry[];
+  if (value && typeof value === 'object') return [value as IdNameEntry];
+  return [];
+}
+
 const selectedCategories = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_sync_categories || []) as Array<{
-      id: string;
-      name: string;
-    }>;
-    return (arr || []).map((o) => o.id || o.name || '').filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_sync_categories);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
   },
   set(v: string[]) {
     const mapByVal = new Map(categoryOptions.value.map((o) => [o.value, o.label] as const));
@@ -683,11 +688,8 @@ const selectedCategories = computed<string[]>({
 
 const excludedCategories = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_exclude_categories || []) as Array<{
-      id: string;
-      name: string;
-    }>;
-    return (arr || []).map((o) => o.id || o.name || '').filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_categories);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
   },
   set(v: string[]) {
     const mapByVal = new Map(categoryOptions.value.map((o) => [o.value, o.label] as const));
@@ -701,11 +703,8 @@ const excludedCategories = computed<string[]>({
 
 const excludedPlugins = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_exclude_plugins || []) as Array<{
-      id: string;
-      name: string;
-    }>;
-    return (arr || []).map((o) => o.id || o.name || '').filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_plugins);
+    return arr.map((o) => o.id || o.name || '').filter(Boolean);
   },
   set(v: string[]) {
     const mapByVal = new Map(pluginOptions.value.map((o) => [o.value, o.label] as const));
@@ -719,8 +718,8 @@ const excludedPlugins = computed<string[]>({
 
 const excludedIds = computed<string[]>({
   get() {
-    const arr = (config.value?.playnite_exclude_games || []) as Array<{ id: string; name: string }>;
-    return (arr || []).map((o) => o.id).filter(Boolean);
+    const arr = normalizeIdNameEntries(config.value?.playnite_exclude_games);
+    return arr.map((o) => o.id || '').filter(Boolean);
   },
   set(v: string[]) {
     const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
@@ -731,7 +730,7 @@ const excludedIds = computed<string[]>({
 
 // Build the display list of current exclusions, resolving names from cache if missing
 const excludedDisplayList = computed<Array<{ id: string; name: string }>>(() => {
-  const arr = (config.value?.playnite_exclude_games || []) as Array<{ id: string; name: string }>;
+  const arr = normalizeIdNameEntries(config.value?.playnite_exclude_games);
   const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
   return (arr || []).map(({ id, name }) => ({ id, name: name || nameById.get(id) || '' }));
 });
