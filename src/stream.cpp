@@ -1951,7 +1951,14 @@ namespace stream {
 #endif
         }
 
-        if (revert_display_config) {
+        bool skip_display_revert = false;
+#ifdef _WIN32
+        if (is_paused && session.virtual_display.active) {
+          skip_display_revert = true;
+        }
+#endif
+
+        if (revert_display_config && !skip_display_revert) {
           display_helper_integration::revert();
         }
 
