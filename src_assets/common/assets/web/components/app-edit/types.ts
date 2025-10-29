@@ -58,7 +58,6 @@ export interface AppForm {
   autoDetach: boolean;
   waitAll: boolean;
   terminateOnPause: boolean;
-  virtualDisplay: boolean;
   allowClientCommands: boolean;
   useAppIdentity: boolean;
   perClientAppIdentity: boolean;

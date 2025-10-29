@@ -96,9 +96,6 @@
             <n-checkbox v-model:checked="form.terminateOnPause" size="small">
               Terminate On Pause
             </n-checkbox>
-            <n-checkbox v-model:checked="form.virtualDisplay" size="small">
-              Use Virtual Display
-            </n-checkbox>
             <n-checkbox
               v-model:checked="form.allowClientCommands"
               size="small"
@@ -352,7 +349,6 @@ function fresh(): AppForm {
     autoDetach: true,
     waitAll: true,
     terminateOnPause: false,
-    virtualDisplay: false,
     allowClientCommands: true,
     useAppIdentity: false,
     perClientAppIdentity: false,
@@ -463,7 +459,11 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   }
   const rawOutput = String(src.output ?? '');
   const virtualScreen =
-    typeof src['virtual-display'] !== 'undefined' ? !!src['virtual-display'] : rawOutput === VIRTUAL_DISPLAY_SELECTION;
+    typeof src['virtual-screen'] !== 'undefined'
+      ? !!src['virtual-screen']
+      : typeof src['virtual-display'] !== 'undefined'
+        ? !!src['virtual-display']
+        : rawOutput === VIRTUAL_DISPLAY_SELECTION;
   return {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
@@ -479,8 +479,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
     terminateOnPause:
       src['terminate-on-pause'] !== undefined ? !!src['terminate-on-pause'] : base.terminateOnPause,
-    virtualDisplay:
-      src['virtual-display'] !== undefined ? !!src['virtual-display'] : base.virtualDisplay,
     allowClientCommands:
       src['allow-client-commands'] !== undefined
         ? !!src['allow-client-commands']
@@ -531,7 +529,6 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
     'terminate-on-pause': !!f.terminateOnPause,
-    'virtual-display': !!f.virtualDisplay,
     'allow-client-commands': !!f.allowClientCommands,
     'use-app-identity': !!f.useAppIdentity,
     'per-client-app-identity': f.useAppIdentity ? !!f.perClientAppIdentity : false,
