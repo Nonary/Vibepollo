@@ -151,6 +151,7 @@
             :show-lossless-sharpening="showLosslessSharpening"
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
+            :lossless-executable-detected="losslessExecutableDetected"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
@@ -476,6 +477,36 @@ const isPlayniteManaged = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
   () => isPlayniteManaged.value && form.value.playniteManaged !== 'manual',
 );
+
+const losslessExecutableStatus = ref<any | null>(null);
+const losslessExecutableDetected = computed<boolean>(
+  () => !!losslessExecutableStatus.value?.checked_exists,
+);
+
+async function refreshLosslessExecutableStatus() {
+  if (!isWindows.value) {
+    losslessExecutableStatus.value = null;
+    return;
+  }
+  try {
+    const params: Record<string, string> = {};
+    const configuredPath = (configStore.config as any)?.lossless_scaling_path;
+    if (configuredPath) {
+      params['path'] = String(configuredPath);
+    }
+    const response = await http.get('/api/lossless_scaling/status', {
+      params,
+      validateStatus: () => true,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      losslessExecutableStatus.value = response.data ?? {};
+    } else {
+      losslessExecutableStatus.value = null;
+    }
+  } catch {
+    losslessExecutableStatus.value = null;
+  }
+}
 
 const frameGenerationSelection = computed<FrameGenerationMode>({
   get: () => form.value.frameGenerationMode ?? 'off',
@@ -850,11 +881,21 @@ watch(open, (o) => {
       frameGenHealth.value = null;
       frameGenHealthError.value = null;
     }
+    if (isWindows.value) {
+      refreshLosslessExecutableStatus().catch(() => {});
+    }
   } else {
     frameGenHealth.value = null;
     frameGenHealthError.value = null;
   }
 });
+watch(
+  () => (configStore.config as any)?.lossless_scaling_path,
+  () => {
+    if (!open.value || !isWindows.value) return;
+    refreshLosslessExecutableStatus().catch(() => {});
+  },
+);
 function close() {
   emit('update:modelValue', false);
 }

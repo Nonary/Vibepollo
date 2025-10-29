@@ -24,6 +24,15 @@
       best-effort and may not always succeed. Configure Playnite integration for more reliable
       results.
     </n-alert>
+    <n-alert
+      v-if="form.losslessScalingEnabled && !losslessExecutableDetected"
+      type="error"
+      :show-icon="true"
+      size="small"
+      class="text-xs"
+    >
+      Lossless Scaling executable not detected. Configure the executable path under Settings → Capture.
+    </n-alert>
 
     <div v-if="form.losslessScalingEnabled" class="space-y-4">
       <div class="grid gap-3 md:grid-cols-2">
@@ -229,6 +238,7 @@ const props = defineProps<{
   showLosslessSharpening: boolean;
   showLosslessAnimeOptions: boolean;
   hasActiveLosslessOverrides: boolean;
+  losslessExecutableDetected: boolean;
   resetActiveLosslessProfile: () => void;
 }>();
 
@@ -237,6 +247,7 @@ const showLosslessResolution = toRef(props, 'showLosslessResolution');
 const showLosslessSharpening = toRef(props, 'showLosslessSharpening');
 const showLosslessAnimeOptions = toRef(props, 'showLosslessAnimeOptions');
 const hasActiveLosslessOverrides = toRef(props, 'hasActiveLosslessOverrides');
+const losslessExecutableDetected = toRef(props, 'losslessExecutableDetected');
 const resetActiveLosslessProfile = props.resetActiveLosslessProfile;
 
 const resolutionInputMode = ref<'factor' | 'percent'>('factor');
