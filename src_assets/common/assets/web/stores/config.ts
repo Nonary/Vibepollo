@@ -192,7 +192,7 @@ const defaultGroups = [
       frame_limiter_provider: 'auto',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
-      rtss_disable_vsync_ullm: false,
+      frame_limiter_disable_vsync: false,
     },
   },
   {
@@ -462,6 +462,17 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
+      const legacyVsync = Object.prototype.hasOwnProperty.call(data, 'rtss_disable_vsync_ullm');
+      const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
+      if (legacyVsync) {
+        if (!hasNewVsync) {
+          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (data as Record<
+            string,
+            unknown
+          >)['rtss_disable_vsync_ullm'];
+        }
+        delete (data as Record<string, unknown>)['rtss_disable_vsync_ullm'];
+      }
     }
 
     // Normalize Playnite boolean-like fields to real booleans so toggles
@@ -475,7 +486,7 @@ export const useConfigStore = defineStore('config', () => {
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [
       'frame_limiter_enable',
-      'rtss_disable_vsync_ullm',
+      'frame_limiter_disable_vsync',
       'dd_wa_hdr_toggle',
       'dd_wa_dummy_plug_hdr10',
     ];
@@ -502,7 +513,7 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     if (data && Boolean((data as Record<string, unknown>)['dd_wa_dummy_plug_hdr10'])) {
-      (data as Record<string, unknown>)['rtss_disable_vsync_ullm'] = true;
+      (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = true;
     }
 
     // Normalize Playnite category/exclusion lists to arrays of {id,name}

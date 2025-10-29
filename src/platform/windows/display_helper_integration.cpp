@@ -345,18 +345,16 @@ namespace display_helper_integration {
     const bool desktop_session = session_targets_desktop(session);
     const bool gen1_framegen_fix = session.gen1_framegen_fix;
     const bool gen2_framegen_fix = session.gen2_framegen_fix;
-    bool should_force_refresh = config::rtss.disable_vsync_ullm &&
-                                (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
-    if (gen1_framegen_fix || gen2_framegen_fix) {
-      should_force_refresh = true;
-    }
+    const bool best_effort_refresh = config::frame_limiter.disable_vsync &&
+                                     (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
+    bool should_force_refresh = gen1_framegen_fix || gen2_framegen_fix || best_effort_refresh;
     if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix) {
       should_force_refresh = false;
     }
 
     const auto parsed = display_device::parse_configuration(video_config, session);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
-      // Copy parsed config so we can optionally override refresh when VSYNC/ULLM suppression is enabled
+      // Copy parsed config so we can optionally override refresh when frame generation fixes require it
       auto cfg_effective = *cfg;
 
       if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
@@ -372,7 +370,7 @@ namespace display_helper_integration {
         if (gen1_framegen_fix || gen2_framegen_fix) {
           BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
         } else {
-          BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
+          BOOST_LOG(info) << "Display helper: VSYNC override fallback forcing the highest available refresh rate for this session.";
         }
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
         if (!cfg_effective.m_resolution && session.width >= 0 && session.height >= 0) {
@@ -445,7 +443,7 @@ namespace display_helper_integration {
         if (gen1_framegen_fix || gen2_framegen_fix) {
           BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
         } else {
-          BOOST_LOG(info) << "Display helper: VSYNC/ULLM suppression enabled; forcing the highest available refresh rate for this session. Disable the Sunshine RTSS 'Disable VSYNC/ULLM' option if the refresh change was not intended.";
+          BOOST_LOG(info) << "Display helper: VSYNC override fallback forcing the highest available refresh rate for this session.";
         }
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = video_config.output_name;  // optional
@@ -467,7 +465,7 @@ namespace display_helper_integration {
           }
         } catch (...) {
         }
-        BOOST_LOG(info) << "Display helper: sending APPLY (VSYNC/ULLM suppression) with configuration:\n"
+        BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
                         << json;
         const bool ok = platf::display_helper_client::send_apply_json(json);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");

@@ -587,14 +587,14 @@ namespace config {
 
   frame_limiter_t frame_limiter {
     false,  // enable
-    "auto"  // provider
+    "auto",  // provider
+    false  // disable_vsync
   };
 
   // Windows-only: RTSS defaults
   rtss_t rtss {
     {},  // install_path
-    "async",  // frame_limit_type
-    false  // disable_vsync_ullm
+    "async"  // frame_limit_type
   };
 
   lossless_scaling_t lossless_scaling {
@@ -1242,12 +1242,13 @@ namespace config {
     if (frame_limiter.provider.empty()) {
       frame_limiter.provider = "auto";
     }
+    bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
+    bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
-    bool_f(vars, "rtss_disable_vsync_ullm", rtss.disable_vsync_ullm);
-    if (video.dd.wa.dummy_plug_hdr10 && !rtss.disable_vsync_ullm) {
-      BOOST_LOG(info) << "config: Forcing rtss_disable_vsync_ullm=1 due to dummy plug HDR10 workaround.";
-      rtss.disable_vsync_ullm = true;
+    if (video.dd.wa.dummy_plug_hdr10 && !frame_limiter.disable_vsync) {
+      BOOST_LOG(info) << "config: Forcing frame_limiter_disable_vsync=1 due to dummy plug HDR10 workaround (VSYNC override required).";
+      frame_limiter.disable_vsync = true;
     }
     string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
 

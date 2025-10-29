@@ -15,8 +15,8 @@ const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
 watch(
   () => config.dd_wa_dummy_plug_hdr10,
   (value) => {
-    if (value && !config.rtss_disable_vsync_ullm) {
-      config.rtss_disable_vsync_ullm = true;
+    if (value && !config.frame_limiter_disable_vsync) {
+      config.frame_limiter_disable_vsync = true;
     }
   },
   { immediate: true },
@@ -316,12 +316,12 @@ onMounted(() => {
       </div>
 
       <div class="space-y-2">
-        <label class="form-label" for="disable_vsync_ullm">{{
+        <label class="form-label" for="frame_limiter_disable_vsync">{{
           t('frameLimiter.vsyncUllmLabel')
         }}</label>
         <n-switch
-          id="disable_vsync_ullm"
-          v-model:value="config.rtss_disable_vsync_ullm"
+          id="frame_limiter_disable_vsync"
+          v-model:value="config.frame_limiter_disable_vsync"
           :disabled="dummyPlugHdrActive"
         />
         <p class="form-text">

@@ -47,7 +47,8 @@ namespace confighttp {
     out["nvidia_available"] = fl.nvidia_available;
     out["nvcp_ready"] = fl.nvcp_ready;
     out["rtss_available"] = fl.rtss_available;
-    out["disable_vsync_ullm"] = fl.disable_vsync_ullm;
+    out["disable_vsync"] = fl.disable_vsync;
+    out["disable_vsync_ullm"] = fl.disable_vsync;  // legacy key for older clients
     out["nv_overrides_supported"] = fl.nv_overrides_supported;
     out["configured_path"] = rtss.configured_path;
     out["path_configured"] = rtss.path_configured;
@@ -146,13 +147,13 @@ namespace confighttp {
     }
 
     std::string override_message;
-    if (fl.disable_vsync_ullm) {
+    if (fl.disable_vsync) {
       if (fl.nv_overrides_supported) {
-        override_message = "NVIDIA overrides ready: VSYNC and Low Latency Mode will be forced off during streams.";
+        override_message = "NVIDIA overrides ready: Sunshine will force VSYNC off during streams.";
       } else if (fl.nvidia_available && !fl.nvcp_ready) {
-        override_message = "NvAPI unavailable; Sunshine will fall back to refresh-rate overrides.";
+        override_message = "NvAPI unavailable; Sunshine will fall back to forcing the highest available refresh rate during streams.";
       } else if (!fl.nvidia_available) {
-        override_message = "Using refresh-rate override to mitigate VSYNC and Low Latency engagement.";
+        override_message = "No NVIDIA GPU detected; Sunshine will force the highest available refresh rate during streams as a best-effort VSYNC workaround.";
       }
     }
 
