@@ -525,9 +525,11 @@ namespace nvhttp {
       auto mode_str = get_arg(args, "mode", config::video.fallback_mode.c_str());
       mode = std::stringstream(mode_str);
       BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] requested to ["sv << mode_str << ']';
+      launch_session->client_display_mode_override = false;
     } else {
       mode = std::stringstream(named_cert_p->display_mode);
       BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] overriden to ["sv << named_cert_p->display_mode << ']';
+      launch_session->client_display_mode_override = true;
     }
 
     // Split mode by the char "x", to populate width/height/fps
