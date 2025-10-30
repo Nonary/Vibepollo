@@ -191,19 +191,7 @@ namespace {
   // Wrap SettingsManager for easy use in this helper
   class DisplayController {
   public:
-    DisplayController() {
-      // Build the Windows display device API and keep a direct WinApiLayer handle as well.
-      m_wapi = std::make_shared<display_device::WinApiLayer>();
-      m_dd = std::make_shared<display_device::WinDisplayDevice>(m_wapi);
-
-      // Use noop persistence and audio context here; Sunshine owns lifecycle across streams.
-      m_sm = std::make_unique<display_device::SettingsManager>(
-        m_dd,
-        std::make_shared<display_device::NoopAudioContext>(),
-        std::make_unique<display_device::PersistentState>(std::make_shared<display_device::NoopSettingsPersistence>()),
-        display_device::WinWorkarounds {}
-      );
-    }
+    DisplayController() = default;
 
     void add_blacklisted_display(const std::string &device_id) {
       std::lock_guard<std::mutex> lg(m_blacklist_mutex);
@@ -225,6 +213,9 @@ namespace {
     // Enumerate all currently available display device IDs (active or inactive).
     std::set<std::string> enum_all_device_ids() const {
       std::set<std::string> ids;
+      if (!ensure_initialized()) {
+        return ids;
+      }
       try {
         for (const auto &d : m_sm->enumAvailableDevices()) {
           ids.insert(d.m_device_id);
@@ -237,6 +228,9 @@ namespace {
 
     // Validate whether a snapshot's topology is currently applicable.
     bool is_topology_valid(const display_device::DisplaySettingsSnapshot &snap) const {
+      if (!ensure_initialized()) {
+        return false;
+      }
       try {
         return m_dd->isTopologyValid(snap.m_topology);
       } catch (...) {
@@ -246,6 +240,9 @@ namespace {
 
     // Apply display configuration; returns whether applied OK.
     bool apply(const display_device::SingleDisplayConfiguration &cfg) {
+      if (!ensure_initialized()) {
+        return false;
+      }
       using enum display_device::SettingsManagerInterface::ApplyResult;
       const auto res = m_sm->applySettings(cfg);
       BOOST_LOG(info) << "ApplySettings result: " << static_cast<int>(res);
@@ -254,6 +251,9 @@ namespace {
 
     // Revert display configuration; returns whether reverted OK.
     bool revert() {
+      if (!ensure_initialized()) {
+        return false;
+      }
       using enum display_device::SettingsManagerInterface::RevertResult;
       const auto res = m_sm->revertSettings();
       BOOST_LOG(info) << "RevertSettings result: " << static_cast<int>(res);
@@ -262,12 +262,18 @@ namespace {
 
     // Reset persistence file; best-effort noop persistence returns true.
     bool reset_persistence() {
+      if (!ensure_initialized()) {
+        return false;
+      }
       return m_sm->resetPersistence();
     }
 
     // Capture a full snapshot of current settings.
     display_device::DisplaySettingsSnapshot snapshot() const {
       display_device::DisplaySettingsSnapshot snap;
+      if (!ensure_initialized()) {
+        return snap;
+      }
       try {
         // Topology
         auto raw_topology = m_dd->getCurrentTopology();
@@ -321,6 +327,9 @@ namespace {
 
     // Validate whether a proposed topology is acceptable by the OS using SDC_VALIDATE.
     bool validate_topology_with_os(const display_device::ActiveTopology &topo) const {
+      if (!ensure_initialized()) {
+        return false;
+      }
       try {
         if (!m_dd->isTopologyValid(topo)) {
           return false;
@@ -355,6 +364,9 @@ namespace {
 
     // Build and validate the topology implied by a SingleDisplayConfiguration without applying it.
     bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+      if (!ensure_initialized()) {
+        return false;
+      }
       try {
         const auto topo_before = m_dd->getCurrentTopology();
         if (!m_dd->isTopologyValid(topo_before)) {
@@ -382,6 +394,9 @@ namespace {
 
     // Compute the topology that would be requested by cfg based on the current initial state.
     std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+      if (!ensure_initialized()) {
+        return std::nullopt;
+      }
       try {
         const auto topo_before = m_dd->getCurrentTopology();
         if (!m_dd->isTopologyValid(topo_before)) {
@@ -404,6 +419,9 @@ namespace {
     }
 
     bool is_topology_the_same(const display_device::ActiveTopology &a, const display_device::ActiveTopology &b) const {
+      if (!ensure_initialized()) {
+        return false;
+      }
       try {
         return m_dd->isTopologyTheSame(a, b);
       } catch (...) {
@@ -413,6 +431,9 @@ namespace {
 
     // Apply the HDR blank workaround synchronously (call from a background thread)
     void blank_hdr_states(std::chrono::milliseconds delay) {
+      if (!ensure_initialized()) {
+        return;
+      }
       try {
         display_device::win_utils::blankHdrStates(*m_dd, delay);
       } catch (...) {
@@ -557,14 +578,13 @@ namespace {
 
     // Apply snapshot best-effort.
     bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snap) {
+      if (!ensure_initialized()) {
+        return false;
+      }
       try {
-        // Set topology first
         (void) m_dd->setTopology(snap.m_topology);
-        // Then set modes temporarily (no DB persistence) with internal relaxed/strict strategy
         (void) m_dd->setDisplayModesTemporary(snap.m_modes);
-        // Then HDR
         (void) m_dd->setHdrStates(snap.m_hdr_states);
-        // Then primary
         if (!snap.m_primary_device.empty()) {
           (void) m_dd->setAsPrimary(snap.m_primary_device);
         }
@@ -575,22 +595,66 @@ namespace {
     }
 
   private:
-    std::shared_ptr<display_device::WinApiLayer> m_wapi;
-    std::shared_ptr<display_device::WinDisplayDevice> m_dd;
-    std::unique_ptr<display_device::SettingsManager> m_sm;
-    
+    enum class InitState : uint8_t {
+      Uninitialized,
+      Ready,
+      Failed
+    };
+
+    bool ensure_initialized() const {
+      auto state = m_init_state.load(std::memory_order_acquire);
+      if (state == InitState::Ready) {
+        return true;
+      }
+      if (state == InitState::Failed) {
+        return false;
+      }
+
+      std::call_once(m_init_once, [this]() noexcept {
+        try {
+          auto wapi = std::make_shared<display_device::WinApiLayer>();
+          auto dd = std::make_shared<display_device::WinDisplayDevice>(wapi);
+          auto sm = std::make_unique<display_device::SettingsManager>(
+            dd,
+            std::make_shared<display_device::NoopAudioContext>(),
+            std::make_unique<display_device::PersistentState>(std::make_shared<display_device::NoopSettingsPersistence>()),
+            display_device::WinWorkarounds {}
+          );
+          m_wapi = std::move(wapi);
+          m_dd = std::move(dd);
+          m_sm = std::move(sm);
+          m_init_state.store(InitState::Ready, std::memory_order_release);
+        } catch (...) {
+          BOOST_LOG(error) << "Display helper: failed to initialize display controller stack.";
+          m_init_state.store(InitState::Failed, std::memory_order_release);
+        }
+      });
+
+      return m_init_state.load(std::memory_order_acquire) == InitState::Ready;
+    }
+
+    mutable std::once_flag m_init_once;
+    mutable std::atomic<InitState> m_init_state {InitState::Uninitialized};
+    mutable std::shared_ptr<display_device::WinApiLayer> m_wapi;
+    mutable std::shared_ptr<display_device::WinDisplayDevice> m_dd;
+    mutable std::unique_ptr<display_device::SettingsManager> m_sm;
+
     mutable std::mutex m_blacklist_mutex;
     std::set<std::string> m_blacklisted_device_ids;
 
-    // Collect devices from full enumeration
     void collect_all_device_ids(std::set<std::string> &out) const {
+      if (!ensure_initialized()) {
+        return;
+      }
       for (const auto &d : m_sm->enumAvailableDevices()) {
         out.insert(d.m_device_id);
       }
     }
 
-    // Find primary device (if any)
     std::optional<std::string> find_primary_in_set(const std::set<std::string> &ids) const {
+      if (!ensure_initialized()) {
+        return std::nullopt;
+      }
       for (const auto &id : ids) {
         if (m_dd->isPrimary(id)) {
           return id;
@@ -1026,6 +1090,8 @@ namespace {
     std::atomic<bool> direct_revert_bypass_grace {false};
     // Track whether a revert/restore is currently pending
     std::atomic<bool> restore_requested {false};
+    std::atomic<uint64_t> restore_cancel_generation {0};
+    std::atomic<bool> startup_restore_suppressed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
 
@@ -1136,6 +1202,28 @@ namespace {
     void reset_restore_backoff() {
       restore_backoff_index.store(0, std::memory_order_release);
       restore_next_allowed_ms.store(0, std::memory_order_release);
+    }
+
+    void request_restore_cancel() {
+      restore_cancel_generation.fetch_add(1, std::memory_order_acq_rel);
+      signal_restore_event(nullptr);
+    }
+
+    void set_startup_restore_suppressed(bool suppressed) {
+      startup_restore_suppressed.store(suppressed, std::memory_order_release);
+    }
+
+    bool consume_startup_restore_suppression(const char *reason = nullptr) {
+      bool expected = true;
+      if (!startup_restore_suppressed.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+        return false;
+      }
+      if (reason) {
+        BOOST_LOG(info) << "Startup restore suppression active; skipping " << reason << '.';
+      } else {
+        BOOST_LOG(info) << "Startup restore suppression active; skipping scheduled restore.";
+      }
+      return true;
     }
 
     void register_restore_failure() {
@@ -1513,7 +1601,7 @@ namespace {
     // Performs up to two attempts (initial + one retry) with short pauses to allow
     // Windows to settle. Returns true only if the post-apply signature exactly
     // matches the golden snapshot signature.
-    bool apply_golden_and_confirm(std::stop_token st = {}) {
+    bool apply_golden_and_confirm(std::stop_token st, uint64_t guard_generation) {
       auto golden = controller.load_display_settings_snapshot(golden_path);
       if (!golden) {
         BOOST_LOG(warning) << "Golden restore snapshot not found; cannot perform revert.";
@@ -1526,6 +1614,12 @@ namespace {
       const auto before_sig = controller.signature(controller.snapshot());
 
       const auto should_cancel = [&]() {
+        if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
+          return true;
+        }
+        if (!restore_requested.load(std::memory_order_acquire)) {
+          return true;
+        }
         return st.stop_possible() && st.stop_requested();
       };
 
@@ -1583,7 +1677,7 @@ namespace {
     }
 
     // Apply the session baseline snapshot (if available) and verify the system now matches it.
-    bool apply_session_and_confirm(std::stop_token st = {}) {
+    bool apply_session_and_confirm(std::stop_token st, uint64_t guard_generation) {
       auto base = controller.load_display_settings_snapshot(session_current_path);
       if (!base) {
         BOOST_LOG(info) << "Session baseline snapshot not available.";
@@ -1592,6 +1686,12 @@ namespace {
       const auto before_sig = controller.signature(controller.snapshot());
 
       const auto should_cancel = [&]() {
+        if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
+          return true;
+        }
+        if (!restore_requested.load(std::memory_order_acquire)) {
+          return true;
+        }
         return st.stop_possible() && st.stop_requested();
       };
 
@@ -1645,27 +1745,37 @@ namespace {
 
     // Attempt a restore once if a valid topology is present. Returns true on
     // confirmed success, false otherwise. Prefers session baseline, then golden.
-    bool try_restore_once_if_valid(std::stop_token st) {
-      if (st.stop_possible() && st.stop_requested()) {
+    bool try_restore_once_if_valid(std::stop_token st, uint64_t guard_generation) {
+      const auto cancelled = [&]() {
+        if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
+          return true;
+        }
+        if (!restore_requested.load(std::memory_order_acquire)) {
+          return true;
+        }
+        return st.stop_possible() && st.stop_requested();
+      };
+
+      if (cancelled()) {
         return false;
       }
       // Session snapshot first
       if (auto base = controller.load_display_settings_snapshot(session_current_path)) {
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled()) {
           return false;
         }
         if (controller.is_topology_valid(*base)) {
-          if (apply_session_and_confirm(st)) {
+          if (apply_session_and_confirm(st, guard_generation)) {
             return true;
           }
         }
       }
       if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled()) {
           return false;
         }
         if (controller.validate_topology_with_os(golden->m_topology)) {
-          if (apply_golden_and_confirm(st)) {
+          if (apply_golden_and_confirm(st, guard_generation)) {
             return true;
           }
         }
@@ -1716,9 +1826,9 @@ namespace {
 
     void stop_restore_polling() {
       restore_poll_active.store(false, std::memory_order_release);
+      request_restore_cancel();
       event_pump.stop();
       event_pump_running.store(false, std::memory_order_release);
-      signal_restore_event(nullptr);
       reset_restore_backoff();
       restore_active_until_ms.store(0, std::memory_order_release);
       last_restore_event_ms.store(0, std::memory_order_release);
@@ -1763,6 +1873,19 @@ namespace {
       const auto kPoll = 3s;
       const auto kLogThrottle = std::chrono::minutes(15);
       auto last_log = std::chrono::steady_clock::now() - kLogThrottle;  // allow immediate log
+      const auto guard_generation = self->restore_cancel_generation.load(std::memory_order_acquire);
+      auto cancelled = [&]() {
+        if (st.stop_requested()) {
+          return true;
+        }
+        if (self->restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
+          return true;
+        }
+        if (!self->restore_requested.load(std::memory_order_acquire)) {
+          return true;
+        }
+        return false;
+      };
 
       // If there is no session or golden snapshot, there is nothing to restore.
       try {
@@ -1781,23 +1904,29 @@ namespace {
           self->clear_restore_origin();
           return;
         }
-      } catch (...) {
-        // fall through
+    } catch (...) {
+      // fall through
+    }
+
+    if (cancelled()) {
+      self->restore_stage_running.store(false, std::memory_order_release);
+      self->restore_poll_active.store(false, std::memory_order_release);
+      return;
+    }
+
+    // Initial one-shot attempt before entering the loop
+    bool initial_attempted = false;
+    bool initial_success = false;
+    try {
+      if (!cancelled() && self->await_restore_backoff(st) && !cancelled()) {
+        initial_attempted = true;
+        initial_success = self->try_restore_once_if_valid(st, guard_generation);
       }
+    } catch (...) {}
 
-      // Initial one-shot attempt before entering the loop
-      bool initial_attempted = false;
-      bool initial_success = false;
-      try {
-        if (!st.stop_requested() && self->await_restore_backoff(st)) {
-          initial_attempted = true;
-          initial_success = self->try_restore_once_if_valid(st);
-        }
-      } catch (...) {}
-
-      if (initial_success) {
-        self->reset_restore_backoff();
-        self->retry_revert_on_topology.store(false, std::memory_order_release);
+    if (initial_success) {
+      self->reset_restore_backoff();
+      self->retry_revert_on_topology.store(false, std::memory_order_release);
         refresh_shell_after_display_change();
 
         delete_restore_scheduled_task();
@@ -1825,7 +1954,7 @@ namespace {
       }
 
       bool exit_due_to_timeout = false;
-      while (!st.stop_requested()) {
+      while (!cancelled()) {
         const auto now = std::chrono::steady_clock::now();
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
         auto active_until_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
@@ -1848,7 +1977,7 @@ namespace {
         if (!triggered && active_window && active_window_kind == RestoreWindow::Primary) {
           triggered = true;
         }
-        if (st.stop_requested()) {
+        if (cancelled()) {
           break;
         }
         if (!triggered) {
@@ -1870,18 +1999,24 @@ namespace {
         if (!self->await_restore_backoff(st)) {
           break;
         }
+        if (cancelled()) {
+          break;
+        }
 
         const auto window_deadline_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
         self->restore_stage_running.store(true, std::memory_order_release);
         bool success = false;
         try {
-          success = self->try_restore_once_if_valid(st);
+          success = self->try_restore_once_if_valid(st, guard_generation);
         } catch (...) {
           self->restore_stage_running.store(false, std::memory_order_release);
           throw;
         }
 
         self->restore_stage_running.store(false, std::memory_order_release);
+        if (cancelled()) {
+          break;
+        }
 
         if (success) {
           self->reset_restore_backoff();
@@ -2417,6 +2552,7 @@ namespace {
       BOOST_LOG(error) << "Failed to parse SingleDisplayConfiguration JSON: " << err;
       return;
     }
+    state.set_startup_restore_suppressed(false);
     state.last_apply_ms.store(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
@@ -2512,6 +2648,10 @@ namespace {
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
+    if (state.consume_startup_restore_suppression("explicit REVERT command")) {
+      BOOST_LOG(info) << "Startup suppression active; ignoring REVERT command.";
+      return;
+    }
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
@@ -2597,6 +2737,11 @@ namespace {
       return;
     }
 
+    if (state.consume_startup_restore_suppression("post-disconnect restore")) {
+      state.restore_requested.store(false, std::memory_order_release);
+      return;
+    }
+
     BOOST_LOG(info) << "Client disconnected; entering restore polling loop (3s interval) until successful.";
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
@@ -2634,11 +2779,13 @@ namespace {
 
 int main(int argc, char *argv[]) {
   bool restore_mode = false;
+  bool skip_startup_restore = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
       if (std::strcmp(argv[i], "--restore") == 0) {
         restore_mode = true;
-        break;
+      } else if (std::strcmp(argv[i], "--no-startup-restore") == 0) {
+        skip_startup_restore = true;
       }
     }
   }
@@ -2662,6 +2809,11 @@ int main(int argc, char *argv[]) {
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
+    if (skip_startup_restore) {
+      BOOST_LOG(info) << "--no-startup-restore supplied; skipping automatic restore.";
+      logging::log_flush();
+      return 0;
+    }
     dd_log_bridge().install();
     ServiceState state;
     state.golden_path = goldenfile;
@@ -2711,6 +2863,10 @@ int main(int argc, char *argv[]) {
   platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
   dd_log_bridge().install();
   ServiceState state;
+  if (skip_startup_restore) {
+    BOOST_LOG(info) << "--no-startup-restore supplied; suppressing initial automatic restore.";
+  }
+  state.set_startup_restore_suppressed(skip_startup_restore);
   state.golden_path = goldenfile;
   state.session_path = sessionfile;  // legacy
   state.session_current_path = session_current;

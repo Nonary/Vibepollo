@@ -44,6 +44,8 @@ namespace {
     return h;
   }
 
+  constexpr DWORD kHelperStopGracePeriodMs = 1500;
+
   struct session_dd_fields_t {
     int width = -1;
     int height = -1;
@@ -110,7 +112,7 @@ namespace {
     }
   }
 
-  bool ensure_helper_started() {
+  bool ensure_helper_started(bool force_restart = false) {
     if (!dd_feature_enabled()) {
       return false;
     }
@@ -123,21 +125,59 @@ namespace {
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
         BOOST_LOG(debug) << "Display helper already running (pid=" << pid << ")";
-        // Check IPC liveness with a lightweight ping; if unresponsive, restart the helper
-        bool ping_ok = false;
-        for (int i = 0; i < 2 && !ping_ok; ++i) {
-          ping_ok = platf::display_helper_client::send_ping();
-          if (!ping_ok) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        bool need_restart = force_restart;
+        if (!need_restart) {
+          // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
+          bool ping_ok = false;
+          for (int i = 0; i < 2 && !ping_ok; ++i) {
+            ping_ok = platf::display_helper_client::send_ping();
+            if (!ping_ok) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
           }
+          if (ping_ok) {
+            return true;
+          }
+          BOOST_LOG(warning) << "Display helper process ping failed; forcing restart.";
+          need_restart = true;
+        } else {
+          BOOST_LOG(info) << "Display helper restart requested (force).";
         }
-        if (ping_ok) {
-          return true;
+        if (need_restart) {
+          bool graceful_shutdown = false;
+          bool stop_sent = platf::display_helper_client::send_stop();
+          if (stop_sent) {
+            DWORD wait_stop = WaitForSingleObject(h, kHelperStopGracePeriodMs);
+            if (wait_stop == WAIT_OBJECT_0) {
+              BOOST_LOG(info) << "Display helper exited after STOP request.";
+              graceful_shutdown = true;
+            } else if (wait_stop == WAIT_TIMEOUT) {
+              BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopGracePeriodMs
+                                 << " ms; forcing termination.";
+            } else {
+              DWORD wait_err = GetLastError();
+              BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err << "); forcing termination.";
+            }
+          } else {
+            BOOST_LOG(warning) << "Display helper STOP request failed; forcing termination.";
+          }
+          platf::display_helper_client::reset_connection();
+          if (!graceful_shutdown) {
+            helper_proc().terminate();
+          }
+          // Wait for process to fully terminate and release resources (especially the named pipe and singleton mutex)
+          // Poll for up to 3 seconds to ensure the process handle is signaled and OS cleanup completes
+          DWORD wait_result = WaitForSingleObject(h, 3000);
+          if (wait_result == WAIT_TIMEOUT) {
+            BOOST_LOG(error) << "Display helper process did not terminate within timeout; forcing cleanup.";
+          } else {
+            BOOST_LOG(debug) << "Display helper process terminated; waiting for OS resource cleanup.";
+          }
+          // Additional delay to allow OS to fully release the named pipe and singleton mutex
+          // Without this, the new process may fail with ERROR_ALREADY_EXISTS on the mutex
+          // or the pipe creation may fail with ERROR_ACCESS_DENIED
+          std::this_thread::sleep_for(std::chrono::milliseconds(800));
         }
-        BOOST_LOG(warning) << "Display helper process is running but IPC ping failed; restarting helper.";
-        helper_proc().terminate();
-        // Allow a brief moment for termination to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
       } else {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
@@ -165,13 +205,54 @@ namespace {
     }
 
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    const bool started = helper_proc().start(helper.wstring(), L"");
+    const bool started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
-    } else if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
-      DWORD pid = GetProcessId(h);
-      BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
+      return false;
     }
+    
+    HANDLE h = helper_proc().get_process_handle();
+    if (!h) {
+      BOOST_LOG(error) << "Display helper started but no process handle available";
+      return false;
+    }
+    
+    DWORD pid = GetProcessId(h);
+    BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
+    
+    // Give the helper process time to initialize and create its named pipe server
+    // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
+    for (int check = 0; check < 6; ++check) {
+      DWORD wait = WaitForSingleObject(h, 50);
+      if (wait == WAIT_OBJECT_0) {
+        DWORD exit_code = 0;
+        GetExitCodeProcess(h, &exit_code);
+        if (exit_code == 3) {
+          BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
+                           << "Retrying after extended cleanup delay...";
+          std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+          
+          const bool retry_started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
+          if (!retry_started) {
+            BOOST_LOG(error) << "Display helper retry start failed";
+            return false;
+          }
+          h = helper_proc().get_process_handle();
+          if (h) {
+            pid = GetProcessId(h);
+            BOOST_LOG(info) << "Display helper retry succeeded (pid=" << pid << ")";
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+          }
+          break;
+        } else {
+          BOOST_LOG(error) << "Display helper exited unexpectedly with code " << exit_code;
+          return false;
+        }
+      }
+    }
+    
+    // Final initialization delay for pipe server creation
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     return started;
   }
 
@@ -281,7 +362,7 @@ namespace {
 
 namespace display_helper_integration {
   bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-    if (!ensure_helper_started()) {
+    if (!ensure_helper_started(true)) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send apply.";
       return false;
     }

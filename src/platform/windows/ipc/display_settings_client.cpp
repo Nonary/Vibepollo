@@ -191,6 +191,21 @@ namespace platf::display_helper_client {
     return false;
   }
 
+  bool send_stop() {
+    BOOST_LOG(info) << "Display helper IPC: STOP request queued";
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
+      BOOST_LOG(warning) << "Display helper IPC: STOP aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::Stop, payload)) {
+      return true;
+    }
+    return false;
+  }
+
   bool send_blacklist(const std::string &device_id) {
     BOOST_LOG(debug) << "Display helper IPC: BLACKLIST request queued for device_id=" << device_id;
     std::unique_lock<std::mutex> lk(pipe_mutex());
