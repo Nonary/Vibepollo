@@ -414,6 +414,7 @@ namespace display_helper_integration {
           platf::display_helper_client::send_blacklist(target_device_id);
 
           set_active_session(session, target_device_id, display_fps);
+          VDISPLAY::setWatchdogFeedingEnabled(true);
         }
         return ok;
       } else {

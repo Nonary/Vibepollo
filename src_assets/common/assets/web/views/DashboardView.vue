@@ -78,6 +78,54 @@
                 </div>
               </div>
             </n-alert>
+            <!-- Crash dump detected banner -->
+            <n-alert v-if="showCrashDumpBanner" type="error" :show-icon="true" class="rounded-xl">
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
+                <div class="min-w-0 space-y-1">
+                  <p class="text-sm m-0 font-medium">
+                    {{
+                      $t('config.crash_dump_title') || 'Recent crash detected'
+                    }}
+                  </p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{
+                      crashDumpMessage ||
+                      $t('config.crash_dump_desc') ||
+                      'Sunshine detected a recent crash dump. Please export a crash bundle and include it when filing an issue.'
+                    }}
+                  </p>
+                  <p v-if="crashDumpDetails" class="text-xs opacity-60 m-0">
+                    {{ crashDumpDetails }}
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <n-button
+                    tag="a"
+                    type="default"
+                    strong
+                    size="small"
+                    href="https://github.com/Nonary/vibeshine/issues/new?template=bug_report.yml"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <i class="fas fa-bug" />
+                    <span>{{ $t('config.crash_dump_report') || 'Report Issue' }}</span>
+                  </n-button>
+                  <n-button type="primary" strong size="small" @click="exportCrashBundle">
+                    <i class="fas fa-file-zipper" />
+                    <span>{{
+                      $t('config.crash_dump_export') || 'Export Crash Bundle'
+                    }}</span>
+                  </n-button>
+                  <n-button tertiary size="small" @click="dismissCrashBundle">
+                    <i class="fas fa-xmark" />
+                    <span>{{ $t('config.crash_dump_dismiss') || 'Dismiss' }}</span>
+                  </n-button>
+                </div>
+              </div>
+            </n-alert>
             <!-- ViGEm (Virtual Gamepad) missing warning on Windows -->
             <n-alert v-if="showVigemBanner" type="warning" :show-icon="true" class="rounded-xl">
               <div
@@ -303,6 +351,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { NCard, NAlert, NGrid, NGi, useMessage } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
@@ -348,10 +397,24 @@ type PlayniteStatus = {
 const playnite = ref<PlayniteStatus | null>(null);
 const updatingPlaynite = ref(false);
 
+type CrashDumpStatus = {
+  available?: boolean;
+  filename?: string;
+  path?: string;
+  size_bytes?: number;
+  captured_at?: string;
+  age_seconds?: number;
+  age_hours?: number;
+  dismissed?: boolean;
+  dismissed_at?: string;
+};
+const crashDump = ref<CrashDumpStatus | null>(null);
+
 const configStore = useConfigStore();
 const auth = useAuthStore();
 let started = false; // prevent duplicate concurrent checks
 const message = useMessage();
+const { t: $t } = useI18n();
 
 async function runVersionChecks() {
   if (started) return; // guard
@@ -424,9 +487,9 @@ async function runVersionChecks() {
     }
     // Tag-based comparison handled below via SunshineVersion
 
+    const plat = (configStore.metadata?.platform || '').toLowerCase();
     // ViGEm health (Windows only)
     try {
-      const plat = (configStore.metadata?.platform || '').toLowerCase();
       const controllerEnabled = cfg.controller === 'enabled';
       if (plat === 'windows' && controllerEnabled) {
         const r = await http.get('/api/health/vigem', { validateStatus: () => true });
@@ -441,6 +504,21 @@ async function runVersionChecks() {
       }
     } catch (e) {
       vigemInstalled.value = null;
+    }
+    // Crash dump health (Windows only)
+    try {
+      if (plat === 'windows') {
+        const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
+        if (r.status === 200 && r.data) {
+          crashDump.value = r.data as CrashDumpStatus;
+        } else {
+          crashDump.value = { available: false };
+        }
+      } else {
+        crashDump.value = null;
+      }
+    } catch (e) {
+      crashDump.value = null;
     }
     // Playnite status for extension version/update check
     try {
@@ -470,6 +548,113 @@ async function runVersionChecks() {
 onMounted(async () => {
   await auth.waitForAuthentication();
   await runVersionChecks();
+});
+
+function exportCrashBundle() {
+  try {
+    if (typeof window !== 'undefined') window.location.href = './api/logs/export_crash';
+  } catch {}
+}
+
+async function dismissCrashBundle() {
+  if (!crashDump.value?.available) return;
+  const payload = {
+    filename: crashDump.value.filename,
+    captured_at: crashDump.value.captured_at,
+  };
+  if (!payload.filename || !payload.captured_at) {
+    message.error(
+      $t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.',
+    );
+    return;
+  }
+  try {
+    const r = await http.post('/api/health/crashdump/dismiss', payload, { validateStatus: () => true });
+    if (r.status === 200 && r.data?.status === true) {
+      crashDump.value = {
+        ...crashDump.value,
+        dismissed: true,
+        dismissed_at: r.data.dismissed_at || new Date().toISOString(),
+      };
+      message.success($t('config.crash_dump_dismiss_success') || 'Crash notification dismissed.');
+    } else {
+      message.error(
+        (r.data && (r.data.error || r.data.message)) ||
+          $t('config.crash_dump_dismiss_error') ||
+          'Failed to dismiss crash notification.',
+      );
+    }
+  } catch {
+    message.error(
+      $t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.',
+    );
+  }
+}
+
+function humanFileSize(bytes?: number | null) {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const formatter = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: value >= 10 ? 0 : 1,
+  });
+  return `${formatter.format(value)} ${units[unit]}`;
+}
+
+function formatRelativeTime(date: Date) {
+  try {
+    const diffMs = Date.now() - date.getTime();
+    if (!Number.isFinite(diffMs)) return '';
+    const minutes = Math.round(diffMs / 60000);
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+    if (Math.abs(minutes) < 60) {
+      return rtf.format(-minutes, 'minute');
+    }
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 48) {
+      return rtf.format(-hours, 'hour');
+    }
+    const days = Math.round(hours / 24);
+    return rtf.format(-days, 'day');
+  } catch {
+    return '';
+  }
+}
+
+const crashDumpDetails = computed(() => {
+  if (!crashDump.value || !crashDump.value.available) return '';
+  const parts: string[] = [];
+  if (crashDump.value.filename) parts.push(crashDump.value.filename);
+  if (typeof crashDump.value.size_bytes === 'number') {
+    const size = humanFileSize(crashDump.value.size_bytes);
+    if (size) parts.push(size);
+  }
+  if (crashDump.value.captured_at) {
+    const captured = new Date(crashDump.value.captured_at);
+    if (!Number.isNaN(captured.getTime())) {
+      parts.push(captured.toLocaleString());
+    }
+  }
+  return parts.join(' • ');
+});
+
+const crashDumpMessage = computed(() => {
+  if (!crashDump.value || !crashDump.value.available) return '';
+  if (crashDump.value.captured_at) {
+    const captured = new Date(crashDump.value.captured_at);
+    if (!Number.isNaN(captured.getTime())) {
+      const rel = formatRelativeTime(captured);
+      if (rel) return `Crash detected ${rel}.`;
+    }
+  }
+  return '';
 });
 
 const installedVersionNotStable = computed(() => {
@@ -520,6 +705,13 @@ const fancyLogs = computed(() => {
     });
   }
   return logLines;
+});
+
+const showCrashDumpBanner = computed(() => {
+  const plat = (configStore.metadata?.platform || '').toLowerCase();
+  if (plat !== 'windows') return false;
+  if (!crashDump.value || crashDump.value.available !== true) return false;
+  return crashDump.value.dismissed !== true;
 });
 
 const showVigemBanner = computed(() => {

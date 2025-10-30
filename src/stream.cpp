@@ -428,6 +428,7 @@ namespace stream {
       bool active = false;
       std::array<std::uint8_t, 16> guid_bytes {};
     } virtual_display;
+    std::atomic<bool> client_requested_termination {false};
 #endif
   };
 
@@ -945,6 +946,40 @@ namespace stream {
     server->map(packetTypes[IDX_START_B], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_START_B]"sv;
     });
+
+    auto handle_client_termination = [&](session_t *session, const std::string_view &payload) {
+      BOOST_LOG(debug) << "type [IDX_TERMINATION]"sv;
+
+      std::optional<std::uint32_t> termination_code;
+      if (payload.size() >= sizeof(std::uint32_t)) {
+        std::uint32_t raw {};
+        std::memcpy(&raw, payload.data(), sizeof(raw));
+        termination_code = util::endian::big(raw);
+      } else if (payload.size() >= sizeof(std::uint16_t)) {
+        std::uint16_t raw {};
+        std::memcpy(&raw, payload.data(), sizeof(raw));
+        termination_code = util::endian::little(raw);
+      }
+
+      if (termination_code) {
+        BOOST_LOG(info) << "Client requested termination with reason 0x"sv << util::hex(*termination_code).to_string_view();
+      } else {
+        BOOST_LOG(info) << "Client requested termination with empty reason payload ("sv << payload.size() << " bytes)";
+      }
+
+#ifdef _WIN32
+      session->client_requested_termination.store(true, std::memory_order_relaxed);
+#endif
+
+      session::stop(*session);
+    };
+
+    server->map(packetTypes[IDX_TERMINATION], handle_client_termination);
+
+    constexpr std::uint16_t LEGACY_TERMINATION_PACKET_TYPE = 0x0100;
+    if (packetTypes[IDX_TERMINATION] != LEGACY_TERMINATION_PACKET_TYPE) {
+      server->map(LEGACY_TERMINATION_PACKET_TYPE, handle_client_termination);
+    }
 
     server->map(packetTypes[IDX_LOSS_STATS], [&](session_t *session, const std::string_view &payload) {
       int32_t *stats = (int32_t *) payload.data();
@@ -1951,9 +1986,13 @@ namespace stream {
 #endif
         }
 
+#ifdef _WIN32
+        const bool client_requested_terminate = session.client_requested_termination.load(std::memory_order_relaxed);
+#endif
+
         bool skip_display_revert = false;
 #ifdef _WIN32
-        if (is_paused && session.virtual_display.active) {
+        if (is_paused && session.virtual_display.active && !client_requested_terminate) {
           skip_display_revert = true;
         }
 #endif
@@ -1974,30 +2013,31 @@ namespace stream {
 
 #ifdef _WIN32
         // Only tear down virtual display when stream truly ends (not paused)
-        if (!is_paused && session.virtual_display.active) {
-          const bool has_physical_display = VDISPLAY::has_active_physical_display();
-          if (has_physical_display) {
-            const bool has_guid = std::any_of(
-              session.virtual_display.guid_bytes.begin(),
-              session.virtual_display.guid_bytes.end(),
-              [](std::uint8_t b) {
-                return b != 0;
-              }
-            );
-            if (has_guid) {
-              GUID guid {};
-              std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
-              if (!VDISPLAY::removeVirtualDisplay(guid)) {
-                BOOST_LOG(warning) << "Failed to remove virtual display.";
-              } else {
-                BOOST_LOG(info) << "Virtual display removed.";
-              }
+        if ((!is_paused || client_requested_terminate) && session.virtual_display.active) {
+          VDISPLAY::setWatchdogFeedingEnabled(false);
+
+          const bool has_guid = std::any_of(
+            session.virtual_display.guid_bytes.begin(),
+            session.virtual_display.guid_bytes.end(),
+            [](std::uint8_t b) {
+              return b != 0;
             }
-            session.virtual_display.active = false;
-            session.virtual_display.guid_bytes.fill(0);
+          );
+          if (has_guid) {
+            GUID guid {};
+            std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
+            if (!VDISPLAY::removeVirtualDisplay(guid)) {
+              BOOST_LOG(warning) << "Failed to remove virtual display.";
+            } else {
+              BOOST_LOG(info) << "Virtual display removed.";
+            }
           } else {
-            BOOST_LOG(info) << "No physical displays detected; keeping virtual display active.";
+            BOOST_LOG(warning) << "Virtual display GUID missing; skipping removal.";
           }
+
+          session.virtual_display.active = false;
+          session.virtual_display.guid_bytes.fill(0);
+          session.client_requested_termination.store(false, std::memory_order_relaxed);
         }
 #endif
       }
@@ -2096,6 +2136,10 @@ namespace stream {
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;
       session->virtual_display.guid_bytes = launch_session.virtual_display_guid_bytes;
+      if (session->virtual_display.active) {
+        VDISPLAY::setWatchdogFeedingEnabled(true);
+      }
+      session->client_requested_termination.store(false, std::memory_order_relaxed);
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;

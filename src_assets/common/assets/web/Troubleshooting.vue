@@ -64,6 +64,25 @@
           </n-button>
         </div>
       </section>
+
+      <section v-if="platform === 'windows' && crashDumpAvailable" class="troubleshoot-card">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 class="text-base font-semibold text-dark dark:text-light">
+              {{ $t('troubleshooting.export_crash_bundle') || 'Export Crash Bundle' }}
+            </h2>
+            <p class="text-xs opacity-70 leading-snug">
+              {{
+                $t('troubleshooting.export_crash_bundle_desc') ||
+                'Download logs and the most recent Sunshine crash dump for issue reports.'
+              }}
+            </p>
+          </div>
+          <n-button type="error" strong @click="exportCrashBundle">
+            {{ $t('troubleshooting.export_crash_bundle') || 'Export Crash Bundle' }}
+          </n-button>
+        </div>
+      </section>
     </div>
 
     <section class="troubleshoot-card space-y-4">
@@ -151,6 +170,18 @@ import { http } from '@/http';
 const store = useConfigStore();
 const authStore = useAuthStore();
 const platform = computed(() => store.metadata.platform);
+
+type CrashDumpStatus = {
+  available?: boolean;
+  filename?: string;
+  path?: string;
+  size_bytes?: number;
+  captured_at?: string;
+  dismissed?: boolean;
+  dismissed_at?: string;
+};
+const crashDump = ref<CrashDumpStatus | null>(null);
+const crashDumpAvailable = computed(() => crashDump.value?.available === true);
 
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
@@ -276,6 +307,29 @@ function downloadPlayniteLogs() {
   } catch (_) {}
 }
 
+async function refreshCrashDumpStatus() {
+  try {
+    if (platform.value === 'windows') {
+      const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
+      if (r.status === 200 && r.data) {
+        crashDump.value = r.data as CrashDumpStatus;
+      } else {
+        crashDump.value = { available: false };
+      }
+    } else {
+      crashDump.value = null;
+    }
+  } catch {
+    crashDump.value = null;
+  }
+}
+
+function exportCrashBundle() {
+  try {
+    if (typeof window !== 'undefined') window.location.href = './api/logs/export_crash';
+  } catch {}
+}
+
 function jumpToLatest() {
   scrollToBottom();
   autoScrollEnabled.value = true;
@@ -312,9 +366,12 @@ function restart() {
 onMounted(async () => {
   loginDisposer = authStore.onLogin(() => {
     void refreshLogs();
+    void refreshCrashDumpStatus();
   });
 
   await authStore.waitForAuthentication();
+
+  await refreshCrashDumpStatus();
 
   nextTick(() => {
     if (logScrollbar.value?.containerRef) scrollToBottom();

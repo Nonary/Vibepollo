@@ -6,21 +6,34 @@
 #ifdef _WIN32
 
   // standard includes
+  #include <algorithm>
+  #include <array>
+  #include <chrono>
+  #include <cstdint>
   #include <filesystem>
   #include <fstream>
+  #include <limits>
+  #include <mutex>
+  #include <optional>
   #include <sstream>
   #include <string>
   #include <string_view>
   #include <unordered_set>
+  #include <vector>
+  #include <cwctype>
 
   // third-party includes
   #include <nlohmann/json.hpp>
   #include <Simple-Web-Server/server_https.hpp>
+  #include <zlib.h>
+  #include <boost/property_tree/json_parser.hpp>
+  #include <boost/property_tree/ptree.hpp>
 
   // local includes
   #include "config_playnite.h"
   #include "confighttp.h"
   #include "logging.h"
+  #include "state_storage.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
 
@@ -412,14 +425,52 @@ namespace confighttp {
     dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
   }
 
-  // Build a minimal ZIP (stored, no compression) from name->data entries
+  
+
+
+  static bool deflate_buffer(const char *data, std::size_t size, std::string &out) {
+    z_stream zs {};
+    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+      deflateEnd(&zs);
+      return false;
+    }
+    std::array<unsigned char, 16384> buf {};
+    out.clear();
+    std::size_t offset = 0;
+    int ret = Z_OK;
+    do {
+      if (zs.avail_in == 0 && offset < size) {
+        std::size_t chunk = std::min<std::size_t>(size - offset, static_cast<std::size_t>(std::numeric_limits<uInt>::max()));
+        zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data + offset));
+        zs.avail_in = static_cast<uInt>(chunk);
+        offset += chunk;
+      }
+      zs.next_out = buf.data();
+      zs.avail_out = static_cast<uInt>(buf.size());
+      int flush = (offset >= size && zs.avail_in == 0) ? Z_FINISH : Z_NO_FLUSH;
+      ret = deflate(&zs, flush);
+      if (ret == Z_STREAM_ERROR) {
+        deflateEnd(&zs);
+        return false;
+      }
+      std::size_t produced = buf.size() - zs.avail_out;
+      if (produced > 0) {
+        out.append(reinterpret_cast<char *>(buf.data()), produced);
+      }
+    } while (ret != Z_STREAM_END);
+    deflateEnd(&zs);
+    return true;
+  }
+
   static std::string build_zip_from_entries(const std::vector<std::pair<std::string, std::string>> &entries) {
     std::string out;
 
     struct CdEnt {
       std::string name;
       uint32_t crc;
-      uint32_t size;
+      uint32_t comp_size;
+      uint32_t uncomp_size;
+      uint16_t method;
       uint32_t offset;
       uint16_t dostime;
       uint16_t dosdate;
@@ -434,60 +485,164 @@ namespace confighttp {
       boost::crc_32_type crc;
       crc.process_bytes(data.data(), data.size());
       uint32_t crc32 = crc.checksum();
-      uint32_t size = static_cast<uint32_t>(data.size());
-      uint32_t off = static_cast<uint32_t>(out.size());
-      // Local file header
-      write_le32(out, 0x04034b50u);  // signature
-      write_le16(out, 20);  // version needed
-      write_le16(out, 0);  // flags
-      write_le16(out, 0);  // method: store
-      write_le16(out, dostime);  // mod time
-      write_le16(out, dosdate);  // mod date
-      write_le32(out, crc32);  // crc32
-      write_le32(out, size);  // comp size
-      write_le32(out, size);  // uncomp size
-      write_le16(out, static_cast<uint16_t>(name.size()));  // name len
-      write_le16(out, 0);  // extra len
+      uint32_t uncomp_size = static_cast<uint32_t>(data.size());
+      std::string compressed;
+      bool use_deflate = deflate_buffer(data.data(), data.size(), compressed) && compressed.size() < data.size();
+      const std::string &payload = use_deflate ? compressed : data;
+      uint16_t method = use_deflate ? 8 : 0;
+      uint32_t comp_size = static_cast<uint32_t>(payload.size());
+      uint32_t offset = static_cast<uint32_t>(out.size());
+      write_le32(out, 0x04034b50u);
+      write_le16(out, 20);
+      write_le16(out, 0);
+      write_le16(out, method);
+      write_le16(out, dostime);
+      write_le16(out, dosdate);
+      write_le32(out, crc32);
+      write_le32(out, comp_size);
+      write_le32(out, uncomp_size);
+      write_le16(out, static_cast<uint16_t>(name.size()));
+      write_le16(out, 0);
       out.append(name.data(), name.size());
-      out.append(data.data(), data.size());
-      cd.push_back(CdEnt {name, crc32, size, off, dostime, dosdate});
+      out.append(payload.data(), payload.size());
+      cd.push_back(CdEnt {name, crc32, comp_size, uncomp_size, method, offset, dostime, dosdate});
     }
+
     uint32_t cd_start = static_cast<uint32_t>(out.size());
     uint32_t cd_size = 0;
     for (const auto &e : cd) {
       std::string rec;
-      write_le32(rec, 0x02014b50u);  // central dir header sig
-      write_le16(rec, 20);  // version made by
-      write_le16(rec, 20);  // version needed
-      write_le16(rec, 0);  // flags
-      write_le16(rec, 0);  // method: store
-      write_le16(rec, e.dostime);  // time
-      write_le16(rec, e.dosdate);  // date
-      write_le32(rec, e.crc);  // crc32
-      write_le32(rec, e.size);  // comp size
-      write_le32(rec, e.size);  // uncomp size
-      write_le16(rec, static_cast<uint16_t>(e.name.size()));  // name len
-      write_le16(rec, 0);  // extra len
-      write_le16(rec, 0);  // comment len
-      write_le16(rec, 0);  // disk start
-      write_le16(rec, 0);  // int attrs
-      write_le32(rec, 0);  // ext attrs
-      write_le32(rec, e.offset);  // rel offset local header
+      write_le32(rec, 0x02014b50u);
+      write_le16(rec, 20);
+      write_le16(rec, 20);
+      write_le16(rec, 0);
+      write_le16(rec, e.method);
+      write_le16(rec, e.dostime);
+      write_le16(rec, e.dosdate);
+      write_le32(rec, e.crc);
+      write_le32(rec, e.comp_size);
+      write_le32(rec, e.uncomp_size);
+      write_le16(rec, static_cast<uint16_t>(e.name.size()));
+      write_le16(rec, 0);
+      write_le16(rec, 0);
+      write_le16(rec, 0);
+      write_le16(rec, 0);
+      write_le32(rec, 0);
+      write_le32(rec, e.offset);
       rec.append(e.name.data(), e.name.size());
       cd_size += static_cast<uint32_t>(rec.size());
       out.append(rec);
     }
-    // End of central directory
+
     write_le32(out, 0x06054b50u);
-    write_le16(out, 0);  // disk num
-    write_le16(out, 0);  // disk start
-    write_le16(out, static_cast<uint16_t>(cd.size()));  // entries this disk
-    write_le16(out, static_cast<uint16_t>(cd.size()));  // total entries
-    write_le32(out, cd_size);  // size of central directory
-    write_le32(out, cd_start);  // offset of central directory
-    write_le16(out, 0);  // comment length
+    write_le16(out, 0);
+    write_le16(out, 0);
+    write_le16(out, static_cast<uint16_t>(cd.size()));
+    write_le16(out, static_cast<uint16_t>(cd.size()));
+    write_le32(out, cd_size);
+    write_le32(out, cd_start);
+    write_le16(out, 0);
     return out;
   }
+
+
+  namespace {
+    namespace fs = std::filesystem;
+    namespace pt = boost::property_tree;
+
+    std::mutex crash_state_mutex;
+
+    pt::ptree &ensure_pt_root(pt::ptree &tree) {
+      auto it = tree.find("root");
+      if (it == tree.not_found()) {
+        auto inserted = tree.insert(tree.end(), std::make_pair(std::string("root"), pt::ptree {}));
+        return inserted->second;
+      }
+      return it->second;
+    }
+
+    struct CrashDismissalState {
+      std::string filename;
+      std::string captured_at;
+      std::string dismissed_at;
+    };
+
+    std::optional<CrashDismissalState> load_crash_dismissal_state() {
+      std::scoped_lock lock(crash_state_mutex);
+      statefile::migrate_recent_state_keys();
+      const std::string &path_str = statefile::vibeshine_state_path();
+      if (path_str.empty()) {
+        return std::nullopt;
+      }
+      fs::path path(path_str);
+      if (!fs::exists(path)) {
+        return std::nullopt;
+      }
+      pt::ptree tree;
+      try {
+        pt::read_json(path.string(), tree);
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Crash dismissal: failed to read state file: " << e.what();
+        return std::nullopt;
+      }
+      auto root_it = tree.find("root");
+      if (root_it == tree.not_found()) {
+        return std::nullopt;
+      }
+      auto dismissal_it = root_it->second.find("crashdump_dismissal");
+      if (dismissal_it == root_it->second.not_found()) {
+        return std::nullopt;
+      }
+      CrashDismissalState state;
+      state.filename = dismissal_it->second.get<std::string>("filename", "");
+      state.captured_at = dismissal_it->second.get<std::string>("captured_at", "");
+      state.dismissed_at = dismissal_it->second.get<std::string>("dismissed_at", "");
+      if (state.filename.empty() || state.captured_at.empty()) {
+        return std::nullopt;
+      }
+      return state;
+    }
+
+    bool save_crash_dismissal_state(const CrashDismissalState &state) {
+      std::scoped_lock lock(crash_state_mutex);
+      statefile::migrate_recent_state_keys();
+      const std::string &path_str = statefile::vibeshine_state_path();
+      if (path_str.empty()) {
+        return false;
+      }
+      fs::path path(path_str);
+      pt::ptree tree;
+      if (fs::exists(path)) {
+        try {
+          pt::read_json(path.string(), tree);
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "Crash dismissal: failed to read existing state file: " << e.what();
+          tree = {};
+        }
+      }
+      auto &root = ensure_pt_root(tree);
+      pt::ptree node;
+      node.put("filename", state.filename);
+      node.put("captured_at", state.captured_at);
+      node.put("dismissed_at", state.dismissed_at);
+      root.put_child("crashdump_dismissal", node);
+      try {
+        fs::path dir = path.parent_path();
+        if (!dir.empty() && !fs::exists(dir)) {
+          fs::create_directories(dir);
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Crash dismissal: failed to prepare directories: " << e.what();
+      }
+      try {
+        pt::write_json(path.string(), tree);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Crash dismissal: failed to write state file: " << e.what();
+        return false;
+      }
+      return true;
+    }
+  }  // namespace
 
   static bool read_file_if_exists(const std::filesystem::path &p, std::string &out) {
     std::error_code ec {};
@@ -508,172 +663,128 @@ namespace confighttp {
     }
   }
 
-  void downloadPlayniteLogs(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
+  static std::vector<std::pair<std::string, std::string>> collect_support_logs() {
+    std::vector<std::pair<std::string, std::string>> entries;
+
+    // sunshine.log (configured location)
     try {
-      std::vector<std::pair<std::string, std::string>> entries;  // name, data
-
-      // sunshine.log (configured location)
-      try {
-        std::string data;
-        if (read_file_if_exists(config::sunshine.log_file, data)) {
-          entries.emplace_back("sunshine.log", std::move(data));
-        }
-      } catch (...) {}
-
-      // Playnite plugin log (Roaming\Sunshine\sunshine_playnite.log)
-      try {
-        platf::dxgi::safe_token user_token;
-        user_token.reset(platf::dxgi::retrieve_users_token(false));
-        PWSTR roamingW = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token.get(), &roamingW)) && roamingW) {
-          std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
-          CoTaskMemFree(roamingW);
-          std::string data;
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-          }
-        }
-      } catch (...) {}
-
-      // Plugin fallback log: try user's LocalAppData\Temp then process TEMP
-      try {
-        // Try active user's LocalAppData\Temp
-        platf::dxgi::safe_token user_token;
-        user_token.reset(platf::dxgi::retrieve_users_token(false));
-        PWSTR localW = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
-          std::filesystem::path p = std::filesystem::path(localW) / L"Temp" / L"sunshine_playnite.log";
-          CoTaskMemFree(localW);
-          std::string data;
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-          }
-        }
-      } catch (...) {}
-      try {
-        // Fallback to current process TEMP
-        wchar_t tmpPathW[MAX_PATH] = {};
-        DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
-        if (n > 0 && n < _countof(tmpPathW)) {
-          std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
-          std::string data;
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-          }
-        }
-      } catch (...) {}
-
-      // Playnite's own logs (prefer active user's Roaming/Local AppData)
-      auto add_playnite_from_base = [&](const std::filesystem::path &base) {
-        bool any = false;
-        {
-          std::string data;
-          auto p = base / L"playnite.log";
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-            any = true;
-          }
-        }
-        {
-          std::string data;
-          auto p = base / L"extensions.log";
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-            any = true;
-          }
-        }
-        {
-          std::string data;
-          auto p = base / L"launcher.log";
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-            any = true;
-          }
-        }
-        return any;
-      };
-      bool got_playnite_logs = false;
-      try {
-        platf::dxgi::safe_token user_token;
-        user_token.reset(platf::dxgi::retrieve_users_token(false));
-        auto add_from_known = [&](REFKNOWNFOLDERID id) {
-          PWSTR pathW = nullptr;
-          if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &pathW)) && pathW) {
-            std::filesystem::path base = std::filesystem::path(pathW) / L"Playnite";
-            CoTaskMemFree(pathW);
-            if (add_playnite_from_base(base)) {
-              got_playnite_logs = true;
-            }
-          }
-        };
-        add_from_known(FOLDERID_RoamingAppData);
-        add_from_known(FOLDERID_LocalAppData);
-      } catch (...) {}
-      // Fallback to current process' profile
-      if (!got_playnite_logs) {
-        try {
-          wchar_t buf[MAX_PATH] = {};
-          if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-            got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-          }
-        } catch (...) {}
-        try {
-          wchar_t buf[MAX_PATH] = {};
-          if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-            got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-          }
-        } catch (...) {}
+      std::string data;
+      if (read_file_if_exists(config::sunshine.log_file, data)) {
+        entries.emplace_back("sunshine.log", std::move(data));
       }
+    } catch (...) {}
 
-      // Launcher/helper logs
-      try {
-        // Prefer active user's Roaming/Local AppData
-        try {
-          platf::dxgi::safe_token user_token;
-          user_token.reset(platf::dxgi::retrieve_users_token(false));
-          auto add_user_sunshine_logs = [&](REFKNOWNFOLDERID id) {
-            PWSTR baseW = nullptr;
-            if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
-              std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
-              CoTaskMemFree(baseW);
-              {
-                std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
-                std::string data;
-                if (read_file_if_exists(p, data)) {
-                  entries.emplace_back(p.filename().string(), std::move(data));
-                }
-              }
-              {
-                std::filesystem::path p = base / L"sunshine_launcher.log";
-                std::string data;
-                if (read_file_if_exists(p, data)) {
-                  entries.emplace_back(p.filename().string(), std::move(data));
-                }
-              }
-              {
-                // Windows Display Helper (tools/sunshine_display_helper.exe)
-                std::filesystem::path p = base / L"sunshine_display_helper.log";
-                std::string data;
-                if (read_file_if_exists(p, data)) {
-                  entries.emplace_back(p.filename().string(), std::move(data));
-                }
-              }
-            }
-          };
-          add_user_sunshine_logs(FOLDERID_RoamingAppData);
-          add_user_sunshine_logs(FOLDERID_LocalAppData);
-        } catch (...) {}
-        auto try_add_sunshine_logs = [&](int csidl) {
-          wchar_t baseW[MAX_PATH] = {};
-          if (!SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
-            return;
+    // Playnite plugin log (Roaming\Sunshine\sunshine_playnite.log)
+    try {
+      platf::dxgi::safe_token user_token;
+      user_token.reset(platf::dxgi::retrieve_users_token(false));
+      PWSTR roamingW = nullptr;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token.get(), &roamingW)) && roamingW) {
+        std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
+        CoTaskMemFree(roamingW);
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+    } catch (...) {}
+
+    // Plugin fallback log: try user's LocalAppData\Temp then process TEMP
+    try {
+      platf::dxgi::safe_token user_token;
+      user_token.reset(platf::dxgi::retrieve_users_token(false));
+      PWSTR localW = nullptr;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
+        std::filesystem::path p = std::filesystem::path(localW) / L"Temp" / L"sunshine_playnite.log";
+        CoTaskMemFree(localW);
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+    } catch (...) {}
+    try {
+      wchar_t tmpPathW[MAX_PATH] = {};
+      DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
+      if (n > 0 && n < _countof(tmpPathW)) {
+        std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+    } catch (...) {}
+
+    auto add_playnite_from_base = [&](const std::filesystem::path &base) {
+      bool any = false;
+      {
+        std::string data;
+        auto p = base / L"playnite.log";
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+          any = true;
+        }
+      }
+      {
+        std::string data;
+        auto p = base / L"extensions.log";
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+          any = true;
+        }
+      }
+      {
+        std::string data;
+        auto p = base / L"launcher.log";
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+          any = true;
+        }
+      }
+      return any;
+    };
+
+    bool got_playnite_logs = false;
+    try {
+      platf::dxgi::safe_token user_token;
+      user_token.reset(platf::dxgi::retrieve_users_token(false));
+      auto add_from_known = [&](REFKNOWNFOLDERID id) {
+        PWSTR pathW = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &pathW)) && pathW) {
+          std::filesystem::path base = std::filesystem::path(pathW) / L"Playnite";
+          CoTaskMemFree(pathW);
+          if (add_playnite_from_base(base)) {
+            got_playnite_logs = true;
           }
+        }
+      };
+      add_from_known(FOLDERID_RoamingAppData);
+      add_from_known(FOLDERID_LocalAppData);
+    } catch (...) {}
+
+    if (!got_playnite_logs) {
+      try {
+        wchar_t buf[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
+          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
+        }
+      } catch (...) {}
+      try {
+        wchar_t buf[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
+          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
+        }
+      } catch (...) {}
+    }
+
+    try {
+      auto add_user_sunshine_logs = [&](REFKNOWNFOLDERID id) {
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+        PWSTR baseW = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
           std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
-          // Preferred new name
+          CoTaskMemFree(baseW);
           {
             std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
             std::string data;
@@ -681,7 +792,6 @@ namespace confighttp {
               entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
-          // Legacy/alternate name
           {
             std::filesystem::path p = base / L"sunshine_launcher.log";
             std::string data;
@@ -689,7 +799,6 @@ namespace confighttp {
               entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
-          // Display helper log
           {
             std::filesystem::path p = base / L"sunshine_display_helper.log";
             std::string data;
@@ -697,38 +806,77 @@ namespace confighttp {
               entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
-        };
-        // Roaming AppData\Sunshine and LocalAppData\Sunshine
-        try_add_sunshine_logs(CSIDL_APPDATA);
-        try_add_sunshine_logs(CSIDL_LOCAL_APPDATA);
-        // Fallback: check Sunshine config directory (next to sunshine.exe) for sunshine_launcher.log
-        try {
-          std::filesystem::path cfg = platf::appdata();
-          std::filesystem::path p = cfg / "sunshine_launcher.log";
-          std::string data;
-          if (read_file_if_exists(p, data)) {
-            entries.emplace_back(p.filename().string(), std::move(data));
-          }
-        } catch (...) {}
-      } catch (...) {}
-
-      // Deduplicate by entry name to avoid duplicate playnite helper logs
-      {
-        std::vector<std::pair<std::string, std::string>> dedup;
-        std::unordered_set<std::string> seen;
-        dedup.reserve(entries.size());
-        for (auto &e : entries) {
-          if (seen.insert(e.first).second) {
-            dedup.emplace_back(std::move(e));
-          }
         }
-        entries.swap(dedup);
-      }
+      };
+      add_user_sunshine_logs(FOLDERID_RoamingAppData);
+      add_user_sunshine_logs(FOLDERID_LocalAppData);
+    } catch (...) {}
 
-      // Build ZIP (may be empty if nothing found)
+    auto try_add_sunshine_logs = [&](int csidl) {
+      wchar_t baseW[MAX_PATH] = {};
+      if (!SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
+        return;
+      }
+      std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
+      {
+        std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+      {
+        std::filesystem::path p = base / L"sunshine_launcher.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+      {
+        std::filesystem::path p = base / L"sunshine_display_helper.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+    };
+
+    try_add_sunshine_logs(CSIDL_APPDATA);
+    try_add_sunshine_logs(CSIDL_LOCAL_APPDATA);
+
+    try {
+      std::filesystem::path cfg = platf::appdata();
+      std::filesystem::path p = cfg / "sunshine_launcher.log";
+      std::string data;
+      if (read_file_if_exists(p, data)) {
+        entries.emplace_back(p.filename().string(), std::move(data));
+      }
+    } catch (...) {}
+
+    {
+      std::vector<std::pair<std::string, std::string>> dedup;
+      std::unordered_set<std::string> seen;
+      dedup.reserve(entries.size());
+      for (auto &e : entries) {
+        if (seen.insert(e.first).second) {
+          dedup.emplace_back(std::move(e));
+        }
+      }
+      entries.swap(dedup);
+    }
+
+    return entries;
+  }
+
+  void downloadPlayniteLogs(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      auto entries = collect_support_logs();
       std::string zip = build_zip_from_entries(entries);
 
-      // Filename with timestamp
       char fname[64];
       std::time_t tt = std::time(nullptr);
       std::tm tm {};
@@ -743,6 +891,440 @@ namespace confighttp {
       headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
       response->write(SimpleWeb::StatusCode::success_ok, zip, headers);
     } catch (std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  struct CrashDumpInfo {
+    std::filesystem::path path;
+    std::filesystem::file_time_type write_time;
+    std::uint64_t size;
+  };
+
+  struct ZipFileEntry {
+    std::string name;
+    std::filesystem::path path;
+    std::filesystem::file_time_type write_time;
+    std::uint64_t size;
+  };
+
+  static std::filesystem::path crash_dump_directory() {
+    wchar_t sysDir[MAX_PATH] = {};
+    UINT len = GetSystemDirectoryW(sysDir, _countof(sysDir));
+    if (len == 0 || len >= _countof(sysDir)) {
+      return {};
+    }
+    std::filesystem::path base(sysDir);
+    return base / L"config" / L"systemprofile" / L"AppData" / L"Local" / L"CrashDumps";
+  }
+
+  static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft) {
+    return std::chrono::time_point_cast<std::chrono::system_clock::duration>(ft - decltype(ft)::clock::now() + std::chrono::system_clock::now());
+  }
+
+  static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date) {
+    std::time_t tt = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm {};
+    localtime_s(&tm, &tt);
+    dos_time = static_cast<uint16_t>(((tm.tm_hour & 0x1F) << 11) | ((tm.tm_min & 0x3F) << 5) | ((tm.tm_sec / 2) & 0x1F));
+    int year = tm.tm_year + 1900;
+    if (year < 1980) {
+      year = 1980;
+    }
+    if (year > 2107) {
+      year = 2107;
+    }
+    dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
+  }
+
+  static std::string to_iso8601(const std::chrono::system_clock::time_point &tp) {
+    std::time_t tt = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm {};
+    gmtime_s(&tm, &tt);
+    char buf[32];
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm) == 0) {
+      return {};
+    }
+    return std::string(buf);
+  }
+
+  static std::optional<CrashDumpInfo> find_recent_crash_dump(std::chrono::hours max_age) {
+    auto root = crash_dump_directory();
+    if (root.empty()) {
+      return std::nullopt;
+    }
+    std::error_code ec {};
+    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+      return std::nullopt;
+    }
+
+    CrashDumpInfo best {};
+    std::filesystem::file_time_type best_time {};
+    bool have = false;
+    for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+      if (ec) {
+        return std::nullopt;
+      }
+      if (!entry.is_regular_file(ec)) {
+        continue;
+      }
+      auto filename = entry.path().filename().wstring();
+      std::wstring lower = filename;
+      std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
+        return std::towlower(ch);
+      });
+      if (lower.rfind(L"sunshine.exe.", 0) != 0) {
+        continue;
+      }
+      auto write_time = entry.last_write_time(ec);
+      if (ec) {
+        ec.clear();
+        continue;
+      }
+      if (!have || write_time > best_time) {
+        best_time = write_time;
+        best.path = entry.path();
+        best.write_time = write_time;
+        best.size = 0;
+        std::error_code size_ec {};
+        auto sz = std::filesystem::file_size(entry.path(), size_ec);
+        if (!size_ec) {
+          best.size = sz;
+        }
+        have = true;
+      }
+    }
+    if (!have) {
+      return std::nullopt;
+    }
+    auto sys_time = file_time_to_system_clock(best.write_time);
+    auto now = std::chrono::system_clock::now();
+    if (sys_time + max_age < now) {
+      return std::nullopt;
+    }
+    return best;
+  }
+
+  static inline void write_le16(std::ostream &out, uint16_t v) {
+    out.put(static_cast<char>(v & 0xFF));
+    out.put(static_cast<char>((v >> 8) & 0xFF));
+  }
+
+  static inline void write_le32(std::ostream &out, uint32_t v) {
+    out.put(static_cast<char>(v & 0xFF));
+    out.put(static_cast<char>((v >> 8) & 0xFF));
+    out.put(static_cast<char>((v >> 16) & 0xFF));
+    out.put(static_cast<char>((v >> 24) & 0xFF));
+  }
+
+  
+  static bool write_zip_bundle_to_path(const std::filesystem::path &dest,
+                                       const std::vector<std::pair<std::string, std::string>> &data_entries,
+                                       const std::vector<ZipFileEntry> &file_entries,
+                                       std::string &error) {
+    std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      error = "Failed to create crash bundle";
+      return false;
+    }
+
+    struct CdEntry {
+      std::string name;
+      uint32_t crc;
+      uint32_t comp_size;
+      uint32_t uncomp_size;
+      uint32_t offset;
+      uint16_t method;
+      uint16_t dostime;
+      uint16_t dosdate;
+    };
+    std::vector<CdEntry> cd;
+
+    auto add_entry = [&](const std::string &name, uint16_t method, uint32_t crc, uint32_t comp_size, uint32_t uncomp_size, uint16_t dostime, uint16_t dosdate, const std::string &payload) -> bool {
+      auto pos = out.tellp();
+      if (pos < 0 || static_cast<unsigned long long>(pos) > std::numeric_limits<uint32_t>::max()) {
+        error = "ZIP entry offset overflow";
+        return false;
+      }
+      uint32_t offset = static_cast<uint32_t>(pos);
+      write_le32(out, 0x04034b50u);
+      write_le16(out, 20);
+      write_le16(out, 0);
+      write_le16(out, method);
+      write_le16(out, dostime);
+      write_le16(out, dosdate);
+      write_le32(out, crc);
+      write_le32(out, comp_size);
+      write_le32(out, uncomp_size);
+      write_le16(out, static_cast<uint16_t>(name.size()));
+      write_le16(out, 0);
+      out.write(name.data(), name.size());
+      out.write(payload.data(), payload.size());
+      if (!out) {
+        error = "Failed writing ZIP entry";
+        return false;
+      }
+      cd.push_back(CdEntry {name, crc, comp_size, uncomp_size, offset, method, dostime, dosdate});
+      return true;
+    };
+
+    uint16_t now_time = 0, now_date = 0;
+    current_dos_datetime(now_time, now_date);
+    for (const auto &entry : data_entries) {
+      const std::string &name = entry.first;
+      const std::string &data = entry.second;
+      boost::crc_32_type crc;
+      crc.process_bytes(data.data(), data.size());
+      uint32_t checksum = crc.checksum();
+      std::string compressed;
+      bool use_deflate = deflate_buffer(data.data(), data.size(), compressed) && compressed.size() < data.size();
+      const std::string &payload = use_deflate ? compressed : data;
+      uint16_t method = use_deflate ? 8 : 0;
+      uint32_t comp_size = static_cast<uint32_t>(payload.size());
+      uint32_t uncomp_size = static_cast<uint32_t>(data.size());
+      if (!add_entry(name, method, checksum, comp_size, uncomp_size, now_time, now_date, payload)) {
+        return false;
+      }
+    }
+
+    for (const auto &entry : file_entries) {
+      std::error_code ec {};
+      if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
+        error = "Crash dump no longer exists";
+        return false;
+      }
+      if (entry.size > std::numeric_limits<uint32_t>::max()) {
+        error = "Crash dump too large (over 4 GiB)";
+        return false;
+      }
+      std::ifstream in(entry.path, std::ios::binary);
+      if (!in) {
+        error = "Failed to open crash dump";
+        return false;
+      }
+      std::string raw;
+      raw.resize(static_cast<std::size_t>(entry.size));
+      in.read(raw.data(), static_cast<std::streamsize>(raw.size()));
+      if (in.gcount() != static_cast<std::streamsize>(raw.size())) {
+        error = "Failed to read crash dump";
+        return false;
+      }
+      boost::crc_32_type crc;
+      crc.process_bytes(raw.data(), raw.size());
+      uint32_t checksum = crc.checksum();
+      std::string compressed;
+      bool use_deflate = deflate_buffer(raw.data(), raw.size(), compressed) && compressed.size() < raw.size();
+      const std::string &payload = use_deflate ? compressed : raw;
+      uint16_t method = use_deflate ? 8 : 0;
+      uint32_t comp_size = static_cast<uint32_t>(payload.size());
+      uint32_t uncomp_size = static_cast<uint32_t>(raw.size());
+      uint16_t dostime = 0, dosdate = 0;
+      to_dos_datetime(file_time_to_system_clock(entry.write_time), dostime, dosdate);
+      if (!add_entry(entry.name, method, checksum, comp_size, uncomp_size, dostime, dosdate, payload)) {
+        return false;
+      }
+    }
+
+    auto cd_start_pos = out.tellp();
+    if (cd_start_pos < 0 || static_cast<unsigned long long>(cd_start_pos) > std::numeric_limits<uint32_t>::max()) {
+      error = "ZIP central directory offset overflow";
+      return false;
+    }
+    uint32_t cd_start = static_cast<uint32_t>(cd_start_pos);
+
+    for (const auto &e : cd) {
+      write_le32(out, 0x02014b50u);
+      write_le16(out, 20);
+      write_le16(out, 20);
+      write_le16(out, 0);
+      write_le16(out, e.method);
+      write_le16(out, e.dostime);
+      write_le16(out, e.dosdate);
+      write_le32(out, e.crc);
+      write_le32(out, e.comp_size);
+      write_le32(out, e.uncomp_size);
+      write_le16(out, static_cast<uint16_t>(e.name.size()));
+      write_le16(out, 0);
+      write_le16(out, 0);
+      write_le16(out, 0);
+      write_le16(out, 0);
+      write_le32(out, 0);
+      write_le32(out, e.offset);
+      out.write(e.name.data(), e.name.size());
+      if (!out) {
+        error = "Failed writing ZIP central directory";
+        return false;
+      }
+    }
+
+    auto cd_end_pos = out.tellp();
+    if (cd_end_pos < 0 || static_cast<unsigned long long>(cd_end_pos) > std::numeric_limits<uint32_t>::max()) {
+      error = "ZIP central directory size overflow";
+      return false;
+    }
+    uint32_t cd_size = static_cast<uint32_t>(cd_end_pos - cd_start_pos);
+
+    write_le32(out, 0x06054b50u);
+    write_le16(out, 0);
+    write_le16(out, 0);
+    write_le16(out, static_cast<uint16_t>(cd.size()));
+    write_le16(out, static_cast<uint16_t>(cd.size()));
+    write_le32(out, cd_size);
+    write_le32(out, cd_start);
+    write_le16(out, 0);
+    out.flush();
+    if (!out.good()) {
+      error = "Failed finalizing crash bundle";
+      return false;
+    }
+    return true;
+  }
+
+  void getCrashDumpStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
+      nlohmann::json out;
+      if (!info) {
+        out["available"] = false;
+        out["dismissed"] = false;
+      } else {
+        auto captured = file_time_to_system_clock(info->write_time);
+        std::string captured_iso = to_iso8601(captured);
+        out["available"] = true;
+        out["path"] = info->path.string();
+        out["filename"] = info->path.filename().string();
+        out["size_bytes"] = info->size;
+        out["captured_at"] = captured_iso;
+        auto age = std::chrono::system_clock::now() - captured;
+        out["age_seconds"] = std::chrono::duration_cast<std::chrono::seconds>(age).count();
+        out["age_hours"] = std::chrono::duration_cast<std::chrono::hours>(age).count();
+        if (auto dismissal = load_crash_dismissal_state()) {
+          bool matches = dismissal->filename == info->path.filename().string() && dismissal->captured_at == captured_iso;
+          out["dismissed"] = matches;
+          if (matches && !dismissal->dismissed_at.empty()) {
+            out["dismissed_at"] = dismissal->dismissed_at;
+          }
+        } else {
+          out["dismissed"] = false;
+        }
+      }
+      send_response(response, out);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void postCrashDumpDismiss(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      const std::string body = request->content.string();
+      if (body.empty()) {
+        bad_request(response, request, "Missing request body");
+        return;
+      }
+      auto payload = nlohmann::json::parse(body, nullptr, true, true);
+      std::string filename = payload.value("filename", "");
+      std::string captured_at = payload.value("captured_at", "");
+      if (filename.empty() || captured_at.empty()) {
+        bad_request(response, request, "Missing filename or captured_at");
+        return;
+      }
+      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
+      if (!info) {
+        bad_request(response, request, "No recent Sunshine crash dumps found (within last 7 days)");
+        return;
+      }
+      std::string current_iso = to_iso8601(file_time_to_system_clock(info->write_time));
+      if (filename != info->path.filename().string() || captured_at != current_iso) {
+        bad_request(response, request, "Crash dump metadata mismatch");
+        return;
+      }
+      CrashDismissalState state {
+        std::move(filename),
+        std::move(captured_at),
+        to_iso8601(std::chrono::system_clock::now()),
+      };
+      if (!save_crash_dismissal_state(state)) {
+        bad_request(response, request, "Failed to persist crash dismissal");
+        return;
+      }
+      nlohmann::json out;
+      out["status"] = true;
+      out["dismissed_at"] = state.dismissed_at;
+      send_response(response, out);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void downloadCrashBundle(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
+      if (!info) {
+        bad_request(response, request, "No recent Sunshine crash dumps found (within last 7 days)");
+        return;
+      }
+      auto entries = collect_support_logs();
+      std::vector<ZipFileEntry> files;
+      files.push_back(ZipFileEntry {info->path.filename().string(), info->path, info->write_time, info->size});
+
+      wchar_t tmpDir[MAX_PATH] = {};
+      wchar_t tmpFile[MAX_PATH] = {};
+      if (GetTempPathW(_countof(tmpDir), tmpDir) == 0) {
+        bad_request(response, request, "Failed to resolve temporary directory");
+        return;
+      }
+      if (GetTempFileNameW(tmpDir, L"SNC", 0, tmpFile) == 0) {
+        bad_request(response, request, "Failed to create temporary file");
+        return;
+      }
+      std::filesystem::path bundle_path(tmpFile);
+      std::string error;
+      if (!write_zip_bundle_to_path(bundle_path, entries, files, error)) {
+        std::error_code ec {};
+        std::filesystem::remove(bundle_path, ec);
+        if (error.empty()) {
+          error = "Failed to build crash bundle";
+        }
+        bad_request(response, request, error);
+        return;
+      }
+
+      std::ifstream in(bundle_path, std::ios::binary);
+      if (!in) {
+        std::error_code ec {};
+        std::filesystem::remove(bundle_path, ec);
+        bad_request(response, request, "Failed to open crash bundle");
+        return;
+      }
+
+      char fname[80];
+      std::time_t tt = std::time(nullptr);
+      std::tm tm {};
+      localtime_s(&tm, &tt);
+      std::snprintf(fname, sizeof(fname), "sunshine_crashbundle-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/zip");
+      headers.emplace("Content-Disposition", std::string("attachment; filename=\"") + fname + "\"");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+      in.close();
+      std::error_code ec {};
+      std::filesystem::remove(bundle_path, ec);
+    } catch (const std::exception &e) {
       bad_request(response, request, e.what());
     }
   }
