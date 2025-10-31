@@ -12,6 +12,7 @@
   #include <optional>
   #include <string>
   #include <thread>
+  #include <vector>
 
   // libdisplaydevice
   #include <display_device/json.h>
@@ -30,6 +31,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+  #include <tlhelp32.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -47,6 +49,64 @@ namespace {
   constexpr DWORD kHelperStopGracePeriodMs = 1500;
   constexpr DWORD kHelperStopTotalWaitMs = 5000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
+
+  void kill_all_helper_processes() {
+    helper_proc().terminate();
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+      DWORD err = GetLastError();
+      BOOST_LOG(error) << "Display helper: failed to snapshot processes for cleanup (winerr=" << err << ").";
+      return;
+    }
+
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    std::vector<DWORD> targets;
+
+    if (Process32FirstW(snapshot, &entry)) {
+      do {
+        if (_wcsicmp(entry.szExeFile, L"sunshine_display_helper.exe") == 0 &&
+            entry.th32ProcessID != GetCurrentProcessId()) {
+          targets.push_back(entry.th32ProcessID);
+        }
+      } while (Process32NextW(snapshot, &entry));
+    } else {
+      DWORD err = GetLastError();
+      if (err != ERROR_NO_MORE_FILES) {
+        BOOST_LOG(warning) << "Display helper: process enumeration failed during cleanup (winerr=" << err << ").";
+      }
+    }
+
+    CloseHandle(snapshot);
+
+    for (DWORD pid : targets) {
+      HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+      if (!h) {
+        DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Display helper: unable to open external instance (pid=" << pid
+                           << ", winerr=" << err << ") for termination.";
+        continue;
+      }
+
+      DWORD wait = WaitForSingleObject(h, 0);
+      if (wait == WAIT_TIMEOUT) {
+        BOOST_LOG(warning) << "Display helper: terminating external instance (pid=" << pid << ").";
+        if (!TerminateProcess(h, 1)) {
+          DWORD err = GetLastError();
+          BOOST_LOG(error) << "Display helper: TerminateProcess failed for pid=" << pid << " (winerr=" << err << ").";
+        } else {
+          DWORD wait_res = WaitForSingleObject(h, kHelperForceKillWaitMs);
+          if (wait_res != WAIT_OBJECT_0) {
+            BOOST_LOG(warning) << "Display helper: external instance pid=" << pid
+                               << " did not exit within " << kHelperForceKillWaitMs << " ms.";
+          }
+        }
+      }
+
+      CloseHandle(h);
+    }
+  }
 
   struct session_dd_fields_t {
     int width = -1;
@@ -214,6 +274,9 @@ namespace {
     if (shutting_down) {
       return false;
     }
+
+    kill_all_helper_processes();
+
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, module_path, _countof(module_path))) {
