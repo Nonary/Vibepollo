@@ -7,7 +7,10 @@
 #include "src/display_helper_integration.h"
 #include "src/uuid.h"
 
+#include <atomic>
+#include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -42,6 +45,27 @@ using namespace SUDOVDA;
 
 namespace VDISPLAY {
   namespace {
+    constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
+
+    std::atomic<bool> g_watchdog_feed_requested {false};
+    std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
+
+    std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
+    }
+
+    std::chrono::steady_clock::time_point time_from_steady_ticks(std::int64_t ticks) {
+      return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(ticks));
+    }
+
+    bool within_grace_period(std::chrono::steady_clock::time_point now) {
+      auto deadline_ticks = g_watchdog_grace_deadline_ns.load(std::memory_order_acquire);
+      if (deadline_ticks <= 0) {
+        return false;
+      }
+      return now < time_from_steady_ticks(deadline_ticks);
+    }
+
     struct ActiveVirtualDisplayTracker {
       void add(const uuid_util::uuid_t &guid) {
         std::lock_guard<std::mutex> lg(mutex);
@@ -584,9 +608,12 @@ namespace VDISPLAY {
 
   void closeVDisplayDevice() {
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
+      setWatchdogFeedingEnabled(false);
       return;
     }
 
+    setWatchdogFeedingEnabled(false);
+    g_watchdog_grace_deadline_ns.store(0, std::memory_order_release);
     CloseHandle(SUDOVDA_DRIVER_HANDLE);
 
     SUDOVDA_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
@@ -631,29 +658,57 @@ namespace VDISPLAY {
       return false;
     }
 
-    if (watchdogOut.Timeout) {
-      auto sleepInterval = watchdogOut.Timeout * 1000 / 3;
-      std::thread ping_thread([sleepInterval, failCb = std::move(failCb)] {
-        uint8_t fail_count = 0;
-        for (;;) {
-          if (!sleepInterval) {
-            return;
-          }
-          if (!PingDriver(SUDOVDA_DRIVER_HANDLE)) {
-            fail_count += 1;
-            if (fail_count > 3) {
-              failCb();
-              return;
-            }
-          };
-          Sleep(sleepInterval);
-        }
-      });
-
-      ping_thread.detach();
+    if (!watchdogOut.Timeout) {
+      return true;
     }
 
+    const auto now = std::chrono::steady_clock::now();
+    const auto deadline = now + WATCHDOG_INIT_GRACE;
+    g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
+    g_watchdog_feed_requested.store(false, std::memory_order_release);
+
+    const auto interval_ms = std::max<long long>(static_cast<long long>(watchdogOut.Timeout) * 1000ll / 3ll, 100ll);
+    const auto sleep_duration = std::chrono::milliseconds(interval_ms);
+
+    std::thread ping_thread([sleep_duration, failCb = std::move(failCb)] {
+      uint8_t fail_count = 0;
+      for (;;) {
+        const auto now_tp = std::chrono::steady_clock::now();
+        bool should_feed = g_watchdog_feed_requested.load(std::memory_order_acquire);
+        if (!should_feed && within_grace_period(now_tp)) {
+          should_feed = true;
+        }
+
+        if (!should_feed) {
+          std::this_thread::sleep_for(sleep_duration);
+          continue;
+        }
+
+        if (!PingDriver(SUDOVDA_DRIVER_HANDLE)) {
+          fail_count += 1;
+          if (fail_count > 3) {
+            failCb();
+            return;
+          }
+        } else {
+          fail_count = 0;
+        }
+
+        std::this_thread::sleep_for(sleep_duration);
+      }
+    });
+
+    ping_thread.detach();
+
     return true;
+  }
+
+  void setWatchdogFeedingEnabled(bool enable) {
+    if (enable) {
+      const auto deadline = std::chrono::steady_clock::now() + WATCHDOG_INIT_GRACE;
+      g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
+    }
+    g_watchdog_feed_requested.store(enable, std::memory_order_release);
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {

@@ -172,6 +172,7 @@
             :show-lossless-sharpening="showLosslessSharpening"
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
+            :lossless-executable-detected="losslessExecutableDetected"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
@@ -642,6 +643,36 @@ const isPlayniteAuto = computed<boolean>(
   () => isPlayniteManaged.value && form.value.playniteManaged !== 'manual',
 );
 
+const losslessExecutableStatus = ref<any | null>(null);
+const losslessExecutableDetected = computed<boolean>(
+  () => !!losslessExecutableStatus.value?.checked_exists,
+);
+
+async function refreshLosslessExecutableStatus() {
+  if (!isWindows.value) {
+    losslessExecutableStatus.value = null;
+    return;
+  }
+  try {
+    const params: Record<string, string> = {};
+    const configuredPath = (configStore.config as any)?.lossless_scaling_path;
+    if (configuredPath) {
+      params['path'] = String(configuredPath);
+    }
+    const response = await http.get('/api/lossless_scaling/status', {
+      params,
+      validateStatus: () => true,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      losslessExecutableStatus.value = response.data ?? {};
+    } else {
+      losslessExecutableStatus.value = null;
+    }
+  } catch {
+    losslessExecutableStatus.value = null;
+  }
+}
+
 const frameGenerationSelection = computed<FrameGenerationMode>({
   get: () => form.value.frameGenerationMode ?? 'off',
   set: (mode) => {
@@ -994,32 +1025,6 @@ function ensureNameSelectionFromForm() {
   nameOptions.value = opts;
   nameSelectValue.value = pid ? String(pid) : currentName ? `__custom__:${currentName}` : '';
 }
-watch(open, (o) => {
-  if (o) {
-    form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
-    // reset playnite picker state when opening
-    selectedPlayniteId.value = '';
-    lockPlaynite.value = false;
-    newAppSource.value = 'custom';
-    // refresh Playnite status early so the picker can enable itself
-    refreshPlayniteStatus().then(() => {
-      if (playniteInstalled.value) void loadPlayniteGames();
-    });
-    // Update scroll shadows after content paints
-    requestAnimationFrame(() => updateShadows());
-    // Initialize unified name combobox selection
-    ensureNameSelectionFromForm();
-    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
-    } else {
-      frameGenHealth.value = null;
-      frameGenHealthError.value = null;
-    }
-  } else {
-    frameGenHealth.value = null;
-    frameGenHealthError.value = null;
-  }
-});
 function close() {
   emit('update:modelValue', false);
 }
@@ -1227,6 +1232,40 @@ const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthLoading = ref(false);
 const frameGenHealthError = ref<string | null>(null);
 let frameGenHealthPromise: Promise<void> | null = null;
+
+watch(open, (o) => {
+  if (o) {
+    form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
+    selectedPlayniteId.value = '';
+    lockPlaynite.value = false;
+    newAppSource.value = 'custom';
+    refreshPlayniteStatus().then(() => {
+      if (playniteInstalled.value) void loadPlayniteGames();
+    });
+    requestAnimationFrame(() => updateShadows());
+    ensureNameSelectionFromForm();
+    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
+      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
+    } else {
+      frameGenHealth.value = null;
+      frameGenHealthError.value = null;
+    }
+    if (isWindows.value) {
+      refreshLosslessExecutableStatus().catch(() => {});
+    }
+  } else {
+    frameGenHealth.value = null;
+    frameGenHealthError.value = null;
+  }
+});
+
+watch(
+  () => (configStore.config as any)?.lossless_scaling_path,
+  () => {
+    if (!open.value || !isWindows.value) return;
+    refreshLosslessExecutableStatus().catch(() => {});
+  },
+);
 
 type FrameGenHealthReason =
   | 'gen1'

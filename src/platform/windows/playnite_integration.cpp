@@ -581,10 +581,13 @@ namespace platf::playnite {
                                                 recent_age_days,
                                                 delete_after_days,
                                                 config::playnite.autosync_require_replacement,
+                                                config::playnite.sync_all_installed,
                                                 config::playnite.sync_categories,
+                                                config::playnite.sync_plugins,
                                                 config::playnite.exclude_categories,
                                                 config::playnite.exclude_games,
                                                 config::playnite.exclude_plugins,
+                                                config::playnite.autosync_remove_uninstalled,
                                                 changed,
                                                 matched);
       if (changed) {
@@ -917,6 +920,7 @@ namespace platf::playnite {
       }
       std::unordered_map<std::string, std::string> game_name_by_id;
       std::unordered_map<std::string, std::string> plugin_name_by_id;
+      std::unordered_map<std::string, std::string> plugin_id_by_name;
       for (const auto &g : games) {
         if (!g.id.empty()) {
           game_name_by_id[g.id] = g.name;
@@ -925,6 +929,9 @@ namespace platf::playnite {
       for (const auto &p : plugins) {
         if (!p.id.empty()) {
           plugin_name_by_id[p.id] = p.name;
+        }
+        if (!p.name.empty()) {
+          plugin_id_by_name[p.name] = p.id;
         }
       }
 
@@ -1032,6 +1039,16 @@ namespace platf::playnite {
         if (!name.empty() && cat_id_by_name.count(name)) {
           id = cat_id_by_name[name];
           return;
+        }
+      });
+      // Included plugins: ensure id/name pairs stay synchronized
+      update_array("playnite_sync_plugins", /*treat_strings_as_ids=*/true, [&](std::string &id, std::string &name) {
+        if (!id.empty() && plugin_name_by_id.count(id)) {
+          name = plugin_name_by_id[id];
+          return;
+        }
+        if (!name.empty() && plugin_id_by_name.count(name)) {
+          id = plugin_id_by_name[name];
         }
       });
       // Excluded games: ensure names match latest snapshot

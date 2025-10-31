@@ -18,6 +18,7 @@ namespace config {
   struct playnite_t {
     // Enabled flag removed; integration manager always runs (server up when plugin installed)
     bool auto_sync = true;  // enable automatic sync from Playnite
+    bool sync_all_installed = false;  // include every installed game regardless of filters
     int recent_games = 10;  // N most recent games
     // If > 0, only treat games whose last played time is within this many days
     // as "recent" for the purposes of recent-based auto-sync selection.
@@ -30,6 +31,10 @@ namespace config {
     std::vector<std::string> exclude_categories;
     // Persisted/meta: excluded categories with id+name (for offline labeling)
     std::vector<id_name_t> exclude_categories_meta;
+    // Runtime: plugin IDs to include from sync
+    std::vector<std::string> sync_plugins;
+    // Persisted/meta: included plugins with id+name (for offline labeling)
+    std::vector<id_name_t> sync_plugins_meta;
     // Runtime: plugin IDs to exclude from sync (Playnite library plugin GUIDs)
     std::vector<std::string> exclude_plugins;
     // Persisted/meta: excluded plugins with id+name (for offline labeling)
@@ -49,6 +54,9 @@ namespace config {
     // many days of being added by auto-sync will be automatically removed.
     // 0 = remove immediately when it falls out of the selected set.
     int autosync_delete_after_days = 14;
+    // When true, automatically remove auto-synced apps whose games become
+    // uninstalled in Playnite.
+    bool autosync_remove_uninstalled = true;
 
     // When true, only purge auto-synced games that no longer qualify
     // if there is a qualifying replacement to fill the slot. When false,

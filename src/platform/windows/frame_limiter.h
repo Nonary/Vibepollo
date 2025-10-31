@@ -29,7 +29,7 @@ namespace platf {
     bool nvidia_available;
     bool nvcp_ready;
     bool rtss_available;
-    bool disable_vsync_ullm;
+    bool disable_vsync;
     bool nv_overrides_supported;
     rtss_status_t rtss;
   };

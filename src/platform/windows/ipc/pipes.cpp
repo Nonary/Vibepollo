@@ -279,6 +279,9 @@ namespace platf::dxgi {
 
   winrt::file_handle NamedPipeFactory::create_client_pipe(const std::wstring &fullPipeName) const {
     const ULONGLONG deadline = GetTickCount64() + 15000;  // 15s
+    const ULONGLONG start_time = GetTickCount64();
+    int retry_count = 0;
+    DWORD last_error = 0;
 
     while (GetTickCount64() < deadline) {
       winrt::file_handle pipe {
@@ -286,21 +289,43 @@ namespace platf::dxgi {
       };
 
       if (pipe) {
+        if (retry_count > 0) {
+          BOOST_LOG(debug) << "CreateFileW succeeded after " << retry_count << " retries in " 
+                          << (GetTickCount64() - start_time) << "ms";
+        }
         return pipe;  // success
       }
 
       const DWORD err = GetLastError();
+      last_error = err;
+      retry_count++;
+      
       if (err == ERROR_PIPE_BUSY) {
+        if (retry_count == 1 || retry_count % 20 == 0) {
+          BOOST_LOG(debug) << "Pipe busy, waiting... (retry " << retry_count << ")";
+        }
         WaitNamedPipeW(fullPipeName.c_str(), 250);
         continue;
       }
       if (err == ERROR_FILE_NOT_FOUND) {
+        if (retry_count == 1) {
+          BOOST_LOG(debug) << "Pipe not found, waiting for server to create it...";
+        } else if (retry_count % 40 == 0) {
+          BOOST_LOG(warning) << "Still waiting for pipe after " << (GetTickCount64() - start_time) 
+                           << "ms (" << retry_count << " retries)";
+        }
         Sleep(50);
         continue;
       }
 
       BOOST_LOG(error) << "CreateFileW failed (" << err << ")";
       break;  // unrecoverable error
+    }
+
+    if (last_error == ERROR_FILE_NOT_FOUND) {
+      BOOST_LOG(error) << "CreateFileW timed out after " << (GetTickCount64() - start_time) 
+                      << "ms waiting for pipe server (ERROR_FILE_NOT_FOUND). "
+                      << "The helper process may not be running or failed to create the pipe.";
     }
 
     return {};  // invalid handle

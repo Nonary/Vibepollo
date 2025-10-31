@@ -296,6 +296,9 @@ namespace confighttp {
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getLosslessScalingStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getCrashDumpStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postCrashDumpDismiss(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void downloadCrashBundle(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Display helper: export current OS state as golden restore snapshot
   void postExportGoldenDisplay(resp_https_t response, req_https_t request);
 #endif
@@ -2709,6 +2712,8 @@ namespace confighttp {
     server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
 #ifdef _WIN32
     server.resource["^/api/health/vigem$"]["GET"] = getVigemHealth;
+    server.resource["^/api/health/crashdump$"]["GET"] = getCrashDumpStatus;
+    server.resource["^/api/health/crashdump/dismiss$"]["POST"] = postCrashDumpDismiss;
 #endif
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
@@ -2733,6 +2738,7 @@ namespace confighttp {
     server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
     // Export logs bundle (Windows only)
     server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
+    server.resource["^/api/logs/export_crash$"]["GET"] = downloadCrashBundle;
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;

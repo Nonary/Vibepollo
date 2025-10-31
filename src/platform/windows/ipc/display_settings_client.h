@@ -24,6 +24,9 @@ namespace platf::display_helper_client {
   // Reset helper-side persistence/state (best-effort)
   bool send_reset();
 
+  // Request helper process to terminate gracefully.
+  bool send_stop();
+
   // Lightweight liveness probe; returns true if a Ping frame was sent.
   // This does not wait for a reply; it only validates a healthy send path.
   bool send_ping();

@@ -17,8 +17,8 @@ const config = store.config;
 watch(
   () => config.dd_wa_dummy_plug_hdr10,
   (value) => {
-    if (value && !config.rtss_disable_vsync_ullm) {
-      config.rtss_disable_vsync_ullm = true;
+    if (value && !config.frame_limiter_disable_vsync) {
+      config.frame_limiter_disable_vsync = true;
     }
   },
   { immediate: true },

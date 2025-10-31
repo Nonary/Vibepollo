@@ -169,15 +169,18 @@ const defaultGroups = [
     name: 'Playnite',
     options: {
       playnite_auto_sync: true,
+      playnite_sync_all_installed: false,
       playnite_recent_games: 10,
       playnite_recent_max_age_days: 0,
       playnite_autosync_delete_after_days: 0,
       playnite_autosync_require_replacement: true,
+      playnite_autosync_remove_uninstalled: true,
       playnite_focus_attempts: 3,
       playnite_focus_timeout_secs: 15,
       playnite_focus_exit_on_first: false,
       playnite_fullscreen_entry_enabled: false,
       playnite_sync_categories: [] as Array<{ id: string; name: string }>,
+      playnite_sync_plugins: [] as Array<{ id: string; name: string }>,
       playnite_exclude_categories: [] as Array<{ id: string; name: string }>,
       playnite_exclude_plugins: [] as Array<{ id: string; name: string }>,
       playnite_exclude_games: [] as Array<{ id: string; name: string }>,
@@ -210,7 +213,7 @@ const defaultGroups = [
       frame_limiter_provider: 'auto',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
-      rtss_disable_vsync_ullm: false,
+      frame_limiter_disable_vsync: false,
     },
   },
   {
@@ -494,20 +497,33 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
+      const legacyVsync = Object.prototype.hasOwnProperty.call(data, 'rtss_disable_vsync_ullm');
+      const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
+      if (legacyVsync) {
+        if (!hasNewVsync) {
+          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (data as Record<
+            string,
+            unknown
+          >)['rtss_disable_vsync_ullm'];
+        }
+        delete (data as Record<string, unknown>)['rtss_disable_vsync_ullm'];
+      }
     }
 
     // Normalize Playnite boolean-like fields to real booleans so toggles
     // persist as true/false instead of enabled/disabled strings.
     const playniteBoolKeys = [
       'playnite_auto_sync',
+      'playnite_sync_all_installed',
       'playnite_autosync_require_replacement',
+      'playnite_autosync_remove_uninstalled',
       'playnite_focus_exit_on_first',
       'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [
       'frame_limiter_enable',
-      'rtss_disable_vsync_ullm',
+      'frame_limiter_disable_vsync',
       'dd_wa_hdr_toggle',
       'dd_wa_dummy_plug_hdr10',
     ];
@@ -534,7 +550,7 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     if (data && Boolean((data as Record<string, unknown>)['dd_wa_dummy_plug_hdr10'])) {
-      (data as Record<string, unknown>)['rtss_disable_vsync_ullm'] = true;
+      (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = true;
     }
 
     // Normalize Playnite category/exclusion lists to arrays of {id,name}
@@ -579,6 +595,12 @@ export const useConfigStore = defineStore('config', () => {
         record['playnite_sync_categories'] = normalizeIdNameArray(
           record['playnite_sync_categories'],
           false,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_plugins')) {
+        record['playnite_sync_plugins'] = normalizeIdNameArray(
+          record['playnite_sync_plugins'],
+          true,
         );
       }
       if (Object.prototype.hasOwnProperty.call(record, 'playnite_exclude_categories')) {

@@ -22,10 +22,17 @@ struct PlayniteConfigFixture: public ::testing::Test {
 };
 
 TEST_F(PlayniteConfigFixture, Booleans_ParseCaseInsensitiveTruths) {
-  std::unordered_map<std::string, std::string> vars {{"playnite_auto_sync", "on"}, {"playnite_autosync_require_replacement", "0"}};
+  std::unordered_map<std::string, std::string> vars {
+    {"playnite_auto_sync", "on"},
+    {"playnite_autosync_require_replacement", "0"},
+    {"playnite_sync_all_installed", "YES"},
+    {"playnite_autosync_remove_uninstalled", "off"}
+  };
   config::apply_playnite(vars);
   EXPECT_TRUE(config::playnite.auto_sync);
   EXPECT_FALSE(config::playnite.autosync_require_replacement);
+  EXPECT_TRUE(config::playnite.sync_all_installed);
+  EXPECT_FALSE(config::playnite.autosync_remove_uninstalled);
   EXPECT_TRUE(vars.empty());
 }
 
@@ -52,6 +59,7 @@ TEST_F(PlayniteConfigFixture, Lists_ParseJsonArrayAndCsv) {
   std::unordered_map<std::string, std::string> vars {
     {"playnite_sync_categories", "[\"A\",\"B\"]"},
     {"playnite_exclude_categories", "[{\"id\":\"deck\",\"name\":\"Steam Deck\"},\"Indie\"]"},
+    {"playnite_sync_plugins", "[{\"id\":\"steam\",\"name\":\"Steam\"},\"gog\"]"},
     {"playnite_exclude_plugins", "[{\"id\":\"steam\",\"name\":\"Steam\"},\"gog\"]"},
     {"playnite_exclude_games", " x , y, z "}
   };
@@ -66,6 +74,11 @@ TEST_F(PlayniteConfigFixture, Lists_ParseJsonArrayAndCsv) {
   EXPECT_EQ(config::playnite.exclude_plugins[1], "gog");
   ASSERT_EQ(config::playnite.exclude_plugins_meta.size(), 2u);
   EXPECT_EQ(config::playnite.exclude_plugins_meta[0].name, "Steam");
+  ASSERT_EQ(config::playnite.sync_plugins.size(), 2u);
+  EXPECT_EQ(config::playnite.sync_plugins[0], "steam");
+  EXPECT_EQ(config::playnite.sync_plugins[1], "gog");
+  ASSERT_EQ(config::playnite.sync_plugins_meta.size(), 2u);
+  EXPECT_EQ(config::playnite.sync_plugins_meta[0].name, "Steam");
   ASSERT_EQ(config::playnite.exclude_games.size(), 3u);
   EXPECT_EQ(config::playnite.exclude_games[0], "x");
   EXPECT_EQ(config::playnite.exclude_games[2], "z");

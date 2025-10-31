@@ -102,7 +102,7 @@ namespace config {
     struct dd_t {
       struct workarounds_t {
         bool hdr_toggle;  ///< Enable HDR high-contrast color workaround (async; fixed 1s delay).
-        bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC/ULLM override).
+        bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
       };
 
       enum class config_option_e {
@@ -240,6 +240,11 @@ namespace config {
 
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
     std::string provider;
+
+    // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
+    // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
+    // Restores the previous VSYNC state when streaming stops.
+    bool disable_vsync {false};
   };
 
   // Windows-only: RTSS integration settings
@@ -250,11 +255,6 @@ namespace config {
     // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
     // If empty or unrecognized, SyncLimiter is not modified.
     std::string frame_limit_type;
-
-    // When enabled, attempt to avoid driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM)
-    // engagement by forcing the display to run at the highest available refresh rate for the
-    // targeted resolution during the stream. Implemented via the Windows display helper.
-    bool disable_vsync_ullm {false};
   };
 
   struct lossless_scaling_t {

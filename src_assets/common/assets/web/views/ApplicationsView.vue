@@ -153,6 +153,11 @@
                         >{{ $t('apps.playnite_label_manual') }}</span
                       >
                       <span
+                        v-else-if="(app['playnite-source'] || '') === 'installed'"
+                        class="text-[10px] opacity-70"
+                        >{{ $t('apps.playnite_label_installed') }}</span
+                      >
+                      <span
                         v-else-if="(app['playnite-source'] || '') === 'recent'"
                         class="text-[10px] opacity-70"
                         >{{ $t('apps.playnite_label_recent') }}</span
@@ -420,7 +425,7 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);
 const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
-const currentIndex = ref<number | null>(-1);
+const currentIndex = ref<number>(-1);
 
 function setRowRef(el: Element | null, index: number): void {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null;
@@ -731,7 +736,7 @@ function openEdit(app: App, i: number): void {
   if (uuid) {
     const idx = apps.value.findIndex((item) => item?.uuid === uuid);
     currentIndex.value = idx >= 0 ? idx : i;
-    currentApp.value = idx >= 0 ? apps.value[idx] : app;
+    currentApp.value = idx >= 0 && apps.value[idx] ? (apps.value[idx] as App) : app;
   } else {
     currentIndex.value = i;
     currentApp.value = app;

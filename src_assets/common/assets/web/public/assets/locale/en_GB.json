@@ -169,7 +169,7 @@
     "dd_hdr_option_auto": "Switch on/off the HDR mode as requested by the client (default)",
     "dd_hdr_option_disabled": "Do not change HDR settings",
     "dd_wa_dummy_plug_hdr10": "HDR 10-bit workaround for physical dummy plugs",
-    "dd_wa_dummy_plug_hdr10_desc": "Locks physical dummy plugs to 30 Hz and keeps VSYNC/ULLM overrides active so HDR10 is recognised. Only enable this when you are using a hardware dummy plug. Applied to game launches only (Desktop streams keep their normal refresh rate).",
+    "dd_wa_dummy_plug_hdr10_desc": "Locks physical dummy plugs to 30 Hz and keeps the VSYNC override active so HDR10 is recognised. Only enable this when you are using a hardware dummy plug. Applied to game launches only (Desktop streams keep their normal refresh rate).",
     "dd_wa_dummy_plug_hdr10_link": "Dummy Plugs setup guide",
     "dd_mode_remapping": "Display overrides",
     "dd_mode_remapping_add": "Add display override",
@@ -498,8 +498,8 @@
   "rtss": {
     "tab": "Frame Limiter",
     "desc": "Sunshine can apply a global frame limit via NVIDIA Control Panel (default on NVIDIA GPUs) or RTSS, then restores the original setting when streaming stops.",
-    "rtss_disable_vsync_ullm": "Disable VSYNC/ULLM by preferring highest refresh",
-    "rtss_disable_vsync_ullm_desc": "When enabled, Sunshine configures the display to use the highest available refresh rate for the targeted resolution during the stream. This avoids driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM) engaging because the display refresh exceeds stream FPS. Useful if you globally force VSYNC and enable ULLM. A virtual display is recommended.",
+    "frame_limiter_disable_vsync": "Force VSYNC off while streaming",
+    "frame_limiter_disable_vsync_desc": "When enabled, Sunshine sets the NVIDIA driver VSYNC setting to Off for the duration of the stream and restores the previous value afterward. If NVIDIA overrides are unavailable, Sunshine forces the display to run at its highest refresh rate as a best-effort fallback.",
     "provider_label": "Frame limiter provider",
     "provider_desc": "Auto picks NVIDIA Control Panel when available, then falls back to RTSS. Manual selection lets you force a specific provider.",
     "provider_auto": "Auto (prefer NVIDIA)",
@@ -577,10 +577,10 @@
       "back": "Back edge sync",
       "reflex": "NVIDIA Reflex"
     },
-    "vsyncUllmLabel": "Disable VSYNC / Low Latency overrides",
-    "vsyncUllmForcedByDummyPlug": "Forced on because the dummy plug HDR workaround requires VSYNC and Ultra-Low Latency Mode overrides for 10-bit output.",
-    "vsyncUllmHintNv": "On NVIDIA GPUs, Sunshine forces Vertical Sync Off and Low Latency Mode Off during the stream. Settings are restored when streaming stops.",
-    "vsyncUllmHintGeneric": "When NVIDIA-specific overrides are unavailable, Sunshine prefers the highest refresh rate to avoid VSYNC and Low Latency Mode engagement.",
+    "vsyncUllmLabel": "Disable VSYNC while streaming",
+    "vsyncUllmForcedByDummyPlug": "Forced on because the dummy plug HDR workaround requires VSYNC to be off for 10-bit output.",
+    "vsyncUllmHintNv": "Sunshine will force the NVIDIA driver VSYNC setting to Off during the stream and restore it afterwards. Use this if you globally enable VSYNC but want Sunshine sessions without it.",
+    "vsyncUllmHintGeneric": "Sunshine will run the display at its highest available refresh rate during the stream as a best-effort VSYNC workaround. NVIDIA overrides are not available on this system.",
     "rtssPath": "RTSS install path",
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
@@ -605,5 +605,12 @@
     "actions": {
       "refresh": "Refresh"
     }
+  },
+  "playnite": {
+    "delete_all_autosync": "Delete All Playnite Auto-Sync Apps",
+    "delete_autosync_title": "Delete auto-synced games?",
+    "delete_autosync_body": "This removes every Playnite-managed auto-sync entry from Applications. Manual entries are not affected.",
+    "delete_autosync_success": "Removed auto-synced Playnite games.",
+    "delete_autosync_error": "Failed to delete auto-synced Playnite games."
   }
 }

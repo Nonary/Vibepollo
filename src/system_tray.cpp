@@ -9,6 +9,7 @@
     #define WIN32_LEAN_AND_MEAN
     #include "platform/windows/utils.h"
 
+    #include <Windows.h>
     #include <accctrl.h>
     #include <aclapi.h>
     #define TRAY_ICON WEB_DIR "images/apollo.ico"
@@ -37,6 +38,7 @@
   // standard includes
   #include <atomic>
   #include <csignal>
+  #include <cwchar>
   #include <string>
   #include <thread>
 
@@ -195,10 +197,57 @@ namespace system_tray {
     while (GetShellWindow() == nullptr) {
       Sleep(1000);
     }
+
+    auto wait_for_default_desktop = []() {
+      constexpr int attempts = 60;
+      for (int attempt = 0; attempt < attempts; ++attempt) {
+        HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_ENUMERATE);
+        if (desktop != nullptr) {
+          auto close_desktop = util::fail_guard([desktop]() {
+            CloseDesktop(desktop);
+          });
+
+          WCHAR desktop_name[256] = {};
+          DWORD required_length = 0;
+          if (GetUserObjectInformationW(desktop, UOI_NAME, desktop_name, sizeof(desktop_name), &required_length)) {
+            if (_wcsicmp(desktop_name, L"Default") == 0) {
+              return true;
+            }
+          }
+        }
+
+        Sleep(1000);
+      }
+
+      return false;
+    };
+
+    if (!wait_for_default_desktop()) {
+      BOOST_LOG(warning) << "Timed out waiting for interactive desktop; system tray may not appear"sv;
+    } else {
+      BOOST_LOG(debug) << "Interactive desktop ready for tray initialization"sv;
+    }
   #endif
 
-    if (tray_init(&tray) < 0) {
-      BOOST_LOG(warning) << "Failed to create system tray"sv;
+    int attempt = 0;
+    int tray_init_result = -1;
+    while (tray_init_result < 0 && attempt < 30) {
+      tray_init_result = tray_init(&tray);
+      if (tray_init_result >= 0) {
+        break;
+      }
+#ifdef _WIN32
+      auto last_error = GetLastError();
+      BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ", error " << last_error << ')';
+#else
+      BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
+#endif
+      std::this_thread::sleep_for(2s);
+      ++attempt;
+    }
+
+    if (tray_init_result < 0) {
+      BOOST_LOG(warning) << "Failed to create system tray after retries"sv;
       return 1;
     }
 

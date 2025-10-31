@@ -18,6 +18,14 @@ import { useConfigStore } from '@/stores/config';
 import { useConnectivityStore } from '@/stores/connectivity';
 import { ensureLocaleLoaded } from '@/locale-manager';
 
+const chunkReloadFlag = 'sunshine:chunk-reload';
+if (typeof window !== 'undefined') {
+  try {
+    window.sessionStorage.removeItem(chunkReloadFlag);
+  } catch {
+  }
+}
+
 // Core application instance & stores
 const app: VueApp<Element> = createApp(App);
 const pinia = createPinia();

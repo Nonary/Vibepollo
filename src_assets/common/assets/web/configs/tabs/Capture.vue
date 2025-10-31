@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { NButton, NInput, NSelect } from 'naive-ui';
+import { NAlert, NButton, NInput, NModal, NRadio, NRadioGroup, NSelect } from 'naive-ui';
 import NvidiaNvencEncoder from '@/configs/tabs/encoders/NvidiaNvencEncoder.vue';
 import IntelQuickSyncEncoder from '@/configs/tabs/encoders/IntelQuickSyncEncoder.vue';
 import AmdAmfEncoder from '@/configs/tabs/encoders/AmdAmfEncoder.vue';
@@ -35,9 +35,36 @@ const gpuList = computed(() => {
 const LOSSLESS_DEFAULT_PATH =
   'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Lossless Scaling\\LosslessScaling.exe';
 
+function normalizeWindowsPath(raw: string | null | undefined): string {
+  if (!raw) return '';
+  let value = String(raw).replace(/\//g, '\\').trim();
+  if (!value) return '';
+  let prefix = '';
+  if (value.startsWith('\\\\?\\')) {
+    prefix = '\\\\?\\';
+    value = value.slice(4);
+  } else if (value.startsWith('\\\\')) {
+    prefix = '\\\\';
+    value = value.slice(2);
+  }
+  value = value.replace(/\\{2,}/g, '\\');
+  if (prefix === '\\\\' && value.startsWith('\\')) {
+    value = value.slice(1);
+  }
+  return prefix + value;
+}
+
 const losslessStatus = ref<any | null>(null);
 const losslessLoading = ref(false);
 const losslessError = ref<string | null>(null);
+const losslessBrowseVisible = ref(false);
+const losslessBrowseSelection = ref('');
+
+const losslessResolvedPath = computed(() => {
+  const raw = losslessStatus.value?.resolved_path;
+  if (typeof raw !== 'string') return '';
+  return normalizeWindowsPath(raw);
+});
 
 const hasNvidia = computed(() => {
   const metaFlag = (metadata.value as any)?.has_nvidia_gpu;
@@ -99,11 +126,21 @@ const captureOptions = computed(() => {
 
 const losslessConfiguredPath = computed(() => (config.value as any)?.lossless_scaling_path ?? '');
 const losslessSuggestedPath = computed(() => {
-  if (losslessConfiguredPath.value) return losslessConfiguredPath.value;
+  if (losslessConfiguredPath.value) return normalizeWindowsPath(losslessConfiguredPath.value);
   const suggested = losslessStatus.value?.suggested_path as string | undefined;
-  return suggested || LOSSLESS_DEFAULT_PATH;
+  return normalizeWindowsPath(suggested) || LOSSLESS_DEFAULT_PATH;
 });
 const losslessPathExists = computed(() => !!losslessStatus.value?.checked_exists);
+const losslessCandidates = computed(() => {
+  const raw = losslessStatus.value?.candidates;
+  if (!Array.isArray(raw)) return [] as string[];
+  return raw
+    .map((item: unknown) => (typeof item === 'string' ? normalizeWindowsPath(item) : ''))
+    .filter((item) => !!item);
+});
+const losslessCheckedIsDirectory = computed(
+  () => !!losslessStatus.value?.checked_is_directory,
+);
 
 async function refreshLosslessStatus() {
   if (platform.value !== 'windows') {
@@ -114,14 +151,28 @@ async function refreshLosslessStatus() {
   try {
     const params: Record<string, string> = {};
     if (losslessConfiguredPath.value) {
-      params['path'] = String(losslessConfiguredPath.value);
+      params['path'] = normalizeWindowsPath(String(losslessConfiguredPath.value));
     }
     const response = await http.get('/api/lossless_scaling/status', {
       params,
       validateStatus: () => true,
     });
     if (response.status >= 200 && response.status < 300) {
-      losslessStatus.value = response.data;
+      const payload = response.data ?? {};
+      if (payload && typeof payload === 'object') {
+        if (typeof payload.suggested_path === 'string') {
+          payload.suggested_path = normalizeWindowsPath(payload.suggested_path);
+        }
+        if (typeof payload.resolved_path === 'string') {
+          payload.resolved_path = normalizeWindowsPath(payload.resolved_path);
+        }
+        if (Array.isArray(payload.candidates)) {
+          payload.candidates = payload.candidates
+            .map((item: unknown) => (typeof item === 'string' ? normalizeWindowsPath(item) : ''))
+            .filter((item: string) => !!item);
+        }
+      }
+      losslessStatus.value = payload;
       losslessError.value = null;
     } else {
       losslessError.value = 'Unable to query Lossless Scaling status.';
@@ -132,6 +183,46 @@ async function refreshLosslessStatus() {
     losslessStatus.value = null;
   } finally {
     losslessLoading.value = false;
+  }
+}
+
+function applyLosslessSuggestion() {
+  if (!config.value) return;
+  (config.value as any).lossless_scaling_path = losslessSuggestedPath.value;
+}
+
+function applyLosslessBrowseSelection() {
+  if (!config.value) return;
+  const selected = normalizeWindowsPath(losslessBrowseSelection.value);
+  if (!selected) return;
+  (config.value as any).lossless_scaling_path = selected;
+  losslessBrowseVisible.value = false;
+}
+
+async function openLosslessBrowse() {
+  if (platform.value !== 'windows') return;
+  if (!losslessStatus.value && !losslessLoading.value) {
+    await refreshLosslessStatus();
+  }
+  const initial =
+    normalizeWindowsPath(losslessConfiguredPath.value) ||
+    losslessResolvedPath.value ||
+    losslessCandidates.value[0] ||
+    '';
+  losslessBrowseSelection.value = initial;
+  losslessBrowseVisible.value = true;
+}
+
+async function rescanLosslessCandidates() {
+  await refreshLosslessStatus();
+  const existing = normalizeWindowsPath(losslessBrowseSelection.value);
+  if (existing) {
+    losslessBrowseSelection.value = existing;
+    return;
+  }
+  const first = losslessCandidates.value[0];
+  if (first) {
+    losslessBrowseSelection.value = first;
   }
 }
 
@@ -146,6 +237,17 @@ watch(
   () => {
     if (platform.value === 'windows') {
       refreshLosslessStatus().catch(() => {});
+    }
+  },
+);
+
+watch(
+  () => (config.value as any)?.lossless_scaling_path,
+  (value) => {
+    if (typeof value !== 'string') return;
+    const normalized = normalizeWindowsPath(value);
+    if (normalized !== value) {
+      (config.value as any).lossless_scaling_path = normalized;
     }
   },
 );
@@ -210,14 +312,13 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
             Lossless Scaling executable
           </label>
           <div class="flex items-center gap-2 text-xs">
-            <n-button
-              size="tiny"
-              tertiary
-              @click="config.lossless_scaling_path = losslessSuggestedPath"
-            >
+            <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
               Use Suggested
             </n-button>
-            <n-button size="tiny" tertiary @click="refreshLosslessStatus"> Check </n-button>
+            <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
+            <n-button size="tiny" tertiary :loading="losslessLoading" @click="refreshLosslessStatus">
+              Check
+            </n-button>
           </div>
         </div>
         <n-input
@@ -231,6 +332,9 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
           <span v-if="losslessLoading">Checking…</span>
           <span v-else-if="losslessError">{{ losslessError }}</span>
           <span v-else>{{ losslessStatus?.message ?? 'Status unavailable.' }}</span>
+        </div>
+        <div v-if="!losslessLoading && losslessResolvedPath" class="text-[11px] opacity-60">
+          Resolved: {{ losslessResolvedPath }}
         </div>
       </div>
     </div>
@@ -250,6 +354,57 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
     <div v-if="shouldShowSoftware" class="encoder-outline">
       <SoftwareEncoder />
     </div>
+
+    <n-modal
+      v-model:show="losslessBrowseVisible"
+      preset="card"
+      class="max-w-2xl"
+      title="Select Lossless Scaling Executable"
+    >
+      <div class="space-y-4">
+        <n-alert type="info" size="small" v-if="!losslessCandidates.length">
+          Sunshine searched common Steam and program directories but could not locate LosslessScaling.exe.
+          Install Lossless Scaling from Steam or set the full path manually.
+        </n-alert>
+        <div v-else class="space-y-2">
+          <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+            Detected installations
+          </div>
+          <n-radio-group v-model:value="losslessBrowseSelection" class="space-y-2">
+            <div
+              v-for="candidate in losslessCandidates"
+              :key="candidate"
+              class="rounded-md border border-dark/10 px-3 py-2 text-xs dark:border-light/10"
+            >
+              <n-radio :value="candidate">{{ candidate }}</n-radio>
+            </div>
+          </n-radio-group>
+        </div>
+        <n-alert
+          v-if="losslessCheckedIsDirectory && !losslessPathExists"
+          type="warning"
+          size="small"
+        >
+          The current configuration points at a folder. Choose LosslessScaling.exe directly.
+        </n-alert>
+        <div class="flex items-center justify-between pt-2">
+          <n-button size="small" tertiary @click="rescanLosslessCandidates" :loading="losslessLoading">
+            Rescan
+          </n-button>
+          <div class="flex items-center gap-2">
+            <n-button size="small" tertiary @click="losslessBrowseVisible = false">Cancel</n-button>
+            <n-button
+              size="small"
+              type="primary"
+              :disabled="!losslessBrowseSelection"
+              @click="applyLosslessBrowseSelection"
+            >
+              Use Selected Path
+            </n-button>
+          </div>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 

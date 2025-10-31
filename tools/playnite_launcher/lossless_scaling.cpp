@@ -58,11 +58,16 @@ namespace playnite_launcher::lossless {
             BOOST_LOG(warning) << "Lossless Scaling: impersonation failed, error=" << GetLastError();
           } else {
             auto revert_guard = util::fail_guard([&]() {
-              if (!RevertToSelf()) {
+              constexpr int kMaxRevertAttempts = 3;
+              for (int attempt = 0; attempt < kMaxRevertAttempts; ++attempt) {
+                if (RevertToSelf()) {
+                  return;
+                }
                 DWORD err = GetLastError();
-                BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation, error=" << err;
-                DebugBreak();
+                BOOST_LOG(error) << "Lossless Scaling: RevertToSelf attempt " << (attempt + 1) << " failed, error=" << err;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
               }
+              BOOST_LOG(fatal) << "Lossless Scaling: giving up after repeated RevertToSelf failures";
             });
             auto result = fn();
             return result;

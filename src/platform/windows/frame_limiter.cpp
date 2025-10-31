@@ -31,7 +31,7 @@ namespace platf {
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
-    bool g_prev_disable_vsync_ullm = false;
+    bool g_prev_disable_vsync = false;
     std::string g_prev_rtss_frame_limit_type;
     bool g_prev_rtss_frame_limit_type_set = false;
 
@@ -103,12 +103,12 @@ namespace platf {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
       g_prev_frame_limiter_provider = config::frame_limiter.provider;
       g_prev_frame_limiter_provider_set = true;
-      g_prev_disable_vsync_ullm = config::rtss.disable_vsync_ullm;
+      g_prev_disable_vsync = config::frame_limiter.disable_vsync;
       g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
       g_prev_rtss_frame_limit_type_set = true;
       config::frame_limiter.enable = true;
       config::frame_limiter.provider = "rtss";
-      config::rtss.disable_vsync_ullm = true;
+      config::frame_limiter.disable_vsync = true;
       config::rtss.frame_limit_type = "front edge sync";
     }
     // Gen2 fix: Force NVIDIA Control Panel limiter (for DLSS4)
@@ -123,7 +123,7 @@ namespace platf {
       g_prev_rtss_frame_limit_type_set = false;
     }
 
-    const bool want_nv_overrides = (config::rtss.disable_vsync_ullm || gen1_framegen_fix || gen2_framegen_fix) && nvidia_gpu_present && nvcp_ready;
+    const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || gen1_framegen_fix || gen2_framegen_fix) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
     const int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
@@ -187,8 +187,8 @@ namespace platf {
           bool ok = frame_limiter_nvcp::streaming_start(
             effective_limit,
             true,
-            want_nv_overrides,
-            want_nv_overrides,
+            want_nv_vsync_override,
+            false,
             want_smooth_motion
           );
           if (ok) {
@@ -220,12 +220,12 @@ namespace platf {
       }
     }
 
-    if ((want_nv_overrides || want_smooth_motion) && !nvcp_already_invoked) {
+    if ((want_nv_vsync_override || want_smooth_motion) && !nvcp_already_invoked) {
       bool nvcp_result = frame_limiter_nvcp::streaming_start(
         effective_limit,
         false,
-        want_nv_overrides,
-        want_nv_overrides,
+        want_nv_vsync_override,
+        false,
         want_smooth_motion
       );
       nvcp_already_invoked = true;
@@ -279,7 +279,7 @@ namespace platf {
         config::frame_limiter.provider = g_prev_frame_limiter_provider;
       }
       if (g_gen1_framegen_fix_active) {
-        config::rtss.disable_vsync_ullm = g_prev_disable_vsync_ullm;
+        config::frame_limiter.disable_vsync = g_prev_disable_vsync;
         if (g_prev_rtss_frame_limit_type_set) {
           config::rtss.frame_limit_type = g_prev_rtss_frame_limit_type;
         }
@@ -314,7 +314,7 @@ namespace platf {
     status.nvidia_available = platf::has_nvidia_gpu();
     status.nvcp_ready = frame_limiter_nvcp::is_available();
     status.rtss_available = rtss_is_configured();
-    status.disable_vsync_ullm = config::rtss.disable_vsync_ullm;
+    status.disable_vsync = config::frame_limiter.disable_vsync;
     status.nv_overrides_supported = status.nvidia_available && status.nvcp_ready;
     status.rtss = rtss_get_status();
     return status;

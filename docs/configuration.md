@@ -1319,7 +1319,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Forces Windows to run the capture output at 30&nbsp;Hz with HDR enabled so physical HDMI dummy plugs expose 10-bit colour.<br>
-            Sunshine also keeps the "Disable VSYNC/ULLM" option engaged to ensure the driver profile disables VSYNC and Ultra-Low Latency Mode.
+            Sunshine also keeps the "Disable VSYNC" override engaged to ensure the driver profile disables VSYNC during streams.
         </td>
     </tr>
     <tr>
@@ -2239,26 +2239,23 @@ editing the `conf` file in a text editor. Use the examples as reference.
 These options integrate with Windows tooling to manage frame pacing and related behavior during a stream.
 They appear in the Frame Limiter section of the settings UI.
 
-### rtss_disable_vsync_ullm
+### frame_limiter_disable_vsync
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Attempt to prevent driver VSYNC and NVIDIA Ultra Low Latency Mode (ULLM) from engaging during a stream by configuring the display to use the highest available refresh rate for the targeted resolution.<br>
-            This works because VSYNC/ULLM only apply when VSYNC is engaged. By running the display at a refresh rate higher than the stream FPS, the driver avoids applying VSYNC and ULLM to the stream.
+            Forces the NVIDIA driver VSYNC setting to Off for the Sunshine profile while streaming. Sunshine restores the previous VSYNC setting when streaming stops.
             <br><br>
-            This option is primarily intended for users following Blur Busters guidance to force VSYNC and enable ULLM globally in the NVIDIA profile. It helps avoid unintended latency and pacing effects while streaming.
+            Use this when you globally enable VSYNC in the driver but need Sunshine sessions to run without it. This option no longer changes Ultra Low Latency Mode or pre-rendered frames.
             <br><br>
-            When enabled, Sunshine asks the Windows Display Helper to switch the active display mode to the highest refresh rate available for the stream's resolution. If no resolution is selected by other display settings, the stream's requested resolution is used when the client has Optimize Game Settings enabled.
+            When NVIDIA-specific overrides are unavailable, Sunshine falls back to forcing the active display to its highest available refresh rate during streams to minimize VSYNC engagement.
             <br><br>
-            A virtual display is highly recommended for this option.
-            <br>
             <b>Notes</b>:
             <ul>
-                <li>Windows only; requires the Display Helper (tools/sunshine_display_helper.exe).</li>
-                <li>Does not change encoder FPS; pair with a frame cap if desired.</li>
-                <li>If Display Device configuration is disabled, this option still applies the minimal refresh-rate-only change.</li>
+                <li>Windows only; uses NVIDIA NvAPI overrides when available and relies on the Sunshine display helper for refresh-rate fallbacks.</li>
+                <li>Automatically enabled when the Dummy Plug HDR workaround is active.</li>
+                <li>On non-NVIDIA GPUs, the refresh-rate fallback acts as a best-effort VSYNC mitigation.</li>
             </ul>
         </td>
     </tr>
@@ -2269,10 +2266,12 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            rtss_disable_vsync_ullm = enabled
+            frame_limiter_disable_vsync = enabled
             @endcode</td>
     </tr>
 </table>
+
+@note{Legacy configurations may still use @code{rtss_disable_vsync_ullm}. Sunshine continues to accept the old key and maps it to @code{frame_limiter_disable_vsync}.}
 
 ## NVIDIA NVENC Encoder
 
@@ -3162,6 +3161,72 @@ They appear in the Frame Limiter section of the settings UI.
 </table>
 
 ## Playnite Integration
+
+### playnite_sync_all_installed
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            When set to <code>true</code>, Sunshine synchronises every installed Playnite game into
+            <code>apps.json</code>, in addition to any recent or category-based selections.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_sync_all_installed = true@endcode</td>
+    </tr>
+</table>
+
+### playnite_sync_plugins
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            List of Playnite library plugin IDs whose installed games should always be auto-synced.
+            Accepts a JSON array of objects with <code>id</code>/<code>name</code> pairs or a comma-separated list of plugin IDs.
+            Any installed game originating from the listed plugins is included even if it is not in the recent list.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}
+playnite_sync_plugins = [
+  {"id": "CB91DFC9-B977-43BF-8E70-55F46E410FAB", "name": "Steam"},
+  "83DD83A4-0CF7-49FB-9138-8547F6B60C18"
+]
+@endcode</td>
+    </tr>
+</table>
+
+### playnite_autosync_remove_uninstalled
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            Controls whether Sunshine removes auto-synced games when they are uninstalled in Playnite.
+            Set to <code>true</code> to drop entries immediately when Playnite reports them as uninstalled.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_autosync_remove_uninstalled = false@endcode</td>
+    </tr>
+</table>
 
 ### playnite_exclude_categories
 
