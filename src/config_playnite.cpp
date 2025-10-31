@@ -131,6 +131,9 @@ namespace config {
   }
 
   void apply_playnite(std::unordered_map<std::string, std::string> &vars) {
+    // Reset to defaults first so removed keys revert to default values
+    playnite = playnite_t{};
+
     // booleans
     std::string tmp;
     // enabled flag removed; integration manager always runs and uses plugin install status
@@ -220,8 +223,7 @@ namespace config {
       playnite.fullscreen_entry_enabled = to_bool(tmp);
     }
 
-    // lists
-    // Reset lists to defaults first so removed keys clear runtime state on hot-apply
+    // lists (already cleared by reset above, but explicit for clarity)
     playnite.sync_categories_meta.clear();
     playnite.sync_categories.clear();
     playnite.exclude_categories_meta.clear();

@@ -593,11 +593,15 @@
     @update:show="(v) => (showDeleteAutosyncConfirm = v)"
   >
     <n-card
-      preset="dialog"
-      :title="$t('playnite.delete_autosync_title') || 'Delete auto-synced games?'"
-      :closable="false"
-      style="max-width: 24rem; width: 100%"
+      :bordered="false"
+      style="max-width: 32rem; width: 100%"
     >
+      <template #header>
+        <div class="flex items-center gap-2">
+          <i class="fas fa-trash" />
+          <span>{{ $t('playnite.delete_autosync_title') || 'Delete auto-synced games?' }}</span>
+        </div>
+      </template>
       <div class="space-y-2 text-sm">
         <p>
           {{
@@ -607,21 +611,13 @@
         </p>
       </div>
       <template #footer>
-        <div class="flex justify-end gap-2">
-          <n-button type="default" strong @click="showDeleteAutosyncConfirm = false">
-            {{ $t('_common.cancel') || 'Cancel' }}
-          </n-button>
-          <n-button
-            type="error"
-            strong
-            :loading="deletingAutosync"
-            @click="confirmDeleteAutosync"
-          >
-            <i class="fas fa-trash" />
-            <span class="ml-2">
-              {{ $t('playnite.delete_all_autosync') || 'Delete Auto-sync Games' }}
-            </span>
-          </n-button>
+        <div class="w-full flex items-center justify-center gap-3">
+          <n-button type="default" strong @click="showDeleteAutosyncConfirm = false">{{
+            $t('_common.cancel') || 'Cancel'
+          }}</n-button>
+          <n-button type="error" strong :loading="deletingAutosync" @click="confirmDeleteAutosync">{{
+            $t('_common.continue') || 'Continue'
+          }}</n-button>
         </div>
       </template>
     </n-card>

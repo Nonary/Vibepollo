@@ -530,6 +530,7 @@ namespace platf::playnite::sync {
                                  bool recent_mode,
                                  bool require_repl,
                                  bool remove_uninstalled,
+                                 bool sync_all_installed,
                                  const std::unordered_set<std::string> &selected_ids,
                                  bool &changed) {
     auto cur = current_auto_ids(root);
@@ -548,6 +549,21 @@ namespace platf::playnite::sync {
         if ((remove_uninstalled && uninstalled_lower.contains(to_lower_copy(pid))) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
           changed = true;
           continue;
+        }
+        // When sync_all_installed is disabled, remove apps that were added by the "installed" source
+        // and are no longer in the selected set (unless they also have other sources)
+        if (!sync_all_installed && !selected_ids.contains(pid)) {
+          try {
+            if (app.contains("playnite-source")) {
+              std::string source = app["playnite-source"].get<std::string>();
+              // Only remove if the app was ONLY from the "installed" source
+              // (i.e., not also selected by recent, category, or plugin criteria)
+              if (source == "installed") {
+                changed = true;
+                continue;
+              }
+            }
+          } catch (...) {}
         }
         if (!selected_ids.contains(pid) && recent_mode && require_repl && repl > 0) {
           --repl;
@@ -674,7 +690,7 @@ namespace platf::playnite::sync {
       selected_ids.insert(g.id);
     }
     const bool recent_mode = (recentN > 0);
-    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, selected_ids, changed);
+    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, sync_all_installed, selected_ids, changed);
 
     // Add missing
     add_missing_auto_entries(root, selected, matched_ids, source_flags, changed);

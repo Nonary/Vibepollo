@@ -89,6 +89,7 @@ namespace platf::playnite::sync {
                                  bool recent_mode,
                                  bool require_repl,
                                  bool remove_uninstalled,
+                                 bool sync_all_installed,
                                  const std::unordered_set<std::string> &selected_ids,
                                  bool &changed);
 
