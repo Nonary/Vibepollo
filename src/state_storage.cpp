@@ -56,6 +56,11 @@ namespace statefile {
     }
   }  // namespace
 
+  std::mutex &state_mutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+
   const std::string &sunshine_state_path() {
     return config::nvhttp.file_state;
   }
@@ -75,6 +80,8 @@ namespace statefile {
       if (old_path.empty() || new_path.empty() || old_path == new_path) {
         return;
       }
+
+      std::lock_guard<std::mutex> guard(state_mutex());
 
       pt::ptree old_tree;
       const bool old_loaded = load_tree_if_exists(old_path, old_tree);

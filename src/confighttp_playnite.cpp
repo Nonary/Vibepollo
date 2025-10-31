@@ -550,8 +550,6 @@ namespace confighttp {
     namespace fs = std::filesystem;
     namespace pt = boost::property_tree;
 
-    std::mutex crash_state_mutex;
-
     pt::ptree &ensure_pt_root(pt::ptree &tree) {
       auto it = tree.find("root");
       if (it == tree.not_found()) {
@@ -568,12 +566,12 @@ namespace confighttp {
     };
 
     std::optional<CrashDismissalState> load_crash_dismissal_state() {
-      std::scoped_lock lock(crash_state_mutex);
       statefile::migrate_recent_state_keys();
       const std::string &path_str = statefile::vibeshine_state_path();
       if (path_str.empty()) {
         return std::nullopt;
       }
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       fs::path path(path_str);
       if (!fs::exists(path)) {
         return std::nullopt;
@@ -604,12 +602,12 @@ namespace confighttp {
     }
 
     bool save_crash_dismissal_state(const CrashDismissalState &state) {
-      std::scoped_lock lock(crash_state_mutex);
       statefile::migrate_recent_state_keys();
       const std::string &path_str = statefile::vibeshine_state_path();
       if (path_str.empty()) {
         return false;
       }
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       fs::path path(path_str);
       pt::ptree tree;
       if (fs::exists(path)) {

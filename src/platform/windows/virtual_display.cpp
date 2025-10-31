@@ -500,6 +500,7 @@ namespace VDISPLAY {
         return std::nullopt;
       }
 
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       const fs::path path(path_str);
       if (!fs::exists(path)) {
         return std::nullopt;
@@ -544,11 +545,13 @@ namespace VDISPLAY {
     }
 
     void write_guid_to_state_locked(const uuid_util::uuid_t &uuid) {
+      statefile::migrate_recent_state_keys();
       const auto &path_str = statefile::vibeshine_state_path();
       if (path_str.empty()) {
         return;
       }
 
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       const fs::path path(path_str);
       pt::ptree tree;
       try {

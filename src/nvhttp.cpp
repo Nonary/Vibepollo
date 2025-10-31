@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <format>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -180,6 +181,8 @@ namespace nvhttp {
     const auto &sunshine_path = statefile::sunshine_state_path();
     const auto &vibeshine_path = statefile::vibeshine_state_path();
 
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+
     pt::ptree root;
 
     if (fs::exists(sunshine_path)) {
@@ -254,6 +257,8 @@ namespace nvhttp {
     statefile::migrate_recent_state_keys();
     const auto &sunshine_path = statefile::sunshine_state_path();
     const auto &vibeshine_path = statefile::vibeshine_state_path();
+
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
 
     if (!fs::exists(sunshine_path)) {
       BOOST_LOG(info) << "File "sv << sunshine_path << " doesn't exist"sv;
