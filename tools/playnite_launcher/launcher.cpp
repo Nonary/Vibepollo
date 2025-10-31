@@ -390,6 +390,7 @@ namespace playnite_launcher {
       bool game_focus_budget_active = false;
       auto game_focus_deadline = std::chrono::steady_clock::now();
       auto next_game_focus_check = std::chrono::steady_clock::now();
+      bool fullscreen_detected = false;
 
       int consecutive_missing = 0;
       auto connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
@@ -429,21 +430,21 @@ namespace playnite_launcher {
 
         auto now = std::chrono::steady_clock::now();
         bool active_game_now = active_game_flag.load();
-        int64_t grace_ms = grace_deadline_ms.load();
-        bool in_grace = grace_ms > 0 && now < millis_to_steady(grace_ms);
-        bool waiting_for_pipe = !pipe_connected.load() && now < connection_grace_deadline;
 
-        if (fs_running) {
+        if(!fullscreen_detected && fs_running) {
+          fullscreen_detected = true;
+        }
+
+        if (fs_running || active_game_now) {
           consecutive_missing = 0;
-        } else {
-          if (active_game_now || in_grace || waiting_for_pipe) {
-            consecutive_missing = 0;
-          } else {
-            consecutive_missing++;
-            if (consecutive_missing >= 12) {
-              break;
-            }
-          }
+        }
+        else {
+          consecutive_missing++;
+        }
+
+        // If fullscreen not running and we've detected it once before, exit
+        if (consecutive_missing >= 12 || (!fs_running && fullscreen_detected)) {
+          break;
         }
 
         if (!watcher_spawned.load() && !fullscreen_install_dir_utf8.empty()) {
