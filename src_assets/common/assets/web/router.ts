@@ -18,6 +18,33 @@ const routes = [
   { path: '/clients', component: ClientManagementView },
 ];
 
+const CHUNK_RELOAD_FLAG = 'sunshine:chunk-reload';
+const chunkErrorPatterns = [
+  'Failed to fetch dynamically imported module',
+  'Importing a module script failed',
+];
+
+function isChunkLoadError(error: unknown): boolean {
+  if (!error) return false;
+  if (typeof error === 'string') {
+    return chunkErrorPatterns.some((pattern) => error.includes(pattern));
+  }
+  if (error instanceof Error) {
+    const message = error.message ?? '';
+    if (chunkErrorPatterns.some((pattern) => message.includes(pattern))) {
+      return true;
+    }
+    if (error.name === 'ChunkLoadError') {
+      return true;
+    }
+    if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
+      const code = (error as { code?: string }).code ?? '';
+      return code === 'ERR_MODULE_NOT_FOUND';
+    }
+  }
+  return false;
+}
+
 export const router = createRouter({
   // Use HTML5 history mode (no # in URLs)
   history: createWebHistory('/'),
@@ -45,4 +72,20 @@ router.beforeEach(async (_to: RouteLocationNormalized) => {
   }
   // Always allow navigation so URL remains intact
   return true;
+});
+
+router.onError((error) => {
+  if (typeof window === 'undefined') return;
+  if (!isChunkLoadError(error)) return;
+  try {
+    const storage = window.sessionStorage;
+    if (storage && !storage.getItem(CHUNK_RELOAD_FLAG)) {
+      storage.setItem(CHUNK_RELOAD_FLAG, Date.now().toString());
+      window.location.reload();
+      return;
+    }
+    storage?.removeItem(CHUNK_RELOAD_FLAG);
+  } catch {
+  }
+  window.location.replace(window.location.origin);
 });

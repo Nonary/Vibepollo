@@ -9,6 +9,41 @@
 
 namespace platf::playnite::sync {
 
+  constexpr int kSourceRecent = 1 << 0;
+  constexpr int kSourceCategory = 1 << 1;
+  constexpr int kSourcePlugin = 1 << 2;
+  constexpr int kSourceInstalled = 1 << 3;
+
+  static std::string compose_source_label(int flags) {
+    if (flags == 0) {
+      return "unknown";
+    }
+    std::vector<std::string> parts;
+    if (flags & kSourceRecent) {
+      parts.emplace_back("recent");
+    }
+    if (flags & kSourceCategory) {
+      parts.emplace_back("category");
+    }
+    if (flags & kSourcePlugin) {
+      parts.emplace_back("plugin");
+    }
+    if (flags & kSourceInstalled) {
+      parts.emplace_back("installed");
+    }
+    if (parts.empty()) {
+      return "unknown";
+    }
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      if (i != 0) {
+        out.push_back('+');
+      }
+      out += parts[i];
+    }
+    return out;
+  }
+
   std::string to_lower_copy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
       return (char) std::tolower(c);
@@ -161,7 +196,67 @@ namespace platf::playnite::sync {
         }
       }
       out.push_back(g);
-      out_source_flags[g.id] |= 0x1;
+      out_source_flags[g.id] |= kSourceRecent;
+    }
+    return out;
+  }
+
+  std::vector<Game> select_plugin_games(const std::vector<Game> &installed,
+                                        const std::unordered_set<std::string> &plugins_lower,
+                                        const std::unordered_set<std::string> &exclude_lower,
+                                        const std::unordered_set<std::string> &exclude_categories_lower,
+                                        const std::unordered_set<std::string> &exclude_plugins_lower,
+                                        std::unordered_map<std::string, int> &out_source_flags) {
+    if (plugins_lower.empty()) {
+      return {};
+    }
+    std::vector<Game> out;
+    out.reserve(installed.size());
+    for (const auto &g : installed) {
+      auto id = to_lower_copy(g.id);
+      if (!id.empty() && exclude_lower.contains(id)) {
+        continue;
+      }
+      if (game_has_excluded_category(g, exclude_categories_lower)) {
+        continue;
+      }
+      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
+        continue;
+      }
+      if (g.plugin_id.empty()) {
+        continue;
+      }
+      if (!plugins_lower.contains(to_lower_copy(g.plugin_id))) {
+        continue;
+      }
+      out.push_back(g);
+      out_source_flags[g.id] |= kSourcePlugin;
+    }
+    return out;
+  }
+
+  std::vector<Game> select_all_installed_games(const std::vector<Game> &installed,
+                                               const std::unordered_set<std::string> &exclude_lower,
+                                               const std::unordered_set<std::string> &exclude_categories_lower,
+                                               const std::unordered_set<std::string> &exclude_plugins_lower,
+                                               std::unordered_map<std::string, int> &out_source_flags) {
+    std::vector<Game> out;
+    out.reserve(installed.size());
+    for (const auto &g : installed) {
+      auto id = to_lower_copy(g.id);
+      if (!id.empty() && exclude_lower.contains(id)) {
+        continue;
+      }
+      if (game_has_excluded_category(g, exclude_categories_lower)) {
+        continue;
+      }
+      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
+        continue;
+      }
+      out.push_back(g);
+      if (!g.id.empty()) {
+        out_source_flags[g.id] |= kSourceInstalled;
+      }
     }
     return out;
   }
@@ -198,7 +293,7 @@ namespace platf::playnite::sync {
       }
       if (ok) {
         out.push_back(g);
-        out_source_flags[g.id] |= 0x2;
+        out_source_flags[g.id] |= kSourceCategory;
       }
     }
     return out;
@@ -325,8 +420,7 @@ namespace platf::playnite::sync {
 
   void mark_app_as_playnite_auto(nlohmann::json &app, int flags) {
     try {
-      std::string src = flags == 0 ? "unknown" : (flags == 3 ? "recent+category" : (flags == 1 ? "recent" : "category"));
-      app["playnite-source"] = src;
+      app["playnite-source"] = compose_source_label(flags);
       app["playnite-managed"] = "auto";
     } catch (...) {}
   }
@@ -428,7 +522,16 @@ namespace platf::playnite::sync {
     return c;
   }
 
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, const std::unordered_set<std::string> &selected_ids, bool &changed) {
+  void purge_uninstalled_and_ttl(nlohmann::json &root,
+                                 const std::unordered_set<std::string> &uninstalled_lower,
+                                 int delete_after_days,
+                                 std::time_t now_time,
+                                 const std::unordered_map<std::string, std::time_t> &last_played_map,
+                                 bool recent_mode,
+                                 bool require_repl,
+                                 bool remove_uninstalled,
+                                 const std::unordered_set<std::string> &selected_ids,
+                                 bool &changed) {
     auto cur = current_auto_ids(root);
     auto repl = count_replacements_available(cur, selected_ids);
     nlohmann::json kept = nlohmann::json::array();
@@ -442,7 +545,7 @@ namespace platf::playnite::sync {
         }
       } catch (...) {}
       if (is_auto && !pid.empty()) {
-        if (uninstalled_lower.contains(to_lower_copy(pid)) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
+        if ((remove_uninstalled && uninstalled_lower.contains(to_lower_copy(pid))) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
           changed = true;
           continue;
         }
@@ -467,10 +570,13 @@ namespace platf::playnite::sync {
                           int recentAgeDays,
                           int delete_after_days,
                           bool require_repl,
+                          bool sync_all_installed,
                           const std::vector<std::string> &categories,
+                          const std::vector<std::string> &include_plugins,
                           const std::vector<std::string> &exclude_categories,
                           const std::vector<std::string> &exclude_ids,
                           const std::vector<std::string> &exclude_plugins,
+                          bool remove_uninstalled,
                           bool &changed,
                           std::size_t &matched_out) {
     if (!root.contains("apps") || !root["apps"].is_array()) {
@@ -500,14 +606,27 @@ namespace platf::playnite::sync {
       }
     }
 
-    // Select recent and/or category and merge with flags
-    std::unordered_map<std::string, int> source_flags;  // id->flags: 1=recent, 2=category
-    std::vector<Game> sel_recent, sel_cats;
+    // Select recent/category/plugin/all-installed sources and merge with flags
+    std::unordered_map<std::string, int> source_flags;
+    std::vector<Game> sel_recent, sel_cats, sel_plugins, sel_all;
     if (recentN > 0) {
       sel_recent = select_recent_installed_games(installed, recentN, recentAgeDays, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
     if (!categories.empty()) {
       sel_cats = select_category_games(installed, categories, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+    }
+    std::unordered_set<std::string> include_plugins_lower;
+    for (auto id : include_plugins) {
+      auto lowered = to_lower_copy(std::move(id));
+      if (!lowered.empty()) {
+        include_plugins_lower.insert(std::move(lowered));
+      }
+    }
+    if (!include_plugins_lower.empty()) {
+      sel_plugins = select_plugin_games(installed, include_plugins_lower, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+    }
+    if (sync_all_installed) {
+      sel_all = select_all_installed_games(installed, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
 
     // Merge selections by id, preserving first instance
@@ -522,6 +641,16 @@ namespace platf::playnite::sync {
         if (!by_id.contains(g.id)) {
           by_id.emplace(g.id, &g);
         }
+      }
+    }
+    for (const auto &g : sel_plugins) {
+      if (!g.id.empty() && !by_id.contains(g.id)) {
+        by_id.emplace(g.id, &g);
+      }
+    }
+    for (const auto &g : sel_all) {
+      if (!g.id.empty() && !by_id.contains(g.id)) {
+        by_id.emplace(g.id, &g);
       }
     }
     std::vector<Game> selected;
@@ -545,7 +674,7 @@ namespace platf::playnite::sync {
       selected_ids.insert(g.id);
     }
     const bool recent_mode = (recentN > 0);
-    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, selected_ids, changed);
+    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, selected_ids, changed);
 
     // Add missing
     add_missing_auto_entries(root, selected, matched_ids, source_flags, changed);

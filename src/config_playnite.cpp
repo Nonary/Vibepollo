@@ -10,6 +10,9 @@
 #include "src/file_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#ifdef _WIN32
+  #include "src/platform/windows/playnite_integration.h"
+#endif
 
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
@@ -137,9 +140,19 @@ namespace config {
       playnite.auto_sync = to_bool(tmp);
     }
     tmp.clear();
+    erase_take(vars, "playnite_sync_all_installed", tmp);
+    if (!tmp.empty()) {
+      playnite.sync_all_installed = to_bool(tmp);
+    }
+    tmp.clear();
     erase_take(vars, "playnite_autosync_require_replacement", tmp);
     if (!tmp.empty()) {
       playnite.autosync_require_replacement = to_bool(tmp);
+    }
+    tmp.clear();
+    erase_take(vars, "playnite_autosync_remove_uninstalled", tmp);
+    if (!tmp.empty()) {
+      playnite.autosync_remove_uninstalled = to_bool(tmp);
     }
 
     // integers
@@ -213,6 +226,8 @@ namespace config {
     playnite.sync_categories.clear();
     playnite.exclude_categories_meta.clear();
     playnite.exclude_categories.clear();
+    playnite.sync_plugins_meta.clear();
+    playnite.sync_plugins.clear();
     playnite.exclude_plugins_meta.clear();
     playnite.exclude_plugins.clear();
     playnite.exclude_games_meta.clear();
@@ -222,6 +237,8 @@ namespace config {
     parse_id_name_array(vars, "playnite_sync_categories", playnite.sync_categories_meta, &playnite.sync_categories, /*treat_strings_as_ids=*/false);
     // Excluded categories: accept JSON array of {id,name} or strings (names). Maintain runtime names list.
     parse_id_name_array(vars, "playnite_exclude_categories", playnite.exclude_categories_meta, &playnite.exclude_categories, /*treat_strings_as_ids=*/false);
+    // Included plugins: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.
+    parse_id_name_array(vars, "playnite_sync_plugins", playnite.sync_plugins_meta, &playnite.sync_plugins, /*treat_strings_as_ids=*/true);
     // Excluded plugins: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.
     parse_id_name_array(vars, "playnite_exclude_plugins", playnite.exclude_plugins_meta, &playnite.exclude_plugins, /*treat_strings_as_ids=*/true);
     // Exclusions: accept JSON array of {id,name} or strings (ids). Maintain runtime ids list.
@@ -297,6 +314,14 @@ namespace config {
       }
     } catch (...) {
       // best-effort; ignore errors
+    }
+#endif
+#ifdef _WIN32
+    if (config::playnite.auto_sync) {
+      try {
+        platf::playnite::force_sync();
+      } catch (...) {
+      }
     }
 #endif
   }

@@ -111,19 +111,9 @@
                     >manual</span
                   >
                   <span
-                    v-else-if="(app['playnite-source'] || '') === 'recent'"
+                    v-else-if="app['playnite-source']"
                     class="text-[10px] opacity-70"
-                    >recent</span
-                  >
-                  <span
-                    v-else-if="(app['playnite-source'] || '') === 'category'"
-                    class="text-[10px] opacity-70"
-                    >category</span
-                  >
-                  <span
-                    v-else-if="(app['playnite-source'] || '') === 'recent+category'"
-                    class="text-[10px] opacity-70"
-                    >recent+category</span
+                    >{{ String(app['playnite-source']).split('+').join(' + ') }}</span
                   >
                   <span v-else class="text-[10px] opacity-70">managed</span>
                 </template>

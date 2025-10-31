@@ -860,42 +860,6 @@ function ensureNameSelectionFromForm() {
   nameOptions.value = opts;
   nameSelectValue.value = pid ? String(pid) : currentName ? `__custom__:${currentName}` : '';
 }
-watch(open, (o) => {
-  if (o) {
-    form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
-    // reset playnite picker state when opening
-    selectedPlayniteId.value = '';
-    lockPlaynite.value = false;
-    newAppSource.value = 'custom';
-    // refresh Playnite status early so the picker can enable itself
-    refreshPlayniteStatus().then(() => {
-      if (playniteInstalled.value) void loadPlayniteGames();
-    });
-    // Update scroll shadows after content paints
-    requestAnimationFrame(() => updateShadows());
-    // Initialize unified name combobox selection
-    ensureNameSelectionFromForm();
-    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
-    } else {
-      frameGenHealth.value = null;
-      frameGenHealthError.value = null;
-    }
-    if (isWindows.value) {
-      refreshLosslessExecutableStatus().catch(() => {});
-    }
-  } else {
-    frameGenHealth.value = null;
-    frameGenHealthError.value = null;
-  }
-});
-watch(
-  () => (configStore.config as any)?.lossless_scaling_path,
-  () => {
-    if (!open.value || !isWindows.value) return;
-    refreshLosslessExecutableStatus().catch(() => {});
-  },
-);
 function close() {
   emit('update:modelValue', false);
 }
@@ -1075,6 +1039,40 @@ const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthLoading = ref(false);
 const frameGenHealthError = ref<string | null>(null);
 let frameGenHealthPromise: Promise<void> | null = null;
+
+watch(open, (o) => {
+  if (o) {
+    form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
+    selectedPlayniteId.value = '';
+    lockPlaynite.value = false;
+    newAppSource.value = 'custom';
+    refreshPlayniteStatus().then(() => {
+      if (playniteInstalled.value) void loadPlayniteGames();
+    });
+    requestAnimationFrame(() => updateShadows());
+    ensureNameSelectionFromForm();
+    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
+      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
+    } else {
+      frameGenHealth.value = null;
+      frameGenHealthError.value = null;
+    }
+    if (isWindows.value) {
+      refreshLosslessExecutableStatus().catch(() => {});
+    }
+  } else {
+    frameGenHealth.value = null;
+    frameGenHealthError.value = null;
+  }
+});
+
+watch(
+  () => (configStore.config as any)?.lossless_scaling_path,
+  () => {
+    if (!open.value || !isWindows.value) return;
+    refreshLosslessExecutableStatus().catch(() => {});
+  },
+);
 
 type FrameGenHealthReason =
   | 'gen1'

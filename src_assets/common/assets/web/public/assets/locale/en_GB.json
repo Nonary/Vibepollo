@@ -605,5 +605,12 @@
     "actions": {
       "refresh": "Refresh"
     }
+  },
+  "playnite": {
+    "delete_all_autosync": "Delete All Playnite Auto-Sync Apps",
+    "delete_autosync_title": "Delete auto-synced games?",
+    "delete_autosync_body": "This removes every Playnite-managed auto-sync entry from Applications. Manual entries are not affected.",
+    "delete_autosync_success": "Removed auto-synced Playnite games.",
+    "delete_autosync_error": "Failed to delete auto-synced Playnite games."
   }
 }

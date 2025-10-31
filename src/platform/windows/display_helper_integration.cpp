@@ -45,6 +45,8 @@ namespace {
   }
 
   constexpr DWORD kHelperStopGracePeriodMs = 1500;
+  constexpr DWORD kHelperStopTotalWaitMs = 5000;
+  constexpr DWORD kHelperForceKillWaitMs = 2000;
 
   struct session_dd_fields_t {
     int width = -1;
@@ -149,33 +151,57 @@ namespace {
           if (stop_sent) {
             DWORD wait_stop = WaitForSingleObject(h, kHelperStopGracePeriodMs);
             if (wait_stop == WAIT_OBJECT_0) {
-              BOOST_LOG(info) << "Display helper exited after STOP request.";
+              DWORD exit_code = 0;
+              GetExitCodeProcess(h, &exit_code);
+              BOOST_LOG(info) << "Display helper exited after STOP request (code=" << exit_code << ").";
               graceful_shutdown = true;
             } else if (wait_stop == WAIT_TIMEOUT) {
-              BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopGracePeriodMs
-                                 << " ms; forcing termination.";
+              DWORD remaining = (kHelperStopTotalWaitMs > kHelperStopGracePeriodMs) ? (kHelperStopTotalWaitMs - kHelperStopGracePeriodMs) : 0;
+              if (remaining > 0) {
+                DWORD wait_more = WaitForSingleObject(h, remaining);
+                if (wait_more == WAIT_OBJECT_0) {
+                  DWORD exit_code = 0;
+                  GetExitCodeProcess(h, &exit_code);
+                  BOOST_LOG(info) << "Display helper exited after extended STOP wait (code=" << exit_code << ").";
+                  graceful_shutdown = true;
+                } else if (wait_more == WAIT_TIMEOUT) {
+                  BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopTotalWaitMs
+                                     << " ms; will force termination.";
+                } else {
+                  DWORD wait_err = GetLastError();
+                  BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err
+                                   << "); will force termination.";
+                }
+              } else {
+                BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopGracePeriodMs
+                                   << " ms; will force termination.";
+              }
             } else {
               DWORD wait_err = GetLastError();
-              BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err << "); forcing termination.";
+              BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err << "); will force termination.";
             }
           } else {
-            BOOST_LOG(warning) << "Display helper STOP request failed; forcing termination.";
+            BOOST_LOG(warning) << "Display helper STOP request failed; will force termination.";
           }
           platf::display_helper_client::reset_connection();
           if (!graceful_shutdown) {
             helper_proc().terminate();
+            DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
+            if (wait_result == WAIT_OBJECT_0) {
+              DWORD exit_code = 0;
+              GetExitCodeProcess(h, &exit_code);
+              BOOST_LOG(info) << "Display helper terminated after forced shutdown (code=" << exit_code << ").";
+            } else if (wait_result == WAIT_TIMEOUT) {
+              BOOST_LOG(error) << "Display helper process still running after forced termination wait of "
+                               << kHelperForceKillWaitMs << " ms; deferring restart.";
+              return false;
+            } else {
+              DWORD wait_err = GetLastError();
+              BOOST_LOG(error) << "Display helper forced termination wait failed (winerr=" << wait_err
+                               << "); deferring restart.";
+              return false;
+            }
           }
-          // Wait for process to fully terminate and release resources (especially the named pipe and singleton mutex)
-          // Poll for up to 3 seconds to ensure the process handle is signaled and OS cleanup completes
-          DWORD wait_result = WaitForSingleObject(h, 3000);
-          if (wait_result == WAIT_TIMEOUT) {
-            BOOST_LOG(error) << "Display helper process did not terminate within timeout; forcing cleanup.";
-          } else {
-            BOOST_LOG(debug) << "Display helper process terminated; waiting for OS resource cleanup.";
-          }
-          // Additional delay to allow OS to fully release the named pipe and singleton mutex
-          // Without this, the new process may fail with ERROR_ALREADY_EXISTS on the mutex
-          // or the pipe creation may fail with ERROR_ACCESS_DENIED
           std::this_thread::sleep_for(std::chrono::milliseconds(800));
         }
       } else {

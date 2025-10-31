@@ -3141,6 +3141,72 @@ They appear in the Frame Limiter section of the settings UI.
 
 ## Playnite Integration
 
+### playnite_sync_all_installed
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            When set to <code>true</code>, Sunshine synchronises every installed Playnite game into
+            <code>apps.json</code>, in addition to any recent or category-based selections.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_sync_all_installed = true@endcode</td>
+    </tr>
+</table>
+
+### playnite_sync_plugins
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            List of Playnite library plugin IDs whose installed games should always be auto-synced.
+            Accepts a JSON array of objects with <code>id</code>/<code>name</code> pairs or a comma-separated list of plugin IDs.
+            Any installed game originating from the listed plugins is included even if it is not in the recent list.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}
+playnite_sync_plugins = [
+  {"id": "CB91DFC9-B977-43BF-8E70-55F46E410FAB", "name": "Steam"},
+  "83DD83A4-0CF7-49FB-9138-8547F6B60C18"
+]
+@endcode</td>
+    </tr>
+</table>
+
+### playnite_autosync_remove_uninstalled
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            Controls whether Sunshine removes auto-synced games when they are uninstalled in Playnite.
+            Set to <code>true</code> to drop entries immediately when Playnite reports them as uninstalled.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_autosync_remove_uninstalled = false@endcode</td>
+    </tr>
+</table>
+
 ### playnite_exclude_categories
 
 <table>

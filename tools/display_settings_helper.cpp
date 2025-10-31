@@ -2915,7 +2915,7 @@ int main(int argc, char *argv[]) {
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
 
     // For anonymous-pipe server, give the client ample time to connect to the data pipe
-    async_pipe.wait_for_client_connection(60000);  // 60s window after handshake
+    async_pipe.wait_for_client_connection(15000);  // 15s window after handshake
 
     if (!async_pipe.is_connected()) {
       const auto now = std::chrono::steady_clock::now();
