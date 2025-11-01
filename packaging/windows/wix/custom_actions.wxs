@@ -52,6 +52,17 @@
     </DirectoryRef>
   </Fragment>
 
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="SudoVdaRegistryDefaults" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\SudoMaker\SudoVDA">
+          <RegistryValue Id="RegSudoVdaSdrBits" Name="sdrBits" Type="integer" Value="10" KeyPath="yes"/>
+          <RegistryValue Id="RegSudoVdaHdrBits" Name="hdrBits" Type="integer" Value="12"/>
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
   <!-- Official service installation component (installed under INSTALL_ROOT\tools) -->
   <Fragment>
     <DirectoryRef Id="DIR_Tools">
