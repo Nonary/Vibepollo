@@ -352,4 +352,5 @@ namespace video {
    * @warning This is only safe to call when there is no client actively streaming.
    */
   int probe_encoders();
+
 }  // namespace video

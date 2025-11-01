@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <winsock2.h>
 #include <windows.h>
 
 #ifndef FILE_DEVICE_UNKNOWN
@@ -70,6 +71,25 @@ namespace VDISPLAY {
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
 
   uuid_util::uuid_t persistentVirtualDisplayUuid();
-  bool has_active_physical_display();
+  bool has_active_physical_display(const std::optional<bool> &active = std::nullopt);
   bool should_auto_enable_virtual_display();
+
+  struct ensure_display_result {
+    bool success;
+    bool created_temporary;
+    GUID temporary_guid;
+  };
+
+  /**
+   * @brief Ensures a display is available for capture/encoding.
+   * If no active physical displays exist, automatically creates a temporary virtual display.
+   * @return Result indicating success and whether a temporary display was created.
+   */
+  ensure_display_result ensure_display();
+
+  /**
+   * @brief Cleans up temporary display created by ensure_display().
+   * @param result The result from ensure_display() call.
+   */
+  void cleanup_ensure_display(const ensure_display_result &result);
 }  // namespace VDISPLAY

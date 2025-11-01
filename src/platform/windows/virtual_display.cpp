@@ -1,6 +1,7 @@
 #include "virtual_display.h"
 
 #include "src/logging.h"
+#include "src/process.h"
 #include "src/state_storage.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/misc.h"
@@ -35,6 +36,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <winsock2.h>
 #include <windows.h>
 #include <winreg.h>
 #include <wrl/client.h>
@@ -49,6 +51,47 @@ namespace VDISPLAY {
 
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
+
+    enum class DriverPresenceCache : unsigned char {
+      Unknown = 0,
+      Present,
+      Absent
+    };
+
+    std::atomic<DriverPresenceCache> g_driver_presence_cache {DriverPresenceCache::Unknown};
+
+    void cache_driver_presence(bool present) {
+      g_driver_presence_cache.store(present ? DriverPresenceCache::Present : DriverPresenceCache::Absent, std::memory_order_release);
+    }
+
+    std::optional<bool> cached_driver_presence() {
+      const auto value = g_driver_presence_cache.load(std::memory_order_acquire);
+      if (value == DriverPresenceCache::Unknown) {
+        return std::nullopt;
+      }
+      return value == DriverPresenceCache::Present;
+    }
+
+    std::optional<bool> probe_driver_presence_via_setupdi() {
+      HDEVINFO device_info = SetupDiGetClassDevsW(&SUVDA_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+      if (device_info == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+
+      SP_DEVICE_INTERFACE_DATA interface_data {};
+      interface_data.cbSize = sizeof(interface_data);
+      const BOOL enumerated = SetupDiEnumDeviceInterfaces(device_info, nullptr, &SUVDA_INTERFACE_GUID, 0, &interface_data);
+      const DWORD error = enumerated ? ERROR_SUCCESS : GetLastError();
+      SetupDiDestroyDeviceInfoList(device_info);
+
+      if (enumerated) {
+        return true;
+      }
+      if (error == ERROR_NO_MORE_ITEMS) {
+        return false;
+      }
+      return std::nullopt;
+    }
 
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -1083,8 +1126,15 @@ namespace VDISPLAY {
 
   bool isSudaVDADriverInstalled() {
     if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
+      cache_driver_presence(true);
       return true;
     }
+
+    if (auto setupdi_presence = probe_driver_presence_via_setupdi()) {
+      cache_driver_presence(*setupdi_presence);
+      return *setupdi_presence;
+    }
+
     HANDLE hDevice = CreateFileW(
       L"\\\\.\\SudoVda",
       GENERIC_READ | GENERIC_WRITE,
@@ -1096,8 +1146,32 @@ namespace VDISPLAY {
     );
     if (hDevice != INVALID_HANDLE_VALUE) {
       CloseHandle(hDevice);
+      cache_driver_presence(true);
       return true;
     }
+
+    const DWORD error = GetLastError();
+    if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION
+#ifdef ERROR_DEVICE_BUSY
+        || error == ERROR_DEVICE_BUSY
+#endif
+#ifdef ERROR_DEVICE_IN_USE
+        || error == ERROR_DEVICE_IN_USE
+#endif
+    ) {
+      cache_driver_presence(true);
+      return true;
+    }
+
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+      cache_driver_presence(false);
+      return false;
+    }
+
+    if (auto cached = cached_driver_presence()) {
+      return *cached;
+    }
+
     return false;
   }
 
@@ -1231,7 +1305,7 @@ namespace VDISPLAY {
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY
 
-bool VDISPLAY::has_active_physical_display() {
+bool VDISPLAY::has_active_physical_display(const std::optional<bool> &active) {
   auto devices = display_helper_integration::enumerate_devices();
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
@@ -1248,28 +1322,35 @@ bool VDISPLAY::has_active_physical_display() {
     BOOST_LOG(debug) << "Device: " << device.m_display_name << ", has_info: " << has_info << ", is_virtual: " << is_virtual;
     if (!is_virtual) {
       found_physical = true;
-      if (has_info) {
+      if (active.has_value()) {
+        if (has_info == *active) {
+          BOOST_LOG(debug) << "Found physical display matching active state, returning true";
+          return true;
+        }
+      } else if (has_info) {
         BOOST_LOG(debug) << "Found active physical display, returning true";
         return true;
       }
     }
   }
 
-  if (found_physical) {
+  if (found_physical && !active.has_value()) {
     BOOST_LOG(debug) << "Found physical display in enumeration (inactive), returning true";
     return true;
   }
 
-  BOOST_LOG(debug) << "No active physical display found, returning false";
+  BOOST_LOG(debug) << "No physical display matching criteria found, returning false";
   return false;
 }
 
 bool VDISPLAY::should_auto_enable_virtual_display() {
   if (!isSudaVDADriverInstalled()) {
+    BOOST_LOG(warning) << "Suda VDA driver not installed, not enabling virtual display.";
     return false;
   }
 
-  if (has_active_physical_display()) {
+  if (has_active_physical_display(true)) {
+    BOOST_LOG(debug) << "Active physical display detected, not enabling virtual display.";
     return false;
   }
 
@@ -1278,4 +1359,88 @@ bool VDISPLAY::should_auto_enable_virtual_display() {
 
 uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
   return ensure_persistent_guid();
+}
+
+VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
+  ensure_display_result result {false, false, {}};
+
+  if (has_active_physical_display(true)) {
+    result.success = true;
+    return result;
+  }
+
+  if (!should_auto_enable_virtual_display()) {
+    BOOST_LOG(debug) << "No active physical displays and virtual display auto-enable is disabled.";
+    return result;
+  }
+
+  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+    proc::initVDisplayDriver();
+  }
+
+  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+    BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure. Status=" << static_cast<int>(proc::vDisplayDriverStatus);
+    return result;
+  }
+
+  auto virtual_displays = enumerateSudaVDADisplays();
+  bool has_active_virtual = std::any_of(
+    virtual_displays.begin(),
+    virtual_displays.end(),
+    [](const SudaVDADisplayInfo &info) {
+      return info.is_active;
+    }
+  );
+
+  if (has_active_virtual) {
+    BOOST_LOG(debug) << "Active virtual display already exists.";
+    result.success = true;
+    return result;
+  }
+
+  auto uuid = persistentVirtualDisplayUuid();
+  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
+
+  BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
+  auto display_info = createVirtualDisplay("sunshine-ensure", "Sunshine Temporary", 1920u, 1080u, 60000u, result.temporary_guid);
+  if (!display_info) {
+    BOOST_LOG(warning) << "Failed to create temporary virtual display.";
+    return result;
+  }
+
+  result.created_temporary = true;
+
+  constexpr auto timeout = std::chrono::seconds(5);
+  constexpr auto interval = std::chrono::milliseconds(100);
+  auto deadline = std::chrono::steady_clock::now() + timeout;
+
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto displays = enumerateSudaVDADisplays();
+    bool active = std::any_of(
+      displays.begin(),
+      displays.end(),
+      [](const SudaVDADisplayInfo &info) {
+        return info.is_active;
+      }
+    );
+    if (active) {
+      BOOST_LOG(info) << "Temporary virtual display ready.";
+      result.success = true;
+      return result;
+    }
+    std::this_thread::sleep_for(interval);
+  }
+
+  BOOST_LOG(warning) << "Temporary virtual display did not become active within timeout.";
+  return result;
+}
+
+void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result) {
+  if (result.created_temporary) {
+    if (!removeVirtualDisplay(result.temporary_guid)) {
+      BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+    } else {
+      BOOST_LOG(info) << "Removed temporary virtual display.";
+    }
+  }
 }
