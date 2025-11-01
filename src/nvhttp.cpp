@@ -1374,8 +1374,9 @@ namespace nvhttp {
     if (proc::proc.running() > 0) {
       proc::proc.terminate();
     }
-
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
+    VDISPLAY::setWatchdogFeedingEnabled(false);
+    VDISPLAY::removeAllVirtualDisplays();
     display_helper_integration::revert();
   }
 

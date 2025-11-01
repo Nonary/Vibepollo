@@ -94,6 +94,11 @@ namespace VDISPLAY {
         return result;
       }
 
+      std::vector<uuid_util::uuid_t> all() {
+        std::lock_guard<std::mutex> lg(mutex);
+        return guids;
+      }
+
      private:
       std::mutex mutex;
       std::vector<uuid_util::uuid_t> guids;
@@ -622,6 +627,53 @@ namespace VDISPLAY {
     SUDOVDA_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
   }
 
+  void ensureVirtualDisplayRegistryDefaults() {
+    constexpr const wchar_t *REG_PATH = L"SOFTWARE\\SudoMaker\\SudoVDA";
+    HKEY key = nullptr;
+    REGSAM access = KEY_WRITE;
+#ifdef KEY_WOW64_64KEY
+    access |= KEY_WOW64_64KEY;
+#endif
+    DWORD disposition = 0;
+    const LSTATUS status = RegCreateKeyExW(
+      HKEY_LOCAL_MACHINE,
+      REG_PATH,
+      0,
+      nullptr,
+      REG_OPTION_NON_VOLATILE,
+      access,
+      nullptr,
+      &key,
+      &disposition
+    );
+    if (status != ERROR_SUCCESS) {
+      BOOST_LOG(warning) << "Failed to create SudoVDA registry key (status=" << status << ")";
+      return;
+    }
+
+    auto set_dword = [key](const wchar_t *name, DWORD value) {
+      const DWORD data = value;
+      const LSTATUS set_status = RegSetValueExW(
+        key,
+        name,
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE *>(&data),
+        sizeof(data)
+      );
+      if (set_status != ERROR_SUCCESS) {
+        BOOST_LOG(warning) << "Failed to set SudoVDA registry value "
+                           << platf::to_utf8(std::wstring(name))
+                           << " (status=" << set_status << ")";
+      }
+    };
+
+    set_dword(L"sdrBits", 10);
+    set_dword(L"hdrBits", 12);
+
+    RegCloseKey(key);
+  }
+
   DRIVER_STATUS openVDisplayDevice() {
     uint32_t retryInterval = 20;
     while (true) {
@@ -938,6 +990,32 @@ namespace VDISPLAY {
     }
     result.reused_existing = false;
     return result;
+  }
+
+  bool removeAllVirtualDisplays() {
+    auto all_guids = active_virtual_display_tracker().all();
+    if (all_guids.empty()) {
+      BOOST_LOG(debug) << "No active virtual displays to remove.";
+      return true;
+    }
+
+    bool all_removed = true;
+    for (const auto &guid : all_guids) {
+      GUID native_guid = uuid_to_guid(guid);
+      BOOST_LOG(debug) << "Removing virtual display with GUID " << guid.string();
+      if (!VDISPLAY::removeVirtualDisplay(native_guid)) {
+        all_removed = false;
+      }
+    }
+
+    if(all_removed){
+      BOOST_LOG(info) << "Virtual display devices have been removed successfully.";
+    }
+    else {
+      BOOST_LOG(warning) << "Virtual display devices failed to be removed.";
+    }
+
+   return all_removed;
   }
 
   bool removeVirtualDisplay(const GUID &guid) {

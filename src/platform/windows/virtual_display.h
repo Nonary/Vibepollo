@@ -36,6 +36,7 @@ namespace VDISPLAY {
   void setWatchdogFeedingEnabled(bool enable);
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
+  void ensureVirtualDisplayRegistryDefaults();
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
@@ -50,6 +51,7 @@ namespace VDISPLAY {
     const GUID &guid
   );
   bool removeVirtualDisplay(const GUID &guid);
+  bool removeAllVirtualDisplays();
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
