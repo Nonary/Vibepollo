@@ -17,6 +17,7 @@
   // libdisplaydevice
   #include <display_device/json.h>
   #include <display_device/windows/win_api_layer.h>
+  #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_display_device.h>
   #include <nlohmann/json.hpp>
 
@@ -25,11 +26,11 @@
   #include "src/display_device.h"  // For configuration parsing only
   #include "src/globals.h"
   #include "src/logging.h"
+  #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
-  #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include <tlhelp32.h>
 
@@ -46,8 +47,8 @@ namespace {
     return h;
   }
 
-  constexpr DWORD kHelperStopGracePeriodMs = 1500;
-  constexpr DWORD kHelperStopTotalWaitMs = 5000;
+  constexpr DWORD kHelperStopGracePeriodMs = 2000;
+  constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
   void kill_all_helper_processes() {
@@ -479,7 +480,7 @@ namespace display_helper_integration {
 
         // Override device ID and device prep for virtual display
         std::string target_device_id;
-        if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+        if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
           target_device_id = *resolved;
         }
         if (target_device_id.empty()) {
@@ -503,7 +504,7 @@ namespace display_helper_integration {
           platf::display_helper_client::send_blacklist(target_device_id);
 
           set_active_session(session, target_device_id, display_fps);
-          VDISPLAY::setWatchdogFeedingEnabled(true);
+          platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
         }
         return ok;
       } else {
@@ -693,6 +694,7 @@ namespace display_helper_integration {
 
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
     try {
+      display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
       return dd.enumAvailableDevices();
