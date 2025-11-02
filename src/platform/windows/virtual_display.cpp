@@ -31,7 +31,6 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <physicalmonitorenumerationapi.h>
-#include <setupapi.h>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -52,47 +51,6 @@ namespace VDISPLAY {
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
 
-    enum class DriverPresenceCache : unsigned char {
-      Unknown = 0,
-      Present,
-      Absent
-    };
-
-    std::atomic<DriverPresenceCache> g_driver_presence_cache {DriverPresenceCache::Unknown};
-
-    void cache_driver_presence(bool present) {
-      g_driver_presence_cache.store(present ? DriverPresenceCache::Present : DriverPresenceCache::Absent, std::memory_order_release);
-    }
-
-    std::optional<bool> cached_driver_presence() {
-      const auto value = g_driver_presence_cache.load(std::memory_order_acquire);
-      if (value == DriverPresenceCache::Unknown) {
-        return std::nullopt;
-      }
-      return value == DriverPresenceCache::Present;
-    }
-
-    std::optional<bool> probe_driver_presence_via_setupdi() {
-      HDEVINFO device_info = SetupDiGetClassDevsW(&SUVDA_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-      if (device_info == INVALID_HANDLE_VALUE) {
-        return std::nullopt;
-      }
-
-      SP_DEVICE_INTERFACE_DATA interface_data {};
-      interface_data.cbSize = sizeof(interface_data);
-      const BOOL enumerated = SetupDiEnumDeviceInterfaces(device_info, nullptr, &SUVDA_INTERFACE_GUID, 0, &interface_data);
-      const DWORD error = enumerated ? ERROR_SUCCESS : GetLastError();
-      SetupDiDestroyDeviceInfoList(device_info);
-
-      if (enumerated) {
-        return true;
-      }
-      if (error == ERROR_NO_MORE_ITEMS) {
-        return false;
-      }
-      return std::nullopt;
-    }
-
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
     }
@@ -107,6 +65,33 @@ namespace VDISPLAY {
         return false;
       }
       return now < time_from_steady_ticks(deadline_ticks);
+    }
+
+    bool driver_handle_responsive(HANDLE handle) {
+      if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+
+      if (!CheckProtocolCompatible(handle)) {
+        return false;
+      }
+
+      if (!PingDriver(handle)) {
+        return false;
+      }
+
+      return true;
+    }
+
+    bool probe_driver_responsive_once() {
+      HANDLE handle = OpenDevice(&SUVDA_INTERFACE_GUID);
+      if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+
+      const bool responsive = driver_handle_responsive(handle);
+      CloseHandle(handle);
+      return responsive;
     }
 
     struct ActiveVirtualDisplayTracker {
@@ -1125,51 +1110,16 @@ namespace VDISPLAY {
   }
 
   bool isSudaVDADriverInstalled() {
+    if (driver_handle_responsive(SUDOVDA_DRIVER_HANDLE)) {
+      return true;
+    }
+
     if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
-      cache_driver_presence(true);
+      closeVDisplayDevice();
+    }
+
+    if (probe_driver_responsive_once()) {
       return true;
-    }
-
-    if (auto setupdi_presence = probe_driver_presence_via_setupdi()) {
-      cache_driver_presence(*setupdi_presence);
-      return *setupdi_presence;
-    }
-
-    HANDLE hDevice = CreateFileW(
-      L"\\\\.\\SudoVda",
-      GENERIC_READ | GENERIC_WRITE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE,
-      NULL,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_NORMAL,
-      NULL
-    );
-    if (hDevice != INVALID_HANDLE_VALUE) {
-      CloseHandle(hDevice);
-      cache_driver_presence(true);
-      return true;
-    }
-
-    const DWORD error = GetLastError();
-    if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION
-#ifdef ERROR_DEVICE_BUSY
-        || error == ERROR_DEVICE_BUSY
-#endif
-#ifdef ERROR_DEVICE_IN_USE
-        || error == ERROR_DEVICE_IN_USE
-#endif
-    ) {
-      cache_driver_presence(true);
-      return true;
-    }
-
-    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
-      cache_driver_presence(false);
-      return false;
-    }
-
-    if (auto cached = cached_driver_presence()) {
-      return *cached;
     }
 
     return false;
