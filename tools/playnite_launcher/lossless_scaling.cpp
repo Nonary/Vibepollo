@@ -1073,8 +1073,16 @@ namespace playnite_launcher::lossless {
     if (force_launch) {
       return true;
     }
-    return state.stopped || state.previously_running;
+    if (state.running_pids.empty()) {
+      return true;
+    }
+    return state.stopped;
   }
+#ifdef SUNSHINE_TESTS
+  bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch) {
+    return should_launch_new_instance(state, force_launch);
+  }
+#endif
 
   static bool focus_with_retry(DWORD pid, int attempts, std::chrono::milliseconds delay) {
     if (!pid) {

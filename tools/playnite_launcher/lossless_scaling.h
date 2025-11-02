@@ -123,5 +123,8 @@ namespace playnite_launcher::lossless {
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup);
   bool lossless_scaling_restore_global_profile(const lossless_scaling_profile_backup &backup);
   void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8 = std::string(), const std::string &exe_path_utf8 = std::string(), DWORD focused_game_pid = 0);
+#ifdef SUNSHINE_TESTS
+  bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch);
+#endif
 
 }  // namespace playnite_launcher::lossless

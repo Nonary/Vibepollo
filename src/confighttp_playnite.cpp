@@ -672,6 +672,15 @@ namespace confighttp {
       }
     } catch (...) {}
 
+    // sunshine_old.log (previous session)
+    try {
+      std::filesystem::path old_log_path = std::filesystem::path(config::sunshine.log_file).parent_path() / "sunshine_old.log";
+      std::string data;
+      if (read_file_if_exists(old_log_path, data)) {
+        entries.emplace_back("sunshine_old.log", std::move(data));
+      }
+    } catch (...) {}
+
     // Playnite plugin log (Roaming\Sunshine\sunshine_playnite.log)
     try {
       platf::dxgi::safe_token user_token;
