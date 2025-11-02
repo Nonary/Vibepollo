@@ -2,6 +2,17 @@ import { defineStore } from 'pinia';
 import { ref, Ref } from 'vue';
 import { http } from '@/http';
 
+const rememberStorageKey = 'sunshine.auth.remember';
+
+function readRememberPreference(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(rememberStorageKey) === '1';
+  } catch {
+    return false;
+  }
+}
+
 interface AuthStatusResponse {
   credentials_configured?: boolean;
   authenticated?: boolean;
@@ -72,24 +83,52 @@ export const useAuthStore = defineStore('auth', () => {
   // Single init call invoked during app bootstrap after http layer validation.
   async function init(): Promise<void> {
     if (ready.value) return;
+    const preferRemember = readRememberPreference();
+
+    const fetchStatus = async (): Promise<AuthStatusResponse | null> => {
+      try {
+        const res = await http.get<AuthStatusResponse>('/api/auth/status', {
+          validateStatus: () => true,
+        });
+        if (res && res.status === 200 && res.data) {
+          return res.data;
+        }
+      } catch {
+        /* noop */
+      }
+      return null;
+    };
+
+    const applyStatus = (payload: AuthStatusResponse | null): boolean => {
+      if (!payload) return false;
+      if (typeof payload.credentials_configured === 'boolean') {
+        credentialsConfigured.value = payload.credentials_configured;
+      }
+      if (payload.authenticated) {
+        setAuthenticated(true);
+      }
+      return !!(payload.login_required && !payload.authenticated);
+    };
+
     try {
-      const res = await http.get<AuthStatusResponse>('/api/auth/status', {
-        validateStatus: () => true,
-      });
-      if (res && res.status === 200 && res.data) {
-        if (typeof res.data.credentials_configured === 'boolean') {
-          credentialsConfigured.value = res.data.credentials_configured;
-        }
-        if (res.data.authenticated) {
-          setAuthenticated(true);
-        }
-        // Show login only if explicitly required and not already authenticated
-        if (res.data.login_required && !res.data.authenticated) {
-          showLoginModal.value = true;
+      let status = await fetchStatus();
+      let requiresLogin = applyStatus(status);
+
+      if (requiresLogin && preferRemember) {
+        const retryDelays = [250, 600];
+        for (const delay of retryDelays) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
+          status = await fetchStatus();
+          requiresLogin = applyStatus(status);
+          if (!requiresLogin) {
+            break;
+          }
         }
       }
-    } catch (e) {
-      // Network issues; defer to interceptor behavior
+
+      if (requiresLogin && !logoutInitiated.value) {
+        showLoginModal.value = true;
+      }
     } finally {
       ready.value = true;
     }

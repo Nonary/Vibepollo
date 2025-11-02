@@ -505,21 +505,7 @@ async function runVersionChecks() {
     } catch (e) {
       vigemInstalled.value = null;
     }
-    // Crash dump health (Windows only)
-    try {
-      if (plat === 'windows') {
-        const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
-        if (r.status === 200 && r.data) {
-          crashDump.value = r.data as CrashDumpStatus;
-        } else {
-          crashDump.value = { available: false };
-        }
-      } else {
-        crashDump.value = null;
-      }
-    } catch (e) {
-      crashDump.value = null;
-    }
+    await refreshCrashDumpStatus(plat);
     // Playnite status for extension version/update check
     try {
       const r = await http.get('/api/playnite/status', { validateStatus: () => true });
@@ -556,6 +542,24 @@ function exportCrashBundle() {
   } catch {}
 }
 
+async function refreshCrashDumpStatus(platformOverride?: string) {
+  const platform = ((platformOverride ?? configStore.metadata?.platform) || '').toLowerCase();
+  if (platform !== 'windows') {
+    crashDump.value = null;
+    return;
+  }
+  try {
+    const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
+    if (r.status === 200 && r.data) {
+      crashDump.value = r.data as CrashDumpStatus;
+    } else {
+      crashDump.value = { available: false };
+    }
+  } catch {
+    crashDump.value = null;
+  }
+}
+
 async function dismissCrashBundle() {
   if (!crashDump.value?.available) return;
   const payload = {
@@ -577,14 +581,24 @@ async function dismissCrashBundle() {
         dismissed_at: r.data.dismissed_at || new Date().toISOString(),
       };
       message.success($t('config.crash_dump_dismiss_success') || 'Crash notification dismissed.');
+      await refreshCrashDumpStatus();
     } else {
+      const errData = r.data && (r.data.error || r.data.message);
+      const errMessage = typeof errData === 'string' ? errData : '';
+      if (errMessage) {
+        const lower = errMessage.toLowerCase();
+        if (lower.includes('metadata mismatch') || lower.includes('no recent sunshine crash dumps')) {
+          await refreshCrashDumpStatus();
+        }
+      }
       message.error(
-        (r.data && (r.data.error || r.data.message)) ||
+        errMessage ||
           $t('config.crash_dump_dismiss_error') ||
           'Failed to dismiss crash notification.',
       );
     }
   } catch {
+    await refreshCrashDumpStatus();
     message.error(
       $t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.',
     );

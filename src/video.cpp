@@ -37,9 +37,9 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
-  #include "uuid.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "uuid.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -47,7 +47,7 @@ extern "C" {
 namespace proc {
   extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
   void initVDisplayDriver();
-}
+}  // namespace proc
 #endif
 
 using namespace std::literals;
@@ -71,8 +71,7 @@ namespace video {
         return false;
       }
 
-      const bool explicit_virtual = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
-                                      config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+      const bool explicit_virtual = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client || config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
       const bool auto_activate = config::video.dd.activate_virtual_display;
       if (explicit_virtual || auto_activate) {
         return true;
@@ -90,7 +89,7 @@ namespace video {
         return false;
       }
 
-      if (!VDISPLAY::has_active_physical_display()) {
+      if (!VDISPLAY::has_active_physical_display(true)) {
         return true;
       }
 
@@ -113,112 +112,6 @@ namespace video {
 
       return std::nullopt;
     }
-#endif
-
-#ifdef _WIN32
-    class probe_virtual_display_guard {
-    public:
-      probe_virtual_display_guard() {
-        ready_ = ensure_display();
-      }
-
-      ~probe_virtual_display_guard() {
-        if (created_) {
-          if (!VDISPLAY::removeVirtualDisplay(display_guid_)) {
-            BOOST_LOG(warning) << "Sunshine virtual display removal failed after encoder probe.";
-          }
-        }
-      }
-
-      bool ready() const {
-        return ready_;
-      }
-
-    private:
-      static bool has_any_dxgi_display() {
-        return !platf::display_names(platf::mem_type_e::dxgi).empty();
-      }
-
-      bool wait_for_display() const {
-        constexpr auto timeout = std::chrono::seconds(5);
-        constexpr auto interval = std::chrono::milliseconds(100);
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-          if (has_any_dxgi_display()) {
-            return true;
-          }
-          std::this_thread::sleep_for(interval);
-        }
-        return has_any_dxgi_display();
-      }
-
-      void ensure_guid() {
-        auto uuid = VDISPLAY::persistentVirtualDisplayUuid();
-        std::memcpy(&display_guid_, uuid.b8, sizeof(display_guid_));
-      }
-
-      bool ensure_display() {
-        if (has_any_dxgi_display()) {
-          return true;
-        }
-
-        if (VDISPLAY::has_active_physical_display()) {
-          return wait_for_display();
-        }
-
-        if (!VDISPLAY::should_auto_enable_virtual_display()) {
-          return false;
-        }
-
-        if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-          proc::initVDisplayDriver();
-        }
-
-        if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-          BOOST_LOG(warning) << "Virtual display driver unavailable for encoder probing. Status=" << static_cast<int>(proc::vDisplayDriverStatus);
-          return false;
-        }
-
-        auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
-        const bool has_active_virtual = std::any_of(
-          virtual_displays.begin(),
-          virtual_displays.end(),
-          [](const VDISPLAY::SudaVDADisplayInfo &info) {
-            return info.is_active;
-          }
-        );
-
-        if (has_active_virtual) {
-          return wait_for_display();
-        }
-
-        ensure_guid();
-
-        constexpr uint32_t width = 1920u;
-        constexpr uint32_t height = 1080u;
-        constexpr uint32_t fps = 480000u;
-
-        BOOST_LOG(info) << "Creating Sunshine virtual display for encoder probing.";
-        auto display_info = VDISPLAY::createVirtualDisplay("sunshine-probe", "Sunshine Probe", width, height, fps, display_guid_);
-        if (!display_info) {
-          BOOST_LOG(warning) << "Failed to create Sunshine virtual display for encoder probing.";
-          return false;
-        }
-
-        created_ = true;
-        if (!wait_for_display()) {
-          BOOST_LOG(warning) << "Virtual display did not become available after creation.";
-          return false;
-        }
-
-        BOOST_LOG(info) << "Sunshine virtual display ready for encoder probing.";
-        return true;
-      }
-
-      bool created_ {false};
-      bool ready_ {false};
-      GUID display_guid_ {};
-    };
 #endif
 
     bool ensure_virtual_display_ready(std::vector<std::string> &display_names, int &display_index) {
@@ -2925,10 +2818,13 @@ namespace video {
     }
 
 #ifdef _WIN32
-    probe_virtual_display_guard virtual_display_guard;
-    if (!virtual_display_guard.ready()) {
-      BOOST_LOG(debug) << "Encoder probing proceeding without an available display.";
+    auto display_result = VDISPLAY::ensure_display();
+    if (!display_result.success) {
+      BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
     }
+    auto cleanup_display = util::fail_guard([&display_result]() {
+      VDISPLAY::cleanup_ensure_display(display_result);
+    });
 #endif
 
     auto encoder_list = encoders;

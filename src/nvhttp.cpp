@@ -12,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -80,6 +81,7 @@ namespace nvhttp {
   static std::string otp_passphrase;
   static std::string otp_device_name;
   static std::chrono::time_point<std::chrono::steady_clock> otp_creation_time;
+  thread_local crypto::x509_t tl_peer_certificate;
 
   class SunshineHTTPSServer: public SimpleWeb::ServerBase<SunshineHTTPS> {
   public:
@@ -218,7 +220,9 @@ namespace nvhttp {
     statefile::migrate_recent_state_keys();
     const auto &sunshine_path = statefile::sunshine_state_path();
     const auto &vibeshine_path = statefile::vibeshine_state_path();
-    const bool share_state_file = sunshine_path == vibeshine_path;
+    const bool share_state_file = statefile::share_state_file();
+
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
 
     nlohmann::json root = nlohmann::json::object();
     if (fs::exists(sunshine_path)) {
@@ -344,7 +348,9 @@ namespace nvhttp {
     statefile::migrate_recent_state_keys();
     const auto &sunshine_path = statefile::sunshine_state_path();
     const auto &vibeshine_path = statefile::vibeshine_state_path();
-    const bool share_state_file = sunshine_path == vibeshine_path;
+    const bool share_state_file = statefile::share_state_file();
+
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
 
     if (!fs::exists(sunshine_path)) {
       BOOST_LOG(info) << "File "sv << sunshine_path << " doesn't exist"sv;
@@ -388,21 +394,7 @@ namespace nvhttp {
 #endif
     }
 
-    if (!root.contains("uniqueid")) {
-      http::uuid = uuid_util::uuid_t::generate();
-      http::unique_id = http::uuid.string();
-      return;
-    }
 
-    std::string uid = root["uniqueid"];
-    http::uuid = uuid_util::uuid_t::parse(uid);
-    http::unique_id = uid;
-
-#ifdef _WIN32
-    if (share_state_file && !root.contains("shared_virtual_display_guid")) {
-      http::shared_virtual_display_guid.clear();
-    }
-#endif
 
     client_t client;
 
@@ -1427,8 +1419,7 @@ namespace nvhttp {
 
 #ifdef _WIN32
     const auto config_mode = config::video.virtual_display_mode;
-    const bool config_requests_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client ||
-                                           config_mode == config::video_t::virtual_display_mode_e::shared);
+    const bool config_requests_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client || config_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     const bool session_requests_virtual = launch_session->virtual_display;
     bool request_virtual_display = config_requests_virtual || metadata_requests_virtual || session_requests_virtual;
@@ -1579,6 +1570,16 @@ namespace nvhttp {
     // The display should be restored in case something fails as there are no other sessions.
     if (rtsp_stream::session_count() == 0) {
       revert_display_configuration = true;
+
+#ifdef _WIN32
+      auto display_result = VDISPLAY::ensure_display();
+      if (!display_result.success) {
+        BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
+      }
+      auto cleanup_display = util::fail_guard([&display_result]() {
+        VDISPLAY::cleanup_ensure_display(display_result);
+      });
+#endif
 
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
@@ -1860,8 +1861,12 @@ namespace nvhttp {
     if (proc::proc.running() > 0) {
       proc::proc.terminate();
     }
-
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
+    if (VDISPLAY::has_active_physical_display(true)) {
+      VDISPLAY::setWatchdogFeedingEnabled(false);
+      VDISPLAY::removeAllVirtualDisplays();
+    }
+
     display_helper_integration::revert();
   }
 
@@ -2037,6 +2042,12 @@ namespace nvhttp {
         SSL_get_peer_certificate(ssl)
 #endif
       };
+
+      // Store peer certificate in thread-local storage for use in request handlers
+      if (x509) {
+        tl_peer_certificate = std::move(x509);
+      }
+
       // Re-fetch for verification logic
       crypto::x509_t x509_verify {
 #if OPENSSL_VERSION_MAJOR >= 3
@@ -2045,7 +2056,7 @@ namespace nvhttp {
         SSL_get_peer_certificate(ssl)
 #endif
       };
-      
+
       if (!x509_verify) {
         BOOST_LOG(info) << "unknown -- denied"sv;
         return false;

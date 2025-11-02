@@ -748,6 +748,7 @@ namespace proc {
   }
 
   void initVDisplayDriver() {
+    VDISPLAY::ensureVirtualDisplayRegistryDefaults();
     vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
     if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
       if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {

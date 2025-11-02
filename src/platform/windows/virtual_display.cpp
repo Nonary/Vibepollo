@@ -1,6 +1,7 @@
 #include "virtual_display.h"
 
 #include "src/logging.h"
+#include "src/process.h"
 #include "src/state_storage.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/misc.h"
@@ -30,11 +31,11 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <physicalmonitorenumerationapi.h>
-#include <setupapi.h>
 #include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
+#include <winsock2.h>
 #include <windows.h>
 #include <winreg.h>
 #include <wrl/client.h>
@@ -66,6 +67,33 @@ namespace VDISPLAY {
       return now < time_from_steady_ticks(deadline_ticks);
     }
 
+    bool driver_handle_responsive(HANDLE handle) {
+      if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+
+      if (!CheckProtocolCompatible(handle)) {
+        return false;
+      }
+
+      if (!PingDriver(handle)) {
+        return false;
+      }
+
+      return true;
+    }
+
+    bool probe_driver_responsive_once() {
+      HANDLE handle = OpenDevice(&SUVDA_INTERFACE_GUID);
+      if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+
+      const bool responsive = driver_handle_responsive(handle);
+      CloseHandle(handle);
+      return responsive;
+    }
+
     struct ActiveVirtualDisplayTracker {
       void add(const uuid_util::uuid_t &guid) {
         std::lock_guard<std::mutex> lg(mutex);
@@ -92,6 +120,11 @@ namespace VDISPLAY {
           }
         }
         return result;
+      }
+
+      std::vector<uuid_util::uuid_t> all() {
+        std::lock_guard<std::mutex> lg(mutex);
+        return guids;
       }
 
      private:
@@ -500,6 +533,7 @@ namespace VDISPLAY {
         return std::nullopt;
       }
 
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       const fs::path path(path_str);
       if (!fs::exists(path)) {
         return std::nullopt;
@@ -544,11 +578,13 @@ namespace VDISPLAY {
     }
 
     void write_guid_to_state_locked(const uuid_util::uuid_t &uuid) {
+      statefile::migrate_recent_state_keys();
       const auto &path_str = statefile::vibeshine_state_path();
       if (path_str.empty()) {
         return;
       }
 
+      std::lock_guard<std::mutex> lock(statefile::state_mutex());
       const fs::path path(path_str);
       pt::ptree tree;
       try {
@@ -617,6 +653,53 @@ namespace VDISPLAY {
     CloseHandle(SUDOVDA_DRIVER_HANDLE);
 
     SUDOVDA_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
+  }
+
+  void ensureVirtualDisplayRegistryDefaults() {
+    constexpr const wchar_t *REG_PATH = L"SOFTWARE\\SudoMaker\\SudoVDA";
+    HKEY key = nullptr;
+    REGSAM access = KEY_WRITE;
+#ifdef KEY_WOW64_64KEY
+    access |= KEY_WOW64_64KEY;
+#endif
+    DWORD disposition = 0;
+    const LSTATUS status = RegCreateKeyExW(
+      HKEY_LOCAL_MACHINE,
+      REG_PATH,
+      0,
+      nullptr,
+      REG_OPTION_NON_VOLATILE,
+      access,
+      nullptr,
+      &key,
+      &disposition
+    );
+    if (status != ERROR_SUCCESS) {
+      BOOST_LOG(warning) << "Failed to create SudoVDA registry key (status=" << status << ")";
+      return;
+    }
+
+    auto set_dword = [key](const wchar_t *name, DWORD value) {
+      const DWORD data = value;
+      const LSTATUS set_status = RegSetValueExW(
+        key,
+        name,
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE *>(&data),
+        sizeof(data)
+      );
+      if (set_status != ERROR_SUCCESS) {
+        BOOST_LOG(warning) << "Failed to set SudoVDA registry value "
+                           << platf::to_utf8(std::wstring(name))
+                           << " (status=" << set_status << ")";
+      }
+    };
+
+    set_dword(L"sdrBits", 10);
+    set_dword(L"hdrBits", 12);
+
+    RegCloseKey(key);
   }
 
   DRIVER_STATUS openVDisplayDevice() {
@@ -937,6 +1020,32 @@ namespace VDISPLAY {
     return result;
   }
 
+  bool removeAllVirtualDisplays() {
+    auto all_guids = active_virtual_display_tracker().all();
+    if (all_guids.empty()) {
+      BOOST_LOG(debug) << "No active virtual displays to remove.";
+      return true;
+    }
+
+    bool all_removed = true;
+    for (const auto &guid : all_guids) {
+      GUID native_guid = uuid_to_guid(guid);
+      BOOST_LOG(debug) << "Removing virtual display with GUID " << guid.string();
+      if (!VDISPLAY::removeVirtualDisplay(native_guid)) {
+        all_removed = false;
+      }
+    }
+
+    if(all_removed){
+      BOOST_LOG(info) << "Virtual display devices have been removed successfully.";
+    }
+    else {
+      BOOST_LOG(warning) << "Virtual display devices failed to be removed.";
+    }
+
+   return all_removed;
+  }
+
   bool removeVirtualDisplay(const GUID &guid) {
     auto current_dpi = read_virtual_display_dpi_value();
     if (current_dpi) {
@@ -1001,22 +1110,18 @@ namespace VDISPLAY {
   }
 
   bool isSudaVDADriverInstalled() {
+    if (driver_handle_responsive(SUDOVDA_DRIVER_HANDLE)) {
+      return true;
+    }
+
     if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
+      closeVDisplayDevice();
+    }
+
+    if (probe_driver_responsive_once()) {
       return true;
     }
-    HANDLE hDevice = CreateFileW(
-      L"\\\\.\\SudoVda",
-      GENERIC_READ | GENERIC_WRITE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE,
-      NULL,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_NORMAL,
-      NULL
-    );
-    if (hDevice != INVALID_HANDLE_VALUE) {
-      CloseHandle(hDevice);
-      return true;
-    }
+
     return false;
   }
 
@@ -1150,7 +1255,7 @@ namespace VDISPLAY {
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY
 
-bool VDISPLAY::has_active_physical_display() {
+bool VDISPLAY::has_active_physical_display(const std::optional<bool> &active) {
   auto devices = display_helper_integration::enumerate_devices();
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
@@ -1167,28 +1272,35 @@ bool VDISPLAY::has_active_physical_display() {
     BOOST_LOG(debug) << "Device: " << device.m_display_name << ", has_info: " << has_info << ", is_virtual: " << is_virtual;
     if (!is_virtual) {
       found_physical = true;
-      if (has_info) {
+      if (active.has_value()) {
+        if (has_info == *active) {
+          BOOST_LOG(debug) << "Found physical display matching active state, returning true";
+          return true;
+        }
+      } else if (has_info) {
         BOOST_LOG(debug) << "Found active physical display, returning true";
         return true;
       }
     }
   }
 
-  if (found_physical) {
+  if (found_physical && !active.has_value()) {
     BOOST_LOG(debug) << "Found physical display in enumeration (inactive), returning true";
     return true;
   }
 
-  BOOST_LOG(debug) << "No active physical display found, returning false";
+  BOOST_LOG(debug) << "No physical display matching criteria found, returning false";
   return false;
 }
 
 bool VDISPLAY::should_auto_enable_virtual_display() {
   if (!isSudaVDADriverInstalled()) {
+    BOOST_LOG(warning) << "Suda VDA driver not installed, not enabling virtual display.";
     return false;
   }
 
-  if (has_active_physical_display()) {
+  if (has_active_physical_display(true)) {
+    BOOST_LOG(debug) << "Active physical display detected, not enabling virtual display.";
     return false;
   }
 
@@ -1197,4 +1309,88 @@ bool VDISPLAY::should_auto_enable_virtual_display() {
 
 uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
   return ensure_persistent_guid();
+}
+
+VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
+  ensure_display_result result {false, false, {}};
+
+  if (has_active_physical_display(true)) {
+    result.success = true;
+    return result;
+  }
+
+  if (!should_auto_enable_virtual_display()) {
+    BOOST_LOG(debug) << "No active physical displays and virtual display auto-enable is disabled.";
+    return result;
+  }
+
+  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+    proc::initVDisplayDriver();
+  }
+
+  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+    BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure. Status=" << static_cast<int>(proc::vDisplayDriverStatus);
+    return result;
+  }
+
+  auto virtual_displays = enumerateSudaVDADisplays();
+  bool has_active_virtual = std::any_of(
+    virtual_displays.begin(),
+    virtual_displays.end(),
+    [](const SudaVDADisplayInfo &info) {
+      return info.is_active;
+    }
+  );
+
+  if (has_active_virtual) {
+    BOOST_LOG(debug) << "Active virtual display already exists.";
+    result.success = true;
+    return result;
+  }
+
+  auto uuid = persistentVirtualDisplayUuid();
+  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
+
+  BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
+  auto display_info = createVirtualDisplay("sunshine-ensure", "Sunshine Temporary", 1920u, 1080u, 60000u, result.temporary_guid);
+  if (!display_info) {
+    BOOST_LOG(warning) << "Failed to create temporary virtual display.";
+    return result;
+  }
+
+  result.created_temporary = true;
+
+  constexpr auto timeout = std::chrono::seconds(5);
+  constexpr auto interval = std::chrono::milliseconds(100);
+  auto deadline = std::chrono::steady_clock::now() + timeout;
+
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto displays = enumerateSudaVDADisplays();
+    bool active = std::any_of(
+      displays.begin(),
+      displays.end(),
+      [](const SudaVDADisplayInfo &info) {
+        return info.is_active;
+      }
+    );
+    if (active) {
+      BOOST_LOG(info) << "Temporary virtual display ready.";
+      result.success = true;
+      return result;
+    }
+    std::this_thread::sleep_for(interval);
+  }
+
+  BOOST_LOG(warning) << "Temporary virtual display did not become active within timeout.";
+  return result;
+}
+
+void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result) {
+  if (result.created_temporary) {
+    if (!removeVirtualDisplay(result.temporary_guid)) {
+      BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+    } else {
+      BOOST_LOG(info) << "Removed temporary virtual display.";
+    }
+  }
 }

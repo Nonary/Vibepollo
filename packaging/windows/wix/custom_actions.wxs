@@ -50,7 +50,18 @@
     </DirectoryRef>
   </Fragment>
 
-  <!-- Author the Apollo service installation under INSTALL_ROOT\\tools -->
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="SudoVdaRegistryDefaults" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\SudoMaker\SudoVDA">
+          <RegistryValue Id="RegSudoVdaSdrBits" Name="sdrBits" Type="integer" Value="10" KeyPath="yes"/>
+          <RegistryValue Id="RegSudoVdaHdrBits" Name="hdrBits" Type="integer" Value="12"/>
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <!-- Official service installation component (installed under INSTALL_ROOT\tools) -->
   <Fragment>
     <DirectoryRef Id="DIR_Tools">
       <Component Id="ApolloSvc" Guid="{CBA8A3D9-5A2A-4F76-9923-5B23D1EDFBB6}">

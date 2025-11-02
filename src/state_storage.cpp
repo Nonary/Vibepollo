@@ -5,6 +5,8 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -56,6 +58,11 @@ namespace statefile {
     }
   }  // namespace
 
+  std::mutex &state_mutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+
   const std::string &sunshine_state_path() {
     return config::nvhttp.file_state;
   }
@@ -75,6 +82,8 @@ namespace statefile {
       if (old_path.empty() || new_path.empty() || old_path == new_path) {
         return;
       }
+
+      std::lock_guard<std::mutex> guard(state_mutex());
 
       pt::ptree old_tree;
       const bool old_loaded = load_tree_if_exists(old_path, old_tree);
@@ -127,6 +136,55 @@ namespace statefile {
         write_tree(old_path, old_tree);
       }
     });
+  }
+
+  bool share_state_file() {
+    const auto &sunshine = sunshine_state_path();
+    const auto &vibeshine = vibeshine_state_path();
+
+    if (sunshine.empty() || vibeshine.empty()) {
+      return false;
+    }
+
+    if (sunshine == vibeshine) {
+      return true;
+    }
+
+    try {
+      const fs::path sunshine_path {sunshine};
+      const fs::path vibeshine_path {vibeshine};
+
+      if (
+        fs::exists(sunshine_path) &&
+        fs::exists(vibeshine_path) &&
+        fs::equivalent(sunshine_path, vibeshine_path)
+      ) {
+        return true;
+      }
+
+#ifdef _WIN32
+      auto normalize_case = [](std::wstring value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+          return static_cast<wchar_t>(std::towlower(ch));
+        });
+        return value;
+      };
+
+      auto normalized_sunshine = normalize_case(sunshine_path.lexically_normal().native());
+      auto normalized_vibeshine = normalize_case(vibeshine_path.lexically_normal().native());
+
+      if (normalized_sunshine == normalized_vibeshine) {
+        return true;
+      }
+#else
+      if (sunshine_path.lexically_normal() == vibeshine_path.lexically_normal()) {
+        return true;
+      }
+#endif
+    } catch (const std::exception &) {
+    }
+
+    return false;
   }
 
 }  // namespace statefile

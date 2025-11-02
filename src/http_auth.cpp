@@ -307,9 +307,15 @@ namespace confighttp {
         j.push_back(obj);
       }
     }
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+
     pt::ptree root;
     if (_dependencies.file_exists(state_path)) {
-      _dependencies.read_json(state_path, root);
+      try {
+        _dependencies.read_json(state_path, root);
+      } catch (...) {
+        root = {};
+      }
     }
     pt::ptree tokens_pt;
     for (const auto &tok : j) {
@@ -367,16 +373,23 @@ namespace confighttp {
     statefile::migrate_recent_state_keys();
     const auto &state_path = statefile::vibeshine_state_path();
 
+    pt::ptree root;
+    bool have_root = false;
+    {
+      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      if (_dependencies.file_exists(state_path)) {
+        try {
+          _dependencies.read_json(state_path, root);
+          have_root = true;
+        } catch (...) {
+        }
+      }
+    }
+
     std::scoped_lock lock(_mutex);
     _api_tokens.clear();
-    if (!_dependencies.file_exists(state_path)) {
+    if (!have_root) {
       return;
-    }
-    pt::ptree root;
-    try {
-      _dependencies.read_json(state_path, root);
-    } catch (...) {
-      return;  // unable to load tokens; ignore
     }
     if (auto tokens_node = root.get_child_optional("root.api_tokens")) {
       for (const auto &[_, token_tree] : *tokens_node) {
@@ -598,54 +611,58 @@ namespace confighttp {
       had_dirty = true;
     }
 
-    pt::ptree root;
-    if (_dependencies.file_exists(state_path)) {
-      try {
-        _dependencies.read_json(state_path, root);
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "SessionTokenManager: failed reading state file: " << e.what();
-        root = {};
-      }
-    }
-
-    pt::ptree sessions_pt;
-    for (const auto &entry : snapshot) {
-      const auto &hash = entry.first;
-      const auto &token = entry.second;
-      pt::ptree node;
-      node.put("hash", hash);
-      node.put("username", token.username);
-      node.put("created_at", std::chrono::duration_cast<std::chrono::seconds>(token.created_at.time_since_epoch()).count());
-      node.put("expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.expires_at.time_since_epoch()).count());
-      node.put("last_seen", std::chrono::duration_cast<std::chrono::seconds>(token.last_seen.time_since_epoch()).count());
-      node.put("remember_me", token.remember_me);
-      if (!token.user_agent.empty()) {
-        node.put("user_agent", token.user_agent);
-      }
-      if (!token.remote_address.empty()) {
-        node.put("remote_address", token.remote_address);
-      }
-      if (!token.device_label.empty()) {
-        node.put("device_label", token.device_label);
-      }
-      sessions_pt.push_back({"", node});
-    }
-
-    root.put_child("root.session_tokens", sessions_pt);
-
-    try {
-      _dependencies.write_json(state_path, root);
-      if (had_dirty) {
-        std::scoped_lock lock(_mutex);
-        if (!_dirty) {
-          _last_persist = _dependencies.now();
+    bool write_failed = false;
+    {
+      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      pt::ptree root;
+      if (_dependencies.file_exists(state_path)) {
+        try {
+          _dependencies.read_json(state_path, root);
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "SessionTokenManager: failed reading state file: " << e.what();
+          root = {};
         }
       }
-    } catch (const std::exception &e) {
-      BOOST_LOG(error) << "SessionTokenManager: failed writing state file: " << e.what();
-      if (had_dirty) {
-        std::scoped_lock lock(_mutex);
+
+      pt::ptree sessions_pt;
+      for (const auto &entry : snapshot) {
+        const auto &hash = entry.first;
+        const auto &token = entry.second;
+        pt::ptree node;
+        node.put("hash", hash);
+        node.put("username", token.username);
+        node.put("created_at", std::chrono::duration_cast<std::chrono::seconds>(token.created_at.time_since_epoch()).count());
+        node.put("expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.expires_at.time_since_epoch()).count());
+        node.put("last_seen", std::chrono::duration_cast<std::chrono::seconds>(token.last_seen.time_since_epoch()).count());
+        node.put("remember_me", token.remember_me);
+        if (!token.user_agent.empty()) {
+          node.put("user_agent", token.user_agent);
+        }
+        if (!token.remote_address.empty()) {
+          node.put("remote_address", token.remote_address);
+        }
+        if (!token.device_label.empty()) {
+          node.put("device_label", token.device_label);
+        }
+        sessions_pt.push_back({"", node});
+      }
+
+      root.put_child("root.session_tokens", sessions_pt);
+
+      try {
+        _dependencies.write_json(state_path, root);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "SessionTokenManager: failed writing state file: " << e.what();
+        write_failed = true;
+      }
+    }
+
+    if (had_dirty) {
+      std::scoped_lock lock(_mutex);
+      if (write_failed) {
         _dirty = true;
+      } else if (!_dirty) {
+        _last_persist = _dependencies.now();
       }
     }
   }
@@ -654,27 +671,32 @@ namespace confighttp {
     statefile::migrate_recent_state_keys();
     const auto &state_path = statefile::vibeshine_state_path();
 
+    pt::ptree root;
+    bool have_root = false;
+    bool load_failed = false;
+    {
+      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      if (_dependencies.file_exists(state_path)) {
+        try {
+          _dependencies.read_json(state_path, root);
+          have_root = true;
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "SessionTokenManager: failed loading state file: " << e.what();
+          load_failed = true;
+        }
+      }
+    }
+
     bool needs_resave = false;
+    auto now = _dependencies.now();
     {
       std::scoped_lock lock(_mutex);
       _session_tokens.clear();
-      if (!_dependencies.file_exists(state_path)) {
+      if (!have_root || load_failed) {
         _dirty = false;
-        _last_persist = _dependencies.now();
+        _last_persist = now;
         return;
       }
-
-      pt::ptree root;
-      try {
-        _dependencies.read_json(state_path, root);
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "SessionTokenManager: failed loading state file: " << e.what();
-        _dirty = false;
-        _last_persist = _dependencies.now();
-        return;
-      }
-
-      auto now = _dependencies.now();
       if (auto sessions_node = root.get_child_optional("root.session_tokens")) {
         for (const auto &[_, node] : *sessions_node) {
           auto hash = node.get<std::string>("hash", "");

@@ -442,7 +442,6 @@ namespace stream {
       bool active = false;
       std::array<std::uint8_t, 16> guid_bytes {};
     } virtual_display;
-    std::atomic<bool> client_requested_termination {false};
 #endif
   };
 
@@ -980,10 +979,6 @@ namespace stream {
       } else {
         BOOST_LOG(info) << "Client requested termination with empty reason payload ("sv << payload.size() << " bytes)";
       }
-
-#ifdef _WIN32
-      session->client_requested_termination.store(true, std::memory_order_relaxed);
-#endif
 
       session::stop(*session);
     };
@@ -2132,13 +2127,9 @@ namespace stream {
 #endif
         }
 
-#ifdef _WIN32
-        const bool client_requested_terminate = session.client_requested_termination.load(std::memory_order_relaxed);
-#endif
-
         bool skip_display_revert = false;
 #ifdef _WIN32
-        if (is_paused && session.virtual_display.active && !client_requested_terminate) {
+        if (is_paused && session.virtual_display.active) {
           skip_display_revert = true;
         }
 #endif
@@ -2156,36 +2147,6 @@ namespace stream {
 
         // No active sessions now; apply any deferred config updates
         config::maybe_apply_deferred();
-
-#ifdef _WIN32
-        // Only tear down virtual display when stream truly ends (not paused)
-        if ((!is_paused || client_requested_terminate) && session.virtual_display.active) {
-          VDISPLAY::setWatchdogFeedingEnabled(false);
-
-          const bool has_guid = std::any_of(
-            session.virtual_display.guid_bytes.begin(),
-            session.virtual_display.guid_bytes.end(),
-            [](std::uint8_t b) {
-              return b != 0;
-            }
-          );
-          if (has_guid) {
-            GUID guid {};
-            std::memcpy(&guid, session.virtual_display.guid_bytes.data(), sizeof(guid));
-            if (!VDISPLAY::removeVirtualDisplay(guid)) {
-              BOOST_LOG(warning) << "Failed to remove virtual display.";
-            } else {
-              BOOST_LOG(info) << "Virtual display removed.";
-            }
-          } else {
-            BOOST_LOG(warning) << "Virtual display GUID missing; skipping removal.";
-          }
-
-          session.virtual_display.active = false;
-          session.virtual_display.guid_bytes.fill(0);
-          session.client_requested_termination.store(false, std::memory_order_relaxed);
-        }
-#endif
       }
 
       BOOST_LOG(info) << "Session ended"sv;
@@ -2313,7 +2274,6 @@ namespace stream {
       if (session->virtual_display.active) {
         VDISPLAY::setWatchdogFeedingEnabled(true);
       }
-      session->client_requested_termination.store(false, std::memory_order_relaxed);
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;
