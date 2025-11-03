@@ -14,6 +14,9 @@ Vibeshine is an AI‑enhanced version of Sunshine, a popular remote streaming ap
 * **Windows Graphics Capture in Service Mode**
   Running Windows Graphics Capture (WGC) as a service improves performance and stability. It captures the full frame rate of frame‑generated titles, avoids crashes when VRAM is exceeded, and follows Microsoft’s recommended capture method going forward. Vibeshine auto‑switches capture methods on demand, so the login screen and UAC prompts are still captured even when using WGC.
 
+* **Native Virtualized Display**
+  Vibeshine includes SudoVDA by default, with multiple stability improvements. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports.
+
 * **Redesigned Frontend with Full Mobile Support**
   The new Web UI makes it easy to add games and change settings without restarting the program. It’s fully responsive, so you can manage your library and configuration from a phone or tablet.
 
