@@ -394,6 +394,22 @@ namespace nvhttp {
 #endif
     }
 
+#ifdef _WIN32
+    if (share_state_file && !root.contains("shared_virtual_display_guid")) {
+      http::shared_virtual_display_guid.clear();
+    }
+#endif
+
+    if (!root.contains("uniqueid")) {
+      http::uuid = uuid_util::uuid_t::generate();
+      http::unique_id = http::uuid.string();
+      return;
+    }
+
+    std::string uid = root["uniqueid"];
+    http::uuid = uuid_util::uuid_t::parse(uid);
+    http::unique_id = uid;
+
 
 
     client_t client;
