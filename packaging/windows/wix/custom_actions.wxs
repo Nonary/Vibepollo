@@ -40,6 +40,26 @@
     </DirectoryRef>
   </Fragment>
 
+  <!-- Start Menu shortcut with the shortcut argument -->
+  <Fragment>
+    <DirectoryRef Id="TARGETDIR">
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="VIBESHINE_PROGRAM_MENU_FOLDER" Name="Vibeshine">
+          <Component Id="StartMenuShortcut" Guid="{A3B4C5D6-E7F8-4A5B-9C2D-3E4F5A6B7C8D}">
+            <Shortcut Id="VibeshineStartMenuShortcut"
+                      Name="Vibeshine"
+                      Description="Launch Vibeshine Web UI"
+                      Target="[INSTALL_ROOT]sunshine.exe"
+                      Arguments="--shortcut"
+                      WorkingDirectory="INSTALL_ROOT" />
+            <RegistryValue Root="HKCU" Key="Software\Vibeshine\Shortcuts" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+            <RemoveFolder Id="RemoveVibeshineMenuFolder" Directory="VIBESHINE_PROGRAM_MENU_FOLDER" On="uninstall" />
+          </Component>
+        </Directory>
+      </Directory>
+    </DirectoryRef>
+  </Fragment>
+
   <!-- Place the component under INSTALL_ROOT directory -->
   <Fragment>
     <DirectoryRef Id="INSTALL_ROOT">

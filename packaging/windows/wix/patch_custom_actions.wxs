@@ -21,6 +21,8 @@
       <ComponentRef Id="SunshineSvc"/>
       <ComponentRef Id="Env_Path"/>
       <ComponentRef Id="Fw_Exceptions"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+      <ComponentRef Id="SudoVdaRegistryDefaults"/>
     </Feature>
 
     <InstallExecuteSequence>

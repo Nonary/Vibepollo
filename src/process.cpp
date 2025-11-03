@@ -176,6 +176,13 @@ namespace proc {
       return std::nullopt;
     }
 
+    bool is_valid_env_key(const std::string &name) {
+      if (name.empty()) {
+        return false;
+      }
+      return name.find('=') == std::string::npos;
+    }
+
     bool scaling_mode_requires_sharpening(const std::string &mode) {
       static const std::array<std::string, 4> sharpening_modes {"ls1", "fsr", "nis", "sgsr"};
       return std::find(sharpening_modes.begin(), sharpening_modes.end(), mode) != sharpening_modes.end();
@@ -1863,6 +1870,10 @@ namespace proc {
       auto this_env = boost::this_process::environment();
 
       for (auto &[name, val] : env_vars) {
+        if (!is_valid_env_key(name)) {
+          BOOST_LOG(warning) << "Skipping invalid environment variable name ["sv << name << ']';
+          continue;
+        }
         this_env[name] = parse_env_val(this_env, val.get_value<std::string>());
       }
 
