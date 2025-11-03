@@ -2101,7 +2101,7 @@ namespace nvhttp {
         }
       }
 
-      auto err_str = cert_chain.verify(x509.get(), named_cert_p);
+      auto err_str = cert_chain.verify(x509_verify.get(), named_cert_p);
       if (err_str) {
         BOOST_LOG(warning) << "SSL Verification error :: "sv << err_str;
         return verified;
