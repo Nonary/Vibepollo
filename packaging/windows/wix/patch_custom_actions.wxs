@@ -21,6 +21,8 @@
       <ComponentRef Id="ApolloSvc"/>
       <ComponentRef Id="RemoveLegacyApolloUninstallKey"/>
       <ComponentRef Id="Fw_Exceptions"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+      <ComponentRef Id="SudoVdaRegistryDefaults"/>
     </Feature>
     <InstallExecuteSequence>
       <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->

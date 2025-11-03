@@ -182,6 +182,18 @@ namespace logging {
   #endif
 #endif
 
+    // Archive the previous log file before starting a new session
+    try {
+      std::filesystem::path log_path(log_file);
+      if (std::filesystem::exists(log_path)) {
+        std::filesystem::path old_log_path = log_path.parent_path() / "sunshine_old.log";
+        std::error_code ec;
+        std::filesystem::copy_file(log_path, old_log_path, std::filesystem::copy_options::overwrite_existing, ec);
+      }
+    } catch (...) {
+      // Ignore archival errors; proceed with logging initialization
+    }
+
     sink = boost::make_shared<text_sink>();
 
 #ifndef SUNSHINE_TESTS

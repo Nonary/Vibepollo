@@ -125,9 +125,33 @@ function Get-TargetDriverVersion {
 
 function Get-InstalledDriverInfo {
     try {
-        return Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
-            Where-Object { $_.DeviceID -like "$hardwarePrefix*" } |
+        $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
+            Where-Object { 
+                $_.DeviceID -like "$hardwarePrefix*" -or 
+                $_.DeviceID -like "*SUDOVDA*" -or
+                $_.HardwareID -like "*SUDOVDA*"
+            } |
             Select-Object -First 1
+        
+        if ($driver) {
+            return $driver
+        }
+        
+        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop | 
+            Where-Object { $_.InstanceId -like "$hardwarePrefix*" -or $_.InstanceId -like "*SUDOVDA*" }
+        
+        if ($devices) {
+            $device = $devices | Select-Object -First 1
+            $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
+                Where-Object { $_.DeviceID -eq $device.InstanceId } |
+                Select-Object -First 1
+            
+            if ($driver) {
+                return $driver
+            }
+        }
+        
+        return $null
     } catch {
         return $null
     }
@@ -184,6 +208,10 @@ $installedInfo = Get-InstalledDriverInfo
 $installedVersion = if ($installedInfo) { $installedInfo.DriverVersion } else { $null }
 $installedVersionObj = Convert-Version -Version $installedVersion
 $targetVersionObj = Convert-Version -Version $targetVersion
+
+Write-Host "[SudoVDA] Target version: $targetVersion"
+Write-Host "[SudoVDA] Installed version: $installedVersion"
+Write-Host "[SudoVDA] Driver info found: $($null -ne $installedInfo)"
 
 if ($installedInfo -and $installedVersionObj -and $targetVersionObj -and $installedVersionObj -ge $targetVersionObj) {
     Write-Host "[SudoVDA] Driver version $installedVersion already installed; skipping."

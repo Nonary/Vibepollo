@@ -5,7 +5,7 @@
 #include "src/state_storage.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/misc.h"
-#include "src/display_helper_integration.h"
+#include "src/platform/windows/display_helper_coordinator.h"
 #include "src/uuid.h"
 
 #include <atomic>
@@ -497,7 +497,7 @@ namespace VDISPLAY {
     }
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices(const std::optional<VirtualDisplayCache::entry_t> &cached_entry) {
-      auto devices = display_helper_integration::enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
       if (!devices) {
         return std::nullopt;
       }
@@ -1135,7 +1135,7 @@ namespace VDISPLAY {
       return resolveAnyVirtualDisplayDeviceId();
     }
 
-    auto devices = display_helper_integration::enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       if (cached_entry && !cached_entry->device_id.empty()) {
         return cached_entry->device_id;
@@ -1177,7 +1177,7 @@ namespace VDISPLAY {
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
-    auto devices = display_helper_integration::enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     std::optional<std::string> cached_match;
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
@@ -1223,7 +1223,7 @@ namespace VDISPLAY {
       return result;
     }
 
-    const auto devices = display_helper_integration::enumerate_devices();
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       return result;
     }
@@ -1256,7 +1256,7 @@ namespace VDISPLAY {
 }  // namespace VDISPLAY
 
 bool VDISPLAY::has_active_physical_display(const std::optional<bool> &active) {
-  auto devices = display_helper_integration::enumerate_devices();
+  auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
     BOOST_LOG(debug) << "No devices enumerated, returning true";

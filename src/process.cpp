@@ -186,6 +186,13 @@ namespace proc {
       return std::nullopt;
     }
 
+    bool is_valid_env_key(const std::string &name) {
+      if (name.empty()) {
+        return false;
+      }
+      return name.find('=') == std::string::npos;
+    }
+
     bool scaling_mode_requires_sharpening(const std::string &mode) {
       static const std::array<std::string, 4> sharpening_modes {"ls1", "fsr", "nis", "sgsr"};
       return std::find(sharpening_modes.begin(), sharpening_modes.end(), mode) != sharpening_modes.end();
@@ -2620,6 +2627,10 @@ namespace proc {
 
         if (tree.contains("env") && tree["env"].is_object()) {
           for (auto &item : tree["env"].items()) {
+            if (!is_valid_env_key(item.key())) {
+              BOOST_LOG(warning) << "Skipping invalid environment variable name ["sv << item.key() << ']';
+              continue;
+            }
             this_env[item.key()] = parse_env_val(this_env, item.value().get<std::string>());
           }
         }

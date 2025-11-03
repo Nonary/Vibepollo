@@ -595,7 +595,7 @@ namespace confighttp {
       state.filename = dismissal_it->second.get<std::string>("filename", "");
       state.captured_at = dismissal_it->second.get<std::string>("captured_at", "");
       state.dismissed_at = dismissal_it->second.get<std::string>("dismissed_at", "");
-      if (state.filename.empty() || state.captured_at.empty()) {
+      if (state.filename.empty()) {
         return std::nullopt;
       }
       return state;
@@ -669,6 +669,15 @@ namespace confighttp {
       std::string data;
       if (read_file_if_exists(config::sunshine.log_file, data)) {
         entries.emplace_back("sunshine.log", std::move(data));
+      }
+    } catch (...) {}
+
+    // sunshine_old.log (previous session)
+    try {
+      std::filesystem::path old_log_path = std::filesystem::path(config::sunshine.log_file).parent_path() / "sunshine_old.log";
+      std::string data;
+      if (read_file_if_exists(old_log_path, data)) {
+        entries.emplace_back("sunshine_old.log", std::move(data));
       }
     } catch (...) {}
 
@@ -1201,10 +1210,15 @@ namespace confighttp {
         out["age_seconds"] = std::chrono::duration_cast<std::chrono::seconds>(age).count();
         out["age_hours"] = std::chrono::duration_cast<std::chrono::hours>(age).count();
         if (auto dismissal = load_crash_dismissal_state()) {
-          bool matches = dismissal->filename == info->path.filename().string() && dismissal->captured_at == captured_iso;
+          bool matches = dismissal->filename == info->path.filename().string();
           out["dismissed"] = matches;
           if (matches && !dismissal->dismissed_at.empty()) {
             out["dismissed_at"] = dismissal->dismissed_at;
+          }
+          if (matches && dismissal->captured_at.empty()) {
+            CrashDismissalState updated = *dismissal;
+            updated.captured_at = captured_iso;
+            save_crash_dismissal_state(updated);
           }
         } else {
           out["dismissed"] = false;
@@ -1230,8 +1244,8 @@ namespace confighttp {
       auto payload = nlohmann::json::parse(body, nullptr, true, true);
       std::string filename = payload.value("filename", "");
       std::string captured_at = payload.value("captured_at", "");
-      if (filename.empty() || captured_at.empty()) {
-        bad_request(response, request, "Missing filename or captured_at");
+      if (filename.empty()) {
+        bad_request(response, request, "Missing filename");
         return;
       }
       auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
@@ -1240,15 +1254,14 @@ namespace confighttp {
         return;
       }
       std::string current_iso = to_iso8601(file_time_to_system_clock(info->write_time));
-      if (filename != info->path.filename().string() || captured_at != current_iso) {
+      if (filename != info->path.filename().string()) {
         bad_request(response, request, "Crash dump metadata mismatch");
         return;
       }
-      CrashDismissalState state {
-        std::move(filename),
-        std::move(captured_at),
-        to_iso8601(std::chrono::system_clock::now()),
-      };
+      CrashDismissalState state;
+      state.filename = std::move(filename);
+      state.captured_at = captured_at.empty() ? current_iso : std::move(captured_at);
+      state.dismissed_at = to_iso8601(std::chrono::system_clock::now());
       if (!save_crash_dismissal_state(state)) {
         bad_request(response, request, "Failed to persist crash dismissal");
         return;

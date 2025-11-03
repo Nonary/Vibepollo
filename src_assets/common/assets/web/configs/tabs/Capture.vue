@@ -66,6 +66,8 @@ const losslessResolvedPath = computed(() => {
   return normalizeWindowsPath(raw);
 });
 
+const losslessForceAdvanced = ref(false);
+
 const hasNvidia = computed(() => {
   const metaFlag = (metadata.value as any)?.has_nvidia_gpu;
   if (typeof metaFlag === 'boolean') return metaFlag;
@@ -130,7 +132,6 @@ const losslessSuggestedPath = computed(() => {
   const suggested = losslessStatus.value?.suggested_path as string | undefined;
   return normalizeWindowsPath(suggested) || LOSSLESS_DEFAULT_PATH;
 });
-const losslessPathExists = computed(() => !!losslessStatus.value?.checked_exists);
 const losslessCandidates = computed(() => {
   const raw = losslessStatus.value?.candidates;
   if (!Array.isArray(raw)) return [] as string[];
@@ -141,6 +142,91 @@ const losslessCandidates = computed(() => {
 const losslessCheckedIsDirectory = computed(
   () => !!losslessStatus.value?.checked_is_directory,
 );
+const losslessDetected = computed(() => {
+  if (!losslessStatus.value) return false;
+  if (losslessError.value) return false;
+  if (losslessStatus.value.checked_exists && !losslessCheckedIsDirectory.value) return true;
+  if (losslessStatus.value.resolved_path) return true;
+  if (losslessStatus.value.configured_exists && !losslessStatus.value.configured_is_directory) {
+    return true;
+  }
+  if (losslessStatus.value.default_exists) return true;
+  if (losslessCandidates.value.length > 0) return true;
+  return false;
+});
+const showLosslessAdvanced = computed(
+  () => !losslessDetected.value || losslessForceAdvanced.value,
+);
+const losslessStatusClass = computed(() => {
+  if (losslessLoading.value) {
+    return 'bg-primary/10 text-primary';
+  }
+  if (losslessDetected.value) {
+    return 'bg-success/10 text-success';
+  }
+  return 'bg-warning/10 text-warning';
+});
+const losslessStatusIcon = computed(() =>
+  losslessDetected.value ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle',
+);
+const losslessDefaultPath = computed(() => {
+  const raw = losslessStatus.value?.default_path;
+  return typeof raw === 'string' ? normalizeWindowsPath(raw) : '';
+});
+const losslessActivePath = computed(() => {
+  if (!losslessStatus.value) return '';
+  if (losslessStatus.value.resolved_path) return losslessResolvedPath.value;
+  if (
+    losslessStatus.value.checked_exists &&
+    typeof losslessStatus.value.checked_path === 'string' &&
+    !losslessCheckedIsDirectory.value
+  ) {
+    return normalizeWindowsPath(losslessStatus.value.checked_path);
+  }
+  if (
+    losslessStatus.value.configured_exists &&
+    typeof losslessStatus.value.configured_path === 'string' &&
+    !losslessStatus.value.configured_is_directory
+  ) {
+    return normalizeWindowsPath(losslessStatus.value.configured_path);
+  }
+  if (losslessStatus.value.default_exists && losslessDefaultPath.value) {
+    return losslessDefaultPath.value;
+  }
+  if (losslessCandidates.value.length > 0) {
+    return losslessCandidates.value[0];
+  }
+  return '';
+});
+const losslessStatusText = computed(() => {
+  if (losslessLoading.value) {
+    return 'Checking…';
+  }
+  if (losslessError.value) {
+    return losslessError.value;
+  }
+  if (losslessDetected.value) {
+    return `Lossless Scaling is Ready`;
+  }
+  if (losslessStatus.value?.message) {
+    return losslessStatus.value.message;
+  }
+  return 'Lossless Scaling status unavailable.';
+});
+const losslessStatusHint = computed(() => {
+  if (losslessLoading.value) {
+    return '';
+  }
+  if (losslessError.value) {
+    return '';
+  }
+  if (losslessDetected.value) {
+
+      return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
+
+  }
+  return 'Sunshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
+});
 
 async function refreshLosslessStatus() {
   if (platform.value !== 'windows') {
@@ -165,6 +251,15 @@ async function refreshLosslessStatus() {
         }
         if (typeof payload.resolved_path === 'string') {
           payload.resolved_path = normalizeWindowsPath(payload.resolved_path);
+        }
+        if (typeof payload.default_path === 'string') {
+          payload.default_path = normalizeWindowsPath(payload.default_path);
+        }
+        if (typeof payload.configured_path === 'string') {
+          payload.configured_path = normalizeWindowsPath(payload.configured_path);
+        }
+        if (typeof payload.checked_path === 'string') {
+          payload.checked_path = normalizeWindowsPath(payload.checked_path);
         }
         if (Array.isArray(payload.candidates)) {
           payload.candidates = payload.candidates
@@ -199,6 +294,14 @@ function applyLosslessBrowseSelection() {
   losslessBrowseVisible.value = false;
 }
 
+function showLosslessOverride() {
+  losslessForceAdvanced.value = true;
+}
+
+function hideLosslessOverride() {
+  losslessForceAdvanced.value = false;
+}
+
 async function openLosslessBrowse() {
   if (platform.value !== 'windows') return;
   if (!losslessStatus.value && !losslessLoading.value) {
@@ -206,8 +309,9 @@ async function openLosslessBrowse() {
   }
   const initial =
     normalizeWindowsPath(losslessConfiguredPath.value) ||
-    losslessResolvedPath.value ||
+    losslessActivePath.value ||
     losslessCandidates.value[0] ||
+    losslessSuggestedPath.value ||
     '';
   losslessBrowseSelection.value = initial;
   losslessBrowseVisible.value = true;
@@ -306,37 +410,72 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
         />
         <n-text depth="3" class="text-[11px] block mt-1">{{ $t('config.encoder_desc') }}</n-text>
       </div>
-      <div v-if="platform === 'windows'" class="space-y-2">
-        <div class="flex items-center justify-between">
-          <label for="lossless_scaling_path" class="form-label">
-            Lossless Scaling executable
-          </label>
-          <div class="flex items-center gap-2 text-xs">
-            <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
-              Use Suggested
-            </n-button>
-            <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
-            <n-button size="tiny" tertiary :loading="losslessLoading" @click="refreshLosslessStatus">
-              Check
-            </n-button>
+      <fieldset v-if="platform === 'windows'" class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25">
+        <legend class="px-2 text-sm font-medium">Lossless Scaling</legend>
+        <div :class="['rounded-lg px-4 py-3 text-[12px]', losslessStatusClass]">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+              <i :class="losslessStatusIcon" />
+              <span class="font-medium leading-tight">{{ losslessStatusText }}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <n-button
+                size="tiny"
+                type="default"
+                strong
+                :loading="losslessLoading"
+                @click="refreshLosslessStatus"
+              >
+                <i class="fas fa-sync" />
+                <span class="ml-1">Check</span>
+              </n-button>
+              <n-button
+                v-if="losslessDetected && !losslessForceAdvanced"
+                size="tiny"
+                tertiary
+                @click="showLosslessOverride"
+              >
+                Override Path
+              </n-button>
+              <n-button
+                v-else-if="losslessDetected && losslessForceAdvanced"
+                size="tiny"
+                tertiary
+                @click="hideLosslessOverride"
+              >
+                Hide Override
+              </n-button>
+            </div>
           </div>
+          <p v-if="losslessStatusHint" class="mt-2 text-xs opacity-80">
+            {{ losslessStatusHint }}
+          </p>
+          <p v-if="!losslessLoading && losslessActivePath" class="mt-1 text-xs opacity-70">
+            Using: {{ losslessActivePath }}
+          </p>
         </div>
-        <n-input
-          id="lossless_scaling_path"
-          v-model:value="config.lossless_scaling_path"
-          :placeholder="LOSSLESS_DEFAULT_PATH"
-          clearable
-        />
-        <div class="text-[11px] opacity-60">Default installation: {{ LOSSLESS_DEFAULT_PATH }}</div>
-        <div class="text-[11px]" :class="losslessPathExists ? 'text-green-500' : 'text-red-500'">
-          <span v-if="losslessLoading">Checking…</span>
-          <span v-else-if="losslessError">{{ losslessError }}</span>
-          <span v-else>{{ losslessStatus?.message ?? 'Status unavailable.' }}</span>
+
+        <div v-if="showLosslessAdvanced" class="space-y-2">
+          <div class="flex items-center justify-between">
+            <label for="lossless_scaling_path" class="form-label">
+              Lossless Scaling executable
+            </label>
+            <div class="flex items-center gap-2 text-xs">
+              <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
+                Use Suggested
+              </n-button>
+              <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
+            </div>
+          </div>
+          <n-input
+            id="lossless_scaling_path"
+            v-model:value="config.lossless_scaling_path"
+            :placeholder="LOSSLESS_DEFAULT_PATH"
+            clearable
+          />
+          <div class="text-[11px] opacity-60">Default installation: {{ LOSSLESS_DEFAULT_PATH }}</div>
         </div>
-        <div v-if="!losslessLoading && losslessResolvedPath" class="text-[11px] opacity-60">
-          Resolved: {{ losslessResolvedPath }}
-        </div>
-      </div>
+      </fieldset>
     </div>
 
     <div v-if="shouldShowNvenc" class="encoder-outline">
