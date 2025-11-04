@@ -453,7 +453,7 @@ namespace config {
     _CONVERT_(per_client);
     _CONVERT_(shared);
 #undef _CONVERT_
-    return video_t::virtual_display_mode_e::per_client;  // Default to per_client for backwards compatibility
+    return video_t::virtual_display_mode_e::disabled;  // Default to primary display when unspecified
   }
 
   video_t video {
@@ -517,7 +517,7 @@ namespace config {
     {},  // adapter_name
     {},  // output_name
 
-    video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
+    video_t::virtual_display_mode_e::disabled,  // virtual_display_mode
 
     {
       video_t::dd_t::config_option_e::verify_only,  // configuration_option
@@ -528,7 +528,7 @@ namespace config {
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
-      true,  // activate_virtual_display
+      false,  // activate_virtual_display
       {},  // mode_remapping
       {false, false}  // wa
     },  // display_device

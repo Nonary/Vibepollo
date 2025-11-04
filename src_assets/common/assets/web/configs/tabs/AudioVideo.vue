@@ -156,7 +156,7 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
         return mode;
       }
     }
-    return 'per_client';
+    return 'disabled';
   },
   set(mode) {
     if (!config.value) return;

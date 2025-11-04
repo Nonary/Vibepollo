@@ -164,6 +164,24 @@ namespace nvhttp {
     std::string pkey;
   } conf_intern;
 
+#ifdef _WIN32
+  namespace {
+    bool has_any_active_display() {
+      if (VDISPLAY::has_active_physical_display(std::optional<bool> {true})) {
+        return true;
+      }
+      const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      return std::any_of(
+        virtual_displays.begin(),
+        virtual_displays.end(),
+        [](const VDISPLAY::SudaVDADisplayInfo &info) {
+          return info.is_active;
+        }
+      );
+    }
+  }  // namespace
+#endif
+
   // uniqueID, session
   std::unordered_map<std::string, pair_session_t> map_id_sess;
   client_t client_root;
@@ -1588,29 +1606,39 @@ namespace nvhttp {
       revert_display_configuration = true;
 
 #ifdef _WIN32
-      auto display_result = VDISPLAY::ensure_display();
-      if (!display_result.success) {
-        BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
+      HANDLE user_token = platf::retrieve_users_token(false);
+      const bool helper_session_available = (user_token != nullptr);
+      if (user_token) {
+        CloseHandle(user_token);
       }
-      auto cleanup_display = util::fail_guard([&display_result]() {
-        VDISPLAY::cleanup_ensure_display(display_result);
-      });
-#endif
 
-      // We want to prepare display only if there are no active sessions at
-      // the moment. This should be done before probing encoders as it could
-      // change the active displays.
-      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
+      if (helper_session_available) {
+        if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+        }
 #ifdef _WIN32
         launch_session->display_helper_applied = true;
 #endif
+      } else {
+        auto display_result = VDISPLAY::ensure_display();
+        if (!display_result.success) {
+          BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
+        }
+        // We can't cleanup the display here because it is still needed for the stream, the teardown will still happen when the stream ends.
+        BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
+#else
+      if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+        BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+      }
+#endif
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+      // Skip encoder probing failure for input-only mode
+      if (video::probe_encoders() && !is_input_only) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
@@ -1793,6 +1821,26 @@ namespace nvhttp {
       launch_session->input_only = true;
     }
 
+    // Apply display configuration early if there are no active sessions
+    if (no_active_sessions) {
+      // We want to prepare display only if there are no active sessions at
+      // the moment. This should be done before probing encoders as it could
+      // change the active displays.
+      if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+#ifdef _WIN32
+        const bool no_display_available = !has_any_active_display();
+        // For input-only mode or when displays are available, continue
+        if (!launch_session->input_only && no_display_available) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
+          return;
+        }
+#endif
+        BOOST_LOG(warning) << "Display helper: failed to re-apply display configuration on resume; continuing with existing display.";
+      }
+    }
+
     if (no_active_sessions && !proc::proc.virtual_display) {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
@@ -1806,7 +1854,8 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+      // Skip encoder probing failure for input-only mode
+      if (video::probe_encoders() && !launch_session->input_only) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");

@@ -2817,16 +2817,6 @@ namespace video {
       return -1;
     }
 
-#ifdef _WIN32
-    auto display_result = VDISPLAY::ensure_display();
-    if (!display_result.success) {
-      BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
-    }
-    auto cleanup_display = util::fail_guard([&display_result]() {
-      VDISPLAY::cleanup_ensure_display(display_result);
-    });
-#endif
-
     auto encoder_list = encoders;
 
     // If we already have a good encoder, check to see if another probe is required

@@ -352,9 +352,25 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
+#ifdef _WIN32
+  {
+    auto encoder_probe_display_result = VDISPLAY::ensure_display();
+    if (!encoder_probe_display_result.success) {
+      BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
+    }
+    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
+      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+    });
+
+    if (video::probe_encoders()) {
+      BOOST_LOG(error) << "Failed to probe encoders during startup.";
+    }
+  }
+#else
   if (video::probe_encoders()) {
     BOOST_LOG(error) << "Failed to probe encoders during startup.";
   }
+#endif
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
