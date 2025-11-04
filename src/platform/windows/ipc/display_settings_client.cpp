@@ -4,8 +4,12 @@
 #ifdef _WIN32
 
   // standard
+  #include <algorithm>
+  #include <array>
+  #include <chrono>
   #include <cstdint>
   #include <mutex>
+  #include <optional>
   #include <string>
   #include <vector>
 
@@ -21,6 +25,7 @@ namespace platf::display_helper_client {
     constexpr int kConnectTimeoutMs = 8000;
     constexpr int kSendTimeoutMs = 5000;
     constexpr int kShutdownIpcTimeoutMs = 500;
+    constexpr int kApplyResultTimeoutMs = 20000;
 
     bool shutdown_requested() {
       if (!mail::man) {
@@ -41,7 +46,8 @@ namespace platf::display_helper_client {
     int effective_send_timeout() {
       return shutdown_requested() ? kShutdownIpcTimeoutMs : kSendTimeoutMs;
     }
-  }  // namespace
+
+  }
 
   /**
    * @brief IPC message types used by the display settings helper protocol.
@@ -52,9 +58,62 @@ namespace platf::display_helper_client {
     Reset = 3,  ///< Reset helper persistence/state (if supported).
     ExportGolden = 4,  ///< Export current OS settings as golden snapshot
     Blacklist = 5,  ///< Blacklist a display device_id from topology exports (string payload).
+    ApplyResult = 6,  ///< Helper acknowledgement for APPLY (payload: [u8 success][optional message...]).
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
+
+  namespace {
+    std::optional<bool> wait_for_apply_result_locked(platf::dxgi::INamedPipe &pipe) {
+      using namespace std::chrono;
+
+      const auto deadline = steady_clock::now() + milliseconds(kApplyResultTimeoutMs);
+      std::array<uint8_t, 2048> buffer {};
+
+      while (steady_clock::now() < deadline) {
+        const auto now = steady_clock::now();
+        auto remaining = duration_cast<milliseconds>(deadline - now);
+        if (remaining.count() < 0) {
+          remaining = milliseconds(0);
+        }
+        int timeout_ms = static_cast<int>(std::max<long long>(remaining.count(), 100LL));
+        size_t bytes_read = 0;
+        auto result = pipe.receive(buffer, bytes_read, timeout_ms);
+
+        if (result == platf::dxgi::PipeResult::Timeout) {
+          continue;
+        }
+        if (result != platf::dxgi::PipeResult::Success) {
+          BOOST_LOG(error) << "Display helper IPC: failed waiting for APPLY result (pipe error)";
+          return std::nullopt;
+        }
+        if (bytes_read == 0) {
+          BOOST_LOG(error) << "Display helper IPC: connection closed while waiting for APPLY result";
+          return std::nullopt;
+        }
+
+        const uint8_t msg_type = buffer[0];
+        if (msg_type == static_cast<uint8_t>(MsgType::ApplyResult)) {
+          bool success = bytes_read >= 2 && buffer[1] != 0;
+          if (!success && bytes_read > 2) {
+            std::string helper_msg(reinterpret_cast<const char *>(buffer.data() + 2), reinterpret_cast<const char *>(buffer.data() + bytes_read));
+            BOOST_LOG(error) << "Display helper reported APPLY failure: " << helper_msg;
+          }
+          return success;
+        }
+
+        if (msg_type == static_cast<uint8_t>(MsgType::Ping)) {
+          continue;
+        }
+
+        BOOST_LOG(debug) << "Display helper IPC: ignoring unexpected message type=" << static_cast<int>(msg_type)
+                         << " while awaiting APPLY result";
+      }
+
+      BOOST_LOG(error) << "Display helper IPC: timed out waiting for APPLY result acknowledgement";
+      return std::nullopt;
+    }
+  }  // namespace
 
   static bool send_message(platf::dxgi::INamedPipe &pipe, MsgType type, const std::vector<uint8_t> &payload) {
     const bool is_ping = (type == MsgType::Ping);
@@ -140,9 +199,19 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> payload(json.begin(), json.end());
     auto &pipe = pipe_singleton();
-    if (pipe && send_message(*pipe, MsgType::Apply, payload)) {
-      return true;
+    if (!pipe) {
+      BOOST_LOG(warning) << "Display helper IPC: APPLY aborted - no pipe instance";
+      return false;
     }
+
+    if (!send_message(*pipe, MsgType::Apply, payload)) {
+      return false;
+    }
+
+    if (auto result = wait_for_apply_result_locked(*pipe)) {
+      return *result;
+    }
+
     return false;
   }
 

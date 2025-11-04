@@ -176,6 +176,7 @@ namespace {
     Reset = 3,  // clear persistence (best-effort)
     ExportGolden = 4,  // no payload; export current settings snapshot as golden restore
     Blacklist = 5,  // payload: device_id string to blacklist from topology exports
+    ApplyResult = 6,  // payload: [u8 success][optional message...]
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -2523,7 +2524,7 @@ namespace {
     }
   }
 
-  void handle_apply(ServiceState &state, std::span<const uint8_t> payload) {
+  bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
     state.cancel_delayed_reapply();
@@ -2550,7 +2551,8 @@ namespace {
     std::string err;
     if (!display_device::fromJson(sanitized_json, cfg, &err)) {
       BOOST_LOG(error) << "Failed to parse SingleDisplayConfiguration JSON: " << err;
-      return;
+      error_msg = "Invalid display configuration payload";
+      return false;
     }
     state.set_startup_restore_suppressed(false);
     state.last_apply_ms.store(
@@ -2631,7 +2633,10 @@ namespace {
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
 
       const auto before_sig = state.controller.signature(state.controller.snapshot());
-      (void) state.controller.apply(cfg);
+      if (!state.controller.apply(cfg)) {
+        error_msg = "Helper failed to apply requested display configuration";
+        return false;
+      }
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = state.read_stable_snapshot(cur);
       const bool changed = got_stable ? (state.controller.signature(cur) != before_sig) : false;
@@ -2643,7 +2648,11 @@ namespace {
       state.schedule_hdr_blank_if_needed(wa_hdr_toggle);
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
+      error_msg = "Display configuration failed validation";
+      return false;
     }
+    error_msg.clear();
+    return true;
   }
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
@@ -2682,7 +2691,15 @@ namespace {
 
   void handle_frame(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type, std::span<const uint8_t> payload, std::atomic<bool> &running) {
     if (type == MsgType::Apply) {
-      handle_apply(state, payload);
+      std::string error_msg;
+      bool success = handle_apply(state, payload, error_msg);
+      std::vector<uint8_t> result_payload;
+      result_payload.push_back(success ? 1u : 0u);
+      if (!error_msg.empty()) {
+        const auto *begin = reinterpret_cast<const uint8_t *>(error_msg.data());
+        result_payload.insert(result_payload.end(), begin, begin + error_msg.size());
+      }
+      send_framed_content(async_pipe, MsgType::ApplyResult, result_payload);
     } else if (type == MsgType::Revert) {
       handle_revert(state, running);
     } else if (type == MsgType::Stop) {

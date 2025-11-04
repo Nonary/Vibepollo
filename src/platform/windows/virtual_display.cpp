@@ -19,8 +19,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
+#include <cfgmgr32.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
+#include <devguid.h>
 #include <filesystem>
 #include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
@@ -31,6 +34,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <physicalmonitorenumerationapi.h>
+#include <string_view>
+#include <setupapi.h>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -47,6 +52,11 @@ using namespace SUDOVDA;
 namespace VDISPLAY {
   namespace {
     constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
+    constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(15);
+    constexpr auto DRIVER_RESTART_POLL_INTERVAL = std::chrono::milliseconds(500);
+    constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
+    constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
+    constexpr std::wstring_view SUDOVDA_FRIENDLY_NAME_W = L"SudoMaker Virtual Display Adapter";
 
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
@@ -92,6 +102,286 @@ namespace VDISPLAY {
       const bool responsive = driver_handle_responsive(handle);
       CloseHandle(handle);
       return responsive;
+    }
+
+    bool equals_ci(std::wstring_view lhs, std::wstring_view rhs) {
+      if (lhs.size() != rhs.size()) {
+        return false;
+      }
+
+      for (size_t i = 0; i < lhs.size(); ++i) {
+        if (std::towlower(lhs[i]) != std::towlower(rhs[i])) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    bool multi_sz_contains_ci(const std::vector<wchar_t> &values, std::wstring_view target) {
+      if (values.empty()) {
+        return false;
+      }
+
+      const wchar_t *current = values.data();
+      while (*current != L'\0') {
+        const size_t length = std::wcslen(current);
+        if (equals_ci(std::wstring_view(current, length), target)) {
+          return true;
+        }
+        current += length + 1;
+      }
+
+      return false;
+    }
+
+    class DevInfoHandle {
+     public:
+      explicit DevInfoHandle(HDEVINFO value) : handle(value) {}
+
+      DevInfoHandle(const DevInfoHandle &) = delete;
+      DevInfoHandle &operator=(const DevInfoHandle &) = delete;
+
+      DevInfoHandle(DevInfoHandle &&other) noexcept : handle(other.handle) {
+        other.handle = INVALID_HANDLE_VALUE;
+      }
+
+      DevInfoHandle &operator=(DevInfoHandle &&other) noexcept {
+        if (this != &other) {
+          if (handle != INVALID_HANDLE_VALUE) {
+            SetupDiDestroyDeviceInfoList(handle);
+          }
+
+          handle = other.handle;
+          other.handle = INVALID_HANDLE_VALUE;
+        }
+
+        return *this;
+      }
+
+      ~DevInfoHandle() {
+        if (handle != INVALID_HANDLE_VALUE) {
+          SetupDiDestroyDeviceInfoList(handle);
+        }
+      }
+
+      HDEVINFO get() const {
+        return handle;
+      }
+
+      bool valid() const {
+        return handle != INVALID_HANDLE_VALUE;
+      }
+
+     private:
+      HDEVINFO handle;
+    };
+
+    bool load_device_property_multi_sz(HDEVINFO info, SP_DEVINFO_DATA &data, DWORD property, std::vector<wchar_t> &buffer) {
+      buffer.clear();
+
+      DWORD reg_type = 0;
+      DWORD required = 0;
+      if (!SetupDiGetDeviceRegistryPropertyW(info, &data, property, &reg_type, nullptr, 0, &required)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_INSUFFICIENT_BUFFER) {
+          return false;
+        }
+      }
+
+      if (required == 0) {
+        return false;
+      }
+
+      buffer.resize((required / sizeof(wchar_t)) + 1);
+      if (!SetupDiGetDeviceRegistryPropertyW(
+            info,
+            &data,
+            property,
+            &reg_type,
+            reinterpret_cast<PBYTE>(buffer.data()),
+            static_cast<DWORD>(buffer.size() * sizeof(wchar_t)),
+            &required
+          )) {
+        return false;
+      }
+
+      if (reg_type != REG_MULTI_SZ) {
+        return false;
+      }
+
+      if (buffer.empty() || buffer.back() != L'\0') {
+        buffer.push_back(L'\0');
+      }
+      if (buffer.size() < 2 || buffer[buffer.size() - 2] != L'\0') {
+        buffer.push_back(L'\0');
+      }
+
+      return true;
+    }
+
+    std::optional<std::wstring> load_device_property_string(HDEVINFO info, SP_DEVINFO_DATA &data, DWORD property) {
+      DWORD reg_type = 0;
+      DWORD required = 0;
+      if (!SetupDiGetDeviceRegistryPropertyW(info, &data, property, &reg_type, nullptr, 0, &required)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_INSUFFICIENT_BUFFER) {
+          return std::nullopt;
+        }
+      }
+
+      if (required == 0) {
+        return std::nullopt;
+      }
+
+      std::vector<wchar_t> buffer((required / sizeof(wchar_t)) + 1);
+      if (!SetupDiGetDeviceRegistryPropertyW(
+            info,
+            &data,
+            property,
+            &reg_type,
+            reinterpret_cast<PBYTE>(buffer.data()),
+            static_cast<DWORD>(buffer.size() * sizeof(wchar_t)),
+            &required
+          )) {
+        return std::nullopt;
+      }
+
+      if (reg_type != REG_SZ && reg_type != REG_EXPAND_SZ) {
+        return std::nullopt;
+      }
+
+      return std::wstring(buffer.data());
+    }
+
+    std::optional<std::wstring> extract_device_instance_id(HDEVINFO info, SP_DEVINFO_DATA &data) {
+      DWORD required = 0;
+      if (!SetupDiGetDeviceInstanceIdW(info, &data, nullptr, 0, &required)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_INSUFFICIENT_BUFFER) {
+          return std::nullopt;
+        }
+      }
+
+      if (required == 0) {
+        return std::nullopt;
+      }
+
+      std::wstring buffer(required, L'\0');
+      if (!SetupDiGetDeviceInstanceIdW(info, &data, buffer.data(), required, nullptr)) {
+        return std::nullopt;
+      }
+
+      buffer.resize(std::wcslen(buffer.c_str()));
+      if (buffer.empty()) {
+        return std::nullopt;
+      }
+
+      return buffer;
+    }
+
+    std::optional<std::wstring> find_sudovda_device_instance_id() {
+      DevInfoHandle info(SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, DIGCF_PRESENT));
+      if (!info.valid()) {
+        const DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Failed to acquire display device info set for SudoVDA lookup (error=" << err << ")";
+        return std::nullopt;
+      }
+
+      std::vector<wchar_t> hardware_ids;
+
+      for (DWORD index = 0;; ++index) {
+        SP_DEVINFO_DATA device_info {};
+        device_info.cbSize = sizeof(device_info);
+        if (!SetupDiEnumDeviceInfo(info.get(), index, &device_info)) {
+          const DWORD err = GetLastError();
+          if (err != ERROR_NO_MORE_ITEMS) {
+            BOOST_LOG(warning) << "SetupDiEnumDeviceInfo failed while scanning for SudoVDA (error=" << err << ")";
+          }
+          break;
+        }
+
+        bool matches = false;
+        if (load_device_property_multi_sz(info.get(), device_info, SPDRP_HARDWAREID, hardware_ids)) {
+          matches = multi_sz_contains_ci(hardware_ids, SUDOVDA_HARDWARE_ID);
+        }
+
+        if (!matches) {
+          if (auto friendly = load_device_property_string(info.get(), device_info, SPDRP_FRIENDLYNAME)) {
+            matches = equals_ci(*friendly, SUDOVDA_FRIENDLY_NAME_W);
+          }
+        }
+
+        if (!matches) {
+          continue;
+        }
+
+        if (auto instance_id = extract_device_instance_id(info.get(), device_info)) {
+          return instance_id;
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    bool apply_device_state_change(HDEVINFO info_set, SP_DEVINFO_DATA &data, DWORD state_change) {
+      SP_PROPCHANGE_PARAMS params {};
+      params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
+      params.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
+      params.StateChange = state_change;
+      params.Scope = DICS_FLAG_GLOBAL;
+      params.HwProfile = 0;
+
+      if (!SetupDiSetClassInstallParamsW(info_set, &data, &params.ClassInstallHeader, sizeof(params))) {
+        const DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Failed to stage property change for SudoVDA device (state=" << state_change << ", error=" << err << ")";
+        return false;
+      }
+
+      const BOOL invoked = SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, info_set, &data);
+      const DWORD err = invoked ? ERROR_SUCCESS : GetLastError();
+      (void) SetupDiSetClassInstallParamsW(info_set, &data, nullptr, 0);
+
+      if (!invoked) {
+        if (state_change == DICS_DISABLE && err == ERROR_NOT_DISABLEABLE) {
+          BOOST_LOG(info) << "SudoVDA device is not disableable (error=" << err << "); continuing with enable.";
+          return true;
+        }
+
+        BOOST_LOG(warning) << "Property change request rejected for SudoVDA device (state=" << state_change << ", error=" << err << ")";
+        return false;
+      }
+
+      return true;
+    }
+
+    bool restart_sudovda_device(const std::wstring &instance_id) {
+      DevInfoHandle info(SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES));
+      if (!info.valid()) {
+        const DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Failed to acquire global device info set for SudoVDA restart (error=" << err << ")";
+        return false;
+      }
+
+      SP_DEVINFO_DATA device_info {};
+      device_info.cbSize = sizeof(device_info);
+      if (!SetupDiOpenDeviceInfoW(info.get(), instance_id.c_str(), nullptr, 0, &device_info)) {
+        const DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Failed to open SudoVDA instance " << platf::to_utf8(instance_id) << " (error=" << err << ")";
+        return false;
+      }
+
+      if (!apply_device_state_change(info.get(), device_info, DICS_DISABLE)) {
+        return false;
+      }
+
+      std::this_thread::sleep_for(DEVICE_RESTART_SETTLE_DELAY);
+
+      if (!apply_device_state_change(info.get(), device_info, DICS_ENABLE)) {
+        return false;
+      }
+
+      return true;
     }
 
     struct ActiveVirtualDisplayTracker {
@@ -308,7 +598,6 @@ namespace VDISPLAY {
     struct VirtualDisplayCache {
       struct entry_t {
         std::wstring display_name;
-        std::string device_id;
         std::optional<uint32_t> dpi_value;
       };
 
@@ -350,14 +639,11 @@ namespace VDISPLAY {
           if (auto disp = json.find("display_name"); disp != json.end() && disp->is_string()) {
             tmp.display_name = platf::from_utf8(disp->get<std::string>());
           }
-          if (auto devid = json.find("device_id"); devid != json.end() && devid->is_string()) {
-            tmp.device_id = devid->get<std::string>();
-          }
           if (auto dpi = json.find("dpi_value"); dpi != json.end() && dpi->is_number_unsigned()) {
             tmp.dpi_value = static_cast<uint32_t>(dpi->get<uint64_t>());
           }
 
-          if (!tmp.display_name.empty() || !tmp.device_id.empty()) {
+          if (!tmp.display_name.empty() || tmp.dpi_value) {
             entry = std::move(tmp);
           }
         } catch (...) {
@@ -368,7 +654,8 @@ namespace VDISPLAY {
       void save_locked() {
         const auto path = storage_path();
         try {
-          if (!entry) {
+          if (!entry || (entry->display_name.empty() && !entry->dpi_value)) {
+            entry.reset();
             std::error_code ec;
             fs::remove(path, ec);
             return;
@@ -377,9 +664,6 @@ namespace VDISPLAY {
           nlohmann::json json = nlohmann::json::object();
           if (!entry->display_name.empty()) {
             json["display_name"] = platf::to_utf8(entry->display_name);
-          }
-          if (!entry->device_id.empty()) {
-            json["device_id"] = entry->device_id;
           }
           if (entry->dpi_value) {
             json["dpi_value"] = *entry->dpi_value;
@@ -417,6 +701,24 @@ namespace VDISPLAY {
         entry->dpi_value = *value;
         save_locked();
       }
+
+      void clear_display_name() {
+        std::lock_guard<std::mutex> lg(mutex);
+        ensure_loaded_locked();
+        if (!entry) {
+          return;
+        }
+        if (!entry->display_name.empty()) {
+          if (!entry->dpi_value) {
+            entry.reset();
+          } else {
+            entry->display_name.clear();
+          }
+        } else if (!entry->dpi_value) {
+          entry.reset();
+        }
+        save_locked();
+      }
     };
 
     namespace pt = boost::property_tree;
@@ -427,10 +729,6 @@ namespace VDISPLAY {
     ) {
       static const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
       if (equals_ci(device.m_friendly_name, sudoMakerDeviceString)) {
-        return true;
-      }
-
-      if (cached_entry && !cached_entry->device_id.empty() && equals_ci(device.m_device_id, cached_entry->device_id)) {
         return true;
       }
 
@@ -704,10 +1002,19 @@ namespace VDISPLAY {
 
   DRIVER_STATUS openVDisplayDevice() {
     uint32_t retryInterval = 20;
+    bool attempted_recovery = false;
     while (true) {
       SUDOVDA_DRIVER_HANDLE = OpenDevice(&SUVDA_INTERFACE_GUID);
       if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
         if (retryInterval > 320) {
+          if (!attempted_recovery) {
+            attempted_recovery = true;
+            if (ensure_driver_is_ready()) {
+              retryInterval = 20;
+              continue;
+            }
+          }
+
           printf("[SUDOVDA] Open device failed!\n");
           return DRIVER_STATUS::FAILED;
         }
@@ -726,6 +1033,45 @@ namespace VDISPLAY {
     }
 
     return DRIVER_STATUS::OK;
+  }
+
+  bool ensure_driver_is_ready() {
+    if (driver_handle_responsive(SUDOVDA_DRIVER_HANDLE)) {
+      return true;
+    }
+
+    if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
+      closeVDisplayDevice();
+    }
+
+    if (probe_driver_responsive_once()) {
+      return true;
+    }
+
+    auto instance_id = find_sudovda_device_instance_id();
+    if (!instance_id) {
+      BOOST_LOG(warning) << "Unable to locate SudoVDA adapter for recovery.";
+      return false;
+    }
+
+    BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << '.';
+
+    if (!restart_sudovda_device(*instance_id)) {
+      BOOST_LOG(warning) << "SudoVDA adapter restart failed.";
+      return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + DRIVER_RESTART_TIMEOUT;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (probe_driver_responsive_once()) {
+        BOOST_LOG(info) << "SudoVDA driver responded after restart.";
+        return true;
+      }
+      std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
+    }
+
+    BOOST_LOG(warning) << "SudoVDA driver did not respond within the restart timeout.";
+    return false;
   }
 
   bool startPingThread(std::function<void()> failCb) {
@@ -887,6 +1233,146 @@ namespace VDISPLAY {
     return true;
   }
 
+  bool wait_for_virtual_display_ready(
+    const std::optional<std::wstring> &display_name,
+    std::optional<std::string> &device_id,
+    const std::optional<VirtualDisplayCache::entry_t> &match_hint,
+    uint32_t width,
+    uint32_t height
+  ) {
+    auto hint = match_hint;
+    if (!hint) {
+      hint = VirtualDisplayCache::instance().get_entry();
+    }
+
+    std::optional<std::string> normalized_name;
+    if (display_name && !display_name->empty()) {
+      normalized_name = normalize_display_name(platf::to_utf8(*display_name));
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> enumerated_at;
+    const auto enumeration_timeout = std::chrono::seconds(5);
+    const auto activation_grace = std::chrono::seconds(2);
+
+    while (true) {
+      const auto now = std::chrono::steady_clock::now();
+      if (!enumerated_at && now - start >= enumeration_timeout) {
+        if (hint && !hint->display_name.empty()) {
+          BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate cached virtual display '"
+                             << platf::to_utf8(hint->display_name)
+                             << "'; clearing cached display name.";
+          VirtualDisplayCache::instance().clear_display_name();
+        }
+        return false;
+      }
+      if (enumerated_at && now - *enumerated_at >= activation_grace) {
+        return true;
+      }
+
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      if (devices) {
+        for (const auto &candidate : *devices) {
+          if (!is_virtual_display_device(candidate, hint)) {
+            continue;
+          }
+
+          bool matches = false;
+          if (device_id && !device_id->empty() && !candidate.m_device_id.empty()) {
+            matches = equals_ci(candidate.m_device_id, *device_id);
+          }
+
+          if (!matches && normalized_name) {
+            if (!candidate.m_display_name.empty() &&
+                normalize_display_name(candidate.m_display_name) == *normalized_name) {
+              matches = true;
+            } else if (!candidate.m_friendly_name.empty() &&
+                       normalize_display_name(candidate.m_friendly_name) == *normalized_name) {
+              matches = true;
+            }
+          }
+
+          if (!matches && !device_id && !normalized_name) {
+            matches = true;
+          }
+
+          if (!matches) {
+            continue;
+          }
+
+          if (!candidate.m_device_id.empty()) {
+            if (!device_id || !equals_ci(candidate.m_device_id, *device_id)) {
+              device_id = candidate.m_device_id;
+            }
+          }
+
+          if (!enumerated_at) {
+            enumerated_at = now;
+          }
+
+          if (candidate.m_info) {
+            if (candidate.m_info->m_resolution.m_width == width &&
+                candidate.m_info->m_resolution.m_height == height) {
+              return true;
+            }
+
+            if (now - *enumerated_at >= std::chrono::milliseconds(500)) {
+              return true;
+            }
+          } else {
+            if (now - *enumerated_at >= std::chrono::milliseconds(500)) {
+              return true;
+            }
+          }
+        }
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+
+  bool wait_for_virtual_display_teardown(
+    const std::wstring &display_name,
+    std::chrono::steady_clock::duration timeout
+  ) {
+    if (display_name.empty()) {
+      return true;
+    }
+
+    const auto normalized = normalize_display_name(platf::to_utf8(display_name));
+    if (normalized.empty()) {
+      return true;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      bool present = false;
+      if (auto devices = platf::display_helper::Coordinator::instance().enumerate_devices()) {
+        for (const auto &device : *devices) {
+          if (!is_virtual_display_device(device, std::nullopt)) {
+            continue;
+          }
+
+          const auto device_name = normalize_display_name(device.m_display_name);
+          const auto friendly_name = normalize_display_name(device.m_friendly_name);
+          if ((!device_name.empty() && device_name == normalized) ||
+              (!friendly_name.empty() && friendly_name == normalized)) {
+            present = true;
+            break;
+          }
+        }
+      }
+
+      if (!present) {
+        return true;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+  }
+
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -902,47 +1388,109 @@ namespace VDISPLAY {
     uuid_util::uuid_t requested_uuid {};
     std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
 
+    // Log entry and inputs for deeper diagnostics
+    BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
+                     << "' client_name='" << (s_client_name ? s_client_name : "(null)")
+                     << "' width=" << width << " height=" << height << " fps=" << fps
+                     << " guid=" << requested_uuid.string();
+
     teardown_conflicting_virtual_displays(requested_uuid);
+    BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
 
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
+    if (cached_entry) {
+      BOOST_LOG(debug) << "Cached entry present: display_name='" << platf::to_utf8(cached_entry->display_name)
+                       << "' dpi='"
+                       << (cached_entry->dpi_value ? std::to_string(*cached_entry->dpi_value) : std::string("(none)")) << "'";
+    } else {
+      BOOST_LOG(debug) << "No cached virtual display entry present.";
+    }
+
     VIRTUAL_DISPLAY_ADD_OUT output {};
+    BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
+      BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
+
+      // If we have a cache entry, attempt to reuse it and wait for Windows to enumerate the device
       if (cached_entry && !cached_entry->display_name.empty()) {
+        BOOST_LOG(debug) << "Cached display name available; attempting reuse path: '" << platf::to_utf8(cached_entry->display_name) << "'";
         if (cached_entry->dpi_value) {
+          BOOST_LOG(debug) << "Applying cached DPI (before reuse)=" << *cached_entry->dpi_value;
           (void) apply_virtual_display_dpi_value(*cached_entry->dpi_value);
         }
-        auto reuse_name = cached_entry->display_name;
-        auto device_id = resolveVirtualDisplayDeviceId(reuse_name);
 
-        VirtualDisplayCache::entry_t updated;
-        updated.display_name = std::move(reuse_name);
-        if (device_id && !device_id->empty()) {
-          updated.device_id = *device_id;
-        }
+        auto reuse_name = cached_entry->display_name;
+        auto resolved_id = resolveVirtualDisplayDeviceId(reuse_name);
+        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(reuse_name) << ") returned '"
+                         << (resolved_id ? *resolved_id : std::string("(none)")) << "'";
+
+        std::optional<VirtualDisplayCache::entry_t> cache_entry;
+        cache_entry.emplace();
+        cache_entry->display_name = reuse_name;
         if (auto dpi = read_virtual_display_dpi_value()) {
-          updated.dpi_value = *dpi;
+          cache_entry->dpi_value = *dpi;
+          BOOST_LOG(debug) << "Read DPI from registry during reuse: " << *dpi;
         } else {
-          updated.dpi_value = cached_entry->dpi_value;
+          cache_entry->dpi_value = cached_entry->dpi_value;
+          BOOST_LOG(debug) << "No DPI read from registry; using cached DPI: "
+                           << (cached_entry->dpi_value ? std::to_string(*cached_entry->dpi_value) : std::string("(none)"));
         }
-        VirtualDisplayCache::instance().set_entry(std::move(updated));
+
+        std::optional<std::wstring> display_name {cache_entry->display_name};
+        std::optional<std::string> device_id;
+        if (resolved_id && !resolved_id->empty()) {
+          device_id = *resolved_id;
+        }
+
+        BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='" << platf::to_utf8(display_name.value())
+                         << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
+        if (!wait_for_virtual_display_ready(display_name, device_id, cache_entry, width, height)) {
+          BOOST_LOG(warning) << "Timed out waiting for existing virtual display to be acknowledged by Windows (reuse path).";
+          printf("[SUDOVDA] Timed out waiting for existing virtual display to be acknowledged by Windows.\n");
+          VirtualDisplayCache::instance().clear_display_name();
+          return std::nullopt;
+        }
+
+        // Persist display_name and dpi to cache (device_id is ephemeral and not cached)
+        if (cache_entry) {
+          if (!cache_entry->display_name.empty() || cache_entry->dpi_value) {
+            VirtualDisplayCache::instance().set_entry(*cache_entry);
+            BOOST_LOG(debug) << "Updated virtual display cache after reuse: display_name='" << platf::to_utf8(cache_entry->display_name)
+                             << "' dpi='"
+                             << (cache_entry->dpi_value ? std::to_string(*cache_entry->dpi_value) : std::string("(none)")) << "'";
+          }
+        }
+
         write_guid_to_state_locked(requested_uuid);
 
-        wprintf(
-          L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
-          static_cast<unsigned long>(error_code),
-          cached_entry->display_name.c_str()
-        );
+        if (display_name) {
+          wprintf(
+            L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
+            static_cast<unsigned long>(error_code),
+            display_name->c_str()
+          );
+        } else {
+          printf("[SUDOVDA] Reusing existing virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+        }
+
+        BOOST_LOG(info) << "Reused virtual display for guid=" << requested_uuid.string()
+                        << " display_name='" << platf::to_utf8(display_name.value()) << "' device_id='"
+                        << (device_id ? *device_id : std::string("(none)")) << "'";
+
         track_virtual_display_created(requested_uuid);
         VirtualDisplayCreationResult result;
-        result.display_name = cached_entry->display_name;
-        if (device_id && !device_id->empty()) {
+        result.display_name = display_name;
+        if (device_id) {
           result.device_id = *device_id;
         }
         result.reused_existing = true;
         return result;
       }
+
+      // No cached entry to reuse; report failure
       printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+      BOOST_LOG(warning) << "Failed to add virtual display and no cached entry available. error=" << error_code;
       return std::nullopt;
     }
 
@@ -979,28 +1527,40 @@ namespace VDISPLAY {
     std::optional<std::string> device_id;
     if (resolved_display_name) {
       device_id = resolveVirtualDisplayDeviceId(*resolved_display_name);
+      BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*resolved_display_name) << ") returned '"
+                       << (device_id ? *device_id : std::string("(none)")) << "'";
     }
     if (!device_id) {
       device_id = resolveAnyVirtualDisplayDeviceId();
     }
 
-    VirtualDisplayCache::entry_t cache_entry;
+    std::optional<VirtualDisplayCache::entry_t> cache_entry;
+    cache_entry.emplace();
     if (resolved_display_name) {
-      cache_entry.display_name = *resolved_display_name;
+      cache_entry->display_name = *resolved_display_name;
     } else if (cached_entry && !cached_entry->display_name.empty()) {
-      cache_entry.display_name = cached_entry->display_name;
-    }
-    if (device_id && !device_id->empty()) {
-      cache_entry.device_id = *device_id;
+      cache_entry->display_name = cached_entry->display_name;
     }
     if (auto dpi = read_virtual_display_dpi_value()) {
-      cache_entry.dpi_value = *dpi;
+      cache_entry->dpi_value = *dpi;
     } else if (cached_entry && cached_entry->dpi_value) {
-      cache_entry.dpi_value = cached_entry->dpi_value;
+      cache_entry->dpi_value = cached_entry->dpi_value;
     }
-    if (!cache_entry.display_name.empty() || !cache_entry.device_id.empty() || cache_entry.dpi_value) {
-      VirtualDisplayCache::instance().set_entry(std::move(cache_entry));
+
+    if (!wait_for_virtual_display_ready(resolved_display_name, device_id, cache_entry, width, height)) {
+      printf("[SUDOVDA] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
+      (void) removeVirtualDisplay(guid);
+      VirtualDisplayCache::instance().clear_display_name();
+      return std::nullopt;
     }
+
+    // Persist display_name and dpi to cache (device_id is ephemeral and not cached)
+    if (cache_entry) {
+      if (!cache_entry->display_name.empty() || cache_entry->dpi_value) {
+        VirtualDisplayCache::instance().set_entry(*cache_entry);
+      }
+    }
+
     write_guid_to_state_locked(requested_uuid);
     track_virtual_display_created(requested_uuid);
 
@@ -1050,6 +1610,12 @@ namespace VDISPLAY {
     auto current_dpi = read_virtual_display_dpi_value();
     if (current_dpi) {
       VirtualDisplayCache::instance().update_dpi(current_dpi);
+    }
+
+    auto cached_entry = VirtualDisplayCache::instance().get_entry();
+    std::optional<std::wstring> cached_display_name;
+    if (cached_entry && !cached_entry->display_name.empty()) {
+      cached_display_name = cached_entry->display_name;
     }
 
     const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
@@ -1102,6 +1668,17 @@ namespace VDISPLAY {
 
     if (removed) {
       printf("[SUDOVDA] Virtual display removed successfully.\n");
+      if (cached_display_name) {
+        constexpr auto teardown_timeout = std::chrono::seconds(2);
+        if (!wait_for_virtual_display_teardown(*cached_display_name, teardown_timeout)) {
+          BOOST_LOG(warning) << "Virtual display '" << platf::to_utf8(*cached_display_name)
+                             << "' still reported by Windows after teardown wait.";
+        } else {
+          BOOST_LOG(debug) << "Virtual display '" << platf::to_utf8(*cached_display_name)
+                           << "' removed from enumeration after teardown.";
+        }
+      }
+      VirtualDisplayCache::instance().clear_display_name();
       return true;
     }
 
@@ -1114,48 +1691,37 @@ namespace VDISPLAY {
       return true;
     }
 
-    if (SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
-      closeVDisplayDevice();
-    }
-
-    if (probe_driver_responsive_once()) {
-      return true;
-    }
-
-    return false;
+    return ensure_driver_is_ready();
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
 
     if (display_name.empty()) {
-      if (cached_entry && !cached_entry->device_id.empty()) {
-        return cached_entry->device_id;
-      }
       return resolveAnyVirtualDisplayDeviceId();
     }
 
     auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
-      if (cached_entry && !cached_entry->device_id.empty()) {
-        return cached_entry->device_id;
-      }
       return std::nullopt;
     }
 
     const auto utf8_name = platf::to_utf8(display_name);
     const auto target = normalize_display_name(utf8_name);
     if (target.empty()) {
-      if (cached_entry && !cached_entry->device_id.empty()) {
-        return cached_entry->device_id;
-      }
       return std::nullopt;
     }
 
     std::optional<std::string> fallback;
+    std::optional<std::string> active_fallback;
     for (const auto &device : *devices) {
-      if (!fallback && is_virtual_display_device(device, cached_entry) && !device.m_device_id.empty()) {
-        fallback = device.m_device_id;
+      if (is_virtual_display_device(device, cached_entry) && !device.m_device_id.empty()) {
+        if (!fallback) {
+          fallback = device.m_device_id;
+        }
+        if (!active_fallback && device.m_info) {
+          active_fallback = device.m_device_id;
+        }
       }
 
       const auto device_name = normalize_display_name(device.m_display_name);
@@ -1164,12 +1730,11 @@ namespace VDISPLAY {
       }
     }
 
+    if (active_fallback) {
+      return active_fallback;
+    }
     if (fallback) {
       return fallback;
-    }
-
-    if (cached_entry && !cached_entry->device_id.empty()) {
-      return cached_entry->device_id;
     }
 
     return std::nullopt;
@@ -1178,7 +1743,6 @@ namespace VDISPLAY {
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
     auto cached_entry = VirtualDisplayCache::instance().get_entry();
     auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
-    std::optional<std::string> cached_match;
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
@@ -1191,9 +1755,6 @@ namespace VDISPLAY {
         if (!any_match) {
           any_match = device.m_device_id;
         }
-        if (cached_entry && !cached_entry->device_id.empty() && equals_ci(device.m_device_id, cached_entry->device_id)) {
-          cached_match = device.m_device_id;
-        }
         if (device.m_info) {
           active_match = device.m_device_id;
           break;
@@ -1204,14 +1765,8 @@ namespace VDISPLAY {
     if (active_match) {
       return active_match;
     }
-    if (cached_match) {
-      return cached_match;
-    }
     if (any_match) {
       return any_match;
-    }
-    if (cached_entry && !cached_entry->device_id.empty()) {
-      return cached_entry->device_id;
     }
     return std::nullopt;
   }
@@ -1237,7 +1792,13 @@ namespace VDISPLAY {
       SudaVDADisplayInfo info;
       info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
       info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
-      info.is_active = device.m_info.has_value();
+      bool assumed_active = device.m_info.has_value();
+      if (!assumed_active && is_virtual_display_device(device, cached_entry)) {
+        if (!device.m_display_name.empty() || !device.m_device_id.empty()) {
+          assumed_active = true;
+        }
+      }
+      info.is_active = assumed_active;
       info.width = 0;
       info.height = 0;
 
@@ -1359,29 +1920,8 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   }
 
   result.created_temporary = true;
-
-  constexpr auto timeout = std::chrono::seconds(5);
-  constexpr auto interval = std::chrono::milliseconds(100);
-  auto deadline = std::chrono::steady_clock::now() + timeout;
-
-  while (std::chrono::steady_clock::now() < deadline) {
-    auto displays = enumerateSudaVDADisplays();
-    bool active = std::any_of(
-      displays.begin(),
-      displays.end(),
-      [](const SudaVDADisplayInfo &info) {
-        return info.is_active;
-      }
-    );
-    if (active) {
-      BOOST_LOG(info) << "Temporary virtual display ready.";
-      result.success = true;
-      return result;
-    }
-    std::this_thread::sleep_for(interval);
-  }
-
-  BOOST_LOG(warning) << "Temporary virtual display did not become active within timeout.";
+  result.success = true;
+  BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }
 

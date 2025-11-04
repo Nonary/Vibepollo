@@ -33,6 +33,7 @@ namespace VDISPLAY {
 
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();
+  bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
   bool setRenderAdapterByName(const std::wstring &adapterName);
