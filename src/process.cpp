@@ -2104,10 +2104,6 @@ namespace proc {
         BOOST_LOG(warning) << "Failed to remove virtual display.";
       } else {
         BOOST_LOG(info) << "Virtual display removed.";
-        if (_launch_session) {
-          _launch_session->virtual_display = false;
-          _launch_session->virtual_display_guid_bytes.fill(0);
-        }
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;
@@ -2116,40 +2112,9 @@ namespace proc {
 
     bool has_run = _app_id > 0;
 
-#ifdef _WIN32
-    // Revert HDR state
-    if (config::video.legacy_virtual_display_mode && has_run && !mode_changed_display.empty()) {
-      auto displayNameW = platf::from_utf8(mode_changed_display);
-      if (VDISPLAY::legacy::setDisplayHDRByName(displayNameW.c_str(), initial_hdr)) {
-        BOOST_LOG(info) << "HDR reverted for display " << mode_changed_display;
-      } else {
-        BOOST_LOG(info) << "HDR revert failed for display " << mode_changed_display;
-      }
-    }
-
-    bool used_virtual_display = vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK && _launch_session && _launch_session->virtual_display;
-    if (used_virtual_display) {
-      if (VDISPLAY::removeVirtualDisplay(_launch_session->display_guid)) {
-        BOOST_LOG(info) << "Virtual Display removed successfully";
-      } else if (this->virtual_display) {
-        BOOST_LOG(warning) << "Virtual Display remove failed";
-      } else {
-        BOOST_LOG(warning) << "Virtual Display remove failed, but it seems it was not created correctly either.";
-      }
-    }
-
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
-      if (used_virtual_display) {
-        display_helper_integration::reset_persistence();
-      } else {
-        display_helper_integration::revert();
-      }
-#else
-    if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
-#endif
-
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif

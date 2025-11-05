@@ -575,7 +575,10 @@ namespace display_helper_integration {
     const bool session_has_virtual_id = effective_virtual_display && !effective_device_id.empty();
     const bool legacy_virtual_mode = video_config.legacy_virtual_display_mode;
     
-    if (session_requests_virtual && video_config.dd.activate_virtual_display) {
+    // Use EnsureOnly mode when:
+    // 1. Virtual display is requested AND auto-activation is enabled (to create new displays)
+    // 2. OR a virtual display already exists in this session (to ensure existing displays are configured)
+    if ((session_requests_virtual && video_config.dd.activate_virtual_display) || effective_virtual_display) {
       BOOST_LOG(info) << "Display helper: Virtual display requested with auto-activation enabled. Activating via EnsureOnly mode.";
 
       // Use parse_configuration to get the properly overridden values
