@@ -1230,15 +1230,12 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
-      
+        auto display_result = VDISPLAY::ensure_display();
+        if (!display_result.success) {
+          BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
+        }
 
-      auto display_result = VDISPLAY::ensure_display();
-      if (!display_result.success) {
-        BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
-      }
-
-      
-      // We can't cleanup the display here because it is still needed for the stream, the teardown will still happen when the stream ends.
+        // We can't cleanup the display here because it is still needed for the stream, the teardown will still happen when the stream ends.
 
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
@@ -1424,10 +1421,9 @@ namespace nvhttp {
       proc::proc.terminate();
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-    if (VDISPLAY::has_active_physical_display(true)) {
-      VDISPLAY::setWatchdogFeedingEnabled(false);
-      VDISPLAY::removeAllVirtualDisplays();
-    }
+
+    VDISPLAY::setWatchdogFeedingEnabled(false);
+    VDISPLAY::removeAllVirtualDisplays();
 
     display_helper_integration::revert();
   }

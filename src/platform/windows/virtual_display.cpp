@@ -595,138 +595,13 @@ namespace VDISPLAY {
       return applied;
     }
 
-    struct VirtualDisplayCache {
-      struct entry_t {
-        std::wstring display_name;
-        std::optional<uint32_t> dpi_value;
-      };
-
-      std::mutex mutex;
-      bool loaded = false;
-      std::optional<entry_t> entry;
-
-      static VirtualDisplayCache &instance() {
-        static VirtualDisplayCache cache;
-        return cache;
-      }
-
-      static fs::path storage_path() {
-        return platf::appdata() / "virtual_display_cache.json";
-      }
-
-      void ensure_loaded_locked() {
-        if (loaded) {
-          return;
-        }
-        loaded = true;
-        entry.reset();
-
-        const auto path = storage_path();
-        try {
-          if (!fs::exists(path)) {
-            return;
-          }
-          std::ifstream stream(path, std::ios::binary);
-          if (!stream) {
-            return;
-          }
-          nlohmann::json json = nlohmann::json::parse(stream, nullptr, false);
-          if (!json.is_object()) {
-            return;
-          }
-
-          entry_t tmp;
-          if (auto disp = json.find("display_name"); disp != json.end() && disp->is_string()) {
-            tmp.display_name = platf::from_utf8(disp->get<std::string>());
-          }
-          if (auto dpi = json.find("dpi_value"); dpi != json.end() && dpi->is_number_unsigned()) {
-            tmp.dpi_value = static_cast<uint32_t>(dpi->get<uint64_t>());
-          }
-
-          if (!tmp.display_name.empty() || tmp.dpi_value) {
-            entry = std::move(tmp);
-          }
-        } catch (...) {
-          entry.reset();
-        }
-      }
-
-      void save_locked() {
-        const auto path = storage_path();
-        try {
-          if (!entry || (entry->display_name.empty() && !entry->dpi_value)) {
-            entry.reset();
-            std::error_code ec;
-            fs::remove(path, ec);
-            return;
-          }
-
-          nlohmann::json json = nlohmann::json::object();
-          if (!entry->display_name.empty()) {
-            json["display_name"] = platf::to_utf8(entry->display_name);
-          }
-          if (entry->dpi_value) {
-            json["dpi_value"] = *entry->dpi_value;
-          }
-
-          fs::create_directories(path.parent_path());
-          std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-          if (!stream) {
-            return;
-          }
-          stream << json.dump(2);
-        } catch (...) {
-        }
-      }
-
-      std::optional<entry_t> get_entry() {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        return entry;
-      }
-
-      void set_entry(entry_t value) {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        entry = std::move(value);
-        save_locked();
-      }
-
-      void update_dpi(const std::optional<uint32_t> &value) {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        if (!entry || !value) {
-          return;
-        }
-        entry->dpi_value = *value;
-        save_locked();
-      }
-
-      void clear_display_name() {
-        std::lock_guard<std::mutex> lg(mutex);
-        ensure_loaded_locked();
-        if (!entry) {
-          return;
-        }
-        if (!entry->display_name.empty()) {
-          if (!entry->dpi_value) {
-            entry.reset();
-          } else {
-            entry->display_name.clear();
-          }
-        } else if (!entry->dpi_value) {
-          entry.reset();
-        }
-        save_locked();
-      }
-    };
+    fs::path legacy_virtual_display_cache_path() {
+      return platf::appdata() / "virtual_display_cache.json";
+    }
 
     namespace pt = boost::property_tree;
 
-    bool is_virtual_display_device(
-      const display_device::EnumeratedDevice &device,
-      const std::optional<VirtualDisplayCache::entry_t> &cached_entry
-    ) {
+    bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
       static const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
       if (equals_ci(device.m_friendly_name, sudoMakerDeviceString)) {
         return true;
@@ -794,13 +669,13 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
-    std::optional<std::wstring> resolve_virtual_display_name_from_devices(const std::optional<VirtualDisplayCache::entry_t> &cached_entry) {
+    std::optional<std::wstring> resolve_virtual_display_name_from_devices() {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
       if (!devices) {
         return std::nullopt;
       }
       for (const auto &device : *devices) {
-        if (!is_virtual_display_device(device, cached_entry)) {
+        if (!is_virtual_display_device(device)) {
           continue;
         }
         if (!device.m_display_name.empty()) {
@@ -851,7 +726,7 @@ namespace VDISPLAY {
     }
 
     std::optional<uuid_util::uuid_t> load_guid_from_legacy_cache_locked() {
-      const auto path = VirtualDisplayCache::storage_path();
+      const auto path = legacy_virtual_display_cache_path();
       if (!fs::exists(path)) {
         return std::nullopt;
       }
@@ -1236,15 +1111,9 @@ namespace VDISPLAY {
   bool wait_for_virtual_display_ready(
     const std::optional<std::wstring> &display_name,
     std::optional<std::string> &device_id,
-    const std::optional<VirtualDisplayCache::entry_t> &match_hint,
     uint32_t width,
     uint32_t height
   ) {
-    auto hint = match_hint;
-    if (!hint) {
-      hint = VirtualDisplayCache::instance().get_entry();
-    }
-
     std::optional<std::string> normalized_name;
     if (display_name && !display_name->empty()) {
       normalized_name = normalize_display_name(platf::to_utf8(*display_name));
@@ -1258,12 +1127,7 @@ namespace VDISPLAY {
     while (true) {
       const auto now = std::chrono::steady_clock::now();
       if (!enumerated_at && now - start >= enumeration_timeout) {
-        if (hint && !hint->display_name.empty()) {
-          BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate cached virtual display '"
-                             << platf::to_utf8(hint->display_name)
-                             << "'; clearing cached display name.";
-          VirtualDisplayCache::instance().clear_display_name();
-        }
+        BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate virtual display.";
         return false;
       }
       if (enumerated_at && now - *enumerated_at >= activation_grace) {
@@ -1273,7 +1137,7 @@ namespace VDISPLAY {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
       if (devices) {
         for (const auto &candidate : *devices) {
-          if (!is_virtual_display_device(candidate, hint)) {
+          if (!is_virtual_display_device(candidate)) {
             continue;
           }
 
@@ -1349,7 +1213,7 @@ namespace VDISPLAY {
       bool present = false;
       if (auto devices = platf::display_helper::Coordinator::instance().enumerate_devices()) {
         for (const auto &device : *devices) {
-          if (!is_virtual_display_device(device, std::nullopt)) {
+          if (!is_virtual_display_device(device)) {
             continue;
           }
 
@@ -1397,105 +1261,63 @@ namespace VDISPLAY {
     teardown_conflicting_virtual_displays(requested_uuid);
     BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
 
-    auto cached_entry = VirtualDisplayCache::instance().get_entry();
-    if (cached_entry) {
-      BOOST_LOG(debug) << "Cached entry present: display_name='" << platf::to_utf8(cached_entry->display_name)
-                       << "' dpi='"
-                       << (cached_entry->dpi_value ? std::to_string(*cached_entry->dpi_value) : std::string("(none)")) << "'";
-    } else {
-      BOOST_LOG(debug) << "No cached virtual display entry present.";
-    }
-
     VIRTUAL_DISPLAY_ADD_OUT output {};
     BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
       BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
 
-      // If we have a cache entry, attempt to reuse it and wait for Windows to enumerate the device
-      if (cached_entry && !cached_entry->display_name.empty()) {
-        BOOST_LOG(debug) << "Cached display name available; attempting reuse path: '" << platf::to_utf8(cached_entry->display_name) << "'";
-        if (cached_entry->dpi_value) {
-          BOOST_LOG(debug) << "Applying cached DPI (before reuse)=" << *cached_entry->dpi_value;
-          (void) apply_virtual_display_dpi_value(*cached_entry->dpi_value);
-        }
-
-        auto reuse_name = cached_entry->display_name;
-        auto resolved_id = resolveVirtualDisplayDeviceId(reuse_name);
-        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(reuse_name) << ") returned '"
-                         << (resolved_id ? *resolved_id : std::string("(none)")) << "'";
-
-        std::optional<VirtualDisplayCache::entry_t> cache_entry;
-        cache_entry.emplace();
-        cache_entry->display_name = reuse_name;
-        if (auto dpi = read_virtual_display_dpi_value()) {
-          cache_entry->dpi_value = *dpi;
-          BOOST_LOG(debug) << "Read DPI from registry during reuse: " << *dpi;
-        } else {
-          cache_entry->dpi_value = cached_entry->dpi_value;
-          BOOST_LOG(debug) << "No DPI read from registry; using cached DPI: "
-                           << (cached_entry->dpi_value ? std::to_string(*cached_entry->dpi_value) : std::string("(none)"));
-        }
-
-        std::optional<std::wstring> display_name {cache_entry->display_name};
-        std::optional<std::string> device_id;
-        if (resolved_id && !resolved_id->empty()) {
-          device_id = *resolved_id;
-        }
-
-        BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='" << platf::to_utf8(display_name.value())
-                         << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
-        if (!wait_for_virtual_display_ready(display_name, device_id, cache_entry, width, height)) {
-          BOOST_LOG(warning) << "Timed out waiting for existing virtual display to be acknowledged by Windows (reuse path).";
-          printf("[SUDOVDA] Timed out waiting for existing virtual display to be acknowledged by Windows.\n");
-          VirtualDisplayCache::instance().clear_display_name();
-          return std::nullopt;
-        }
-
-        // Persist display_name and dpi to cache (device_id is ephemeral and not cached)
-        if (cache_entry) {
-          if (!cache_entry->display_name.empty() || cache_entry->dpi_value) {
-            VirtualDisplayCache::instance().set_entry(*cache_entry);
-            BOOST_LOG(debug) << "Updated virtual display cache after reuse: display_name='" << platf::to_utf8(cache_entry->display_name)
-                             << "' dpi='"
-                             << (cache_entry->dpi_value ? std::to_string(*cache_entry->dpi_value) : std::string("(none)")) << "'";
-          }
-        }
-
-        write_guid_to_state_locked(requested_uuid);
-
-        if (display_name) {
-          wprintf(
-            L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
-            static_cast<unsigned long>(error_code),
-            display_name->c_str()
-          );
-        } else {
-          printf("[SUDOVDA] Reusing existing virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
-        }
-
-        BOOST_LOG(info) << "Reused virtual display for guid=" << requested_uuid.string()
-                        << " display_name='" << platf::to_utf8(display_name.value()) << "' device_id='"
-                        << (device_id ? *device_id : std::string("(none)")) << "'";
-
-        track_virtual_display_created(requested_uuid);
-        VirtualDisplayCreationResult result;
-        result.display_name = display_name;
-        if (device_id) {
-          result.device_id = *device_id;
-        }
-        result.reused_existing = true;
-        return result;
+      auto reuse_name = resolve_virtual_display_name_from_devices();
+      std::optional<std::string> device_id;
+      if (reuse_name) {
+        device_id = resolveVirtualDisplayDeviceId(*reuse_name);
+        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*reuse_name) << ") returned '"
+                         << (device_id ? *device_id : std::string("(none)")) << "'";
+      }
+      if (!device_id) {
+        device_id = resolveAnyVirtualDisplayDeviceId();
       }
 
-      // No cached entry to reuse; report failure
-      printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
-      BOOST_LOG(warning) << "Failed to add virtual display and no cached entry available. error=" << error_code;
-      return std::nullopt;
-    }
+      if (auto dpi = read_virtual_display_dpi_value()) {
+        (void) apply_virtual_display_dpi_value(*dpi);
+      }
 
-    if (cached_entry && cached_entry->dpi_value) {
-      (void) apply_virtual_display_dpi_value(*cached_entry->dpi_value);
+      if (reuse_name || device_id) {
+        BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='"
+                         << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
+                         << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
+        std::optional<std::wstring> display_name = reuse_name;
+        if (wait_for_virtual_display_ready(display_name, device_id, width, height)) {
+          write_guid_to_state_locked(requested_uuid);
+          track_virtual_display_created(requested_uuid);
+
+          if (display_name) {
+            wprintf(
+              L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
+              static_cast<unsigned long>(error_code),
+              display_name->c_str()
+            );
+          } else {
+            printf("[SUDOVDA] Reusing existing virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+          }
+
+          BOOST_LOG(info) << "Reused virtual display for guid=" << requested_uuid.string()
+                          << " display_name='"
+                          << (display_name ? platf::to_utf8(*display_name) : std::string("(none)")) << "' device_id='"
+                          << (device_id ? *device_id : std::string("(none)")) << "'";
+
+          VirtualDisplayCreationResult result;
+          result.display_name = display_name;
+          if (device_id && !device_id->empty()) {
+            result.device_id = *device_id;
+          }
+          result.reused_existing = true;
+          return result;
+        }
+      }
+
+      printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+      return std::nullopt;
     }
 
     std::optional<std::wstring> resolved_display_name;
@@ -1517,11 +1339,7 @@ namespace VDISPLAY {
     }
 
     if (!resolved_display_name) {
-      resolved_display_name = resolve_virtual_display_name_from_devices(cached_entry);
-    }
-
-    if (!resolved_display_name && cached_entry && !cached_entry->display_name.empty()) {
-      resolved_display_name = cached_entry->display_name;
+      resolved_display_name = resolve_virtual_display_name_from_devices();
     }
 
     std::optional<std::string> device_id;
@@ -1534,31 +1352,10 @@ namespace VDISPLAY {
       device_id = resolveAnyVirtualDisplayDeviceId();
     }
 
-    std::optional<VirtualDisplayCache::entry_t> cache_entry;
-    cache_entry.emplace();
-    if (resolved_display_name) {
-      cache_entry->display_name = *resolved_display_name;
-    } else if (cached_entry && !cached_entry->display_name.empty()) {
-      cache_entry->display_name = cached_entry->display_name;
-    }
-    if (auto dpi = read_virtual_display_dpi_value()) {
-      cache_entry->dpi_value = *dpi;
-    } else if (cached_entry && cached_entry->dpi_value) {
-      cache_entry->dpi_value = cached_entry->dpi_value;
-    }
-
-    if (!wait_for_virtual_display_ready(resolved_display_name, device_id, cache_entry, width, height)) {
+    if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height)) {
       printf("[SUDOVDA] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
       (void) removeVirtualDisplay(guid);
-      VirtualDisplayCache::instance().clear_display_name();
       return std::nullopt;
-    }
-
-    // Persist display_name and dpi to cache (device_id is ephemeral and not cached)
-    if (cache_entry) {
-      if (!cache_entry->display_name.empty() || cache_entry->dpi_value) {
-        VirtualDisplayCache::instance().set_entry(*cache_entry);
-      }
     }
 
     write_guid_to_state_locked(requested_uuid);
@@ -1607,16 +1404,7 @@ namespace VDISPLAY {
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
-    auto current_dpi = read_virtual_display_dpi_value();
-    if (current_dpi) {
-      VirtualDisplayCache::instance().update_dpi(current_dpi);
-    }
-
-    auto cached_entry = VirtualDisplayCache::instance().get_entry();
-    std::optional<std::wstring> cached_display_name;
-    if (cached_entry && !cached_entry->display_name.empty()) {
-      cached_display_name = cached_entry->display_name;
-    }
+    auto cached_display_name = resolve_virtual_display_name_from_devices();
 
     const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
     bool opened_handle = false;
@@ -1674,11 +1462,10 @@ namespace VDISPLAY {
           BOOST_LOG(warning) << "Virtual display '" << platf::to_utf8(*cached_display_name)
                              << "' still reported by Windows after teardown wait.";
         } else {
-          BOOST_LOG(debug) << "Virtual display '" << platf::to_utf8(*cached_display_name)
-                           << "' removed from enumeration after teardown.";
+         BOOST_LOG(debug) << "Virtual display '" << platf::to_utf8(*cached_display_name)
+                          << "' removed from enumeration after teardown.";
         }
       }
-      VirtualDisplayCache::instance().clear_display_name();
       return true;
     }
 
@@ -1695,8 +1482,6 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
-    auto cached_entry = VirtualDisplayCache::instance().get_entry();
-
     if (display_name.empty()) {
       return resolveAnyVirtualDisplayDeviceId();
     }
@@ -1715,7 +1500,7 @@ namespace VDISPLAY {
     std::optional<std::string> fallback;
     std::optional<std::string> active_fallback;
     for (const auto &device : *devices) {
-      if (is_virtual_display_device(device, cached_entry) && !device.m_device_id.empty()) {
+      if (is_virtual_display_device(device) && !device.m_device_id.empty()) {
         if (!fallback) {
           fallback = device.m_device_id;
         }
@@ -1741,14 +1526,13 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
-    auto cached_entry = VirtualDisplayCache::instance().get_entry();
     auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
     if (devices) {
       for (const auto &device : *devices) {
-        if (!is_virtual_display_device(device, cached_entry) || device.m_device_id.empty()) {
+        if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
           continue;
         }
 
@@ -1783,9 +1567,8 @@ namespace VDISPLAY {
       return result;
     }
 
-    auto cached_entry = VirtualDisplayCache::instance().get_entry();
     for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device, cached_entry)) {
+      if (!is_virtual_display_device(device)) {
         continue;
       }
 
@@ -1793,7 +1576,7 @@ namespace VDISPLAY {
       info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
       info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
       bool assumed_active = device.m_info.has_value();
-      if (!assumed_active && is_virtual_display_device(device, cached_entry)) {
+      if (!assumed_active) {
         if (!device.m_display_name.empty() || !device.m_device_id.empty()) {
           assumed_active = true;
         }
@@ -1824,12 +1607,10 @@ bool VDISPLAY::has_active_physical_display(const std::optional<bool> &active) {
     return true;
   }
 
-  auto cached_entry = VirtualDisplayCache::instance().get_entry();
-  BOOST_LOG(debug) << "Cached entry present: " << cached_entry.has_value();
   bool found_physical = false;
   for (const auto &device : *devices) {
     bool has_info = device.m_info.has_value();
-    bool is_virtual = is_virtual_display_device(device, cached_entry);
+    bool is_virtual = is_virtual_display_device(device);
     BOOST_LOG(debug) << "Device: " << device.m_display_name << ", has_info: " << has_info << ", is_virtual: " << is_virtual;
     if (!is_virtual) {
       found_physical = true;
