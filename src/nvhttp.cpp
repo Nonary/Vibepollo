@@ -1230,13 +1230,6 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
-        auto display_result = VDISPLAY::ensure_display();
-        if (!display_result.success) {
-          BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
-        }
-
-        // We can't cleanup the display here because it is still needed for the stream, the teardown will still happen when the stream ends.
-
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
 #else
@@ -1249,7 +1242,23 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+#ifdef _WIN32
+      bool encoder_probe_failed = video::probe_encoders();
+      if (encoder_probe_failed) {
+        BOOST_LOG(warning) << "Failed to probe encoders for stream launch without forcing a display. Retrying with temporary virtual display.";
+
+        auto ensured_display = VDISPLAY::ensure_display();
+        if (!ensured_display.success) {
+          BOOST_LOG(warning) << "Unable to ensure display before stream launch. Probe may fail.";
+        } else {
+          encoder_probe_failed = video::probe_encoders();
+        }
+      }
+#else
+      bool encoder_probe_failed = video::probe_encoders();
+#endif
+
+      if (encoder_probe_failed) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
