@@ -457,7 +457,6 @@ namespace config {
   }
 
   video_t video {
-    false,  // headless_mode
     true,  // limit_framerate
     false,  // double_refreshrate
 
@@ -537,8 +536,6 @@ namespace config {
     20,  // minimum_fps_target (0 = framerate)
 
     "1920x1080x60",  // fallback_mode
-    false,  // isolated Display
-    false,  // legacy virtual display mode
     false,  // ignore_encoder_probe_failure
   };
 
@@ -1184,7 +1181,20 @@ namespace config {
       modified_config_settings[name] = val;
     }
 
-    bool_f(vars, "headless_mode", video.headless_mode);
+    auto drop_deprecated_option = [&](const char *name) {
+      auto it = vars.find(name);
+      if (it == vars.end()) {
+        return;
+      }
+      BOOST_LOG(warning) << "config: [" << name << "] is no longer supported and will be ignored.";
+      vars.erase(it);
+      modified_config_settings.erase(name);
+    };
+
+    drop_deprecated_option("headless_mode");
+    drop_deprecated_option("isolated_virtual_display_option");
+    drop_deprecated_option("legacy_virtual_display_mode");
+
     bool_f(vars, "limit_framerate", video.limit_framerate);
     bool_f(vars, "double_refreshrate", video.double_refreshrate);
     int_f(vars, "qp", video.qp);
@@ -1296,8 +1306,6 @@ namespace config {
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 
     string_f(vars, "fallback_mode", video.fallback_mode);
-    bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
-    bool_f(vars, "legacy_virtual_display_mode", video.legacy_virtual_display_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
 
     // Windows-only frame limiter options

@@ -1559,6 +1559,7 @@ namespace nvhttp {
           }
         }
 
+        VDISPLAY::setWatchdogFeedingEnabled(true);
         auto display_info = VDISPLAY::createVirtualDisplay(
           display_uuid_source.c_str(),
           client_label.c_str(),

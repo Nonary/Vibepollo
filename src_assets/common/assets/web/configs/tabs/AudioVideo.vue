@@ -143,10 +143,7 @@ const installSteamDrivers = boolProxy('install_steam_audio_drivers', 'true');
 const streamAudio = boolProxy('stream_audio', 'true');
 const keepSinkDefault = boolProxy('keep_sink_default', 'true');
 const autoCaptureSink = boolProxy('auto_capture_sink', 'true');
-const headlessMode = boolProxy('headless_mode', 'false');
 const doubleRefreshrate = boolProxy('double_refreshrate', 'false');
-const isolatedVirtualDisplay = boolProxy('isolated_virtual_display_option', 'false');
-const legacyVirtualDisplay = boolProxy('legacy_virtual_display_mode', 'false');
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
@@ -358,50 +355,6 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
       <div class="text-[11px] opacity-60 mt-1">{{ t('config.fallback_mode_desc') }}</div>
     </div>
 
-    <!-- Windows-specific legacy options -->
-    <PlatformLayout>
-      <template #windows>
-        <fieldset class="mb-6 border border-dark/20 dark:border-light/15 rounded-xl p-4 space-y-4">
-          <legend class="px-2 text-sm font-semibold">
-            {{ t('config.virtual_display_group_title') }}
-          </legend>
-          <p class="text-[11px] opacity-70 leading-snug">
-            {{ t('config.virtual_display_group_intro') }}
-          </p>
-
-          <div class="space-y-3">
-            <div class="space-y-1">
-              <n-checkbox v-model:checked="legacyVirtualDisplay">
-                {{ t('config.legacy_virtual_display_mode') }}
-              </n-checkbox>
-              <p class="text-[11px] opacity-70 leading-snug">
-                {{ t('config.legacy_virtual_display_mode_desc') }}
-              </p>
-            </div>
-
-            <template v-if="legacyVirtualDisplay">
-              <div class="space-y-1 pl-6">
-                <n-checkbox v-model:checked="headlessMode">
-                  {{ t('config.headless_mode') }}
-                </n-checkbox>
-                <p class="text-[11px] opacity-70 leading-snug">
-                  {{ t('config.headless_mode_desc') }}
-                </p>
-              </div>
-
-              <div class="space-y-1 pl-6">
-                <n-checkbox v-model:checked="isolatedVirtualDisplay">
-                  {{ t('config.isolated_virtual_display_option') }}
-                </n-checkbox>
-                <p class="text-[11px] opacity-70 leading-snug">
-                  {{ t('config.isolated_virtual_display_option_desc') }}
-                </p>
-              </div>
-            </template>
-          </div>
-        </fieldset>
-      </template>
-    </PlatformLayout>
   </div>
 </template>
 

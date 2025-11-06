@@ -40,6 +40,8 @@ namespace rtsp_stream {
 
     std::string device_name;
     std::string unique_id;
+    std::string client_uuid;
+    std::string client_name;
     crypto::PERM perm;
     int appid;
 

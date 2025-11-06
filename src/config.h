@@ -29,7 +29,6 @@ namespace config {
       shared  ///< Use single shared virtual display for all clients
     };
 
-    bool headless_mode;
     bool limit_framerate;
     bool double_refreshrate;
     // ffmpeg params
@@ -161,8 +160,6 @@ namespace config {
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
 
     std::string fallback_mode;
-    bool isolated_virtual_display_option;
-    bool legacy_virtual_display_mode;
     bool ignore_encoder_probe_failure;
   };
 

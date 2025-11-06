@@ -1220,8 +1220,8 @@ namespace proc {
           if (device_name.empty()) {
             device_name = "Sunshine";
           }
-          device_uuid_str = launch_session->unique_id;
-          device_uuid = uuid_util::uuid_t::parse(launch_session->unique_id);
+          device_uuid_str = !launch_session->client_uuid.empty() ? launch_session->client_uuid : launch_session->unique_id;
+          device_uuid = uuid_util::uuid_t::parse(device_uuid_str);
         }
 
         std::memcpy(&launch_session->display_guid, &device_uuid, sizeof(GUID));
@@ -1260,20 +1260,6 @@ namespace proc {
             BOOST_LOG(info) << "Virtual display reused; device name pending enumeration.";
           } else {
             BOOST_LOG(info) << "Virtual display created; device name pending enumeration.";
-          }
-
-          if (config::video.legacy_virtual_display_mode && display_name_w) {
-            if (launch_session->width && launch_session->height && launch_session->fps) {
-              VDISPLAY::legacy::changeDisplaySettings(display_name_w->c_str(), render_width, render_height, target_fps);
-            }
-
-            if (config::video.isolated_virtual_display_option) {
-              VDISPLAY::legacy::changeDisplaySettings2(display_name_w->c_str(), render_width, render_height, target_fps, true);
-            }
-          } else if (config::video.legacy_virtual_display_mode && !display_name_w) {
-            BOOST_LOG(info) << "Skipping legacy virtual display adjustments until device name is available.";
-          } else if (config::video.isolated_virtual_display_option) {
-            BOOST_LOG(info) << "Skipping isolated virtual display adjustments because legacy mode is disabled.";
           }
 
           launch_session->virtual_display = true;
@@ -1353,7 +1339,7 @@ namespace proc {
     _env["APOLLO_APP_NAME"] = _app.name;
     _env["APOLLO_APP_UUID"] = _app.uuid;
     _env["APOLLO_APP_STATUS"] = "STARTING";
-    _env["APOLLO_CLIENT_UUID"] = launch_session->unique_id;
+    _env["APOLLO_CLIENT_UUID"] = !launch_session->client_uuid.empty() ? launch_session->client_uuid : launch_session->unique_id;
     _env["APOLLO_CLIENT_NAME"] = launch_session->device_name;
     _env["APOLLO_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["APOLLO_CLIENT_HEIGHT"] = std::to_string(render_height);
@@ -1834,64 +1820,6 @@ namespace proc {
 
     _app_launch_time = std::chrono::steady_clock::now();
 
-#ifdef _WIN32
-    if (config::video.legacy_virtual_display_mode) {
-      auto resetHDRThread = std::thread([this, enable_hdr = launch_session->enable_hdr] {
-      // Windows doesn't seem to be able to set HDR correctly when a display is just connected / changed resolution,
-      // so we have tooggle HDR for the virtual display manually after a delay.
-      auto retryInterval = 200ms;
-      while (is_changing_settings_going_to_fail()) {
-        if (retryInterval > 2s) {
-          BOOST_LOG(warning) << "Restoring HDR settings failed due to retry timeout!";
-          return;
-        }
-        std::this_thread::sleep_for(retryInterval);
-        retryInterval *= 2;
-      }
-
-      retryInterval = 200ms;
-      while (this->display_name.empty()) {
-        if (retryInterval > 2s) {
-          BOOST_LOG(warning) << "Not getting current display in time! HDR will not be toggled.";
-          return;
-        }
-        std::this_thread::sleep_for(retryInterval);
-        retryInterval *= 2;
-      }
-
-      // We should have got the actual streaming display by now
-      std::string currentDisplay = this->display_name;
-      auto currentDisplayW = platf::from_utf8(currentDisplay);
-
-      initial_hdr = VDISPLAY::legacy::getDisplayHDRByName(currentDisplayW.c_str());
-
-      if (config::video.dd.hdr_option == config::video_t::dd_t::hdr_option_e::automatic) {
-        mode_changed_display = currentDisplay;
-
-        // Try turn off HDR whatever
-        // As we always have to apply the workaround by turining off HDR first
-        VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), false);
-
-        if (enable_hdr) {
-          if (VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
-            BOOST_LOG(info) << "HDR enabled for display " << currentDisplay;
-          } else {
-            BOOST_LOG(info) << "HDR enable failed for display " << currentDisplay;
-          }
-        }
-      } else if (initial_hdr) {
-        if (VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), false) && VDISPLAY::legacy::setDisplayHDRByName(currentDisplayW.c_str(), true)) {
-          BOOST_LOG(info) << "HDR toggled successfully for display " << currentDisplay;
-        } else {
-          BOOST_LOG(info) << "HDR toggle failed for display " << currentDisplay;
-        }
-      }
-    });
-
-      resetHDRThread.detach();
-    }
-#endif
-
     fg.disable();
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -2138,7 +2066,6 @@ namespace proc {
     _app = {};
     display_name.clear();
     initial_display.clear();
-    mode_changed_display.clear();
     _launch_session.reset();
     virtual_display = false;
     allow_client_commands = false;
