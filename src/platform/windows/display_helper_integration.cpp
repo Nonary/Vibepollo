@@ -664,6 +664,11 @@ namespace display_helper_integration {
         cfg_effective.m_device_id = effective_device_id;
       }
 
+      // Force EnsureOnlyDisplay for virtual displays
+      if (session_requests_virtual) {
+        cfg_effective.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+      }
+
       if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
         BOOST_LOG(info) << "Display helper: dummy plug HDR10 mode forcing 30 Hz for non-desktop session.";
         cfg_effective.m_refresh_rate = display_device::Rational {30u, 1u};
@@ -737,7 +742,6 @@ namespace display_helper_integration {
       if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = session_has_virtual_id ? effective_device_id : video_config.output_name;
-        cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
         if (effective_width >= 0 && effective_height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(effective_width),
@@ -792,7 +796,6 @@ namespace display_helper_integration {
         }
         display_device::SingleDisplayConfiguration cfg_override;
         cfg_override.m_device_id = session_has_virtual_id ? effective_device_id : video_config.output_name;
-        cfg_override.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
         if (effective_width >= 0 && effective_height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(effective_width),

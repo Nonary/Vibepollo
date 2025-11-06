@@ -1620,11 +1620,6 @@ namespace nvhttp {
         launch_session->display_helper_applied = true;
 #endif
       } else {
-        auto display_result = VDISPLAY::ensure_display();
-        if (!display_result.success) {
-          BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
-        }
-        // We can't cleanup the display here because it is still needed for the stream, the teardown will still happen when the stream ends.
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
 #else
@@ -1637,8 +1632,23 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      // Skip encoder probing failure for input-only mode
-      if (video::probe_encoders() && !is_input_only) {
+#ifdef _WIN32
+      bool encoder_probe_failed = video::probe_encoders();
+      if (encoder_probe_failed) {
+        BOOST_LOG(warning) << "Failed to probe encoders for stream launch without forcing a display. Retrying with temporary virtual display.";
+
+        auto ensured_display = VDISPLAY::ensure_display();
+        if (!ensured_display.success) {
+          BOOST_LOG(warning) << "Unable to ensure display before stream launch. Probe may fail.";
+        } else {
+          encoder_probe_failed = video::probe_encoders();
+        }
+      }
+#else
+      bool encoder_probe_failed = video::probe_encoders();
+#endif
+
+      if (encoder_probe_failed && !is_input_only) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
@@ -1927,10 +1937,9 @@ namespace nvhttp {
       proc::proc.terminate();
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-    if (VDISPLAY::has_active_physical_display(true)) {
-      VDISPLAY::setWatchdogFeedingEnabled(false);
-      VDISPLAY::removeAllVirtualDisplays();
-    }
+
+    VDISPLAY::setWatchdogFeedingEnabled(false);
+    VDISPLAY::removeAllVirtualDisplays();
 
     display_helper_integration::revert();
   }

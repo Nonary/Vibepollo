@@ -354,15 +354,24 @@ int main(int argc, char *argv[]) {
 
 #ifdef _WIN32
   {
-    auto encoder_probe_display_result = VDISPLAY::ensure_display();
-    if (!encoder_probe_display_result.success) {
-      BOOST_LOG(warning) << "No display available for encoder probing. Probe may fail.";
-    }
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
-    });
+    bool encoder_probe_failed = video::probe_encoders();
 
-    if (video::probe_encoders()) {
+    if (encoder_probe_failed) {
+      BOOST_LOG(warning) << "Failed to probe encoders during startup without forcing a display. Retrying with temporary virtual display.";
+
+      auto encoder_probe_display_result = VDISPLAY::ensure_display();
+      if (!encoder_probe_display_result.success) {
+        BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
+      } else {
+        auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
+          VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+        });
+
+        encoder_probe_failed = video::probe_encoders();
+      }
+    }
+
+    if (encoder_probe_failed) {
       BOOST_LOG(error) << "Failed to probe encoders during startup.";
     }
   }
