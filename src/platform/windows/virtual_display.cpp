@@ -1,5 +1,6 @@
 #include "virtual_display.h"
 
+#include "src/config.h"
 #include "src/logging.h"
 #include "src/process.h"
 #include "src/state_storage.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <cmath>
 #include <combaseapi.h>
 #include <cstdlib>
 #include <cstring>
@@ -133,6 +135,75 @@ namespace VDISPLAY {
       }
 
       return false;
+    }
+
+    std::string trim_copy(std::string_view value) {
+      const auto start = value.find_first_not_of(" \t\r\n");
+      if (start == std::string_view::npos) {
+        return {};
+      }
+      const auto end = value.find_last_not_of(" \t\r\n");
+      return std::string(value.substr(start, end - start + 1));
+    }
+
+    std::optional<uint32_t> parse_refresh_hz(std::string_view value) {
+      const auto trimmed = trim_copy(value);
+      if (trimmed.empty()) {
+        return std::nullopt;
+      }
+      try {
+        const double hz = std::stod(trimmed);
+        if (!std::isfinite(hz) || hz <= 0.0) {
+          return std::nullopt;
+        }
+        const double clamped = std::min(hz, static_cast<double>(std::numeric_limits<uint32_t>::max()));
+        const auto rounded = static_cast<uint32_t>(std::lround(clamped));
+        if (rounded == 0) {
+          return std::nullopt;
+        }
+        return rounded;
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    uint32_t highest_requested_refresh_hz() {
+      using dd_t = config::video_t::dd_t;
+      uint32_t max_hz = 0;
+
+      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
+        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
+          max_hz = std::max(max_hz, *manual);
+        }
+      }
+
+      const auto process_entries = [&](const auto &entries) {
+        for (const auto &entry : entries) {
+          if (auto parsed = parse_refresh_hz(entry.final_refresh_rate)) {
+            max_hz = std::max(max_hz, *parsed);
+          }
+        }
+      };
+
+      process_entries(config::video.dd.mode_remapping.mixed);
+      process_entries(config::video.dd.mode_remapping.refresh_rate_only);
+      process_entries(config::video.dd.mode_remapping.resolution_only);
+
+      return max_hz;
+    }
+
+    uint32_t apply_refresh_overrides(uint32_t fps_millihz) {
+      constexpr uint64_t scale = 1000ull;
+      const uint32_t max_hz = highest_requested_refresh_hz();
+      if (max_hz == 0) {
+        return fps_millihz;
+      }
+      uint64_t required = static_cast<uint64_t>(max_hz) * scale;
+      if (required <= fps_millihz) {
+        return fps_millihz;
+      }
+      required = std::min<uint64_t>(required, std::numeric_limits<uint32_t>::max());
+      return static_cast<uint32_t>(required);
     }
 
     class DevInfoHandle {
@@ -1261,9 +1332,10 @@ namespace VDISPLAY {
     teardown_conflicting_virtual_displays(requested_uuid);
     BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
 
+    const uint32_t requested_fps = apply_refresh_overrides(fps);
     VIRTUAL_DISPLAY_ADD_OUT output {};
     BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
-    if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
+    if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
       const DWORD error_code = GetLastError();
       BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
 
@@ -1366,7 +1438,7 @@ namespace VDISPLAY {
     } else {
       wprintf(L"[SUDOVDA] Virtual display added; device name pending enumeration (target=%u).\n", output.TargetId);
     }
-    printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, fps);
+    printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, requested_fps);
 
     VirtualDisplayCreationResult result;
     result.display_name = resolved_display_name;
