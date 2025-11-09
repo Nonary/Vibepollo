@@ -135,7 +135,7 @@ namespace display_helper_integration::helpers {
     const bool metadata_requests_virtual = session_.app_metadata && session_.app_metadata->virtual_screen;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
 
-    if (session_requests_virtual && video_config_.dd.activate_virtual_display) {
+    if (session_requests_virtual) {
       return configure_virtual_display(builder, effective_layout, effective_width, effective_height, display_fps);
     }
     return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);

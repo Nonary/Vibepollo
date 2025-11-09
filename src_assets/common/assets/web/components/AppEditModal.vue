@@ -214,6 +214,7 @@
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
             :lossless-executable-detected="losslessExecutableDetected"
+            :lossless-executable-check-complete="losslessExecutableCheckComplete"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
@@ -592,15 +593,28 @@ const isPlayniteAuto = computed<boolean>(
 );
 
 const losslessExecutableStatus = ref<any | null>(null);
-const losslessExecutableDetected = computed<boolean>(
-  () => !!losslessExecutableStatus.value?.checked_exists,
-);
+const losslessExecutableCheckComplete = ref(false);
+function hasLosslessCandidates(status: any | null): boolean {
+  return Array.isArray(status?.candidates) && status.candidates.length > 0;
+}
+const losslessExecutableDetected = computed<boolean>(() => {
+  const status = losslessExecutableStatus.value;
+  if (!status) {
+    return false;
+  }
+  if (status.checked_exists || status.configured_exists || status.default_exists) {
+    return true;
+  }
+  return hasLosslessCandidates(status);
+});
 
 async function refreshLosslessExecutableStatus() {
   if (!isWindows.value) {
     losslessExecutableStatus.value = null;
+    losslessExecutableCheckComplete.value = true;
     return;
   }
+  losslessExecutableCheckComplete.value = false;
   try {
     const params: Record<string, string> = {};
     const configuredPath = (configStore.config as any)?.lossless_scaling_path;
@@ -616,8 +630,10 @@ async function refreshLosslessExecutableStatus() {
     } else {
       losslessExecutableStatus.value = null;
     }
+    losslessExecutableCheckComplete.value = true;
   } catch {
     losslessExecutableStatus.value = null;
+    losslessExecutableCheckComplete.value = true;
   }
 }
 

@@ -591,6 +591,10 @@ namespace platf::frame_limiter_nvcp {
 
   }  // namespace
 
+  void restore_pending_overrides() {
+    maybe_restore_from_overrides_file();
+  }
+
   bool is_available() {
     maybe_restore_from_overrides_file();
 

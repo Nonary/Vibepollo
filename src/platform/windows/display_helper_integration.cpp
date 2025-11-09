@@ -234,14 +234,15 @@ namespace {
       return true;
     }
 
-    const bool virtual_display_selected = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
-                                            config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
-    if (virtual_display_selected && config::video.dd.activate_virtual_display) {
+    const bool virtual_display_selected =
+      (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
+       config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+    if (virtual_display_selected) {
       return true;
     }
 
     std::lock_guard<std::mutex> lg(g_session_mutex);
-    return g_active_session_dd && g_active_session_dd->virtual_display && config::video.dd.activate_virtual_display;
+    return g_active_session_dd && g_active_session_dd->virtual_display;
   }
 
   bool shutdown_requested() {
@@ -256,8 +257,8 @@ namespace {
     }
   }
 
-  bool ensure_helper_started(bool force_restart = false) {
-    if (!dd_feature_enabled()) {
+  bool ensure_helper_started(bool force_restart = false, bool force_enable = false) {
+    if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
     const bool shutting_down = shutdown_requested();
@@ -547,7 +548,11 @@ namespace display_helper_integration {
       return false;
     }
 
-    if (!ensure_helper_started(true)) {
+    const bool requires_virtual_display =
+      request.enable_virtual_display_watchdog ||
+      request.session_overrides.virtual_display_override.value_or(false);
+
+    if (!ensure_helper_started(true, requires_virtual_display)) {
       BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
       return false;
     }
@@ -720,9 +725,6 @@ namespace display_helper_integration {
   }
 
   void start_watchdog() {
-    if (!dd_feature_enabled()) {
-      return;
-    }
     if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
       return;  // already running
     }

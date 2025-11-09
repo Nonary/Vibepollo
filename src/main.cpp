@@ -22,7 +22,9 @@
 #include "upnp.h"
 #include "video.h"
 #ifdef _WIN32
+  #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
+  #include "src/platform/windows/rtss_integration.h"
   #include "src/platform/windows/virtual_display.h"
 #endif
 
@@ -147,6 +149,11 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(info) << "config: '"sv << name << "' = "sv << val;
   }
   config::modified_config_settings.clear();
+
+#ifdef _WIN32
+  platf::frame_limiter_nvcp::restore_pending_overrides();
+  platf::rtss_restore_pending_overrides();
+#endif
 
   if (!config::sunshine.cmd.name.empty()) {
     auto fn = cmd_to_func.find(config::sunshine.cmd.name);

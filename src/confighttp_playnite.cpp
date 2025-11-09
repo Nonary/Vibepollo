@@ -915,6 +915,8 @@ namespace confighttp {
     std::uint64_t size;
   };
 
+  constexpr std::uint64_t kMinCrashDumpSizeBytes = 10ull * 1024ull * 1024ull;
+
   static std::filesystem::path crash_dump_directory() {
     wchar_t sysDir[MAX_PATH] = {};
     UINT len = GetSystemDirectoryW(sysDir, _countof(sysDir));
@@ -988,16 +990,23 @@ namespace confighttp {
         ec.clear();
         continue;
       }
+      std::error_code size_ec {};
+      auto file_size_raw = std::filesystem::file_size(entry.path(), size_ec);
+      if (size_ec) {
+        continue;
+      }
+      if (file_size_raw < kMinCrashDumpSizeBytes) {
+        continue;
+      }
+      if (file_size_raw > std::numeric_limits<std::uint64_t>::max()) {
+        continue;
+      }
+      const std::uint64_t file_size = static_cast<std::uint64_t>(file_size_raw);
       if (!have || write_time > best_time) {
         best_time = write_time;
         best.path = entry.path();
         best.write_time = write_time;
-        best.size = 0;
-        std::error_code size_ec {};
-        auto sz = std::filesystem::file_size(entry.path(), size_ec);
-        if (!size_ec) {
-          best.size = sz;
-        }
+        best.size = file_size;
         have = true;
       }
     }
