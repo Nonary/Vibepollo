@@ -26,10 +26,10 @@
 
   // sunshine
   #include "display_helper_integration.h"
-  #include "src/display_device.h"  // For configuration parsing only
   #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
+  #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
@@ -133,6 +133,23 @@ namespace {
   constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
+  const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout) {
+    using enum display_helper_integration::VirtualDisplayArrangement;
+    switch (layout) {
+      case Extended:
+        return "extended";
+      case ExtendedPrimary:
+        return "extended_primary";
+      case ExtendedIsolated:
+        return "extended_isolated";
+      case ExtendedPrimaryIsolated:
+        return "extended_primary_isolated";
+      case Exclusive:
+      default:
+        return "exclusive";
+    }
+  }
+
   void kill_all_helper_processes() {
     helper_proc().terminate();
 
@@ -210,24 +227,6 @@ namespace {
   // We do NOT cache serialized JSON, only the subset of session fields that
   // affect display configuration. On reconnect, we rebuild the full
   // SingleDisplayConfiguration from current Sunshine config + these fields.
-
-  bool session_targets_desktop(const rtsp_stream::launch_session_t &session) {
-    const auto apps = proc::proc.get_apps();
-    if (apps.empty()) {
-      return false;
-    }
-
-    const auto app_id = std::to_string(session.appid);
-    const auto it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
-      return app.id == app_id;
-    });
-
-    if (it == apps.end()) {
-      return session.appid <= 0;
-    }
-
-    return it->cmd.empty() && it->playnite_id.empty();
-  }
 
   bool dd_feature_enabled() {
     using config_option_e = config::video_t::dd_t::config_option_e;
@@ -526,7 +525,8 @@ namespace {
           tmp_session.framegen_refresh_rate = session_opt->framegen_refresh_rate;
           tmp_session.gen1_framegen_fix = session_opt->gen1_framegen_fix;
           tmp_session.gen2_framegen_fix = session_opt->gen2_framegen_fix;
-          bool reapplied = display_helper_integration::apply_from_session(config::video, tmp_session);
+          auto request = display_helper_integration::helpers::build_request_from_session(config::video, tmp_session);
+          bool reapplied = request && display_helper_integration::apply(*request);
           BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
           if (!reapplied) {
             helper_ready = platf::display_helper_client::send_ping();
@@ -541,307 +541,129 @@ namespace {
 }  // namespace
 
 namespace display_helper_integration {
-  bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-    if (!ensure_helper_started(true)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot send apply.";
+  bool apply(const DisplayApplyRequest &request) {
+    if (request.action == DisplayApplyAction::Skip) {
+      BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
       return false;
     }
 
-    // Best-effort liveness probe: if ping fails, reset and try once more
+    if (!ensure_helper_started(true)) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
+      return false;
+    }
+
     if (!platf::display_helper_client::send_ping()) {
       BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
       platf::display_helper_client::reset_connection();
       (void) platf::display_helper_client::send_ping();
     }
 
-    const auto previous_session = get_active_session_copy();
-    const int effective_width = session.width > 0 ? session.width : (previous_session && previous_session->width > 0 ? previous_session->width : session.width);
-    const int effective_height = session.height > 0 ? session.height : (previous_session && previous_session->height > 0 ? previous_session->height : session.height);
-    std::optional<int> effective_framegen_refresh_rate = session.framegen_refresh_rate;
-    if (!effective_framegen_refresh_rate && previous_session && previous_session->framegen_refresh_rate) {
-      effective_framegen_refresh_rate = previous_session->framegen_refresh_rate;
-    }
-    const int base_fps = session.fps > 0 ? session.fps : (previous_session && previous_session->fps > 0 ? previous_session->fps : session.fps);
-    const int display_fps = effective_framegen_refresh_rate && *effective_framegen_refresh_rate > 0 ? *effective_framegen_refresh_rate : base_fps;
-    const bool effective_virtual_display = session.virtual_display || (previous_session && previous_session->virtual_display);
-    std::string effective_device_id = session.virtual_display_device_id;
-    if (effective_device_id.empty() && previous_session && !previous_session->virtual_display_device_id.empty()) {
-      effective_device_id = previous_session->virtual_display_device_id;
-    }
-
-    // Check if virtual display auto-activation is enabled
-    const bool config_selects_virtual = (video_config.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
-                                          video_config.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
-    const bool session_requests_virtual = effective_virtual_display || config_selects_virtual;
-    const bool session_has_virtual_id = effective_virtual_display && !effective_device_id.empty();
-    if (session_requests_virtual && video_config.dd.activate_virtual_display) {
-      BOOST_LOG(info) << "Display helper: Virtual display requested with auto-activation enabled. Activating via EnsureOnly mode.";
-
-      // Use parse_configuration to get the properly overridden values
-      const auto parsed = display_device::parse_configuration(video_config, session);
-      if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
-        // Start with the parsed configuration that includes all overrides
-        display_device::SingleDisplayConfiguration vd_cfg = *cfg;
-
-        // Override device ID and device prep for virtual display
-        std::string target_device_id = effective_device_id;
-        if (target_device_id.empty()) {
-          if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
-            target_device_id = *resolved;
-          }
-        }
-        if (target_device_id.empty()) {
-          target_device_id = video_config.output_name;
-        }
-        vd_cfg.m_device_id = target_device_id;
-        vd_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-
-        if (!vd_cfg.m_resolution && effective_width > 0 && effective_height > 0) {
-          vd_cfg.m_resolution = display_device::Resolution {
-            static_cast<unsigned int>(effective_width),
-            static_cast<unsigned int>(effective_height)
-          };
-        }
-        if (!vd_cfg.m_refresh_rate && display_fps > 0) {
-          vd_cfg.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
-        }
-
-        if (!target_device_id.empty()) {
-          BOOST_LOG(info) << "Display helper: blacklisting virtual display device_id from topology exports: " << target_device_id;
-          platf::display_helper_client::send_blacklist(target_device_id);
-        }
-
-        std::string json = display_device::toJson(vd_cfg);
-        BOOST_LOG(info) << "Display helper: sending APPLY for virtual display activation with configuration:\n"
-                        << json;
-        const bool ok = platf::display_helper_client::send_apply_json(json);
-        BOOST_LOG(info) << "Display helper: Virtual display APPLY dispatch result=" << (ok ? "true" : "false");
-
-        if (!ok) {
-          return false;
-        }
-
-        if (!verify_helper_topology(session, target_device_id, vd_cfg.m_device_prep)) {
-          return false;
-        }
-
-        set_active_session(
-        session,
-        target_device_id.empty() ? std::nullopt : std::optional<std::string>(target_device_id),
-        display_fps,
-          effective_width > 0 ? std::optional<int>(effective_width) : std::nullopt,
-          effective_height > 0 ? std::optional<int>(effective_height) : std::nullopt,
-          effective_virtual_display
-        );
-        platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
-        return true;
-      } else {
-        BOOST_LOG(error) << "Display helper: Failed to parse configuration for virtual display.";
-        return false;
-      }
-    }
-
-    const bool dummy_plug_mode = video_config.dd.wa.dummy_plug_hdr10;
-    const bool desktop_session = session_targets_desktop(session);
-    const bool gen1_framegen_fix = session.gen1_framegen_fix;
-    const bool gen2_framegen_fix = session.gen2_framegen_fix;
-    const bool best_effort_refresh = config::frame_limiter.disable_vsync &&
-                                     (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
-    bool should_force_refresh = gen1_framegen_fix || gen2_framegen_fix || best_effort_refresh;
-    if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix) {
-      should_force_refresh = false;
-    }
-
-    const auto parsed = display_device::parse_configuration(video_config, session);
-    if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
-      // Copy parsed config so we can optionally override refresh when frame generation fixes require it
-      auto cfg_effective = *cfg;
-      if (session_has_virtual_id) {
-        cfg_effective.m_device_id = effective_device_id;
-      }
-
-      // Force EnsureOnlyDisplay for virtual displays
-      if (session_requests_virtual) {
-        cfg_effective.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-      }
-
-      if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
-        BOOST_LOG(info) << "Display helper: dummy plug HDR10 mode forcing 30 Hz for non-desktop session.";
-        cfg_effective.m_refresh_rate = display_device::Rational {30u, 1u};
-        cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
-      }
-      if (dummy_plug_mode && (gen1_framegen_fix || gen2_framegen_fix) && !desktop_session) {
-        BOOST_LOG(info) << "Display helper: Frame generated capture fix overriding dummy plug refresh lock.";
-        cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
-      }
-      if (should_force_refresh) {
-        if (gen1_framegen_fix || gen2_framegen_fix) {
-          BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
-        } else {
-          BOOST_LOG(info) << "Display helper: VSYNC override fallback forcing the highest available refresh rate for this session.";
-        }
-        cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
-        if (!cfg_effective.m_resolution && effective_width >= 0 && effective_height >= 0) {
-          cfg_effective.m_resolution = display_device::Resolution {
-            static_cast<unsigned int>(effective_width),
-            static_cast<unsigned int>(effective_height)
-          };
-        }
-      }
-
-      if (!cfg_effective.m_resolution && effective_width > 0 && effective_height > 0) {
-        cfg_effective.m_resolution = display_device::Resolution {
-          static_cast<unsigned int>(effective_width),
-          static_cast<unsigned int>(effective_height)
-        };
-      }
-      if (!cfg_effective.m_refresh_rate && display_fps > 0) {
-        cfg_effective.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
-      }
-
-      std::string json = display_device::toJson(cfg_effective);
-      // Embed helper-only flag for HDR workaround (async; fixed 1s delay)
-      try {
-        if (video_config.dd.wa.hdr_toggle) {
-          // Parse, attach flag, and dump back. Unknown fields are ignored by the helper's typed parser.
-          nlohmann::json j = nlohmann::json::parse(json);
-          j["wa_hdr_toggle"] = true;
-          json = j.dump();
-        }
-      } catch (...) {
-        // Non-fatal: fall back to raw JSON without the extra flag
-      }
-      BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
-                      << json;
-      const bool ok = platf::display_helper_client::send_apply_json(json);
-      BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-      if (!ok) {
-        return false;
-      }
-
-      if (!verify_helper_topology(session, cfg_effective.m_device_id, cfg_effective.m_device_prep)) {
-        return false;
-      }
-
-      set_active_session(
-        session,
-        std::nullopt,
-        display_fps,
-        effective_width > 0 ? std::optional<int>(effective_width) : std::nullopt,
-        effective_height > 0 ? std::optional<int>(effective_height) : std::nullopt,
-        effective_virtual_display,
-        effective_framegen_refresh_rate
-      );
-      return true;
-    }
-    if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
-      if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
-        display_device::SingleDisplayConfiguration cfg_override;
-        cfg_override.m_device_id = session_has_virtual_id ? effective_device_id : video_config.output_name;
-        if (effective_width >= 0 && effective_height >= 0) {
-          cfg_override.m_resolution = display_device::Resolution {
-            static_cast<unsigned int>(effective_width),
-            static_cast<unsigned int>(effective_height)
-          };
-        }
-        cfg_override.m_refresh_rate = display_device::Rational {30u, 1u};
-        cfg_override.m_hdr_state = display_device::HdrState::Enabled;
-
-        std::string json = display_device::toJson(cfg_override);
-        try {
-          if (video_config.dd.wa.hdr_toggle) {
-            nlohmann::json j = nlohmann::json::parse(json);
-            j["wa_hdr_toggle"] = true;
-            json = j.dump();
-          }
-        } catch (...) {
-        }
-        BOOST_LOG(info) << "Display helper: sending APPLY (dummy plug HDR10) with configuration:\n"
-                        << json;
-        const bool ok = platf::display_helper_client::send_apply_json(json);
-        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-        if (!ok) {
-          return false;
-        }
-
-        if (!verify_helper_topology(session, cfg_override.m_device_id, cfg_override.m_device_prep)) {
-          return false;
-        }
-
-        set_active_session(
-          session,
-          std::nullopt,
-          display_fps,
-        effective_width > 0 ? std::optional<int>(effective_width) : std::nullopt,
-        effective_height > 0 ? std::optional<int>(effective_height) : std::nullopt,
-        effective_virtual_display,
-        effective_framegen_refresh_rate
-      );
-        return true;
-      }
-
-      if (dummy_plug_mode && (gen1_framegen_fix || gen2_framegen_fix) && !desktop_session) {
-        BOOST_LOG(info) << "Display helper: Frame generated capture fix active; skipping dummy plug HDR 30 Hz override.";
-      }
-
-      if (should_force_refresh) {
-        if (gen1_framegen_fix || gen2_framegen_fix) {
-          BOOST_LOG(info) << "Display helper: Frame generated capture fix forcing the highest available refresh rate for this session.";
-        } else {
-          BOOST_LOG(info) << "Display helper: VSYNC override fallback forcing the highest available refresh rate for this session.";
-        }
-        display_device::SingleDisplayConfiguration cfg_override;
-        cfg_override.m_device_id = session_has_virtual_id ? effective_device_id : video_config.output_name;
-        if (effective_width >= 0 && effective_height >= 0) {
-          cfg_override.m_resolution = display_device::Resolution {
-            static_cast<unsigned int>(effective_width),
-            static_cast<unsigned int>(effective_height)
-          };
-        }
-        cfg_override.m_refresh_rate = display_device::Rational {10000u, 1u};
-
-        std::string json = display_device::toJson(cfg_override);
-        try {
-          if (video_config.dd.wa.hdr_toggle) {
-            nlohmann::json j = nlohmann::json::parse(json);
-            j["wa_hdr_toggle"] = true;
-            json = j.dump();
-          }
-        } catch (...) {
-        }
-        BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
-                        << json;
-        const bool ok = platf::display_helper_client::send_apply_json(json);
-        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-        if (!ok) {
-          return false;
-        }
-
-        if (!verify_helper_topology(session, cfg_override.m_device_id, cfg_override.m_device_prep)) {
-          return false;
-        }
-
-        set_active_session(
-          session,
-          std::nullopt,
-          display_fps,
-        effective_width > 0 ? std::optional<int>(effective_width) : std::nullopt,
-        effective_height > 0 ? std::optional<int>(effective_height) : std::nullopt,
-        effective_virtual_display,
-        effective_framegen_refresh_rate
-      );
-        return true;
-      }
-
-      // Otherwise, if disabled and no override, request revert so helper can restore
-      BOOST_LOG(info) << "Display configuration disabled; requesting REVERT via helper.";
+    if (request.action == DisplayApplyAction::Revert) {
+      BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
       const bool ok = platf::display_helper_client::send_revert();
       BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+      clear_active_session();
       return ok;
     }
-    // failed_to_parse -> let caller fallback
-    BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
-    return false;
+
+    if (request.action != DisplayApplyAction::Apply) {
+      return false;
+    }
+
+    if (!request.configuration) {
+      BOOST_LOG(error) << "Display helper: no configuration provided for APPLY request.";
+      return false;
+    }
+
+    if (request.device_blacklist && !request.device_blacklist->empty()) {
+      BOOST_LOG(info) << "Display helper: blacklisting device_id from topology exports: " << *request.device_blacklist;
+      platf::display_helper_client::send_blacklist(*request.device_blacklist);
+    }
+
+    std::string json = display_device::toJson(*request.configuration);
+    bool payload_initialized = false;
+    bool mutated_payload = false;
+    nlohmann::json payload;
+    auto ensure_payload = [&]() -> nlohmann::json & {
+      if (!payload_initialized) {
+        try {
+          payload = nlohmann::json::parse(json);
+          if (!payload.is_object()) {
+            payload = nlohmann::json::object();
+          }
+        } catch (...) {
+          payload = nlohmann::json::object();
+        }
+        payload_initialized = true;
+      }
+      return payload;
+    };
+
+    if (request.attach_hdr_toggle_flag) {
+      auto &p = ensure_payload();
+      p["wa_hdr_toggle"] = true;
+      mutated_payload = true;
+    }
+
+    if (request.virtual_display_arrangement) {
+      auto &p = ensure_payload();
+      p["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
+      mutated_payload = true;
+    }
+
+    if (!request.topology.monitor_positions.empty()) {
+      auto &p = ensure_payload();
+      nlohmann::json positions = nlohmann::json::object();
+      for (const auto &[device_id, point] : request.topology.monitor_positions) {
+        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
+      }
+      p["sunshine_monitor_positions"] = std::move(positions);
+      mutated_payload = true;
+    }
+
+    if (!request.topology.topology.empty()) {
+      auto &p = ensure_payload();
+      p["sunshine_topology"] = request.topology.topology;
+      mutated_payload = true;
+    }
+
+    if (mutated_payload) {
+      json = payload.dump();
+    }
+
+    BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
+                    << json;
+    const bool ok = platf::display_helper_client::send_apply_json(json);
+    BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+    if (!ok) {
+      return false;
+    }
+
+    const auto *session = request.session;
+    if (!session) {
+      BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
+      return false;
+    }
+
+    if (!verify_helper_topology(*session, request.configuration->m_device_id, request.configuration->m_device_prep)) {
+      return false;
+    }
+
+    set_active_session(
+      *session,
+      request.session_overrides.device_id_override,
+      request.session_overrides.fps_override,
+      request.session_overrides.width_override,
+      request.session_overrides.height_override,
+      request.session_overrides.virtual_display_override,
+      request.session_overrides.framegen_refresh_override
+    );
+
+    if (request.enable_virtual_display_watchdog) {
+      platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+    }
+
+    return true;
   }
 
   bool revert() {

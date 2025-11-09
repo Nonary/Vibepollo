@@ -7,6 +7,7 @@
 
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 // lib includes
@@ -37,6 +39,7 @@
 #include "platform/common.h"
 #include "state_storage.h"
 #ifdef _WIN32
+  #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
 #endif
@@ -152,6 +155,34 @@ namespace nvhttp {
           return info.is_active;
         }
       );
+    }
+
+    std::atomic<bool> virtual_display_cleanup_pending {false};
+
+    void cleanup_virtual_display_state() {
+      VDISPLAY::setWatchdogFeedingEnabled(false);
+      VDISPLAY::removeAllVirtualDisplays();
+      display_helper_integration::revert();
+    }
+
+    void schedule_virtual_display_cleanup() {
+      bool expected = false;
+      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
+        return;
+      }
+
+      std::thread([] {
+        auto guard = util::fail_guard([]() {
+          virtual_display_cleanup_pending.store(false, std::memory_order_release);
+        });
+        try {
+          cleanup_virtual_display_state();
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+        }
+      }).detach();
     }
   }  // namespace
 #endif
@@ -480,6 +511,8 @@ namespace nvhttp {
             metadata.virtual_screen = app_ctx.virtual_screen;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
+            launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
+            launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
             launch_session->app_metadata = std::move(metadata);
             break;
           }
@@ -1061,11 +1094,14 @@ namespace nvhttp {
     auto launch_session = make_launch_session(host_audio, args, request);
 
 #ifdef _WIN32
-    const auto config_mode = config::video.virtual_display_mode;
-    const bool config_requests_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client || config_mode == config::video_t::virtual_display_mode_e::shared);
+    const auto effective_mode =
+      launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+    const bool effective_requests_virtual =
+      (effective_mode == config::video_t::virtual_display_mode_e::per_client ||
+       effective_mode == config::video_t::virtual_display_mode_e::shared);
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     const bool session_requests_virtual = launch_session->virtual_display;
-    bool request_virtual_display = config_requests_virtual || metadata_requests_virtual || session_requests_virtual;
+    bool request_virtual_display = effective_requests_virtual || metadata_requests_virtual || session_requests_virtual;
 
     // Auto-enable virtual display if no physical monitors are attached
     if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
@@ -1106,7 +1142,7 @@ namespace nvhttp {
           return generated;
         };
 
-        const bool shared_mode = (config_mode == config::video_t::virtual_display_mode_e::shared);
+        const bool shared_mode = (effective_mode == config::video_t::virtual_display_mode_e::shared);
         uuid_util::uuid_t session_uuid;
         if (shared_mode) {
           session_uuid = ensure_shared_guid();
@@ -1227,14 +1263,19 @@ namespace nvhttp {
       }
 
       if (helper_session_available) {
-        if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+        if (!request) {
+          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+        } else if (!display_helper_integration::apply(*request)) {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
 #else
-      if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+      display_helper_integration::DisplayApplyBuilder noop_builder;
+      noop_builder.set_session(*launch_session);
+      if (!display_helper_integration::apply(noop_builder.build())) {
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
@@ -1354,11 +1395,53 @@ namespace nvhttp {
     const auto launch_session = make_launch_session(host_audio, args, request);
 
     if (no_active_sessions) {
+      const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
 
-      if (!display_helper_integration::apply_from_session(config::video, *launch_session)) {
+      bool display_apply_attempted = false;
+      bool display_apply_failed = false;
+#ifdef _WIN32
+      if (should_reapply_display) {
+        HANDLE user_token = platf::retrieve_users_token(false);
+        const bool helper_session_available = (user_token != nullptr);
+        if (user_token) {
+          CloseHandle(user_token);
+        }
+
+        display_apply_attempted = true;
+        if (helper_session_available) {
+          auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+          if (!request) {
+            BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+            display_apply_failed = true;
+          } else if (!display_helper_integration::apply(*request)) {
+            display_apply_failed = true;
+            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+          }
+        } else {
+          display_apply_failed = true;
+          BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+        }
+      } else {
+        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+      }
+#else
+      if (should_reapply_display) {
+        display_apply_attempted = true;
+        display_helper_integration::DisplayApplyBuilder noop_builder;
+        noop_builder.set_session(*launch_session);
+        if (!display_helper_integration::apply(noop_builder.build())) {
+          display_apply_failed = true;
+          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+        }
+      } else {
+        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+      }
+#endif
+
+      if (display_apply_attempted && display_apply_failed) {
         const bool no_display_available = !has_any_active_display();
         if (no_display_available) {
           tree.put("root.resume", 0);
@@ -1432,10 +1515,9 @@ namespace nvhttp {
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
 
-    VDISPLAY::setWatchdogFeedingEnabled(false);
-    VDISPLAY::removeAllVirtualDisplays();
-
-    display_helper_integration::revert();
+#ifdef _WIN32
+    schedule_virtual_display_cleanup();
+#endif
   }
 
   void appasset(resp_https_t response, req_https_t request) {

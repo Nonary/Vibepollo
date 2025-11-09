@@ -1907,6 +1907,8 @@ namespace proc {
         }
         auto lossless_scaling_framegen = app_node.get_optional<bool>("lossless-scaling-framegen"s);
         auto frame_generation_provider = app_node.get_optional<std::string>("frame-generation-provider"s);
+        auto virtual_display_mode = app_node.get_optional<std::string>("virtual-display-mode"s);
+        auto virtual_display_layout = app_node.get_optional<std::string>("virtual-display-layout"s);
 
         ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
         ctx.frame_generation_provider = frame_generation_provider ? normalize_frame_generation_provider(*frame_generation_provider) : "lossless-scaling";
@@ -2020,6 +2022,30 @@ namespace proc {
 
         ctx.elevated = elevated.value_or(false);
         ctx.virtual_screen = app_node.get_optional<bool>("virtual-screen"s).value_or(false);
+        if (virtual_display_mode) {
+          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_mode);
+          if (normalized == "disabled") {
+            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+          } else if (normalized == "per_client") {
+            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
+          } else if (normalized == "shared") {
+            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
+          }
+        }
+        if (virtual_display_layout) {
+          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_layout);
+          if (normalized == "exclusive") {
+            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
+          } else if (normalized == "extended") {
+            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
+          } else if (normalized == "extended_primary") {
+            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
+          } else if (normalized == "extended_isolated") {
+            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
+          } else if (normalized == "extended_primary_isolated") {
+            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
+          }
+        }
         ctx.auto_detach = auto_detach.value_or(true);
         ctx.wait_all = wait_all.value_or(true);
         // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)

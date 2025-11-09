@@ -271,7 +271,8 @@ namespace platf::dxgi {
   }
 
   winrt::file_handle NamedPipeFactory::create_client_pipe(const std::wstring &fullPipeName) const {
-    const ULONGLONG deadline = GetTickCount64() + 15000;  // 15s
+    constexpr ULONGLONG kClientConnectDeadlineMs = 2000;  // 2 seconds to match Sunshine helper watchdog expectations
+    const ULONGLONG deadline = GetTickCount64() + kClientConnectDeadlineMs;
     const ULONGLONG start_time = GetTickCount64();
     int retry_count = 0;
     DWORD last_error = 0;

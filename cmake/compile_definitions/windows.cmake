@@ -63,6 +63,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/display_settings_client.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_coordinator.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_coordinator.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"

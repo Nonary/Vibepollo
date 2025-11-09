@@ -22,7 +22,7 @@
 namespace platf::display_helper_client {
 
   namespace {
-    constexpr int kConnectTimeoutMs = 8000;
+    constexpr int kConnectTimeoutMs = 2000;
     constexpr int kSendTimeoutMs = 5000;
     constexpr int kShutdownIpcTimeoutMs = 500;
     constexpr int kApplyResultTimeoutMs = 20000;

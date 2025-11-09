@@ -1066,6 +1066,86 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### virtual_display_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a Sudovda virtual display instead of relying on your physical monitor.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_mode = shared
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>disabled</td>
+        <td>Use the physical display selected via <code>output_name</code>.</td>
+    </tr>
+    <tr>
+        <td>per_client</td>
+        <td>Create a dedicated virtual display per client connection.</td>
+    </tr>
+    <tr>
+        <td>shared</td>
+        <td>Reuse a single virtual display for all clients. Faster reconnects, but only one virtual layout is maintained.</td>
+    </tr>
+</table>
+
+### virtual_display_layout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controls how the virtual display is positioned relative to your physical monitors whenever <code>virtual_display_mode</code> is not <code>disabled</code>.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            exclusive
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_layout = extended_primary_isolated
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>exclusive</td>
+        <td>Deactivate every other monitor so only the virtual display remains visible.</td>
+    </tr>
+    <tr>
+        <td>extended</td>
+        <td>Keep all existing monitors active and simply add the virtual display as another screen.</td>
+    </tr>
+    <tr>
+        <td>extended_primary</td>
+        <td>Extend the desktop while promoting the virtual display to be the primary monitor.</td>
+    </tr>
+    <tr>
+        <td>extended_isolated</td>
+        <td>Extend the desktop but move the virtual display far away in the coordinate space so the mouse cannot accidentally reach it.</td>
+    </tr>
+    <tr>
+        <td>extended_primary_isolated</td>
+        <td>Combine the primary + isolated behaviors: the virtual display becomes primary while remaining far away from the physical monitors.</td>
+    </tr>
+</table>
+
 ### dd_configuration_option
 
 <table>
