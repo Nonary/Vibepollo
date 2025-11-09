@@ -1740,11 +1740,9 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
 
   if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
     proc::initVDisplayDriver();
-  }
-
-  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
-    BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure. Status=" << static_cast<int>(proc::vDisplayDriverStatus);
-    return result;
+    if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+      BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure (status=" << static_cast<int>(proc::vDisplayDriverStatus) << "). Continuing with best-effort ensure.";
+    }
   }
 
   auto virtual_displays = enumerateSudaVDADisplays();
