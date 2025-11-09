@@ -82,9 +82,9 @@
       <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
-    <!-- We can't remove the reboot required message on repairs, but we can tell users it's not needed.
-         Restrict strictly to repair by requiring REINSTALL to be set, so it won't fire on uninstall or upgrade. -->
+    <!-- We can't suppress MSI's reboot prompts, so surface a notice in UI installs/uninstalls explaining no reboot is needed. -->
     <InstallUISequence>
+      <Custom Action="ShowRebootNotice" After="AppSearch">UILevel &gt; 2</Custom>
       <!-- Legacy Sunshine handling flow -->
       <!-- 1. Ask user if they want to uninstall legacy Sunshine (and launch if they agree) -->
       <Custom Action="AskUninstallLegacySunshine" After="AppSearch">LEGACY_SUNSHINE_PRESENT AND UILevel &gt; 2 AND NOT Installed</Custom>

@@ -30,6 +30,7 @@
     <!-- VBScripts for legacy Sunshine handling -->
     <Binary Id="AskUninstallLegacySunshineVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_legacy_sunshine.vbs"/>
     <Binary Id="WaitForLegacyUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_legacy_uninstall.vbs"/>
+    <Binary Id="RebootNoticeVbs" SourceFile="$(sys.SOURCEFILEDIR)reboot_notice.vbs"/>
 
   </Fragment>
 
@@ -211,6 +212,7 @@
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />
+    <CustomAction Id="ShowRebootNotice" BinaryKey="RebootNoticeVbs" VBScriptCall="ShowRebootNotice" Execute="immediate" Return="check" />
 
   </Fragment>
 
