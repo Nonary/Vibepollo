@@ -25,7 +25,7 @@
       results.
     </n-alert>
     <n-alert
-      v-if="form.losslessScalingEnabled && !losslessExecutableDetected"
+      v-if="form.losslessScalingEnabled && losslessExecutableCheckComplete && !losslessExecutableDetected"
       type="error"
       :show-icon="true"
       size="small"
@@ -239,6 +239,7 @@ const props = defineProps<{
   showLosslessAnimeOptions: boolean;
   hasActiveLosslessOverrides: boolean;
   losslessExecutableDetected: boolean;
+  losslessExecutableCheckComplete: boolean;
   resetActiveLosslessProfile: () => void;
 }>();
 
@@ -248,6 +249,7 @@ const showLosslessSharpening = toRef(props, 'showLosslessSharpening');
 const showLosslessAnimeOptions = toRef(props, 'showLosslessAnimeOptions');
 const hasActiveLosslessOverrides = toRef(props, 'hasActiveLosslessOverrides');
 const losslessExecutableDetected = toRef(props, 'losslessExecutableDetected');
+const losslessExecutableCheckComplete = toRef(props, 'losslessExecutableCheckComplete');
 const resetActiveLosslessProfile = props.resetActiveLosslessProfile;
 
 const resolutionInputMode = ref<'factor' | 'percent'>('factor');

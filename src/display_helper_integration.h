@@ -5,6 +5,7 @@
 #pragma once
 
 #include "src/config.h"
+#include "src/display_helper_builder.h"
 #include "src/rtsp.h"
 
 #include <display_device/types.h>
@@ -29,7 +30,7 @@ namespace display_helper_integration {
 
 namespace display_helper_integration {
   // Non-Windows: No-op implementations that allow callers to fallback to in-process logic
-  inline bool apply_from_session(const config::video_t &, const rtsp_stream::launch_session_t &) {
+  inline bool apply(const DisplayApplyRequest &) {
     return false;
   }
 

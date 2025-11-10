@@ -166,22 +166,15 @@ import type { ScrollbarInst } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
+import type { CrashDumpStatus } from '@/utils/crashDump';
+import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
 
 const store = useConfigStore();
 const authStore = useAuthStore();
 const platform = computed(() => store.metadata.platform);
 
-type CrashDumpStatus = {
-  available?: boolean;
-  filename?: string;
-  path?: string;
-  size_bytes?: number;
-  captured_at?: string;
-  dismissed?: boolean;
-  dismissed_at?: string;
-};
 const crashDump = ref<CrashDumpStatus | null>(null);
-const crashDumpAvailable = computed(() => crashDump.value?.available === true);
+const crashDumpAvailable = computed(() => isCrashDumpEligible(crashDump.value));
 
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
@@ -312,7 +305,8 @@ async function refreshCrashDumpStatus() {
     if (platform.value === 'windows') {
       const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
       if (r.status === 200 && r.data) {
-        crashDump.value = r.data as CrashDumpStatus;
+        const sanitized = sanitizeCrashDumpStatus(r.data as CrashDumpStatus);
+        crashDump.value = sanitized ?? { available: false };
       } else {
         crashDump.value = { available: false };
       }

@@ -136,6 +136,68 @@
             </n-checkbox>
           </div>
 
+          <div
+            v-if="isWindows && virtualScreenEnabled"
+            class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+          >
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.app_virtual_display_mode_label') }}
+                </span>
+                <n-button
+                  v-if="form.virtualDisplayMode !== null"
+                  size="tiny"
+                  tertiary
+                  @click="form.virtualDisplayMode = null"
+                >
+                  {{ t('config.app_virtual_display_mode_reset') }}
+                </n-button>
+              </div>
+              <p class="text-[11px] opacity-70">{{ t('config.app_virtual_display_mode_hint') }}</p>
+            </div>
+            <n-radio-group :value="resolvedVirtualDisplayMode" @update:value="form.virtualDisplayMode = $event" class="grid gap-3 sm:grid-cols-3">
+              <n-radio
+                v-for="option in appVirtualDisplayModeOptions"
+                :key="option.value"
+                :value="option.value"
+                class="app-radio-card"
+              >
+                <span class="app-radio-card-title">{{ option.label }}</span>
+              </n-radio>
+            </n-radio-group>
+
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.virtual_display_layout_label') }}
+                </span>
+                <n-button
+                  v-if="form.virtualDisplayLayout !== null"
+                  size="tiny"
+                  tertiary
+                  @click="form.virtualDisplayLayout = null"
+                >
+                  {{ t('config.app_virtual_display_layout_reset') }}
+                </n-button>
+              </div>
+              <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
+            </div>
+            <n-radio-group :value="resolvedVirtualDisplayLayout" @update:value="form.virtualDisplayLayout = $event" class="space-y-4">
+              <div
+                v-for="option in appVirtualDisplayLayoutOptions"
+                :key="option.value"
+                class="flex flex-col"
+              >
+                <div class="flex items-center gap-3">
+                  <n-radio :value="option.value" />
+                  <span class="text-sm font-semibold">{{ option.label }}</span>
+                </div>
+                <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+              </div>
+            </n-radio-group>
+          </div>
+
           <AppEditFrameGenSection
             v-if="isWindows"
             v-model:mode="frameGenerationSelection"
@@ -173,6 +235,7 @@
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
             :lossless-executable-detected="losslessExecutableDetected"
+            :lossless-executable-check-complete="losslessExecutableCheckComplete"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
@@ -286,8 +349,9 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
-import { NModal, NCard, NButton, NCheckbox, NInput } from 'naive-ui';
+import { NModal, NCard, NButton, NCheckbox, NRadioGroup, NRadio } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
+import { useI18n } from 'vue-i18n';
 import type {
   AppForm,
   ServerApp,
@@ -299,6 +363,8 @@ import type {
   FrameGenerationProvider,
   FrameGenerationMode,
   FrameGenHealth,
+  AppVirtualDisplayMode,
+  AppVirtualDisplayLayout,
 } from './app-edit/types';
 import {
   LOSSLESS_PROFILE_DEFAULTS,
@@ -336,6 +402,7 @@ const emit = defineEmits<{
 }>();
 const open = computed<boolean>(() => !!props.modelValue);
 const message = useMessage();
+const { t } = useI18n();
 function fresh(): AppForm {
   return {
     index: -1,
@@ -372,9 +439,42 @@ function fresh(): AppForm {
     losslessScalingRtssTouched: false,
     losslessScalingProfile: 'recommended',
     losslessScalingProfiles: emptyLosslessProfileState(),
+    virtualDisplayMode: null,
+    virtualDisplayLayout: null,
   };
 }
 const form = ref<AppForm>(fresh());
+
+const APP_VIRTUAL_DISPLAY_MODES: AppVirtualDisplayMode[] = ['disabled', 'per_client', 'shared'];
+const APP_VIRTUAL_DISPLAY_LAYOUTS: AppVirtualDisplayLayout[] = [
+  'exclusive',
+  'extended',
+  'extended_primary',
+  'extended_isolated',
+  'extended_primary_isolated',
+];
+
+function parseAppVirtualDisplayMode(value: unknown): AppVirtualDisplayMode | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (APP_VIRTUAL_DISPLAY_MODES.includes(normalized as AppVirtualDisplayMode)) {
+    return normalized as AppVirtualDisplayMode;
+  }
+  return null;
+}
+
+function parseAppVirtualDisplayLayout(value: unknown): AppVirtualDisplayLayout | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (APP_VIRTUAL_DISPLAY_LAYOUTS.includes(normalized as AppVirtualDisplayLayout)) {
+    return normalized as AppVirtualDisplayLayout;
+  }
+  return null;
+}
 
 watch(
   () => form.value.playniteId,
@@ -460,11 +560,15 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   }
   const rawOutput = String(src.output ?? '');
   const virtualScreen =
-    typeof src['virtual-screen'] !== 'undefined'
-      ? !!src['virtual-screen']
-      : typeof src['virtual-display'] !== 'undefined'
-        ? !!src['virtual-display']
-        : rawOutput === VIRTUAL_DISPLAY_SELECTION;
+    typeof rawVirtualScreen === 'boolean' ? rawVirtualScreen : rawOutput === VIRTUAL_DISPLAY_SELECTION;
+  const sanitizedOutput =
+    virtualScreen && rawOutput === VIRTUAL_DISPLAY_SELECTION ? '' : rawOutput;
+  const serverVirtualDisplayMode = parseAppVirtualDisplayMode(
+    (src as any)?.['virtual-display-mode'],
+  );
+  const serverVirtualDisplayLayout = parseAppVirtualDisplayLayout(
+    (src as any)?.['virtual-display-layout'],
+  );
   return {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
@@ -512,6 +616,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingRtssTouched: lsLimit !== null,
     losslessScalingProfile: profileKey,
     losslessScalingProfiles: losslessProfiles,
+    virtualDisplayMode: serverVirtualDisplayMode,
+    virtualDisplayLayout: serverVirtualDisplayLayout,
   };
 }
 
@@ -553,9 +659,11 @@ function toServerPayload(f: AppForm): Record<string, any> {
     detached: Array.isArray(f.detached) ? f.detached : [],
     'virtual-screen': !!f.virtualScreen,
   };
-  const trimmedUuid = typeof f.uuid === 'string' ? f.uuid.trim() : '';
-  if (trimmedUuid) {
-    payload.uuid = trimmedUuid;
+  if (f.virtualDisplayMode !== null) {
+    payload['virtual-display-mode'] = f.virtualDisplayMode;
+  }
+  if (f.virtualDisplayLayout !== null) {
+    payload['virtual-display-layout'] = f.virtualDisplayLayout;
   }
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
@@ -644,15 +752,28 @@ const isPlayniteAuto = computed<boolean>(
 );
 
 const losslessExecutableStatus = ref<any | null>(null);
-const losslessExecutableDetected = computed<boolean>(
-  () => !!losslessExecutableStatus.value?.checked_exists,
-);
+const losslessExecutableCheckComplete = ref(false);
+function hasLosslessCandidates(status: any | null): boolean {
+  return Array.isArray(status?.candidates) && status.candidates.length > 0;
+}
+const losslessExecutableDetected = computed<boolean>(() => {
+  const status = losslessExecutableStatus.value;
+  if (!status) {
+    return false;
+  }
+  if (status.checked_exists || status.configured_exists || status.default_exists) {
+    return true;
+  }
+  return hasLosslessCandidates(status);
+});
 
 async function refreshLosslessExecutableStatus() {
   if (!isWindows.value) {
     losslessExecutableStatus.value = null;
+    losslessExecutableCheckComplete.value = true;
     return;
   }
+  losslessExecutableCheckComplete.value = false;
   try {
     const params: Record<string, string> = {};
     const configuredPath = (configStore.config as any)?.lossless_scaling_path;
@@ -668,8 +789,10 @@ async function refreshLosslessExecutableStatus() {
     } else {
       losslessExecutableStatus.value = null;
     }
+    losslessExecutableCheckComplete.value = true;
   } catch {
     losslessExecutableStatus.value = null;
+    losslessExecutableCheckComplete.value = true;
   }
 }
 
@@ -1163,10 +1286,38 @@ const ddConfigOption = computed(
 );
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
-const virtualDisplayMode = computed(() => {
+const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() => {
   const mode = (configStore.config as any)?.virtual_display_mode;
-  return typeof mode === 'string' ? mode : 'disabled';
+  return parseAppVirtualDisplayMode(mode) ?? 'disabled';
 });
+const globalVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() => {
+  const layout = (configStore.config as any)?.virtual_display_layout;
+  return parseAppVirtualDisplayLayout(layout) ?? 'exclusive';
+});
+const resolvedVirtualDisplayMode = computed<AppVirtualDisplayMode>(() =>
+  form.value.virtualDisplayMode ?? globalVirtualDisplayMode.value,
+);
+const resolvedVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() =>
+  form.value.virtualDisplayLayout ?? globalVirtualDisplayLayout.value,
+);
+const APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string> = {
+  disabled: 'config.virtual_display_mode_disabled',
+  per_client: 'config.virtual_display_mode_per_client',
+  shared: 'config.virtual_display_mode_shared',
+};
+const appVirtualDisplayModeOptions = computed(() =>
+  APP_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled').map((value) => ({
+    value,
+    label: t(APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
+  })),
+);
+const appVirtualDisplayLayoutOptions = computed(() =>
+  APP_VIRTUAL_DISPLAY_LAYOUTS.map((value) => ({
+    value,
+    label: t(`config.virtual_display_layout_${value}`),
+    description: t(`config.virtual_display_layout_${value}_desc`),
+  })),
+);
 const windowsDisplayVersion = computed(() => {
   const v = (configStore.metadata as any)?.windows_display_version;
   return typeof v === 'string' ? v : '';
@@ -1204,7 +1355,7 @@ const usingVirtualDisplay = computed(() => {
   if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
     return true;
   }
-  const mode = virtualDisplayMode.value;
+  const mode = resolvedVirtualDisplayMode.value;
   if (mode === 'per_client' || mode === 'shared') {
     return true;
   }

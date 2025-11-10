@@ -85,9 +85,9 @@
       <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
-    <!-- We can't remove the reboot required message on repairs, but we can tell users it's not needed.
-         Restrict strictly to repair by requiring REINSTALL to be set, so it won't fire on uninstall or upgrade. -->
+    <!-- We can't suppress MSI's reboot prompts, so surface a notice in UI installs/uninstalls explaining no reboot is needed. -->
     <InstallUISequence>
+      <Custom Action="ShowRebootNotice" After="AppSearch">UILevel &gt; 2</Custom>
       <!-- Existing Apollo handling flow -->
       <!-- 1. Ask user if they want to uninstall Apollo (and launch if they agree) -->
       <Custom Action="AskUninstallApollo" After="AppSearch">APOLLO_PRESENT AND UILevel &gt; 2 AND NOT Installed</Custom>

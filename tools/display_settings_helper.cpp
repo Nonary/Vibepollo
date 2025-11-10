@@ -269,6 +269,17 @@ namespace {
       return m_sm->resetPersistence();
     }
 
+    bool set_display_origin(const std::string &device_id, const display_device::Point &origin) {
+      if (!ensure_initialized()) {
+        return false;
+      }
+      try {
+        return m_dd->setDisplayOrigin(device_id, origin);
+      } catch (...) {
+        return false;
+      }
+    }
+
     // Capture a full snapshot of current settings.
     display_device::DisplaySettingsSnapshot snapshot() const {
       display_device::DisplaySettingsSnapshot snap;
@@ -2532,6 +2543,8 @@ namespace {
 
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
     bool wa_hdr_toggle = false;
+    std::optional<std::string> requested_virtual_layout;
+    std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
     std::string sanitized_json = json;  // may strip helper-only fields
     try {
       auto j = nlohmann::json::parse(json);
@@ -2540,6 +2553,31 @@ namespace {
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
+        }
+        if (j.contains("sunshine_virtual_layout") && j["sunshine_virtual_layout"].is_string()) {
+          requested_virtual_layout = j["sunshine_virtual_layout"].get<std::string>();
+          j.erase("sunshine_virtual_layout");
+        }
+        if (j.contains("sunshine_monitor_positions") && j["sunshine_monitor_positions"].is_object()) {
+          for (auto it = j["sunshine_monitor_positions"].begin(); it != j["sunshine_monitor_positions"].end(); ++it) {
+            const auto &node = it.value();
+            if (!node.is_object()) {
+              continue;
+            }
+            auto x_it = node.find("x");
+            auto y_it = node.find("y");
+            if (x_it == node.end() || y_it == node.end() || !x_it->is_number_integer() || !y_it->is_number_integer()) {
+              continue;
+            }
+            monitor_position_overrides.emplace_back(
+              it.key(),
+              display_device::Point {x_it->get<int>(), y_it->get<int>()}
+            );
+          }
+          j.erase("sunshine_monitor_positions");
+        }
+        if (j.contains("sunshine_topology")) {
+          j.erase("sunshine_topology");
         }
         sanitized_json = j.dump();
       }
@@ -2646,6 +2684,20 @@ namespace {
       state.schedule_delayed_reapply();
       refresh_shell_after_display_change();
       state.schedule_hdr_blank_if_needed(wa_hdr_toggle);
+      if (requested_virtual_layout) {
+        BOOST_LOG(info) << "Display helper: requested virtual display layout=" << *requested_virtual_layout;
+      }
+      if (!monitor_position_overrides.empty()) {
+        bool reposition_result = true;
+        for (const auto &[device_id, origin] : monitor_position_overrides) {
+          if (device_id.empty()) {
+            continue;
+          }
+          const bool ok_origin = state.controller.set_display_origin(device_id, origin);
+          reposition_result = reposition_result && ok_origin;
+        }
+        BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+      }
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
       error_msg = "Display configuration failed validation";

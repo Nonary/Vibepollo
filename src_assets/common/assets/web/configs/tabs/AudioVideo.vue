@@ -61,6 +61,18 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => config.value?.virtual_display_mode,
+  (next, prev) => {
+    if (typeof next === 'string' && next !== 'disabled' && prev === 'disabled') {
+      const currentLayout = config.value?.['virtual_display_layout'];
+      if (!currentLayout || currentLayout === 'disabled') {
+        store.updateOption('virtual_display_layout', 'exclusive');
+      }
+    }
+  },
+);
+
 const displayAutomationEnabled = computed<boolean>({
   get() {
     return config.value?.dd_configuration_option !== 'disabled';
@@ -160,6 +172,55 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
     store.updateOption('virtual_display_mode', mode);
   },
 });
+
+const virtualDisplayLayout = computed<
+  'exclusive' | 'extended' | 'extended_primary' | 'extended_isolated' | 'extended_primary_isolated'
+>({
+  get() {
+    const layout = config.value?.['virtual_display_layout'];
+    if (
+      layout === 'extended' ||
+      layout === 'extended_primary' ||
+      layout === 'extended_isolated' ||
+      layout === 'extended_primary_isolated'
+    ) {
+      return layout;
+    }
+    return 'exclusive';
+  },
+  set(layout) {
+    if (!config.value) return;
+    store.updateOption('virtual_display_layout', layout);
+  },
+});
+
+const virtualDisplayLayoutOptions = computed(() => [
+  {
+    value: 'exclusive',
+    label: t('config.virtual_display_layout_exclusive') + ' (default)',
+    description: t('config.virtual_display_layout_exclusive_desc'),
+  },
+  {
+    value: 'extended',
+    label: t('config.virtual_display_layout_extended'),
+    description: t('config.virtual_display_layout_extended_desc'),
+  },
+  {
+    value: 'extended_primary',
+    label: t('config.virtual_display_layout_extended_primary'),
+    description: t('config.virtual_display_layout_extended_primary_desc'),
+  },
+  {
+    value: 'extended_isolated',
+    label: t('config.virtual_display_layout_extended_isolated'),
+    description: t('config.virtual_display_layout_extended_isolated_desc'),
+  },
+  {
+    value: 'extended_primary_isolated',
+    label: t('config.virtual_display_layout_extended_primary_isolated'),
+    description: t('config.virtual_display_layout_extended_primary_isolated_desc'),
+  },
+]);
 </script>
 
 <template>
@@ -281,6 +342,27 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
+            <div v-else class="mt-3 space-y-2">
+              <div class="text-sm font-medium">
+                {{ $t('config.virtual_display_layout_label') }}
+              </div>
+              <p class="text-[11px] opacity-70 leading-snug">
+                {{ $t('config.virtual_display_layout_hint') }}
+              </p>
+              <n-radio-group v-model:value="virtualDisplayLayout" class="space-y-4">
+                <div
+                  v-for="option in virtualDisplayLayoutOptions"
+                  :key="option.value"
+                  class="flex flex-col"
+                >
+                  <div class="flex items-center gap-3">
+                    <n-radio :value="option.value" />
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                  </div>
+                  <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+                </div>
+              </n-radio-group>
+            </div>
 
             <!-- Double Refresh Rate -->
             <PlatformLayout>
@@ -358,4 +440,19 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.display-mode-option {
+  @apply block w-full rounded-xl border border-dark/10 dark:border-light/10 px-4 py-3 text-sm font-semibold transition-colors;
+  min-height: 56px;
+}
+
+.display-mode-option :deep(.n-radio__label) {
+  width: 100%;
+  @apply flex items-center justify-center gap-3;
+  text-align: center;
+}
+
+.display-mode-option :deep(.n-radio__indicator) {
+  @apply flex-shrink-0;
+}
+</style>

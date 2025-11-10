@@ -30,6 +30,7 @@
     <Binary Id="AskUninstallApolloVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_apollo.vbs"/>
     <Binary Id="WaitForApolloUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_apollo_uninstall.vbs"/>
     <Binary Id="AskRmGamepadVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_gamepad.vbs"/>
+    <Binary Id="RebootNoticeVbs" SourceFile="$(sys.SOURCEFILEDIR)reboot_notice.vbs"/>
 
   </Fragment>
 
@@ -232,6 +233,7 @@
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />
+    <CustomAction Id="ShowRebootNotice" BinaryKey="RebootNoticeVbs" VBScriptCall="ShowRebootNotice" Execute="immediate" Return="check" />
 
   </Fragment>
 

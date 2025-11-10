@@ -110,6 +110,7 @@ const defaultGroups = [
       adapter_name: '',
       output_name: '',
       virtual_display_mode: 'disabled',
+      virtual_display_layout: 'exclusive',
       dd_configuration_option: 'verify_only',
       dd_resolution_option: 'auto',
       dd_manual_resolution: '',

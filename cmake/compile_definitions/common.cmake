@@ -67,6 +67,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/config.cpp"
         "${CMAKE_SOURCE_DIR}/src/display_device.h"
         "${CMAKE_SOURCE_DIR}/src/display_device.cpp"
+        "${CMAKE_SOURCE_DIR}/src/display_helper_builder.h"
+        "${CMAKE_SOURCE_DIR}/src/display_helper_builder.cpp"
         "${CMAKE_SOURCE_DIR}/src/entry_handler.cpp"
         "${CMAKE_SOURCE_DIR}/src/entry_handler.h"
         "${CMAKE_SOURCE_DIR}/src/file_handler.cpp"

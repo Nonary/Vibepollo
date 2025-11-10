@@ -23,6 +23,13 @@ export type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
 
 export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion' | 'game-provided';
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
+export type AppVirtualDisplayMode = 'disabled' | 'per_client' | 'shared';
+export type AppVirtualDisplayLayout =
+  | 'exclusive'
+  | 'extended'
+  | 'extended_primary'
+  | 'extended_isolated'
+  | 'extended_primary_isolated';
 
 export interface LosslessProfileOverrides {
   performanceMode: boolean | null;
@@ -71,6 +78,8 @@ export interface AppForm {
   virtualScreen: boolean;
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
+  virtualDisplayMode: AppVirtualDisplayMode | null;
+  virtualDisplayLayout: AppVirtualDisplayLayout | null;
   frameGenerationProvider: FrameGenerationProvider;
   frameGenerationMode: FrameGenerationMode;
   losslessScalingEnabled: boolean;
@@ -120,6 +129,8 @@ export interface ServerApp {
   'lossless-scaling-profile'?: string;
   'lossless-scaling-recommended'?: Record<string, unknown>;
   'lossless-scaling-custom'?: Record<string, unknown>;
+  'virtual-display-mode'?: string;
+  'virtual-display-layout'?: string;
 }
 
 export type FrameGenRequirementStatus = 'pass' | 'warn' | 'fail' | 'unknown';

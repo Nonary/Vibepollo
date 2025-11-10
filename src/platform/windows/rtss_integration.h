@@ -28,6 +28,8 @@ namespace platf {
   // Restore any RTSS settings modified at stream start.
   void rtss_streaming_stop();
 
+  void rtss_restore_pending_overrides();
+
   bool rtss_is_configured();
 
   // Query RTSS availability and installation status (no side effects).

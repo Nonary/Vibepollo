@@ -114,6 +114,8 @@ namespace proc {
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};
+    std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
+    std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     bool auto_detach;
     bool wait_all;
     bool virtual_display;

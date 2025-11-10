@@ -456,6 +456,19 @@ namespace config {
     return video_t::virtual_display_mode_e::disabled;  // Default to primary display when unspecified
   }
 
+  video_t::virtual_display_layout_e virtual_display_layout_from_view(const ::std::string_view value) {
+#define _CONVERT_LAYOUT_(x) \
+  if (value == #x##sv) \
+  return video_t::virtual_display_layout_e::x
+    _CONVERT_LAYOUT_(exclusive);
+    _CONVERT_LAYOUT_(extended);
+    _CONVERT_LAYOUT_(extended_primary);
+    _CONVERT_LAYOUT_(extended_isolated);
+    _CONVERT_LAYOUT_(extended_primary_isolated);
+#undef _CONVERT_LAYOUT_
+    return video_t::virtual_display_layout_e::exclusive;
+  }
+
   video_t video {
     true,  // limit_framerate
     false,  // double_refreshrate
@@ -517,6 +530,7 @@ namespace config {
     {},  // output_name
 
     video_t::virtual_display_mode_e::disabled,  // virtual_display_mode
+    video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
     {
       video_t::dd_t::config_option_e::verify_only,  // configuration_option
@@ -1273,6 +1287,7 @@ namespace config {
     string_f(vars, "output_name", video.output_name);
 
     generic_f(vars, "virtual_display_mode", video.virtual_display_mode, virtual_display_mode_from_view);
+    generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);

@@ -359,6 +359,8 @@ import SunshineVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
+import type { CrashDumpStatus } from '@/utils/crashDump';
+import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
 
 const installedVersion = ref<SunshineVersion>(new SunshineVersion('0.0.0'));
 const githubRelease = ref<GitHubRelease | null>(null);
@@ -397,17 +399,6 @@ type PlayniteStatus = {
 const playnite = ref<PlayniteStatus | null>(null);
 const updatingPlaynite = ref(false);
 
-type CrashDumpStatus = {
-  available?: boolean;
-  filename?: string;
-  path?: string;
-  size_bytes?: number;
-  captured_at?: string;
-  age_seconds?: number;
-  age_hours?: number;
-  dismissed?: boolean;
-  dismissed_at?: string;
-};
 const crashDump = ref<CrashDumpStatus | null>(null);
 
 const configStore = useConfigStore();
@@ -551,7 +542,8 @@ async function refreshCrashDumpStatus(platformOverride?: string) {
   try {
     const r = await http.get('/api/health/crashdump', { validateStatus: () => true });
     if (r.status === 200 && r.data) {
-      crashDump.value = r.data as CrashDumpStatus;
+      const sanitized = sanitizeCrashDumpStatus(r.data as CrashDumpStatus);
+      crashDump.value = sanitized ?? { available: false };
     } else {
       crashDump.value = { available: false };
     }
@@ -724,8 +716,8 @@ const fancyLogs = computed(() => {
 const showCrashDumpBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!crashDump.value || crashDump.value.available !== true) return false;
-  return crashDump.value.dismissed !== true;
+  if (!isCrashDumpEligible(crashDump.value)) return false;
+  return crashDump.value?.dismissed !== true;
 });
 
 const showVigemBanner = computed(() => {

@@ -29,8 +29,17 @@ namespace config {
       shared  ///< Use single shared virtual display for all clients
     };
 
+    enum class virtual_display_layout_e {
+      exclusive,  ///< Deactivate all other displays (only the virtual display stays visible)
+      extended,  ///< Keep other displays active and extend the desktop with the virtual display
+      extended_primary,  ///< Extend the desktop and force the virtual display to be primary
+      extended_isolated,  ///< Extend the desktop and move the virtual display far away from other monitors
+      extended_primary_isolated  ///< Extend the desktop, force the virtual display to be primary, and isolate it
+    };
+
     bool limit_framerate;
     bool double_refreshrate;
+
     // ffmpeg params
     int qp;  // higher == more compression and less quality
 
@@ -97,6 +106,7 @@ namespace config {
     std::string output_name;
 
     virtual_display_mode_e virtual_display_mode;
+    virtual_display_layout_e virtual_display_layout;
 
     struct dd_t {
       struct workarounds_t {

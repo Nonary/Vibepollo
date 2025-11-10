@@ -821,6 +821,10 @@ namespace platf {
     }
   }  // namespace
 
+  void rtss_restore_pending_overrides() {
+    maybe_restore_from_overrides_file();
+  }
+
   void rtss_set_sync_limiter_override(std::optional<std::string> value) {
     if (value && value->empty()) {
       g_sync_limiter_override.reset();
