@@ -2642,12 +2642,11 @@ namespace proc {
         ctx.gamepad = app_node.value("gamepad", "");
         ctx.gen1_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false));
         ctx.gen2_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen2-framegen-fix", false);
-        ctx.virtual_display_mode = util::get_non_string_json_value<std::string>(app_node, "virtual-display-mode", "");
-        ctx.virtual_display_layout = util::get_non_string_json_value<std::string>(app_node, "virtual-display-layout", "");
-        
-        // Convert virtual display mode string to enum override
-        if (!ctx.virtual_display_mode.empty()) {
-          auto normalized = boost::algorithm::to_lower_copy(ctx.virtual_display_mode);
+        auto virtual_display_mode = util::get_non_string_json_value<std::string>(app_node, "virtual-display-mode", "");
+        auto virtual_display_layout = util::get_non_string_json_value<std::string>(app_node, "virtual-display-layout", "");
+
+        if (!virtual_display_mode.empty()) {
+          auto normalized = boost::algorithm::to_lower_copy(virtual_display_mode);
           if (normalized == "disabled") {
             ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
           } else if (normalized == "per_client") {
@@ -2656,10 +2655,9 @@ namespace proc {
             ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
           }
         }
-        
-        // Convert virtual display layout string to enum override
-        if (!ctx.virtual_display_layout.empty()) {
-          auto normalized = boost::algorithm::to_lower_copy(ctx.virtual_display_layout);
+
+        if (!virtual_display_layout.empty()) {
+          auto normalized = boost::algorithm::to_lower_copy(virtual_display_layout);
           if (normalized == "exclusive") {
             ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
           } else if (normalized == "extended") {

@@ -563,7 +563,8 @@ namespace display_helper_integration {
       platf::display_helper_client::reset_connection();
       (void) platf::display_helper_client::send_ping();
     }
-    
+
+    if (request.action == DisplayApplyAction::Revert) {
       const bool ok = platf::display_helper_client::send_revert();
       BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
       clear_active_session();
@@ -668,6 +669,15 @@ namespace display_helper_integration {
     }
 
     return true;
+  }
+
+  bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    auto request = helpers::build_request_from_session(video_config, session);
+    if (!request) {
+      BOOST_LOG(warning) << "Display helper: failed to build display configuration from session context.";
+      return false;
+    }
+    return apply(*request);
   }
 
   bool revert() {

@@ -16,6 +16,9 @@ namespace display_helper_integration {
   // Returns true if the helper accepted the command; false to allow fallback.
   bool apply(const DisplayApplyRequest &request);
 
+  // Convenience helper: builds a request from a session/config pair and applies it.
+  bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();
