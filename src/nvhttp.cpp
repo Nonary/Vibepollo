@@ -1096,17 +1096,11 @@ namespace nvhttp {
     const bool no_active_sessions = (rtsp_stream::session_count() == 0);
 
 #ifdef _WIN32
-    const auto effective_mode =
-      launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
-    const bool effective_requests_virtual =
-      (effective_mode == config::video_t::virtual_display_mode_e::per_client ||
-       effective_mode == config::video_t::virtual_display_mode_e::shared);
-    BOOST_LOG(debug) << "effective_requests_virtual: " << effective_requests_virtual;
-    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-    BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
-    const bool session_requests_virtual = launch_session->virtual_display;
+    bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
+    const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    bool request_virtual_display = effective_requests_virtual || metadata_requests_virtual || session_requests_virtual;
+    bool request_virtual_display = config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
     auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
@@ -1168,7 +1162,7 @@ namespace nvhttp {
         return generated;
       };
 
-      const bool shared_mode = (effective_mode == config::video_t::virtual_display_mode_e::shared);
+      const bool shared_mode = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
       uuid_util::uuid_t session_uuid;
       if (shared_mode) {
         session_uuid = ensure_shared_guid();

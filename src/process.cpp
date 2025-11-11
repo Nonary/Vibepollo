@@ -2038,28 +2038,30 @@ namespace proc {
 
         ctx.elevated = elevated.value_or(false);
         ctx.virtual_screen = app_node.get_optional<bool>("virtual-screen"s).value_or(false);
-        if (virtual_display_mode) {
-          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_mode);
-          if (normalized == "disabled" || !ctx.virtual_screen) {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
-          } else if (normalized == "per_client") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
-          } else if (normalized == "shared") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
+        if (ctx.virtual_screen) {
+          if (virtual_display_mode) {
+            auto normalized = boost::algorithm::to_lower_copy(*virtual_display_mode);
+            if (normalized == "disabled") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+            } else if (normalized == "per_client") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
+            } else if (normalized == "shared") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
+            }
           }
-        }
-        if (virtual_display_layout) {
-          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_layout);
-          if (normalized == "exclusive") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
-          } else if (normalized == "extended") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
-          } else if (normalized == "extended_primary") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
-          } else if (normalized == "extended_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
-          } else if (normalized == "extended_primary_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
+          if (virtual_display_layout) {
+            auto normalized = boost::algorithm::to_lower_copy(*virtual_display_layout);
+            if (normalized == "exclusive") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
+            } else if (normalized == "extended") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
+            } else if (normalized == "extended_primary") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
+            } else if (normalized == "extended_isolated") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
+            } else if (normalized == "extended_primary_isolated") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
+            }
           }
         }
         ctx.auto_detach = auto_detach.value_or(true);

@@ -104,9 +104,16 @@ namespace display_helper_integration::helpers {
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
     builder.set_session(session_);
     builder.set_hdr_toggle_flag(video_config_.dd.wa.hdr_toggle);
+    BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
+    if (session_.virtual_display_layout_override) {
+      BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
+    }
+    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(video_config_.virtual_display_layout);
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
+    BOOST_LOG(debug) << "effective_layout: " << static_cast<int>(effective_layout);
     const auto layout_flags = describe_layout(effective_layout);
+    BOOST_LOG(debug) << "layout_flags.arrangement: " << static_cast<int>(layout_flags.arrangement);
     builder.set_virtual_display_arrangement(layout_flags.arrangement);
 
     auto &overrides = builder.mutable_session_overrides();
@@ -125,15 +132,24 @@ namespace display_helper_integration::helpers {
     overrides.virtual_display_override = session_.virtual_display;
 
     const int effective_width = session_.width;
+    BOOST_LOG(debug) << "effective_width: " << effective_width;
     const int effective_height = session_.height;
+    BOOST_LOG(debug) << "effective_height: " << effective_height;
     const int base_fps = session_.fps;
+    BOOST_LOG(debug) << "base_fps: " << base_fps;
     std::optional<int> framegen_refresh = session_.framegen_refresh_rate;
+    BOOST_LOG(debug) << "framegen_refresh: " << (framegen_refresh ? std::to_string(*framegen_refresh) : "nullopt");
     const int display_fps = framegen_refresh && *framegen_refresh > 0 ? *framegen_refresh : base_fps;
+    BOOST_LOG(debug) << "display_fps: " << display_fps;
 
     const auto config_mode = video_config_.virtual_display_mode;
+    BOOST_LOG(debug) << "config_mode: " << static_cast<int>(config_mode);
     const bool config_selects_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client || config_mode == config::video_t::virtual_display_mode_e::shared);
+    BOOST_LOG(debug) << "config_selects_virtual: " << config_selects_virtual;
     const bool metadata_requests_virtual = session_.app_metadata && session_.app_metadata->virtual_screen;
+    BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
+    BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
 
     if (session_requests_virtual) {
       return configure_virtual_display(builder, effective_layout, effective_width, effective_height, display_fps);
@@ -293,6 +309,11 @@ namespace display_helper_integration::helpers {
     if (topology.topology.empty()) {
       topology.topology = {{device_id}};
     }
+    BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
+    if (session_.virtual_display_layout_override) {
+      BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
+    }
+    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(video_config_.virtual_display_layout);
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
