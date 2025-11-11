@@ -511,6 +511,7 @@ namespace nvhttp {
             metadata.virtual_screen = app_ctx.virtual_screen;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
+            launch_session->virtual_display = app_ctx.virtual_screen;
             launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
             launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
             launch_session->app_metadata = std::move(metadata);
@@ -1100,9 +1101,13 @@ namespace nvhttp {
     const bool effective_requests_virtual =
       (effective_mode == config::video_t::virtual_display_mode_e::per_client ||
        effective_mode == config::video_t::virtual_display_mode_e::shared);
+    BOOST_LOG(debug) << "effective_requests_virtual: " << effective_requests_virtual;
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = launch_session->virtual_display;
+    BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     bool request_virtual_display = effective_requests_virtual || metadata_requests_virtual || session_requests_virtual;
+    BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
     auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
       if (!should_request_virtual_display) {

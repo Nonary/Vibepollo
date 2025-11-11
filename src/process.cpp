@@ -2040,7 +2040,7 @@ namespace proc {
         ctx.virtual_screen = app_node.get_optional<bool>("virtual-screen"s).value_or(false);
         if (virtual_display_mode) {
           auto normalized = boost::algorithm::to_lower_copy(*virtual_display_mode);
-          if (normalized == "disabled") {
+          if (normalized == "disabled" || !ctx.virtual_screen) {
             ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
           } else if (normalized == "per_client") {
             ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
