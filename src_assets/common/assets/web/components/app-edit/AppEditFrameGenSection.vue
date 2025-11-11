@@ -228,9 +228,17 @@ const displayTargets = computed(() => props.health?.display.targets || []);
 
         <div class="space-y-2">
           <label class="text-xs font-semibold uppercase tracking-wide opacity-70">Profile</label>
-          <n-radio-group v-model:value="losslessProfileModel">
-            <n-radio value="recommended">Recommended (Lowest Latency & Frame Pacing)</n-radio>
-            <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
+          <n-radio-group v-model:value="losslessProfileModel" class="flex flex-col space-y-2">
+            <n-radio value="recommended" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
+              <div class="flex items-center gap-2 w-full">
+                <span class="block text-sm">Recommended (Lowest Latency & Frame Pacing)</span>
+              </div>
+            </n-radio>
+            <n-radio value="custom" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
+              <div class="flex items-center gap-2 w-full">
+                <span class="block text-sm">Custom: Use my Lossless Scaling default profile</span>
+              </div>
+            </n-radio>
           </n-radio-group>
           <p class="text-[12px] opacity-60 leading-relaxed">
             Recommended mirrors Sunshine&rsquo;s latency-focused template. Custom runs the profile you
