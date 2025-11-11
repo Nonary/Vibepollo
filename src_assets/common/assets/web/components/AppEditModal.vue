@@ -648,14 +648,6 @@ const frameGenerationSelection = computed<FrameGenerationMode>({
       form.value.losslessScalingRtssTouched = false;
     } else if (mode === 'lossless-scaling') {
       form.value.frameGenerationProvider = 'lossless-scaling';
-      if (!form.value.losslessScalingTargetFps) {
-        form.value.losslessScalingTargetFps = 120;
-      }
-      if (!form.value.losslessScalingRtssLimit && !form.value.losslessScalingRtssTouched) {
-        form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
-          parseNumeric(form.value.losslessScalingTargetFps),
-        );
-      }
     } else if (mode === 'game-provided') {
       form.value.frameGenerationProvider = 'game-provided';
       form.value.losslessScalingTargetFps = null;
@@ -704,12 +696,8 @@ watch(
         form.value.frameGenerationMode = 'nvidia-smooth-motion';
       }
     } else if (normalized === 'lossless-scaling') {
-      if (form.value.frameGenerationMode === 'off' || form.value.frameGenerationMode === 'game-provided') {
-        const hasLosslessFrameGen =
-          form.value.losslessScalingTargetFps !== null || form.value.losslessScalingRtssLimit !== null;
-        if (hasLosslessFrameGen) {
-          form.value.frameGenerationMode = 'lossless-scaling';
-        }
+      if (form.value.frameGenerationMode !== 'lossless-scaling') {
+        form.value.frameGenerationMode = 'lossless-scaling';
       }
     } else if (normalized === 'game-provided') {
       if (form.value.frameGenerationMode === 'lossless-scaling' || form.value.frameGenerationMode === 'nvidia-smooth-motion') {
@@ -745,10 +733,14 @@ watch(
 );
 
 function onLosslessRtssLimitChange(value: number | null) {
-  form.value.losslessScalingRtssTouched = true;
   const normalized = parseNumeric(value);
-  form.value.losslessScalingRtssLimit =
-    normalized === null ? null : Math.min(360, Math.max(1, Math.round(normalized)));
+  if (normalized === null) {
+    form.value.losslessScalingRtssTouched = false;
+    form.value.losslessScalingRtssLimit = null;
+    return;
+  }
+  form.value.losslessScalingRtssTouched = true;
+  form.value.losslessScalingRtssLimit = Math.min(360, Math.max(1, Math.round(normalized)));
 }
 
 const activeLosslessProfile = computed<LosslessProfileKey>(() =>

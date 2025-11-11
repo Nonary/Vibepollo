@@ -8,8 +8,9 @@
 #include <boost/log/common.hpp>
 #include <boost/log/expressions.hpp>
 #include <boost/log/sinks.hpp>
-// std includes
 #include <filesystem>
+#include <optional>
+#include <vector>
 // Expose the severity attribute keyword to all translation units
 BOOST_LOG_ATTRIBUTE_KEYWORD(severity, "Severity", int)
 
@@ -69,6 +70,13 @@ namespace logging {
   [[nodiscard]] std::unique_ptr<deinit_t> init(int min_log_level, const std::filesystem::path &log_file);
 
   /**
+   * @brief Initialize logging in single-file mode (no session rotation). Intended for helper tools/tests.
+   */
+  [[nodiscard]] std::unique_ptr<deinit_t> init_single_file(int min_log_level, const std::string &log_file);
+  [[nodiscard]] std::unique_ptr<deinit_t> init_single_file(int min_log_level, const char *log_file);
+  [[nodiscard]] std::unique_ptr<deinit_t> init_single_file(int min_log_level, const std::filesystem::path &log_file);
+
+  /**
    * @brief Initialize the logging system in append mode.
    * @param min_log_level The minimum log level to output.
    * @param log_file The log file to write to.
@@ -116,6 +124,27 @@ namespace logging {
    * @examples_end
    */
   void print_help(const char *name);
+
+  /**
+   * @brief Get the currently active log file path.
+   */
+  [[nodiscard]] std::filesystem::path current_log_file();
+
+  /**
+   * @brief Get the directory containing Sunshine log files (session folder or log file parent).
+   */
+  [[nodiscard]] std::filesystem::path log_directory();
+
+  /**
+   * @brief Get the session log directory when session logging is enabled.
+   */
+  [[nodiscard]] std::optional<std::filesystem::path> session_log_directory();
+
+  /**
+   * @brief List the most recent session logs stored in the log directory.
+   * @param max_sessions Maximum number of sessions to include.
+   */
+  [[nodiscard]] std::vector<std::filesystem::path> recent_session_logs(std::size_t max_sessions = 10);
 
   /**
    * @brief A helper class for tracking and logging numerical values across a period of time

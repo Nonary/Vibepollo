@@ -455,6 +455,11 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
           </p>
         </div>
 
+        <p class="mt-3 text-[11px] opacity-70">
+          Enable Lossless Scaling per application from the Apps editor when you need frame
+          generation or upscaling on a specific title.
+        </p>
+
         <div v-if="showLosslessAdvanced" class="space-y-2">
           <div class="flex items-center justify-between">
             <label for="lossless_scaling_path" class="form-label">

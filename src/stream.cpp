@@ -2050,7 +2050,7 @@ namespace stream {
           if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
             lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
           } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
-            int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.6);
+            int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.5);
             if (computed > 0) {
               lossless_rtss_limit = computed;
             }
