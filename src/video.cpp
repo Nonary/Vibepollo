@@ -92,7 +92,7 @@ namespace video {
         return false;
       }
 
-      if (!VDISPLAY::has_active_physical_display(true)) {
+      if (!VDISPLAY::has_active_physical_display()) {
         return true;
       }
 

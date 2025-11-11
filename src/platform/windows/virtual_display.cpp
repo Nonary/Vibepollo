@@ -1671,39 +1671,26 @@ namespace VDISPLAY {
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY
 
-bool VDISPLAY::has_active_physical_display(const std::optional<bool> &active) {
+bool VDISPLAY::has_active_physical_display() {
   auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
-    BOOST_LOG(debug) << "No devices enumerated, returning true";
-    return true;
+    BOOST_LOG(debug) << "No display devices detected, therefore returning false.";
+    return false;
   }
 
-  bool found_physical = false;
   for (const auto &device : *devices) {
-    bool has_info = device.m_info.has_value();
     bool is_virtual = is_virtual_display_device(device);
-    BOOST_LOG(debug) << "Device: " << device.m_display_name << ", has_info: " << has_info << ", is_virtual: " << is_virtual;
     if (!is_virtual) {
-      found_physical = true;
-      if (active.has_value()) {
-        if (has_info == *active) {
-          BOOST_LOG(debug) << "Found physical display matching active state, returning true";
-          return true;
-        }
-      } else if (has_info) {
-        BOOST_LOG(debug) << "Found active physical display, returning true";
+      bool is_active = !device.m_display_name.empty();
+      BOOST_LOG(debug) << "Physical device: " << device.m_display_name << ", is_active: " << is_active;
+      if (is_active) {
         return true;
       }
     }
   }
 
-  if (found_physical && !active.has_value()) {
-    BOOST_LOG(debug) << "Found physical display in enumeration (inactive), returning true";
-    return true;
-  }
-
-  BOOST_LOG(debug) << "No physical display matching criteria found, returning false";
+  BOOST_LOG(debug) << "No active physical display found, returning false";
   return false;
 }
 
@@ -1713,7 +1700,7 @@ bool VDISPLAY::should_auto_enable_virtual_display() {
     return false;
   }
 
-  if (has_active_physical_display(true)) {
+  if (has_active_physical_display()) {
     BOOST_LOG(debug) << "Active physical display detected, not enabling virtual display.";
     return false;
   }
@@ -1728,7 +1715,7 @@ uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
 VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   ensure_display_result result {false, false, {}};
 
-  if (has_active_physical_display(true)) {
+  if (has_active_physical_display()) {
     result.success = true;
     return result;
   }

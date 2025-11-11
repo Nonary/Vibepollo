@@ -144,7 +144,7 @@ namespace nvhttp {
 #ifdef _WIN32
   namespace {
     bool has_any_active_display() {
-      if (VDISPLAY::has_active_physical_display(std::optional<bool> {true})) {
+      if (VDISPLAY::has_active_physical_display()) {
         return true;
       }
       const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
@@ -1300,21 +1300,10 @@ namespace nvhttp {
     // encoder matches the active GPU (which could have changed
     // due to hotplugging, driver crash, primary monitor change,
     // or any number of other factors).
-#ifdef _WIN32
-    auto encoder_probe_display_result = VDISPLAY::ensure_display();
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
-    });
-
     bool encoder_probe_failed = video::probe_encoders();
-    if (encoder_probe_failed && !encoder_probe_display_result.success) {
-      BOOST_LOG(warning) << "Unable to ensure display before stream launch. Probe may fail.";
-    }
-#else
-    bool encoder_probe_failed = video::probe_encoders();
-#endif
 
       if (encoder_probe_failed) {
+        BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);

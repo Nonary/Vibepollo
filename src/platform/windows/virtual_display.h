@@ -72,7 +72,7 @@ namespace VDISPLAY {
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
 
   uuid_util::uuid_t persistentVirtualDisplayUuid();
-  bool has_active_physical_display(const std::optional<bool> &active = std::nullopt);
+  bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
 
   struct ensure_display_result {
