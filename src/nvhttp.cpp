@@ -243,9 +243,12 @@ namespace nvhttp {
       }
     }
 
-    root.erase("root"s);
+    pt::ptree root_node;
+    if (auto existing_root = root.get_child_optional("root")) {
+      root_node = *existing_root;
+    }
 
-    root.put("root.uniqueid", http::unique_id);
+    root_node.put("uniqueid", http::unique_id);
     client_t &client = client_root;
 
     pt::ptree named_cert_nodes;
@@ -256,7 +259,8 @@ namespace nvhttp {
       named_cert_node.put("uuid"s, named_cert.uuid);
       named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
-    root.add_child("root.named_devices"s, named_cert_nodes);
+    root_node.put_child("named_devices", named_cert_nodes);
+    root.put_child("root", root_node);
 
     try {
       pt::write_json(sunshine_path, root);
