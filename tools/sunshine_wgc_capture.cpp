@@ -14,6 +14,8 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <filesystem>
+#include <system_error>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +35,8 @@
 #include <ShellScalingApi.h>  // For DPI awareness
 #include <Windows.Graphics.Capture.Interop.h>
 #include <Windows.h>
+#include <KnownFolders.h>
+#include <ShlObj.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Metadata.h>  // For ApiInformation
@@ -1261,32 +1265,51 @@ void CALLBACK desktop_switch_hook_proc(HWINEVENTHOOK /*h_win_event_hook*/, DWORD
   }
 }
 
+std::filesystem::path get_roaming_log_directory() {
+  PWSTR roaming_path = nullptr;
+  HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, nullptr, &roaming_path);
+  if (FAILED(hr) || roaming_path == nullptr) {
+    if (roaming_path) {
+      CoTaskMemFree(roaming_path);
+    }
+    return {};
+  }
+
+  std::filesystem::path result(roaming_path);
+  CoTaskMemFree(roaming_path);
+  result /= L"Sunshine";
+
+  std::error_code ec;
+  std::filesystem::create_directories(result, ec);
+  if (ec) {
+    return {};
+  }
+
+  return result;
+}
+
 /**
- * @brief Helper function to get the system temp directory for log files.
+ * @brief Helper function to get the WGC helper log path.
  *
- * Constructs a path to a log file in the system temporary directory.
- * If the system temp path cannot be obtained, falls back to the current directory.
- * Handles Unicode to UTF-8 conversion for the path string.
+ * Logs now live under Roaming/Sunshine so they sit with the other Sunshine logs.
+ * Falls back to the system temporary directory (or current directory) if the roaming
+ * folder cannot be resolved.
  *
  * @return Path to the log file as a UTF-8 string.
  */
 std::string get_temp_log_path() {
+  if (auto roaming_dir = get_roaming_log_directory(); !roaming_dir.empty()) {
+    auto log_file = roaming_dir / L"sunshine_wgc_helper.log";
+    return wide_to_utf8(log_file.wstring());
+  }
+
   std::wstring temp_path(MAX_PATH, L'\0');
   if (auto len = GetTempPathW(MAX_PATH, temp_path.data()); len == 0 || len > MAX_PATH) {
-    // fallback to current directory if temp path fails
     return "sunshine_wgc_helper.log";
   }
-  temp_path.resize(wcslen(temp_path.data()));  // Remove null padding
+  temp_path.resize(wcslen(temp_path.data()));
   std::wstring wlog = temp_path + L"sunshine_wgc_helper.log";
-  // Convert to UTF-8
-  int size_needed = WideCharToMultiByte(CP_UTF8, 0, wlog.c_str(), -1, nullptr, 0, nullptr, nullptr);
-  std::string log_file(size_needed, 0);
-  WideCharToMultiByte(CP_UTF8, 0, wlog.c_str(), -1, &log_file[0], size_needed, nullptr, nullptr);
-  // Remove trailing null
-  if (!log_file.empty() && log_file.back() == '\0') {
-    log_file.pop_back();
-  }
-  return log_file;
+  return wide_to_utf8(wlog);
 }
 
 /**
@@ -1410,7 +1433,7 @@ bool setup_desktop_switch_hook() {
  */
 int main(int argc, char *argv[]) {
   // Set up default config and log level
-  auto log_deinit = logging::init(2, get_temp_log_path());
+  auto log_deinit = logging::init_single_file(2, get_temp_log_path());
 
   // Check command line arguments for pipe names
   if (argc < 3) {

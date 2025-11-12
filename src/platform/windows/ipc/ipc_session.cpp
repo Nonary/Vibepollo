@@ -5,6 +5,7 @@
  * between the main process and the WGC capture helper process.
  */
 // standard includes
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -76,6 +77,15 @@ namespace platf::dxgi {
     // Reset success flag before attempting
     _initialized = false;
 
+    if (_pipe) {
+      _pipe->stop();
+      _pipe.reset();
+    }
+    _frame_queue_pipe.reset();
+    _shared_texture = nullptr;
+    _keyed_mutex = nullptr;
+    _frame_ready = false;
+
     // Get the directory of the main executable (Unicode-safe)
     std::wstring exePathBuffer(MAX_PATH, L'\0');
     GetModuleFileNameW(nullptr, exePathBuffer.data(), MAX_PATH);
@@ -95,16 +105,8 @@ namespace platf::dxgi {
       return;
     }
 
-    bool handle_received = false;
-
-    auto on_message = [this, &handle_received](std::span<const uint8_t> msg) {
-      if (msg.size() == sizeof(shared_handle_data_t)) {
-        shared_handle_data_t handle_data;
-        memcpy(&handle_data, msg.data(), sizeof(shared_handle_data_t));
-        if (setup_shared_texture_from_shared_handle(handle_data.texture_handle, handle_data.width, handle_data.height)) {
-          handle_received = true;
-        }
-      } else if (msg.size() == 1) {
+    auto on_message = [this](std::span<const uint8_t> msg) {
+      if (msg.size() == 1) {
         handle_secure_desktop_message(msg);
       }
     };
@@ -120,17 +122,27 @@ namespace platf::dxgi {
 
     auto anon_connector = std::make_unique<AnonymousPipeFactory>();
 
-    auto raw_pipe = anon_connector->create_server(pipe_guid);
+    auto control_pipe = anon_connector->create_server(pipe_guid);
     auto frame_queue_pipe = anon_connector->create_server(frame_queue_pipe_guid);
-    if (!raw_pipe || !frame_queue_pipe) {
+    if (!control_pipe || !frame_queue_pipe) {
       BOOST_LOG(error) << "IPC pipe setup failed for WGC session; aborting";
       return;
     }
-    _pipe = std::make_unique<AsyncNamedPipe>(std::move(raw_pipe));
-    _frame_queue_pipe = std::move(frame_queue_pipe);
 
-    _pipe->wait_for_client_connection(5000);
-    _frame_queue_pipe->wait_for_client_connection(5000);
+    control_pipe->wait_for_client_connection(5000);
+    frame_queue_pipe->wait_for_client_connection(5000);
+
+    if (!control_pipe->is_connected()) {
+      BOOST_LOG(error) << "Helper failed to connect to control pipe within timeout";
+      _process_helper->terminate();
+      return;
+    }
+
+    if (!frame_queue_pipe->is_connected()) {
+      BOOST_LOG(error) << "Helper failed to connect to frame queue pipe within timeout";
+      _process_helper->terminate();
+      return;
+    }
 
     // Send config data to helper process
     config_data_t config_data = {};
@@ -156,25 +168,92 @@ namespace platf::dxgi {
       memset(&config_data.adapter_luid, 0, sizeof(LUID));
     }
 
-    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&config_data), sizeof(config_data_t)));
+    auto config_span = std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&config_data), sizeof(config_data_t));
+    if (!control_pipe->send(config_span, 5000)) {
+      BOOST_LOG(error) << "Failed to send configuration data to helper process";
+      _process_helper->terminate();
+      return;
+    }
 
-    _pipe->start(on_message, on_error, on_broken_pipe);
+    constexpr auto handle_wait_timeout = std::chrono::seconds(3);
+    auto deadline = std::chrono::steady_clock::now() + handle_wait_timeout;
+    std::array<uint8_t, sizeof(shared_handle_data_t)> control_buffer {};
+    bool handle_received = false;
+    bool timed_out_waiting = false;
 
-    auto start_time = std::chrono::steady_clock::now();
     while (!handle_received) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      if (std::chrono::steady_clock::now() - start_time > std::chrono::seconds(3)) {
-        BOOST_LOG(error) << "Timed out waiting for handle data from helper process (3s)";
+      auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        timed_out_waiting = true;
+        break;
+      }
+
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      const int wait_ms = std::max(1, static_cast<int>(remaining.count()));
+
+      size_t bytes_read = 0;
+      auto result = control_pipe->receive(std::span<uint8_t>(control_buffer.data(), control_buffer.size()), bytes_read, wait_ms);
+
+      if (result == PipeResult::Success) {
+        if (bytes_read == sizeof(shared_handle_data_t)) {
+          shared_handle_data_t handle_data {};
+          memcpy(&handle_data, control_buffer.data(), sizeof(handle_data));
+          if (setup_shared_texture_from_shared_handle(handle_data.texture_handle, handle_data.width, handle_data.height)) {
+            handle_received = true;
+          } else {
+            break;
+          }
+        } else if (bytes_read == 1) {
+          handle_secure_desktop_message(std::span<const uint8_t>(control_buffer.data(), 1));
+        } else if (bytes_read > 0) {
+          BOOST_LOG(warning) << "Ignoring unexpected control payload (" << bytes_read << " bytes) while waiting for shared handle";
+        }
+      } else if (result == PipeResult::Timeout) {
+        continue;
+      } else if (result == PipeResult::BrokenPipe) {
+        BOOST_LOG(warning) << "Broken pipe while waiting for handle data from helper process";
+        break;
+      } else {
+        BOOST_LOG(error) << "Control pipe receive failed while waiting for handle data (state=" << static_cast<int>(result) << ')';
         break;
       }
     }
 
-    if (handle_received) {
-      _initialized = true;
-    } else {
+    if (!handle_received) {
+      if (timed_out_waiting) {
+        BOOST_LOG(error) << "Timed out waiting for handle data from helper process (3s)";
+      }
       BOOST_LOG(error) << "Failed to receive handle data from helper process! Helper is likely deadlocked!";
-      _initialized = false;
+      _process_helper->terminate();
+      return;
     }
+
+    auto cleanup_on_failure = util::fail_guard([this]() {
+      if (_pipe) {
+        _pipe->stop();
+        _pipe.reset();
+      }
+      if (_frame_queue_pipe) {
+        _frame_queue_pipe->disconnect();
+        _frame_queue_pipe.reset();
+      }
+      _shared_texture = nullptr;
+      _keyed_mutex = nullptr;
+      if (_process_helper) {
+        _process_helper->terminate();
+      }
+    });
+
+    _pipe = std::make_unique<AsyncNamedPipe>(std::move(control_pipe));
+    _frame_queue_pipe = std::move(frame_queue_pipe);
+
+    if (!_pipe->start(on_message, on_error, on_broken_pipe)) {
+      BOOST_LOG(error) << "Failed to start AsyncNamedPipe for helper communication";
+      return;
+    }
+
+    cleanup_on_failure.disable();
+    _initialized = true;
   }
 
   bool ipc_session_t::wait_for_frame(std::chrono::milliseconds timeout) {

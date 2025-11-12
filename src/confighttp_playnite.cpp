@@ -664,20 +664,34 @@ namespace confighttp {
   static std::vector<std::pair<std::string, std::string>> collect_support_logs() {
     std::vector<std::pair<std::string, std::string>> entries;
 
-    // sunshine.log (configured location)
+    // Sunshine log directory (session logging)
     try {
-      std::string data;
-      if (read_file_if_exists(config::sunshine.log_file, data)) {
-        entries.emplace_back("sunshine.log", std::move(data));
+      bool collected_directory = false;
+      if (auto log_dir = logging::session_log_directory()) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(*log_dir, ec); it != std::filesystem::directory_iterator(); ++it) {
+          if (ec) {
+            break;
+          }
+          std::error_code file_ec;
+          if (!it->is_regular_file(file_ec)) {
+            continue;
+          }
+          std::string data;
+          if (read_file_if_exists(it->path(), data)) {
+            entries.emplace_back(it->path().filename().string(), std::move(data));
+            collected_directory = true;
+          }
+        }
       }
-    } catch (...) {}
-
-    // sunshine_old.log (previous session)
-    try {
-      std::filesystem::path old_log_path = std::filesystem::path(config::sunshine.log_file).parent_path() / "sunshine_old.log";
-      std::string data;
-      if (read_file_if_exists(old_log_path, data)) {
-        entries.emplace_back("sunshine_old.log", std::move(data));
+      if (!collected_directory) {
+        auto current_log = logging::current_log_file();
+        if (!current_log.empty()) {
+          std::string data;
+          if (read_file_if_exists(current_log, data)) {
+            entries.emplace_back(current_log.filename().string(), std::move(data));
+          }
+        }
       }
     } catch (...) {}
 
@@ -813,6 +827,13 @@ namespace confighttp {
               entries.emplace_back(p.filename().string(), std::move(data));
             }
           }
+          {
+            std::filesystem::path p = base / L"sunshine_wgc_helper.log";
+            std::string data;
+            if (read_file_if_exists(p, data)) {
+              entries.emplace_back(p.filename().string(), std::move(data));
+            }
+          }
         }
       };
       add_user_sunshine_logs(FOLDERID_RoamingAppData);
@@ -841,6 +862,13 @@ namespace confighttp {
       }
       {
         std::filesystem::path p = base / L"sunshine_display_helper.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
+      {
+        std::filesystem::path p = base / L"sunshine_wgc_helper.log";
         std::string data;
         if (read_file_if_exists(p, data)) {
           entries.emplace_back(p.filename().string(), std::move(data));

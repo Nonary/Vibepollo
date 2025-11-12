@@ -170,7 +170,7 @@ namespace nvhttp {
 #ifdef _WIN32
   namespace {
     bool has_any_active_display() {
-      if (VDISPLAY::has_active_physical_display(std::optional<bool> {true})) {
+      if (VDISPLAY::has_active_physical_display()) {
         return true;
       }
       const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
@@ -640,6 +640,7 @@ namespace nvhttp {
             metadata.virtual_screen = app_ctx.virtual_screen || app_ctx.virtual_display;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
+            launch_session->virtual_display = app_ctx.virtual_screen;
             launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
             launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
             launch_session->app_metadata = std::move(metadata);
@@ -1486,21 +1487,21 @@ namespace nvhttp {
     bool no_active_sessions = (rtsp_stream::session_count() == 0);
 
 #ifdef _WIN32
-    const auto effective_mode =
-      launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
-    const bool effective_requests_virtual =
-      (effective_mode == config::video_t::virtual_display_mode_e::per_client ||
-       effective_mode == config::video_t::virtual_display_mode_e::shared);
-    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-    const bool session_requests_virtual = launch_session->virtual_display;
-    bool request_virtual_display = effective_requests_virtual || metadata_requests_virtual || session_requests_virtual;
+    bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
+    const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+    bool request_virtual_display = config_requests_virtual || session_requests_virtual;
+    BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
-    // Auto-enable virtual display if no physical monitors are attached
-    if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
-      BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
-      request_virtual_display = true;
-    }
-    if (request_virtual_display) {
+    auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
+      if (!should_request_virtual_display) {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+        return;
+      }
+
       if (!no_active_sessions) {
         auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId();
         if (existing_device) {
@@ -1514,143 +1515,146 @@ namespace nvhttp {
           BOOST_LOG(info) << "Skipping virtual display creation because another session is running and no reusable device was found.";
         }
         launch_session->virtual_display_guid_bytes.fill(0);
-      } else {
+        return;
+      }
+
+      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        proc::initVDisplayDriver();
         if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-          proc::initVDisplayDriver();
-          if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-            BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus) << "). Continuing with best-effort virtual display creation.";
+          BOOST_LOG(warning) << "SudaVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus) << "). Continuing with best-effort virtual display creation.";
+        }
+      }
+      if (!config::video.adapter_name.empty()) {
+        (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+      } else {
+        (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
+      }
+
+      auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
+        if (value.empty()) {
+          return std::nullopt;
+        }
+        try {
+          return uuid_util::uuid_t::parse(value);
+        } catch (...) {
+          return std::nullopt;
+        }
+      };
+
+      auto ensure_shared_guid = [&]() -> uuid_util::uuid_t {
+        if (!http::shared_virtual_display_guid.empty()) {
+          if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
+            return *parsed;
           }
         }
-        if (!config::video.adapter_name.empty()) {
-          (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
-        } else {
-          (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
-        }
+        auto generated = VDISPLAY::persistentVirtualDisplayUuid();
+        http::shared_virtual_display_guid = generated.string();
+        nvhttp::save_state();
+        return generated;
+      };
 
-        auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
-          if (value.empty()) {
-            return std::nullopt;
-          }
-          try {
-            return uuid_util::uuid_t::parse(value);
-          } catch (...) {
-            return std::nullopt;
-          }
-        };
+      const bool shared_mode = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+      uuid_util::uuid_t session_uuid;
+      if (shared_mode) {
+        session_uuid = ensure_shared_guid();
+        launch_session->unique_id = session_uuid.string();
+      } else if (auto parsed = parse_uuid(launch_session->unique_id)) {
+        session_uuid = *parsed;
+      } else {
+        session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+        launch_session->unique_id = session_uuid.string();
+      }
 
-        auto ensure_shared_guid = [&]() -> uuid_util::uuid_t {
-          if (!http::shared_virtual_display_guid.empty()) {
-            if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
-              return *parsed;
-            }
-          }
-          auto generated = VDISPLAY::persistentVirtualDisplayUuid();
-          http::shared_virtual_display_guid = generated.string();
-          nvhttp::save_state();
-          return generated;
-        };
+      std::string display_uuid_source;
+      if (!shared_mode && !launch_session->client_uuid.empty()) {
+        display_uuid_source = launch_session->client_uuid;
+        BOOST_LOG(debug) << "Using client UUID for virtual display: " << display_uuid_source;
+      } else {
+        display_uuid_source = session_uuid.string();
+        BOOST_LOG(debug) << "Using session UUID for virtual display: " << display_uuid_source;
+      }
 
-        const bool shared_mode = (effective_mode == config::video_t::virtual_display_mode_e::shared);
-        uuid_util::uuid_t session_uuid;
-        if (shared_mode) {
-          session_uuid = ensure_shared_guid();
-          launch_session->unique_id = session_uuid.string();
-        } else if (auto parsed = parse_uuid(launch_session->unique_id)) {
-          session_uuid = *parsed;
-        } else {
-          session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-          launch_session->unique_id = session_uuid.string();
-        }
-
-        std::string display_uuid_source;
-        if (!shared_mode && !launch_session->client_uuid.empty()) {
-          display_uuid_source = launch_session->client_uuid;
-          BOOST_LOG(debug) << "Using client UUID for virtual display: " << display_uuid_source;
-        } else {
-          display_uuid_source = session_uuid.string();
-          BOOST_LOG(debug) << "Using session UUID for virtual display: " << display_uuid_source;
-        }
-
-        GUID virtual_display_guid {};
-        if (!shared_mode && !launch_session->client_uuid.empty()) {
-          if (auto client_uuid_parsed = parse_uuid(launch_session->client_uuid)) {
-            std::memcpy(&virtual_display_guid, client_uuid_parsed->b8, sizeof(virtual_display_guid));
-            std::copy_n(std::cbegin(client_uuid_parsed->b8), sizeof(client_uuid_parsed->b8), launch_session->virtual_display_guid_bytes.begin());
-          } else {
-            std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
-            std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
-          }
+      GUID virtual_display_guid {};
+      if (!shared_mode && !launch_session->client_uuid.empty()) {
+        if (auto client_uuid_parsed = parse_uuid(launch_session->client_uuid)) {
+          std::memcpy(&virtual_display_guid, client_uuid_parsed->b8, sizeof(virtual_display_guid));
+          std::copy_n(std::cbegin(client_uuid_parsed->b8), sizeof(client_uuid_parsed->b8), launch_session->virtual_display_guid_bytes.begin());
         } else {
           std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
           std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
         }
+      } else {
+        std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+        std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
+      }
 
-        uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
-        uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-        uint32_t vd_fps = 0;
-        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-          vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
-        } else if (launch_session->fps > 0) {
-          vd_fps = static_cast<uint32_t>(launch_session->fps);
+      uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
+      uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+      uint32_t vd_fps = 0;
+      if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
+        vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
+      } else if (launch_session->fps > 0) {
+        vd_fps = static_cast<uint32_t>(launch_session->fps);
+      } else {
+        vd_fps = 60000u;
+      }
+      if (vd_fps < 1000u) {
+        vd_fps *= 1000u;
+      }
+
+      std::string client_label;
+      if (shared_mode) {
+        client_label = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
+      } else {
+        if (!launch_session->client_name.empty()) {
+          client_label = launch_session->client_name;
+        } else if (!launch_session->device_name.empty()) {
+          client_label = launch_session->device_name;
         } else {
-          vd_fps = 60000u;
+          client_label = config::nvhttp.sunshine_name;
         }
-        if (vd_fps < 1000u) {
-          vd_fps *= 1000u;
-        }
-
-        std::string client_label;
-        if (shared_mode) {
-          client_label = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
-        } else {
-          if (!launch_session->client_name.empty()) {
-            client_label = launch_session->client_name;
-          } else if (!launch_session->device_name.empty()) {
-            client_label = launch_session->device_name;
-          } else {
-            client_label = config::nvhttp.sunshine_name;
-          }
-          if (client_label.empty()) {
-            client_label = "Sunshine";
-          }
-        }
-
-        VDISPLAY::setWatchdogFeedingEnabled(true);
-        auto display_info = VDISPLAY::createVirtualDisplay(
-          display_uuid_source.c_str(),
-          client_label.c_str(),
-          vd_width,
-          vd_height,
-          vd_fps,
-          virtual_display_guid
-        );
-
-        if (display_info) {
-          launch_session->virtual_display = true;
-          if (display_info->device_id && !display_info->device_id->empty()) {
-            launch_session->virtual_display_device_id = *display_info->device_id;
-          } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
-            launch_session->virtual_display_device_id = *resolved_device;
-          } else {
-            launch_session->virtual_display_device_id.clear();
-          }
-          if (display_info->display_name && !display_info->display_name->empty()) {
-            BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
-          } else {
-            BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
-          }
-        } else {
-          launch_session->virtual_display = false;
-          launch_session->virtual_display_guid_bytes.fill(0);
-          launch_session->virtual_display_device_id.clear();
-          BOOST_LOG(warning) << "Virtual display creation failed.";
+        if (client_label.empty()) {
+          client_label = "Sunshine";
         }
       }
-    } else {
-      launch_session->virtual_display = false;
-      launch_session->virtual_display_guid_bytes.fill(0);
-      launch_session->virtual_display_device_id.clear();
+
+      VDISPLAY::setWatchdogFeedingEnabled(true);
+      auto display_info = VDISPLAY::createVirtualDisplay(
+        display_uuid_source.c_str(),
+        client_label.c_str(),
+        vd_width,
+        vd_height,
+        vd_fps,
+        virtual_display_guid
+      );
+
+      if (display_info) {
+        launch_session->virtual_display = true;
+        if (display_info->device_id && !display_info->device_id->empty()) {
+          launch_session->virtual_display_device_id = *display_info->device_id;
+        } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+          launch_session->virtual_display_device_id = *resolved_device;
+        } else {
+          launch_session->virtual_display_device_id.clear();
+        }
+        if (display_info->display_name && !display_info->display_name->empty()) {
+          BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
+        } else {
+          BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
+        }
+      } else {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+        BOOST_LOG(warning) << "Virtual display creation failed.";
+      }
+    };
+
+    if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+      BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
+      request_virtual_display = true;
     }
+    apply_virtual_display_request(request_virtual_display);
 #endif
 
     // The display should be restored in case something fails as there are no other sessions.
@@ -1689,21 +1693,10 @@ namespace nvhttp {
     // encoder matches the active GPU (which could have changed
     // due to hotplugging, driver crash, primary monitor change,
     // or any number of other factors).
-#ifdef _WIN32
-    auto encoder_probe_display_result = VDISPLAY::ensure_display();
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
-    });
-
     bool encoder_probe_failed = video::probe_encoders();
-    if (encoder_probe_failed && !encoder_probe_display_result.success) {
-      BOOST_LOG(warning) << "Unable to ensure display before stream launch. Probe may fail.";
-    }
-#else
-    bool encoder_probe_failed = video::probe_encoders();
-#endif
 
       if (encoder_probe_failed && !is_input_only) {
+        BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);

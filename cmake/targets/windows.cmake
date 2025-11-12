@@ -9,9 +9,22 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         avrt.lib)
 
 # Copy Playnite plugin sources into build output (for packaging/installers)
-add_custom_target(copy_playnite_plugin ALL
+## Copy Playnite plugin sources into build output (for packaging/installers)
+## Make the copy step incremental: only re-run when source files change.
+file(GLOB_RECURSE SUNSHINE_PLAYNITE_PLUGIN_SOURCES
+        CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/plugins/playnite/*")
+set(SUNSHINE_PLAYNITE_PLUGIN_STAMP "${CMAKE_BINARY_DIR}/plugins/playnite/.copy_stamp")
+
+add_custom_command(
+        OUTPUT ${SUNSHINE_PLAYNITE_PLUGIN_STAMP}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/plugins/playnite"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/playnite" "${CMAKE_BINARY_DIR}/plugins/playnite"
-        COMMENT "Copying Playnite plugin sources")
+        COMMAND ${CMAKE_COMMAND} -E touch ${SUNSHINE_PLAYNITE_PLUGIN_STAMP}
+        DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_SOURCES}
+        COMMENT "Copying Playnite plugin sources"
+)
+add_custom_target(copy_playnite_plugin DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_STAMP})
 add_dependencies(sunshine copy_playnite_plugin)
 
 # Ensure the Windows display helper is built and staged under the Sunshine tools

@@ -2275,6 +2275,7 @@ namespace {
       settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
       settings->put_StopIfGoingOnBatteries(VARIANT_FALSE);
       settings->put_ExecutionTimeLimit(_bstr_t(L"PT0S"));
+      settings->put_Hidden(VARIANT_TRUE);
       settings->Release();
     }
 

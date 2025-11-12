@@ -221,6 +221,14 @@ const virtualDisplayLayoutOptions = computed(() => [
     description: t('config.virtual_display_layout_extended_primary_isolated_desc'),
   },
 ]);
+
+function selectVirtualDisplayLayout(v: unknown) {
+  const sv = String(v);
+  const opts = virtualDisplayLayoutOptions.value.map((o) => o.value);
+  if (opts.includes(sv)) {
+    virtualDisplayLayout.value = sv as any;
+  }
+}
 </script>
 
 <template>
@@ -353,7 +361,11 @@ const virtualDisplayLayoutOptions = computed(() => [
                 <div
                   v-for="option in virtualDisplayLayoutOptions"
                   :key="option.value"
-                  class="flex flex-col"
+                  class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                  @click.prevent="selectVirtualDisplayLayout(option.value)"
+                  @keydown.enter.prevent="selectVirtualDisplayLayout(option.value)"
+                  @keydown.space.prevent="selectVirtualDisplayLayout(option.value)"
+                  tabindex="0"
                 >
                   <div class="flex items-center gap-3">
                     <n-radio :value="option.value" />

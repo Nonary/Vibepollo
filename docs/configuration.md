@@ -1847,9 +1847,12 @@ editing the `conf` file in a text editor. Use the examples as reference.
 
 <table>
     <tr>
-        <td>Description</td>
+    <td>Description</td>
         <td colspan="2">
-            The path where the Sunshine log is stored.
+            Determines where Sunshine stores log sessions. When this value points to a file (the default),
+            Sunshine keeps a rolling <code>logs</code> folder next to that file and keeps the last 10 sessions,
+            each with up to 10 rollovers for files that grow beyond ~2MB. Pointing to a directory stores the
+            <code>logs</code> folder at the specified location.
         </td>
     </tr>
     <tr>

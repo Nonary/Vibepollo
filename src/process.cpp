@@ -1069,6 +1069,28 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
+    std::optional<int> effective_lossless_target = launch_session->lossless_scaling_target_fps;
+    if (
+      (!effective_lossless_target || *effective_lossless_target <= 0) &&
+      launch_session->fps > 0
+    ) {
+      effective_lossless_target = launch_session->fps;
+    }
+    launch_session->lossless_scaling_target_fps = effective_lossless_target;
+
+    std::optional<int> effective_lossless_rtss = launch_session->lossless_scaling_rtss_limit;
+    if (
+      (!effective_lossless_rtss || *effective_lossless_rtss <= 0) &&
+      effective_lossless_target && *effective_lossless_target > 0
+    ) {
+      int computed_limit = (int) std::lround(*effective_lossless_target * 0.5);
+      if (computed_limit > 0) {
+        effective_lossless_rtss = computed_limit;
+      } else {
+        effective_lossless_rtss.reset();
+      }
+    }
+    launch_session->lossless_scaling_rtss_limit = effective_lossless_rtss;
 
     const auto apply_refresh_override = [&](int candidate) {
       if (candidate <= 0) {
@@ -1399,27 +1421,26 @@ namespace proc {
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
     if (using_lossless_provider) {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
-      if (_app.lossless_scaling_target_fps) {
-        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*_app.lossless_scaling_target_fps);
+      if (effective_lossless_target) {
+        _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*effective_lossless_target);
       } else {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
       }
-      if (_app.lossless_scaling_rtss_limit) {
-        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*_app.lossless_scaling_rtss_limit);
+      if (effective_lossless_rtss) {
+        _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*effective_lossless_rtss);
       } else {
         _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
       }
 
-      const bool wants_lossless_framegen = using_lossless_provider &&
-                                           (_app.lossless_scaling_target_fps.has_value() || _app.lossless_scaling_rtss_limit.has_value());
+      const bool wants_lossless_framegen = using_lossless_provider;
       auto runtime = compute_lossless_runtime(_app, wants_lossless_framegen);
 #ifdef _WIN32
       bool has_launch_commands = !_app.cmd.empty() || !_app.detached.empty();
       should_start_lossless_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
       if (should_start_lossless_support) {
         lossless_metadata.enabled = true;
-        lossless_metadata.target_fps = _app.lossless_scaling_target_fps;
-        lossless_metadata.rtss_limit = _app.lossless_scaling_rtss_limit;
+        lossless_metadata.target_fps = effective_lossless_target;
+        lossless_metadata.rtss_limit = effective_lossless_rtss;
         if (!config::lossless_scaling.exe_path.empty()) {
           lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
         }
@@ -1443,13 +1464,8 @@ namespace proc {
 #ifdef _WIN32
       std::optional<int> rtss_warmup_limit;
       if (using_lossless_provider) {
-        if (_app.lossless_scaling_rtss_limit && *_app.lossless_scaling_rtss_limit > 0) {
-          rtss_warmup_limit = *_app.lossless_scaling_rtss_limit;
-        } else if (_app.lossless_scaling_target_fps && *_app.lossless_scaling_target_fps > 0) {
-          int computed_limit = (int) std::lround(*_app.lossless_scaling_target_fps * 0.6);
-          if (computed_limit > 0) {
-            rtss_warmup_limit = computed_limit;
-          }
+        if (effective_lossless_rtss && *effective_lossless_rtss > 0) {
+          rtss_warmup_limit = *effective_lossless_rtss;
         }
       }
       platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
@@ -2645,106 +2661,108 @@ namespace proc {
         auto virtual_display_mode = util::get_non_string_json_value<std::string>(app_node, "virtual-display-mode", "");
         auto virtual_display_layout = util::get_non_string_json_value<std::string>(app_node, "virtual-display-layout", "");
 
-        if (!virtual_display_mode.empty()) {
-          auto normalized = boost::algorithm::to_lower_copy(virtual_display_mode);
-          if (normalized == "disabled") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
-          } else if (normalized == "per_client") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
-          } else if (normalized == "shared") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
-          }
-        }
-
-        if (!virtual_display_layout.empty()) {
-          auto normalized = boost::algorithm::to_lower_copy(virtual_display_layout);
-          if (normalized == "exclusive") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
-          } else if (normalized == "extended") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
-          } else if (normalized == "extended_primary") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
-          } else if (normalized == "extended_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
-          } else if (normalized == "extended_primary_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
-          }
-        }
-
-          ctx.playnite_id.clear();
-          if (app_node.contains("playnite-id") && app_node["playnite-id"].is_string()) {
-            try {
-              ctx.playnite_id = parse_env_val(this_env, app_node["playnite-id"].get<std::string>());
-            } catch (...) {
-              ctx.playnite_id.clear();
-            }
-          }
-          ctx.playnite_fullscreen = false;
-          if (app_node.contains("playnite-fullscreen")) {
-            try {
-              const auto &flag = app_node["playnite-fullscreen"];
-              if (flag.is_boolean()) {
-                ctx.playnite_fullscreen = flag.get<bool>();
-              } else if (flag.is_number_integer()) {
-                ctx.playnite_fullscreen = flag.get<int>() != 0;
-              } else if (flag.is_string()) {
-                auto text = flag.get<std::string>();
-                boost::algorithm::trim(text);
-                boost::algorithm::to_lower(text);
-                ctx.playnite_fullscreen = (text == "true" || text == "1" || text == "yes");
-              }
-            } catch (...) {
-              ctx.playnite_fullscreen = false;
+        if (ctx.virtual_screen) {
+          if (!virtual_display_mode.empty()) {
+            auto normalized = boost::algorithm::to_lower_copy(virtual_display_mode);
+            if (normalized == "disabled") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+            } else if (normalized == "per_client") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
+            } else if (normalized == "shared") {
+              ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
             }
           }
 
-          ctx.lossless_scaling_framegen = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-framegen", false);
-          ctx.frame_generation_provider = "lossless-scaling";
-          if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
-            ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
+          if (!virtual_display_layout.empty()) {
+            auto normalized = boost::algorithm::to_lower_copy(virtual_display_layout);
+            if (normalized == "exclusive") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
+            } else if (normalized == "extended") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
+            } else if (normalized == "extended_primary") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
+            } else if (normalized == "extended_isolated") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
+            } else if (normalized == "extended_primary_isolated") {
+              ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
+            }
           }
+        }
+
+        ctx.playnite_id.clear();
+        if (app_node.contains("playnite-id") && app_node["playnite-id"].is_string()) {
+          try {
+            ctx.playnite_id = parse_env_val(this_env, app_node["playnite-id"].get<std::string>());
+          } catch (...) {
+            ctx.playnite_id.clear();
+          }
+        }
+        ctx.playnite_fullscreen = false;
+        if (app_node.contains("playnite-fullscreen")) {
+          try {
+            const auto &flag = app_node["playnite-fullscreen"];
+            if (flag.is_boolean()) {
+              ctx.playnite_fullscreen = flag.get<bool>();
+            } else if (flag.is_number_integer()) {
+              ctx.playnite_fullscreen = flag.get<int>() != 0;
+            } else if (flag.is_string()) {
+              auto text = flag.get<std::string>();
+              boost::algorithm::trim(text);
+              boost::algorithm::to_lower(text);
+              ctx.playnite_fullscreen = (text == "true" || text == "1" || text == "yes");
+            }
+          } catch (...) {
+            ctx.playnite_fullscreen = false;
+          }
+        }
+
+        ctx.lossless_scaling_framegen = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-framegen", false);
+        ctx.frame_generation_provider = "lossless-scaling";
+        if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
+          ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
+        }
+        ctx.lossless_scaling_target_fps.reset();
+        int lossless_target_fps = util::get_non_string_json_value<int>(app_node, "lossless-scaling-target-fps", 0);
+        if (lossless_target_fps > 0) {
+          ctx.lossless_scaling_target_fps = lossless_target_fps;
+        }
+        ctx.lossless_scaling_rtss_limit.reset();
+        int lossless_rtss_limit = util::get_non_string_json_value<int>(app_node, "lossless-scaling-rtss-limit", 0);
+        if (lossless_rtss_limit > 0) {
+          ctx.lossless_scaling_rtss_limit = lossless_rtss_limit;
+        }
+        ctx.lossless_scaling_profile = LOSSLESS_PROFILE_CUSTOM;
+        if (auto it = app_node.find("lossless-scaling-profile"); it != app_node.end() && it->is_string()) {
+          if (boost::iequals(it->get<std::string>(), LOSSLESS_PROFILE_RECOMMENDED)) {
+            ctx.lossless_scaling_profile = LOSSLESS_PROFILE_RECOMMENDED;
+          }
+        }
+        if (auto it = app_node.find("lossless-scaling-recommended"); it != app_node.end()) {
+          populate_lossless_overrides(*it, ctx.lossless_scaling_recommended);
+        }
+        if (auto it = app_node.find("lossless-scaling-custom"); it != app_node.end()) {
+          populate_lossless_overrides(*it, ctx.lossless_scaling_custom);
+        }
+        if (!ctx.lossless_scaling_framegen) {
           ctx.lossless_scaling_target_fps.reset();
-          int lossless_target_fps = util::get_non_string_json_value<int>(app_node, "lossless-scaling-target-fps", 0);
-          if (lossless_target_fps > 0) {
-            ctx.lossless_scaling_target_fps = lossless_target_fps;
-          }
           ctx.lossless_scaling_rtss_limit.reset();
-          int lossless_rtss_limit = util::get_non_string_json_value<int>(app_node, "lossless-scaling-rtss-limit", 0);
-          if (lossless_rtss_limit > 0) {
-            ctx.lossless_scaling_rtss_limit = lossless_rtss_limit;
-          }
-          ctx.lossless_scaling_profile = LOSSLESS_PROFILE_CUSTOM;
-          if (auto it = app_node.find("lossless-scaling-profile"); it != app_node.end() && it->is_string()) {
-            if (boost::iequals(it->get<std::string>(), LOSSLESS_PROFILE_RECOMMENDED)) {
-              ctx.lossless_scaling_profile = LOSSLESS_PROFILE_RECOMMENDED;
-            }
-          }
-          if (auto it = app_node.find("lossless-scaling-recommended"); it != app_node.end()) {
-            populate_lossless_overrides(*it, ctx.lossless_scaling_recommended);
-          }
-          if (auto it = app_node.find("lossless-scaling-custom"); it != app_node.end()) {
-            populate_lossless_overrides(*it, ctx.lossless_scaling_custom);
-          }
-          if (!ctx.lossless_scaling_framegen) {
-            ctx.lossless_scaling_target_fps.reset();
-            ctx.lossless_scaling_rtss_limit.reset();
-          }
+        }
 
-          // Calculate a unique application id.
-          auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
-          if (ids.count(std::get<0>(possible_ids)) == 0) {
-            ctx.id = std::get<0>(possible_ids);
-          } else {
-            ctx.id = std::get<1>(possible_ids);
-          }
-          ids.insert(ctx.id);
+        // Calculate a unique application id.
+        auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
+        if (ids.count(std::get<0>(possible_ids)) == 0) {
+          ctx.id = std::get<0>(possible_ids);
+        } else {
+          ctx.id = std::get<1>(possible_ids);
+        }
+        ids.insert(ctx.id);
 
-          ctx.name = std::move(name);
-          ctx.prep_cmds = std::move(prep_cmds);
-          ctx.state_cmds = std::move(state_cmds);
-          ctx.detached = std::move(detached);
+        ctx.name = std::move(name);
+        ctx.prep_cmds = std::move(prep_cmds);
+        ctx.state_cmds = std::move(state_cmds);
+        ctx.detached = std::move(detached);
 
-          apps.emplace_back(std::move(ctx));
+        apps.emplace_back(std::move(ctx));
         }
 
         fail_count = 0;

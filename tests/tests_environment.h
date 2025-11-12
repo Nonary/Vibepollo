@@ -8,7 +8,7 @@
 struct SunshineEnvironment: testing::Environment {
   void SetUp() override {
     mail::man = std::make_shared<safe::mail_raw_t>();
-    deinit_log = logging::init(0, "test_sunshine.log");
+    deinit_log = logging::init_single_file(0, "test_sunshine.log");
   }
 
   void TearDown() override {

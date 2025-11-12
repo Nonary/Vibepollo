@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { NButton, NSwitch, NAlert, NTag, NSelect, NInputNumber, NRadioGroup, NRadio } from 'naive-ui';
 import type {
   FrameGenHealth,
@@ -43,6 +43,27 @@ const frameGenOptions = computed(() => [
 ]);
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
 const hasFrameGenSelection = computed(() => modeModel.value !== 'off');
+const losslessAdvancedTargets = ref(
+  losslessTargetModel.value !== null || losslessRtssModel.value !== null,
+);
+
+watch(
+  () => [losslessTargetModel.value, losslessRtssModel.value],
+  ([target, rtss]) => {
+    if (target !== null || rtss !== null) {
+      losslessAdvancedTargets.value = true;
+    }
+  },
+);
+
+function handleLosslessAdvancedToggle(enabled: boolean) {
+  losslessAdvancedTargets.value = enabled;
+  if (!enabled) {
+    losslessTargetModel.value = null;
+    losslessRtssModel.value = null;
+    props.onLosslessRtssLimitChange(null);
+  }
+}
 
 const requirementRows = computed(() => {
   if (!props.health) return [];
@@ -207,9 +228,17 @@ const displayTargets = computed(() => props.health?.display.targets || []);
 
         <div class="space-y-2">
           <label class="text-xs font-semibold uppercase tracking-wide opacity-70">Profile</label>
-          <n-radio-group v-model:value="losslessProfileModel">
-            <n-radio value="recommended">Recommended (Lowest Latency & Frame Pacing)</n-radio>
-            <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
+          <n-radio-group v-model:value="losslessProfileModel" class="flex flex-col space-y-2">
+            <n-radio value="recommended" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
+              <div class="flex items-center gap-2 w-full">
+                <span class="block text-sm">Recommended (Lowest Latency & Frame Pacing)</span>
+              </div>
+            </n-radio>
+            <n-radio value="custom" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
+              <div class="flex items-center gap-2 w-full">
+                <span class="block text-sm">Custom: Use my Lossless Scaling default profile</span>
+              </div>
+            </n-radio>
           </n-radio-group>
           <p class="text-[12px] opacity-60 leading-relaxed">
             Recommended mirrors Sunshine&rsquo;s latency-focused template. Custom runs the profile you
@@ -217,41 +246,66 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           </p>
         </div>
 
-        <div class="grid gap-3 md:grid-cols-3">
-          <div class="space-y-1">
+        <div class="space-y-3">
+          <div class="space-y-2">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Target Frame Rate
+              Frame Targets
             </label>
-            <n-input-number
-              v-model:value="losslessTargetModel"
-              :min="1"
-              :max="360"
-              :step="1"
-              :precision="0"
-              placeholder="120"
-              size="small"
-            />
             <p class="text-[12px] opacity-60 leading-relaxed">
-              Sunshine asks Lossless Scaling to chase this FPS during the stream.
+              Sunshine inherits the FPS your streaming client requests and forwards it to Lossless
+              Scaling automatically. When RTSS is available we cap it at half of that request for
+              steadier pacing.
             </p>
+            <div class="flex flex-wrap items-center gap-2">
+              <n-switch
+                size="small"
+                :value="losslessAdvancedTargets"
+                @update:value="handleLosslessAdvancedToggle"
+              />
+              <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                Advanced overrides
+              </span>
+              <span class="text-[11px] opacity-60">Manual FPS &amp; RTSS</span>
+            </div>
           </div>
-          <div class="space-y-1">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              RTSS Frame Limit
-            </label>
-            <n-input-number
-              v-model:value="losslessRtssModel"
-              :min="1"
-              :max="360"
-              :step="1"
-              :precision="0"
-              placeholder="60"
-              size="small"
-              @update:value="props.onLosslessRtssLimitChange"
-            />
-            <p class="text-[12px] opacity-60 leading-relaxed">
-              Defaults to 50% of the target when unset. Requires RTSS installed and running.
-            </p>
+          <div v-if="losslessAdvancedTargets" class="grid gap-3 md:grid-cols-2">
+            <div class="space-y-1">
+              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                Target Frame Rate Override
+              </label>
+              <n-input-number
+                v-model:value="losslessTargetModel"
+                :min="1"
+                :max="360"
+                :step="1"
+                :precision="0"
+                placeholder="120"
+                size="small"
+              />
+              <p class="text-[12px] opacity-60 leading-relaxed">
+                Only set this when you need to override the client&rsquo;s requested FPS for Lossless
+                Scaling.
+              </p>
+            </div>
+            <div class="space-y-1">
+              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                RTSS Frame Limit Override
+              </label>
+              <n-input-number
+                v-model:value="losslessRtssModel"
+                :min="1"
+                :max="360"
+                :step="1"
+                :precision="0"
+                placeholder="60"
+                size="small"
+                @update:value="props.onLosslessRtssLimitChange"
+              />
+              <p class="text-[12px] opacity-60 leading-relaxed">
+                Sunshine defaults to half of the client request when left blank. Requires RTSS installed
+                and running.
+              </p>
+            </div>
           </div>
           <div class="space-y-1">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">

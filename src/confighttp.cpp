@@ -2070,7 +2070,13 @@ namespace confighttp {
     }
 
     print_req(request);
-    std::string content = file_handler::read_file(config::sunshine.log_file.c_str());
+
+    std::string content;
+    auto log_path = logging::current_log_file();
+    if (!log_path.empty()) {
+      const std::string log_path_str = log_path.string();
+      content = file_handler::read_file(log_path_str.c_str());
+    }
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";
 #ifdef _WIN32
