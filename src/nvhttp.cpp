@@ -265,6 +265,46 @@ namespace nvhttp {
     return commands;
   }
 
+  std::optional<config::video_t::virtual_display_mode_e> parse_virtual_display_mode_override(const std::string &value) {
+    if (value.empty()) {
+      return std::nullopt;
+    }
+    const auto normalized = boost::algorithm::to_lower_copy(value);
+    if (normalized == "disabled") {
+      return config::video_t::virtual_display_mode_e::disabled;
+    }
+    if (normalized == "per_client") {
+      return config::video_t::virtual_display_mode_e::per_client;
+    }
+    if (normalized == "shared") {
+      return config::video_t::virtual_display_mode_e::shared;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<config::video_t::virtual_display_layout_e> parse_virtual_display_layout_override(const std::string &value) {
+    if (value.empty()) {
+      return std::nullopt;
+    }
+    const auto normalized = boost::algorithm::to_lower_copy(value);
+    if (normalized == "exclusive") {
+      return config::video_t::virtual_display_layout_e::exclusive;
+    }
+    if (normalized == "extended") {
+      return config::video_t::virtual_display_layout_e::extended;
+    }
+    if (normalized == "extended_primary") {
+      return config::video_t::virtual_display_layout_e::extended_primary;
+    }
+    if (normalized == "extended_isolated") {
+      return config::video_t::virtual_display_layout_e::extended_isolated;
+    }
+    if (normalized == "extended_primary_isolated") {
+      return config::video_t::virtual_display_layout_e::extended_primary_isolated;
+    }
+    return std::nullopt;
+  }
+
   void save_state() {
     statefile::migrate_recent_state_keys();
     const auto &sunshine_path = statefile::sunshine_state_path();
@@ -313,6 +353,12 @@ namespace nvhttp {
         named_cert_node["cert"] = named_cert_p->cert;
         named_cert_node["uuid"] = named_cert_p->uuid;
         named_cert_node["display_mode"] = named_cert_p->display_mode;
+        if (!named_cert_p->virtual_display_mode_override.empty()) {
+          named_cert_node["virtual_display_mode"] = named_cert_p->virtual_display_mode_override;
+        }
+        if (!named_cert_p->virtual_display_layout_override.empty()) {
+          named_cert_node["virtual_display_layout"] = named_cert_p->virtual_display_layout_override;
+        }
         named_cert_node["perm"] = static_cast<uint32_t>(named_cert_p->perm);
         named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
@@ -489,6 +535,8 @@ namespace nvhttp {
         named_cert_p->cert = el.value("cert", "");
         named_cert_p->uuid = el.value("uuid", "");
         named_cert_p->display_mode = el.value("display_mode", "");
+        named_cert_p->virtual_display_mode_override = el.value("virtual_display_mode", "");
+        named_cert_p->virtual_display_layout_override = el.value("virtual_display_layout", "");
         named_cert_p->perm = (PERM) (util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t) PERM::_all)) & PERM::_all;
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
@@ -587,6 +635,17 @@ namespace nvhttp {
       mode = std::stringstream(named_cert_p->display_mode);
       BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] overriden to ["sv << named_cert_p->display_mode << ']';
       launch_session->client_display_mode_override = true;
+    }
+
+    if (!named_cert_p->virtual_display_mode_override.empty()) {
+      if (const auto parsed_mode = parse_virtual_display_mode_override(named_cert_p->virtual_display_mode_override)) {
+        launch_session->virtual_display_mode_override = *parsed_mode;
+      }
+    }
+    if (!named_cert_p->virtual_display_layout_override.empty()) {
+      if (const auto parsed_layout = parse_virtual_display_layout_override(named_cert_p->virtual_display_layout_override)) {
+        launch_session->virtual_display_layout_override = *parsed_layout;
+      }
     }
 
     // Split mode by the char "x", to populate width/height/fps
@@ -1260,6 +1319,8 @@ namespace nvhttp {
       named_cert_node["name"] = named_cert->name;
       named_cert_node["uuid"] = named_cert->uuid;
       named_cert_node["display_mode"] = named_cert->display_mode;
+      named_cert_node["virtual_display_mode"] = named_cert->virtual_display_mode_override;
+      named_cert_node["virtual_display_layout"] = named_cert->virtual_display_layout_override;
       named_cert_node["perm"] = static_cast<uint32_t>(named_cert->perm);
       named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
       named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
@@ -1926,7 +1987,7 @@ namespace nvhttp {
       }
     }
 
-    if (no_active_sessions && !proc::proc.virtual_display) {
+    if (no_active_sessions && !proc::proc.virtual_display && !launch_session->input_only) {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
       // This should be done before probing encoders as it could change the active displays.
@@ -2393,7 +2454,9 @@ namespace nvhttp {
     const crypto::PERM newPerm,
     const bool enable_legacy_ordering,
     const bool allow_client_commands,
-    const bool always_use_virtual_display
+    const bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout
   ) {
     find_and_udpate_session_info(uuid, name, newPerm);
 
@@ -2410,6 +2473,8 @@ namespace nvhttp {
         named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
         named_cert_p->allow_client_commands = allow_client_commands;
         named_cert_p->always_use_virtual_display = always_use_virtual_display;
+        named_cert_p->virtual_display_mode_override = virtual_display_mode;
+        named_cert_p->virtual_display_layout_override = virtual_display_layout;
         save_state();
         return true;
       }

@@ -314,6 +314,79 @@
                   desc="pin.always_use_virtual_display_desc"
                   default="false"
                 />
+                <div
+                  v-if="platform === 'windows' && client.editAlwaysUseVirtualDisplay"
+                  class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+                >
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        {{ t('config.app_virtual_display_mode_label') }}
+                      </span>
+                      <n-button
+                        v-if="client.editVirtualDisplayMode !== null"
+                        size="tiny"
+                        tertiary
+                        @click="client.editVirtualDisplayMode = null"
+                      >
+                        {{ t('config.app_virtual_display_mode_reset') }}
+                      </n-button>
+                    </div>
+                    <p class="text-[11px] opacity-70">{{ t('config.app_virtual_display_mode_hint') }}</p>
+                  </div>
+                  <n-radio-group
+                    :value="resolvedClientVirtualDisplayMode(client)"
+                    @update:value="(value) => updateClientVirtualDisplayMode(client, value)"
+                    class="grid gap-3 sm:grid-cols-3"
+                  >
+                    <n-radio
+                      v-for="option in clientVirtualDisplayModeOptions"
+                      :key="option.value"
+                      :value="option.value"
+                      class="app-radio-card cursor-pointer"
+                    >
+                      <span class="app-radio-card-title">{{ option.label }}</span>
+                    </n-radio>
+                  </n-radio-group>
+
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        {{ t('config.virtual_display_layout_label') }}
+                      </span>
+                      <n-button
+                        v-if="client.editVirtualDisplayLayout !== null"
+                        size="tiny"
+                        tertiary
+                        @click="client.editVirtualDisplayLayout = null"
+                      >
+                        {{ t('config.app_virtual_display_layout_reset') }}
+                      </n-button>
+                    </div>
+                    <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
+                  </div>
+                  <n-radio-group
+                    :value="resolvedClientVirtualDisplayLayout(client)"
+                    @update:value="(value) => updateClientVirtualDisplayLayout(client, value)"
+                    class="space-y-4"
+                  >
+                    <div
+                      v-for="option in clientVirtualDisplayLayoutOptions"
+                      :key="option.value"
+                      class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                      @click="selectClientVirtualDisplayLayout(client, option.value)"
+                      @keydown.enter.prevent="selectClientVirtualDisplayLayout(client, option.value)"
+                      @keydown.space.prevent="selectClientVirtualDisplayLayout(client, option.value)"
+                      tabindex="0"
+                    >
+                      <div class="flex items-center gap-3">
+                        <n-radio :value="option.value" />
+                        <span class="text-sm font-semibold">{{ option.label }}</span>
+                      </div>
+                      <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+                    </div>
+                  </n-radio-group>
+                </div>
                 <n-form-item :label="$t('pin.display_mode_override')">
                   <n-input v-model:value="client.editDisplayMode" placeholder="1920x1080x59.94" />
                   <template #feedback>
@@ -489,6 +562,8 @@ import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import Checkbox from '@/Checkbox.vue';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
+import { useConfigStore } from '@/stores/config';
+import type { AppVirtualDisplayLayout, AppVirtualDisplayMode } from '@/components/app-edit/types';
 
 interface ApiTokenRouteDef {
   path: string;
@@ -574,6 +649,8 @@ interface ClientApiEntry {
   allow_client_commands?: boolean | string | number;
   enable_legacy_ordering?: boolean | string | number;
   always_use_virtual_display?: boolean | string | number;
+  virtual_display_mode?: string;
+  virtual_display_layout?: string;
   do?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
   undo?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
 }
@@ -601,6 +678,8 @@ interface SaveClientPayload {
   uuid: string;
   name: string;
   display_mode: string;
+  virtual_display_mode: string;
+  virtual_display_layout: string;
   allow_client_commands: boolean;
   enable_legacy_ordering: boolean;
   always_use_virtual_display: boolean;
@@ -623,6 +702,8 @@ interface ClientViewModel {
   allowClientCommands: boolean;
   enableLegacyOrdering: boolean;
   alwaysUseVirtualDisplay: boolean;
+  virtualDisplayMode: AppVirtualDisplayMode | null;
+  virtualDisplayLayout: AppVirtualDisplayLayout | null;
   doCommands: ClientCommand[];
   undoCommands: ClientCommand[];
   editing: boolean;
@@ -632,6 +713,8 @@ interface ClientViewModel {
   editAllowClientCommands: boolean;
   editEnableLegacyOrdering: boolean;
   editAlwaysUseVirtualDisplay: boolean;
+  editVirtualDisplayMode: AppVirtualDisplayMode | null;
+  editVirtualDisplayLayout: AppVirtualDisplayLayout | null;
   editDo: ClientCommand[];
   editUndo: ClientCommand[];
 }
@@ -699,11 +782,66 @@ const permissionGroups: PermissionGroup[] = [
 
 const commandTypes: CommandType[] = ['do', 'undo'];
 const MODE_OVERRIDE_PATTERN = /^\d+x\d+x\d+(?:\.\d+)?$/;
+const CLIENT_VIRTUAL_DISPLAY_MODES: AppVirtualDisplayMode[] = ['disabled', 'per_client', 'shared'];
+const CLIENT_VIRTUAL_DISPLAY_LAYOUTS: AppVirtualDisplayLayout[] = [
+  'exclusive',
+  'extended',
+  'extended_primary',
+  'extended_isolated',
+  'extended_primary_isolated',
+];
 const highlightPermissionThreshold = 0x04000000;
+
+function parseClientVirtualDisplayMode(value: unknown): AppVirtualDisplayMode | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (CLIENT_VIRTUAL_DISPLAY_MODES.includes(normalized as AppVirtualDisplayMode)) {
+    return normalized as AppVirtualDisplayMode;
+  }
+  return null;
+}
+
+function parseClientVirtualDisplayLayout(value: unknown): AppVirtualDisplayLayout | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (CLIENT_VIRTUAL_DISPLAY_LAYOUTS.includes(normalized as AppVirtualDisplayLayout)) {
+    return normalized as AppVirtualDisplayLayout;
+  }
+  return null;
+}
 
 const { t } = useI18n();
 const message = useMessage();
 const authStore = useAuthStore();
+const configStore = useConfigStore();
+const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() =>
+  parseClientVirtualDisplayMode((configStore.config as any)?.virtual_display_mode) ?? 'disabled',
+);
+const globalVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() =>
+  parseClientVirtualDisplayLayout((configStore.config as any)?.virtual_display_layout) ?? 'exclusive',
+);
+const CLIENT_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string> = {
+  disabled: 'config.virtual_display_mode_disabled',
+  per_client: 'config.virtual_display_mode_per_client',
+  shared: 'config.virtual_display_mode_shared',
+};
+const clientVirtualDisplayModeOptions = computed(() =>
+  CLIENT_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled').map((value) => ({
+    value,
+    label: t(CLIENT_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
+  })),
+);
+const clientVirtualDisplayLayoutOptions = computed(() =>
+  CLIENT_VIRTUAL_DISPLAY_LAYOUTS.map((value) => ({
+    value,
+    label: t(`config.virtual_display_layout_${value}`),
+    description: t(`config.virtual_display_layout_${value}_desc`),
+  })),
+);
 
 const initialHash = typeof window !== 'undefined' ? window.location.hash : '';
 const pairTab = ref<'otp' | 'pin'>(initialHash === '#PIN' ? 'pin' : 'otp');
@@ -829,6 +967,28 @@ function normalizeCommands(entries?: any): ClientCommand[] {
   }));
 }
 
+function resolvedClientVirtualDisplayMode(client: ClientViewModel): AppVirtualDisplayMode {
+  return client.editVirtualDisplayMode ?? globalVirtualDisplayMode.value;
+}
+
+function resolvedClientVirtualDisplayLayout(client: ClientViewModel): AppVirtualDisplayLayout {
+  return client.editVirtualDisplayLayout ?? globalVirtualDisplayLayout.value;
+}
+
+function updateClientVirtualDisplayMode(client: ClientViewModel, value: AppVirtualDisplayMode) {
+  client.editVirtualDisplayMode =
+    value === globalVirtualDisplayMode.value ? null : value;
+}
+
+function updateClientVirtualDisplayLayout(client: ClientViewModel, value: AppVirtualDisplayLayout) {
+  client.editVirtualDisplayLayout =
+    value === globalVirtualDisplayLayout.value ? null : value;
+}
+
+function selectClientVirtualDisplayLayout(client: ClientViewModel, value: AppVirtualDisplayLayout) {
+  updateClientVirtualDisplayLayout(client, value);
+}
+
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const doCommands = normalizeCommands(entry.do);
   const undoCommands = normalizeCommands(entry.undo);
@@ -841,6 +1001,8 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
+  const virtualDisplayMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
+  const virtualDisplayLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
   return {
     uuid: entry.uuid ?? '',
     name,
@@ -850,6 +1012,8 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     allowClientCommands: allowCommands,
     enableLegacyOrdering: legacyOrdering,
     alwaysUseVirtualDisplay: alwaysVirtual,
+    virtualDisplayMode,
+    virtualDisplayLayout,
     doCommands,
     undoCommands,
     editing: false,
@@ -859,6 +1023,8 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editAllowClientCommands: allowCommands,
     editEnableLegacyOrdering: legacyOrdering,
     editAlwaysUseVirtualDisplay: alwaysVirtual,
+    editVirtualDisplayMode: virtualDisplayMode,
+    editVirtualDisplayLayout: virtualDisplayLayout,
     editDo: doCommands.map(cloneCommand),
     editUndo: undoCommands.map(cloneCommand),
   };
@@ -871,6 +1037,8 @@ function resetClientEdits(client: ClientViewModel) {
   client.editAllowClientCommands = client.allowClientCommands;
   client.editEnableLegacyOrdering = client.enableLegacyOrdering;
   client.editAlwaysUseVirtualDisplay = client.alwaysUseVirtualDisplay;
+  client.editVirtualDisplayMode = client.virtualDisplayMode;
+  client.editVirtualDisplayLayout = client.virtualDisplayLayout;
   client.editDo = client.doCommands.map(cloneCommand);
   client.editUndo = client.undoCommands.map(cloneCommand);
 }
@@ -969,6 +1137,8 @@ function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayl
   client.allowClientCommands = payload.allow_client_commands;
   client.enableLegacyOrdering = payload.enable_legacy_ordering;
   client.alwaysUseVirtualDisplay = payload.always_use_virtual_display;
+  client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
+  client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
   client.doCommands = payload.do.map(cloneCommand);
   client.undoCommands = payload.undo.map(cloneCommand);
   resetClientEdits(client);
@@ -996,6 +1166,8 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     uuid: client.uuid,
     name: trimmedName,
     display_mode: trimmedDisplayMode,
+    virtual_display_mode: client.editVirtualDisplayMode ?? '',
+    virtual_display_layout: client.editVirtualDisplayLayout ?? '',
     allow_client_commands: !!client.editAllowClientCommands,
     enable_legacy_ordering: !!client.editEnableLegacyOrdering,
     always_use_virtual_display: !!client.editAlwaysUseVirtualDisplay,

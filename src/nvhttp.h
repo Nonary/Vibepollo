@@ -275,6 +275,8 @@ namespace nvhttp {
    * @param[in]  enable_legacy_ordering  Enable legacy ordering
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
+   * @param[in]  virtual_display_mode  Virtual display mode override
+   * @param[in]  virtual_display_layout  Virtual display layout override
    *
    * @return     Whether the update is successful
    */
@@ -287,7 +289,9 @@ namespace nvhttp {
     const crypto::PERM newPerm,
     const bool enable_legacy_ordering,
     const bool allow_client_commands,
-    const bool always_use_virtual_display
+    const bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout
   );
 
   /**
