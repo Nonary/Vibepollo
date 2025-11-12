@@ -1658,7 +1658,7 @@ namespace nvhttp {
 #endif
 
     // The display should be restored in case something fails as there are no other sessions.
-    if (no_active_sessions) {
+    if (no_active_sessions && !launch_session->input_only) {
       revert_display_configuration = true;
 
 #ifdef _WIN32
@@ -1866,7 +1866,7 @@ namespace nvhttp {
     }
 
     // Apply display configuration early if there are no active sessions
-    if (no_active_sessions) {
+    if (no_active_sessions && !launch_session->input_only) {
       const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
