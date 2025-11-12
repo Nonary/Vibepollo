@@ -451,6 +451,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     frameGenerationMode = 'game-provided';
   }
   const rawOutput = String(src.output ?? '');
+  const rawVirtualScreen = src['virtual-screen'];
   const virtualScreen =
     typeof rawVirtualScreen === 'boolean' ? rawVirtualScreen : rawOutput === VIRTUAL_DISPLAY_SELECTION;
   const sanitizedOutput =
@@ -550,6 +551,12 @@ function toServerPayload(f: AppForm): Record<string, any> {
     detached: Array.isArray(f.detached) ? f.detached : [],
     // Leave 'virtual-screen' to be persisted only if explicitly different from the global setting.
   };
+  
+  // Include uuid to enable backend UUID-matching for updates
+  if (f.uuid) {
+    payload['uuid'] = f.uuid;
+  }
+  
   // Only persist virtual display mode/layout if explicitly set and different from global defaults
   const _globalVDMode = globalVirtualDisplayMode.value;
   const _globalVDLayout = globalVirtualDisplayLayout.value;
