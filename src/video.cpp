@@ -2774,6 +2774,18 @@ namespace video {
       return -1;
     }
 
+    const auto previous_active_hevc_mode = active_hevc_mode;
+    const auto previous_active_av1_mode = active_av1_mode;
+    const auto previous_last_ref_frames_invalidation = last_encoder_probe_supported_ref_frames_invalidation;
+    const auto previous_last_yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec;
+
+    auto restore_previous_probe_state = util::fail_guard([&]() {
+      active_hevc_mode = previous_active_hevc_mode;
+      active_av1_mode = previous_active_av1_mode;
+      last_encoder_probe_supported_ref_frames_invalidation = previous_last_ref_frames_invalidation;
+      last_encoder_probe_supported_yuv444_for_codec = previous_last_yuv444_for_codec;
+    });
+
     auto encoder_list = encoders;
 
     // Restart encoder selection
@@ -2782,6 +2794,7 @@ namespace video {
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
+    last_encoder_probe_supported_yuv444_for_codec = {};
 
     // Clear any cached display from previous probes to ensure fresh start
     cached_probe_display.reset();
@@ -2953,6 +2966,7 @@ namespace video {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
+    restore_previous_probe_state.disable();
     return 0;
   }
 
