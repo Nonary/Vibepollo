@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <memory>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -1271,6 +1272,37 @@ namespace nvhttp {
           BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
         } else {
           BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
+        }
+
+        if (!display_info->reused_existing) {
+          VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
+          recovery_params.guid = virtual_display_guid;
+          recovery_params.width = vd_width;
+          recovery_params.height = vd_height;
+          recovery_params.fps = vd_fps;
+          recovery_params.client_uid = display_uuid_source;
+          recovery_params.client_name = client_label;
+          recovery_params.display_name = display_info->display_name;
+          if (display_info->device_id && !display_info->device_id->empty()) {
+            recovery_params.device_id = *display_info->device_id;
+          } else if (!launch_session->virtual_display_device_id.empty()) {
+            recovery_params.device_id = launch_session->virtual_display_device_id;
+          }
+          recovery_params.max_attempts = 3;
+
+          std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
+          recovery_params.should_abort = [session_weak]() {
+            return session_weak.expired();
+          };
+          recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &info) {
+            if (auto session_locked = session_weak.lock()) {
+              if (info.device_id && !info.device_id->empty()) {
+                session_locked->virtual_display_device_id = *info.device_id;
+              }
+            }
+          };
+
+          VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
         }
       } else {
         launch_session->virtual_display = false;

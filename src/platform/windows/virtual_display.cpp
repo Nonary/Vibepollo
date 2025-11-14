@@ -889,7 +889,199 @@ namespace VDISPLAY {
       write_guid_to_state_locked(generated);
       return *cached;
     }
+
+    constexpr auto RECOVERY_MONITOR_WINDOW = std::chrono::seconds(10);
+    constexpr auto RECOVERY_STABLE_REQUIREMENT = std::chrono::seconds(2);
+    constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(200);
+    constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
+    constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
+
+    struct RecoveryMonitorState {
+      VirtualDisplayRecoveryParams params;
+      uuid_util::uuid_t guid_uuid;
+      std::optional<std::wstring> current_display_name;
+      std::optional<std::string> normalized_display_name;
+      std::optional<std::string> current_device_id;
+
+      explicit RecoveryMonitorState(const VirtualDisplayRecoveryParams &p):
+          params(p),
+          guid_uuid(guid_to_uuid(p.guid)),
+          current_display_name(p.display_name),
+          current_device_id(p.device_id) {
+        if (current_display_name && !current_display_name->empty()) {
+          normalized_display_name = normalize_display_name(platf::to_utf8(*current_display_name));
+        }
+      }
+
+      void update_identifiers(
+        const std::optional<std::wstring> &display_name,
+        const std::optional<std::string> &device_id
+      ) {
+        current_display_name = display_name;
+        current_device_id = device_id;
+        normalized_display_name.reset();
+        if (current_display_name && !current_display_name->empty()) {
+          normalized_display_name = normalize_display_name(platf::to_utf8(*current_display_name));
+        }
+      }
+
+      std::string describe_target() const {
+        std::string description;
+        if (current_device_id && !current_device_id->empty()) {
+          description += "device_id='" + *current_device_id + "'";
+        }
+        if (current_display_name && !current_display_name->empty()) {
+          if (!description.empty()) {
+            description += ' ';
+          }
+          description += "display_name='" + platf::to_utf8(*current_display_name) + "'";
+        }
+        if (description.empty()) {
+          description = "guid=" + guid_uuid.string();
+        }
+        return description;
+      }
+    };
+
+    bool monitor_should_abort(const RecoveryMonitorState &state) {
+      return state.params.should_abort && state.params.should_abort();
+    }
+
+    bool monitor_target_present(const RecoveryMonitorState &state) {
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      if (!devices) {
+        return false;
+      }
+
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device)) {
+          continue;
+        }
+        if (state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
+          if (equals_ci(device.m_device_id, *state.current_device_id)) {
+            return true;
+          }
+        }
+        if (state.normalized_display_name) {
+          auto normalized_display = normalize_display_name(device.m_display_name);
+          if (!normalized_display.empty() && normalized_display == *state.normalized_display_name) {
+            return true;
+          }
+          auto normalized_friendly = normalize_display_name(device.m_friendly_name);
+          if (!normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    bool attempt_virtual_display_recovery(RecoveryMonitorState &state) {
+      if (!ensure_driver_is_ready()) {
+        BOOST_LOG(warning) << "Virtual display recovery: driver not ready for " << state.describe_target();
+        return false;
+      }
+
+      proc::vDisplayDriverStatus = openVDisplayDevice();
+      if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+        BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
+                           << static_cast<int>(proc::vDisplayDriverStatus) << ") for "
+                           << state.describe_target();
+        return false;
+      }
+
+      setWatchdogFeedingEnabled(true);
+      auto recreation = createVirtualDisplay(
+        state.params.client_uid.c_str(),
+        state.params.client_name.c_str(),
+        state.params.width,
+        state.params.height,
+        state.params.fps,
+        state.params.guid
+      );
+      if (!recreation) {
+        BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
+        return false;
+      }
+
+      state.update_identifiers(recreation->display_name, recreation->device_id);
+      if (state.params.on_recovery_success) {
+        state.params.on_recovery_success(*recreation);
+      }
+      return true;
+    }
+
+    void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
+      const auto deadline = std::chrono::steady_clock::now() + RECOVERY_MONITOR_WINDOW;
+      unsigned int attempts = 0;
+      bool observed_present = false;
+      auto stable_since = std::chrono::steady_clock::now();
+
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (monitor_should_abort(state)) {
+          BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
+          return;
+        }
+
+        if (monitor_target_present(state)) {
+          if (!observed_present) {
+            observed_present = true;
+            stable_since = std::chrono::steady_clock::now();
+          } else if (std::chrono::steady_clock::now() - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
+            BOOST_LOG(debug) << "Virtual display recovery monitor completed for " << state.describe_target();
+            return;
+          }
+
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        observed_present = false;
+        if (attempts >= state.params.max_attempts) {
+          BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
+                             << state.describe_target() << "; giving up.";
+          return;
+        }
+
+        attempts += 1;
+        BOOST_LOG(warning) << "Virtual display recovery monitor detected disappearance for "
+                           << state.describe_target() << " (attempt "
+                           << attempts << '/' << state.params.max_attempts << ").";
+
+        const bool recovered = attempt_virtual_display_recovery(state);
+        if (!recovered) {
+          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+          continue;
+        }
+
+        std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+      }
+
+      BOOST_LOG(debug) << "Virtual display recovery monitor timed out for " << state.describe_target();
+    }
   }  // namespace
+
+  void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
+    if (params.max_attempts == 0) {
+      return;
+    }
+
+    const bool has_device_id = params.device_id && !params.device_id->empty();
+    const bool has_display_name = params.display_name && !params.display_name->empty();
+    if (!has_device_id && !has_display_name) {
+      BOOST_LOG(debug) << "Virtual display recovery monitor skipped: no identifiers available.";
+      return;
+    }
+
+    RecoveryMonitorState state(params);
+    BOOST_LOG(debug) << "Virtual display recovery monitor scheduled for " << state.describe_target()
+                     << " (max_attempts=" << params.max_attempts << ").";
+    std::thread monitor_thread([state = std::move(state)]() mutable {
+      run_virtual_display_recovery_monitor(std::move(state));
+    });
+    monitor_thread.detach();
+  }
 
   // {dff7fd29-5b75-41d1-9731-b32a17a17104}
   // static const GUID DEFAULT_DISPLAY_GUID = { 0xdff7fd29, 0x5b75, 0x41d1, { 0x97, 0x31, 0xb3, 0x2a, 0x17, 0xa1, 0x71, 0x04 } };
@@ -1004,6 +1196,7 @@ namespace VDISPLAY {
       return true;
     }
 
+    bool waited_for_restart = false;
     auto instance_id = find_sudovda_device_instance_id();
     if (!instance_id) {
       BOOST_LOG(warning) << "Unable to locate SudoVDA adapter for recovery.";
@@ -1017,10 +1210,14 @@ namespace VDISPLAY {
       return false;
     }
 
+    waited_for_restart = true;
     const auto deadline = std::chrono::steady_clock::now() + DRIVER_RESTART_TIMEOUT;
     while (std::chrono::steady_clock::now() < deadline) {
       if (probe_driver_responsive_once()) {
         BOOST_LOG(info) << "SudoVDA driver responded after restart.";
+        if (waited_for_restart) {
+          std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+        }
         return true;
       }
       std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
