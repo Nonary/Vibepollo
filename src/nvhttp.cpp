@@ -8,6 +8,7 @@
 // standard includes
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -155,6 +156,22 @@ namespace nvhttp {
           return info.is_active;
         }
       );
+    }
+
+    bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
+      if (timeout <= std::chrono::steady_clock::duration::zero()) {
+        return has_any_active_display();
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (has_any_active_display()) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+
+      return has_any_active_display();
     }
 
     std::atomic<bool> virtual_display_cleanup_pending {false};
@@ -1239,7 +1256,7 @@ namespace nvhttp {
         vd_height,
         vd_fps,
         virtual_display_guid
-      );
+      );      
 
       if (display_info) {
         launch_session->virtual_display = true;
@@ -1285,7 +1302,9 @@ namespace nvhttp {
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        } else if (!display_helper_integration::apply(*request)) {
+        }
+
+        if (!request && !display_helper_integration::apply(*request)) {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
@@ -1299,11 +1318,24 @@ namespace nvhttp {
       }
 #endif
 
-    // Probe encoders again before streaming to ensure our chosen
-    // encoder matches the active GPU (which could have changed
-    // due to hotplugging, driver crash, primary monitor change,
-    // or any number of other factors).
-    bool encoder_probe_failed = video::probe_encoders();
+      // Probe encoders again before streaming to ensure our chosen
+      // encoder matches the active GPU (which could have changed
+      // due to hotplugging, driver crash, primary monitor change,
+      // or any number of other factors).
+      bool encoder_probe_failed = video::probe_encoders();
+
+#ifdef _WIN32
+      if (encoder_probe_failed && !has_any_active_display()) {
+        BOOST_LOG(info) << "Encoder probe failed with no active display; waiting for activation before retry.";
+        constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+        if (wait_for_display_activation(kDisplayActivationTimeout)) {
+          BOOST_LOG(info) << "Display became active; retrying encoder probe.";
+          encoder_probe_failed = video::probe_encoders();
+        } else {
+          BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying encoder probe.";
+        }
+      }
+#endif
 
       if (encoder_probe_failed) {
         BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
@@ -1463,7 +1495,22 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+      bool encoder_probe_failed = video::probe_encoders();
+
+#ifdef _WIN32
+      if (encoder_probe_failed && !has_any_active_display()) {
+        BOOST_LOG(info) << "Resume encoder probe failed with no active display; waiting for activation before retry.";
+        constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+        if (wait_for_display_activation(kDisplayActivationTimeout)) {
+          BOOST_LOG(info) << "Display became active; retrying resume encoder probe.";
+          encoder_probe_failed = video::probe_encoders();
+        } else {
+          BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying resume encoder probe.";
+        }
+      }
+#endif
+
+      if (encoder_probe_failed) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
