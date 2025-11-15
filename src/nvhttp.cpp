@@ -13,12 +13,12 @@
 #include <filesystem>
 #include <format>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 #include <utility>
-#include <memory>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -1257,7 +1257,7 @@ namespace nvhttp {
         vd_height,
         vd_fps,
         virtual_display_guid
-      );      
+      );
 
       if (display_info) {
         launch_session->virtual_display = true;
@@ -1336,7 +1336,7 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
         }
 
-        if (!request && !display_helper_integration::apply(*request)) {
+        if (request && !display_helper_integration::apply(*request)) {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
