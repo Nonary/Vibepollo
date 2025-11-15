@@ -2861,6 +2861,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (restore_mode) {
+    FreeConsole();
     hide_console_window();
   }
 
