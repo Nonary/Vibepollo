@@ -480,6 +480,7 @@ namespace nvhttp {
     launch_session->virtual_display = false;
     launch_session->virtual_display_guid_bytes.fill(0);
     launch_session->virtual_display_device_id.clear();
+    launch_session->virtual_display_ready_since.reset();
     launch_session->app_metadata.reset();
     launch_session->client_uuid.clear();
     launch_session->client_name.clear();
@@ -1130,6 +1131,7 @@ namespace nvhttp {
         launch_session->virtual_display = false;
         launch_session->virtual_display_guid_bytes.fill(0);
         launch_session->virtual_display_device_id.clear();
+        launch_session->virtual_display_ready_since.reset();
         return;
       }
 
@@ -1138,11 +1140,13 @@ namespace nvhttp {
         if (existing_device) {
           launch_session->virtual_display = true;
           launch_session->virtual_display_device_id = *existing_device;
+          launch_session->virtual_display_ready_since = std::chrono::steady_clock::now();
           BOOST_LOG(info) << "Virtual display already active (device_id=" << *existing_device
                           << "). Skipping additional creation because another session is running.";
         } else {
           launch_session->virtual_display = false;
           launch_session->virtual_display_device_id.clear();
+          launch_session->virtual_display_ready_since.reset();
           BOOST_LOG(info) << "Skipping virtual display creation because another session is running and no reusable device was found.";
         }
         launch_session->virtual_display_guid_bytes.fill(0);
@@ -1268,6 +1272,7 @@ namespace nvhttp {
         } else {
           launch_session->virtual_display_device_id.clear();
         }
+        launch_session->virtual_display_ready_since = display_info->ready_since;
         if (display_info->display_name && !display_info->display_name->empty()) {
           BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
         } else {
@@ -1299,6 +1304,7 @@ namespace nvhttp {
               if (info.device_id && !info.device_id->empty()) {
                 session_locked->virtual_display_device_id = *info.device_id;
               }
+              session_locked->virtual_display_ready_since = info.ready_since;
             }
           };
 
@@ -1308,6 +1314,7 @@ namespace nvhttp {
         launch_session->virtual_display = false;
         launch_session->virtual_display_guid_bytes.fill(0);
         launch_session->virtual_display_device_id.clear();
+        launch_session->virtual_display_ready_since.reset();
         BOOST_LOG(warning) << "Virtual display creation failed.";
       }
     };

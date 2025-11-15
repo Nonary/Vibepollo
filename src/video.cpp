@@ -9,7 +9,9 @@
 #include <chrono>
 #include <cstring>
 #include <list>
+#include <mutex>
 #include <optional>
+#include <sstream>
 #include <thread>
 
 // lib includes
@@ -165,6 +167,59 @@ namespace video {
       display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
       return true;
 #endif
+    }
+
+    struct EncoderProbeCacheState {
+      std::mutex mutex;
+      std::string cache_key;
+      bool valid = false;
+    };
+
+    EncoderProbeCacheState &encoder_probe_cache_state() {
+      static EncoderProbeCacheState state;
+      return state;
+    }
+
+    std::string build_probe_cache_key() {
+      std::ostringstream oss;
+      oss << config::video.encoder << '|'
+          << config::video.hevc_mode << '|'
+          << config::video.av1_mode << '|'
+          << config::video.output_name << '|'
+          << config::video.adapter_name << '|'
+          << static_cast<int>(config::video.virtual_display_mode);
+#ifdef _WIN32
+      oss << '|';
+      bool any_gpu = false;
+      for (const auto &gpu : platf::enumerate_gpus()) {
+        any_gpu = true;
+        oss << gpu.vendor_id << ':' << gpu.device_id << ':' << gpu.description << ':' << gpu.dedicated_video_memory << ';';
+      }
+      if (!any_gpu) {
+        oss << "nogpu";
+      }
+#else
+      oss << "|nogpu";
+#endif
+      return oss.str();
+    }
+
+    bool probe_cache_matches(const std::string &key) {
+      auto &state = encoder_probe_cache_state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      return state.valid && state.cache_key == key;
+    }
+
+    void update_probe_cache(const std::string &key, bool success) {
+      auto &state = encoder_probe_cache_state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      if (success) {
+        state.cache_key = key;
+        state.valid = true;
+      } else {
+        state.valid = false;
+        state.cache_key.clear();
+      }
     }
   }  // namespace
 
@@ -2769,8 +2824,15 @@ namespace video {
   }
 
   int probe_encoders() {
+    const auto cache_key = build_probe_cache_key();
+    if (probe_cache_matches(cache_key)) {
+      BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
+      return 0;
+    }
+
     if (!allow_encoder_probing()) {
       // Error already logged
+      update_probe_cache(cache_key, false);
       return -1;
     }
 
@@ -2911,6 +2973,7 @@ namespace video {
       } else {
         BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
       }
+      update_probe_cache(cache_key, false);
       return -1;
     }
 
@@ -2966,6 +3029,7 @@ namespace video {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
+    update_probe_cache(cache_key, true);
     restore_previous_probe_state.disable();
     return 0;
   }

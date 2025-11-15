@@ -1730,12 +1730,14 @@ namespace VDISPLAY {
                           << (display_name ? platf::to_utf8(*display_name) : std::string("(none)")) << "' device_id='"
                           << (device_id ? *device_id : std::string("(none)")) << "'";
 
+          const auto ready_since = std::chrono::steady_clock::now();
           VirtualDisplayCreationResult result;
           result.display_name = display_name;
           if (device_id && !device_id->empty()) {
             result.device_id = *device_id;
           }
           result.reused_existing = true;
+          result.ready_since = ready_since;
           return result;
         }
       }
@@ -1806,12 +1808,14 @@ namespace VDISPLAY {
     }
     printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, requested_fps);
 
+    const auto ready_since = std::chrono::steady_clock::now();
     VirtualDisplayCreationResult result;
     result.display_name = resolved_display_name;
     if (device_id && !device_id->empty()) {
       result.device_id = *device_id;
     }
     result.reused_existing = false;
+    result.ready_since = ready_since;
     return result;
   }
 

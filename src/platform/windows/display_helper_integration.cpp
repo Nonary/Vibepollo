@@ -60,6 +60,27 @@ namespace {
     return boost::iequals(lhs, rhs);
   }
 
+  bool device_is_active(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (device.m_device_id.empty() || !device.m_info) {
+        continue;
+      }
+      if (device_id_equals_ci(device.m_device_id, device_id)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool wait_for_device_activation(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
     if (device_id.empty()) {
       return false;
@@ -67,15 +88,8 @@ namespace {
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
-      if (devices) {
-        for (const auto &device : *devices) {
-          if (!device.m_device_id.empty() && device_id_equals_ci(device.m_device_id, device_id)) {
-            if (device.m_info) {
-              return true;
-            }
-          }
-        }
+      if (device_is_active(device_id)) {
+        return true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -110,6 +124,16 @@ namespace {
     display_device::SingleDisplayConfiguration::DevicePreparation prep
   ) {
     if (!device_id.empty()) {
+      const bool has_activation_hint = session.virtual_display &&
+                                       session.virtual_display_ready_since.has_value() &&
+                                       !session.virtual_display_device_id.empty() &&
+                                       device_id_equals_ci(device_id, session.virtual_display_device_id);
+      if (has_activation_hint && device_is_active(device_id)) {
+        BOOST_LOG(debug) << "Display helper: device_id " << device_id
+                         << " already active; skipping activation wait.";
+        return true;
+      }
+
       if (!wait_for_device_activation(device_id, kTopologyWaitTimeout)) {
         BOOST_LOG(error) << "Display helper: device_id " << device_id << " did not become active after APPLY.";
         return false;
@@ -120,6 +144,11 @@ namespace {
     const bool expects_virtual_display = session.virtual_display ||
                                          prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
     if (expects_virtual_display) {
+      const bool hint_ready = session.virtual_display && session.virtual_display_ready_since.has_value();
+      if (hint_ready) {
+        BOOST_LOG(debug) << "Display helper: virtual display ready hint satisfied. Skipping activation wait.";
+        return true;
+      }
       if (!wait_for_virtual_display_activation(kTopologyWaitTimeout)) {
         BOOST_LOG(error) << "Display helper: virtual display topology did not become active after APPLY.";
         return false;

@@ -3,6 +3,7 @@
 #include "src/utility.h"
 #include "src/uuid.h"
 
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <string>
@@ -43,6 +44,7 @@ namespace VDISPLAY {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
     bool reused_existing;
+    std::chrono::steady_clock::time_point ready_since;
   };
 
   struct VirtualDisplayRecoveryParams {
