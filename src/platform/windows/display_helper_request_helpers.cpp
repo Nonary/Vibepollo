@@ -327,9 +327,6 @@ namespace display_helper_integration::helpers {
       default_device_id = "DISPLAY_PRIMARY";
     }
 
-    if (topology.topology.empty() && !default_device_id.empty()) {
-      topology.topology = {{default_device_id}};
-    }
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
@@ -338,6 +335,37 @@ namespace display_helper_integration::helpers {
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
+    bool topology_overridden = false;
+    if (session_.virtual_display &&
+        session_.virtual_display_topology_snapshot &&
+        layout_flags.arrangement != display_helper_integration::VirtualDisplayArrangement::Exclusive) {
+      const std::string merged_device_id =
+        !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : default_device_id;
+      if (!merged_device_id.empty()) {
+        auto merged_topology = *session_.virtual_display_topology_snapshot;
+        const auto already_present = std::any_of(
+          merged_topology.begin(),
+          merged_topology.end(),
+          [&](const std::vector<std::string> &group) {
+            return std::any_of(group.begin(), group.end(), [&](const std::string &device_id) {
+              return boost::iequals(device_id, merged_device_id);
+            });
+          }
+        );
+        if (!already_present) {
+          merged_topology.push_back({merged_device_id});
+        }
+        if (!merged_topology.empty()) {
+          topology.topology = std::move(merged_topology);
+          topology_overridden = true;
+        }
+      }
+    }
+
+    if (!topology_overridden && topology.topology.empty() && !default_device_id.empty()) {
+      topology.topology = {{default_device_id}};
+    }
+
     if (!layout_flags.isolated) {
       return;
     }

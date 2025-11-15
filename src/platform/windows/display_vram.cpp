@@ -407,9 +407,8 @@ namespace platf::dxgi {
 
         // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
         if (!rtvs_cleared) {
-          auto black = create_black_texture_for_rtv_clear();
-          if (black) {
-            draw(black, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear);
+          if (ensure_black_texture_for_rtv_clear()) {
+            draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear);
           }
           rtvs_cleared = true;
         }
@@ -858,7 +857,11 @@ namespace platf::dxgi {
       return 0;
     }
 
-    shader_res_t create_black_texture_for_rtv_clear() {
+    bool ensure_black_texture_for_rtv_clear() {
+      if (black_texture_for_clear_srv) {
+        return true;
+      }
+
       constexpr auto width = 32;
       constexpr auto height = 32;
 
@@ -879,17 +882,19 @@ namespace platf::dxgi {
       auto status = device->CreateTexture2D(&texture_desc, &texture_data, &texture);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Failed to create black texture: " << util::log_hex(status);
-        return {};
+        return false;
       }
 
       shader_res_t resource_view;
       status = device->CreateShaderResourceView(texture.get(), nullptr, &resource_view);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Failed to create black texture resource view: " << util::log_hex(status);
-        return {};
+        return false;
       }
 
-      return resource_view;
+      black_texture_for_clear = std::move(texture);
+      black_texture_for_clear_srv = std::move(resource_view);
+      return true;
     }
 
     ::video::color_t *color_p;
@@ -929,6 +934,8 @@ namespace platf::dxgi {
     device_ctx_t device_ctx;
 
     texture2d_t output_texture;
+    texture2d_t black_texture_for_clear;
+    shader_res_t black_texture_for_clear_srv;
   };
 
   class d3d_avcodec_encode_device_t: public avcodec_encode_device_t {

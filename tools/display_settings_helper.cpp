@@ -239,15 +239,27 @@ namespace {
       }
     }
 
-    // Apply display configuration; returns whether applied OK.
-    bool apply(const display_device::SingleDisplayConfiguration &cfg) {
+    bool apply(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) {
       if (!ensure_initialized()) {
         return false;
+      }
+      try {
+        if (base_topology && m_dd->isTopologyValid(*base_topology)) {
+          (void) m_dd->setTopology(*base_topology);
+        }
+      } catch (...) {
       }
       using enum display_device::SettingsManagerInterface::ApplyResult;
       const auto res = m_sm->applySettings(cfg);
       BOOST_LOG(info) << "ApplySettings result: " << static_cast<int>(res);
       return res == Ok;
+    }
+
+    bool apply(const display_device::SingleDisplayConfiguration &cfg) {
+      return apply(cfg, std::nullopt);
     }
 
     // Revert display configuration; returns whether reverted OK.
@@ -374,13 +386,15 @@ namespace {
       }
     }
 
-    // Build and validate the topology implied by a SingleDisplayConfiguration without applying it.
-    bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+    bool soft_test_display_settings(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) const {
       if (!ensure_initialized()) {
         return false;
       }
       try {
-        const auto topo_before = m_dd->getCurrentTopology();
+        auto topo_before = base_topology.value_or(m_dd->getCurrentTopology());
         if (!m_dd->isTopologyValid(topo_before)) {
           return false;
         }
@@ -404,13 +418,19 @@ namespace {
       }
     }
 
-    // Compute the topology that would be requested by cfg based on the current initial state.
-    std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+    bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+      return soft_test_display_settings(cfg, std::nullopt);
+    }
+
+    std::optional<display_device::ActiveTopology> compute_expected_topology(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) const {
       if (!ensure_initialized()) {
         return std::nullopt;
       }
       try {
-        const auto topo_before = m_dd->getCurrentTopology();
+        auto topo_before = base_topology.value_or(m_dd->getCurrentTopology());
         if (!m_dd->isTopologyValid(topo_before)) {
           return std::nullopt;
         }
@@ -428,6 +448,10 @@ namespace {
       } catch (...) {
         return std::nullopt;
       }
+    }
+
+    std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+      return compute_expected_topology(cfg, std::nullopt);
     }
 
     bool is_topology_the_same(const display_device::ActiveTopology &a, const display_device::ActiveTopology &b) const {
@@ -2546,11 +2570,11 @@ namespace {
     bool wa_hdr_toggle = false;
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
-    std::string sanitized_json = json;  // may strip helper-only fields
+    std::optional<display_device::ActiveTopology> sunshine_topology;
+    std::string sanitized_json = json;
     try {
       auto j = nlohmann::json::parse(json);
       if (j.is_object()) {
-        // Extract helper-only flags, then erase them so strict parsers accept the payload
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -2577,13 +2601,31 @@ namespace {
           }
           j.erase("sunshine_monitor_positions");
         }
-        if (j.contains("sunshine_topology")) {
+        if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
+          display_device::ActiveTopology topo;
+          for (const auto &grp_node : j["sunshine_topology"]) {
+            if (!grp_node.is_array()) {
+              continue;
+            }
+            std::vector<std::string> grp;
+            for (const auto &id_node : grp_node) {
+              if (!id_node.is_string()) {
+                continue;
+              }
+              grp.push_back(id_node.get<std::string>());
+            }
+            if (!grp.empty()) {
+              topo.push_back(std::move(grp));
+            }
+          }
+          if (!topo.empty()) {
+            sunshine_topology = std::move(topo);
+          }
           j.erase("sunshine_topology");
         }
         sanitized_json = j.dump();
       }
     } catch (...) {
-      // If parsing fails, proceed with the original string (legacy senders)
     }
 
     display_device::SingleDisplayConfiguration cfg {};
@@ -2666,13 +2708,13 @@ namespace {
     }
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
-    if (state.controller.soft_test_display_settings(cfg)) {
+    if (state.controller.soft_test_display_settings(cfg, sunshine_topology)) {
       BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
       const bool task_created = create_restore_scheduled_task();
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
 
       const auto before_sig = state.controller.signature(state.controller.snapshot());
-      if (!state.controller.apply(cfg)) {
+      if (!state.controller.apply(cfg, sunshine_topology)) {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
       }

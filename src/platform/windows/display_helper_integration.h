@@ -10,6 +10,7 @@
 
 #include <display_device/types.h>
 #include <optional>
+#include <vector>
 
 namespace display_helper_integration {
   // Launch the helper (if needed) and process the provided builder request.
@@ -31,6 +32,9 @@ namespace display_helper_integration {
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json();
+
+  // Capture the currently active topology before applying changes.
+  std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
 
   // Start a lightweight watchdog during active streams that pings the helper periodically
   // and restarts/re-handshakes if it crashes. No-ops if already running.

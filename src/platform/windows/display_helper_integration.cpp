@@ -745,6 +745,17 @@ namespace display_helper_integration {
     }
   }
 
+  std::optional<std::vector<std::vector<std::string>>> capture_current_topology() {
+    try {
+      display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      return dd.getCurrentTopology();
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
   std::string enumerate_devices_json() {
     auto devices = enumerate_devices();
     if (!devices) {
