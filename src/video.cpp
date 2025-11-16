@@ -185,7 +185,7 @@ namespace video {
       oss << config::video.encoder << '|'
           << config::video.hevc_mode << '|'
           << config::video.av1_mode << '|'
-          << config::video.output_name << '|'
+          << config::get_active_output_name() << '|'
           << config::video.adapter_name << '|'
           << static_cast<int>(config::video.virtual_display_mode);
 #ifdef _WIN32
@@ -1222,7 +1222,7 @@ namespace video {
    */
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name = display_device::map_output_name(config::video.output_name);
+    const auto output_name = display_device::map_output_name(config::get_active_output_name());
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -2966,7 +2966,7 @@ namespace video {
     }
 
     if (chosen_encoder == nullptr) {
-      const auto output_name = display_device::map_output_name(config::video.output_name);
+      const auto output_name = display_device::map_output_name(config::get_active_output_name());
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
       if (!config::video.adapter_name.empty() || !output_name.empty()) {
         BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;

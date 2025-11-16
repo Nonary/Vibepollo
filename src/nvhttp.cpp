@@ -1116,7 +1116,16 @@ namespace nvhttp {
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, args, request);
+    std::optional<std::string> pending_output_override;
+    auto output_override_guard = util::fail_guard([&]() {
+      if (pending_output_override) {
+        config::set_runtime_output_name_override(std::nullopt);
+      }
+    });
     const bool no_active_sessions = (rtsp_stream::session_count() == 0);
+    if (no_active_sessions) {
+      config::set_runtime_output_name_override(std::nullopt);
+    }
 
 #ifdef _WIN32
     bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
@@ -1337,6 +1346,10 @@ namespace nvhttp {
       request_virtual_display = true;
     }
     apply_virtual_display_request(request_virtual_display);
+    if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
+      config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
+      pending_output_override = launch_session->virtual_display_device_id;
+    }
 #endif
 
     // The display should be restored in case something fails as there are no other sessions.
@@ -1435,6 +1448,7 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
+    output_override_guard.disable();
 
     // Stream was started successfully, we will revert the config when the app or session terminates
     revert_display_configuration = false;
@@ -1477,6 +1491,9 @@ namespace nvhttp {
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
     const bool no_active_sessions {rtsp_stream::session_count() == 0};
+    if (no_active_sessions) {
+      config::set_runtime_output_name_override(std::nullopt);
+    }
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
