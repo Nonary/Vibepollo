@@ -190,15 +190,6 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ipc_vram_t::dummy_img(platf::img_t *img_base) {
-    _ipc_session->initialize_if_needed();
-
-    // In certain scenarios (e.g., Windows login screen or when no user session is active),
-    // the IPC session may fail to initialize, making it impossible to perform encoder tests via WGC.
-    // In such cases, we must check if the session was initialized; if not, fall back to DXGI for dummy image generation.
-    if (_ipc_session->is_initialized()) {
-      return display_vram_t::complete_img(img_base, true);
-    }
-
     auto temp_dxgi = std::make_unique<display_ddup_vram_t>();
     if (temp_dxgi->init(_config, _display_name) == 0) {
       return temp_dxgi->dummy_img(img_base);
@@ -418,14 +409,6 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ipc_ram_t::dummy_img(platf::img_t *img_base) {
-    _ipc_session->initialize_if_needed();
-
-    // In certain scenarios (e.g., Windows login screen or when no user session is active),
-    // the IPC session may fail to initialize, making it impossible to perform encoder tests via WGC.
-    // In such cases, we must check if the session was initialized; if not, fall back to DXGI for dummy image generation.
-    if (_ipc_session->is_initialized()) {
-      return display_ram_t::complete_img(img_base, true);
-    }
 
     auto temp_dxgi = std::make_unique<display_ddup_ram_t>();
     if (temp_dxgi->init(_config, _display_name) == 0) {

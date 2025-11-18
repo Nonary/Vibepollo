@@ -751,7 +751,7 @@ namespace VDISPLAY {
     }
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices() {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
         return std::nullopt;
       }
@@ -948,7 +948,7 @@ namespace VDISPLAY {
     }
 
     bool monitor_target_present(const RecoveryMonitorState &state) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
         return false;
       }
@@ -1454,7 +1454,7 @@ namespace VDISPLAY {
         return false;
       };
 
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (devices) {
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
         bool resolution_conflict = false;
@@ -1557,7 +1557,7 @@ namespace VDISPLAY {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
       bool present = false;
-      if (auto devices = platf::display_helper::Coordinator::instance().enumerate_devices()) {
+      if (auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
         for (const auto &device : *devices) {
           if (!is_virtual_display_device(device)) {
             continue;
@@ -1591,7 +1591,7 @@ namespace VDISPLAY {
     const std::optional<std::wstring> &display_name,
     const std::optional<std::string> &device_id
   ) {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return false;
     }
@@ -1988,7 +1988,7 @@ namespace VDISPLAY {
       return resolveAnyVirtualDisplayDeviceId();
     }
 
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return std::nullopt;
     }
@@ -2028,7 +2028,7 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
@@ -2064,7 +2064,7 @@ namespace VDISPLAY {
       return result;
     }
 
-    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return result;
     }
@@ -2102,7 +2102,7 @@ namespace VDISPLAY {
 }  // namespace VDISPLAY
 
 bool VDISPLAY::has_active_physical_display() {
-  auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+  auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
     BOOST_LOG(debug) << "No display devices detected, therefore returning false.";

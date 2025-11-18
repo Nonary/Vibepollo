@@ -65,7 +65,7 @@ namespace {
       return false;
     }
 
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return false;
     }
@@ -734,12 +734,14 @@ namespace display_helper_integration {
     return ok;
   }
 
-  std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail
+  ) {
     try {
       display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      return dd.enumAvailableDevices();
+      return dd.enumAvailableDevices(detail);
     } catch (...) {
       return std::nullopt;
     }

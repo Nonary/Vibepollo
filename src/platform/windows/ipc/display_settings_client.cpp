@@ -25,7 +25,7 @@ namespace platf::display_helper_client {
     constexpr int kConnectTimeoutMs = 2000;
     constexpr int kSendTimeoutMs = 5000;
     constexpr int kShutdownIpcTimeoutMs = 500;
-    constexpr int kApplyResultTimeoutMs = 20000;
+    constexpr int kApplyResultTimeoutMs = 5000;
 
     bool shutdown_requested() {
       if (!mail::man) {

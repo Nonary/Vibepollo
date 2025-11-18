@@ -82,7 +82,7 @@ namespace display_helper_integration::helpers {
     }
 
     std::optional<std::string> resolve_current_primary_device_id(const std::optional<std::string> &virtual_device_id) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
         return std::nullopt;
       }

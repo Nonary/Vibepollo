@@ -28,7 +28,8 @@ namespace display_helper_integration {
   bool reset_persistence();
 
   // Enumerate display devices via helper (or return nullopt on failure).
-  std::optional<display_device::EnumeratedDeviceList> enumerate_devices();
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Full);
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json();
