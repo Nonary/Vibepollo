@@ -365,4 +365,8 @@ namespace config {
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+
+  void set_runtime_output_name_override(std::optional<std::string> output_name);
+  std::optional<std::string> runtime_output_name_override();
+  std::string get_active_output_name();
 }  // namespace config

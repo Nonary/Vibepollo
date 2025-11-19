@@ -1691,11 +1691,35 @@ namespace config {
     std::atomic<bool> g_deferred_reload {false};
     std::mutex g_apply_mutex;  // serialize apply_config_now()
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
+    std::shared_mutex g_output_override_mutex;
+    std::optional<std::string> g_runtime_output_name_override;
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate() {
     return std::shared_lock<std::shared_mutex>(g_apply_gate);
+  }
+
+  void set_runtime_output_name_override(std::optional<std::string> output_name) {
+    std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
+    if (output_name && output_name->empty()) {
+      g_runtime_output_name_override.reset();
+      return;
+    }
+    g_runtime_output_name_override = std::move(output_name);
+  }
+
+  std::optional<std::string> runtime_output_name_override() {
+    std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
+    return g_runtime_output_name_override;
+  }
+
+  std::string get_active_output_name() {
+    std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
+    if (g_runtime_output_name_override && !g_runtime_output_name_override->empty()) {
+      return *g_runtime_output_name_override;
+    }
+    return video.output_name;
   }
 
   void apply_config_now() {

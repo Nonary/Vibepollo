@@ -54,7 +54,9 @@ namespace display_helper_integration {
     return "[]";
   }
 
-  inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
+  inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Full
+  ) {
     return std::nullopt;
   }
 }  // namespace display_helper_integration

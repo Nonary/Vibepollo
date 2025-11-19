@@ -7,7 +7,6 @@
 
   // standard
   #include <algorithm>
-  #include <boost/algorithm/string/predicate.hpp>
   #include <chrono>
   #include <filesystem>
   #include <mutex>
@@ -15,6 +14,8 @@
   #include <string>
   #include <thread>
   #include <vector>
+
+  #include <boost/algorithm/string/predicate.hpp>
 
   // libdisplaydevice
   #include <display_device/json.h>
@@ -35,7 +36,6 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
-
   #include <tlhelp32.h>
 
 namespace {
@@ -60,6 +60,27 @@ namespace {
     return boost::iequals(lhs, rhs);
   }
 
+  bool device_is_active(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (device.m_device_id.empty() || !device.m_info) {
+        continue;
+      }
+      if (device_id_equals_ci(device.m_device_id, device_id)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool wait_for_device_activation(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
     if (device_id.empty()) {
       return false;
@@ -67,15 +88,8 @@ namespace {
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
-      if (devices) {
-        for (const auto &device : *devices) {
-          if (!device.m_device_id.empty() && device_id_equals_ci(device.m_device_id, device_id)) {
-            if (device.m_info) {
-              return true;
-            }
-          }
-        }
+      if (device_is_active(device_id)) {
+        return true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -110,6 +124,16 @@ namespace {
     display_device::SingleDisplayConfiguration::DevicePreparation prep
   ) {
     if (!device_id.empty()) {
+      const bool has_activation_hint = session.virtual_display &&
+                                       session.virtual_display_ready_since.has_value() &&
+                                       !session.virtual_display_device_id.empty() &&
+                                       device_id_equals_ci(device_id, session.virtual_display_device_id);
+      if (has_activation_hint && device_is_active(device_id)) {
+        BOOST_LOG(debug) << "Display helper: device_id " << device_id
+                         << " already active; skipping activation wait.";
+        return true;
+      }
+
       if (!wait_for_device_activation(device_id, kTopologyWaitTimeout)) {
         BOOST_LOG(error) << "Display helper: device_id " << device_id << " did not become active after APPLY.";
         return false;
@@ -120,6 +144,11 @@ namespace {
     const bool expects_virtual_display = session.virtual_display ||
                                          prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
     if (expects_virtual_display) {
+      const bool hint_ready = session.virtual_display && session.virtual_display_ready_since.has_value();
+      if (hint_ready) {
+        BOOST_LOG(debug) << "Display helper: virtual display ready hint satisfied. Skipping activation wait.";
+        return true;
+      }
       if (!wait_for_virtual_display_activation(kTopologyWaitTimeout)) {
         BOOST_LOG(error) << "Display helper: virtual display topology did not become active after APPLY.";
         return false;
@@ -223,7 +252,6 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
-
   // Active session display parameters snapshot for re-apply on reconnect.
   // We do NOT cache serialized JSON, only the subset of session fields that
   // affect display configuration. On reconnect, we rebuild the full
@@ -238,7 +266,7 @@ namespace {
     const bool virtual_display_selected =
       (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
        config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
-    if (virtual_display_selected && config::video.dd.activate_virtual_display) {
+    if (virtual_display_selected) {
       return true;
     }
 
@@ -383,16 +411,16 @@ namespace {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
     }
-
+    
     HANDLE h = helper_proc().get_process_handle();
     if (!h) {
       BOOST_LOG(error) << "Display helper started but no process handle available";
       return false;
     }
-
+    
     DWORD pid = GetProcessId(h);
     BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
-
+    
     // Give the helper process time to initialize and create its named pipe server
     // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
     for (int check = 0; check < 6; ++check) {
@@ -402,9 +430,9 @@ namespace {
         GetExitCodeProcess(h, &exit_code);
         if (exit_code == 3) {
           BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
-                             << "Retrying after extended cleanup delay...";
+                           << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
+          
           const bool retry_started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
@@ -423,7 +451,7 @@ namespace {
         }
       }
     }
-
+    
     // Final initialization delay for pipe server creation
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     return started;
@@ -565,6 +593,7 @@ namespace display_helper_integration {
     }
 
     if (request.action == DisplayApplyAction::Revert) {
+      BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
       const bool ok = platf::display_helper_client::send_revert();
       BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
       clear_active_session();
@@ -671,15 +700,6 @@ namespace display_helper_integration {
     return true;
   }
 
-  bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-    auto request = helpers::build_request_from_session(video_config, session);
-    if (!request) {
-      BOOST_LOG(warning) << "Display helper: failed to build display configuration from session context.";
-      return false;
-    }
-    return apply(*request);
-  }
-
   bool revert() {
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
@@ -714,12 +734,25 @@ namespace display_helper_integration {
     return ok;
   }
 
-  std::optional<display_device::EnumeratedDeviceList> enumerate_devices() {
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail
+  ) {
     try {
       display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      return dd.enumAvailableDevices();
+      return dd.enumAvailableDevices(detail);
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  std::optional<std::vector<std::vector<std::string>>> capture_current_topology() {
+    try {
+      display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      return dd.getCurrentTopology();
     } catch (...) {
       return std::nullopt;
     }

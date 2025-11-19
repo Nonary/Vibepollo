@@ -7,11 +7,13 @@
 // standard includes
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <list>
 #include <memory>
-#include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "config.h"
 // local includes
@@ -73,6 +75,8 @@ namespace rtsp_stream {
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
+    std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    std::optional<std::vector<std::vector<std::string>>> virtual_display_topology_snapshot;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
@@ -90,7 +94,6 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_undo_cmds;
 
 #ifdef _WIN32
-    bool display_helper_applied {};
     GUID display_guid {};
 #endif
   };

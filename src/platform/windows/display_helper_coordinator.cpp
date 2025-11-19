@@ -11,8 +11,10 @@ namespace platf::display_helper {
     return instance;
   }
 
-  std::optional<display_device::EnumeratedDeviceList> Coordinator::enumerate_devices() {
-    return display_helper_integration::enumerate_devices();
+  std::optional<display_device::EnumeratedDeviceList> Coordinator::enumerate_devices(
+    display_device::DeviceEnumerationDetail detail
+  ) {
+    return display_helper_integration::enumerate_devices(detail);
   }
 
   std::string Coordinator::enumerate_devices_json() {

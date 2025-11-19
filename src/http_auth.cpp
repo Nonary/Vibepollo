@@ -11,6 +11,7 @@
 #include "utility.h"
 
 #include <algorithm>
+#include <utility>
 #include <boost/algorithm/string.hpp>
 #include <boost/function.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -945,6 +946,55 @@ namespace confighttp {
     return result;
   }
 
+  AuthResult make_basic_auth_error(const std::string &error_message = "Unauthorized") {
+    AuthResult result = make_auth_error(StatusCode::client_error_unauthorized, error_message);
+    result.headers.emplace("WWW-Authenticate", "Basic realm=\"Sunshine\"");
+    return result;
+  }
+
+  namespace {
+    std::optional<std::pair<std::string, std::string>> parse_basic_credentials(const std::string &raw_auth) {
+      auto space_pos = raw_auth.find(' ');
+      if (space_pos == std::string::npos) {
+        return std::nullopt;
+      }
+      std::string scheme = raw_auth.substr(0, space_pos);
+      if (!boost::iequals(scheme, "Basic")) {
+        return std::nullopt;
+      }
+      std::string encoded = raw_auth.substr(space_pos + 1);
+      if (encoded.empty()) {
+        return std::nullopt;
+      }
+      try {
+        std::string decoded = SimpleWeb::Crypto::Base64::decode(encoded);
+        auto colon_pos = decoded.find(':');
+        if (colon_pos == std::string::npos) {
+          return std::nullopt;
+        }
+        return std::make_pair(decoded.substr(0, colon_pos), decoded.substr(colon_pos + 1));
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    bool validate_basic_credentials(const std::string &username, const std::string &password) {
+      if (config::sunshine.username.empty()) {
+        return false;
+      }
+      auto hashed = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
+      return boost::iequals(username, config::sunshine.username) && hashed == config::sunshine.password;
+    }
+  }  // namespace
+
+  AuthResult check_basic_auth(const std::string &raw_auth) {
+    if (auto credentials = parse_basic_credentials(raw_auth);
+        credentials && validate_basic_credentials(credentials->first, credentials->second)) {
+      return {true, StatusCode::success_ok, {}, {}};
+    }
+    return make_basic_auth_error("Unauthorized");
+  }
+
   AuthResult check_bearer_auth(const std::string &raw_auth, const std::string &path, const std::string &method) {
     if (!api_token_manager.authenticate_bearer(raw_auth, path, method)) {
       return make_auth_error(StatusCode::client_error_forbidden, "Forbidden: Token does not have permission for this path/method.");
@@ -1042,6 +1092,11 @@ namespace confighttp {
         }
         return session_res;
       }
+    }
+
+    if (auto scheme_end = auth_header.find(' ');
+        scheme_end != std::string::npos && boost::iequals(auth_header.substr(0, scheme_end), "Basic")) {
+      return check_basic_auth(auth_header);
     }
 
     // Default: unauthorized

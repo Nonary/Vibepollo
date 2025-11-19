@@ -10,14 +10,12 @@
 
 #include <display_device/types.h>
 #include <optional>
+#include <vector>
 
 namespace display_helper_integration {
   // Launch the helper (if needed) and process the provided builder request.
   // Returns true if the helper accepted the command; false to allow fallback.
   bool apply(const DisplayApplyRequest &request);
-
-  // Convenience helper: builds a request from a session/config pair and applies it.
-  bool apply_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
 
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
@@ -30,10 +28,14 @@ namespace display_helper_integration {
   bool reset_persistence();
 
   // Enumerate display devices via helper (or return nullopt on failure).
-  std::optional<display_device::EnumeratedDeviceList> enumerate_devices();
+  std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Full);
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json();
+
+  // Capture the currently active topology before applying changes.
+  std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
 
   // Start a lightweight watchdog during active streams that pings the helper periodically
   // and restarts/re-handshakes if it crashes. No-ops if already running.

@@ -16,6 +16,7 @@
   #include "src/platform/windows/virtual_display.h"
 
   #include <display_device/json.h>
+  #include <boost/algorithm/string/predicate.hpp>
   #include <algorithm>
 
 namespace display_helper_integration::helpers {
@@ -77,6 +78,26 @@ namespace display_helper_integration::helpers {
         return video_config.output_name;
       }
 
+      return std::nullopt;
+    }
+
+    std::optional<std::string> resolve_current_primary_device_id(const std::optional<std::string> &virtual_device_id) {
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return std::nullopt;
+      }
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty()) {
+          continue;
+        }
+        if (!device.m_info || !device.m_info->m_primary) {
+          continue;
+        }
+        if (virtual_device_id && boost::iequals(device.m_device_id, *virtual_device_id)) {
+          continue;
+        }
+        return device.m_device_id;
+      }
       return std::nullopt;
     }
 
@@ -297,18 +318,15 @@ namespace display_helper_integration::helpers {
 
   void SessionMonitorPositionHelper::configure(DisplayApplyBuilder &builder) const {
     auto &topology = builder.mutable_topology();
-    std::string device_id;
+    std::string default_device_id;
     if (!session_.virtual_display_device_id.empty()) {
-      device_id = session_.virtual_display_device_id;
+      default_device_id = session_.virtual_display_device_id;
     } else if (!video_config_.output_name.empty()) {
-      device_id = video_config_.output_name;
+      default_device_id = video_config_.output_name;
     } else {
-      device_id = "DISPLAY_PRIMARY";
+      default_device_id = "DISPLAY_PRIMARY";
     }
 
-    if (topology.topology.empty()) {
-      topology.topology = {{device_id}};
-    }
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
@@ -317,9 +335,58 @@ namespace display_helper_integration::helpers {
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
-    if (layout_flags.isolated) {
-      topology.monitor_positions[device_id] = display_device::Point {kIsolatedVirtualDisplayOffset, kIsolatedVirtualDisplayOffset};
+    bool topology_overridden = false;
+    if (session_.virtual_display &&
+        session_.virtual_display_topology_snapshot &&
+        layout_flags.arrangement != display_helper_integration::VirtualDisplayArrangement::Exclusive) {
+      const std::string merged_device_id =
+        !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : default_device_id;
+      if (!merged_device_id.empty()) {
+        auto merged_topology = *session_.virtual_display_topology_snapshot;
+        const auto already_present = std::any_of(
+          merged_topology.begin(),
+          merged_topology.end(),
+          [&](const std::vector<std::string> &group) {
+            return std::any_of(group.begin(), group.end(), [&](const std::string &device_id) {
+              return boost::iequals(device_id, merged_device_id);
+            });
+          }
+        );
+        if (!already_present) {
+          merged_topology.push_back({merged_device_id});
+        }
+        if (!merged_topology.empty()) {
+          topology.topology = std::move(merged_topology);
+          topology_overridden = true;
+        }
+      }
     }
+
+    if (!topology_overridden && topology.topology.empty() && !default_device_id.empty()) {
+      topology.topology = {{default_device_id}};
+    }
+
+    if (!layout_flags.isolated) {
+      return;
+    }
+
+    auto resolved_virtual_device_id = resolve_virtual_device_id(video_config_, session_);
+    std::string isolated_device_id = default_device_id;
+    if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::ExtendedPrimaryIsolated) {
+      if (auto primary_device_id = resolve_current_primary_device_id(resolved_virtual_device_id)) {
+        isolated_device_id = *primary_device_id;
+      } else if (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) {
+        isolated_device_id = *resolved_virtual_device_id;
+      }
+    } else if (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) {
+      isolated_device_id = *resolved_virtual_device_id;
+    }
+
+    if (isolated_device_id.empty()) {
+      return;
+    }
+
+    topology.monitor_positions[isolated_device_id] = display_device::Point {kIsolatedVirtualDisplayOffset, kIsolatedVirtualDisplayOffset};
   }
 
   std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {

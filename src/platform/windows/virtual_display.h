@@ -3,6 +3,7 @@
 #include "src/utility.h"
 #include "src/uuid.h"
 
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <string>
@@ -43,6 +44,21 @@ namespace VDISPLAY {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
     bool reused_existing;
+    std::chrono::steady_clock::time_point ready_since;
+  };
+
+  struct VirtualDisplayRecoveryParams {
+    GUID guid;
+    uint32_t width;
+    uint32_t height;
+    uint32_t fps;
+    std::string client_uid;
+    std::string client_name;
+    std::optional<std::wstring> display_name;
+    std::optional<std::string> device_id;
+    unsigned int max_attempts = 3;
+    std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
+    std::function<bool()> should_abort;
   };
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
@@ -54,6 +70,7 @@ namespace VDISPLAY {
   );
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
+  void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();

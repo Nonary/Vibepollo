@@ -50,6 +50,7 @@
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/playnite_integration.h"
+  #include "platform/windows/display_helper_request_helpers.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
 
@@ -1167,18 +1168,28 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    const bool forced_virtual_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client ||
-                                          config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+    using dd_config_option_e = config::video_t::dd_t::config_option_e;
+    const auto dd_config_option = config::video.dd.configuration_option;
+    const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+    const bool headless_mode = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    const bool dd_conflicts_with_virtual_display =
+      dd_config_option == dd_config_option_e::ensure_only_display &&
+      dd_config_option != dd_config_option_e::disabled &&
+      !headless_mode;
     const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
     const bool session_requests_virtual = launch_session->virtual_display;
 
-    const bool should_use_virtual_display =
-      forced_virtual_display ||
+    if (forced_sudavda_virtual_display) {
+      launch_session->virtual_display = true;
+    }
+
+    bool should_use_virtual_display =
+      headless_mode ||
       app_requests_virtual ||
       metadata_requests_virtual ||
       session_requests_virtual ||
-      !VDISPLAY::has_active_physical_display() ||
+      !video::allow_encoder_probing() ||
       VDISPLAY::should_auto_enable_virtual_display();
 
     const bool already_has_virtual_guid = std::any_of(
@@ -1187,7 +1198,37 @@ namespace proc {
       [](std::uint8_t b) { return b != 0; }
     );
 
-    if (should_use_virtual_display && !already_has_virtual_guid) {
+    if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
+      if (session_requests_virtual || app_requests_virtual) {
+        BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
+      }
+      launch_session->virtual_display = false;
+      should_use_virtual_display = headless_mode || !video::allow_encoder_probing();
+    }
+
+    bool dd_api_handled = false;
+    if (!forced_sudavda_virtual_display &&
+        (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !headless_mode))) {
+#ifdef _WIN32
+      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+      if (request) {
+        dd_api_handled = display_helper_integration::apply(*request);
+      }
+#endif
+      if (dd_api_handled) {
+        const bool virtual_display_requested = session_requests_virtual || app_requests_virtual;
+        const bool still_missing_active_display = !video::allow_encoder_probing();
+
+        if (!virtual_display_requested && !still_missing_active_display) {
+          BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
+          should_use_virtual_display = false;
+        } else {
+          BOOST_LOG(info) << "Display configuration handled by DD API but virtual display support remains required; keeping SudoVDA virtual display active.";
+        }
+      }
+    }
+
+    if (should_use_virtual_display && !dd_api_handled && !already_has_virtual_guid) {
       if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
         initVDisplayDriver();
       }
@@ -1206,23 +1247,19 @@ namespace proc {
         const bool use_shared_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
 
         if (use_shared_display) {
-          // Shared virtual display mode: reuse or create a shared GUID
           if (http::shared_virtual_display_guid.empty()) {
-            // Generate a new shared GUID and save it
             device_uuid = uuid_util::uuid_t::generate();
             device_uuid_str = device_uuid.string();
             http::shared_virtual_display_guid = device_uuid_str;
             nvhttp::save_state();
             BOOST_LOG(info) << "Generated new shared virtual display GUID: " << device_uuid_str;
           } else {
-            // Reuse existing shared GUID
             device_uuid_str = http::shared_virtual_display_guid;
             device_uuid = uuid_util::uuid_t::parse(device_uuid_str);
             BOOST_LOG(info) << "Reusing shared virtual display GUID: " << device_uuid_str;
           }
           device_name = config::nvhttp.sunshine_name.empty() ? "Sunshine Shared Display" : config::nvhttp.sunshine_name + " Shared";
         } else if (_app.use_app_identity) {
-          // Per-client mode with app identity
           device_name = _app.name;
           if (_app.per_client_app_identity) {
             device_uuid = uuid_util::uuid_t::parse(launch_session->unique_id);
@@ -1237,7 +1274,6 @@ namespace proc {
             device_uuid = uuid_util::uuid_t::parse(_app.uuid);
           }
         } else {
-          // Per-client mode with unique client ID
           device_name = !launch_session->device_name.empty() ? launch_session->device_name : config::nvhttp.sunshine_name;
           if (device_name.empty()) {
             device_name = "Sunshine";
@@ -1273,16 +1309,8 @@ namespace proc {
 
         if (display_info) {
           const std::wstring *display_name_w = display_info->display_name && !display_info->display_name->empty()
-                                                ? &*display_info->display_name
-                                                : nullptr;
-
-          if (display_name_w) {
-            BOOST_LOG(info) << "Virtual display created at " << *display_name_w;
-          } else if (display_info->reused_existing) {
-            BOOST_LOG(info) << "Virtual display reused; device name pending enumeration.";
-          } else {
-            BOOST_LOG(info) << "Virtual display created; device name pending enumeration.";
-          }
+                                               ? &*display_info->display_name
+                                               : nullptr;
 
           launch_session->virtual_display = true;
           this->virtual_display = true;
@@ -1322,8 +1350,17 @@ namespace proc {
       _virtual_display_active = true;
     }
 
-    if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
-      launch_session->display_helper_applied = true;
+    if (!dd_api_handled && !this->virtual_display) {
+#ifdef _WIN32
+      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+      if (request) {
+        display_helper_integration::apply(*request);
+      }
+#endif
+    }
+
+    if (this->virtual_display) {
+      display_helper_integration::reset_persistence();
     }
 #endif  // _WIN32
 

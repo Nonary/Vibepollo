@@ -196,6 +196,31 @@ namespace confighttp {
     EXPECT_EQ(json_response["error"], "Forbidden");
   }
 
+  TEST_F(ConfigHttpCheckAuthTest, given_invalid_basic_credentials_when_checking_auth_then_should_return_unauthorized) {
+    auto auth_header = createBasicAuthHeader("testuser", "wrongpass");
+
+    auto result = check_auth("127.0.0.1", auth_header, "/api/test", "GET");
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
+    auto json_response = nlohmann::json::parse(result.body);
+    EXPECT_EQ(json_response["error"], "Unauthorized");
+    auto www_auth_it = result.headers.find("WWW-Authenticate");
+    EXPECT_NE(www_auth_it, result.headers.end());
+    EXPECT_EQ(www_auth_it->second, "Basic realm=\"Sunshine\"");
+  }
+
+  TEST_F(ConfigHttpCheckAuthTest, given_valid_basic_credentials_when_checking_auth_then_should_authorize) {
+    auto auth_header = createBasicAuthHeader("testuser", "testpass");
+
+    auto result = check_auth("127.0.0.1", auth_header, "/api/test", "GET");
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
+    EXPECT_TRUE(result.body.empty());
+    EXPECT_TRUE(result.headers.empty());
+  }
+
   TEST_F(ConfigHttpCheckAuthTest, given_invalid_bearer_token_when_checking_auth_then_should_return_forbidden) {
     // Given: Invalid bearer token for API access
 

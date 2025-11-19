@@ -582,7 +582,6 @@ namespace nvhttp {
     launch_session->lossless_scaling_rtss_limit.reset();
     launch_session->frame_generation_provider = "lossless-scaling";
 #ifdef _WIN32
-    launch_session->display_helper_applied = false;
 #endif
     launch_session->device_name = named_cert_p->name.empty() ? config::nvhttp.sunshine_name : named_cert_p->name;
     launch_session->virtual_display = false;
@@ -1736,9 +1735,6 @@ namespace nvhttp {
         } else if (!display_helper_integration::apply(*request)) {
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
-#ifdef _WIN32
-        launch_session->display_helper_applied = true;
-#endif
       } else {
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
@@ -1991,11 +1987,12 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions
       // and the current session isn't virtual display at the moment.
       // This should be done before probing encoders as it could change the active displays.
-      if (display_helper_integration::apply_from_session(config::video, *launch_session)) {
 #ifdef _WIN32
-        launch_session->display_helper_applied = true;
-#endif
+      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+      if (request) {
+        display_helper_integration::apply(*request);
       }
+#endif
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,

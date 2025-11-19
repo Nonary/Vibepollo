@@ -16,6 +16,7 @@
   #include <cstdlib>
   #include <cstring>
   #include <cwchar>
+  #include <cmath>
   #include <filesystem>
   #include <functional>
   #include <memory>
@@ -214,15 +215,8 @@ namespace {
     // Enumerate all currently available display device IDs (active or inactive).
     std::set<std::string> enum_all_device_ids() const {
       std::set<std::string> ids;
-      if (!ensure_initialized()) {
-        return ids;
-      }
-      try {
-        for (const auto &d : m_sm->enumAvailableDevices()) {
-          ids.insert(d.m_device_id);
-        }
-      } catch (...) {
-        // best-effort; return what we have
+      for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+        ids.insert(d.m_device_id);
       }
       return ids;
     }
@@ -239,15 +233,27 @@ namespace {
       }
     }
 
-    // Apply display configuration; returns whether applied OK.
-    bool apply(const display_device::SingleDisplayConfiguration &cfg) {
+    bool apply(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) {
       if (!ensure_initialized()) {
         return false;
+      }
+      try {
+        if (base_topology && m_dd->isTopologyValid(*base_topology)) {
+          (void) m_dd->setTopology(*base_topology);
+        }
+      } catch (...) {
       }
       using enum display_device::SettingsManagerInterface::ApplyResult;
       const auto res = m_sm->applySettings(cfg);
       BOOST_LOG(info) << "ApplySettings result: " << static_cast<int>(res);
       return res == Ok;
+    }
+
+    bool apply(const display_device::SingleDisplayConfiguration &cfg) {
+      return apply(cfg, std::nullopt);
     }
 
     // Revert display configuration; returns whether reverted OK.
@@ -278,6 +284,20 @@ namespace {
       } catch (...) {
         return false;
       }
+    }
+
+    bool configuration_matches_current_state(const display_device::SingleDisplayConfiguration &cfg) const {
+      if (!ensure_initialized()) {
+        return false;
+      }
+      if (cfg.m_device_id.empty()) {
+        return false;
+      }
+      auto info = get_device_info_minimal(cfg.m_device_id);
+      if (!info) {
+        return false;
+      }
+      return info_matches_config(*info, cfg);
     }
 
     // Capture a full snapshot of current settings.
@@ -374,17 +394,19 @@ namespace {
       }
     }
 
-    // Build and validate the topology implied by a SingleDisplayConfiguration without applying it.
-    bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+    bool soft_test_display_settings(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) const {
       if (!ensure_initialized()) {
         return false;
       }
       try {
-        const auto topo_before = m_dd->getCurrentTopology();
+        auto topo_before = base_topology.value_or(m_dd->getCurrentTopology());
         if (!m_dd->isTopologyValid(topo_before)) {
           return false;
         }
-        const auto devices = m_sm->enumAvailableDevices();
+        const auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
         auto initial = display_device::win_utils::computeInitialState(std::nullopt, topo_before, devices);
         if (!initial) {
           return false;
@@ -404,17 +426,23 @@ namespace {
       }
     }
 
-    // Compute the topology that would be requested by cfg based on the current initial state.
-    std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+    bool soft_test_display_settings(const display_device::SingleDisplayConfiguration &cfg) const {
+      return soft_test_display_settings(cfg, std::nullopt);
+    }
+
+    std::optional<display_device::ActiveTopology> compute_expected_topology(
+      const display_device::SingleDisplayConfiguration &cfg,
+      const std::optional<display_device::ActiveTopology> &base_topology
+    ) const {
       if (!ensure_initialized()) {
         return std::nullopt;
       }
       try {
-        const auto topo_before = m_dd->getCurrentTopology();
+        auto topo_before = base_topology.value_or(m_dd->getCurrentTopology());
         if (!m_dd->isTopologyValid(topo_before)) {
           return std::nullopt;
         }
-        const auto devices = m_sm->enumAvailableDevices();
+        const auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
         auto initial = display_device::win_utils::computeInitialState(std::nullopt, topo_before, devices);
         if (!initial) {
           return std::nullopt;
@@ -428,6 +456,10 @@ namespace {
       } catch (...) {
         return std::nullopt;
       }
+    }
+
+    std::optional<display_device::ActiveTopology> compute_expected_topology(const display_device::SingleDisplayConfiguration &cfg) const {
+      return compute_expected_topology(cfg, std::nullopt);
     }
 
     bool is_topology_the_same(const display_device::ActiveTopology &a, const display_device::ActiveTopology &b) const {
@@ -655,11 +687,19 @@ namespace {
     std::set<std::string> m_blacklisted_device_ids;
 
     void collect_all_device_ids(std::set<std::string> &out) const {
-      if (!ensure_initialized()) {
-        return;
-      }
-      for (const auto &d : m_sm->enumAvailableDevices()) {
+      for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
         out.insert(d.m_device_id);
+      }
+    }
+
+    display_device::EnumeratedDeviceList enumerate_devices(display_device::DeviceEnumerationDetail detail) const {
+      if (!ensure_initialized()) {
+        return {};
+      }
+      try {
+        return m_dd->enumAvailableDevices(detail);
+      } catch (...) {
+        return {};
       }
     }
 
@@ -686,6 +726,67 @@ namespace {
         return {};
       }
       return data.substr(p + 1);
+    }
+
+    static std::optional<double> floating_to_double(const display_device::FloatingPoint &value) {
+      if (std::holds_alternative<double>(value)) {
+        return std::get<double>(value);
+      }
+      const auto &rat = std::get<display_device::Rational>(value);
+      if (rat.m_denominator == 0) {
+        return std::nullopt;
+      }
+      return static_cast<double>(rat.m_numerator) / static_cast<double>(rat.m_denominator);
+    }
+
+    static bool nearly_equal(double lhs, double rhs) {
+      const double diff = std::abs(lhs - rhs);
+      const double scale = std::max({1.0, std::abs(lhs), std::abs(rhs)});
+      return diff <= scale * 1e-4;
+    }
+
+    std::optional<display_device::EnumeratedDevice::Info> get_device_info_minimal(const std::string &device_id) const {
+      if (!ensure_initialized()) {
+        return std::nullopt;
+      }
+      try {
+        auto devices = m_dd->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+        for (const auto &device : devices) {
+          if (device.m_device_id == device_id && device.m_info) {
+            return device.m_info;
+          }
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
+    bool info_matches_config(
+      const display_device::EnumeratedDevice::Info &info,
+      const display_device::SingleDisplayConfiguration &cfg
+    ) const {
+      if (cfg.m_resolution) {
+        if (info.m_resolution.m_width != cfg.m_resolution->m_width ||
+            info.m_resolution.m_height != cfg.m_resolution->m_height) {
+          return false;
+        }
+      }
+
+      if (cfg.m_refresh_rate) {
+        auto desired = floating_to_double(*cfg.m_refresh_rate);
+        auto actual = floating_to_double(info.m_refresh_rate);
+        if (!desired || !actual || !nearly_equal(*desired, *actual)) {
+          return false;
+        }
+      }
+
+      if (cfg.m_hdr_state) {
+        if (!info.m_hdr_state || *info.m_hdr_state != *cfg.m_hdr_state) {
+          return false;
+        }
+      }
+
+      return true;
     }
 
     static void parse_primary_field(const std::string &prim, display_device::DisplaySettingsSnapshot &snap) {
@@ -1091,6 +1192,7 @@ namespace {
     std::atomic<bool> *running_flag {nullptr};
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
+    std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
     std::filesystem::path golden_path;  // file to store golden snapshot
     std::filesystem::path session_path;  // legacy single-file path (migration only)
     std::filesystem::path session_current_path;  // file to store current session baseline snapshot (first apply)
@@ -2119,18 +2221,32 @@ namespace {
       }
     }
 
+    static bool wait_with_stop(std::stop_token st, std::chrono::milliseconds duration) {
+      using namespace std::chrono_literals;
+      constexpr auto step = 50ms;
+      auto remaining = duration;
+      while (remaining > std::chrono::milliseconds::zero()) {
+        if (st.stop_requested()) {
+          return false;
+        }
+        const auto slice = remaining > step ? step : remaining;
+        std::this_thread::sleep_for(slice);
+        remaining -= slice;
+      }
+      return !st.stop_requested();
+    }
+
     static void delayed_reapply_proc(std::stop_token st, ServiceState *self) {
       using namespace std::chrono_literals;
-      const auto delays = {1s, 3s};
-      for (auto d : delays) {
-        if (st.stop_requested()) {
+      const std::array<std::chrono::milliseconds, 2> delays {250ms, 750ms};
+      for (auto delay : delays) {
+        if (!wait_with_stop(st, delay)) {
           return;
         }
-        std::this_thread::sleep_for(d);
-        if (st.stop_requested()) {
-          return;
+        if (self->configuration_matches_last()) {
+          continue;
         }
-        BOOST_LOG(info) << "Delayed re-apply attempt after activation";
+        BOOST_LOG(info) << "Delayed re-apply attempt after activation 213Q902";
         self->best_effort_apply_last_cfg();
       }
     }
@@ -2142,6 +2258,71 @@ namespace {
           refresh_shell_after_display_change();
         }
       } catch (...) {}
+    }
+
+    bool configuration_matches_last() const {
+      if (!last_cfg) {
+        return true;
+      }
+      return controller.configuration_matches_current_state(*last_cfg);
+    }
+
+    void cancel_post_apply_tasks() {
+      if (post_apply_thread.joinable()) {
+        post_apply_thread.request_stop();
+        post_apply_thread.join();
+      }
+    }
+
+    void schedule_post_apply_tasks(
+      bool enforce_snapshot,
+      std::optional<std::string> before_sig,
+      bool wa_hdr_toggle,
+      std::optional<std::string> requested_virtual_layout,
+      std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides
+    ) {
+      cancel_post_apply_tasks();
+      post_apply_thread = std::jthread(
+        [this,
+         enforce_snapshot,
+         before_sig = std::move(before_sig),
+         wa_hdr_toggle,
+         requested_virtual_layout = std::move(requested_virtual_layout),
+         monitor_position_overrides = std::move(monitor_position_overrides)
+        ](std::stop_token st) mutable {
+          if (enforce_snapshot && before_sig) {
+            display_device::DisplaySettingsSnapshot cur;
+            const bool got_stable = read_stable_snapshot(
+              cur,
+              std::chrono::milliseconds(600),
+              std::chrono::milliseconds(75),
+              st
+            );
+            (void) got_stable;
+          }
+
+          retry_apply_on_topology.store(false, std::memory_order_release);
+          schedule_delayed_reapply();
+          refresh_shell_after_display_change();
+          schedule_hdr_blank_if_needed(wa_hdr_toggle);
+
+          if (requested_virtual_layout) {
+            BOOST_LOG(info) << "Display helper: requested virtual display layout=" << *requested_virtual_layout;
+          }
+
+          if (!monitor_position_overrides.empty()) {
+            bool reposition_result = true;
+            for (const auto &[device_id, origin] : monitor_position_overrides) {
+              if (device_id.empty()) {
+                continue;
+              }
+              const bool ok_origin = controller.set_display_origin(device_id, origin);
+              reposition_result = reposition_result && ok_origin;
+            }
+            BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+          }
+        }
+      );
     }
   };
 
@@ -2540,17 +2721,18 @@ namespace {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
     state.cancel_delayed_reapply();
+    state.cancel_post_apply_tasks();
     state.exit_after_revert.store(false, std::memory_order_release);
 
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
     bool wa_hdr_toggle = false;
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
-    std::string sanitized_json = json;  // may strip helper-only fields
+    std::optional<display_device::ActiveTopology> sunshine_topology;
+    std::string sanitized_json = json;
     try {
       auto j = nlohmann::json::parse(json);
       if (j.is_object()) {
-        // Extract helper-only flags, then erase them so strict parsers accept the payload
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -2577,13 +2759,31 @@ namespace {
           }
           j.erase("sunshine_monitor_positions");
         }
-        if (j.contains("sunshine_topology")) {
+        if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
+          display_device::ActiveTopology topo;
+          for (const auto &grp_node : j["sunshine_topology"]) {
+            if (!grp_node.is_array()) {
+              continue;
+            }
+            std::vector<std::string> grp;
+            for (const auto &id_node : grp_node) {
+              if (!id_node.is_string()) {
+                continue;
+              }
+              grp.push_back(id_node.get<std::string>());
+            }
+            if (!grp.empty()) {
+              topo.push_back(std::move(grp));
+            }
+          }
+          if (!topo.empty()) {
+            sunshine_topology = std::move(topo);
+          }
           j.erase("sunshine_topology");
         }
         sanitized_json = j.dump();
       }
     } catch (...) {
-      // If parsing fails, proceed with the original string (legacy senders)
     }
 
     display_device::SingleDisplayConfiguration cfg {};
@@ -2666,39 +2866,29 @@ namespace {
     }
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
-    if (state.controller.soft_test_display_settings(cfg)) {
+    const bool enforce_snapshot = !state.session_saved.load(std::memory_order_acquire);
+
+    if (state.controller.soft_test_display_settings(cfg, sunshine_topology)) {
       BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
       const bool task_created = create_restore_scheduled_task();
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
 
-      const auto before_sig = state.controller.signature(state.controller.snapshot());
-      if (!state.controller.apply(cfg)) {
+      std::optional<std::string> before_sig;
+      if (enforce_snapshot) {
+        before_sig = state.controller.signature(state.controller.snapshot());
+      }
+      if (!state.controller.apply(cfg, sunshine_topology)) {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
       }
-      display_device::DisplaySettingsSnapshot cur;
-      const bool got_stable = state.read_stable_snapshot(cur);
-      const bool changed = got_stable ? (state.controller.signature(cur) != before_sig) : false;
-      if (!changed) {
-      }
       state.retry_apply_on_topology.store(false, std::memory_order_release);
-      state.schedule_delayed_reapply();
-      refresh_shell_after_display_change();
-      state.schedule_hdr_blank_if_needed(wa_hdr_toggle);
-      if (requested_virtual_layout) {
-        BOOST_LOG(info) << "Display helper: requested virtual display layout=" << *requested_virtual_layout;
-      }
-      if (!monitor_position_overrides.empty()) {
-        bool reposition_result = true;
-        for (const auto &[device_id, origin] : monitor_position_overrides) {
-          if (device_id.empty()) {
-            continue;
-          }
-          const bool ok_origin = state.controller.set_display_origin(device_id, origin);
-          reposition_result = reposition_result && ok_origin;
-        }
-        BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
-      }
+      state.schedule_post_apply_tasks(
+        enforce_snapshot,
+        std::move(before_sig),
+        wa_hdr_toggle,
+        requested_virtual_layout,
+        std::move(monitor_position_overrides)
+      );
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
       error_msg = "Display configuration failed validation";
@@ -2861,6 +3051,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (restore_mode) {
+    FreeConsole();
     hide_console_window();
   }
 
