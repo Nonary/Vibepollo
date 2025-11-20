@@ -31,6 +31,7 @@
 
 namespace confighttp {
   inline constexpr std::string_view session_cookie_name {"__Host-sunshine_session"};
+  inline constexpr std::string_view refresh_cookie_name {"__Host-sunshine_refresh"};
   using StatusCode = SimpleWeb::StatusCode;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
@@ -181,11 +182,14 @@ namespace confighttp {
     std::string username;
     std::chrono::system_clock::time_point created_at;
     std::chrono::system_clock::time_point expires_at;
+    std::chrono::system_clock::time_point refresh_expires_at;
     std::string user_agent;
     std::string remote_address;
     std::chrono::system_clock::time_point last_seen;
     bool remember_me;
     std::string device_label;
+    std::string refresh_token_hash;
+    std::string rotation_id;
   };
 
   struct SessionTokenView {
@@ -198,6 +202,14 @@ namespace confighttp {
     std::string user_agent;
     std::string remote_address;
     std::string device_label;
+  };
+
+  struct SessionTokenBundle {
+    std::string session_token;
+    std::string refresh_token;
+    std::chrono::seconds session_ttl;
+    std::chrono::seconds refresh_ttl;
+    bool remember_me;
   };
 
   struct SessionTokenManagerDependencies {
@@ -228,6 +240,25 @@ namespace confighttp {
      * @return Newly generated opaque token string.
      */
     std::string generate_session_token(const std::string &username, std::chrono::seconds lifetime = std::chrono::seconds::zero(), const std::string &user_agent = std::string {}, const std::string &remote_address = std::string {}, bool remember_me = false);
+    /**
+     * @brief Issue a new access + refresh token pair.
+     * @param username Account to bind.
+     * @param session_ttl Optional access token lifetime (falls back to config when zero).
+     * @param refresh_ttl Optional refresh token lifetime (defaults to sliding/remember-me policy).
+     * @param user_agent Reported user agent string.
+     * @param remote_address Source address.
+     * @param remember_me Whether to extend refresh lifetime for long-lived device trust.
+     * @return Bundle containing raw tokens and effective TTLs.
+     */
+    SessionTokenBundle issue_session_tokens(const std::string &username, std::chrono::seconds session_ttl = std::chrono::seconds::zero(), std::chrono::seconds refresh_ttl = std::chrono::seconds::zero(), const std::string &user_agent = std::string {}, const std::string &remote_address = std::string {}, bool remember_me = false);
+    /**
+     * @brief Refresh a session using a refresh token.
+     * @param refresh_token Raw refresh token value.
+     * @param user_agent Current user agent (for device labeling).
+     * @param remote_address Current client address.
+     * @return New token bundle if valid; std::nullopt otherwise.
+     */
+    std::optional<SessionTokenBundle> refresh_session_tokens(const std::string &refresh_token, const std::string &user_agent = std::string {}, const std::string &remote_address = std::string {});
     /**
      * @brief Validate a session token (and update internal state if expired).
      * @param token Opaque token string.
@@ -280,6 +311,12 @@ namespace confighttp {
      * @return `true` if a session was removed.
      */
     bool revoke_session_by_hash(const std::string &token_hash);
+    /**
+     * @brief Revoke a session using its refresh token value.
+     * @param refresh_token Raw refresh token.
+     * @return `true` if a session was removed.
+     */
+    bool revoke_refresh_token(const std::string &refresh_token);
 
   private:
     SessionTokenManagerDependencies _dependencies;  ///< Injected dependencies
@@ -302,6 +339,7 @@ namespace confighttp {
     };
 
     std::unordered_map<std::string, SessionToken, TransparentStringHash, std::equal_to<>> _session_tokens;  ///< Active session tokens keyed by hash
+    std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> _refresh_index;  ///< Maps refresh token hash -> session hash
     mutable bool _dirty = false;  ///< Tracks whether persistence is required
     mutable std::chrono::system_clock::time_point _last_persist;  ///< Last persistence timestamp
   };
@@ -344,13 +382,21 @@ namespace confighttp {
      * @param session_token Token to revoke.
      * @return Success or error response.
      */
-    APIResponse logout(const std::string &session_token);
+    APIResponse logout(const std::string &session_token, const std::string &refresh_token = std::string {});
     /**
      * @brief Validate a session token for an active session.
      * @param session_token Token to validate.
      * @return Response containing validity state.
      */
     APIResponse validate_session(const std::string &session_token);
+    /**
+     * @brief Refresh a session using a refresh token.
+     * @param refresh_token Refresh token value from cookie/header/body.
+     * @param user_agent User agent to associate with the renewed session.
+     * @param remote_address Remote address for device labeling.
+     * @return API response with new cookies and token payload.
+     */
+    APIResponse refresh_session(const std::string &refresh_token, const std::string &user_agent, const std::string &remote_address);
     /**
      * @brief List active sessions for the current user.
      * @param username_filter Optional username filter.
@@ -431,6 +477,12 @@ namespace confighttp {
    * @return Token string (may be empty if not present).
    */
   std::string extract_session_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers);
+  /**
+   * @brief Extract refresh token from Cookie headers.
+   * @param headers Case-insensitive header multimap.
+   * @return Token string (may be empty if not present).
+   */
+  std::string extract_refresh_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers);
   extern ApiTokenManager api_token_manager;
   extern SessionTokenManager session_token_manager;
   extern SessionTokenAPI session_token_api;

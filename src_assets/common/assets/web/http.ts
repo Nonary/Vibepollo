@@ -12,6 +12,34 @@ export const http = axios.create({
 });
 
 let authInitialized = false;
+let refreshPromise: Promise<boolean> | null = null;
+
+export async function refreshSession(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+  const auth = useAuthStore();
+  const cfg: any = {
+    validateStatus: () => true,
+    headers: {
+      'X-Skip-Auth-Refresh': '1',
+    },
+  };
+  cfg.__skipAuthRefresh = true;
+  refreshPromise = http
+    .post('/api/auth/refresh', {}, cfg)
+    .then((res) => {
+      if (res?.status === 200 && res.data && (res.data as any).status) {
+        auth.setAuthenticated(true);
+        return true;
+      }
+      auth.setAuthenticated(false);
+      return false;
+    })
+    .catch(() => false)
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
+}
 
 function initAuthHandling(): void {
   if (authInitialized) return;
@@ -36,7 +64,7 @@ function initAuthHandling(): void {
         return Promise.reject(err);
       }
       const allowWhenLoggedOut =
-        /(\s*\/api\/auth\/(login|status)\b|\s*\/api\/password\b|\s*\/api\/configLocale\b)/.test(
+        /(\s*\/api\/auth\/(login|status|refresh)\b|\s*\/api\/password\b|\s*\/api\/configLocale\b)/.test(
           path,
         );
       if (!auth.isAuthenticated && !allowWhenLoggedOut) {
@@ -68,11 +96,6 @@ function initAuthHandling(): void {
           window.dispatchEvent(new CustomEvent('sunshine:online'));
         }
       } catch {}
-      if (response?.status === 401) {
-        if (auth.isAuthenticated) auth.setAuthenticated(false);
-        // Suppress login modal if user explicitly logged out
-        if (!(auth as any).logoutInitiated) triggerLoginModal();
-      }
       return response;
     },
     async (error: AxiosError) => {
@@ -94,9 +117,26 @@ function initAuthHandling(): void {
           }
         }
       } catch {}
-      if (error?.response?.status === 401) {
+      const status = error?.response?.status;
+      const originalRequest: any = error.config || {};
+      const skipAuthRetry =
+        originalRequest?.__skipAuthRefresh === true ||
+        (originalRequest?.headers && originalRequest.headers['X-Skip-Auth-Refresh']);
+      const isAuthRequest = /\/api\/auth\/(login|refresh)\b/.test(String(originalRequest?.url || ''));
+      const userLoggedOut = (auth as any).logoutInitiated === true;
+
+      if (status === 401 && !skipAuthRetry && !isAuthRequest && !userLoggedOut) {
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          originalRequest.__skipAuthRefresh = true;
+          originalRequest.__isRetryRequest = true;
+          return http(originalRequest);
+        }
+      }
+
+      if (status === 401) {
         if (auth.isAuthenticated) auth.setAuthenticated(false);
-        if (!(auth as any).logoutInitiated) triggerLoginModal();
+        if (!userLoggedOut) triggerLoginModal();
       } else if (
         error?.response?.status === 400 &&
         error?.response?.data &&

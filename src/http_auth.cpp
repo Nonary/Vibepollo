@@ -44,6 +44,7 @@ namespace confighttp {
 
   namespace {
     constexpr std::chrono::seconds remember_me_token_ttl {std::chrono::hours(24 * 30)};
+    constexpr std::chrono::seconds default_refresh_token_ttl {std::chrono::hours(24)};
 
     std::string detect_os(const std::string &ua_lower) {
       using boost::algorithm::icontains;
@@ -465,22 +466,149 @@ namespace confighttp {
   }
 
   std::string SessionTokenManager::generate_session_token(const std::string &username, std::chrono::seconds lifetime, const std::string &user_agent, const std::string &remote_address, bool remember_me) {
-    std::string token = _dependencies.rand_alphabet(64);
-    std::string token_hash = _dependencies.hash(token);
-    auto now = _dependencies.now();
-    if (lifetime <= std::chrono::seconds::zero()) {
-      lifetime = config::sunshine.session_token_ttl;
+    return issue_session_tokens(username, lifetime, std::chrono::seconds::zero(), user_agent, remote_address, remember_me).session_token;
+  }
+
+  SessionTokenBundle SessionTokenManager::issue_session_tokens(const std::string &username, std::chrono::seconds session_ttl, std::chrono::seconds refresh_ttl, const std::string &user_agent, const std::string &remote_address, bool remember_me) {
+    if (session_ttl <= std::chrono::seconds::zero()) {
+      session_ttl = config::sunshine.session_token_ttl;
     }
-    auto expires = now + lifetime;
+    if (refresh_ttl <= std::chrono::seconds::zero()) {
+      refresh_ttl = remember_me ? remember_me_token_ttl : default_refresh_token_ttl;
+    }
+    if (refresh_ttl < session_ttl) {
+      refresh_ttl = session_ttl;
+    }
+
+    auto now = _dependencies.now();
+    auto refresh_expires_at = now + refresh_ttl;
+    auto session_expires_at = std::min(now + session_ttl, refresh_expires_at);
+
+    std::string session_token = _dependencies.rand_alphabet(64);
+    std::string refresh_token = _dependencies.rand_alphabet(64);
+    std::string session_hash = _dependencies.hash(session_token);
+    std::string refresh_hash = _dependencies.hash(refresh_token);
     std::string device_label = derive_device_label(user_agent, remote_address);
+    std::string rotation_id = _dependencies.rand_alphabet(24);
+
     {
       std::scoped_lock lock(_mutex);
-      _session_tokens[token_hash] = SessionToken {username, now, expires, user_agent, remote_address, now, remember_me, device_label};
+      SessionToken token {
+        username,
+        now,
+        session_expires_at,
+        refresh_expires_at,
+        user_agent,
+        remote_address,
+        now,
+        remember_me,
+        device_label,
+        refresh_hash,
+        rotation_id,
+      };
+      _session_tokens.erase(session_hash);
+      _session_tokens.emplace(session_hash, std::move(token));
+      _refresh_index[refresh_hash] = session_hash;
       _dirty = true;
     }
+
     cleanup_expired_session_tokens();
     save_session_tokens();
-    return token;
+
+    SessionTokenBundle bundle;
+    bundle.session_token = std::move(session_token);
+    bundle.refresh_token = std::move(refresh_token);
+    bundle.session_ttl = std::chrono::duration_cast<std::chrono::seconds>(session_expires_at - now);
+    bundle.refresh_ttl = std::chrono::duration_cast<std::chrono::seconds>(refresh_expires_at - now);
+    bundle.remember_me = remember_me;
+    return bundle;
+  }
+
+  std::optional<SessionTokenBundle> SessionTokenManager::refresh_session_tokens(const std::string &refresh_token, const std::string &user_agent, const std::string &remote_address) {
+    if (refresh_token.empty()) {
+      return std::nullopt;
+    }
+
+    auto now = _dependencies.now();
+    std::string refresh_hash = _dependencies.hash(refresh_token);
+    std::optional<SessionTokenBundle> result;
+    bool needs_persist = false;
+    bool invalid = false;
+
+    {
+      std::scoped_lock lock(_mutex);
+      auto ref_it = _refresh_index.find(refresh_hash);
+      if (ref_it == _refresh_index.end()) {
+        return std::nullopt;
+      }
+
+      auto sess_it = _session_tokens.find(ref_it->second);
+      if (sess_it == _session_tokens.end()) {
+        _refresh_index.erase(ref_it);
+        _dirty = true;
+        needs_persist = true;
+        invalid = true;
+      }
+      if (!invalid) {
+        auto &entry = sess_it->second;
+        if (now > entry.refresh_expires_at) {
+          _refresh_index.erase(ref_it);
+          _session_tokens.erase(sess_it);
+          _dirty = true;
+          needs_persist = true;
+          invalid = true;
+        } else {
+          const bool remember_me = entry.remember_me;
+          auto session_ttl = config::sunshine.session_token_ttl;
+          auto refresh_expires_at = entry.refresh_expires_at;  // keep absolute lifetime; no sliding extension
+          auto session_expires_at = std::min(now + session_ttl, refresh_expires_at);
+
+          std::string new_session_token = _dependencies.rand_alphabet(64);
+          std::string new_refresh_token = _dependencies.rand_alphabet(64);
+          std::string new_session_hash = _dependencies.hash(new_session_token);
+          std::string new_refresh_hash = _dependencies.hash(new_refresh_token);
+          std::string device_label = derive_device_label(user_agent, remote_address);
+          std::string rotation_id = _dependencies.rand_alphabet(24);
+
+          SessionToken updated {
+            entry.username,
+            now,
+            session_expires_at,
+            refresh_expires_at,
+            user_agent,
+            remote_address,
+            now,
+            remember_me,
+            device_label,
+            new_refresh_hash,
+            rotation_id,
+          };
+
+          _session_tokens.erase(sess_it);
+          _refresh_index.erase(ref_it);
+          _session_tokens.emplace(new_session_hash, std::move(updated));
+          _refresh_index[new_refresh_hash] = new_session_hash;
+          _dirty = true;
+          needs_persist = true;
+
+          result = SessionTokenBundle {
+            std::move(new_session_token),
+            std::move(new_refresh_token),
+            std::chrono::duration_cast<std::chrono::seconds>(session_expires_at - now),
+            std::chrono::duration_cast<std::chrono::seconds>(refresh_expires_at - now),
+            remember_me,
+          };
+        }
+      }
+    }
+
+    if (needs_persist) {
+      save_session_tokens();
+    }
+    if (invalid) {
+      return std::nullopt;
+    }
+    return result;
   }
 
   bool SessionTokenManager::validate_session_token(const std::string &token) {
@@ -494,11 +622,17 @@ namespace confighttp {
         return false;
       }
       auto now = _dependencies.now();
-      if (now > it->second.expires_at) {
+      if (now > it->second.refresh_expires_at) {
+        if (!it->second.refresh_token_hash.empty()) {
+          _refresh_index.erase(it->second.refresh_token_hash);
+        }
         _session_tokens.erase(it);
         _dirty = true;
         should_persist = true;
         return false;
+      }
+      if (now > it->second.expires_at) {
+        return false;  // access token expired but refresh token may still be valid
       }
       valid = true;
       if (now - it->second.last_seen >= std::chrono::minutes(5)) {
@@ -522,7 +656,11 @@ namespace confighttp {
     bool removed = false;
     {
       std::scoped_lock lock(_mutex);
-      if (_session_tokens.erase(token_hash) > 0) {
+      if (auto it = _session_tokens.find(token_hash); it != _session_tokens.end()) {
+        if (!it->second.refresh_token_hash.empty()) {
+          _refresh_index.erase(it->second.refresh_token_hash);
+        }
+        _session_tokens.erase(it);
         removed = true;
         _dirty = true;
       }
@@ -533,13 +671,39 @@ namespace confighttp {
     return removed;
   }
 
+  bool SessionTokenManager::revoke_refresh_token(const std::string &refresh_token) {
+    if (refresh_token.empty()) {
+      return false;
+    }
+    std::string refresh_hash = _dependencies.hash(refresh_token);
+    std::optional<std::string> session_hash;
+    {
+      std::scoped_lock lock(_mutex);
+      auto it = _refresh_index.find(refresh_hash);
+      if (it == _refresh_index.end()) {
+        return false;
+      }
+      session_hash = it->second;
+    }
+    if (session_hash) {
+      return revoke_session_by_hash(*session_hash);
+    }
+    return false;
+  }
+
   bool SessionTokenManager::cleanup_expired_session_tokens() {
     bool removed = false;
     {
       std::scoped_lock lock(_mutex);
       auto now = _dependencies.now();
-      auto erased = std::erase_if(_session_tokens, [now](const auto &pair) {
-        return now > pair.second.expires_at;
+      auto erased = std::erase_if(_session_tokens, [&](const auto &pair) {
+        if (now > pair.second.refresh_expires_at) {
+          if (!pair.second.refresh_token_hash.empty()) {
+            _refresh_index.erase(pair.second.refresh_token_hash);
+          }
+          return true;
+        }
+        return false;
       });
       if (erased > 0) {
         removed = true;
@@ -560,10 +724,16 @@ namespace confighttp {
         return std::nullopt;
       }
       auto now = _dependencies.now();
-      if (now > it->second.expires_at) {
+      if (now > it->second.refresh_expires_at) {
+        if (!it->second.refresh_token_hash.empty()) {
+          _refresh_index.erase(it->second.refresh_token_hash);
+        }
         _session_tokens.erase(it);
         _dirty = true;
         should_persist = true;
+        return std::nullopt;
+      }
+      if (now > it->second.expires_at) {
         return std::nullopt;
       }
       username = it->second.username;
@@ -587,7 +757,12 @@ namespace confighttp {
   std::optional<std::string> SessionTokenManager::get_hash_for_token(const std::string &token) const {
     std::scoped_lock lock(_mutex);
     std::string token_hash = _dependencies.hash(token);
-    if (_session_tokens.find(token_hash) == _session_tokens.end()) {
+    auto it = _session_tokens.find(token_hash);
+    if (it == _session_tokens.end()) {
+      return std::nullopt;
+    }
+    auto now = _dependencies.now();
+    if (now > it->second.refresh_expires_at || now > it->second.expires_at) {
       return std::nullopt;
     }
     return token_hash;
@@ -634,8 +809,15 @@ namespace confighttp {
         node.put("username", token.username);
         node.put("created_at", std::chrono::duration_cast<std::chrono::seconds>(token.created_at.time_since_epoch()).count());
         node.put("expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.expires_at.time_since_epoch()).count());
+        node.put("refresh_expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.refresh_expires_at.time_since_epoch()).count());
         node.put("last_seen", std::chrono::duration_cast<std::chrono::seconds>(token.last_seen.time_since_epoch()).count());
         node.put("remember_me", token.remember_me);
+        if (!token.refresh_token_hash.empty()) {
+          node.put("refresh_token_hash", token.refresh_token_hash);
+        }
+        if (!token.rotation_id.empty()) {
+          node.put("rotation_id", token.rotation_id);
+        }
         if (!token.user_agent.empty()) {
           node.put("user_agent", token.user_agent);
         }
@@ -693,6 +875,7 @@ namespace confighttp {
     {
       std::scoped_lock lock(_mutex);
       _session_tokens.clear();
+      _refresh_index.clear();
       if (!have_root || load_failed) {
         _dirty = false;
         _last_persist = now;
@@ -710,9 +893,13 @@ namespace confighttp {
           token.created_at = std::chrono::system_clock::time_point(std::chrono::seconds(created_secs));
           auto expires_secs = node.get<std::int64_t>("expires_at", 0);
           token.expires_at = std::chrono::system_clock::time_point(std::chrono::seconds(expires_secs));
+          auto refresh_expires_secs = node.get<std::int64_t>("refresh_expires_at", expires_secs);
+          token.refresh_expires_at = std::chrono::system_clock::time_point(std::chrono::seconds(refresh_expires_secs));
           auto last_seen_secs = node.get<std::int64_t>("last_seen", created_secs);
           token.last_seen = std::chrono::system_clock::time_point(std::chrono::seconds(last_seen_secs));
           token.remember_me = node.get<bool>("remember_me", false);
+          token.refresh_token_hash = node.get<std::string>("refresh_token_hash", "");
+          token.rotation_id = node.get<std::string>("rotation_id", "");
           token.user_agent = node.get<std::string>("user_agent", "");
           token.remote_address = node.get<std::string>("remote_address", "");
           token.device_label = node.get<std::string>("device_label", "");
@@ -720,10 +907,22 @@ namespace confighttp {
             token.device_label = derive_device_label(token.user_agent, token.remote_address);
             needs_resave = true;
           }
-          if (now > token.expires_at) {
+          if (token.refresh_token_hash.empty()) {
+            // Legacy sessions without refresh support expire with the access token
+            token.refresh_token_hash.clear();
+            token.refresh_expires_at = token.expires_at;
+          }
+          if (token.expires_at > token.refresh_expires_at) {
+            token.expires_at = token.refresh_expires_at;
+            needs_resave = true;
+          }
+          if (now > token.refresh_expires_at) {
             continue;
           }
-          _session_tokens.emplace(std::move(hash), std::move(token));
+          auto inserted = _session_tokens.emplace(hash, std::move(token));
+          if (inserted.second && !inserted.first->second.refresh_token_hash.empty()) {
+            _refresh_index[inserted.first->second.refresh_token_hash] = inserted.first->first;
+          }
         }
       }
       _dirty = needs_resave;
@@ -737,8 +936,12 @@ namespace confighttp {
   std::vector<SessionTokenView> SessionTokenManager::list_sessions(const std::string &username_filter) const {
     std::vector<SessionTokenView> out;
     std::scoped_lock lock(_mutex);
+    auto now = _dependencies.now();
     out.reserve(_session_tokens.size());
     for (const auto &[hash, token] : _session_tokens) {
+      if (now > token.refresh_expires_at) {
+        continue;
+      }
       if (!username_filter.empty() && !boost::iequals(token.username, username_filter)) {
         continue;
       }
@@ -766,12 +969,19 @@ namespace confighttp {
       return create_error_response("Invalid credentials", StatusCode::client_error_unauthorized);
     }
 
-    auto lifetime = remember_me ? remember_me_token_ttl : config::sunshine.session_token_ttl;
-    std::string session_token = _session_manager.generate_session_token(username, lifetime, user_agent, remote_address, remember_me);
+    auto issued = _session_manager.issue_session_tokens(
+      username,
+      config::sunshine.session_token_ttl,
+      std::chrono::seconds::zero(),
+      user_agent,
+      remote_address,
+      remember_me
+    );
 
     nlohmann::json response_data;
-    response_data["token"] = session_token;
-    response_data["expires_in"] = std::chrono::duration_cast<std::chrono::seconds>(lifetime).count();
+    response_data["token"] = issued.session_token;
+    response_data["expires_in"] = issued.session_ttl.count();
+    response_data["refresh_expires_in"] = issued.refresh_ttl.count();
     response_data["remember_me"] = remember_me;
 
     // Hardened secure redirect handling
@@ -799,16 +1009,24 @@ namespace confighttp {
 
     // Set session cookie with Secure if HTTPS or localhost
     // Percent-encode token for safe cookie storage
-    std::string encoded = http::cookie_escape(session_token);
-    std::string cookie = std::string(session_cookie_name) + "=" + encoded + "; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High";
-    if (remember_me) {
-      cookie += std::format("; Max-Age={}", std::chrono::duration_cast<std::chrono::seconds>(lifetime).count());
-      auto expires_at = std::chrono::system_clock::now() + lifetime;
+    auto now = std::chrono::system_clock::now();
+    auto append_expiry = [&](std::string &cookie, std::chrono::seconds ttl) {
+      cookie += std::format("; Max-Age={}", ttl.count());
+      auto expires_at = now + ttl;
       if (auto expires_str = format_cookie_expires(expires_at); !expires_str.empty()) {
         cookie += "; Expires=" + expires_str;
       }
-    }
-    response.headers.emplace("Set-Cookie", cookie);
+    };
+
+    std::string encoded_session = http::cookie_escape(issued.session_token);
+    std::string session_cookie = std::string(session_cookie_name) + "=" + encoded_session + "; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High";
+    append_expiry(session_cookie, issued.session_ttl);
+    response.headers.emplace("Set-Cookie", session_cookie);
+
+    std::string encoded_refresh = http::cookie_escape(issued.refresh_token);
+    std::string refresh_cookie = std::string(refresh_cookie_name) + "=" + encoded_refresh + "; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High";
+    append_expiry(refresh_cookie, issued.refresh_ttl);
+    response.headers.emplace("Set-Cookie", refresh_cookie);
 
     // Set CORS header for localhost only (no wildcard), dynamically set port
     std::uint16_t https_port = net::map_port(nvhttp::PORT_HTTPS);
@@ -818,9 +1036,11 @@ namespace confighttp {
     return response;
   }
 
-  APIResponse SessionTokenAPI::logout(const std::string &session_token) {
+  APIResponse SessionTokenAPI::logout(const std::string &session_token, const std::string &refresh_token) {
     if (!session_token.empty()) {
       _session_manager.revoke_session_token(session_token);
+    } else if (!refresh_token.empty()) {
+      _session_manager.revoke_refresh_token(refresh_token);
     }
 
     nlohmann::json response_data;
@@ -830,7 +1050,9 @@ namespace confighttp {
     APIResponse response = create_success_response(response_data);
     // Set-Cookie header to clear the session token on client
     std::string clear_cookie = std::string(session_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
+    std::string clear_refresh_cookie = std::string(refresh_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
     response.headers.emplace("Set-Cookie", clear_cookie);
+    response.headers.emplace("Set-Cookie", clear_refresh_cookie);
     return response;
   }
 
@@ -844,6 +1066,46 @@ namespace confighttp {
     }
 
     return create_success_response();
+  }
+
+  APIResponse SessionTokenAPI::refresh_session(const std::string &refresh_token, const std::string &user_agent, const std::string &remote_address) {
+    if (refresh_token.empty()) {
+      return create_error_response("Refresh token required", StatusCode::client_error_unauthorized);
+    }
+
+    auto refreshed = _session_manager.refresh_session_tokens(refresh_token, user_agent, remote_address);
+    if (!refreshed) {
+      return create_error_response("Invalid or expired refresh token", StatusCode::client_error_unauthorized);
+    }
+
+    nlohmann::json response_data;
+    response_data["token"] = refreshed->session_token;
+    response_data["expires_in"] = refreshed->session_ttl.count();
+    response_data["refresh_expires_in"] = refreshed->refresh_ttl.count();
+    response_data["remember_me"] = refreshed->remember_me;
+
+    APIResponse response = create_success_response(response_data);
+
+    auto now = std::chrono::system_clock::now();
+    auto append_expiry = [&](std::string &cookie, std::chrono::seconds ttl) {
+      cookie += std::format("; Max-Age={}", ttl.count());
+      auto expires_at = now + ttl;
+      if (auto expires_str = format_cookie_expires(expires_at); !expires_str.empty()) {
+        cookie += "; Expires=" + expires_str;
+      }
+    };
+
+    std::string encoded_session = http::cookie_escape(refreshed->session_token);
+    std::string session_cookie = std::string(session_cookie_name) + "=" + encoded_session + "; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High";
+    append_expiry(session_cookie, refreshed->session_ttl);
+    response.headers.emplace("Set-Cookie", session_cookie);
+
+    std::string encoded_refresh = http::cookie_escape(refreshed->refresh_token);
+    std::string refresh_cookie = std::string(refresh_cookie_name) + "=" + encoded_refresh + "; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High";
+    append_expiry(refresh_cookie, refreshed->refresh_ttl);
+    response.headers.emplace("Set-Cookie", refresh_cookie);
+
+    return response;
   }
 
   APIResponse SessionTokenAPI::list_sessions(const std::string &username_filter, const std::string &active_session_hash) const {
@@ -1103,20 +1365,29 @@ namespace confighttp {
     return make_auth_error(StatusCode::client_error_unauthorized, "Unauthorized");
   }
 
-  std::string extract_session_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers) {
-    if (auto cookie_it = headers.find("Cookie"); cookie_it != headers.end()) {
-      const std::string &cookies = cookie_it->second;
-      const std::string prefix = std::string(session_cookie_name) + "=";
-      auto pos = cookies.find(prefix);
-      if (pos != std::string::npos) {
-        pos += prefix.size();
-        auto end = cookies.find(';', pos);
-        // Decode percent-encoded session token
-        auto raw = cookies.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-        return http::cookie_unescape(raw);
+  namespace {
+    std::string extract_cookie_value(const SimpleWeb::CaseInsensitiveMultimap &headers, std::string_view name) {
+      if (auto cookie_it = headers.find("Cookie"); cookie_it != headers.end()) {
+        const std::string &cookies = cookie_it->second;
+        const std::string prefix = std::string(name) + "=";
+        auto pos = cookies.find(prefix);
+        if (pos != std::string::npos) {
+          pos += prefix.size();
+          auto end = cookies.find(';', pos);
+          auto raw = cookies.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+          return http::cookie_unescape(raw);
+        }
       }
+      return {};
     }
-    return {};
+  }  // namespace
+
+  std::string extract_session_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers) {
+    return extract_cookie_value(headers, session_cookie_name);
+  }
+
+  std::string extract_refresh_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers) {
+    return extract_cookie_value(headers, refresh_cookie_name);
   }
 
 }  // namespace confighttp
