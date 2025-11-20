@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, Ref } from 'vue';
-import { http } from '@/http';
+import { http, refreshSession } from '@/http';
 
 const rememberStorageKey = 'sunshine.auth.remember';
 
@@ -114,7 +114,15 @@ export const useAuthStore = defineStore('auth', () => {
       let status = await fetchStatus();
       let requiresLogin = applyStatus(status);
 
-      if (requiresLogin && preferRemember) {
+      if (requiresLogin && !logoutInitiated.value) {
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          status = await fetchStatus();
+          requiresLogin = applyStatus(status);
+        }
+      }
+
+      if (requiresLogin && preferRemember && !logoutInitiated.value) {
         const retryDelays = [250, 600];
         for (const delay of retryDelays) {
           await new Promise<void>((resolve) => setTimeout(resolve, delay));

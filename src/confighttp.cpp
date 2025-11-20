@@ -2760,6 +2760,7 @@ namespace confighttp {
     // Session validation endpoint used by the web UI to detect HttpOnly session cookies
     server.resource["^/api-tokens/?$"]["GET"] = getTokenPage;
     server.resource["^/api/auth/login$"]["POST"] = loginUser;
+    server.resource["^/api/auth/refresh$"]["POST"] = refreshSession;
     server.resource["^/api/auth/logout$"]["POST"] = logoutUser;
     server.resource["^/api/auth/status$"]["GET"] = authStatus;
     server.resource["^/api/auth/sessions$"]["GET"] = listSessions;
@@ -2913,13 +2914,50 @@ namespace confighttp {
       }
       std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
 
-      APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
-      write_api_response(response, api_response);
+    APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
+    write_api_response(response, api_response);
 
-    } catch (const nlohmann::json::exception &e) {
-      BOOST_LOG(warning) << "Login JSON error:"sv << e.what();
-      bad_request(response, request, "Invalid JSON format");
+  } catch (const nlohmann::json::exception &e) {
+    BOOST_LOG(warning) << "Login JSON error:"sv << e.what();
+    bad_request(response, request, "Invalid JSON format");
+  }
+}
+
+  void refreshSession(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    std::string refresh_token;
+    if (auto auth = request->header.find("authorization");
+        auth != request->header.end() && auth->second.rfind("Refresh ", 0) == 0) {
+      refresh_token = auth->second.substr(8);
     }
+    if (refresh_token.empty()) {
+      refresh_token = extract_refresh_token_from_cookie(request->header);
+    }
+
+    // Allow JSON body input for API clients that do not rely on cookies/Authorization header
+    if (refresh_token.empty()) {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      if (!ss.str().empty()) {
+        try {
+          auto body = nlohmann::json::parse(ss);
+          if (auto it = body.find("refresh_token"); it != body.end() && it->is_string()) {
+            refresh_token = it->get<std::string>();
+          }
+        } catch (const nlohmann::json::exception &) {
+        }
+      }
+    }
+
+    std::string user_agent;
+    if (auto ua = request->header.find("user-agent"); ua != request->header.end()) {
+      user_agent = ua->second;
+    }
+    std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
+
+    APIResponse api_response = session_token_api.refresh_session(refresh_token, user_agent, remote_address);
+    write_api_response(response, api_response);
   }
 
   /**
@@ -2941,7 +2979,9 @@ namespace confighttp {
       session_token = extract_session_token_from_cookie(request->header);
     }
 
-    APIResponse api_response = session_token_api.logout(session_token);
+    std::string refresh_token = extract_refresh_token_from_cookie(request->header);
+
+    APIResponse api_response = session_token_api.logout(session_token, refresh_token);
     write_api_response(response, api_response);
   }
 
@@ -3000,7 +3040,9 @@ namespace confighttp {
     APIResponse api_response = session_token_api.revoke_session_by_hash(session_hash);
     if (api_response.status_code == StatusCode::success_ok && is_current) {
       std::string clear_cookie = std::string(session_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
+      std::string clear_refresh_cookie = std::string(refresh_cookie_name) + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Priority=High; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
       api_response.headers.emplace("Set-Cookie", std::move(clear_cookie));
+      api_response.headers.emplace("Set-Cookie", std::move(clear_refresh_cookie));
     }
     write_api_response(response, api_response);
   }

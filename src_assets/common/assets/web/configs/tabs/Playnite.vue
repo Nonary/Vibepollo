@@ -988,29 +988,6 @@ async function loadPlugins() {
   }
   pluginsLoading.value = true;
   try {
-    try {
-      const rp = await http.get('/api/playnite/plugins', { validateStatus: () => true });
-      if (rp.status >= 200 && rp.status < 300 && Array.isArray(rp.data) && rp.data.length) {
-        const opts = (rp.data as any[])
-          .map((p) => {
-            if (p && typeof p === 'object') {
-              const id = String((p as any).id || '');
-              const name = String((p as any).name || '');
-              const value = id || name;
-              if (!value || value === NULL_GUID) return null;
-              return { value, label: name || value };
-            }
-            const s = String(p || '');
-            return s && s !== NULL_GUID ? { value: s, label: s } : null;
-          })
-          .filter((x): x is { label: string; value: string } => !!x)
-          .sort((a, b) => a.label.localeCompare(b.label));
-        pluginOptions.value = opts;
-        ensurePluginOptionsIncludeSelection();
-        return;
-      }
-    } catch {}
-
     const map = new Map<string, string>();
     const ingestGames = (rows: GameRow[]) => {
       for (const g of rows) {

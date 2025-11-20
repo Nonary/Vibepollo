@@ -253,7 +253,6 @@ async function refreshLogs() {
     const r = await http.get('./api/logs', {
       responseType: 'text',
       transformResponse: [(v) => v],
-      validateStatus: () => true,
     });
     if (r.status !== 200 || typeof r.data !== 'string') return;
     const prev = logs.value || '';

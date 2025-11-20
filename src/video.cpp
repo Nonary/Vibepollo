@@ -128,7 +128,21 @@ namespace video {
 
       display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
 
-      if (!should_prefer_virtual_display()) {
+      const auto current_override = config::runtime_output_name_override();
+      const bool force_virtual_preference = should_prefer_virtual_display() || (current_override && !current_override->empty());
+
+      // If a runtime override is present, honor it immediately when available.
+      if (current_override) {
+        for (int i = 0; i < static_cast<int>(display_names.size()); ++i) {
+          if (boost::iequals(display_names[i], *current_override)) {
+            display_index = i;
+            wait_start = {};
+            return true;
+          }
+        }
+      }
+
+      if (!force_virtual_preference) {
         wait_start = {};
         return true;
       }
@@ -138,6 +152,10 @@ namespace video {
           if (boost::iequals(display_names[i], *desired_name)) {
             display_index = i;
             wait_start = {};
+            const auto current_override = config::runtime_output_name_override();
+            if (!current_override || !boost::iequals(*current_override, display_names[i])) {
+              config::set_runtime_output_name_override(display_names[i]);
+            }
             return true;
           }
         }

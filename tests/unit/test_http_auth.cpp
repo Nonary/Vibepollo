@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <vector>
 
 using namespace confighttp;
 using namespace testing;
@@ -352,6 +353,56 @@ TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
   config::nvhttp.file_state = original_state_file;
   config::sunshine.session_token_ttl = original_ttl;
   config::sunshine.username = original_username;
+}
+
+TEST(SessionTokenManagerStatefulTest, RefreshTokenRenewsExpiredAccessToken) {
+  SessionTokenManagerDependencies deps;
+  std::vector<std::string> token_stream {"session-1", "refresh-1", "rot-1", "session-2", "refresh-2", "rot-2"};
+  deps.rand_alphabet = [&token_stream](std::size_t) {
+    if (token_stream.empty()) {
+      return std::string("fallback");
+    }
+    auto value = token_stream.front();
+    token_stream.erase(token_stream.begin());
+    return value;
+  };
+  auto now = std::chrono::system_clock::now();
+  deps.now = [&]() {
+    return now;
+  };
+  deps.hash = [](const std::string &input) {
+    return input + "_hash";
+  };
+  deps.file_exists = [](const std::string &) {
+    return false;
+  };
+  deps.read_json = [](const std::string &, pt::ptree &) {};
+  deps.write_json = [](const std::string &, const pt::ptree &) {};
+
+  SessionTokenManager manager(deps);
+  auto bundle = manager.issue_session_tokens(
+    "admin",
+    std::chrono::seconds(5),
+    std::chrono::seconds(60),
+    "AgentA",
+    "127.0.0.1",
+    true
+  );
+
+  EXPECT_EQ(bundle.session_token, "session-1");
+  EXPECT_EQ(bundle.refresh_token, "refresh-1");
+
+  // Advance past access expiry but before refresh expiry
+  now += std::chrono::seconds(6);
+  EXPECT_FALSE(manager.validate_session_token(bundle.session_token));
+
+  auto refreshed = manager.refresh_session_tokens(bundle.refresh_token, "AgentB", "10.0.0.5");
+  ASSERT_TRUE(refreshed.has_value());
+  EXPECT_EQ(refreshed->session_token, "session-2");
+  EXPECT_EQ(refreshed->refresh_token, "refresh-2");
+
+  EXPECT_FALSE(manager.refresh_session_tokens(bundle.refresh_token, "AgentB", "10.0.0.5").has_value());
+  EXPECT_TRUE(manager.validate_session_token(refreshed->session_token));
 }
 
 TEST_F(ApiTokenManagerTest, given_invalid_token_when_authenticating_then_should_return_false) {

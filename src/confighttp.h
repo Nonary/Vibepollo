@@ -54,6 +54,7 @@ namespace confighttp {
   void revokeApiToken(resp_https_t response, req_https_t request);
   void getTokenPage(resp_https_t response, req_https_t request);
   void loginUser(resp_https_t response, req_https_t request);
+  void refreshSession(resp_https_t response, req_https_t request);
   void authStatus(resp_https_t response, req_https_t request);
   void logoutUser(resp_https_t response, req_https_t request);
   void getSpaEntry(resp_https_t response, req_https_t request);

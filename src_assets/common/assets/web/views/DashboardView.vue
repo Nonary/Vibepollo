@@ -514,7 +514,13 @@ async function runVersionChecks() {
   }
   try {
     // logs only after auth
-    logs.value = await fetch('./api/logs').then((r) => r.text());
+    const r = await http.get('./api/logs', {
+      responseType: 'text',
+      transformResponse: [(v) => v],
+    });
+    if (r.status === 200 && typeof r.data === 'string') {
+      logs.value = r.data;
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[Dashboard] logs fetch failed', e);
