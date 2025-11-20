@@ -542,6 +542,15 @@ namespace {
     // Save snapshot to file as JSON-like format.
     bool save_display_settings_snapshot_to_file(const std::filesystem::path &path) const {
       auto snap = snapshot();
+      if (!is_topology_valid(snap)) {
+        BOOST_LOG(warning) << "Skipping display snapshot save; topology is invalid or empty for path="
+                           << path.string();
+        return false;
+      }
+      if (snap.m_modes.empty()) {
+        BOOST_LOG(warning) << "Skipping display snapshot save; mode set is empty for path=" << path.string();
+        return false;
+      }
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       FILE *f = _wfopen(path.wstring().c_str(), L"wb");
@@ -2717,6 +2726,22 @@ namespace {
     }
   }
 
+  bool validate_session_snapshot(ServiceState &state, const std::filesystem::path &path) {
+    auto snap = state.controller.load_display_settings_snapshot(path);
+    if (!snap) {
+      BOOST_LOG(warning) << "Existing session snapshot could not be parsed; removing path=" << path.string();
+    } else if (!state.controller.is_topology_valid(*snap) || snap->m_modes.empty()) {
+      BOOST_LOG(warning) << "Existing session snapshot is invalid (topology or modes missing); removing path="
+                         << path.string();
+    } else {
+      return true;
+    }
+
+    std::error_code ec_rm;
+    std::filesystem::remove(path, ec_rm);
+    return false;
+  }
+
   bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
@@ -3087,17 +3112,21 @@ int main(int argc, char *argv[]) {
       const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);
       const bool legacy_exists = std::filesystem::exists(state.session_path, ec_legacy);
       if (cur_exists && !ec_cur) {
-        state.session_saved.store(true, std::memory_order_release);
-        BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
-                        << state.session_current_path.string();
+        if (validate_session_snapshot(state, state.session_current_path)) {
+          state.session_saved.store(true, std::memory_order_release);
+          BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
+                          << state.session_current_path.string();
+        }
       } else if (legacy_exists && !ec_legacy) {
         std::error_code ec_copy;
         std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
         (void) ec_copy;
         std::filesystem::copy_file(state.session_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
         if (!ec_copy) {
-          state.session_saved.store(true, std::memory_order_release);
-          BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+          if (validate_session_snapshot(state, state.session_current_path)) {
+            state.session_saved.store(true, std::memory_order_release);
+            BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+          }
           std::error_code ec_rm;
           (void) std::filesystem::remove(state.session_path, ec_rm);
         }
@@ -3137,17 +3166,21 @@ int main(int argc, char *argv[]) {
     const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);
     const bool legacy_exists = std::filesystem::exists(state.session_path, ec_legacy);
     if (cur_exists && !ec_cur) {
-      state.session_saved.store(true, std::memory_order_release);
-      BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
-                      << state.session_current_path.string();
+      if (validate_session_snapshot(state, state.session_current_path)) {
+        state.session_saved.store(true, std::memory_order_release);
+        BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
+                        << state.session_current_path.string();
+      }
     } else if (legacy_exists && !ec_legacy) {
       std::error_code ec_copy;
       std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
       (void) ec_copy;
       std::filesystem::copy_file(state.session_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
       if (!ec_copy) {
-        state.session_saved.store(true, std::memory_order_release);
-        BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+        if (validate_session_snapshot(state, state.session_current_path)) {
+          state.session_saved.store(true, std::memory_order_release);
+          BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+        }
         std::error_code ec_rm;
         (void) std::filesystem::remove(state.session_path, ec_rm);
       }
