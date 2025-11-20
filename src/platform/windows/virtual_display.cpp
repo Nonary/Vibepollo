@@ -1454,7 +1454,7 @@ namespace VDISPLAY {
         return false;
       };
 
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
       if (devices) {
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
         bool resolution_conflict = false;
@@ -1591,7 +1591,7 @@ namespace VDISPLAY {
     const std::optional<std::wstring> &display_name,
     const std::optional<std::string> &device_id
   ) {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       return false;
     }
@@ -1988,7 +1988,7 @@ namespace VDISPLAY {
       return resolveAnyVirtualDisplayDeviceId();
     }
 
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       return std::nullopt;
     }
@@ -2028,7 +2028,7 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
@@ -2064,7 +2064,7 @@ namespace VDISPLAY {
       return result;
     }
 
-    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       return result;
     }

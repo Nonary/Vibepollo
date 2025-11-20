@@ -65,7 +65,7 @@ namespace {
       return false;
     }
 
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
     if (!devices) {
       return false;
     }
