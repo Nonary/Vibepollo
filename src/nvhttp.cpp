@@ -184,21 +184,27 @@ namespace nvhttp {
     }
 
     void schedule_virtual_display_cleanup() {
-      bool expected = false;
-      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
-        return;
-      }
+    bool expected = false;
+    if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
+      return;
+    }
 
-      std::thread([] {
-        auto guard = util::fail_guard([]() {
-          virtual_display_cleanup_pending.store(false, std::memory_order_release);
-        });
-        try {
-          cleanup_virtual_display_state();
-        } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
-        } catch (...) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+    std::thread([] {
+      auto guard = util::fail_guard([]() {
+        virtual_display_cleanup_pending.store(false, std::memory_order_release);
+      });
+      try {
+        // If a new session spun up while we were scheduling cleanup, leave displays alone.
+        if (rtsp_stream::session_count() > 0) {
+          BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
+          return;
+        }
+
+        cleanup_virtual_display_state();
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
         }
       }).detach();
     }
