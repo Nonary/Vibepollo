@@ -66,9 +66,9 @@
             </n-checkbox>
             <n-checkbox v-if="isWindows" v-model:checked="virtualScreenEnabled" size="small" class="md:col-span-2">
               <div class="flex flex-col">
-                <span>Use Virtual Screen</span>
+                <span>{{ t('config.virtual_display_toggle_label') }}</span>
                 <span class="text-[11px] opacity-60">
-                  Launch the app on an isolated virtualized display, deactivating all other monitors.
+                  {{ t('config.virtual_display_toggle_hint') }}
                 </span>
               </div>
             </n-checkbox>
@@ -1045,7 +1045,7 @@ const APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string>
   shared: 'config.virtual_display_mode_shared',
 };
 const appVirtualDisplayModeOptions = computed(() =>
-  APP_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled').map((value) => ({
+  APP_VIRTUAL_DISPLAY_MODES.map((value) => ({
     value,
     label: t(APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
   })),

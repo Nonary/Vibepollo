@@ -111,18 +111,6 @@ namespace {
     return user;
   }
 
-  std::wstring sanitize_task_suffix(const std::wstring &name) {
-    std::wstring sanitized;
-    sanitized.reserve(name.size());
-    for (wchar_t ch : name) {
-      const bool is_alpha = (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
-      const bool is_digit = (ch >= L'0' && ch <= L'9');
-      const bool is_sep = (ch == L'-' || ch == L'_');
-      sanitized.push_back((is_alpha || is_digit || is_sep) ? ch : L'_');
-    }
-    return sanitized;
-  }
-
   std::wstring build_restore_task_name(const std::wstring &username) {
     return L"VibeshineDisplayRestore";
   }
@@ -178,6 +166,7 @@ namespace {
     ExportGolden = 4,  // no payload; export current settings snapshot as golden restore
     Blacklist = 5,  // payload: device_id string to blacklist from topology exports
     ApplyResult = 6,  // payload: [u8 success][optional message...]
+    Disarm = 7,  // cancel any pending restore requests/watchdogs
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -1236,6 +1225,7 @@ namespace {
     static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
+    static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
     std::atomic<size_t> restore_backoff_index {0};
     std::atomic<long long> restore_next_allowed_ms {0};
     static constexpr std::array<std::chrono::seconds, 8> kRestoreBackoffProfile {
@@ -1965,6 +1955,19 @@ namespace {
       restore_origin_epoch.store(0, std::memory_order_release);
     }
 
+    void disarm_restore_requests(const char *reason = nullptr) {
+      const bool had_pending = restore_requested.load(std::memory_order_acquire);
+      stop_restore_polling();
+      delete_restore_scheduled_task();
+      direct_revert_bypass_grace.store(false, std::memory_order_release);
+      exit_after_revert.store(false, std::memory_order_release);
+      if (reason) {
+        BOOST_LOG(info) << reason << " (pending_restore=" << (had_pending ? "true" : "false") << ")";
+      } else if (had_pending) {
+        BOOST_LOG(info) << "Restore requests disarmed.";
+      }
+    }
+
     uint64_t begin_connection_epoch() {
       const auto epoch = next_connection_epoch.fetch_add(1, std::memory_order_acq_rel);
       active_connection_epoch.store(epoch, std::memory_order_release);
@@ -2088,7 +2091,6 @@ namespace {
           window_expired = true;
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
-          active_until_ms = 0;
         }
 
         const auto wait_timeout = active_window ? 500ms : kPoll;
@@ -2210,17 +2212,18 @@ namespace {
       (void) 0;
     }
 
-    // Schedule a couple of delayed re-apply attempts to work around Windows
-    // sometimes forcing native resolution immediately after activating a display.
-    void schedule_delayed_reapply() {
+    // Schedule delayed re-apply attempts to work around Windows sometimes forcing native
+    // resolution immediately after activating a display. The provided delays represent
+    // the windows (relative to now) when verification/re-apply should be attempted.
+    void schedule_delayed_reapply(std::vector<std::chrono::milliseconds> delays = {250ms, 750ms}) {
       if (delayed_reapply_thread.joinable()) {
         delayed_reapply_thread.request_stop();
         delayed_reapply_thread.join();
       }
-      if (!last_cfg) {
+      if (!last_cfg || delays.empty()) {
         return;
       }
-      delayed_reapply_thread = std::jthread(&ServiceState::delayed_reapply_proc, this);
+      delayed_reapply_thread = std::jthread(&ServiceState::delayed_reapply_proc, this, std::move(delays));
     }
 
     void cancel_delayed_reapply() {
@@ -2245,14 +2248,12 @@ namespace {
       return !st.stop_requested();
     }
 
-    static void delayed_reapply_proc(std::stop_token st, ServiceState *self) {
-      using namespace std::chrono_literals;
-      const std::array<std::chrono::milliseconds, 2> delays {250ms, 750ms};
+    static void delayed_reapply_proc(std::stop_token st, ServiceState *self, std::vector<std::chrono::milliseconds> delays) {
       for (auto delay : delays) {
         if (!wait_with_stop(st, delay)) {
           return;
         }
-        if (self->configuration_matches_last()) {
+        if (self->verify_last_configuration_sticky(kVerificationSettleDelay)) {
           continue;
         }
         BOOST_LOG(info) << "Delayed re-apply attempt after activation 213Q902";
@@ -2267,6 +2268,23 @@ namespace {
           refresh_shell_after_display_change();
         }
       } catch (...) {}
+    }
+
+    bool verify_last_configuration_sticky(std::chrono::milliseconds settle_delay = kVerificationSettleDelay) {
+      if (!last_cfg) {
+        return true;
+      }
+      auto matches = [&]() {
+        return controller.configuration_matches_current_state(*last_cfg);
+      };
+      if (!matches()) {
+        return false;
+      }
+      if (settle_delay > std::chrono::milliseconds::zero()) {
+        std::this_thread::sleep_for(settle_delay);
+        return matches();
+      }
+      return true;
     }
 
     bool configuration_matches_last() const {
@@ -2288,7 +2306,8 @@ namespace {
       std::optional<std::string> before_sig,
       bool wa_hdr_toggle,
       std::optional<std::string> requested_virtual_layout,
-      std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides
+      std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides,
+      std::vector<std::chrono::milliseconds> reapply_delays
     ) {
       cancel_post_apply_tasks();
       post_apply_thread = std::jthread(
@@ -2297,7 +2316,8 @@ namespace {
          before_sig = std::move(before_sig),
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
-         monitor_position_overrides = std::move(monitor_position_overrides)
+         monitor_position_overrides = std::move(monitor_position_overrides),
+         reapply_delays = std::move(reapply_delays)
         ](std::stop_token st) mutable {
           if (enforce_snapshot && before_sig) {
             display_device::DisplaySettingsSnapshot cur;
@@ -2311,7 +2331,9 @@ namespace {
           }
 
           retry_apply_on_topology.store(false, std::memory_order_release);
-          schedule_delayed_reapply();
+          if (!reapply_delays.empty()) {
+            schedule_delayed_reapply(std::move(reapply_delays));
+          }
           refresh_shell_after_display_change();
           schedule_hdr_blank_if_needed(wa_hdr_toggle);
 
@@ -2906,13 +2928,38 @@ namespace {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
       }
+
+      constexpr int kMaxSyncVerifyAttempts = 2;
+      bool verified_sync = false;
+      std::vector<std::chrono::milliseconds> reapply_delays {750ms};
+
+      for (int attempt = 1; attempt <= kMaxSyncVerifyAttempts; ++attempt) {
+        if (state.verify_last_configuration_sticky(ServiceState::kVerificationSettleDelay)) {
+          verified_sync = true;
+          if (attempt > 1) {
+            BOOST_LOG(info) << "Display helper: verification succeeded on attempt #" << attempt << " after re-apply.";
+          }
+          break;
+        }
+        BOOST_LOG(warning) << "Display helper: verification attempt #" << attempt
+                           << " did not stick; "
+                           << (attempt < kMaxSyncVerifyAttempts ? "retrying synchronously." : "deferring to async retry.");
+        state.best_effort_apply_last_cfg();
+      }
+      if (verified_sync) {
+        BOOST_LOG(debug) << "Display helper: synchronous verification succeeded; scheduling follow-up check.";
+      } else {
+        BOOST_LOG(warning) << "Display helper: synchronous verification failed; scheduling async fallback.";
+      }
+
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.schedule_post_apply_tasks(
         enforce_snapshot,
         std::move(before_sig),
         wa_hdr_toggle,
         requested_virtual_layout,
-        std::move(monitor_position_overrides)
+        std::move(monitor_position_overrides),
+        std::move(reapply_delays)
       );
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
@@ -2946,6 +2993,8 @@ namespace {
       (void) state.controller.reset_persistence();
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
+    } else if (type == MsgType::Disarm) {
+      state.disarm_restore_requests("DISARM command received");
     } else if (type == MsgType::Blacklist) {
       std::string device_id(payload.begin(), payload.end());
       state.controller.add_blacklisted_display(device_id);

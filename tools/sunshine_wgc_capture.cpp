@@ -584,7 +584,9 @@ public:
 
       auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
         auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
-        if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
+        MONITORINFOEXW m_info {};
+        m_info.cbSize = sizeof(MONITORINFOEXW);
+        if (GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
           data->found_monitor = h_mon;
           return FALSE;  // Stop enumeration
         }

@@ -26,9 +26,11 @@ namespace display_device {
                        /*mutating=*/false);
     }
 
-    [[nodiscard]] EnumeratedDeviceList enumAvailableDevices() const override {
+    [[nodiscard]] EnumeratedDeviceList enumAvailableDevices(
+      DeviceEnumerationDetail detail = DeviceEnumerationDetail::Full
+    ) const override {
       return run<EnumeratedDeviceList>([&] {
-        return m_inner->enumAvailableDevices();
+        return m_inner->enumAvailableDevices(detail);
       },
                                        /*mutating=*/false);
     }
@@ -127,6 +129,13 @@ namespace display_device {
     [[nodiscard]] bool restoreMonitorSettings() override {
       return run<bool>([&] {
         return m_inner->restoreMonitorSettings();
+      },
+                       /*mutating=*/true);
+    }
+
+    [[nodiscard]] bool setDisplayOrigin(const std::string &device_id, const Point &origin) override {
+      return run<bool>([&] {
+        return m_inner->setDisplayOrigin(device_id, origin);
       },
                        /*mutating=*/true);
     }

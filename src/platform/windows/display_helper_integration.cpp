@@ -30,6 +30,7 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
@@ -37,6 +38,11 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include <tlhelp32.h>
+#include <display_device/noop_audio_context.h>
+#include <display_device/noop_settings_persistence.h>
+#include <display_device/windows/persistent_state.h>
+#include <display_device/windows/settings_manager.h>
+#include <display_device/windows/types.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -52,6 +58,42 @@ namespace {
   }
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
+  constexpr DWORD kHelperStopGracePeriodMs = 2000;
+
+  bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
+  const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
+
+  struct InProcessDisplayContext {
+    std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
+    std::shared_ptr<display_device::WinDisplayDeviceInterface> display;
+  };
+
+  std::optional<InProcessDisplayContext> make_settings_manager() {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      auto dd = std::make_shared<display_device::WinDisplayDevice>(api);
+      auto impersonated_dd = std::make_shared<display_device::ImpersonatingDisplayDevice>(dd);
+      auto audio = std::make_shared<display_device::NoopAudioContext>();
+      auto persistence = std::make_unique<display_device::PersistentState>(
+        std::make_shared<display_device::NoopSettingsPersistence>()
+      );
+      auto settings_mgr = std::make_shared<display_device::SettingsManager>(
+        impersonated_dd,
+        audio,
+        std::move(persistence),
+        display_device::WinWorkarounds {}
+      );
+      return InProcessDisplayContext {
+        .settings_mgr = std::move(settings_mgr),
+        .display = std::move(impersonated_dd),
+      };
+    } catch (const std::exception &ex) {
+      BOOST_LOG(error) << "Display helper (in-process): failed to initialize SettingsManager: " << ex.what();
+    } catch (...) {
+      BOOST_LOG(error) << "Display helper (in-process): failed to initialize SettingsManager due to unknown error.";
+    }
+    return std::nullopt;
+  }
 
   bool device_id_equals_ci(const std::string &lhs, const std::string &rhs) {
     if (lhs.empty() || rhs.empty()) {
@@ -158,7 +200,122 @@ namespace {
     return true;
   }
 
-  constexpr DWORD kHelperStopGracePeriodMs = 2000;
+  bool apply_via_helper(const display_helper_integration::DisplayApplyRequest &request, bool requires_virtual_display) {
+    if (!ensure_helper_started(true, requires_virtual_display)) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
+      return false;
+    }
+
+    if (!platf::display_helper_client::send_ping()) {
+      BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
+      platf::display_helper_client::reset_connection();
+      (void) platf::display_helper_client::send_ping();
+    }
+
+    if (request.device_blacklist && !request.device_blacklist->empty()) {
+      BOOST_LOG(info) << "Display helper: blacklisting device_id from topology exports: " << *request.device_blacklist;
+      platf::display_helper_client::send_blacklist(*request.device_blacklist);
+    }
+
+    std::string json = display_device::toJson(*request.configuration);
+    bool payload_initialized = false;
+    bool mutated_payload = false;
+    nlohmann::json payload;
+    auto ensure_payload = [&]() -> nlohmann::json & {
+      if (!payload_initialized) {
+        try {
+          payload = nlohmann::json::parse(json);
+          if (!payload.is_object()) {
+            payload = nlohmann::json::object();
+          }
+        } catch (...) {
+          payload = nlohmann::json::object();
+        }
+        payload_initialized = true;
+      }
+      return payload;
+    };
+
+    if (request.attach_hdr_toggle_flag) {
+      auto &p = ensure_payload();
+      p["wa_hdr_toggle"] = true;
+      mutated_payload = true;
+    }
+
+    if (request.virtual_display_arrangement) {
+      auto &p = ensure_payload();
+      p["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
+      mutated_payload = true;
+    }
+
+    if (!request.topology.monitor_positions.empty()) {
+      auto &p = ensure_payload();
+      nlohmann::json positions = nlohmann::json::object();
+      for (const auto &[device_id, point] : request.topology.monitor_positions) {
+        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
+      }
+      p["sunshine_monitor_positions"] = std::move(positions);
+      mutated_payload = true;
+    }
+
+    if (!request.topology.topology.empty()) {
+      auto &p = ensure_payload();
+      p["sunshine_topology"] = request.topology.topology;
+      mutated_payload = true;
+    }
+
+    if (!request.topology.monitor_positions.empty()) {
+      auto &p = ensure_payload();
+      nlohmann::json positions = nlohmann::json::object();
+      for (const auto &[device_id, point] : request.topology.monitor_positions) {
+        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
+      }
+      p["sunshine_monitor_positions"] = std::move(positions);
+      mutated_payload = true;
+    }
+
+    if (mutated_payload) {
+      json = payload.dump();
+    }
+
+    BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
+                    << json;
+    const bool ok = platf::display_helper_client::send_apply_json(json);
+    BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
+
+  bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.configuration) {
+      BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
+      return false;
+    }
+
+    auto ctx = make_settings_manager();
+    if (!ctx) {
+      return false;
+    }
+
+    const auto result = ctx->settings_mgr->applySettings(*request.configuration);
+    const bool ok = (result == display_device::SettingsManagerInterface::ApplyResult::Ok);
+    BOOST_LOG(info) << "Display helper (in-process): APPLY result=" << (ok ? "Ok" : "Failed");
+    if (!ok) {
+      return false;
+    }
+
+    // Apply optional topology/placement tweaks when provided.
+    if (!request.topology.topology.empty()) {
+      BOOST_LOG(debug) << "Display helper (in-process): applying topology override.";
+      (void) ctx->display->setTopology(request.topology.topology);
+    }
+    for (const auto &[device_id, point] : request.topology.monitor_positions) {
+      BOOST_LOG(debug) << "Display helper (in-process): setting origin for " << device_id
+                       << " to (" << point.m_x << "," << point.m_y << ").";
+      (void) ctx->display->setDisplayOrigin(device_id, point);
+    }
+
+    return ok;
+  }
   constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
@@ -286,7 +443,39 @@ namespace {
     }
   }
 
-  bool ensure_helper_started(bool force_restart = false, bool force_enable = false) {
+  bool disarm_helper_restore_if_running() {
+    if (!dd_feature_enabled() || shutdown_requested()) {
+      return false;
+    }
+
+    bool helper_running = false;
+    {
+      std::lock_guard<std::mutex> lg(helper_mutex());
+      if (HANDLE h = helper_proc().get_process_handle()) {
+        helper_running = (WaitForSingleObject(h, 0) == WAIT_TIMEOUT);
+      }
+    }
+
+    if (!helper_running) {
+      helper_running = platf::display_helper_client::send_ping();
+      if (!helper_running) {
+        platf::display_helper_client::reset_connection();
+        BOOST_LOG(debug) << "Display helper: DISARM skipped (helper not reachable).";
+        return false;
+      }
+    }
+
+    bool ok = platf::display_helper_client::send_disarm_restore();
+    if (!ok) {
+      BOOST_LOG(warning) << "Display helper: DISARM send failed; retrying after connection reset.";
+      platf::display_helper_client::reset_connection();
+      ok = platf::display_helper_client::send_disarm_restore();
+    }
+    BOOST_LOG(info) << "Display helper: DISARM dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
+
+  bool ensure_helper_started(bool force_restart, bool force_enable) {
     if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
@@ -581,16 +770,8 @@ namespace display_helper_integration {
       request.enable_virtual_display_watchdog ||
       request.session_overrides.virtual_display_override.value_or(false);
 
-    if (!ensure_helper_started(true, requires_virtual_display)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
-      return false;
-    }
-
-    if (!platf::display_helper_client::send_ping()) {
-      BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
-      platf::display_helper_client::reset_connection();
-      (void) platf::display_helper_client::send_ping();
-    }
+    // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
+    (void) ensure_helper_started(false, requires_virtual_display);
 
     if (request.action == DisplayApplyAction::Revert) {
       BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
@@ -604,71 +785,11 @@ namespace display_helper_integration {
       return false;
     }
 
-    if (!request.configuration) {
-      BOOST_LOG(error) << "Display helper: no configuration provided for APPLY request.";
-      return false;
+    bool ok = apply_in_process(request);
+    if (!ok) {
+      BOOST_LOG(warning) << "Display helper (in-process) APPLY failed; falling back to helper IPC.";
+      ok = apply_via_helper(request, requires_virtual_display);
     }
-
-    if (request.device_blacklist && !request.device_blacklist->empty()) {
-      BOOST_LOG(info) << "Display helper: blacklisting device_id from topology exports: " << *request.device_blacklist;
-      platf::display_helper_client::send_blacklist(*request.device_blacklist);
-    }
-
-    std::string json = display_device::toJson(*request.configuration);
-    bool payload_initialized = false;
-    bool mutated_payload = false;
-    nlohmann::json payload;
-    auto ensure_payload = [&]() -> nlohmann::json & {
-      if (!payload_initialized) {
-        try {
-          payload = nlohmann::json::parse(json);
-          if (!payload.is_object()) {
-            payload = nlohmann::json::object();
-          }
-        } catch (...) {
-          payload = nlohmann::json::object();
-        }
-        payload_initialized = true;
-      }
-      return payload;
-    };
-
-    if (request.attach_hdr_toggle_flag) {
-      auto &p = ensure_payload();
-      p["wa_hdr_toggle"] = true;
-      mutated_payload = true;
-    }
-
-    if (request.virtual_display_arrangement) {
-      auto &p = ensure_payload();
-      p["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.monitor_positions.empty()) {
-      auto &p = ensure_payload();
-      nlohmann::json positions = nlohmann::json::object();
-      for (const auto &[device_id, point] : request.topology.monitor_positions) {
-        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
-      }
-      p["sunshine_monitor_positions"] = std::move(positions);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.topology.empty()) {
-      auto &p = ensure_payload();
-      p["sunshine_topology"] = request.topology.topology;
-      mutated_payload = true;
-    }
-
-    if (mutated_payload) {
-      json = payload.dump();
-    }
-
-    BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
-                    << json;
-    const bool ok = platf::display_helper_client::send_apply_json(json);
-    BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
     if (!ok) {
       return false;
     }
@@ -710,6 +831,10 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     clear_active_session();
     return ok;
+  }
+
+  bool disarm_pending_restore() {
+    return disarm_helper_restore_if_running();
   }
 
   bool export_golden_restore() {

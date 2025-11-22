@@ -270,7 +270,7 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
       continue;
     }
 
-    bool still_running;
+    bool still_running = true;
     do {
       // Wait for the stop event to be set, Sunshine.exe to terminate, or the console session to change
       const HANDLE wait_objects[] = {stop_event, process_info.hProcess, session_change_event};

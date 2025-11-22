@@ -1364,6 +1364,7 @@ namespace nvhttp {
       }
 
       if (helper_session_available) {
+        (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
@@ -1519,6 +1520,7 @@ namespace nvhttp {
 
         display_apply_attempted = true;
         if (helper_session_available) {
+          (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
           if (!request) {
             BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
