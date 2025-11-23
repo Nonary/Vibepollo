@@ -584,9 +584,7 @@ public:
 
       auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
         auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
-        MONITORINFOEXW m_info {};
-        m_info.cbSize = sizeof(MONITORINFOEXW);
-        if (GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
+        if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
           data->found_monitor = h_mon;
           return FALSE;  // Stop enumeration
         }
@@ -889,6 +887,7 @@ struct WgcCaptureDependencies {
 
 class WgcCaptureManager {
 private:
+  std::atomic<bool> _shutting_down {false};
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
   winrt::event_token _frame_arrived_token {};  ///< Event token for frame arrival notifications
@@ -932,8 +931,22 @@ public:
    * Automatically cleans up capture session and frame pool resources.
    */
   ~WgcCaptureManager() noexcept {
+    shutdown();
+  }
+
+  void shutdown() noexcept {
+    if (_shutting_down.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
+
     cleanup_capture_session();
     cleanup_frame_pool();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (_outstanding_frames.load(std::memory_order_acquire) > 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
   }
 
 private:
@@ -1173,14 +1186,54 @@ public:
       return false;
     }
 
+    if (!_deps || !_deps->graphics_item) {
+      BOOST_LOG(error) << "Cannot create capture session: missing capture item";
+      return false;
+    }
+
     _frame_arrived_token = _frame_pool.FrameArrived([this](Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &) {
-      ++_outstanding_frames;
-      _peak_outstanding = std::max(_peak_outstanding.load(), _outstanding_frames.load());
+      if (_shutting_down.load(std::memory_order_acquire)) {
+        return;
+      }
+
+      const int outstanding = _outstanding_frames.fetch_add(1, std::memory_order_acq_rel) + 1;
+      int prev_peak = _peak_outstanding.load(std::memory_order_relaxed);
+      while (outstanding > prev_peak &&
+             !_peak_outstanding.compare_exchange_weak(prev_peak, outstanding, std::memory_order_release, std::memory_order_relaxed)) {
+      }
+
       process_frame(sender);
+
+      _outstanding_frames.fetch_sub(1, std::memory_order_acq_rel);
     });
 
-    _capture_session = _frame_pool.CreateCaptureSession(_deps->graphics_item);
-    _capture_session.IsBorderRequired(false);
+    try {
+      _capture_session = _frame_pool.CreateCaptureSession(_deps->graphics_item);
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(error) << "CreateCaptureSession threw: " << ex.code() << " - " << winrt::to_string(ex.message());
+      return false;
+    } catch (...) {
+      BOOST_LOG(error) << "CreateCaptureSession threw an unknown exception";
+      return false;
+    }
+
+    if (!_capture_session) {
+      BOOST_LOG(error) << "Failed to create GraphicsCaptureSession (returned null)";
+      return false;
+    }
+
+    auto session3 = _capture_session.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession3>();
+    if (!session3) {
+      BOOST_LOG(warning) << "IGraphicsCaptureSession3 not available; skipping IsBorderRequired(false)";
+    } else {
+      try {
+        session3.IsBorderRequired(false);
+      } catch (const winrt::hresult_error &ex) {
+        BOOST_LOG(warning) << "IsBorderRequired(false) failed (continuing without it): " << ex.code() << " - " << winrt::to_string(ex.message());
+      } catch (...) {
+        BOOST_LOG(warning) << "IsBorderRequired(false) threw an unknown exception (continuing without it)";
+      }
+    }
 
     // Technically this is not required for users that have 24H2, but there's really no functional difference.
     // So instead of coding out a version check, we'll just set it for everyone.
