@@ -1203,7 +1203,6 @@ namespace {
     // Track whether a revert/restore is currently pending
     std::atomic<bool> restore_requested {false};
     std::atomic<uint64_t> restore_cancel_generation {0};
-    std::atomic<bool> startup_restore_suppressed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
 
@@ -1320,23 +1319,6 @@ namespace {
     void request_restore_cancel() {
       restore_cancel_generation.fetch_add(1, std::memory_order_acq_rel);
       signal_restore_event(nullptr);
-    }
-
-    void set_startup_restore_suppressed(bool suppressed) {
-      startup_restore_suppressed.store(suppressed, std::memory_order_release);
-    }
-
-    bool consume_startup_restore_suppression(const char *reason = nullptr) {
-      bool expected = true;
-      if (!startup_restore_suppressed.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
-        return false;
-      }
-      if (reason) {
-        BOOST_LOG(info) << "Startup restore suppression active; skipping " << reason << '.';
-      } else {
-        BOOST_LOG(info) << "Startup restore suppression active; skipping scheduled restore.";
-      }
-      return true;
     }
 
     void register_restore_failure() {
@@ -2840,7 +2822,6 @@ namespace {
       error_msg = "Invalid display configuration payload";
       return false;
     }
-    state.set_startup_restore_suppressed(false);
     state.last_apply_ms.store(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
@@ -2972,10 +2953,6 @@ namespace {
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
-    if (state.consume_startup_restore_suppression("explicit REVERT command")) {
-      BOOST_LOG(info) << "Startup suppression active; ignoring REVERT command.";
-      return;
-    }
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
@@ -3071,11 +3048,6 @@ namespace {
       return;
     }
 
-    if (state.consume_startup_restore_suppression("post-disconnect restore")) {
-      state.restore_requested.store(false, std::memory_order_release);
-      return;
-    }
-
     BOOST_LOG(info) << "Client disconnected; entering restore polling loop (3s interval) until successful.";
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
@@ -3113,13 +3085,12 @@ namespace {
 
 int main(int argc, char *argv[]) {
   bool restore_mode = false;
-  bool skip_startup_restore = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
       if (std::strcmp(argv[i], "--restore") == 0) {
         restore_mode = true;
       } else if (std::strcmp(argv[i], "--no-startup-restore") == 0) {
-        skip_startup_restore = true;
+        BOOST_LOG(info) << "--no-startup-restore is deprecated and ignored.";
       }
     }
   }
@@ -3144,11 +3115,6 @@ int main(int argc, char *argv[]) {
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
-    if (skip_startup_restore) {
-      BOOST_LOG(info) << "--no-startup-restore supplied; skipping automatic restore.";
-      logging::log_flush();
-      return 0;
-    }
     dd_log_bridge().install();
     ServiceState state;
     state.golden_path = goldenfile;
@@ -3202,10 +3168,7 @@ int main(int argc, char *argv[]) {
   platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
   dd_log_bridge().install();
   ServiceState state;
-  if (skip_startup_restore) {
-    BOOST_LOG(info) << "--no-startup-restore supplied; suppressing initial automatic restore.";
-  }
-  state.set_startup_restore_suppressed(skip_startup_restore);
+  // Suppression of startup restore is deprecated; REVERTs are always allowed.
   state.golden_path = goldenfile;
   state.session_path = sessionfile;  // legacy
   state.session_current_path = session_current;

@@ -22,7 +22,6 @@
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_display_device.h>
-  #include <nlohmann/json.hpp>
 
   // sunshine
   #include "display_helper_integration.h"
@@ -200,90 +199,6 @@ namespace {
     return true;
   }
 
-  bool apply_via_helper(const display_helper_integration::DisplayApplyRequest &request, bool requires_virtual_display) {
-    if (!ensure_helper_started(true, requires_virtual_display)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
-      return false;
-    }
-
-    if (!platf::display_helper_client::send_ping()) {
-      BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
-      platf::display_helper_client::reset_connection();
-      (void) platf::display_helper_client::send_ping();
-    }
-
-    if (request.device_blacklist && !request.device_blacklist->empty()) {
-      BOOST_LOG(info) << "Display helper: blacklisting device_id from topology exports: " << *request.device_blacklist;
-      platf::display_helper_client::send_blacklist(*request.device_blacklist);
-    }
-
-    std::string json = display_device::toJson(*request.configuration);
-    bool payload_initialized = false;
-    bool mutated_payload = false;
-    nlohmann::json payload;
-    auto ensure_payload = [&]() -> nlohmann::json & {
-      if (!payload_initialized) {
-        try {
-          payload = nlohmann::json::parse(json);
-          if (!payload.is_object()) {
-            payload = nlohmann::json::object();
-          }
-        } catch (...) {
-          payload = nlohmann::json::object();
-        }
-        payload_initialized = true;
-      }
-      return payload;
-    };
-
-    if (request.attach_hdr_toggle_flag) {
-      auto &p = ensure_payload();
-      p["wa_hdr_toggle"] = true;
-      mutated_payload = true;
-    }
-
-    if (request.virtual_display_arrangement) {
-      auto &p = ensure_payload();
-      p["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.monitor_positions.empty()) {
-      auto &p = ensure_payload();
-      nlohmann::json positions = nlohmann::json::object();
-      for (const auto &[device_id, point] : request.topology.monitor_positions) {
-        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
-      }
-      p["sunshine_monitor_positions"] = std::move(positions);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.topology.empty()) {
-      auto &p = ensure_payload();
-      p["sunshine_topology"] = request.topology.topology;
-      mutated_payload = true;
-    }
-
-    if (!request.topology.monitor_positions.empty()) {
-      auto &p = ensure_payload();
-      nlohmann::json positions = nlohmann::json::object();
-      for (const auto &[device_id, point] : request.topology.monitor_positions) {
-        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
-      }
-      p["sunshine_monitor_positions"] = std::move(positions);
-      mutated_payload = true;
-    }
-
-    if (mutated_payload) {
-      json = payload.dump();
-    }
-
-    BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
-                    << json;
-    const bool ok = platf::display_helper_client::send_apply_json(json);
-    BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-    return ok;
-  }
 
   bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
     if (!request.configuration) {
@@ -595,7 +510,7 @@ namespace {
     }
 
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    const bool started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
+    const bool started = helper_proc().start(helper.wstring(), L"");
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
@@ -622,7 +537,7 @@ namespace {
                            << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
           
-          const bool retry_started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
+          const bool retry_started = helper_proc().start(helper.wstring(), L"");
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             return false;
@@ -771,7 +686,8 @@ namespace display_helper_integration {
       request.session_overrides.virtual_display_override.value_or(false);
 
     // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
-    (void) ensure_helper_started(false, requires_virtual_display);
+    // Force-restart helper for each new stream so Sunshine reconnects quickly to a fresh instance.
+    (void) ensure_helper_started(true, requires_virtual_display);
 
     if (request.action == DisplayApplyAction::Revert) {
       BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
@@ -785,12 +701,8 @@ namespace display_helper_integration {
       return false;
     }
 
-    bool ok = apply_in_process(request);
-    if (!ok) {
-      BOOST_LOG(warning) << "Display helper (in-process) APPLY failed; falling back to helper IPC.";
-      ok = apply_via_helper(request, requires_virtual_display);
-    }
-    if (!ok) {
+    if (!apply_in_process(request)) {
+      BOOST_LOG(warning) << "Display helper (in-process) APPLY failed.";
       return false;
     }
 
