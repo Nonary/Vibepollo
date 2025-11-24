@@ -54,6 +54,42 @@ namespace platf::playnite {
 
   // Time parsing helper moved to platf::playnite::sync
 
+  struct playnite_session_tracker_t {
+    std::mutex mtx;
+    std::string last_started_id;
+    bool seen_started {false};
+
+    void on_started(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      last_started_id = id;
+      seen_started = true;
+    }
+
+    bool allow_stop(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      if (!seen_started) {
+        return false;
+      }
+      if (!id.empty() && !last_started_id.empty() && id != last_started_id) {
+        return false;
+      }
+      seen_started = false;
+      last_started_id.clear();
+      return true;
+    }
+
+    void reset() {
+      std::scoped_lock lk(mtx);
+      seen_started = false;
+      last_started_id.clear();
+    }
+  };
+
+  playnite_session_tracker_t &playnite_session_tracker() {
+    static playnite_session_tracker_t tracker;
+    return tracker;
+  }
+
   // Acquire a primary user token suitable for per-user operations (HKCU view, KNOWNFOLDER paths, launching)
   // Preference order:
   // 1) Token from a running Playnite process (Desktop or Fullscreen)
@@ -534,7 +570,29 @@ namespace platf::playnite {
                          << "' id='" << msg.status_game_id
                          << "' exe='" << msg.status_exe
                          << "' installDir='" << msg.status_install_dir << "'";
-        if (msg.status_name == "gameStopped") {
+        if (msg.status_name == "gameStarted") {
+          playnite_session_tracker().on_started(msg.status_game_id);
+        } else if (msg.status_name == "gameStopped") {
+          auto guard = proc::proc.active_session_guard();
+          if (!guard.has_active_app || !guard.uses_playnite) {
+            BOOST_LOG(debug) << "Playnite: ignoring gameStopped because no active Playnite-backed app";
+            return;
+          }
+          if (!msg.status_game_id.empty() && !guard.playnite_id.empty() && msg.status_game_id != guard.playnite_id) {
+            BOOST_LOG(debug) << "Playnite: ignoring gameStopped for id='" << msg.status_game_id
+                             << "' (active Playnite id='" << guard.playnite_id << "')";
+            return;
+          }
+          if (!playnite_session_tracker().allow_stop(msg.status_game_id)) {
+            BOOST_LOG(debug) << "Playnite: ignoring gameStopped because no prior gameStarted for this session";
+            return;
+          }
+          auto now = std::chrono::steady_clock::now();
+          if (guard.launch_started_at.time_since_epoch().count() != 0 &&
+              now - guard.launch_started_at < std::chrono::seconds(2)) {
+            BOOST_LOG(debug) << "Playnite: ignoring gameStopped within session guard window";
+            return;
+          }
           BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
           proc::proc.terminate();
         }
