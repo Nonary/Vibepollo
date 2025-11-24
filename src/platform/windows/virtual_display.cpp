@@ -1870,7 +1870,29 @@ namespace VDISPLAY {
 
       auto result = create_virtual_display_once(s_client_uid, s_client_name, width, height, fps, guid);
       if (!result) {
-        return std::nullopt;
+        BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
+                           << " failed.";
+
+        if (attempt == kMaxInitializationAttempts) {
+          BOOST_LOG(error) << "Virtual display could not be created after " << kMaxInitializationAttempts << " attempts.";
+          return std::nullopt;
+        }
+
+        closeVDisplayDevice();
+
+        if (!ensure_driver_is_ready()) {
+          BOOST_LOG(warning) << "Driver recovery failed after virtual display creation failure.";
+          return std::nullopt;
+        }
+
+        if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+          BOOST_LOG(warning) << "Failed to re-open SudoVDA driver after recovery.";
+          return std::nullopt;
+        }
+
+        BOOST_LOG(info) << "Retrying SudoVDA virtual display initialization (attempt "
+                        << (attempt + 1) << '/' << kMaxInitializationAttempts << ").";
+        continue;
       }
 
       if (confirm_virtual_display_persistence(*result, width, height)) {
