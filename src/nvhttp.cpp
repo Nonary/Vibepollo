@@ -1361,6 +1361,8 @@ namespace nvhttp {
     // The display should be restored in case something fails as there are no other sessions.
     if (no_active_sessions) {
       revert_display_configuration = true;
+      bool display_apply_attempted = false;
+      bool display_apply_failed = false;
 
 #ifdef _WIN32
       HANDLE user_token = platf::retrieve_users_token(false);
@@ -1370,13 +1372,16 @@ namespace nvhttp {
       }
 
       if (helper_session_available) {
+        display_apply_attempted = true;
         (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
+          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
         }
 
         if (request && !display_helper_integration::apply(*request)) {
+          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
@@ -1385,10 +1390,19 @@ namespace nvhttp {
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
       noop_builder.set_session(*launch_session);
+      display_apply_attempted = true;
       if (!display_helper_integration::apply(noop_builder.build())) {
+        display_apply_failed = true;
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
+
+      if (display_apply_attempted && display_apply_failed) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
+        tree.put("root.gamesession", 0);
+        return;
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1557,15 +1571,10 @@ namespace nvhttp {
 #endif
 
       if (display_apply_attempted && display_apply_failed) {
-        const bool no_display_available = !has_any_active_display();
-        if (no_display_available) {
-          tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 503);
-          tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
-          return;
-        }
-
-        BOOST_LOG(warning) << "Display helper: failed to re-apply display configuration on resume; continuing with existing display.";
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
+        return;
       }
 
       // Probe encoders again before streaming to ensure our chosen

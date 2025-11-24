@@ -1237,6 +1237,13 @@ namespace {
       std::chrono::seconds(20),
       std::chrono::seconds(30)
     };
+    // IPC command queue to decouple pipe reads from heavy display operations
+    std::mutex command_queue_mutex;
+    std::condition_variable command_queue_cv;
+    std::deque<std::vector<uint8_t>> command_queue;
+    std::atomic<bool> command_worker_stop {false};
+    std::jthread command_worker;
+    std::atomic<uint64_t> command_worker_epoch {0};
 
     static long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3220,35 +3227,70 @@ int main(int argc, char *argv[]) {
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
 
-    // For anonymous-pipe server, give the client ample time to connect to the data pipe
-    async_pipe.wait_for_client_connection(15000);  // 15s window after handshake
-
-    if (!async_pipe.is_connected()) {
-      const auto now = std::chrono::steady_clock::now();
-      if (last_connect_wait_log == std::chrono::steady_clock::time_point::min() ||
-          now - last_connect_wait_log >= kReconnectLogInterval) {
-        last_connect_wait_log = now;
-        BOOST_LOG(info) << "Waiting for Sunshine to reconnect... (this message only shows up once per hour).";
-      }
-      std::this_thread::sleep_for(500ms);
-      continue;
-    }
-
-    last_connect_wait_log = std::chrono::steady_clock::time_point::min();
-
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
     state.begin_heartbeat_monitoring();
+
+    // Reset and start per-connection command worker so IPC stays responsive even during heavy display work.
+    state.command_worker_stop.store(true, std::memory_order_release);
+    state.command_queue_cv.notify_all();
+    if (state.command_worker.joinable()) {
+      state.command_worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+      state.command_queue.clear();
+    }
+    state.command_worker_stop.store(false, std::memory_order_release);
+    state.command_worker_epoch.store(connection_epoch, std::memory_order_release);
+
+    auto start_command_worker = [&](platf::dxgi::AsyncNamedPipe &pipe) {
+      state.command_worker = std::jthread([&, connection_epoch](std::stop_token) {
+        while (!state.command_worker_stop.load(std::memory_order_acquire) &&
+               running.load(std::memory_order_acquire) &&
+               state.is_connection_epoch_current(connection_epoch)) {
+          std::vector<uint8_t> next;
+          {
+            std::unique_lock<std::mutex> lk(state.command_queue_mutex);
+            state.command_queue_cv.wait(lk, [&]() {
+              return state.command_worker_stop.load(std::memory_order_acquire) ||
+                     !running.load(std::memory_order_acquire) ||
+                     !state.command_queue.empty() ||
+                     !state.is_connection_epoch_current(connection_epoch);
+            });
+            if (state.command_worker_stop.load(std::memory_order_acquire) ||
+                !state.is_connection_epoch_current(connection_epoch) ||
+                !running.load(std::memory_order_acquire)) {
+              break;
+            }
+            if (state.command_queue.empty()) {
+              continue;
+            }
+            next = std::move(state.command_queue.front());
+            state.command_queue.pop_front();
+          }
+          if (!next.empty()) {
+            try {
+              process_incoming_frame(state, pipe, next, running);
+            } catch (const std::exception &ex) {
+              BOOST_LOG(error) << "IPC framing error in command worker: " << ex.what();
+            }
+          }
+        }
+      });
+    };
 
     auto on_message = [&, connection_epoch](std::span<const uint8_t> bytes) {
       if (!state.is_connection_epoch_current(connection_epoch)) {
         return;
       }
-      try {
-        process_incoming_frame(state, async_pipe, bytes, running);
-      } catch (const std::exception &ex) {
-        BOOST_LOG(error) << "IPC framing error: " << ex.what();
+      {
+        std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+        if (state.command_worker_epoch.load(std::memory_order_acquire) == connection_epoch) {
+          state.command_queue.emplace_back(bytes.begin(), bytes.end());
+        }
       }
+      state.command_queue_cv.notify_one();
     };
 
     // Track broken/disconnect events from the async worker thread without
@@ -3263,6 +3305,8 @@ int main(int argc, char *argv[]) {
       }
       BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
       broken.store(true, std::memory_order_release);
+      state.command_worker_stop.store(true, std::memory_order_release);
+      state.command_queue_cv.notify_all();
       attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
@@ -3274,11 +3318,14 @@ int main(int argc, char *argv[]) {
       }
       BOOST_LOG(warning) << "Client disconnected; applying revert policy and staying alive until successful.";
       broken.store(true, std::memory_order_release);
+      state.command_worker_stop.store(true, std::memory_order_release);
+      state.command_queue_cv.notify_all();
       attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
     // Start async message loop (establish_connection is a no-op if already connected)
     async_pipe.start(on_message, on_error, on_broken);
+    start_command_worker(async_pipe);
 
     // Stay in this inner loop until the client disconnects or service told to exit
     while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
@@ -3294,6 +3341,15 @@ int main(int argc, char *argv[]) {
     // Ensure the worker thread is stopped and the server handle is
     // disconnected before looping to accept a new session.
     state.end_heartbeat_monitoring();
+    state.command_worker_stop.store(true, std::memory_order_release);
+    state.command_queue_cv.notify_all();
+    if (state.command_worker.joinable()) {
+      state.command_worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+      state.command_queue.clear();
+    }
     async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop

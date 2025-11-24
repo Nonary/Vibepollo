@@ -58,6 +58,8 @@ namespace {
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
   constexpr DWORD kHelperStopGracePeriodMs = 2000;
+  constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
+  constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
 
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
@@ -234,6 +236,28 @@ namespace {
   constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
+  bool wait_for_helper_ipc_ready_locked() {
+    const auto deadline = std::chrono::steady_clock::now() + kHelperIpcReadyTimeout;
+    int attempts = 0;
+
+    platf::display_helper_client::reset_connection();
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (platf::display_helper_client::send_ping()) {
+        if (attempts > 0) {
+          BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
+        }
+        return true;
+      }
+      ++attempts;
+      std::this_thread::sleep_for(kHelperIpcReadyPoll);
+      platf::display_helper_client::reset_connection();
+    }
+
+    BOOST_LOG(warning) << "Display helper IPC did not respond within " << kHelperIpcReadyTimeout.count()
+                       << " ms of helper start.";
+    return false;
+  }
+
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout) {
     using enum display_helper_integration::VirtualDisplayArrangement;
     switch (layout) {
@@ -372,12 +396,13 @@ namespace {
     }
 
     if (!helper_running) {
-      helper_running = platf::display_helper_client::send_ping();
-      if (!helper_running) {
-        platf::display_helper_client::reset_connection();
-        BOOST_LOG(debug) << "Display helper: DISARM skipped (helper not reachable).";
-        return false;
-      }
+      helper_running = ensure_helper_started();
+    }
+
+    if (!helper_running) {
+      platf::display_helper_client::reset_connection();
+      BOOST_LOG(debug) << "Display helper: DISARM skipped (helper not reachable).";
+      return false;
     }
 
     bool ok = platf::display_helper_client::send_disarm_restore();
@@ -416,8 +441,9 @@ namespace {
           if (ping_ok) {
             return true;
           }
-          BOOST_LOG(warning) << "Display helper process ping failed; forcing restart.";
-          need_restart = true;
+          platf::display_helper_client::reset_connection();
+          BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
+          return false;
         } else {
           BOOST_LOG(info) << "Display helper restart requested (force).";
         }
@@ -558,7 +584,7 @@ namespace {
     
     // Final initialization delay for pipe server creation
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    return started;
+    return wait_for_helper_ipc_ready_locked();
   }
 
   // Watchdog state for helper liveness during active streams
@@ -642,34 +668,52 @@ namespace {
         if (!helper_ready) {
           continue;
         }
-        // Attempt to re-derive and apply the desired configuration from
-        // current Sunshine state if a session is active.
-        auto session_opt = get_active_session_copy();
-        if (session_opt) {
-          auto _hot_apply_gate = config::acquire_apply_read_gate();
-          // Rebuild a minimal launch_session_t carrying display-related fields
-          rtsp_stream::launch_session_t tmp_session {};
-          tmp_session.width = session_opt->width;
-          tmp_session.height = session_opt->height;
-          tmp_session.fps = session_opt->fps;
-          tmp_session.enable_hdr = session_opt->enable_hdr;
-          tmp_session.enable_sops = session_opt->enable_sops;
-          tmp_session.virtual_display = session_opt->virtual_display;
-          tmp_session.virtual_display_device_id = session_opt->virtual_display_device_id;
-          tmp_session.framegen_refresh_rate = session_opt->framegen_refresh_rate;
-          tmp_session.gen1_framegen_fix = session_opt->gen1_framegen_fix;
-          tmp_session.gen2_framegen_fix = session_opt->gen2_framegen_fix;
-          auto request = display_helper_integration::helpers::build_request_from_session(config::video, tmp_session);
-          bool reapplied = request && display_helper_integration::apply(*request);
-          BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
-          if (!reapplied) {
-            helper_ready = platf::display_helper_client::send_ping();
-          }
-        } else {
-          helper_ready = platf::display_helper_client::send_ping();
-        }
+        // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
+        helper_ready = platf::display_helper_client::send_ping();
       }
     }
+  }
+
+  std::optional<display_helper_integration::DisplayApplyRequest> build_safe_fallback_request(
+    const display_helper_integration::DisplayApplyRequest &request
+  ) {
+    if (request.action != display_helper_integration::DisplayApplyAction::Apply) {
+      return std::nullopt;
+    }
+    if (!request.session) {
+      return std::nullopt;
+    }
+
+    display_helper_integration::DisplayApplyRequest fallback {request};
+    display_device::SingleDisplayConfiguration cfg {};
+
+    if (request.configuration && !request.configuration->m_device_id.empty()) {
+      cfg.m_device_id = request.configuration->m_device_id;
+    } else if (!request.session->virtual_display_device_id.empty()) {
+      cfg.m_device_id = request.session->virtual_display_device_id;
+    } else {
+      cfg.m_device_id = config::get_active_output_name();
+    }
+
+    cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+    cfg.m_resolution = display_device::Resolution {1920u, 1080u};
+    cfg.m_refresh_rate = display_device::Rational {60u, 1u};
+    cfg.m_hdr_state = display_device::HdrState::Disabled;
+
+    fallback.configuration = cfg;
+    fallback.device_blacklist.reset();
+    fallback.enable_virtual_display_watchdog = false;
+    fallback.virtual_display_arrangement.reset();
+    fallback.session_overrides.device_id_override = cfg.m_device_id;
+    fallback.session_overrides.virtual_display_override = false;
+    fallback.session_overrides.fps_override = std::nullopt;
+    fallback.session_overrides.width_override = std::nullopt;
+    fallback.session_overrides.height_override = std::nullopt;
+    fallback.session_overrides.framegen_refresh_override = std::nullopt;
+    fallback.topology.topology.clear();
+    fallback.topology.monitor_positions.clear();
+
+    return fallback;
   }
 
 }  // namespace
@@ -687,7 +731,10 @@ namespace display_helper_integration {
 
     // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
     // Force-restart helper for each new stream so Sunshine reconnects quickly to a fresh instance.
-    (void) ensure_helper_started(true, requires_virtual_display);
+    const bool helper_ready = ensure_helper_started(false, requires_virtual_display);
+    if (!helper_ready && (requires_virtual_display || dd_feature_enabled())) {
+      BOOST_LOG(warning) << "Display helper IPC unavailable after restart; continuing with in-process apply only.";
+    }
 
     if (request.action == DisplayApplyAction::Revert) {
       BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
@@ -701,36 +748,55 @@ namespace display_helper_integration {
       return false;
     }
 
-    if (!apply_in_process(request)) {
-      BOOST_LOG(warning) << "Display helper (in-process) APPLY failed.";
-      return false;
+    auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
+      if (!apply_in_process(payload)) {
+        BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
+        return false;
+      }
+
+      const auto *session = payload.session ? payload.session : request.session;
+      if (!session) {
+        BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
+        return false;
+      }
+
+      const auto device_id = payload.configuration ? payload.configuration->m_device_id : std::string {};
+      const auto prep = payload.configuration
+        ? payload.configuration->m_device_prep
+        : display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+
+      if (!verify_helper_topology(*session, device_id, prep)) {
+        BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
+        return false;
+      }
+
+      set_active_session(
+        *session,
+        payload.session_overrides.device_id_override,
+        payload.session_overrides.fps_override,
+        payload.session_overrides.width_override,
+        payload.session_overrides.height_override,
+        payload.session_overrides.virtual_display_override,
+        payload.session_overrides.framegen_refresh_override
+      );
+
+      if (payload.enable_virtual_display_watchdog) {
+        platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+      }
+
+      return true;
+    };
+
+    if (attempt_apply(request, "primary")) {
+      return true;
     }
 
-    const auto *session = request.session;
-    if (!session) {
-      BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
-      return false;
+    if (auto fallback = build_safe_fallback_request(request)) {
+      BOOST_LOG(warning) << "Display helper: attempting safe fallback apply (1080p60 ensure-only).";
+      return attempt_apply(*fallback, "fallback");
     }
 
-    if (!verify_helper_topology(*session, request.configuration->m_device_id, request.configuration->m_device_prep)) {
-      return false;
-    }
-
-    set_active_session(
-      *session,
-      request.session_overrides.device_id_override,
-      request.session_overrides.fps_override,
-      request.session_overrides.width_override,
-      request.session_overrides.height_override,
-      request.session_overrides.virtual_display_override,
-      request.session_overrides.framegen_refresh_override
-    );
-
-    if (request.enable_virtual_display_watchdog) {
-      platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
-    }
-
-    return true;
+    return false;
   }
 
   bool revert() {
