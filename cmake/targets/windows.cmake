@@ -1,7 +1,13 @@
 # windows specific target definitions
 set_target_properties(sunshine PROPERTIES LINK_SEARCH_START_STATIC 1)
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll")
-find_library(ZLIB ZLIB1)
+
+# Look for zlib1.dll in Sunshine install directory or Apollo
+find_library(ZLIB ZLIB1
+    HINTS
+        "C:/Program Files (x86)/Sunshine"
+        "C:/Program Files/Apollo"
+)
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         $<TARGET_OBJECTS:sunshine_rc_object>
         Windowsapp.lib

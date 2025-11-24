@@ -155,7 +155,6 @@ const installSteamDrivers = boolProxy('install_steam_audio_drivers', 'true');
 const streamAudio = boolProxy('stream_audio', 'true');
 const keepSinkDefault = boolProxy('keep_sink_default', 'true');
 const autoCaptureSink = boolProxy('auto_capture_sink', 'true');
-const doubleRefreshrate = boolProxy('double_refreshrate', 'false');
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
@@ -375,20 +374,6 @@ function selectVirtualDisplayLayout(v: unknown) {
                 </div>
               </n-radio-group>
             </div>
-
-            <!-- Double Refresh Rate -->
-            <PlatformLayout>
-              <template #windows>
-                <div class="mt-4 space-y-1">
-                  <n-checkbox v-model:checked="doubleRefreshrate">
-                    {{ t('config.double_refreshrate') }}
-                  </n-checkbox>
-                  <p class="text-[11px] opacity-70 leading-snug">
-                    {{ t('config.double_refreshrate_desc') }}
-                  </p>
-                </div>
-              </template>
-            </PlatformLayout>
 
             <div
               class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"

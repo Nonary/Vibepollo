@@ -777,6 +777,7 @@ namespace proc {
       _apps(std::move(other._apps)),
       _app(std::move(other._app)),
       _app_launch_time(other._app_launch_time),
+      _active_client_uuid(std::move(other._active_client_uuid)),
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
@@ -811,6 +812,7 @@ namespace proc {
       _apps = std::move(other._apps);
       _app = std::move(other._app);
       _app_launch_time = other._app_launch_time;
+      _active_client_uuid = std::move(other._active_client_uuid);
       placebo = other.placebo;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
@@ -1063,6 +1065,7 @@ namespace proc {
     _app_id = util::from_view(app.id);
     _app_name = app.name;
     _launch_session = launch_session;
+    _active_client_uuid = launch_session ? launch_session->client_uuid : std::string();
     allow_client_commands = app.allow_client_commands;
     launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
     launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
@@ -2114,6 +2117,8 @@ namespace proc {
       }
     }
 
+    _active_client_uuid.clear();
+    _app_launch_time = {};
     _app_id = -1;
     _app_name.clear();
     _app = {};
@@ -2131,6 +2136,17 @@ namespace proc {
     if (needs_refresh) {
       refresh(config::stream.file_apps, false);
     }
+  }
+
+  active_session_guard_t proc_t::active_session_guard() const {
+    std::scoped_lock lk(_apps_mutex);
+    active_session_guard_t guard;
+    guard.has_active_app = _app_id > 0;
+    guard.playnite_id = guard.has_active_app ? _app.playnite_id : std::string();
+    guard.uses_playnite = guard.has_active_app && !_app.playnite_id.empty();
+    guard.client_uuid = guard.has_active_app ? _active_client_uuid : std::string();
+    guard.launch_started_at = _app_launch_time;
+    return guard;
   }
 
   std::vector<ctx_t> proc_t::get_apps() const {

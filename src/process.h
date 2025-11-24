@@ -19,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <chrono>
 
 // lib includes
 #include <boost/process/v1/child.hpp>
@@ -57,6 +58,14 @@ namespace proc {
 #endif
 
   typedef config::prep_cmd_t cmd_t;
+
+  struct active_session_guard_t {
+    bool has_active_app {false};
+    bool uses_playnite {false};
+    std::string playnite_id;
+    std::string client_uuid;
+    std::chrono::steady_clock::time_point launch_started_at {};
+  };
 
   /**
    * pre_cmds -- guaranteed to be executed unless any of the commands fail.
@@ -168,6 +177,7 @@ namespace proc {
     ~proc_t();
 
     // Return a snapshot copy to avoid concurrent access races
+    active_session_guard_t active_session_guard() const;
     std::vector<ctx_t> get_apps() const;
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
@@ -197,6 +207,7 @@ namespace proc {
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
+    std::string _active_client_uuid;
 
     mutable std::mutex _apps_mutex;
 

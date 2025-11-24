@@ -471,7 +471,7 @@ namespace config {
 
   video_t video {
     true,  // limit_framerate
-    false,  // double_refreshrate
+    true,  // double_refreshrate
 
     28,  // qp
 
@@ -1209,6 +1209,21 @@ namespace config {
     drop_deprecated_option("isolated_virtual_display_option");
     drop_deprecated_option("legacy_virtual_display_mode");
 
+    auto remap_option = [&](const char *old_name, const char *new_name) {
+      auto it = vars.find(old_name);
+      if (it == vars.end()) {
+        return;
+      }
+      BOOST_LOG(info) << "config: [" << old_name << "] renamed to [" << new_name << "], applying provided value.";
+      if (!vars.count(new_name)) {
+        vars.emplace(new_name, it->second);
+      }
+      vars.erase(it);
+      modified_config_settings.erase(old_name);
+    };
+
+    remap_option("dd_wa_virtual_double_refresh", "double_refreshrate");
+
     bool_f(vars, "limit_framerate", video.limit_framerate);
     bool_f(vars, "double_refreshrate", video.double_refreshrate);
     int_f(vars, "qp", video.qp);
@@ -1739,6 +1754,7 @@ namespace config {
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
+      const auto prev_double_refreshrate = video.double_refreshrate;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       for (const auto &[name, value] : command_line_overrides) {
@@ -1771,7 +1787,8 @@ namespace config {
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                      (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
+                                     (prev_double_refreshrate != video.double_refreshrate);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0) {

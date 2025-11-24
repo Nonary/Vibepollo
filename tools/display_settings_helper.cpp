@@ -111,18 +111,6 @@ namespace {
     return user;
   }
 
-  std::wstring sanitize_task_suffix(const std::wstring &name) {
-    std::wstring sanitized;
-    sanitized.reserve(name.size());
-    for (wchar_t ch : name) {
-      const bool is_alpha = (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
-      const bool is_digit = (ch >= L'0' && ch <= L'9');
-      const bool is_sep = (ch == L'-' || ch == L'_');
-      sanitized.push_back((is_alpha || is_digit || is_sep) ? ch : L'_');
-    }
-    return sanitized;
-  }
-
   std::wstring build_restore_task_name(const std::wstring &username) {
     return L"VibeshineDisplayRestore";
   }
@@ -178,6 +166,7 @@ namespace {
     ExportGolden = 4,  // no payload; export current settings snapshot as golden restore
     Blacklist = 5,  // payload: device_id string to blacklist from topology exports
     ApplyResult = 6,  // payload: [u8 success][optional message...]
+    Disarm = 7,  // cancel any pending restore requests/watchdogs
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -1214,7 +1203,6 @@ namespace {
     // Track whether a revert/restore is currently pending
     std::atomic<bool> restore_requested {false};
     std::atomic<uint64_t> restore_cancel_generation {0};
-    std::atomic<bool> startup_restore_suppressed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
 
@@ -1236,6 +1224,7 @@ namespace {
     static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
+    static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
     std::atomic<size_t> restore_backoff_index {0};
     std::atomic<long long> restore_next_allowed_ms {0};
     static constexpr std::array<std::chrono::seconds, 8> kRestoreBackoffProfile {
@@ -1248,6 +1237,13 @@ namespace {
       std::chrono::seconds(20),
       std::chrono::seconds(30)
     };
+    // IPC command queue to decouple pipe reads from heavy display operations
+    std::mutex command_queue_mutex;
+    std::condition_variable command_queue_cv;
+    std::deque<std::vector<uint8_t>> command_queue;
+    std::atomic<bool> command_worker_stop {false};
+    std::jthread command_worker;
+    std::atomic<uint64_t> command_worker_epoch {0};
 
     static long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1330,23 +1326,6 @@ namespace {
     void request_restore_cancel() {
       restore_cancel_generation.fetch_add(1, std::memory_order_acq_rel);
       signal_restore_event(nullptr);
-    }
-
-    void set_startup_restore_suppressed(bool suppressed) {
-      startup_restore_suppressed.store(suppressed, std::memory_order_release);
-    }
-
-    bool consume_startup_restore_suppression(const char *reason = nullptr) {
-      bool expected = true;
-      if (!startup_restore_suppressed.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
-        return false;
-      }
-      if (reason) {
-        BOOST_LOG(info) << "Startup restore suppression active; skipping " << reason << '.';
-      } else {
-        BOOST_LOG(info) << "Startup restore suppression active; skipping scheduled restore.";
-      }
-      return true;
     }
 
     void register_restore_failure() {
@@ -1965,6 +1944,19 @@ namespace {
       restore_origin_epoch.store(0, std::memory_order_release);
     }
 
+    void disarm_restore_requests(const char *reason = nullptr) {
+      const bool had_pending = restore_requested.load(std::memory_order_acquire);
+      stop_restore_polling();
+      delete_restore_scheduled_task();
+      direct_revert_bypass_grace.store(false, std::memory_order_release);
+      exit_after_revert.store(false, std::memory_order_release);
+      if (reason) {
+        BOOST_LOG(info) << reason << " (pending_restore=" << (had_pending ? "true" : "false") << ")";
+      } else if (had_pending) {
+        BOOST_LOG(info) << "Restore requests disarmed.";
+      }
+    }
+
     uint64_t begin_connection_epoch() {
       const auto epoch = next_connection_epoch.fetch_add(1, std::memory_order_acq_rel);
       active_connection_epoch.store(epoch, std::memory_order_release);
@@ -2088,7 +2080,6 @@ namespace {
           window_expired = true;
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
-          active_until_ms = 0;
         }
 
         const auto wait_timeout = active_window ? 500ms : kPoll;
@@ -2210,17 +2201,18 @@ namespace {
       (void) 0;
     }
 
-    // Schedule a couple of delayed re-apply attempts to work around Windows
-    // sometimes forcing native resolution immediately after activating a display.
-    void schedule_delayed_reapply() {
+    // Schedule delayed re-apply attempts to work around Windows sometimes forcing native
+    // resolution immediately after activating a display. The provided delays represent
+    // the windows (relative to now) when verification/re-apply should be attempted.
+    void schedule_delayed_reapply(std::vector<std::chrono::milliseconds> delays = {250ms, 750ms}) {
       if (delayed_reapply_thread.joinable()) {
         delayed_reapply_thread.request_stop();
         delayed_reapply_thread.join();
       }
-      if (!last_cfg) {
+      if (!last_cfg || delays.empty()) {
         return;
       }
-      delayed_reapply_thread = std::jthread(&ServiceState::delayed_reapply_proc, this);
+      delayed_reapply_thread = std::jthread(&ServiceState::delayed_reapply_proc, this, std::move(delays));
     }
 
     void cancel_delayed_reapply() {
@@ -2245,14 +2237,12 @@ namespace {
       return !st.stop_requested();
     }
 
-    static void delayed_reapply_proc(std::stop_token st, ServiceState *self) {
-      using namespace std::chrono_literals;
-      const std::array<std::chrono::milliseconds, 2> delays {250ms, 750ms};
+    static void delayed_reapply_proc(std::stop_token st, ServiceState *self, std::vector<std::chrono::milliseconds> delays) {
       for (auto delay : delays) {
         if (!wait_with_stop(st, delay)) {
           return;
         }
-        if (self->configuration_matches_last()) {
+        if (self->verify_last_configuration_sticky(kVerificationSettleDelay)) {
           continue;
         }
         BOOST_LOG(info) << "Delayed re-apply attempt after activation 213Q902";
@@ -2267,6 +2257,23 @@ namespace {
           refresh_shell_after_display_change();
         }
       } catch (...) {}
+    }
+
+    bool verify_last_configuration_sticky(std::chrono::milliseconds settle_delay = kVerificationSettleDelay) {
+      if (!last_cfg) {
+        return true;
+      }
+      auto matches = [&]() {
+        return controller.configuration_matches_current_state(*last_cfg);
+      };
+      if (!matches()) {
+        return false;
+      }
+      if (settle_delay > std::chrono::milliseconds::zero()) {
+        std::this_thread::sleep_for(settle_delay);
+        return matches();
+      }
+      return true;
     }
 
     bool configuration_matches_last() const {
@@ -2288,7 +2295,8 @@ namespace {
       std::optional<std::string> before_sig,
       bool wa_hdr_toggle,
       std::optional<std::string> requested_virtual_layout,
-      std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides
+      std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides,
+      std::vector<std::chrono::milliseconds> reapply_delays
     ) {
       cancel_post_apply_tasks();
       post_apply_thread = std::jthread(
@@ -2297,7 +2305,8 @@ namespace {
          before_sig = std::move(before_sig),
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
-         monitor_position_overrides = std::move(monitor_position_overrides)
+         monitor_position_overrides = std::move(monitor_position_overrides),
+         reapply_delays = std::move(reapply_delays)
         ](std::stop_token st) mutable {
           if (enforce_snapshot && before_sig) {
             display_device::DisplaySettingsSnapshot cur;
@@ -2311,7 +2320,9 @@ namespace {
           }
 
           retry_apply_on_topology.store(false, std::memory_order_release);
-          schedule_delayed_reapply();
+          if (!reapply_delays.empty()) {
+            schedule_delayed_reapply(std::move(reapply_delays));
+          }
           refresh_shell_after_display_change();
           schedule_hdr_blank_if_needed(wa_hdr_toggle);
 
@@ -2818,7 +2829,6 @@ namespace {
       error_msg = "Invalid display configuration payload";
       return false;
     }
-    state.set_startup_restore_suppressed(false);
     state.last_apply_ms.store(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
@@ -2906,13 +2916,38 @@ namespace {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
       }
+
+      constexpr int kMaxSyncVerifyAttempts = 2;
+      bool verified_sync = false;
+      std::vector<std::chrono::milliseconds> reapply_delays {750ms};
+
+      for (int attempt = 1; attempt <= kMaxSyncVerifyAttempts; ++attempt) {
+        if (state.verify_last_configuration_sticky(ServiceState::kVerificationSettleDelay)) {
+          verified_sync = true;
+          if (attempt > 1) {
+            BOOST_LOG(info) << "Display helper: verification succeeded on attempt #" << attempt << " after re-apply.";
+          }
+          break;
+        }
+        BOOST_LOG(warning) << "Display helper: verification attempt #" << attempt
+                           << " did not stick; "
+                           << (attempt < kMaxSyncVerifyAttempts ? "retrying synchronously." : "deferring to async retry.");
+        state.best_effort_apply_last_cfg();
+      }
+      if (verified_sync) {
+        BOOST_LOG(debug) << "Display helper: synchronous verification succeeded; scheduling follow-up check.";
+      } else {
+        BOOST_LOG(warning) << "Display helper: synchronous verification failed; scheduling async fallback.";
+      }
+
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.schedule_post_apply_tasks(
         enforce_snapshot,
         std::move(before_sig),
         wa_hdr_toggle,
         requested_virtual_layout,
-        std::move(monitor_position_overrides)
+        std::move(monitor_position_overrides),
+        std::move(reapply_delays)
       );
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
@@ -2925,10 +2960,6 @@ namespace {
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
-    if (state.consume_startup_restore_suppression("explicit REVERT command")) {
-      BOOST_LOG(info) << "Startup suppression active; ignoring REVERT command.";
-      return;
-    }
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
@@ -2946,6 +2977,8 @@ namespace {
       (void) state.controller.reset_persistence();
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
+    } else if (type == MsgType::Disarm) {
+      state.disarm_restore_requests("DISARM command received");
     } else if (type == MsgType::Blacklist) {
       std::string device_id(payload.begin(), payload.end());
       state.controller.add_blacklisted_display(device_id);
@@ -3022,11 +3055,6 @@ namespace {
       return;
     }
 
-    if (state.consume_startup_restore_suppression("post-disconnect restore")) {
-      state.restore_requested.store(false, std::memory_order_release);
-      return;
-    }
-
     BOOST_LOG(info) << "Client disconnected; entering restore polling loop (3s interval) until successful.";
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
@@ -3064,13 +3092,12 @@ namespace {
 
 int main(int argc, char *argv[]) {
   bool restore_mode = false;
-  bool skip_startup_restore = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
       if (std::strcmp(argv[i], "--restore") == 0) {
         restore_mode = true;
       } else if (std::strcmp(argv[i], "--no-startup-restore") == 0) {
-        skip_startup_restore = true;
+        BOOST_LOG(info) << "--no-startup-restore is deprecated and ignored.";
       }
     }
   }
@@ -3095,11 +3122,6 @@ int main(int argc, char *argv[]) {
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
-    if (skip_startup_restore) {
-      BOOST_LOG(info) << "--no-startup-restore supplied; skipping automatic restore.";
-      logging::log_flush();
-      return 0;
-    }
     dd_log_bridge().install();
     ServiceState state;
     state.golden_path = goldenfile;
@@ -3153,10 +3175,7 @@ int main(int argc, char *argv[]) {
   platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
   dd_log_bridge().install();
   ServiceState state;
-  if (skip_startup_restore) {
-    BOOST_LOG(info) << "--no-startup-restore supplied; suppressing initial automatic restore.";
-  }
-  state.set_startup_restore_suppressed(skip_startup_restore);
+  // Suppression of startup restore is deprecated; REVERTs are always allowed.
   state.golden_path = goldenfile;
   state.session_path = sessionfile;  // legacy
   state.session_current_path = session_current;
@@ -3208,35 +3227,70 @@ int main(int argc, char *argv[]) {
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
 
-    // For anonymous-pipe server, give the client ample time to connect to the data pipe
-    async_pipe.wait_for_client_connection(15000);  // 15s window after handshake
-
-    if (!async_pipe.is_connected()) {
-      const auto now = std::chrono::steady_clock::now();
-      if (last_connect_wait_log == std::chrono::steady_clock::time_point::min() ||
-          now - last_connect_wait_log >= kReconnectLogInterval) {
-        last_connect_wait_log = now;
-        BOOST_LOG(info) << "Waiting for Sunshine to reconnect... (this message only shows up once per hour).";
-      }
-      std::this_thread::sleep_for(500ms);
-      continue;
-    }
-
-    last_connect_wait_log = std::chrono::steady_clock::time_point::min();
-
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
     state.begin_heartbeat_monitoring();
+
+    // Reset and start per-connection command worker so IPC stays responsive even during heavy display work.
+    state.command_worker_stop.store(true, std::memory_order_release);
+    state.command_queue_cv.notify_all();
+    if (state.command_worker.joinable()) {
+      state.command_worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+      state.command_queue.clear();
+    }
+    state.command_worker_stop.store(false, std::memory_order_release);
+    state.command_worker_epoch.store(connection_epoch, std::memory_order_release);
+
+    auto start_command_worker = [&](platf::dxgi::AsyncNamedPipe &pipe) {
+      state.command_worker = std::jthread([&, connection_epoch](std::stop_token) {
+        while (!state.command_worker_stop.load(std::memory_order_acquire) &&
+               running.load(std::memory_order_acquire) &&
+               state.is_connection_epoch_current(connection_epoch)) {
+          std::vector<uint8_t> next;
+          {
+            std::unique_lock<std::mutex> lk(state.command_queue_mutex);
+            state.command_queue_cv.wait(lk, [&]() {
+              return state.command_worker_stop.load(std::memory_order_acquire) ||
+                     !running.load(std::memory_order_acquire) ||
+                     !state.command_queue.empty() ||
+                     !state.is_connection_epoch_current(connection_epoch);
+            });
+            if (state.command_worker_stop.load(std::memory_order_acquire) ||
+                !state.is_connection_epoch_current(connection_epoch) ||
+                !running.load(std::memory_order_acquire)) {
+              break;
+            }
+            if (state.command_queue.empty()) {
+              continue;
+            }
+            next = std::move(state.command_queue.front());
+            state.command_queue.pop_front();
+          }
+          if (!next.empty()) {
+            try {
+              process_incoming_frame(state, pipe, next, running);
+            } catch (const std::exception &ex) {
+              BOOST_LOG(error) << "IPC framing error in command worker: " << ex.what();
+            }
+          }
+        }
+      });
+    };
 
     auto on_message = [&, connection_epoch](std::span<const uint8_t> bytes) {
       if (!state.is_connection_epoch_current(connection_epoch)) {
         return;
       }
-      try {
-        process_incoming_frame(state, async_pipe, bytes, running);
-      } catch (const std::exception &ex) {
-        BOOST_LOG(error) << "IPC framing error: " << ex.what();
+      {
+        std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+        if (state.command_worker_epoch.load(std::memory_order_acquire) == connection_epoch) {
+          state.command_queue.emplace_back(bytes.begin(), bytes.end());
+        }
       }
+      state.command_queue_cv.notify_one();
     };
 
     // Track broken/disconnect events from the async worker thread without
@@ -3251,6 +3305,8 @@ int main(int argc, char *argv[]) {
       }
       BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
       broken.store(true, std::memory_order_release);
+      state.command_worker_stop.store(true, std::memory_order_release);
+      state.command_queue_cv.notify_all();
       attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
@@ -3262,11 +3318,14 @@ int main(int argc, char *argv[]) {
       }
       BOOST_LOG(warning) << "Client disconnected; applying revert policy and staying alive until successful.";
       broken.store(true, std::memory_order_release);
+      state.command_worker_stop.store(true, std::memory_order_release);
+      state.command_queue_cv.notify_all();
       attempt_revert_after_disconnect(state, running, connection_epoch);
     };
 
     // Start async message loop (establish_connection is a no-op if already connected)
     async_pipe.start(on_message, on_error, on_broken);
+    start_command_worker(async_pipe);
 
     // Stay in this inner loop until the client disconnects or service told to exit
     while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
@@ -3282,6 +3341,15 @@ int main(int argc, char *argv[]) {
     // Ensure the worker thread is stopped and the server handle is
     // disconnected before looping to accept a new session.
     state.end_heartbeat_monitoring();
+    state.command_worker_stop.store(true, std::memory_order_release);
+    state.command_queue_cv.notify_all();
+    if (state.command_worker.joinable()) {
+      state.command_worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> lg(state.command_queue_mutex);
+      state.command_queue.clear();
+    }
     async_pipe.stop();
 
     // If a successful restore requested exit, break outer loop

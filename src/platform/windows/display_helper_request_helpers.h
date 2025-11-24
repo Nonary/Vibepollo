@@ -30,7 +30,8 @@ namespace display_helper_integration::helpers {
       config::video_t::virtual_display_layout_e layout,
       int effective_width,
       int effective_height,
-      int display_fps
+      int display_fps,
+      bool double_refresh_workaround
     ) const;
     bool configure_standard(
       DisplayApplyBuilder &builder,

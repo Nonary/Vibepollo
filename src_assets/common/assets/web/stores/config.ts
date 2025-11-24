@@ -129,7 +129,7 @@ const defaultGroups = [
       dd_wa_dummy_plug_hdr10: false,
       keep_sink_default: 'enabled',
       auto_capture_sink: 'enabled',
-      double_refreshrate: 'disabled',
+      double_refreshrate: true,
       fallback_mode: '1920x1080x60',
       max_bitrate: 0,
       minimum_fps_target: 20,
@@ -524,6 +524,7 @@ export const useConfigStore = defineStore('config', () => {
       'frame_limiter_disable_vsync',
       'dd_wa_hdr_toggle',
       'dd_wa_dummy_plug_hdr10',
+      'double_refreshrate',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {

@@ -18,6 +18,8 @@
   #include <display_device/json.h>
   #include <boost/algorithm/string/predicate.hpp>
   #include <algorithm>
+  #include <limits>
+  #include <type_traits>
 
 namespace display_helper_integration::helpers {
   namespace {
@@ -117,6 +119,17 @@ namespace display_helper_integration::helpers {
         config.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
       }
     }
+
+    int safe_double_int(int value) {
+      if (value <= 0) {
+        return value;
+      }
+      if (value > std::numeric_limits<int>::max() / 2) {
+        return std::numeric_limits<int>::max();
+      }
+      return value * 2;
+    }
+
   }  // namespace
 
   SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
@@ -171,9 +184,22 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+    const bool double_virtual_refresh = session_requests_virtual && video_config_.double_refreshrate;
+    const int virtual_target_fps = double_virtual_refresh ? safe_double_int(base_fps) : base_fps;
+    const int effective_virtual_display_fps = double_virtual_refresh ? std::max(display_fps, virtual_target_fps) : display_fps;
+    BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
+    BOOST_LOG(debug) << "effective_display_fps: "
+                     << (session_requests_virtual ? effective_virtual_display_fps : display_fps);
 
     if (session_requests_virtual) {
-      return configure_virtual_display(builder, effective_layout, effective_width, effective_height, display_fps);
+      return configure_virtual_display(
+        builder,
+        effective_layout,
+        effective_width,
+        effective_height,
+        effective_virtual_display_fps,
+        double_virtual_refresh
+      );
     }
     return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);
   }
@@ -183,7 +209,8 @@ namespace display_helper_integration::helpers {
     const config::video_t::virtual_display_layout_e layout,
     const int effective_width,
     const int effective_height,
-    const int display_fps
+    const int display_fps,
+    const bool double_refresh_workaround
   ) const {
     const auto parsed = display_device::parse_configuration(video_config_, session_);
     const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);

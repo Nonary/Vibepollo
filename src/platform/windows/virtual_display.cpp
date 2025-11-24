@@ -57,11 +57,13 @@ namespace VDISPLAY {
     constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(15);
     constexpr auto DRIVER_RESTART_POLL_INTERVAL = std::chrono::milliseconds(500);
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
+    constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
     constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
     constexpr std::wstring_view SUDOVDA_FRIENDLY_NAME_W = L"SudoMaker Virtual Display Adapter";
 
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
+    std::atomic<std::int64_t> g_last_teardown_ns {0};
 
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -69,6 +71,27 @@ namespace VDISPLAY {
 
     std::chrono::steady_clock::time_point time_from_steady_ticks(std::int64_t ticks) {
       return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(ticks));
+    }
+
+    void note_virtual_display_teardown() {
+      g_last_teardown_ns.store(steady_ticks_from_time(std::chrono::steady_clock::now()), std::memory_order_release);
+    }
+
+    void enforce_teardown_cooldown_if_needed() {
+      const auto last_teardown = g_last_teardown_ns.load(std::memory_order_acquire);
+      if (last_teardown <= 0) {
+        return;
+      }
+
+      const auto last_time = time_from_steady_ticks(last_teardown);
+      const auto deadline = last_time + VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN;
+      const auto now = std::chrono::steady_clock::now();
+      if (deadline > now) {
+        const auto sleep_for = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        BOOST_LOG(debug) << "Delaying virtual display creation for " << sleep_for.count()
+                         << " ms to let teardown settle.";
+        std::this_thread::sleep_for(sleep_for);
+      }
     }
 
     bool within_grace_period(std::chrono::steady_clock::time_point now) {
@@ -1686,6 +1709,7 @@ namespace VDISPLAY {
 
     teardown_conflicting_virtual_displays(requested_uuid);
     BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
+    enforce_teardown_cooldown_if_needed();
 
     const uint32_t requested_fps = apply_refresh_overrides(fps);
     VIRTUAL_DISPLAY_ADD_OUT output {};
@@ -1842,7 +1866,29 @@ namespace VDISPLAY {
 
       auto result = create_virtual_display_once(s_client_uid, s_client_name, width, height, fps, guid);
       if (!result) {
-        return std::nullopt;
+        BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
+                           << " failed.";
+
+        if (attempt == kMaxInitializationAttempts) {
+          BOOST_LOG(error) << "Virtual display could not be created after " << kMaxInitializationAttempts << " attempts.";
+          return std::nullopt;
+        }
+
+        closeVDisplayDevice();
+
+        if (!ensure_driver_is_ready()) {
+          BOOST_LOG(warning) << "Driver recovery failed after virtual display creation failure.";
+          return std::nullopt;
+        }
+
+        if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+          BOOST_LOG(warning) << "Failed to re-open SudoVDA driver after recovery.";
+          return std::nullopt;
+        }
+
+        BOOST_LOG(info) << "Retrying SudoVDA virtual display initialization (attempt "
+                        << (attempt + 1) << '/' << kMaxInitializationAttempts << ").";
+        continue;
       }
 
       if (confirm_virtual_display_persistence(*result, width, height)) {
@@ -1928,8 +1974,10 @@ namespace VDISPLAY {
       DWORD error_code = removed ? ERROR_SUCCESS : GetLastError();
       if (removed) {
         track_virtual_display_removed(guid_to_uuid(guid));
+        note_virtual_display_teardown();
       } else if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_INVALID_PARAMETER) {
         track_virtual_display_removed(guid_to_uuid(guid));
+        note_virtual_display_teardown();
       }
       return {removed, error_code};
     };

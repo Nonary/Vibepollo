@@ -1285,6 +1285,29 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### double_refreshrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops.<br>
+            Leave this on unless a specific game or monitor behaves incorrectly.<br>
+            @note{Applies to Windows virtual displays only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            double_refreshrate = false
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_wa_hdr_toggle_delay
 
 <table>

@@ -22,7 +22,6 @@
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_display_device.h>
-  #include <nlohmann/json.hpp>
 
   // sunshine
   #include "display_helper_integration.h"
@@ -30,6 +29,7 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
@@ -37,6 +37,11 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include <tlhelp32.h>
+#include <display_device/noop_audio_context.h>
+#include <display_device/noop_settings_persistence.h>
+#include <display_device/windows/persistent_state.h>
+#include <display_device/windows/settings_manager.h>
+#include <display_device/windows/types.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -52,6 +57,44 @@ namespace {
   }
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
+  constexpr DWORD kHelperStopGracePeriodMs = 2000;
+  constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
+  constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
+
+  bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
+  const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
+
+  struct InProcessDisplayContext {
+    std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
+    std::shared_ptr<display_device::WinDisplayDeviceInterface> display;
+  };
+
+  std::optional<InProcessDisplayContext> make_settings_manager() {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      auto dd = std::make_shared<display_device::WinDisplayDevice>(api);
+      auto impersonated_dd = std::make_shared<display_device::ImpersonatingDisplayDevice>(dd);
+      auto audio = std::make_shared<display_device::NoopAudioContext>();
+      auto persistence = std::make_unique<display_device::PersistentState>(
+        std::make_shared<display_device::NoopSettingsPersistence>()
+      );
+      auto settings_mgr = std::make_shared<display_device::SettingsManager>(
+        impersonated_dd,
+        audio,
+        std::move(persistence),
+        display_device::WinWorkarounds {}
+      );
+      return InProcessDisplayContext {
+        .settings_mgr = std::move(settings_mgr),
+        .display = std::move(impersonated_dd),
+      };
+    } catch (const std::exception &ex) {
+      BOOST_LOG(error) << "Display helper (in-process): failed to initialize SettingsManager: " << ex.what();
+    } catch (...) {
+      BOOST_LOG(error) << "Display helper (in-process): failed to initialize SettingsManager due to unknown error.";
+    }
+    return std::nullopt;
+  }
 
   bool device_id_equals_ci(const std::string &lhs, const std::string &rhs) {
     if (lhs.empty() || rhs.empty()) {
@@ -158,9 +201,62 @@ namespace {
     return true;
   }
 
-  constexpr DWORD kHelperStopGracePeriodMs = 2000;
+
+  bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.configuration) {
+      BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
+      return false;
+    }
+
+    auto ctx = make_settings_manager();
+    if (!ctx) {
+      return false;
+    }
+
+    const auto result = ctx->settings_mgr->applySettings(*request.configuration);
+    const bool ok = (result == display_device::SettingsManagerInterface::ApplyResult::Ok);
+    BOOST_LOG(info) << "Display helper (in-process): APPLY result=" << (ok ? "Ok" : "Failed");
+    if (!ok) {
+      return false;
+    }
+
+    // Apply optional topology/placement tweaks when provided.
+    if (!request.topology.topology.empty()) {
+      BOOST_LOG(debug) << "Display helper (in-process): applying topology override.";
+      (void) ctx->display->setTopology(request.topology.topology);
+    }
+    for (const auto &[device_id, point] : request.topology.monitor_positions) {
+      BOOST_LOG(debug) << "Display helper (in-process): setting origin for " << device_id
+                       << " to (" << point.m_x << "," << point.m_y << ").";
+      (void) ctx->display->setDisplayOrigin(device_id, point);
+    }
+
+    return ok;
+  }
   constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
+
+  bool wait_for_helper_ipc_ready_locked() {
+    const auto deadline = std::chrono::steady_clock::now() + kHelperIpcReadyTimeout;
+    int attempts = 0;
+
+    platf::display_helper_client::reset_connection();
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (platf::display_helper_client::send_ping()) {
+        if (attempts > 0) {
+          BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
+        }
+        return true;
+      }
+      ++attempts;
+      std::this_thread::sleep_for(kHelperIpcReadyPoll);
+      platf::display_helper_client::reset_connection();
+    }
+
+    BOOST_LOG(warning) << "Display helper IPC did not respond within " << kHelperIpcReadyTimeout.count()
+                       << " ms of helper start.";
+    return false;
+  }
 
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout) {
     using enum display_helper_integration::VirtualDisplayArrangement;
@@ -286,7 +382,40 @@ namespace {
     }
   }
 
-  bool ensure_helper_started(bool force_restart = false, bool force_enable = false) {
+  bool disarm_helper_restore_if_running() {
+    if (!dd_feature_enabled() || shutdown_requested()) {
+      return false;
+    }
+
+    bool helper_running = false;
+    {
+      std::lock_guard<std::mutex> lg(helper_mutex());
+      if (HANDLE h = helper_proc().get_process_handle()) {
+        helper_running = (WaitForSingleObject(h, 0) == WAIT_TIMEOUT);
+      }
+    }
+
+    if (!helper_running) {
+      helper_running = ensure_helper_started();
+    }
+
+    if (!helper_running) {
+      platf::display_helper_client::reset_connection();
+      BOOST_LOG(debug) << "Display helper: DISARM skipped (helper not reachable).";
+      return false;
+    }
+
+    bool ok = platf::display_helper_client::send_disarm_restore();
+    if (!ok) {
+      BOOST_LOG(warning) << "Display helper: DISARM send failed; retrying after connection reset.";
+      platf::display_helper_client::reset_connection();
+      ok = platf::display_helper_client::send_disarm_restore();
+    }
+    BOOST_LOG(info) << "Display helper: DISARM dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
+
+  bool ensure_helper_started(bool force_restart, bool force_enable) {
     if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
@@ -312,8 +441,9 @@ namespace {
           if (ping_ok) {
             return true;
           }
-          BOOST_LOG(warning) << "Display helper process ping failed; forcing restart.";
-          need_restart = true;
+          platf::display_helper_client::reset_connection();
+          BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
+          return false;
         } else {
           BOOST_LOG(info) << "Display helper restart requested (force).";
         }
@@ -406,7 +536,7 @@ namespace {
     }
 
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    const bool started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
+    const bool started = helper_proc().start(helper.wstring(), L"");
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
@@ -433,7 +563,7 @@ namespace {
                            << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
           
-          const bool retry_started = helper_proc().start(helper.wstring(), L"--no-startup-restore");
+          const bool retry_started = helper_proc().start(helper.wstring(), L"");
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             return false;
@@ -454,7 +584,7 @@ namespace {
     
     // Final initialization delay for pipe server creation
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    return started;
+    return wait_for_helper_ipc_ready_locked();
   }
 
   // Watchdog state for helper liveness during active streams
@@ -538,32 +668,8 @@ namespace {
         if (!helper_ready) {
           continue;
         }
-        // Attempt to re-derive and apply the desired configuration from
-        // current Sunshine state if a session is active.
-        auto session_opt = get_active_session_copy();
-        if (session_opt) {
-          auto _hot_apply_gate = config::acquire_apply_read_gate();
-          // Rebuild a minimal launch_session_t carrying display-related fields
-          rtsp_stream::launch_session_t tmp_session {};
-          tmp_session.width = session_opt->width;
-          tmp_session.height = session_opt->height;
-          tmp_session.fps = session_opt->fps;
-          tmp_session.enable_hdr = session_opt->enable_hdr;
-          tmp_session.enable_sops = session_opt->enable_sops;
-          tmp_session.virtual_display = session_opt->virtual_display;
-          tmp_session.virtual_display_device_id = session_opt->virtual_display_device_id;
-          tmp_session.framegen_refresh_rate = session_opt->framegen_refresh_rate;
-          tmp_session.gen1_framegen_fix = session_opt->gen1_framegen_fix;
-          tmp_session.gen2_framegen_fix = session_opt->gen2_framegen_fix;
-          auto request = display_helper_integration::helpers::build_request_from_session(config::video, tmp_session);
-          bool reapplied = request && display_helper_integration::apply(*request);
-          BOOST_LOG(info) << "Display helper watchdog: re-assert APPLY after reconnect result=" << (reapplied ? "true" : "false");
-          if (!reapplied) {
-            helper_ready = platf::display_helper_client::send_ping();
-          }
-        } else {
-          helper_ready = platf::display_helper_client::send_ping();
-        }
+        // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
+        helper_ready = platf::display_helper_client::send_ping();
       }
     }
   }
@@ -581,15 +687,11 @@ namespace display_helper_integration {
       request.enable_virtual_display_watchdog ||
       request.session_overrides.virtual_display_override.value_or(false);
 
-    if (!ensure_helper_started(true, requires_virtual_display)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot process request.";
-      return false;
-    }
-
-    if (!platf::display_helper_client::send_ping()) {
-      BOOST_LOG(warning) << "Display helper: initial ping failed; resetting connection and retrying.";
-      platf::display_helper_client::reset_connection();
-      (void) platf::display_helper_client::send_ping();
+    // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
+    // Force-restart helper for each new stream so Sunshine reconnects quickly to a fresh instance.
+    const bool helper_ready = ensure_helper_started(false, requires_virtual_display);
+    if (!helper_ready && (requires_virtual_display || dd_feature_enabled())) {
+      BOOST_LOG(warning) << "Display helper IPC unavailable after restart; continuing with in-process apply only.";
     }
 
     if (request.action == DisplayApplyAction::Revert) {
@@ -604,100 +706,51 @@ namespace display_helper_integration {
       return false;
     }
 
-    if (!request.configuration) {
-      BOOST_LOG(error) << "Display helper: no configuration provided for APPLY request.";
-      return false;
-    }
-
-    if (request.device_blacklist && !request.device_blacklist->empty()) {
-      BOOST_LOG(info) << "Display helper: blacklisting device_id from topology exports: " << *request.device_blacklist;
-      platf::display_helper_client::send_blacklist(*request.device_blacklist);
-    }
-
-    std::string json = display_device::toJson(*request.configuration);
-    bool payload_initialized = false;
-    bool mutated_payload = false;
-    nlohmann::json payload;
-    auto ensure_payload = [&]() -> nlohmann::json & {
-      if (!payload_initialized) {
-        try {
-          payload = nlohmann::json::parse(json);
-          if (!payload.is_object()) {
-            payload = nlohmann::json::object();
-          }
-        } catch (...) {
-          payload = nlohmann::json::object();
-        }
-        payload_initialized = true;
+    auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
+      if (!apply_in_process(payload)) {
+        BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
+        return false;
       }
-      return payload;
+
+      const auto *session = payload.session ? payload.session : request.session;
+      if (!session) {
+        BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
+        return false;
+      }
+
+      const auto device_id = payload.configuration ? payload.configuration->m_device_id : std::string {};
+      const auto prep = payload.configuration
+        ? payload.configuration->m_device_prep
+        : display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+
+      if (!verify_helper_topology(*session, device_id, prep)) {
+        BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
+        return false;
+      }
+
+      set_active_session(
+        *session,
+        payload.session_overrides.device_id_override,
+        payload.session_overrides.fps_override,
+        payload.session_overrides.width_override,
+        payload.session_overrides.height_override,
+        payload.session_overrides.virtual_display_override,
+        payload.session_overrides.framegen_refresh_override
+      );
+
+      if (payload.enable_virtual_display_watchdog) {
+        platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+      }
+
+      return true;
     };
 
-    if (request.attach_hdr_toggle_flag) {
-      auto &p = ensure_payload();
-      p["wa_hdr_toggle"] = true;
-      mutated_payload = true;
+    if (attempt_apply(request, "primary")) {
+      return true;
     }
 
-    if (request.virtual_display_arrangement) {
-      auto &p = ensure_payload();
-      p["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.monitor_positions.empty()) {
-      auto &p = ensure_payload();
-      nlohmann::json positions = nlohmann::json::object();
-      for (const auto &[device_id, point] : request.topology.monitor_positions) {
-        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
-      }
-      p["sunshine_monitor_positions"] = std::move(positions);
-      mutated_payload = true;
-    }
-
-    if (!request.topology.topology.empty()) {
-      auto &p = ensure_payload();
-      p["sunshine_topology"] = request.topology.topology;
-      mutated_payload = true;
-    }
-
-    if (mutated_payload) {
-      json = payload.dump();
-    }
-
-    BOOST_LOG(info) << "Display helper: sending APPLY with configuration:\n"
-                    << json;
-    const bool ok = platf::display_helper_client::send_apply_json(json);
-    BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-    if (!ok) {
-      return false;
-    }
-
-    const auto *session = request.session;
-    if (!session) {
-      BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
-      return false;
-    }
-
-    if (!verify_helper_topology(*session, request.configuration->m_device_id, request.configuration->m_device_prep)) {
-      return false;
-    }
-
-    set_active_session(
-      *session,
-      request.session_overrides.device_id_override,
-      request.session_overrides.fps_override,
-      request.session_overrides.width_override,
-      request.session_overrides.height_override,
-      request.session_overrides.virtual_display_override,
-      request.session_overrides.framegen_refresh_override
-    );
-
-    if (request.enable_virtual_display_watchdog) {
-      platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
-    }
-
-    return true;
+    BOOST_LOG(warning) << "Display helper: retrying primary apply after failure.";
+    return attempt_apply(request, "retry");
   }
 
   bool revert() {
@@ -710,6 +763,10 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     clear_active_session();
     return ok;
+  }
+
+  bool disarm_pending_restore() {
+    return disarm_helper_restore_if_running();
   }
 
   bool export_golden_restore() {

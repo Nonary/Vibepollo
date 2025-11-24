@@ -39,6 +39,8 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+  #include <dxgi1_2.h>
+  #include <wrl/client.h>
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
@@ -100,15 +102,29 @@ namespace video {
 
     std::optional<std::string> active_virtual_display_dxgi_name() {
       auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      auto map_to_dxgi_name = [](const std::wstring &name) -> std::optional<std::string> {
+        if (name.empty()) {
+          return std::nullopt;
+        }
+
+        const auto mapped = display_device::map_output_name(platf::to_utf8(name));
+        if (mapped.empty()) {
+          return std::nullopt;
+        }
+        return mapped;
+      };
+
       for (const auto &info : virtual_displays) {
-        if (info.is_active && !info.device_name.empty()) {
-          return platf::to_utf8(info.device_name);
+        if (info.is_active) {
+          if (auto mapped = map_to_dxgi_name(info.device_name)) {
+            return mapped;
+          }
         }
       }
 
       for (const auto &info : virtual_displays) {
-        if (!info.device_name.empty()) {
-          return platf::to_utf8(info.device_name);
+        if (auto mapped = map_to_dxgi_name(info.device_name)) {
+          return mapped;
         }
       }
 
@@ -133,8 +149,9 @@ namespace video {
 
       // If a runtime override is present, honor it immediately when available.
       if (current_override) {
+        const auto mapped_override = display_device::map_output_name(*current_override);
         for (int i = 0; i < static_cast<int>(display_names.size()); ++i) {
-          if (boost::iequals(display_names[i], *current_override)) {
+          if (boost::iequals(display_names[i], mapped_override) || boost::iequals(display_names[i], *current_override)) {
             display_index = i;
             wait_start = {};
             return true;
@@ -195,12 +212,67 @@ namespace video {
       return state;
     }
 
+#ifdef _WIN32
+    // Build a stable cache sub-key for the adapter that backs the current output.
+    // If we cannot resolve the adapter, fall back to the provided output name.
+    std::string adapter_cache_key_for_output(const std::string &output_name) {
+      const auto mapped_output = display_device::map_output_name(output_name);
+      Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+      if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+        return mapped_output;
+      }
+
+      const auto mapped_output_w = platf::from_utf8(mapped_output);
+      for (UINT adapter_index = 0;; ++adapter_index) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(adapter_index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        if (FAILED(adapter->GetDesc1(&adapter_desc))) {
+          continue;
+        }
+
+        for (UINT output_index = 0;; ++output_index) {
+          Microsoft::WRL::ComPtr<IDXGIOutput> output;
+          const auto hr = adapter->EnumOutputs(output_index, output.GetAddressOf());
+          if (hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(hr)) {
+            continue;
+          }
+
+          DXGI_OUTPUT_DESC output_desc {};
+          if (FAILED(output->GetDesc(&output_desc))) {
+            continue;
+          }
+
+          if (_wcsicmp(output_desc.DeviceName, mapped_output_w.c_str()) != 0) {
+            continue;
+          }
+
+          std::ostringstream key;
+          key << adapter_desc.VendorId << ':' << adapter_desc.DeviceId << ':' << platf::to_utf8(adapter_desc.Description);
+          return key.str();
+        }
+      }
+
+      return mapped_output;
+    }
+#else
+    std::string adapter_cache_key_for_output(const std::string &output_name) {
+      return output_name;
+    }
+#endif
+
     std::string build_probe_cache_key() {
       std::ostringstream oss;
       oss << config::video.encoder << '|'
           << config::video.hevc_mode << '|'
           << config::video.av1_mode << '|'
-          << config::get_active_output_name() << '|'
+          << adapter_cache_key_for_output(config::get_active_output_name()) << '|'
           << config::video.adapter_name << '|'
           << static_cast<int>(config::video.virtual_display_mode);
 #ifdef _WIN32

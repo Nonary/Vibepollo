@@ -21,6 +21,10 @@ namespace display_helper_integration {
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();
 
+  // Attempt to cancel any pending restore/revert requests on a running helper.
+  // Returns true if a DISARM command was sent successfully.
+  bool disarm_pending_restore();
+
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
 

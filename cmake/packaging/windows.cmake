@@ -2,7 +2,16 @@
 install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
-install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
+# Check for zlib in Sunshine or Apollo install directories
+if(EXISTS "${ZLIB}")
+    install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
+elseif(EXISTS "C:/Program Files (x86)/Sunshine/zlib1.dll")
+    install(FILES "C:/Program Files (x86)/Sunshine/zlib1.dll" DESTINATION "." COMPONENT application)
+elseif(EXISTS "C:/Program Files/Apollo/zlib1.dll")
+    install(FILES "C:/Program Files/Apollo/zlib1.dll" DESTINATION "." COMPONENT application)
+else()
+    message(FATAL_ERROR "zlib1.dll not found in expected locations")
+endif()
 
 # ViGEmBus installer is no longer bundled or managed by the installer
 

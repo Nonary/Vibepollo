@@ -192,21 +192,27 @@ namespace nvhttp {
     }
 
     void schedule_virtual_display_cleanup() {
-      bool expected = false;
-      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
-        return;
-      }
+    bool expected = false;
+    if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
+      return;
+    }
 
-      std::thread([] {
-        auto guard = util::fail_guard([]() {
-          virtual_display_cleanup_pending.store(false, std::memory_order_release);
-        });
-        try {
-          cleanup_virtual_display_state();
-        } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
-        } catch (...) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+    std::thread([] {
+      auto guard = util::fail_guard([]() {
+        virtual_display_cleanup_pending.store(false, std::memory_order_release);
+      });
+      try {
+        // If a new session spun up while we were scheduling cleanup, leave displays alone.
+        if (rtsp_stream::session_count() > 0) {
+          BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
+          return;
+        }
+
+        cleanup_virtual_display_state();
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
         }
       }).detach();
     }
@@ -1720,6 +1726,8 @@ namespace nvhttp {
     // The display should be restored in case something fails as there are no other sessions.
     if (no_active_sessions && !launch_session->input_only) {
       revert_display_configuration = true;
+      bool display_apply_attempted = false;
+      bool display_apply_failed = false;
 
 #ifdef _WIN32
       HANDLE user_token = platf::retrieve_users_token(false);
@@ -1729,10 +1737,16 @@ namespace nvhttp {
       }
 
       if (helper_session_available) {
+        display_apply_attempted = true;
+        (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
+          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        } else if (!display_helper_integration::apply(*request)) {
+        }
+
+        if (request && !display_helper_integration::apply(*request)) {
+          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
@@ -1741,16 +1755,25 @@ namespace nvhttp {
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
       noop_builder.set_session(*launch_session);
+      display_apply_attempted = true;
       if (!display_helper_integration::apply(noop_builder.build())) {
+        display_apply_failed = true;
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
 
-    // Probe encoders again before streaming to ensure our chosen
-    // encoder matches the active GPU (which could have changed
-    // due to hotplugging, driver crash, primary monitor change,
-    // or any number of other factors).
-    bool encoder_probe_failed = video::probe_encoders();
+      if (display_apply_attempted && display_apply_failed) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
+        tree.put("root.gamesession", 0);
+        return;
+      }
+
+      // Probe encoders again before streaming to ensure our chosen
+      // encoder matches the active GPU (which could have changed
+      // due to hotplugging, driver crash, primary monitor change,
+      // or any number of other factors).
+      bool encoder_probe_failed = video::probe_encoders();
 
       if (encoder_probe_failed && !is_input_only) {
         BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
@@ -1941,6 +1964,7 @@ namespace nvhttp {
 
         display_apply_attempted = true;
         if (helper_session_available) {
+          (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
           if (!request) {
             BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
@@ -1971,15 +1995,10 @@ namespace nvhttp {
 #endif
 
       if (display_apply_attempted && display_apply_failed) {
-        const bool no_display_available = !has_any_active_display();
-        // For input-only mode or when displays are available, continue
-        if (!launch_session->input_only && no_display_available) {
-          tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 503);
-          tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
-          return;
-        }
-        BOOST_LOG(warning) << "Display helper: failed to re-apply display configuration on resume; continuing with existing display.";
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
+        return;
       }
     }
 
