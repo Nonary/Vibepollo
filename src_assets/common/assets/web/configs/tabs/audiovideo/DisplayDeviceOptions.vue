@@ -753,6 +753,13 @@ const isManualEnforcementActive = computed(() => {
                       default="false"
                     />
                     <Checkbox
+                      id="dd_wa_virtual_double_refresh"
+                      v-model="config.dd_wa_virtual_double_refresh"
+                      locale-prefix="config"
+                      :default="true"
+                      :disabled="!usingVirtualDisplay"
+                    />
+                    <Checkbox
                       id="dd_wa_dummy_plug_hdr10"
                       v-model="config.dd_wa_dummy_plug_hdr10"
                       locale-prefix="config"

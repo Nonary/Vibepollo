@@ -110,6 +110,7 @@ namespace config {
       struct workarounds_t {
         bool hdr_toggle;  ///< Enable HDR high-contrast color workaround (async; fixed 1s delay).
         bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
+        bool virtual_double_refresh;  ///< Request double refresh on virtual displays to avoid unexpected FPS drops.
       };
 
       enum class config_option_e {

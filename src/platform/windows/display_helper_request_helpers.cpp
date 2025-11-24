@@ -18,6 +18,8 @@
   #include <display_device/json.h>
   #include <boost/algorithm/string/predicate.hpp>
   #include <algorithm>
+  #include <limits>
+  #include <type_traits>
 
 namespace display_helper_integration::helpers {
   namespace {
@@ -117,6 +119,46 @@ namespace display_helper_integration::helpers {
         config.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
       }
     }
+
+    int safe_double_int(int value) {
+      if (value <= 0) {
+        return value;
+      }
+      if (value > std::numeric_limits<int>::max() / 2) {
+        return std::numeric_limits<int>::max();
+      }
+      return value * 2;
+    }
+
+    display_device::FloatingPoint double_refresh_value(const display_device::FloatingPoint &value) {
+      return std::visit(
+        [](const auto &v) -> display_device::FloatingPoint {
+          using V = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<V, display_device::Rational>) {
+            display_device::Rational doubled = v;
+            if (doubled.m_numerator > std::numeric_limits<unsigned int>::max() / 2) {
+              const double as_double = static_cast<double>(doubled.m_numerator) / doubled.m_denominator;
+              return static_cast<double>(as_double * 2.0);
+            }
+            doubled.m_numerator = std::min<unsigned int>(
+              doubled.m_numerator * 2u,
+              std::numeric_limits<unsigned int>::max()
+            );
+            return doubled;
+          } else {
+            return static_cast<double>(v * 2.0);
+          }
+        },
+        value
+      );
+    }
+
+    void double_refresh_if_present(std::optional<display_device::FloatingPoint> &value) {
+      if (!value) {
+        return;
+      }
+      value = double_refresh_value(*value);
+    }
   }  // namespace
 
   SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
@@ -171,9 +213,21 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+    const bool double_virtual_refresh = session_requests_virtual && video_config_.dd.wa.virtual_double_refresh;
+    const int effective_virtual_display_fps = double_virtual_refresh ? safe_double_int(display_fps) : display_fps;
+    BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
+    BOOST_LOG(debug) << "effective_display_fps: "
+                     << (session_requests_virtual ? effective_virtual_display_fps : display_fps);
 
     if (session_requests_virtual) {
-      return configure_virtual_display(builder, effective_layout, effective_width, effective_height, display_fps);
+      return configure_virtual_display(
+        builder,
+        effective_layout,
+        effective_width,
+        effective_height,
+        effective_virtual_display_fps,
+        double_virtual_refresh
+      );
     }
     return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);
   }
@@ -183,7 +237,8 @@ namespace display_helper_integration::helpers {
     const config::video_t::virtual_display_layout_e layout,
     const int effective_width,
     const int effective_height,
-    const int display_fps
+    const int display_fps,
+    const bool double_refresh_workaround
   ) const {
     const auto parsed = display_device::parse_configuration(video_config_, session_);
     const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
@@ -201,6 +256,9 @@ namespace display_helper_integration::helpers {
     vd_cfg.m_device_id = target_device_id;
     const auto layout_flags = describe_layout(layout);
     vd_cfg.m_device_prep = layout_flags.device_prep;
+    if (double_refresh_workaround && vd_cfg.m_refresh_rate) {
+      double_refresh_if_present(vd_cfg.m_refresh_rate);
+    }
     apply_resolution_refresh_overrides(vd_cfg, effective_width, effective_height, display_fps);
 
     auto &overrides = builder.mutable_session_overrides();

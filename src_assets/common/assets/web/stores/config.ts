@@ -119,6 +119,7 @@ const defaultGroups = [
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
       dd_wa_hdr_toggle: false,
+      dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
@@ -494,6 +495,7 @@ export const useConfigStore = defineStore('config', () => {
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
       'dd_wa_hdr_toggle',
+      'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);

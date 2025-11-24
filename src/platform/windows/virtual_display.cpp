@@ -194,6 +194,10 @@ namespace VDISPLAY {
 
     uint32_t apply_refresh_overrides(uint32_t fps_millihz) {
       constexpr uint64_t scale = 1000ull;
+      if (config::video.dd.wa.virtual_double_refresh && fps_millihz > 0) {
+        const uint64_t doubled = static_cast<uint64_t>(fps_millihz) * 2ull;
+        fps_millihz = static_cast<uint32_t>(std::min<uint64_t>(doubled, std::numeric_limits<uint32_t>::max()));
+      }
       const uint32_t max_hz = highest_requested_refresh_hz();
       if (max_hz == 0) {
         return fps_millihz;

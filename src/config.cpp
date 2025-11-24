@@ -535,7 +535,7 @@ namespace config {
       {},  // config_revert_on_disconnect
       false,  // activate_virtual_display
       {},  // mode_remapping
-      {false, false}  // wa
+      {false, false, true}  // wa
     },  // display_device
 
     0,  // max_bitrate
@@ -1247,6 +1247,7 @@ namespace config {
       }
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
+    bool_f(vars, "dd_wa_virtual_double_refresh", video.dd.wa.virtual_double_refresh);
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -1650,6 +1651,7 @@ namespace config {
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
+      const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       for (const auto &[name, value] : command_line_overrides) {
@@ -1682,7 +1684,8 @@ namespace config {
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                      (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
+                                     (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0) {
