@@ -2187,30 +2187,32 @@ namespace stream {
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
 #ifdef _WIN32
-        // Apply RTSS frame limit if enabled (Windows-only)
-        std::optional<int> lossless_rtss_limit;
-        const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
-                                             boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
-        const bool using_smooth_motion =
-          boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
-        if (using_lossless_provider) {
-          if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
-            lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
-          } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
-            int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.5);
-            if (computed > 0) {
-              lossless_rtss_limit = computed;
+        if (!session.config.monitor.input_only) {
+          // Apply RTSS frame limit if enabled (Windows-only)
+          std::optional<int> lossless_rtss_limit;
+          const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
+                                               boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
+          const bool using_smooth_motion =
+            boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
+          if (using_lossless_provider) {
+            if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
+              lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
+            } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
+              int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.5);
+              if (computed > 0) {
+                lossless_rtss_limit = computed;
+              }
             }
           }
+          platf::frame_limiter_streaming_start(
+            session.config.monitor.framerate,
+            session.config.monitor.encodingFramerate,
+            session.config.gen1_framegen_fix,
+            session.config.gen2_framegen_fix,
+            lossless_rtss_limit,
+            using_smooth_motion
+          );
         }
-        platf::frame_limiter_streaming_start(
-          session.config.monitor.framerate,
-          session.config.monitor.encodingFramerate,
-          session.config.gen1_framegen_fix,
-          session.config.gen2_framegen_fix,
-          lossless_rtss_limit,
-          using_smooth_motion
-        );
 #endif
         platf::streaming_will_start();
         proc::proc.resume();
