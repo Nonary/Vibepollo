@@ -205,6 +205,7 @@ namespace video {
       std::mutex mutex;
       std::string cache_key;
       bool valid = false;
+      bool hdr_supported = false;
     };
 
     EncoderProbeCacheState &encoder_probe_cache_state() {
@@ -291,21 +292,23 @@ namespace video {
       return oss.str();
     }
 
-    bool probe_cache_matches(const std::string &key) {
+    bool probe_cache_matches(const std::string &key, bool want_hdr) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
-      return state.valid && state.cache_key == key;
+      return state.valid && state.cache_key == key && (!want_hdr || state.hdr_supported);
     }
 
-    void update_probe_cache(const std::string &key, bool success) {
+    void update_probe_cache(const std::string &key, bool success, bool hdr_supported) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
       if (success) {
         state.cache_key = key;
         state.valid = true;
+        state.hdr_supported = hdr_supported;
       } else {
         state.valid = false;
         state.cache_key.clear();
+        state.hdr_supported = false;
       }
     }
   }  // namespace
@@ -2958,14 +2961,15 @@ namespace video {
 
   int probe_encoders() {
     const auto cache_key = build_probe_cache_key();
-    if (probe_cache_matches(cache_key)) {
+    const bool wants_hdr = (config::video.hevc_mode == 3) || (config::video.av1_mode == 3);
+    if (probe_cache_matches(cache_key, wants_hdr)) {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
     }
 
     if (!allow_encoder_probing()) {
       // Error already logged
-      update_probe_cache(cache_key, false);
+      update_probe_cache(cache_key, false, false);
       return -1;
     }
 
@@ -3106,7 +3110,7 @@ namespace video {
       } else {
         BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
       }
-      update_probe_cache(cache_key, false);
+      update_probe_cache(cache_key, false, false);
       return -1;
     }
 
@@ -3162,7 +3166,8 @@ namespace video {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
-    update_probe_cache(cache_key, true);
+    const bool cache_hdr_supported = encoder.hevc[encoder_t::DYNAMIC_RANGE] || encoder.av1[encoder_t::DYNAMIC_RANGE];
+    update_probe_cache(cache_key, true, cache_hdr_supported);
     restore_previous_probe_state.disable();
     return 0;
   }

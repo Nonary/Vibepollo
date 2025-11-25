@@ -1690,6 +1690,19 @@ namespace nvhttp {
           }
         }
 
+        const auto desired_layout = launch_session->virtual_display_layout_override.value_or(config::video.virtual_display_layout);
+        const bool wants_extended_layout = desired_layout != config::video_t::virtual_display_layout_e::exclusive;
+        if (wants_extended_layout) {
+          auto topology_snapshot = display_helper_integration::capture_current_topology();
+          if (topology_snapshot) {
+            launch_session->virtual_display_topology_snapshot = *topology_snapshot;
+          } else {
+            launch_session->virtual_display_topology_snapshot.reset();
+          }
+        } else {
+          launch_session->virtual_display_topology_snapshot.reset();
+        }
+
         VDISPLAY::setWatchdogFeedingEnabled(true);
         auto display_info = VDISPLAY::createVirtualDisplay(
           display_uuid_source.c_str(),
