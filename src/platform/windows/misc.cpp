@@ -402,6 +402,11 @@ namespace platf {
     return ret;
   }
 
+  bool has_active_console_session() {
+    const DWORD session_id = WTSGetActiveConsoleSessionId();
+    return session_id != 0xFFFFFFFF;
+  }
+
   // Note: This does NOT append a null terminator
   void append_string_to_environment_block(wchar_t *env_block, int &offset, const std::wstring &wstr) {
     std::memcpy(&env_block[offset], wstr.data(), wstr.length() * sizeof(wchar_t));
