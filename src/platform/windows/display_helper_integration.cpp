@@ -201,6 +201,51 @@ namespace {
     return true;
   }
 
+  bool apply_topology_definition(
+    const display_helper_integration::DisplayTopologyDefinition &topology,
+    const char *label
+  ) {
+    if (topology.topology.empty() && topology.monitor_positions.empty()) {
+      return true;
+    }
+
+    auto ctx = make_settings_manager();
+    if (!ctx) {
+      BOOST_LOG(warning) << "Display helper: unable to initialize display context for topology apply (" << label << ").";
+      return false;
+    }
+
+    bool topology_ok = true;
+    if (!topology.topology.empty()) {
+      try {
+        auto current_topology = ctx->display->getCurrentTopology();
+        const bool already_matches = ctx->display->isTopologyTheSame(current_topology, topology.topology);
+        if (!already_matches) {
+          BOOST_LOG(info) << "Display helper: applying requested topology (" << label << ").";
+          topology_ok = ctx->display->setTopology(topology.topology);
+          if (!topology_ok) {
+            BOOST_LOG(warning) << "Display helper: requested topology apply failed (" << label << ").";
+          }
+        } else {
+          BOOST_LOG(debug) << "Display helper: requested topology already active (" << label << ").";
+        }
+      } catch (const std::exception &ex) {
+        BOOST_LOG(warning) << "Display helper: topology inspection failed (" << label << "): " << ex.what();
+        topology_ok = false;
+      } catch (...) {
+        BOOST_LOG(warning) << "Display helper: topology inspection failed (" << label << ") with an unknown error.";
+        topology_ok = false;
+      }
+    }
+
+    for (const auto &[device_id, point] : topology.monitor_positions) {
+      BOOST_LOG(debug) << "Display helper: setting origin for " << device_id
+                       << " to (" << point.m_x << "," << point.m_y << ") after " << label << ".";
+      (void) ctx->display->setDisplayOrigin(device_id, point);
+    }
+
+    return topology_ok;
+  }
 
   bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
     if (!request.configuration) {
@@ -725,6 +770,11 @@ namespace display_helper_integration {
 
       if (!verify_helper_topology(*session, device_id, prep)) {
         BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
+        return false;
+      }
+
+      if (!apply_topology_definition(payload.topology, label)) {
+        BOOST_LOG(warning) << "Display helper: topology override failed after " << label << " APPLY.";
         return false;
       }
 
