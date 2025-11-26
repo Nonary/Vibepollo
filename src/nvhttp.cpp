@@ -32,6 +32,7 @@
 // local includes
 #include "config.h"
 #include "display_helper_integration.h"
+#include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -1140,6 +1141,14 @@ namespace nvhttp {
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     bool request_virtual_display = config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
+    const auto requested_output_name = config::get_active_output_name();
+    if (!request_virtual_display && !requested_output_name.empty()) {
+      if (!display_device::output_exists(requested_output_name)) {
+        BOOST_LOG(warning) << "Requested display '" << requested_output_name
+                           << "' not found; initializing virtual display instead.";
+        request_virtual_display = true;
+      }
+    }
 
     auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
       if (!should_request_virtual_display) {

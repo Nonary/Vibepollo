@@ -36,6 +36,11 @@ namespace display_device {
   [[nodiscard]] std::string map_output_name(const std::string &output_name);
 
   /**
+   * @brief Check whether a configured output name matches a known physical display.
+   */
+  [[nodiscard]] bool output_exists(const std::string &output_name);
+
+  /**
    * @brief A tag structure indicating that configuration parsing has failed.
    */
   struct failed_to_parse_tag_t {};
