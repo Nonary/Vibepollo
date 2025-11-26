@@ -124,6 +124,27 @@ namespace {
     return false;
   }
 
+  bool device_is_present(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (device.m_device_id.empty()) {
+        continue;
+      }
+      if (device_id_equals_ci(device.m_device_id, device_id)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool wait_for_device_activation(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
     if (device_id.empty()) {
       return false;
@@ -728,6 +749,37 @@ namespace display_helper_integration {
       return false;
     }
 
+    auto refresh_request_if_needed = [&](const DisplayApplyRequest &current, const char *label) -> DisplayApplyRequest {
+      const rtsp_stream::launch_session_t *session = current.session ? current.session : request.session;
+      if (!session || !session->virtual_display) {
+        return current;
+      }
+
+      const auto requested_device_id = current.configuration ? current.configuration->m_device_id : std::string {};
+      const bool session_has_device = !session->virtual_display_device_id.empty();
+      const bool request_missing_or_stale = (requested_device_id.empty() && session_has_device) ||
+                                            (!requested_device_id.empty() && !device_is_present(requested_device_id));
+      const bool device_mismatch = session_has_device &&
+                                   !requested_device_id.empty() &&
+                                   !device_id_equals_ci(requested_device_id, session->virtual_display_device_id);
+      if (!request_missing_or_stale && !device_mismatch) {
+        return current;
+      }
+
+      auto rebuilt = display_helper_integration::helpers::build_request_from_session(config::video, *session);
+      if (!rebuilt) {
+        BOOST_LOG(warning) << "Display helper: unable to refresh virtual display request for " << label
+                           << " APPLY (stale device_id).";
+        return current;
+      }
+
+      const auto refreshed_device_id = rebuilt->configuration ? rebuilt->configuration->m_device_id : std::string {};
+      BOOST_LOG(debug) << "Display helper: refreshed virtual display request for " << label
+                       << " APPLY using device_id '" << (refreshed_device_id.empty() ? "(none)" : refreshed_device_id)
+                       << "'.";
+      return std::move(*rebuilt);
+    };
+
     const bool requires_virtual_display =
       request.enable_virtual_display_watchdog ||
       request.session_overrides.virtual_display_override.value_or(false);
@@ -751,6 +803,7 @@ namespace display_helper_integration {
       return false;
     }
 
+    DisplayApplyRequest effective_request = refresh_request_if_needed(request, "primary");
     auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
       if (!apply_in_process(payload)) {
         BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
@@ -795,12 +848,13 @@ namespace display_helper_integration {
       return true;
     };
 
-    if (attempt_apply(request, "primary")) {
+    if (attempt_apply(effective_request, "primary")) {
       return true;
     }
 
     BOOST_LOG(warning) << "Display helper: retrying primary apply after failure.";
-    return attempt_apply(request, "retry");
+    effective_request = refresh_request_if_needed(effective_request, "retry");
+    return attempt_apply(effective_request, "retry");
   }
 
   bool revert() {
