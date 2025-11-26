@@ -382,7 +382,7 @@ namespace display_helper_integration::helpers {
     } else if (!video_config_.output_name.empty()) {
       default_device_id = video_config_.output_name;
     } else {
-      default_device_id = "DISPLAY_PRIMARY";
+      default_device_id = "";
     }
 
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
