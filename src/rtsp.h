@@ -83,7 +83,7 @@ namespace rtsp_stream {
     bool client_display_mode_override;
     std::optional<int> framegen_refresh_rate;
     std::string frame_generation_provider;
-    std::optional<int> lossless_scaling_target_fps;
+    std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;

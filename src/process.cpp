@@ -1073,12 +1073,12 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
-    std::optional<int> effective_lossless_target = launch_session->lossless_scaling_target_fps;
+    std::optional<double> effective_lossless_target = launch_session->lossless_scaling_target_fps;
     if (
       (!effective_lossless_target || *effective_lossless_target <= 0) &&
       launch_session->fps > 0
     ) {
-      effective_lossless_target = launch_session->fps;
+      effective_lossless_target = (double) launch_session->fps / 1000.0;
     }
     launch_session->lossless_scaling_target_fps = effective_lossless_target;
 
@@ -2775,7 +2775,7 @@ namespace proc {
           ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
         }
         ctx.lossless_scaling_target_fps.reset();
-        int lossless_target_fps = util::get_non_string_json_value<int>(app_node, "lossless-scaling-target-fps", 0);
+        double lossless_target_fps = util::get_non_string_json_value<double>(app_node, "lossless-scaling-target-fps", 0.0);
         if (lossless_target_fps > 0) {
           ctx.lossless_scaling_target_fps = lossless_target_fps;
         }

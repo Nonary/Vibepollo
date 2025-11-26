@@ -181,7 +181,7 @@ namespace playnite_launcher::lossless {
 
     void finalize_lossless_options(lossless_scaling_options &options) {
       if (options.enabled && !options.rtss_limit && options.target_fps && *options.target_fps > 0) {
-        int computed = *options.target_fps / 2;
+        int computed = (int) std::floor(*options.target_fps / 2.0);
         if (computed > 0) {
           options.rtss_limit = computed;
         }
@@ -826,7 +826,7 @@ namespace playnite_launcher::lossless {
         profile.put("LSFGFlowScale", flow);
       }
       if (options.target_fps && *options.target_fps > 0) {
-        int target = std::clamp(*options.target_fps, 1, 480);
+        double target = std::clamp(*options.target_fps, 1.0, 480.0);
         profile.put("LSFG3Target", target);
       }
       if (options.resolution_scale_factor) {
@@ -963,7 +963,7 @@ namespace playnite_launcher::lossless {
   lossless_scaling_options lossless_scaling_env_loader::load() const {
     lossless_scaling_options opt;
     opt.enabled = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"));
-    opt.target_fps = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
+    opt.target_fps = parse_env_double(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
     opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
     opt.active_profile = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE"));
     opt.capture_api = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_CAPTURE_API"));

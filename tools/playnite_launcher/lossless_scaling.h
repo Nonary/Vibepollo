@@ -11,7 +11,7 @@ namespace playnite_launcher::lossless {
 
   struct lossless_scaling_options {
     bool enabled = false;
-    std::optional<int> target_fps;
+    std::optional<double> target_fps;
     std::optional<int> rtss_limit;
     std::optional<std::filesystem::path> configured_path;
     std::optional<std::string> active_profile;
@@ -77,7 +77,7 @@ namespace playnite_launcher::lossless {
 
   struct lossless_scaling_app_metadata {
     bool enabled = false;
-    std::optional<int> target_fps;
+    std::optional<double> target_fps;
     std::optional<int> rtss_limit;
     std::optional<std::filesystem::path> configured_path;
     std::optional<std::string> active_profile;
