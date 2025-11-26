@@ -34,6 +34,7 @@
 // local includes
 #include "config.h"
 #include "display_helper_integration.h"
+#include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -1553,11 +1554,27 @@ namespace nvhttp {
     bool no_active_sessions = (rtsp_stream::session_count() == 0);
 
 #ifdef _WIN32
+
     auto disable_virtual_display_request = [&]() {
       launch_session->virtual_display = false;
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
     };
+
+    bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
+    const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+    BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+    bool request_virtual_display = config_requests_virtual || session_requests_virtual;
+    BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
+    const auto requested_output_name = config::get_active_output_name();
+    if (!request_virtual_display && !requested_output_name.empty()) {
+      if (!display_device::output_exists(requested_output_name)) {
+        BOOST_LOG(warning) << "Requested display '" << requested_output_name
+                           << "' not found; initializing virtual display instead.";
+        request_virtual_display = true;
+      }
+    }
 
     if (is_input_only) {
       disable_virtual_display_request();

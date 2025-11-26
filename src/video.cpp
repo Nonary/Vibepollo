@@ -271,11 +271,8 @@ namespace video {
     std::string build_probe_cache_key() {
       std::ostringstream oss;
       oss << config::video.encoder << '|'
-          << config::video.hevc_mode << '|'
-          << config::video.av1_mode << '|'
           << adapter_cache_key_for_output(config::get_active_output_name()) << '|'
-          << config::video.adapter_name << '|'
-          << static_cast<int>(config::video.virtual_display_mode);
+          << config::video.adapter_name;
 #ifdef _WIN32
       oss << '|';
       bool any_gpu = false;

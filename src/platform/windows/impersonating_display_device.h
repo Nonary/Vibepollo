@@ -151,6 +151,11 @@ namespace display_device {
       T result {};
       HANDLE token = platf::retrieve_users_token(/*elevated*/ true);
       if (!token) {
+        // Allow temporary SYSTEM applies only when no user session exists; otherwise avoid
+        // mutating the user's profile without impersonation.
+        if (!platf::has_active_console_session()) {
+          return std::forward<Fn>(fn)();
+        }
         // If we cannot impersonate for a mutating operation, avoid applying
         // changes under SYSTEM. Return a safe default and log.
         if (mutating) {

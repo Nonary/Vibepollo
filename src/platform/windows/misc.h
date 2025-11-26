@@ -46,6 +46,12 @@ namespace platf {
   bool is_running_as_system();
 
   /**
+   * @brief Check whether a user is logged into the active console session.
+   * @return true if an active console session exists, false otherwise.
+   */
+  bool has_active_console_session();
+
+  /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
    * @param elevated Specify whether to elevate the process.
    * @param cmd The command to run.

@@ -49,6 +49,7 @@
   #include "config_playnite.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
+  #include "platform/windows/lossless_scaling_paths.h"
   #include "platform/windows/playnite_integration.h"
   #include "platform/windows/display_helper_request_helpers.h"
   #include "tools/playnite_launcher/focus_utils.h"
@@ -110,6 +111,46 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_LS1_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS";
     constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
+
+#ifdef _WIN32
+    std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
+      if (utf8.empty()) {
+        return std::nullopt;
+      }
+      try {
+        return std::filesystem::path(platf::dxgi::utf8_to_wide(utf8));
+      } catch (...) {
+      }
+      try {
+        return std::filesystem::u8path(utf8);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    std::string lossless_path_to_utf8(const std::filesystem::path &path) {
+      try {
+        return platf::dxgi::wide_to_utf8(path.wstring());
+      } catch (...) {
+        return std::string();
+      }
+    }
+
+    std::optional<std::filesystem::path> resolve_lossless_executable_path() {
+      auto configured_path = lossless_to_path(config::lossless_scaling.exe_path);
+      auto default_path = lossless_paths::default_steam_lossless_path();
+      std::optional<std::filesystem::path> default_opt;
+      if (!default_path.empty()) {
+        default_opt = default_path;
+      }
+
+      auto candidates = lossless_paths::discover_lossless_candidates(configured_path, std::nullopt, default_opt);
+      if (!candidates.empty()) {
+        return candidates.front();
+      }
+      return std::nullopt;
+    }
+#endif
 
     std::string normalize_frame_generation_provider(const std::string &value) {
       std::string normalized;
@@ -1050,6 +1091,8 @@ namespace proc {
     bool should_start_lossless_support = false;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
+    std::optional<std::filesystem::path> resolved_lossless_exe_path;
+    std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
     _virtual_display_guid = GUID {};
 #endif
@@ -1432,11 +1475,19 @@ namespace proc {
     _env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
     _env["APOLLO_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
 
+#ifdef _WIN32
+    resolved_lossless_exe_path = resolve_lossless_executable_path();
+    if (resolved_lossless_exe_path) {
+      resolved_lossless_exe_utf8 = lossless_path_to_utf8(*resolved_lossless_exe_path);
+    }
+    _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = !resolved_lossless_exe_utf8.empty() ? resolved_lossless_exe_utf8 : config::lossless_scaling.exe_path;
+#else
     try {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = config::lossless_scaling.exe_path;
     } catch (...) {
       _env["SUNSHINE_LOSSLESS_SCALING_EXE"] = "";
     }
+#endif
 
     auto clear_lossless_runtime_env = [&]() {
       _env[ENV_LOSSLESS_PROFILE] = "";
@@ -1481,7 +1532,9 @@ namespace proc {
         lossless_metadata.enabled = true;
         lossless_metadata.target_fps = effective_lossless_target;
         lossless_metadata.rtss_limit = effective_lossless_rtss;
-        if (!config::lossless_scaling.exe_path.empty()) {
+        if (resolved_lossless_exe_path) {
+          lossless_metadata.configured_path = *resolved_lossless_exe_path;
+        } else if (!config::lossless_scaling.exe_path.empty()) {
           lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
         }
         lossless_metadata.active_profile = runtime.profile;

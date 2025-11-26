@@ -674,6 +674,48 @@ namespace display_device {
 #endif
   }
 
+  bool output_exists(const std::string &output_name) {
+#ifdef _WIN32
+    if (output_name.empty()) {
+      return true;
+    }
+
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      display_device::WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices();
+
+      auto equals_ci = [](const std::string &a, const std::string &b) {
+        if (a.size() != b.size()) {
+          return false;
+        }
+        for (size_t i = 0; i < a.size(); ++i) {
+          if (std::tolower((unsigned char) a[i]) != std::tolower((unsigned char) b[i])) {
+            return false;
+          }
+        }
+        return true;
+      };
+
+      for (const auto &d : devices) {
+        if ((!d.m_device_id.empty() && equals_ci(d.m_device_id, output_name)) ||
+            (!d.m_display_name.empty() && equals_ci(d.m_display_name, output_name)) ||
+            (!d.m_friendly_name.empty() && equals_ci(d.m_friendly_name, output_name))) {
+          return !d.m_display_name.empty();
+        }
+      }
+
+      return false;
+    } catch (...) {
+      // Avoid false negatives if enumeration fails; assume the display may exist.
+      return true;
+    }
+#else
+    (void) output_name;
+    return true;
+#endif
+  }
+
   std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     const auto device_prep {parse_device_prep_option(video_config)};
     if (!device_prep) {
