@@ -25,7 +25,12 @@ namespace platf::dxgi {
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
-  display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() = default;
+  display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
+    if (_frame_locked && _ipc_session) {
+      _ipc_session->release();
+      _frame_locked = false;
+    }
+  }
 
   int display_wgc_ipc_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
     _config = config;
@@ -72,6 +77,13 @@ namespace platf::dxgi {
     uint64_t frame_qpc;
 
     auto capture_status = acquire_next_frame(timeout, src, frame_qpc, cursor_visible);
+    _frame_locked = capture_status == capture_e::ok;
+    auto release_guard = util::fail_guard([&]() {
+      if (_frame_locked && _ipc_session) {
+        _ipc_session->release();
+        _frame_locked = false;
+      }
+    });
 
     if (capture_status == capture_e::ok) {
       // Got a new frame - process it normally
@@ -108,29 +120,38 @@ namespace platf::dxgi {
       auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
       d3d_img->blank = false;  // image is always ready for capture
 
-      // Assign the shared texture from the session to the img_d3d_t
-      d3d_img->capture_texture.reset(src.release());
+      auto current_tex = d3d_img->capture_texture.get();
+      auto new_tex = src.get();
 
-      // Get the keyed mutex from the shared texture
-      HRESULT status = d3d_img->capture_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &d3d_img->capture_mutex);
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex from shared texture [0x"sv << util::hex(status).to_string_view() << ']';
-        return capture_e::error;
-      }
+      // Only rebuild handles when the underlying shared texture changes (e.g., reinit).
+      // This keeps a stable NT handle for in-flight encoder work instead of churning it every frame.
+      if (current_tex != new_tex) {
+        d3d_img->capture_mutex.reset();
+        if (d3d_img->encoder_texture_handle) {
+          CloseHandle(d3d_img->encoder_texture_handle);
+          d3d_img->encoder_texture_handle = nullptr;
+        }
 
-      // Get the shared handle for the encoder
-      resource1_t resource;
-      status = d3d_img->capture_texture->QueryInterface(__uuidof(IDXGIResource1), (void **) &resource);
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "Failed to query IDXGIResource1 [0x"sv << util::hex(status).to_string_view() << ']';
-        return capture_e::error;
-      }
+        d3d_img->capture_texture.reset(src.release());
 
-      // Create NT shared handle for the encoder device to use
-      status = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &d3d_img->encoder_texture_handle);
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "Failed to create NT shared texture handle [0x"sv << util::hex(status).to_string_view() << ']';
-        return capture_e::error;
+        HRESULT status = d3d_img->capture_texture->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **) &d3d_img->capture_mutex);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to query IDXGIKeyedMutex from shared texture [0x"sv << util::hex(status).to_string_view() << ']';
+          return capture_e::error;
+        }
+
+        resource1_t resource;
+        status = d3d_img->capture_texture->QueryInterface(__uuidof(IDXGIResource1), (void **) &resource);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to query IDXGIResource1 [0x"sv << util::hex(status).to_string_view() << ']';
+          return capture_e::error;
+        }
+
+        status = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &d3d_img->encoder_texture_handle);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to create NT shared texture handle [0x"sv << util::hex(status).to_string_view() << ']';
+          return capture_e::error;
+        }
       }
 
       // Set the format and other properties
@@ -183,8 +204,9 @@ namespace platf::dxgi {
   }
 
   capture_e display_wgc_ipc_vram_t::release_snapshot() {
-    if (_ipc_session) {
+    if (_ipc_session && _frame_locked) {
       _ipc_session->release();
+      _frame_locked = false;
     }
     return capture_e::ok;
   }

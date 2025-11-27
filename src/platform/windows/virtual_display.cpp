@@ -511,6 +511,13 @@ namespace VDISPLAY {
         return guids;
       }
 
+      bool contains(const uuid_util::uuid_t &guid) {
+        std::lock_guard<std::mutex> lg(mutex);
+        return std::any_of(guids.begin(), guids.end(), [&](const auto &entry) {
+          return entry == guid;
+        });
+      }
+
      private:
       std::mutex mutex;
       std::vector<uuid_util::uuid_t> guids;
@@ -539,6 +546,10 @@ namespace VDISPLAY {
 
     void track_virtual_display_removed(const uuid_util::uuid_t &guid) {
       active_virtual_display_tracker().remove(guid);
+    }
+
+    bool is_virtual_display_guid_tracked(const uuid_util::uuid_t &guid) {
+      return active_virtual_display_tracker().contains(guid);
     }
 
     std::vector<uuid_util::uuid_t> collect_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
@@ -1036,24 +1047,23 @@ namespace VDISPLAY {
     }
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
-      const auto deadline = std::chrono::steady_clock::now() + RECOVERY_MONITOR_WINDOW;
       unsigned int attempts = 0;
       bool observed_present = false;
       auto stable_since = std::chrono::steady_clock::now();
 
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (true) {
         if (monitor_should_abort(state)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
 
+        const auto now = std::chrono::steady_clock::now();
         if (monitor_target_present(state)) {
           if (!observed_present) {
             observed_present = true;
-            stable_since = std::chrono::steady_clock::now();
-          } else if (std::chrono::steady_clock::now() - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
-            BOOST_LOG(debug) << "Virtual display recovery monitor completed for " << state.describe_target();
-            return;
+            stable_since = now;
+          } else if (now - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
+            attempts = 0;
           }
 
           std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
@@ -1061,10 +1071,13 @@ namespace VDISPLAY {
         }
 
         observed_present = false;
+        stable_since = now;
         if (attempts >= state.params.max_attempts) {
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
-                             << state.describe_target() << "; giving up.";
-          return;
+                             << state.describe_target() << "; backing off.";
+          attempts = 0;
+          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+          continue;
         }
 
         attempts += 1;
@@ -1080,10 +1093,12 @@ namespace VDISPLAY {
 
         std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
       }
-
-      BOOST_LOG(debug) << "Virtual display recovery monitor timed out for " << state.describe_target();
     }
   }  // namespace
+
+  bool is_virtual_display_guid_tracked(const GUID &guid) {
+    return is_virtual_display_guid_tracked(guid_to_uuid(guid));
+  }
 
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
     if (params.max_attempts == 0) {

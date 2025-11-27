@@ -459,6 +459,7 @@ namespace platf::dxgi {
     ::video::config_t _config;
     std::string _display_name;
     bool _session_initialized_logged = false;
+    bool _frame_locked = false;
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {

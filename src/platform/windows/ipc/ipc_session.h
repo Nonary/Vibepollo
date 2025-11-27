@@ -137,6 +137,11 @@ namespace platf::dxgi {
      */
     bool try_get_adapter_luid(LUID &luid_out);
 
+    /**
+     * @brief Stop the helper process (best effort) and note teardown time.
+     */
+    void stop_helper_process();
+
     // --- members ---
     std::unique_ptr<ProcessHandler> _process_helper;  ///< Helper process owner.
     std::unique_ptr<AsyncNamedPipe> _pipe;  ///< Async control/message pipe.
@@ -155,6 +160,7 @@ namespace platf::dxgi {
     uint32_t _timeout_count = 0;  ///< Consecutive acquire timeout counter.
     ::video::config_t _config;  ///< Cached video config.
     std::string _display_name;  ///< Display name copy.
+    std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
   };
 
 }  // namespace platf::dxgi

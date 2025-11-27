@@ -86,6 +86,27 @@ namespace platf::dxgi {
     _keyed_mutex = nullptr;
     _frame_ready = false;
 
+    // Ensure previous helper is fully stopped before restarting. This avoids overlapping D3D11 allocations
+    // across rapid re-inits that have been observed to destabilize the NVIDIA driver stack.
+    stop_helper_process();
+
+    // Give the driver a brief window to release resources if we just tore down.
+    if (_last_helper_stop.time_since_epoch().count() != 0) {
+      auto since_stop = std::chrono::steady_clock::now() - _last_helper_stop;
+      if (since_stop < std::chrono::milliseconds(200)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200) - since_stop);
+      }
+    }
+
+    // Flush any pending work on the capture device before creating a new shared texture.
+    if (_device) {
+      winrt::com_ptr<ID3D11DeviceContext> ctx;
+      _device->GetImmediateContext(ctx.put());
+      if (ctx) {
+        ctx->Flush();
+      }
+    }
+
     // Get the directory of the main executable (Unicode-safe)
     std::wstring exePathBuffer(MAX_PATH, L'\0');
     GetModuleFileNameW(nullptr, exePathBuffer.data(), MAX_PATH);
@@ -409,6 +430,17 @@ namespace platf::dxgi {
       return false;
     }
     return true;
+  }
+
+  void ipc_session_t::stop_helper_process() {
+    if (!_process_helper) {
+      return;
+    }
+
+    DWORD exit_code = 0;
+    _process_helper->terminate();  // best effort
+    _process_helper->wait(exit_code);
+    _last_helper_stop = std::chrono::steady_clock::now();
   }
 
 }  // namespace platf::dxgi
