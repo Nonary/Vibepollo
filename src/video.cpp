@@ -218,12 +218,15 @@ namespace video {
 
 #ifdef _WIN32
     // Build a stable cache sub-key for the adapter that backs the current output.
-    // If we cannot resolve the adapter, fall back to the provided output name.
+    // Returns empty string if we cannot resolve the adapter, since the full GPU
+    // enumeration in build_probe_cache_key() provides stable adapter identification.
+    // We must NOT fall back to the display name as it can change when virtual
+    // displays are created/destroyed, causing unnecessary cache invalidation.
     std::string adapter_cache_key_for_output(const std::string &output_name) {
       const auto mapped_output = display_device::map_output_name(output_name);
       Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
       if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
-        return mapped_output;
+        return "";
       }
 
       const auto mapped_output_w = platf::from_utf8(mapped_output);
@@ -263,11 +266,16 @@ namespace video {
         }
       }
 
-      return mapped_output;
+      // Return empty string instead of the display name - the display name is
+      // transient and can change when virtual displays are created/destroyed.
+      // The GPU enumeration in build_probe_cache_key() already provides stable
+      // adapter identification for cache invalidation purposes.
+      return "";
     }
 #else
     std::string adapter_cache_key_for_output(const std::string &output_name) {
-      return output_name;
+      (void) output_name;  // Unused on non-Windows platforms
+      return "";
     }
 #endif
 
