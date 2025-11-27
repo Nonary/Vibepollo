@@ -1316,37 +1316,46 @@ namespace nvhttp {
           BOOST_LOG(info) << "Virtual display created (device name pending enumeration).";
         }
 
-        if (!display_info->reused_existing) {
-          VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
-          recovery_params.guid = virtual_display_guid;
-          recovery_params.width = vd_width;
-          recovery_params.height = vd_height;
-          recovery_params.fps = vd_fps;
-          recovery_params.client_uid = display_uuid_source;
-          recovery_params.client_name = client_label;
-          recovery_params.display_name = display_info->display_name;
-          if (display_info->device_id && !display_info->device_id->empty()) {
-            recovery_params.device_id = *display_info->device_id;
-          } else if (!launch_session->virtual_display_device_id.empty()) {
-            recovery_params.device_id = launch_session->virtual_display_device_id;
-          }
-          recovery_params.max_attempts = 3;
-
-          std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
-          recovery_params.should_abort = [session_weak]() {
-            return session_weak.expired();
-          };
-          recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &info) {
-            if (auto session_locked = session_weak.lock()) {
-              if (info.device_id && !info.device_id->empty()) {
-                session_locked->virtual_display_device_id = *info.device_id;
-              }
-              session_locked->virtual_display_ready_since = info.ready_since;
-            }
-          };
-
-          VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
+        VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
+        recovery_params.guid = virtual_display_guid;
+        recovery_params.width = vd_width;
+        recovery_params.height = vd_height;
+        recovery_params.fps = vd_fps;
+        recovery_params.client_uid = display_uuid_source;
+        recovery_params.client_name = client_label;
+        recovery_params.display_name = display_info->display_name;
+        if (display_info->device_id && !display_info->device_id->empty()) {
+          recovery_params.device_id = *display_info->device_id;
+        } else if (!launch_session->virtual_display_device_id.empty()) {
+          recovery_params.device_id = launch_session->virtual_display_device_id;
         }
+        recovery_params.max_attempts = 3;
+
+        GUID recovery_guid = virtual_display_guid;
+        recovery_params.should_abort = [recovery_guid]() {
+          return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
+        };
+        std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
+        recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
+          if (auto session_locked = session_weak.lock()) {
+            if (result.device_id && !result.device_id->empty()) {
+              session_locked->virtual_display_device_id = *result.device_id;
+              config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
+            }
+            session_locked->virtual_display_ready_since = result.ready_since;
+            if (session_locked->virtual_display) {
+              auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
+              if (request) {
+                BOOST_LOG(info) << "Virtual display recovery: re-applying display helper configuration after recreation.";
+                (void) display_helper_integration::apply(*request);
+              } else {
+                BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation.";
+              }
+            }
+          }
+        };
+
+        VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
       } else {
         launch_session->virtual_display = false;
         launch_session->virtual_display_guid_bytes.fill(0);
