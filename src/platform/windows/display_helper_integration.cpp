@@ -37,6 +37,7 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include <tlhelp32.h>
+#include <nlohmann/json.hpp>
 #include <display_device/noop_audio_context.h>
 #include <display_device/noop_settings_persistence.h>
 #include <display_device/windows/persistent_state.h>
@@ -124,6 +125,27 @@ namespace {
     return false;
   }
 
+  bool device_is_present(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (device.m_device_id.empty()) {
+        continue;
+      }
+      if (device_id_equals_ci(device.m_device_id, device_id)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool wait_for_device_activation(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
     if (device_id.empty()) {
       return false;
@@ -201,7 +223,7 @@ namespace {
     return true;
   }
 
-  bool apply_topology_definition(
+  [[maybe_unused]] bool apply_topology_definition(
     const display_helper_integration::DisplayTopologyDefinition &topology,
     const char *label
   ) {
@@ -247,7 +269,7 @@ namespace {
     return topology_ok;
   }
 
-  bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
+  [[maybe_unused]] bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
     if (!request.configuration) {
       BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
       return false;
@@ -719,6 +741,48 @@ namespace {
     }
   }
 
+  std::optional<std::string> build_helper_apply_json(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.configuration) {
+      BOOST_LOG(error) << "Display helper: cannot build helper payload without configuration.";
+      return std::nullopt;
+    }
+
+    try {
+      auto j = nlohmann::json::parse(display_device::toJson(*request.configuration));
+
+      if (request.attach_hdr_toggle_flag) {
+        j["wa_hdr_toggle"] = true;
+      }
+
+      if (request.virtual_display_arrangement) {
+        j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
+      }
+
+      if (!request.topology.monitor_positions.empty()) {
+        auto &positions = j["sunshine_monitor_positions"];
+        for (const auto &[device_id, point] : request.topology.monitor_positions) {
+          positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
+        }
+      }
+
+      if (!request.topology.topology.empty()) {
+        nlohmann::json topo = nlohmann::json::array();
+        for (const auto &group : request.topology.topology) {
+          topo.push_back(group);
+        }
+        j["sunshine_topology"] = std::move(topo);
+      }
+
+      return j.dump();
+    } catch (const std::exception &ex) {
+      BOOST_LOG(error) << "Display helper: failed to serialize apply payload: " << ex.what();
+    } catch (...) {
+      BOOST_LOG(error) << "Display helper: failed to serialize apply payload due to unknown error.";
+    }
+
+    return std::nullopt;
+  }
+
 }  // namespace
 
 namespace display_helper_integration {
@@ -728,15 +792,58 @@ namespace display_helper_integration {
       return false;
     }
 
+    auto refresh_request_if_needed = [&](const DisplayApplyRequest &current, const char *label) -> DisplayApplyRequest {
+      const rtsp_stream::launch_session_t *session = current.session ? current.session : request.session;
+      if (!session || !session->virtual_display) {
+        return current;
+      }
+
+      const auto requested_device_id = current.configuration ? current.configuration->m_device_id : std::string {};
+      const bool session_has_device = !session->virtual_display_device_id.empty();
+      const bool request_missing_or_stale = (requested_device_id.empty() && session_has_device) ||
+                                            (!requested_device_id.empty() && !device_is_present(requested_device_id));
+      const bool device_mismatch = session_has_device &&
+                                   !requested_device_id.empty() &&
+                                   !device_id_equals_ci(requested_device_id, session->virtual_display_device_id);
+      if (!request_missing_or_stale && !device_mismatch) {
+        return current;
+      }
+
+      auto rebuilt = display_helper_integration::helpers::build_request_from_session(config::video, *session);
+      if (!rebuilt) {
+        BOOST_LOG(warning) << "Display helper: unable to refresh virtual display request for " << label
+                           << " APPLY (stale device_id).";
+        return current;
+      }
+
+      const auto refreshed_device_id = rebuilt->configuration ? rebuilt->configuration->m_device_id : std::string {};
+      BOOST_LOG(debug) << "Display helper: refreshed virtual display request for " << label
+                       << " APPLY using device_id '" << (refreshed_device_id.empty() ? "(none)" : refreshed_device_id)
+                       << "'.";
+      return std::move(*rebuilt);
+    };
+
     const bool requires_virtual_display =
       request.enable_virtual_display_watchdog ||
       request.session_overrides.virtual_display_override.value_or(false);
 
-    // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
-    // Force-restart helper for each new stream so Sunshine reconnects quickly to a fresh instance.
+    // Require the helper for all applies unless no user session exists (SYSTEM-only path).
     const bool helper_ready = ensure_helper_started(false, requires_virtual_display);
-    if (!helper_ready && (requires_virtual_display || dd_feature_enabled())) {
-      BOOST_LOG(warning) << "Display helper IPC unavailable after restart; continuing with in-process apply only.";
+    if (!helper_ready) {
+      // Allow in-process SYSTEM applies when no user is logged in
+      if (!platf::has_active_console_session() && platf::is_running_as_system()) {
+        BOOST_LOG(info) << "Display helper IPC unavailable with no user session; using in-process SYSTEM fallback.";
+        if (request.action == DisplayApplyAction::Revert) {
+          // In-process revert not supported without persistence; succeed vacuously.
+          return true;
+        }
+        if (request.action == DisplayApplyAction::Apply && request.configuration) {
+          return apply_in_process(request);
+        }
+        return false;
+      }
+      BOOST_LOG(error) << "Display helper IPC unavailable; aborting request.";
+      return false;
     }
 
     if (request.action == DisplayApplyAction::Revert) {
@@ -751,30 +858,27 @@ namespace display_helper_integration {
       return false;
     }
 
+    DisplayApplyRequest effective_request = refresh_request_if_needed(request, "primary");
     auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
-      if (!apply_in_process(payload)) {
-        BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
+      const auto payload_json = build_helper_apply_json(payload);
+      if (!payload_json) {
+        BOOST_LOG(error) << "Display helper: failed to build " << label << " APPLY payload.";
+        return false;
+      }
+
+      if (payload.device_blacklist) {
+        (void) platf::display_helper_client::send_blacklist(*payload.device_blacklist);
+      }
+
+      BOOST_LOG(info) << "Display helper: sending " << label << " APPLY request via helper.";
+      if (!platf::display_helper_client::send_apply_json(*payload_json)) {
+        BOOST_LOG(warning) << "Display helper (" << label << "): helper APPLY failed.";
         return false;
       }
 
       const auto *session = payload.session ? payload.session : request.session;
       if (!session) {
         BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
-        return false;
-      }
-
-      const auto device_id = payload.configuration ? payload.configuration->m_device_id : std::string {};
-      const auto prep = payload.configuration
-        ? payload.configuration->m_device_prep
-        : display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-
-      if (!verify_helper_topology(*session, device_id, prep)) {
-        BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
-        return false;
-      }
-
-      if (!apply_topology_definition(payload.topology, label)) {
-        BOOST_LOG(warning) << "Display helper: topology override failed after " << label << " APPLY.";
         return false;
       }
 
@@ -795,12 +899,38 @@ namespace display_helper_integration {
       return true;
     };
 
-    if (attempt_apply(request, "primary")) {
-      return true;
+    const auto do_retry_refresh = [&](DisplayApplyRequest &payload, const char *label) {
+      payload = refresh_request_if_needed(payload, label);
+    };
+
+    DisplayApplyRequest current_request = effective_request;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      const char *label = (attempt == 0) ? "primary" : (attempt == 1 ? "retry" : "final");
+
+      // On final attempt, force-kill helper and restart for a clean IPC server.
+      if (attempt == 2) {
+        BOOST_LOG(debug) << "Display helper: killing helper before final APPLY attempt.";
+        helper_proc().terminate();
+        platf::display_helper_client::reset_connection();
+        if (!ensure_helper_started(true, requires_virtual_display)) {
+          BOOST_LOG(error) << "Display helper: helper restart failed before final APPLY attempt.";
+          return false;
+        }
+        do_retry_refresh(current_request, label);
+      } else if (attempt > 0) {
+        BOOST_LOG(debug) << "Display helper: resetting IPC before APPLY attempt #" << (attempt + 1);
+        platf::display_helper_client::reset_connection();
+        do_retry_refresh(current_request, label);
+      }
+
+      if (attempt_apply(current_request, label)) {
+        return true;
+      }
+
+      BOOST_LOG(warning) << "Display helper: " << label << " APPLY failed.";
     }
 
-    BOOST_LOG(warning) << "Display helper: retrying primary apply after failure.";
-    return attempt_apply(request, "retry");
+    return false;
   }
 
   bool revert() {
