@@ -71,6 +71,7 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  bool is_virtual_display_guid_tracked(const GUID &guid);
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();

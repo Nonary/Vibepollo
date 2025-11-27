@@ -511,6 +511,13 @@ namespace VDISPLAY {
         return guids;
       }
 
+      bool contains(const uuid_util::uuid_t &guid) {
+        std::lock_guard<std::mutex> lg(mutex);
+        return std::any_of(guids.begin(), guids.end(), [&](const auto &entry) {
+          return entry == guid;
+        });
+      }
+
      private:
       std::mutex mutex;
       std::vector<uuid_util::uuid_t> guids;
@@ -539,6 +546,10 @@ namespace VDISPLAY {
 
     void track_virtual_display_removed(const uuid_util::uuid_t &guid) {
       active_virtual_display_tracker().remove(guid);
+    }
+
+    bool is_virtual_display_guid_tracked(const uuid_util::uuid_t &guid) {
+      return active_virtual_display_tracker().contains(guid);
     }
 
     std::vector<uuid_util::uuid_t> collect_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
@@ -1084,6 +1095,10 @@ namespace VDISPLAY {
       BOOST_LOG(debug) << "Virtual display recovery monitor timed out for " << state.describe_target();
     }
   }  // namespace
+
+  bool is_virtual_display_guid_tracked(const GUID &guid) {
+    return is_virtual_display_guid_tracked(guid_to_uuid(guid));
+  }
 
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
     if (params.max_attempts == 0) {
