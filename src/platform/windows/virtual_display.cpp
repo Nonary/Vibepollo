@@ -1051,24 +1051,23 @@ namespace VDISPLAY {
     }
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
-      const auto deadline = std::chrono::steady_clock::now() + RECOVERY_MONITOR_WINDOW;
       unsigned int attempts = 0;
       bool observed_present = false;
       auto stable_since = std::chrono::steady_clock::now();
 
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (true) {
         if (monitor_should_abort(state)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
 
+        const auto now = std::chrono::steady_clock::now();
         if (monitor_target_present(state)) {
           if (!observed_present) {
             observed_present = true;
-            stable_since = std::chrono::steady_clock::now();
-          } else if (std::chrono::steady_clock::now() - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
-            BOOST_LOG(debug) << "Virtual display recovery monitor completed for " << state.describe_target();
-            return;
+            stable_since = now;
+          } else if (now - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
+            attempts = 0;
           }
 
           std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
@@ -1076,10 +1075,13 @@ namespace VDISPLAY {
         }
 
         observed_present = false;
+        stable_since = now;
         if (attempts >= state.params.max_attempts) {
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
-                             << state.describe_target() << "; giving up.";
-          return;
+                             << state.describe_target() << "; backing off.";
+          attempts = 0;
+          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+          continue;
         }
 
         attempts += 1;
@@ -1095,8 +1097,6 @@ namespace VDISPLAY {
 
         std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
       }
-
-      BOOST_LOG(debug) << "Virtual display recovery monitor timed out for " << state.describe_target();
     }
   }  // namespace
 

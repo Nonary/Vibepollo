@@ -635,6 +635,52 @@ namespace {
   // Watchdog state for helper liveness during active streams
   static std::atomic<bool> g_watchdog_running {false};
   static std::jthread g_watchdog_thread;
+  static std::chrono::steady_clock::time_point g_last_vd_reenable {};
+
+  constexpr auto kVirtualDisplayReenableCooldown = std::chrono::seconds(3);
+
+  bool recently_reenabled_virtual_display() {
+    if (g_last_vd_reenable.time_since_epoch().count() == 0) {
+      return false;
+    }
+    return (std::chrono::steady_clock::now() - g_last_vd_reenable) < kVirtualDisplayReenableCooldown;
+  }
+
+  void explicit_virtual_display_reset_and_apply(
+    display_helper_integration::DisplayApplyBuilder &builder,
+    const rtsp_stream::launch_session_t &session,
+    std::function<bool(const display_helper_integration::DisplayApplyRequest &)> apply_fn
+  ) {
+    // Only act if virtual display is in play.
+    if (!session.virtual_display && !builder.build().session_overrides.virtual_display_override.value_or(false)) {
+      return;
+    }
+
+    // Debounce to avoid hammering the driver.
+    if (recently_reenabled_virtual_display()) {
+      return;
+    }
+
+    // First send a "blank" request to detach virtual display.
+    display_helper_integration::DisplayApplyBuilder disable_builder;
+    disable_builder.set_session(session);
+    auto &overrides = disable_builder.mutable_session_overrides();
+    overrides.virtual_display_override = false;
+    disable_builder.set_action(display_helper_integration::DisplayApplyAction::Apply);
+    auto disable_req = disable_builder.build();
+
+    BOOST_LOG(info) << "Display helper: explicit virtual display disable before re-enable.";
+    (void) apply_fn(disable_req);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+    // Re-enable with the original builder intent.
+    BOOST_LOG(info) << "Display helper: explicit virtual display re-enable after disappearance.";
+    auto enable_req = builder.build();
+    if (apply_fn(enable_req)) {
+      g_last_vd_reenable = std::chrono::steady_clock::now();
+    }
+  }
 
   static void set_active_session(
     const rtsp_stream::launch_session_t &session,
@@ -797,6 +843,26 @@ namespace display_helper_integration {
 
     if (attempt_apply(request, "primary")) {
       return true;
+    }
+
+    // If the apply failed and a virtual display is involved, try a targeted disable/enable cycle once.
+    if (request.session && (request.session->virtual_display ||
+                            request.session_overrides.virtual_display_override.value_or(false))) {
+      display_helper_integration::DisplayApplyBuilder rebuild;
+      rebuild.set_action(display_helper_integration::DisplayApplyAction::Apply);
+      if (request.configuration) {
+        rebuild.set_configuration(*request.configuration);
+      }
+      rebuild.set_session(*request.session);
+      rebuild.mutable_session_overrides() = request.session_overrides;
+      rebuild.set_virtual_display_watchdog(request.enable_virtual_display_watchdog);
+      rebuild.set_hdr_toggle_flag(request.attach_hdr_toggle_flag);
+      rebuild.set_topology(request.topology);
+      rebuild.set_virtual_display_arrangement(request.virtual_display_arrangement);
+
+      explicit_virtual_display_reset_and_apply(rebuild, *request.session, [&](const DisplayApplyRequest &req) {
+        return apply_in_process(req);
+      });
     }
 
     BOOST_LOG(warning) << "Display helper: retrying primary apply after failure.";

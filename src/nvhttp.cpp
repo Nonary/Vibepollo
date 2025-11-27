@@ -1381,6 +1381,7 @@ namespace nvhttp {
       revert_display_configuration = true;
       bool display_apply_attempted = false;
       bool display_apply_failed = false;
+      std::optional<display_helper_integration::DisplayApplyRequest> applied_request;
 
 #ifdef _WIN32
       HANDLE user_token = platf::retrieve_users_token(false);
@@ -1398,9 +1399,13 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
         }
 
-        if (request && !display_helper_integration::apply(*request)) {
-          display_apply_failed = true;
-          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+        if (request) {
+          if (display_helper_integration::apply(*request)) {
+            applied_request = *request;
+          } else {
+            display_apply_failed = true;
+            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+          }
         }
       } else {
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
