@@ -827,9 +827,21 @@ namespace display_helper_integration {
       request.enable_virtual_display_watchdog ||
       request.session_overrides.virtual_display_override.value_or(false);
 
-    // Require the helper for all applies; no in-process fallback.
+    // Require the helper for all applies unless no user session exists (SYSTEM-only path).
     const bool helper_ready = ensure_helper_started(false, requires_virtual_display);
     if (!helper_ready) {
+      // Allow in-process SYSTEM applies when no user is logged in
+      if (!platf::has_active_console_session() && platf::is_running_as_system()) {
+        BOOST_LOG(info) << "Display helper IPC unavailable with no user session; using in-process SYSTEM fallback.";
+        if (request.action == DisplayApplyAction::Revert) {
+          // In-process revert not supported without persistence; succeed vacuously.
+          return true;
+        }
+        if (request.action == DisplayApplyAction::Apply && request.configuration) {
+          return apply_in_process(request);
+        }
+        return false;
+      }
       BOOST_LOG(error) << "Display helper IPC unavailable; aborting request.";
       return false;
     }
