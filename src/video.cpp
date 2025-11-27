@@ -217,67 +217,10 @@ namespace video {
     }
 
 #ifdef _WIN32
-    // Build a stable cache sub-key for the adapter that backs the current output.
-    // If we cannot resolve the adapter, fall back to the provided output name.
-    std::string adapter_cache_key_for_output(const std::string &output_name) {
-      const auto mapped_output = display_device::map_output_name(output_name);
-      Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-      if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
-        return mapped_output;
-      }
-
-      const auto mapped_output_w = platf::from_utf8(mapped_output);
-      for (UINT adapter_index = 0;; ++adapter_index) {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(adapter_index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-
-        DXGI_ADAPTER_DESC1 adapter_desc {};
-        if (FAILED(adapter->GetDesc1(&adapter_desc))) {
-          continue;
-        }
-
-        for (UINT output_index = 0;; ++output_index) {
-          Microsoft::WRL::ComPtr<IDXGIOutput> output;
-          const auto hr = adapter->EnumOutputs(output_index, output.GetAddressOf());
-          if (hr == DXGI_ERROR_NOT_FOUND) {
-            break;
-          }
-          if (FAILED(hr)) {
-            continue;
-          }
-
-          DXGI_OUTPUT_DESC output_desc {};
-          if (FAILED(output->GetDesc(&output_desc))) {
-            continue;
-          }
-
-          if (_wcsicmp(output_desc.DeviceName, mapped_output_w.c_str()) != 0) {
-            continue;
-          }
-
-          std::ostringstream key;
-          key << adapter_desc.VendorId << ':' << adapter_desc.DeviceId << ':' << platf::to_utf8(adapter_desc.Description);
-          return key.str();
-        }
-      }
-
-      return mapped_output;
-    }
-#else
-    std::string adapter_cache_key_for_output(const std::string &output_name) {
-      return output_name;
-    }
-#endif
-
     std::string build_probe_cache_key() {
       std::ostringstream oss;
       oss << config::video.encoder << '|'
-          << adapter_cache_key_for_output(config::get_active_output_name()) << '|'
-          << config::video.adapter_name;
-#ifdef _WIN32
-      oss << '|';
+          << config::video.adapter_name << '|';
       bool any_gpu = false;
       for (const auto &gpu : platf::enumerate_gpus()) {
         any_gpu = true;
@@ -286,11 +229,15 @@ namespace video {
       if (!any_gpu) {
         oss << "nogpu";
       }
-#else
-      oss << "|nogpu";
-#endif
       return oss.str();
     }
+#else
+    std::string build_probe_cache_key() {
+      std::ostringstream oss;
+      oss << config::video.encoder << '|' << config::video.adapter_name << "|nogpu";
+      return oss.str();
+    }
+#endif
 
     bool probe_cache_matches(const std::string &key, bool want_hdr) {
       auto &state = encoder_probe_cache_state();

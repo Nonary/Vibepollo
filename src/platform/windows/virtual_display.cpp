@@ -917,7 +917,6 @@ namespace VDISPLAY {
       return *cached;
     }
 
-    constexpr auto RECOVERY_MONITOR_WINDOW = std::chrono::seconds(10);
     constexpr auto RECOVERY_STABLE_REQUIREMENT = std::chrono::seconds(2);
     constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(200);
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
@@ -1040,24 +1039,22 @@ namespace VDISPLAY {
     }
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
-      const auto deadline = std::chrono::steady_clock::now() + RECOVERY_MONITOR_WINDOW;
       unsigned int attempts = 0;
       bool observed_present = false;
+      bool attempts_exhausted_logged = false;
       auto stable_since = std::chrono::steady_clock::now();
 
-      while (std::chrono::steady_clock::now() < deadline) {
-        if (monitor_should_abort(state)) {
-          BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
-          return;
-        }
+      while (!monitor_should_abort(state)) {
+        const auto now = std::chrono::steady_clock::now();
 
         if (monitor_target_present(state)) {
           if (!observed_present) {
             observed_present = true;
-            stable_since = std::chrono::steady_clock::now();
-          } else if (std::chrono::steady_clock::now() - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
-            BOOST_LOG(debug) << "Virtual display recovery monitor completed for " << state.describe_target();
-            return;
+            stable_since = now;
+          } else if (now - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
+            // Reset attempts after a stable period so future disappearances can be recovered again.
+            attempts = 0;
+            attempts_exhausted_logged = false;
           }
 
           std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
@@ -1066,9 +1063,14 @@ namespace VDISPLAY {
 
         observed_present = false;
         if (attempts >= state.params.max_attempts) {
-          BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
-                             << state.describe_target() << "; giving up.";
-          return;
+          if (!attempts_exhausted_logged) {
+            BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
+                               << state.describe_target()
+                               << "; monitoring continues without further recovery attempts.";
+            attempts_exhausted_logged = true;
+          }
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
         }
 
         attempts += 1;
@@ -1077,15 +1079,15 @@ namespace VDISPLAY {
                            << attempts << '/' << state.params.max_attempts << ").";
 
         const bool recovered = attempt_virtual_display_recovery(state);
-        if (!recovered) {
-          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
-          continue;
+        if (recovered) {
+          attempts = 0;
+          attempts_exhausted_logged = false;
         }
 
         std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
       }
 
-      BOOST_LOG(debug) << "Virtual display recovery monitor timed out for " << state.describe_target();
+      BOOST_LOG(debug) << "Virtual display recovery monitor stopped for " << state.describe_target();
     }
   }  // namespace
 
@@ -1093,6 +1095,8 @@ namespace VDISPLAY {
     if (params.max_attempts == 0) {
       return;
     }
+
+    constexpr auto RECOVERY_MONITOR_INTERVAL = RECOVERY_CHECK_INTERVAL;
 
     const bool has_device_id = params.device_id && !params.device_id->empty();
     const bool has_display_name = params.display_name && !params.display_name->empty();
@@ -1103,7 +1107,8 @@ namespace VDISPLAY {
 
     RecoveryMonitorState state(params);
     BOOST_LOG(debug) << "Virtual display recovery monitor scheduled for " << state.describe_target()
-                     << " (max_attempts=" << params.max_attempts << ").";
+                     << " (max_attempts=" << params.max_attempts
+                     << ", interval_ms=" << RECOVERY_MONITOR_INTERVAL.count() << ").";
     std::thread monitor_thread([state = std::move(state)]() mutable {
       run_virtual_display_recovery_monitor(std::move(state));
     });

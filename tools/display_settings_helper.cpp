@@ -45,6 +45,7 @@
   #include <display_device/windows/win_api_utils.h>
   #include <display_device/windows/win_display_device.h>
   #include <nlohmann/json.hpp>
+  #include <display_device/windows/win_api_recovery.h>
 
   // platform
   #ifndef SECURITY_WIN32
@@ -2754,6 +2755,9 @@ namespace {
   }
 
   bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
+    // Avoid recursive "recovery" attempts while applying; return failure quickly instead.
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
     state.cancel_delayed_reapply();
@@ -2917,29 +2921,9 @@ namespace {
         return false;
       }
 
-      constexpr int kMaxSyncVerifyAttempts = 2;
-      bool verified_sync = false;
-      std::vector<std::chrono::milliseconds> reapply_delays {750ms};
-
-      for (int attempt = 1; attempt <= kMaxSyncVerifyAttempts; ++attempt) {
-        if (state.verify_last_configuration_sticky(ServiceState::kVerificationSettleDelay)) {
-          verified_sync = true;
-          if (attempt > 1) {
-            BOOST_LOG(info) << "Display helper: verification succeeded on attempt #" << attempt << " after re-apply.";
-          }
-          break;
-        }
-        BOOST_LOG(warning) << "Display helper: verification attempt #" << attempt
-                           << " did not stick; "
-                           << (attempt < kMaxSyncVerifyAttempts ? "retrying synchronously." : "deferring to async retry.");
-        state.best_effort_apply_last_cfg();
-      }
-      if (verified_sync) {
-        BOOST_LOG(debug) << "Display helper: synchronous verification succeeded; scheduling follow-up check.";
-      } else {
-        BOOST_LOG(warning) << "Display helper: synchronous verification failed; scheduling async fallback.";
-      }
-
+      // Defer verification/re-apply to the async post-apply worker to keep the IPC
+      // thread responsive for the ApplyResult response.
+      std::vector<std::chrono::milliseconds> reapply_delays {0ms, 500ms, 1500ms};
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.schedule_post_apply_tasks(
         enforce_snapshot,
