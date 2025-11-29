@@ -17,9 +17,9 @@
 #include <cstdint>
 #include <cstring>
 #include <cwctype>
-#include <limits>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -1157,11 +1157,7 @@ namespace proc {
         return value * 2;
       };
 
-      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-        apply_refresh_override(saturating_double(launch_session->fps));
-      }
-
-      if (config::video.double_refreshrate) {
+      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix || config::video.double_refreshrate) {
         apply_refresh_override(saturating_double(launch_session->fps));
       }
     }
@@ -2165,9 +2161,7 @@ namespace proc {
       // Restore output name to its original value
       config::video.output_name = initial_display;
 
-      if (config::video.dd.config_revert_on_disconnect) {
-        display_helper_integration::revert();
-      }
+      display_helper_integration::revert();
     }
 
     _active_client_uuid.clear();

@@ -163,8 +163,7 @@ namespace {
 
   bool verify_helper_topology(
     const rtsp_stream::launch_session_t &session,
-    const std::string &device_id,
-    display_device::SingleDisplayConfiguration::DevicePreparation prep
+    const std::string &device_id
   ) {
     if (!device_id.empty()) {
       const bool has_activation_hint = session.virtual_display &&
@@ -184,10 +183,8 @@ namespace {
       return true;
     }
 
-    const bool expects_virtual_display = session.virtual_display ||
-                                         prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-    if (expects_virtual_display) {
-      const bool hint_ready = session.virtual_display && session.virtual_display_ready_since.has_value();
+    if (session.virtual_display) {
+      const bool hint_ready = session.virtual_display_ready_since.has_value();
       if (hint_ready) {
         BOOST_LOG(debug) << "Display helper: virtual display ready hint satisfied. Skipping activation wait.";
         return true;
@@ -810,11 +807,8 @@ namespace display_helper_integration {
       }
 
       const auto device_id = payload.configuration ? payload.configuration->m_device_id : std::string {};
-      const auto prep = payload.configuration
-        ? payload.configuration->m_device_prep
-        : display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
 
-      if (!verify_helper_topology(*session, device_id, prep)) {
+      if (!verify_helper_topology(*session, device_id)) {
         BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
         return false;
       }

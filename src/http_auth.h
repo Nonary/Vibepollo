@@ -30,8 +30,8 @@
 #include <Simple-Web-Server/server_https.hpp>
 
 namespace confighttp {
-  inline constexpr std::string_view session_cookie_name {"__Host-sunshine_session"};
-  inline constexpr std::string_view refresh_cookie_name {"__Host-sunshine_refresh"};
+  inline constexpr std::string_view session_cookie_name {"__Host-apollo_session"};
+  inline constexpr std::string_view refresh_cookie_name {"__Host-apollo_refresh"};
   using StatusCode = SimpleWeb::StatusCode;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
