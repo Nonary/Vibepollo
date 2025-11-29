@@ -209,6 +209,11 @@ namespace video {
       std::string cache_key;
       bool valid = false;
       bool hdr_supported = false;
+
+      // Track failed probe attempts per cache key to allow retries before hard-locking
+      std::string failure_cache_key;
+      int failure_count = 0;
+      static constexpr int max_failure_retries = 3;
     };
 
     EncoderProbeCacheState &encoder_probe_cache_state() {
@@ -303,7 +308,26 @@ namespace video {
     bool probe_cache_matches(const std::string &key, bool want_hdr) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
-      return state.valid && state.cache_key == key && (!want_hdr || state.hdr_supported);
+
+      // Check if we have a valid cached success
+      if (state.valid && state.cache_key == key && (!want_hdr || state.hdr_supported)) {
+        return true;
+      }
+
+      // If we have a cached failure for this key and haven't exceeded retry limit,
+      // allow re-probing (return false to trigger a new probe)
+      if (!state.valid && state.failure_cache_key == key) {
+        if (state.failure_count < EncoderProbeCacheState::max_failure_retries) {
+          // Allow retry - don't skip probing
+          return false;
+        }
+        // We've exceeded max retries, but we still need to probe if:
+        // - The previous successful cache key doesn't match (different config/hardware)
+        // - The cache is simply invalid
+        // Since state.valid is false here, we should let it probe again anyway
+      }
+
+      return false;
     }
 
     void update_probe_cache(const std::string &key, bool success, bool hdr_supported) {
@@ -313,11 +337,42 @@ namespace video {
         state.cache_key = key;
         state.valid = true;
         state.hdr_supported = hdr_supported;
+        // Clear failure tracking on success
+        state.failure_cache_key.clear();
+        state.failure_count = 0;
       } else {
         state.valid = false;
         state.cache_key.clear();
         state.hdr_supported = false;
+        // Track failures to allow retries up to max_failure_retries
+        if (state.failure_cache_key == key) {
+          state.failure_count++;
+        } else {
+          // New cache key, reset failure counter
+          state.failure_cache_key = key;
+          state.failure_count = 1;
+        }
+        if (state.failure_count < EncoderProbeCacheState::max_failure_retries) {
+          BOOST_LOG(warning) << "Encoder probe failed (attempt " << state.failure_count
+                             << "/" << EncoderProbeCacheState::max_failure_retries
+                             << "), will retry on next attempt";
+        } else {
+          BOOST_LOG(warning) << "Encoder probe failed after " << EncoderProbeCacheState::max_failure_retries
+                             << " attempts, caching as permanently failed for this configuration";
+        }
       }
+    }
+
+    /**
+     * @brief Check if encoder probe failures have been exhausted for a given cache key.
+     * @param key The cache key to check.
+     * @return True if we've exhausted all retry attempts for this key.
+     */
+    bool probe_failures_exhausted(const std::string &key) {
+      auto &state = encoder_probe_cache_state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      return state.failure_cache_key == key &&
+             state.failure_count >= EncoderProbeCacheState::max_failure_retries;
     }
   }  // namespace
 
@@ -2927,6 +2982,12 @@ namespace video {
     if (probe_cache_matches(cache_key, wants_hdr)) {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
+    }
+
+    // Check if we've exhausted all retry attempts for this configuration
+    if (probe_failures_exhausted(cache_key)) {
+      BOOST_LOG(debug) << "Encoder probe skipped (max retry attempts exhausted).";
+      return -1;
     }
 
     if (!allow_encoder_probing()) {
