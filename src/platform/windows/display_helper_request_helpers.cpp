@@ -393,12 +393,15 @@ namespace display_helper_integration::helpers {
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
+    const auto resolved_virtual_device_id = resolve_virtual_device_id(video_config_, session_);
+    const std::string topology_device_id =
+      resolved_virtual_device_id && !resolved_virtual_device_id->empty() ? *resolved_virtual_device_id : default_device_id;
     bool topology_overridden = false;
     if (session_.virtual_display &&
         session_.virtual_display_topology_snapshot &&
         layout_flags.arrangement != display_helper_integration::VirtualDisplayArrangement::Exclusive) {
       const std::string merged_device_id =
-        !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : default_device_id;
+        !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : topology_device_id;
       if (!merged_device_id.empty()) {
         auto merged_topology = *session_.virtual_display_topology_snapshot;
         const auto already_present = std::any_of(
