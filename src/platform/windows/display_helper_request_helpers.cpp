@@ -130,34 +130,32 @@ namespace display_helper_integration::helpers {
       return value * 2;
     }
 
-    display_device::FloatingPoint double_refresh_value(const display_device::FloatingPoint &value) {
+    double get_refresh_rate_value(const display_device::FloatingPoint &value) {
       return std::visit(
-        [](const auto &v) -> display_device::FloatingPoint {
+        [](const auto &v) -> double {
           using V = std::decay_t<decltype(v)>;
           if constexpr (std::is_same_v<V, display_device::Rational>) {
-            display_device::Rational doubled = v;
-            if (doubled.m_numerator > std::numeric_limits<unsigned int>::max() / 2) {
-              const double as_double = static_cast<double>(doubled.m_numerator) / doubled.m_denominator;
-              return static_cast<double>(as_double * 2.0);
-            }
-            doubled.m_numerator = std::min<unsigned int>(
-              doubled.m_numerator * 2u,
-              std::numeric_limits<unsigned int>::max()
-            );
-            return doubled;
+            return v.m_denominator > 0
+                     ? static_cast<double>(v.m_numerator) / v.m_denominator
+                     : static_cast<double>(v.m_numerator);
           } else {
-            return static_cast<double>(v * 2.0);
+            return static_cast<double>(v);
           }
         },
         value
       );
     }
 
-    void double_refresh_if_present(std::optional<display_device::FloatingPoint> &value) {
-      if (!value) {
+    void ensure_minimum_refresh_if_present(std::optional<display_device::FloatingPoint> &value, int minimum_fps) {
+      if (!value || minimum_fps <= 0) {
         return;
       }
-      value = double_refresh_value(*value);
+      const double current = get_refresh_rate_value(*value);
+      if (current >= static_cast<double>(minimum_fps)) {
+        return;  // Already at or above minimum, don't change
+      }
+      // Set to minimum fps as a Rational
+      value = display_device::Rational {static_cast<unsigned int>(minimum_fps), 1u};
     }
   }  // namespace
 
@@ -216,10 +214,14 @@ namespace display_helper_integration::helpers {
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     const bool double_virtual_refresh = session_requests_virtual && video_config_.dd.wa.virtual_double_refresh;
-    const bool apply_double_refresh = double_virtual_refresh && !framegen_active;
-    const int effective_virtual_display_fps = apply_double_refresh ? safe_double_int(display_fps) : display_fps;
+    // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
+    const bool needs_double_minimum = double_virtual_refresh || framegen_active;
+    const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;
+    // Use the higher of display_fps (which may already be doubled by framegen) or the minimum
+    const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
     BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
-    BOOST_LOG(debug) << "apply_double_refresh: " << apply_double_refresh;
+    BOOST_LOG(debug) << "needs_double_minimum: " << needs_double_minimum;
+    BOOST_LOG(debug) << "minimum_fps: " << minimum_fps;
     BOOST_LOG(debug) << "effective_display_fps: "
                      << (session_requests_virtual ? effective_virtual_display_fps : display_fps);
 
@@ -230,7 +232,7 @@ namespace display_helper_integration::helpers {
         effective_width,
         effective_height,
         effective_virtual_display_fps,
-        apply_double_refresh
+        minimum_fps
       );
     }
     return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);
@@ -242,7 +244,7 @@ namespace display_helper_integration::helpers {
     const int effective_width,
     const int effective_height,
     const int display_fps,
-    const bool double_refresh_workaround
+    const int minimum_fps
   ) const {
     const auto parsed = display_device::parse_configuration(video_config_, session_);
     const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
@@ -260,8 +262,8 @@ namespace display_helper_integration::helpers {
     vd_cfg.m_device_id = target_device_id;
     const auto layout_flags = describe_layout(layout);
     vd_cfg.m_device_prep = layout_flags.device_prep;
-    if (double_refresh_workaround && vd_cfg.m_refresh_rate) {
-      double_refresh_if_present(vd_cfg.m_refresh_rate);
+    if (minimum_fps > 0 && vd_cfg.m_refresh_rate) {
+      ensure_minimum_refresh_if_present(vd_cfg.m_refresh_rate, minimum_fps);
     }
     apply_resolution_refresh_overrides(vd_cfg, effective_width, effective_height, display_fps);
 

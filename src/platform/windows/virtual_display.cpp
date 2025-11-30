@@ -223,9 +223,15 @@ namespace VDISPLAY {
 
     uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
       constexpr uint64_t scale = 1000ull;
-      if (config::video.dd.wa.virtual_double_refresh && fps_millihz > 0 && !framegen_refresh_active) {
-        const uint64_t doubled = static_cast<uint64_t>(fps_millihz) * 2ull;
-        fps_millihz = static_cast<uint32_t>(std::min<uint64_t>(doubled, std::numeric_limits<uint32_t>::max()));
+      // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
+      const bool needs_double_minimum = config::video.dd.wa.virtual_double_refresh || framegen_refresh_active;
+      if (needs_double_minimum && base_fps_millihz > 0) {
+        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * 2ull;
+        const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
+        // Ensure we're at least at the minimum, but never lower if already higher
+        if (fps_millihz < safe_minimum) {
+          fps_millihz = safe_minimum;
+        }
       }
       const uint32_t max_hz = highest_requested_refresh_hz();
       if (max_hz == 0) {

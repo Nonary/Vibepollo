@@ -31,7 +31,7 @@ namespace display_helper_integration::helpers {
       int effective_width,
       int effective_height,
       int display_fps,
-      bool double_refresh_workaround
+      int minimum_fps
     ) const;
     bool configure_standard(
       DisplayApplyBuilder &builder,
