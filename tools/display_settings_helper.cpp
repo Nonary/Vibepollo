@@ -1699,6 +1699,26 @@ namespace {
       return false;
     }
 
+    void clear_session_restore_snapshots_after_golden() {
+      std::error_code ec_cur;
+      const bool removed_current = std::filesystem::remove(session_current_path, ec_cur);
+      std::error_code ec_prev;
+      const bool removed_previous = std::filesystem::remove(session_previous_path, ec_prev);
+      session_saved.store(false, std::memory_order_release);
+
+      BOOST_LOG(info) << "Golden restore cleanup: removed current=" << (removed_current && !ec_cur ? "true" : "false")
+                      << ", previous=" << (removed_previous && !ec_prev ? "true" : "false");
+
+      if (ec_cur) {
+        BOOST_LOG(warning) << "Golden restore cleanup: failed to remove current session snapshot '"
+                           << session_current_path.string() << "' (ec=" << ec_cur.value() << ")";
+      }
+      if (ec_prev) {
+        BOOST_LOG(warning) << "Golden restore cleanup: failed to remove previous session snapshot '"
+                           << session_previous_path.string() << "' (ec=" << ec_prev.value() << ")";
+      }
+    }
+
     // Apply the golden snapshot (if available) and verify the system now matches it.
     // Performs up to two attempts (initial + one retry) with short pauses to allow
     // Windows to settle. Returns true only if the post-apply signature exactly
@@ -1741,12 +1761,8 @@ namespace {
                       << ", golden_sig=" << controller.signature(*golden)
                       << ", match=" << (ok ? "true" : "false");
       if (ok) {
-        // Golden won: copy golden snapshot to previous
-        std::error_code ec_prev_rm;
-        (void) std::filesystem::remove(session_previous_path, ec_prev_rm);
-        std::error_code ec_copy;
-        std::filesystem::copy_file(golden_path, session_previous_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
-        BOOST_LOG(info) << "Golden restore confirmed; copied golden snapshot to previous. copy_ok=" << (!ec_copy ? "true" : "false");
+        BOOST_LOG(info) << "Golden restore confirmed; clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
         return true;
       }
 
@@ -1769,11 +1785,8 @@ namespace {
                       << ", golden_sig=" << controller.signature(*golden)
                       << ", match=" << (ok ? "true" : "false");
       if (ok) {
-        std::error_code ec_prev_rm;
-        (void) std::filesystem::remove(session_previous_path, ec_prev_rm);
-        std::error_code ec_copy2;
-        std::filesystem::copy_file(golden_path, session_previous_path, std::filesystem::copy_options::overwrite_existing, ec_copy2);
-        BOOST_LOG(info) << "Golden restore confirmed (retry); copied golden snapshot to previous. copy_ok=" << (!ec_copy2 ? "true" : "false");
+        BOOST_LOG(info) << "Golden restore confirmed (retry); clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
       }
       return ok;
     }

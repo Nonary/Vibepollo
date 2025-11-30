@@ -375,6 +375,21 @@ function selectVirtualDisplayLayout(v: unknown) {
               </n-radio-group>
             </div>
 
+            <!-- HDR Calibration Tip for per-client virtual display -->
+            <transition name="fade">
+              <div
+                v-if="virtualDisplayMode === 'per_client'"
+                class="mt-4 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3"
+              >
+                <p class="text-[11px] text-blue-900 dark:text-blue-100">
+                  <span class="flex items-start gap-2">
+                    <i class="fas fa-lightbulb text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                    <span class="block">{{ $t('config.virtual_display_hdr_tip') }}</span>
+                  </span>
+                </p>
+              </div>
+            </transition>
+
             <div
               class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >

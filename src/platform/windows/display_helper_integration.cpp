@@ -794,6 +794,9 @@ namespace display_helper_integration {
       return false;
     }
 
+    const bool virtual_involved = request.session && (request.session->virtual_display ||
+                                                      request.session_overrides.virtual_display_override.value_or(false));
+
     auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
       if (!apply_in_process(payload)) {
         BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
@@ -839,9 +842,42 @@ namespace display_helper_integration {
       return true;
     }
 
+    // Staged fallback: make the virtual display primary while keeping others active,
+    // then retry the ensure-only request to avoid full topology drops in one shot.
+    const bool ensure_only_requested =
+      request.configuration &&
+      request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+    if (virtual_involved && ensure_only_requested && request.session) {
+      auto build_staged_request = [&]() -> std::optional<DisplayApplyRequest> {
+        display_device::SingleDisplayConfiguration staged_cfg = *request.configuration;
+        staged_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary;
+
+        DisplayApplyBuilder builder;
+        builder.set_action(DisplayApplyAction::Apply)
+               .set_session(*request.session)
+               .set_configuration(staged_cfg)
+               .set_device_blacklist(request.device_blacklist)
+               .set_virtual_display_watchdog(request.enable_virtual_display_watchdog)
+               .set_hdr_toggle_flag(request.attach_hdr_toggle_flag)
+               .set_topology(request.topology)
+               .set_virtual_display_arrangement(VirtualDisplayArrangement::ExtendedPrimary);
+        builder.mutable_session_overrides() = request.session_overrides;
+        return builder.build();
+      };
+
+      if (auto staged_request = build_staged_request()) {
+        if (attempt_apply(*staged_request, "staged-extended-primary")) {
+          if (attempt_apply(request, "ensure-only-after-stage")) {
+            return true;
+          }
+          BOOST_LOG(warning) << "Display helper: ensure-only reapply failed after staged fallback; keeping extended-primary layout active.";
+          return true;
+        }
+      }
+    }
+
     // If the apply failed and a virtual display is involved, try a targeted disable/enable cycle once.
-    if (request.session && (request.session->virtual_display ||
-                            request.session_overrides.virtual_display_override.value_or(false))) {
+    if (virtual_involved) {
       display_helper_integration::DisplayApplyBuilder rebuild;
       rebuild.set_action(display_helper_integration::DisplayApplyAction::Apply);
       if (request.configuration) {
