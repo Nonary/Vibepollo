@@ -54,6 +54,8 @@ namespace VDISPLAY {
     uint32_t width;
     uint32_t height;
     uint32_t fps;
+    uint32_t base_fps_millihz = 0;
+    bool framegen_refresh_active = false;
     std::string client_uid;
     std::string client_name;
     std::optional<std::wstring> display_name;
@@ -68,7 +70,9 @@ namespace VDISPLAY {
     uint32_t width,
     uint32_t height,
     uint32_t fps,
-    const GUID &guid
+    const GUID &guid,
+    uint32_t base_fps_millihz = 0,
+    bool framegen_refresh_active = false
   );
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();

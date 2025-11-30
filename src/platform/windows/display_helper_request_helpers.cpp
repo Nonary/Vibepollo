@@ -201,8 +201,10 @@ namespace display_helper_integration::helpers {
     const int base_fps = session_.fps;
     BOOST_LOG(debug) << "base_fps: " << base_fps;
     std::optional<int> framegen_refresh = session_.framegen_refresh_rate;
+    const bool framegen_active = framegen_refresh && *framegen_refresh > 0;
     BOOST_LOG(debug) << "framegen_refresh: " << (framegen_refresh ? std::to_string(*framegen_refresh) : "nullopt");
-    const int display_fps = framegen_refresh && *framegen_refresh > 0 ? *framegen_refresh : base_fps;
+    const int framegen_display_fps = framegen_active ? *framegen_refresh : 0;
+    const int display_fps = framegen_display_fps > 0 ? framegen_display_fps : base_fps;
     BOOST_LOG(debug) << "display_fps: " << display_fps;
 
     const auto config_mode = video_config_.virtual_display_mode;
@@ -214,8 +216,10 @@ namespace display_helper_integration::helpers {
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     const bool double_virtual_refresh = session_requests_virtual && video_config_.dd.wa.virtual_double_refresh;
-    const int effective_virtual_display_fps = double_virtual_refresh ? safe_double_int(display_fps) : display_fps;
+    const bool apply_double_refresh = double_virtual_refresh && !framegen_active;
+    const int effective_virtual_display_fps = apply_double_refresh ? safe_double_int(display_fps) : display_fps;
     BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
+    BOOST_LOG(debug) << "apply_double_refresh: " << apply_double_refresh;
     BOOST_LOG(debug) << "effective_display_fps: "
                      << (session_requests_virtual ? effective_virtual_display_fps : display_fps);
 
@@ -226,7 +230,7 @@ namespace display_helper_integration::helpers {
         effective_width,
         effective_height,
         effective_virtual_display_fps,
-        double_virtual_refresh
+        apply_double_refresh
       );
     }
     return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);

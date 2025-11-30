@@ -221,9 +221,9 @@ namespace VDISPLAY {
       return max_hz;
     }
 
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz) {
+    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
       constexpr uint64_t scale = 1000ull;
-      if (config::video.dd.wa.virtual_double_refresh && fps_millihz > 0) {
+      if (config::video.dd.wa.virtual_double_refresh && fps_millihz > 0 && !framegen_refresh_active) {
         const uint64_t doubled = static_cast<uint64_t>(fps_millihz) * 2ull;
         fps_millihz = static_cast<uint32_t>(std::min<uint64_t>(doubled, std::numeric_limits<uint32_t>::max()));
       }
@@ -1430,7 +1430,9 @@ namespace VDISPLAY {
         state.params.width,
         state.params.height,
         state.params.fps,
-        state.params.guid
+        state.params.guid,
+        state.params.base_fps_millihz,
+        state.params.framegen_refresh_active
       );
       if (!recreation) {
         BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
@@ -2104,8 +2106,10 @@ namespace VDISPLAY {
       const char *s_client_name,
       uint32_t width,
       uint32_t height,
-    uint32_t fps,
-    const GUID &guid
+      uint32_t fps,
+      const GUID &guid,
+      uint32_t base_fps_millihz,
+      bool framegen_refresh_active
   ) {
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return std::nullopt;
@@ -2124,7 +2128,7 @@ namespace VDISPLAY {
     BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
     enforce_teardown_cooldown_if_needed();
 
-    const uint32_t requested_fps = apply_refresh_overrides(fps);
+    const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
     VIRTUAL_DISPLAY_ADD_OUT output {};
     BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
@@ -2281,7 +2285,9 @@ namespace VDISPLAY {
     uint32_t width,
     uint32_t height,
     uint32_t fps,
-    const GUID &guid
+    const GUID &guid,
+    uint32_t base_fps_millihz,
+    bool framegen_refresh_active
   ) {
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
@@ -2294,7 +2300,16 @@ namespace VDISPLAY {
         }
       }
 
-      auto result = create_virtual_display_once(s_client_uid, s_client_name, width, height, fps, guid);
+      auto result = create_virtual_display_once(
+        s_client_uid,
+        s_client_name,
+        width,
+        height,
+        fps,
+        guid,
+        base_fps_millihz,
+        framegen_refresh_active
+      );
       if (!result) {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
                            << " failed.";
@@ -2659,7 +2674,16 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
-  auto display_info = createVirtualDisplay("sunshine-ensure", "Sunshine Temporary", 1920u, 1080u, 60000u, result.temporary_guid);
+  auto display_info = createVirtualDisplay(
+    "sunshine-ensure",
+    "Sunshine Temporary",
+    1920u,
+    1080u,
+    60000u,
+    result.temporary_guid,
+    60000u,
+    false
+  );
   if (!display_info) {
     BOOST_LOG(warning) << "Failed to create temporary virtual display.";
     return result;
