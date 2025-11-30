@@ -221,8 +221,18 @@ namespace VDISPLAY {
       return max_hz;
     }
 
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz) {
+    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
       constexpr uint64_t scale = 1000ull;
+      // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
+      const bool needs_double_minimum = config::video.double_refreshrate || framegen_refresh_active;
+      if (needs_double_minimum && base_fps_millihz > 0) {
+        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * 2ull;
+        const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
+        // Ensure we're at least at the minimum, but never lower if already higher
+        if (fps_millihz < safe_minimum) {
+          fps_millihz = safe_minimum;
+        }
+      }
       const uint32_t max_hz = highest_requested_refresh_hz();
       if (max_hz == 0) {
         return fps_millihz;
@@ -704,26 +714,24 @@ namespace VDISPLAY {
       const std::optional<std::string> &client_name = std::nullopt
     );
 
-    // Write color profile association directly to registry for a virtual display
-    bool write_color_profile_to_registry(const std::wstring &device_path, const std::wstring &profile_filename) {
+    // Helper to compute the registry path for color profile associations from a device path
+    std::optional<std::wstring> get_color_profile_registry_path(const std::wstring &device_path) {
       // Parse the device path to extract the instance ID
       // Format: \\?\DISPLAY#SMKD1CE#1&28a6823a&2&UID265#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}
       size_t first_hash = device_path.find(L'#');
-      if (first_hash == std::wstring::npos) return false;
+      if (first_hash == std::wstring::npos) return std::nullopt;
       size_t second_hash = device_path.find(L'#', first_hash + 1);
-      if (second_hash == std::wstring::npos) return false;
+      if (second_hash == std::wstring::npos) return std::nullopt;
       size_t third_hash = device_path.find(L'#', second_hash + 1);
-      if (third_hash == std::wstring::npos) return false;
+      if (third_hash == std::wstring::npos) return std::nullopt;
 
-      // Extract device type (e.g., "SMKD1CE") and instance ID (e.g., "1&28a6823a&2&UID265")
       std::wstring device_type = device_path.substr(first_hash + 1, second_hash - first_hash - 1);
       std::wstring instance_id = device_path.substr(second_hash + 1, third_hash - second_hash - 1);
 
-      // Look up the driver key for this device instance
       std::wstring enum_path = L"SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\" + device_type + L"\\" + instance_id;
       HKEY enum_key = nullptr;
       if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, enum_path.c_str(), 0, KEY_READ, &enum_key) != ERROR_SUCCESS) {
-        return false;
+        return std::nullopt;
       }
 
       wchar_t driver_value[256] = {};
@@ -734,21 +742,77 @@ namespace VDISPLAY {
       RegCloseKey(enum_key);
 
       if (status != ERROR_SUCCESS || driver_type != REG_SZ) {
+        return std::nullopt;
+      }
+
+      std::wstring driver_str(driver_value);
+      size_t backslash = driver_str.rfind(L'\\');
+      if (backslash == std::wstring::npos) return std::nullopt;
+      std::wstring key_number = driver_str.substr(backslash + 1);
+
+      return L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\" +
+             driver_str.substr(0, backslash) + L"\\" + key_number;
+    }
+
+    // Read the current color profile from registry for a display
+    std::optional<std::wstring> read_color_profile_from_registry(const std::wstring &device_path) {
+      auto profile_path = get_color_profile_registry_path(device_path);
+      if (!profile_path) {
+        return std::nullopt;
+      }
+
+      HKEY profile_key = nullptr;
+      if (RegOpenKeyExW(HKEY_CURRENT_USER, profile_path->c_str(), 0, KEY_READ, &profile_key) != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      wchar_t profile_value[512] = {};
+      DWORD profile_size = sizeof(profile_value);
+      DWORD profile_type = 0;
+      LSTATUS status = RegQueryValueExW(profile_key, L"ICMProfileAC", nullptr, &profile_type,
+                                        reinterpret_cast<LPBYTE>(profile_value), &profile_size);
+      RegCloseKey(profile_key);
+
+      if (status != ERROR_SUCCESS || (profile_type != REG_MULTI_SZ && profile_type != REG_SZ)) {
+        return std::nullopt;
+      }
+
+      // REG_MULTI_SZ is null-terminated, return first string
+      if (profile_value[0] == L'\0') {
+        return std::nullopt;
+      }
+
+      return std::wstring(profile_value);
+    }
+
+    // Clear the color profile association from registry for a display
+    bool clear_color_profile_from_registry(const std::wstring &device_path) {
+      auto profile_path = get_color_profile_registry_path(device_path);
+      if (!profile_path) {
         return false;
       }
 
-      // driver_value is like "{4d36e96e-e325-11ce-bfc1-08002be10318}\0012"
-      std::wstring driver_str(driver_value);
-      size_t backslash = driver_str.rfind(L'\\');
-      if (backslash == std::wstring::npos) return false;
-      std::wstring key_number = driver_str.substr(backslash + 1);
+      HKEY profile_key = nullptr;
+      if (RegOpenKeyExW(HKEY_CURRENT_USER, profile_path->c_str(), 0, KEY_SET_VALUE, &profile_key) != ERROR_SUCCESS) {
+        return false;
+      }
 
-      // Write the profile association to the correct registry key
-      std::wstring profile_assoc_path = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\" +
-                                        driver_str.substr(0, backslash) + L"\\" + key_number;
+      // Delete the ICMProfileAC value
+      LSTATUS status = RegDeleteValueW(profile_key, L"ICMProfileAC");
+      RegCloseKey(profile_key);
+
+      return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+    }
+
+    // Write color profile association directly to registry for a virtual display
+    bool write_color_profile_to_registry(const std::wstring &device_path, const std::wstring &profile_filename) {
+      auto profile_assoc_path = get_color_profile_registry_path(device_path);
+      if (!profile_assoc_path) {
+        return false;
+      }
 
       HKEY profile_key = nullptr;
-      status = RegCreateKeyExW(HKEY_CURRENT_USER, profile_assoc_path.c_str(), 0, nullptr,
+      LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, profile_assoc_path->c_str(), 0, nullptr,
                                REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &profile_key, nullptr);
       if (status != ERROR_SUCCESS) {
         return false;
@@ -776,38 +840,60 @@ namespace VDISPLAY {
       const std::optional<std::wstring> &display_name,
       const std::optional<std::string> &device_id,
       const std::optional<std::wstring> &monitor_device_path,
-      const std::optional<std::string> &client_name_utf8
+      const std::optional<std::string> &client_name_utf8,
+      bool is_virtual_display = true
     ) {
+      // For virtual displays, we need to check if a profile exists and clear it if it doesn't match
+      // This is because Windows often reuses UIDs and can assign incorrect HDR profiles
+      const bool should_clear_mismatched = is_virtual_display;
+
+      // If no client name, we can't match profiles - but for virtual displays we should still clear mismatched ones
       if (!client_name_utf8 || client_name_utf8->empty()) {
+        if (!should_clear_mismatched) {
+          return;
+        }
+        // For virtual displays without a client name, clear any existing profile
+        if (monitor_device_path && !monitor_device_path->empty()) {
+          std::thread([monitor_path = *monitor_device_path]() {
+            HANDLE user_token = platf::retrieve_users_token(false);
+            if (!user_token) {
+              return;
+            }
+            (void) platf::impersonate_current_user(user_token, [&]() {
+              auto existing = read_color_profile_from_registry(monitor_path);
+              if (existing && !existing->empty()) {
+                BOOST_LOG(debug) << "HDR profile: clearing stale profile '" << platf::to_utf8(*existing)
+                                 << "' from virtual display (no client name).";
+                clear_color_profile_from_registry(monitor_path);
+              }
+            });
+            CloseHandle(user_token);
+          }).detach();
+        }
         return;
       }
 
       const auto profile_path = find_hdr_profile_for_client(*client_name_utf8);
-      if (!profile_path) {
-        return;
-      }
 
       // Run asynchronously to avoid blocking stream startup
       std::thread([
-        profile_path = *profile_path,
+        profile_path,
         client_name = *client_name_utf8,
-        monitor_path = monitor_device_path
+        monitor_path = monitor_device_path,
+        should_clear_mismatched
       ]() {
-        BOOST_LOG(debug) << "HDR profile: applying '" << profile_path.filename().string() << "' for client '" << client_name << "'.";
-
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
           device_name_w = resolve_monitor_device_path(std::nullopt, std::nullopt, 50, std::chrono::milliseconds(100), client_name);
         }
         if (!device_name_w || device_name_w->empty()) {
-          BOOST_LOG(warning) << "HDR profile: skipped - monitor device path unavailable for '" << client_name << "'.";
+          if (profile_path) {
+            BOOST_LOG(warning) << "HDR profile: skipped - monitor device path unavailable for '" << client_name << "'.";
+          }
           return;
         }
 
-        const auto profile_filename = profile_path.filename().wstring();
-
-        // Install profile and write registry association
         HANDLE user_token = platf::retrieve_users_token(false);
         if (!user_token) {
           return;
@@ -815,22 +901,47 @@ namespace VDISPLAY {
 
         bool success = false;
         (void) platf::impersonate_current_user(user_token, [&]() {
-          // Install the color profile if needed
-          if (!InstallColorProfileW(nullptr, profile_path.c_str())) {
-            const auto err = GetLastError();
-            if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
-              return;
+          // Check existing profile and handle mismatches for virtual displays
+          if (should_clear_mismatched) {
+            auto existing = read_color_profile_from_registry(*device_name_w);
+            if (existing && !existing->empty()) {
+              // Determine expected filename
+              std::wstring expected_filename;
+              if (profile_path) {
+                expected_filename = profile_path->filename().wstring();
+              }
+
+              // If no profile for this client, or existing doesn't match expected, clear it
+              if (expected_filename.empty() || _wcsicmp(existing->c_str(), expected_filename.c_str()) != 0) {
+                BOOST_LOG(debug) << "HDR profile: clearing mismatched profile '" << platf::to_utf8(*existing)
+                                 << "' from virtual display for client '" << client_name << "'.";
+                clear_color_profile_from_registry(*device_name_w);
+              }
             }
           }
 
-          // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
-          success = write_color_profile_to_registry(*device_name_w, profile_filename);
+          // If we have a profile to apply, do it
+          if (profile_path) {
+            const auto profile_filename = profile_path->filename().wstring();
+            BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
+
+            // Install the color profile if needed
+            if (!InstallColorProfileW(nullptr, profile_path->c_str())) {
+              const auto err = GetLastError();
+              if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
+                return;
+              }
+            }
+
+            // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
+            success = write_color_profile_to_registry(*device_name_w, profile_filename);
+          }
         });
 
         CloseHandle(user_token);
 
-        if (success) {
-          BOOST_LOG(info) << "Applied HDR color profile '" << platf::to_utf8(profile_filename)
+        if (success && profile_path) {
+          BOOST_LOG(info) << "Applied HDR color profile '" << platf::to_utf8(profile_path->filename().wstring())
                           << "' for client '" << client_name << "'.";
         }
       }).detach();
@@ -1426,7 +1537,9 @@ namespace VDISPLAY {
         state.params.width,
         state.params.height,
         state.params.fps,
-        state.params.guid
+        state.params.guid,
+        state.params.base_fps_millihz,
+        state.params.framegen_refresh_active
       );
       if (!recreation) {
         BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
@@ -1886,7 +1999,7 @@ namespace VDISPLAY {
         return false;
       };
 
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (devices) {
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
         bool resolution_conflict = false;
@@ -2023,7 +2136,7 @@ namespace VDISPLAY {
     const std::optional<std::wstring> &display_name,
     const std::optional<std::string> &device_id
   ) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return false;
     }
@@ -2100,8 +2213,10 @@ namespace VDISPLAY {
       const char *s_client_name,
       uint32_t width,
       uint32_t height,
-    uint32_t fps,
-    const GUID &guid
+      uint32_t fps,
+      const GUID &guid,
+      uint32_t base_fps_millihz,
+      bool framegen_refresh_active
   ) {
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return std::nullopt;
@@ -2120,7 +2235,7 @@ namespace VDISPLAY {
     BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
     enforce_teardown_cooldown_if_needed();
 
-    const uint32_t requested_fps = apply_refresh_overrides(fps);
+    const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
     VIRTUAL_DISPLAY_ADD_OUT output {};
     BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
     if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
@@ -2277,7 +2392,9 @@ namespace VDISPLAY {
     uint32_t width,
     uint32_t height,
     uint32_t fps,
-    const GUID &guid
+    const GUID &guid,
+    uint32_t base_fps_millihz,
+    bool framegen_refresh_active
   ) {
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
@@ -2290,7 +2407,16 @@ namespace VDISPLAY {
         }
       }
 
-      auto result = create_virtual_display_once(s_client_uid, s_client_name, width, height, fps, guid);
+      auto result = create_virtual_display_once(
+        s_client_uid,
+        s_client_name,
+        width,
+        height,
+        fps,
+        guid,
+        base_fps_millihz,
+        framegen_refresh_active
+      );
       if (!result) {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
                            << " failed.";
@@ -2462,7 +2588,7 @@ namespace VDISPLAY {
       return resolveAnyVirtualDisplayDeviceId();
     }
 
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return std::nullopt;
     }
@@ -2502,7 +2628,7 @@ namespace VDISPLAY {
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     std::optional<std::string> active_match;
     std::optional<std::string> any_match;
 
@@ -2538,7 +2664,7 @@ namespace VDISPLAY {
       return result;
     }
 
-    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices();
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
       return result;
     }
@@ -2655,7 +2781,16 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
-  auto display_info = createVirtualDisplay("sunshine-ensure", "Sunshine Temporary", 1920u, 1080u, 60000u, result.temporary_guid);
+  auto display_info = createVirtualDisplay(
+    "sunshine-ensure",
+    "Sunshine Temporary",
+    1920u,
+    1080u,
+    60000u,
+    result.temporary_guid,
+    60000u,
+    false
+  );
   if (!display_info) {
     BOOST_LOG(warning) << "Failed to create temporary virtual display.";
     return result;

@@ -1679,17 +1679,23 @@ namespace nvhttp {
 
         uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
         uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+        uint32_t base_vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
+        uint32_t base_vd_fps_millihz = base_vd_fps;
+        if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {
+          base_vd_fps_millihz *= 1000u;
+        }
         uint32_t vd_fps = 0;
         if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
           vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
-        } else if (launch_session->fps > 0) {
-          vd_fps = static_cast<uint32_t>(launch_session->fps);
+        } else if (base_vd_fps > 0) {
+          vd_fps = base_vd_fps;
         } else {
           vd_fps = 60000u;
         }
         if (vd_fps < 1000u) {
           vd_fps *= 1000u;
         }
+        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
 
         std::string client_label;
         if (shared_mode) {
@@ -1727,7 +1733,9 @@ namespace nvhttp {
           vd_width,
           vd_height,
           vd_fps,
-          virtual_display_guid
+          virtual_display_guid,
+          base_vd_fps_millihz,
+          framegen_refresh_active
         );
 
         if (display_info) {
@@ -1751,6 +1759,8 @@ namespace nvhttp {
           recovery_params.width = vd_width;
           recovery_params.height = vd_height;
           recovery_params.fps = vd_fps;
+          recovery_params.base_fps_millihz = base_vd_fps_millihz;
+          recovery_params.framegen_refresh_active = framegen_refresh_active;
           recovery_params.client_uid = display_uuid_source;
           recovery_params.client_name = client_label;
           recovery_params.display_name = display_info->display_name;
@@ -1807,9 +1817,6 @@ namespace nvhttp {
     // The display should be restored in case something fails as there are no other sessions.
     if (no_active_sessions && !launch_session->input_only) {
       revert_display_configuration = true;
-      bool display_apply_attempted = false;
-      bool display_apply_failed = false;
-      std::optional<display_helper_integration::DisplayApplyRequest> applied_request;
 
 #ifdef _WIN32
       HANDLE user_token = platf::retrieve_users_token(false);
@@ -1819,19 +1826,14 @@ namespace nvhttp {
       }
 
       if (helper_session_available) {
-        display_apply_attempted = true;
         (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
-          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
         }
 
         if (request) {
-          if (display_helper_integration::apply(*request)) {
-            applied_request = *request;
-          } else {
-            display_apply_failed = true;
+          if (!display_helper_integration::apply(*request)) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         }
@@ -1841,19 +1843,10 @@ namespace nvhttp {
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
       noop_builder.set_session(*launch_session);
-      display_apply_attempted = true;
       if (!display_helper_integration::apply(noop_builder.build())) {
-        display_apply_failed = true;
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
-
-      if (display_apply_attempted && display_apply_failed) {
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
-        tree.put("root.gamesession", 0);
-        return;
-      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -2038,8 +2031,6 @@ namespace nvhttp {
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
 
-      bool display_apply_attempted = false;
-      bool display_apply_failed = false;
 #ifdef _WIN32
       if (should_reapply_display) {
         HANDLE user_token = platf::retrieve_users_token(false);
@@ -2048,19 +2039,15 @@ namespace nvhttp {
           CloseHandle(user_token);
         }
 
-        display_apply_attempted = true;
         if (helper_session_available) {
           (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
           if (!request) {
             BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-            display_apply_failed = true;
           } else if (!display_helper_integration::apply(*request)) {
-            display_apply_failed = true;
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         } else {
-          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
         }
       } else {
@@ -2068,11 +2055,9 @@ namespace nvhttp {
       }
 #else
       if (should_reapply_display) {
-        display_apply_attempted = true;
         display_helper_integration::DisplayApplyBuilder noop_builder;
         noop_builder.set_session(*launch_session);
         if (!display_helper_integration::apply(noop_builder.build())) {
-          display_apply_failed = true;
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
       } else {
@@ -2080,24 +2065,6 @@ namespace nvhttp {
       }
 #endif
 
-      if (display_apply_attempted && display_apply_failed) {
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to apply display configuration before streaming.");
-        return;
-      }
-    }
-
-    if (no_active_sessions && !proc::proc.virtual_display && !launch_session->input_only) {
-      // We want to prepare display only if there are no active sessions
-      // and the current session isn't virtual display at the moment.
-      // This should be done before probing encoders as it could change the active displays.
-#ifdef _WIN32
-      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-      if (request) {
-        display_helper_integration::apply(*request);
-      }
-#endif
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,

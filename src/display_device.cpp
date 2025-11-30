@@ -582,7 +582,7 @@ namespace display_device {
     try {
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      const auto devices = dd.enumAvailableDevices();
+      const auto devices = dd.enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
 
       for (const auto &d : devices) {
         if (d.m_device_id.empty()) {
@@ -636,7 +636,7 @@ namespace display_device {
       // to the Windows logical display name using libdisplaydevice enumeration.
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      const auto devices = dd.enumAvailableDevices();
+      const auto devices = dd.enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
 
       auto equals_ci = [](const std::string &a, const std::string &b) {
         if (a.size() != b.size()) {
@@ -683,7 +683,7 @@ namespace display_device {
     try {
       auto api = std::make_shared<display_device::WinApiLayer>();
       display_device::WinDisplayDevice dd(api);
-      const auto devices = dd.enumAvailableDevices();
+      const auto devices = dd.enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
 
       auto equals_ci = [](const std::string &a, const std::string &b) {
         if (a.size() != b.size()) {
