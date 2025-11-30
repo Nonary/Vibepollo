@@ -290,6 +290,19 @@ const isManualEnforcementActive = computed(() => {
               />
             </div>
           </n-radio-group>
+          <transition name="fade">
+            <div
+              v-if="config.dd_configuration_option === 'ensure_active'"
+              class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+            >
+              <p class="text-[11px] text-amber-900 dark:text-amber-100">
+                <span class="flex items-start gap-2">
+                  <i class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <span class="block">{{ $t('config.dd_config_ensure_active_warning') }}</span>
+                </span>
+              </p>
+            </div>
+          </transition>
           <div class="text-[11px] opacity-60 mt-1">
             {{ $t('config.dd_config_hint') }}
           </div>

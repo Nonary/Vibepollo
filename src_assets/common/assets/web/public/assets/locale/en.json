@@ -198,6 +198,7 @@
     "credentials_file": "Credentials File",
     "credentials_file_desc": "Store Username/Password separately from Sunshine's state file.",
     "dd_config_ensure_active": "Activate the display automatically",
+    "dd_config_ensure_active_warning": "Windows does not display the lock screen on external monitors until you click on them, which can cause black screens when streaming. If this is an issue, use the primary display option instead.",
     "dd_config_ensure_only_display": "Deactivate other displays and activate only the specified display",
     "dd_config_ensure_primary": "Activate the display automatically and make it a primary display",
     "dd_configuration_option": "Device configuration",
