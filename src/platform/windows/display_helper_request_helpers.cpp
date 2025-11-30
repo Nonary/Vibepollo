@@ -431,7 +431,6 @@ namespace display_helper_integration::helpers {
       return;
     }
 
-    auto resolved_virtual_device_id = resolve_virtual_device_id(video_config_, session_);
     std::string isolated_device_id = default_device_id;
     if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::ExtendedPrimaryIsolated) {
       if (auto primary_device_id = resolve_current_primary_device_id(resolved_virtual_device_id)) {

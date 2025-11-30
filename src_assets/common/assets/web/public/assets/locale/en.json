@@ -245,6 +245,7 @@
     "virtual_display_mode_per_client": "Virtual Display (Per Client)",
     "virtual_display_mode_shared": "Shared Virtual Display",
     "virtual_display_mode_step_hint": "Select which display Sunshine should prepare: keep your physical monitor, create a per-client virtual display, or reuse a shared virtual screen.",
+    "virtual_display_hdr_tip": "HDR Tip: Run Windows HDR Calibration while streaming and save the profile with the exact display name shown in the calibration utility (e.g., \"iphone\"). Sunshine will automatically apply this profile to the virtual display each session.",
     "virtual_display_layout_label": "Virtual Display Layout",
     "virtual_display_layout_hint": "Choose how Sunshine positions and prioritizes your virtual display when it is enabled.",
     "virtual_display_toggle_label": "Use virtual display",

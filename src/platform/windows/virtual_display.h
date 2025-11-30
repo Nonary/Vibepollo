@@ -43,6 +43,8 @@ namespace VDISPLAY {
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
+    std::optional<std::string> client_name;
+    std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
     std::chrono::steady_clock::time_point ready_since;
   };

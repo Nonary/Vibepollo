@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
+#include <icm.h>
 #include <initguid.h>
 #include <iostream>
 #include <limits>
@@ -46,6 +47,11 @@
 #include <windows.h>
 #include <winreg.h>
 #include <wrl/client.h>
+
+#ifndef CPST_EXTENDED_DISPLAY_COLOR_MODE
+  // MinGW headers may not expose the extended display color mode constant.
+  #define CPST_EXTENDED_DISPLAY_COLOR_MODE 8
+#endif
 
 namespace fs = std::filesystem;
 
@@ -610,6 +616,230 @@ namespace VDISPLAY {
       return upper;
     }
 
+    fs::path default_color_profile_directory() {
+      wchar_t system_root[MAX_PATH] = {};
+      if (GetSystemWindowsDirectoryW(system_root, _countof(system_root)) == 0) {
+        return fs::path(L"C:\\Windows\\System32\\spool\\drivers\\color");
+      }
+      fs::path root(system_root);
+      return root / L"System32" / L"spool" / L"drivers" / L"color";
+    }
+
+    std::wstring normalize_profile_key(std::wstring value) {
+      auto trim = [](std::wstring &inout) {
+        size_t start = 0;
+        while (start < inout.size() && std::iswspace(inout[start])) {
+          ++start;
+        }
+        size_t end = inout.size();
+        while (end > start && std::iswspace(inout[end - 1])) {
+          --end;
+        }
+        if (start > 0 || end < inout.size()) {
+          inout = inout.substr(start, end - start);
+        }
+      };
+
+      trim(value);
+
+      std::wstring upper;
+      upper.reserve(value.size());
+      for (wchar_t ch : value) {
+        upper.push_back(static_cast<wchar_t>(std::towupper(ch)));
+      }
+      return upper;
+    }
+
+    std::optional<fs::path> find_hdr_profile_for_client(const std::string &client_name_utf8) {
+      if (client_name_utf8.empty()) {
+        return std::nullopt;
+      }
+
+      const auto client_name_w = platf::from_utf8(client_name_utf8);
+      const auto normalized_name = normalize_profile_key(client_name_w);
+      if (normalized_name.empty()) {
+        return std::nullopt;
+      }
+
+      const fs::path color_dir = default_color_profile_directory();
+
+      const auto make_candidates = [&]() {
+        std::vector<std::wstring> names;
+        names.push_back(client_name_w);
+        const auto has_extension = client_name_w.find(L'.') != std::wstring::npos;
+        if (!has_extension) {
+          names.push_back(client_name_w + L".icm");
+          names.push_back(client_name_w + L".icc");
+        }
+        return names;
+      };
+
+      for (const auto &name : make_candidates()) {
+        fs::path candidate = color_dir / name;
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec)) {
+          return candidate;
+        }
+      }
+
+      try {
+        for (const auto &entry : fs::directory_iterator(color_dir)) {
+          std::error_code ec;
+          if (!entry.is_regular_file(ec)) {
+            continue;
+          }
+          if (normalize_profile_key(entry.path().stem().wstring()) == normalized_name) {
+            return entry.path();
+          }
+        }
+      } catch (...) {
+        // Best-effort search; ignore enumeration failures.
+      }
+
+      return std::nullopt;
+    }
+
+    // Forward declaration for the retrying resolver
+    std::optional<std::wstring> resolve_monitor_device_path(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      int attempts = 5,
+      std::chrono::milliseconds delay = std::chrono::milliseconds(100),
+      const std::optional<std::string> &client_name = std::nullopt
+    );
+
+    // Write color profile association directly to registry for a virtual display
+    bool write_color_profile_to_registry(const std::wstring &device_path, const std::wstring &profile_filename) {
+      // Parse the device path to extract the instance ID
+      // Format: \\?\DISPLAY#SMKD1CE#1&28a6823a&2&UID265#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}
+      size_t first_hash = device_path.find(L'#');
+      if (first_hash == std::wstring::npos) return false;
+      size_t second_hash = device_path.find(L'#', first_hash + 1);
+      if (second_hash == std::wstring::npos) return false;
+      size_t third_hash = device_path.find(L'#', second_hash + 1);
+      if (third_hash == std::wstring::npos) return false;
+
+      // Extract device type (e.g., "SMKD1CE") and instance ID (e.g., "1&28a6823a&2&UID265")
+      std::wstring device_type = device_path.substr(first_hash + 1, second_hash - first_hash - 1);
+      std::wstring instance_id = device_path.substr(second_hash + 1, third_hash - second_hash - 1);
+
+      // Look up the driver key for this device instance
+      std::wstring enum_path = L"SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\" + device_type + L"\\" + instance_id;
+      HKEY enum_key = nullptr;
+      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, enum_path.c_str(), 0, KEY_READ, &enum_key) != ERROR_SUCCESS) {
+        return false;
+      }
+
+      wchar_t driver_value[256] = {};
+      DWORD driver_size = sizeof(driver_value);
+      DWORD driver_type = 0;
+      LSTATUS status = RegQueryValueExW(enum_key, L"Driver", nullptr, &driver_type,
+                                        reinterpret_cast<LPBYTE>(driver_value), &driver_size);
+      RegCloseKey(enum_key);
+
+      if (status != ERROR_SUCCESS || driver_type != REG_SZ) {
+        return false;
+      }
+
+      // driver_value is like "{4d36e96e-e325-11ce-bfc1-08002be10318}\0012"
+      std::wstring driver_str(driver_value);
+      size_t backslash = driver_str.rfind(L'\\');
+      if (backslash == std::wstring::npos) return false;
+      std::wstring key_number = driver_str.substr(backslash + 1);
+
+      // Write the profile association to the correct registry key
+      std::wstring profile_assoc_path = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\" +
+                                        driver_str.substr(0, backslash) + L"\\" + key_number;
+
+      HKEY profile_key = nullptr;
+      status = RegCreateKeyExW(HKEY_CURRENT_USER, profile_assoc_path.c_str(), 0, nullptr,
+                               REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &profile_key, nullptr);
+      if (status != ERROR_SUCCESS) {
+        return false;
+      }
+
+      // Write UsePerUserProfiles = 1
+      DWORD use_per_user = 1;
+      RegSetValueExW(profile_key, L"UsePerUserProfiles", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE *>(&use_per_user), sizeof(use_per_user));
+
+      // Write ICMProfileAC as REG_MULTI_SZ
+      std::vector<wchar_t> multi_sz(profile_filename.begin(), profile_filename.end());
+      multi_sz.push_back(L'\0');
+      multi_sz.push_back(L'\0');
+
+      status = RegSetValueExW(profile_key, L"ICMProfileAC", 0, REG_MULTI_SZ,
+                              reinterpret_cast<const BYTE *>(multi_sz.data()),
+                              static_cast<DWORD>(multi_sz.size() * sizeof(wchar_t)));
+      RegCloseKey(profile_key);
+
+      return status == ERROR_SUCCESS;
+    }
+
+    void apply_hdr_profile_if_available(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      const std::optional<std::wstring> &monitor_device_path,
+      const std::optional<std::string> &client_name_utf8
+    ) {
+      if (!client_name_utf8 || client_name_utf8->empty()) {
+        return;
+      }
+
+      const auto profile_path = find_hdr_profile_for_client(*client_name_utf8);
+      if (!profile_path) {
+        return;
+      }
+
+      // Run asynchronously to avoid blocking stream startup
+      std::thread([
+        profile_path = *profile_path,
+        client_name = *client_name_utf8,
+        monitor_path = monitor_device_path
+      ]() {
+        BOOST_LOG(debug) << "HDR profile: applying '" << profile_path.filename().string() << "' for client '" << client_name << "'.";
+
+        std::optional<std::wstring> device_name_w = monitor_path;
+        if (!device_name_w || device_name_w->empty()) {
+          // Resolve monitor path - allow up to 5 seconds for display to be enumerable
+          device_name_w = resolve_monitor_device_path(std::nullopt, std::nullopt, 50, std::chrono::milliseconds(100), client_name);
+        }
+        if (!device_name_w || device_name_w->empty()) {
+          BOOST_LOG(warning) << "HDR profile: skipped - monitor device path unavailable for '" << client_name << "'.";
+          return;
+        }
+
+        const auto profile_filename = profile_path.filename().wstring();
+
+        // Install profile and write registry association
+        HANDLE user_token = platf::retrieve_users_token(false);
+        if (!user_token) {
+          return;
+        }
+
+        bool success = false;
+        (void) platf::impersonate_current_user(user_token, [&]() {
+          // Install the color profile if needed
+          if (!InstallColorProfileW(nullptr, profile_path.c_str())) {
+            const auto err = GetLastError();
+            if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
+              return;
+            }
+          }
+
+          // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
+          success = write_color_profile_to_registry(*device_name_w, profile_filename);
+        });
+
+        CloseHandle(user_token);
+
+        if (success) {
+          BOOST_LOG(info) << "Applied HDR color profile '" << platf::to_utf8(profile_filename)
+                          << "' for client '" << client_name << "'.";
+        }
+      }).detach();
+    }
+
     std::optional<uint32_t> read_virtual_display_dpi_value() {
       HKEY root = nullptr;
       if (RegOpenKeyExW(
@@ -737,7 +967,7 @@ namespace VDISPLAY {
       std::optional<std::wstring> monitor_friendly_device_name;
     };
 
-    std::optional<DisplayConfigIdentity> query_display_config_identity(const VIRTUAL_DISPLAY_ADD_OUT &output) {
+    std::optional<DisplayConfigIdentity> query_display_config_identity_inner(const VIRTUAL_DISPLAY_ADD_OUT &output) {
       const UINT flags = QDC_VIRTUAL_MODE_AWARE | QDC_DATABASE_CURRENT;
       UINT path_count = 0;
       UINT mode_count = 0;
@@ -786,6 +1016,170 @@ namespace VDISPLAY {
       }
 
       return std::nullopt;
+    }
+
+    std::optional<DisplayConfigIdentity> query_display_config_identity(const VIRTUAL_DISPLAY_ADD_OUT &output) {
+      // Try without impersonation first (works if already in user context)
+      if (auto result = query_display_config_identity_inner(output)) {
+        return result;
+      }
+
+      // QueryDisplayConfig requires user session context when running as SYSTEM
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        BOOST_LOG(debug) << "query_display_config_identity: unable to retrieve user token";
+        return std::nullopt;
+      }
+
+      std::optional<DisplayConfigIdentity> result;
+      const auto impersonation_ec = platf::impersonate_current_user(user_token, [&]() {
+        result = query_display_config_identity_inner(output);
+      });
+
+      CloseHandle(user_token);
+
+      if (impersonation_ec) {
+        BOOST_LOG(debug) << "query_display_config_identity: impersonation failed";
+      }
+
+      return result;
+    }
+
+    std::optional<std::wstring> resolve_monitor_device_path_once(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      const std::optional<std::string> &client_name = std::nullopt
+    ) {
+      std::optional<std::string> normalized_target;
+      if (display_name && !display_name->empty()) {
+        normalized_target = normalize_display_name(platf::to_utf8(*display_name));
+      }
+      std::optional<std::string> normalized_device_id;
+      if (device_id && !device_id->empty()) {
+        normalized_device_id = normalize_display_name(*device_id);
+      }
+      std::optional<std::string> normalized_client_name;
+      if (client_name && !client_name->empty()) {
+        normalized_client_name = normalize_display_name(*client_name);
+      }
+
+      // Use QDC_ALL_PATHS to include virtual displays that may not be "active" yet
+      UINT path_count = 0;
+      UINT mode_count = 0;
+      UINT flags = QDC_ALL_PATHS;
+
+      LONG buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      if (buffer_result != ERROR_SUCCESS) {
+        // Fallback to QDC_ONLY_ACTIVE_PATHS
+        flags = QDC_ONLY_ACTIVE_PATHS;
+        buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      }
+      if (buffer_result != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+      std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+      LONG qdc_result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+      if (qdc_result != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      for (UINT i = 0; i < path_count; ++i) {
+        const auto &path = paths[i];
+
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target_name {};
+        target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        target_name.header.size = sizeof(target_name);
+        target_name.header.adapterId = path.targetInfo.adapterId;
+        target_name.header.id = path.targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS) {
+          continue;
+        }
+
+        if (target_name.monitorDevicePath[0] == L'\0') {
+          continue;
+        }
+
+        std::optional<std::string> target_friendly;
+        if (target_name.monitorFriendlyDeviceName[0] != L'\0') {
+          target_friendly = normalize_display_name(platf::to_utf8(std::wstring(target_name.monitorFriendlyDeviceName)));
+        }
+
+        // Match by client name against monitor friendly name (virtual display uses client name as friendly name)
+        if (target_friendly && normalized_client_name && *target_friendly == *normalized_client_name) {
+          return std::wstring(target_name.monitorDevicePath);
+        }
+
+        const bool target_match =
+          (target_friendly && normalized_target && *target_friendly == *normalized_target) ||
+          (target_friendly && normalized_device_id && *target_friendly == *normalized_device_id);
+        if (target_match) {
+          return std::wstring(target_name.monitorDevicePath);
+        }
+
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source_name {};
+        source_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source_name.header.size = sizeof(source_name);
+        source_name.header.adapterId = path.sourceInfo.adapterId;
+        source_name.header.id = path.sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&source_name.header) != ERROR_SUCCESS) {
+          continue;
+        }
+
+        std::optional<std::string> source_view;
+        if (source_name.viewGdiDeviceName[0] != L'\0') {
+          source_view = normalize_display_name(platf::to_utf8(std::wstring(source_name.viewGdiDeviceName)));
+        }
+        const bool source_match =
+          (source_view && normalized_target && *source_view == *normalized_target) ||
+          (source_view && normalized_device_id && *source_view == *normalized_device_id);
+        if (source_match) {
+          return std::wstring(target_name.monitorDevicePath);
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    std::optional<std::wstring> resolve_monitor_device_path(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      int attempts,
+      std::chrono::milliseconds delay,
+      const std::optional<std::string> &client_name
+    ) {
+      // Try without impersonation first (faster if already in user context)
+      for (int i = 0; i < attempts; ++i) {
+        if (auto path = resolve_monitor_device_path_once(display_name, device_id, client_name)) {
+          return path;
+        }
+        if (i + 1 < attempts) {
+          std::this_thread::sleep_for(delay);
+        }
+      }
+
+      // Fall back to impersonation if direct access failed
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        return std::nullopt;
+      }
+
+      std::optional<std::wstring> result;
+      (void) platf::impersonate_current_user(user_token, [&]() {
+        for (int i = 0; i < attempts; ++i) {
+          if (auto path = resolve_monitor_device_path_once(display_name, device_id, client_name)) {
+            result = path;
+            return;
+          }
+          if (i + 1 < attempts) {
+            std::this_thread::sleep_for(delay);
+          }
+        }
+      });
+
+      CloseHandle(user_token);
+      return result;
     }
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices() {
@@ -1705,11 +2099,11 @@ namespace VDISPLAY {
     return true;
   }
 
-  std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
-    const char *s_client_uid,
-    const char *s_client_name,
-    uint32_t width,
-    uint32_t height,
+    std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
+      const char *s_client_uid,
+      const char *s_client_name,
+      uint32_t width,
+      uint32_t height,
     uint32_t fps,
     const GUID &guid
   ) {
@@ -1779,8 +2173,13 @@ namespace VDISPLAY {
           if (device_id && !device_id->empty()) {
             result.device_id = *device_id;
           }
+          if (s_client_name && std::strlen(s_client_name) > 0) {
+            result.client_name = std::string(s_client_name);
+          }
+          result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
           result.reused_existing = true;
           result.ready_since = ready_since;
+          apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name);
           return result;
         }
       }
@@ -1857,8 +2256,20 @@ namespace VDISPLAY {
     if (device_id && !device_id->empty()) {
       result.device_id = *device_id;
     }
+    if (s_client_name && std::strlen(s_client_name) > 0) {
+      result.client_name = std::string(s_client_name);
+    }
+    if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
+      result.monitor_device_path = display_config_identity->monitor_device_path;
+    }
     result.reused_existing = false;
     result.ready_since = ready_since;
+    apply_hdr_profile_if_available(
+      result.display_name,
+      result.device_id,
+      result.monitor_device_path,
+      result.client_name
+    );
     return result;
   }
 

@@ -6,7 +6,8 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         $<TARGET_OBJECTS:sunshine_rc_object>
         Windowsapp.lib
         Wtsapi32.lib
-        avrt.lib)
+        avrt.lib
+        Mscms.lib)
 
 # Copy Playnite plugin sources into build output (for packaging/installers)
 ## Copy Playnite plugin sources into build output (for packaging/installers)
