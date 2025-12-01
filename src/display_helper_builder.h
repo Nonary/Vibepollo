@@ -61,7 +61,6 @@ namespace display_helper_integration {
   struct DisplayApplyRequest {
     DisplayApplyAction action {DisplayApplyAction::Skip};
     std::optional<display_device::SingleDisplayConfiguration> configuration;
-    std::optional<std::string> device_blacklist;
     ActiveSessionState session_overrides {};
     bool enable_virtual_display_watchdog {false};
     bool attach_hdr_toggle_flag {false};
@@ -79,7 +78,6 @@ namespace display_helper_integration {
     DisplayApplyBuilder &set_action(DisplayApplyAction action);
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);
     DisplayApplyBuilder &clear_configuration();
-    DisplayApplyBuilder &set_device_blacklist(const std::optional<std::string> &device_id);
     DisplayApplyBuilder &set_virtual_display_watchdog(bool enable);
     DisplayApplyBuilder &set_hdr_toggle_flag(bool enable);
     DisplayApplyBuilder &set_topology(const DisplayTopologyDefinition &topology);
@@ -93,7 +91,6 @@ namespace display_helper_integration {
     const rtsp_stream::launch_session_t *session_ {nullptr};
     DisplayApplyAction action_ {DisplayApplyAction::Skip};
     std::optional<display_device::SingleDisplayConfiguration> configuration_;
-    std::optional<std::string> device_blacklist_;
     ActiveSessionState session_overrides_ {};
     DisplayTopologyDefinition topology_ {};
     bool enable_virtual_display_watchdog_ {false};

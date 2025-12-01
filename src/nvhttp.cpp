@@ -1560,6 +1560,15 @@ namespace nvhttp {
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
     };
+    
+    // Snapshot current display state BEFORE any display enumeration.
+    // queryDisplayConfig(QueryType::All) in output_exists() and other calls can activate
+    // external dummy plugs, which would pollute the snapshot used for session restore.
+    if (no_active_sessions) {
+      if (!display_helper_integration::snapshot_current_display_state()) {
+        BOOST_LOG(warning) << "Display helper snapshot before session start was not accepted.";
+      }
+    }
 
     bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;

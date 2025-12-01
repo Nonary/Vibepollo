@@ -849,10 +849,6 @@ namespace display_helper_integration {
       }
 
       if (helper_ready) {
-        if (request.device_blacklist && !request.device_blacklist->empty()) {
-          (void) platf::display_helper_client::send_blacklist(*request.device_blacklist);
-        }
-
         auto payload = build_helper_apply_payload(request);
         if (!payload) {
           BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
@@ -948,6 +944,17 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: sending RESET request.";
     const bool ok = platf::display_helper_client::send_reset();
     BOOST_LOG(info) << "Display helper: RESET dispatch result=" << (ok ? "true" : "false");
+    return ok;
+  }
+
+  bool snapshot_current_display_state() {
+    if (!ensure_helper_started()) {
+      BOOST_LOG(info) << "Display helper unavailable; cannot snapshot current display state.";
+      return false;
+    }
+    BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
+    const bool ok = platf::display_helper_client::send_snapshot_current();
+    BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT dispatch result=" << (ok ? "true" : "false");
     return ok;
   }
 

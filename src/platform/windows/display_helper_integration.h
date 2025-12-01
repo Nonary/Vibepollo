@@ -31,6 +31,9 @@ namespace display_helper_integration {
   // Request the helper to reset its persistence/state.
   bool reset_persistence();
 
+  // Ask the helper to capture the current display snapshot without applying changes.
+  bool snapshot_current_display_state();
+
   // Enumerate display devices via helper (or return nullopt on failure).
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
     display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal);
