@@ -453,6 +453,24 @@ namespace display_helper_integration::helpers {
       return;
     }
 
+    // Capture current positions of all active displays to preserve their arrangement.
+    // When the topology is applied, Windows may rearrange displays. By storing all
+    // current positions, we ensure non-isolated displays return to their original
+    // locations after the topology change.
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (devices) {
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || !device.m_info) {
+          continue;
+        }
+        // Skip the device that will be isolated - its position will be set below
+        if (boost::iequals(device.m_device_id, isolated_device_id)) {
+          continue;
+        }
+        topology.monitor_positions[device.m_device_id] = device.m_info->m_origin_point;
+      }
+    }
+
     topology.monitor_positions[isolated_device_id] = display_device::Point {kIsolatedVirtualDisplayOffset, kIsolatedVirtualDisplayOffset};
   }
 
