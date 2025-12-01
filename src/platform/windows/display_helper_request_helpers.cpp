@@ -146,16 +146,17 @@ namespace display_helper_integration::helpers {
       );
     }
 
-    void ensure_minimum_refresh_if_present(std::optional<display_device::FloatingPoint> &value, int minimum_fps) {
-      if (!value || minimum_fps <= 0) {
+    void ensure_minimum_refresh_if_present(std::optional<display_device::FloatingPoint> &value, int minimum_fps_millihz) {
+      if (!value || minimum_fps_millihz <= 0) {
         return;
       }
       const double current = get_refresh_rate_value(*value);
-      if (current >= static_cast<double>(minimum_fps)) {
+      const double minimum_hz = static_cast<double>(minimum_fps_millihz) / 1000.0;
+      if (current >= minimum_hz) {
         return;  // Already at or above minimum, don't change
       }
-      // Set to minimum fps as a Rational
-      value = display_device::Rational {static_cast<unsigned int>(minimum_fps), 1u};
+      // Set to minimum fps as a Rational (numerator in milli-Hz, denominator 1000)
+      value = display_device::Rational {static_cast<unsigned int>(minimum_fps_millihz), 1000u};
     }
   }  // namespace
 
