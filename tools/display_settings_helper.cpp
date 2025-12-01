@@ -164,7 +164,6 @@ namespace {
     Revert = 2,  // no payload
     Reset = 3,  // clear persistence (best-effort)
     ExportGolden = 4,  // no payload; export current settings snapshot as golden restore
-    Blacklist = 5,  // payload: device_id string to blacklist from topology exports
     ApplyResult = 6,  // payload: [u8 success][optional message...]
     Disarm = 7,  // cancel any pending restore requests/watchdogs
     SnapshotCurrent = 8,  // snapshot current session state (rotate current->previous) without applying
@@ -184,23 +183,6 @@ namespace {
   class DisplayController {
   public:
     DisplayController() = default;
-
-    void add_blacklisted_display(const std::string &device_id) {
-      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
-      m_blacklisted_device_ids.insert(device_id);
-      BOOST_LOG(info) << "Blacklisted display device_id from topology exports: " << device_id;
-    }
-
-    void clear_blacklist() {
-      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
-      m_blacklisted_device_ids.clear();
-      BOOST_LOG(info) << "Cleared display device_id blacklist";
-    }
-
-    bool is_device_blacklisted(const std::string &device_id) const {
-      std::lock_guard<std::mutex> lg(m_blacklist_mutex);
-      return m_blacklisted_device_ids.count(device_id) > 0;
-    }
 
     // Enumerate all currently available display device IDs (active or inactive).
     std::set<std::string> enum_all_device_ids() const {
@@ -338,30 +320,9 @@ namespace {
         return snap;
       }
       try {
-        // Topology
-        auto raw_topology = m_dd->getCurrentTopology();
-        
-        // Filter out blacklisted devices from topology
-        {
-          std::lock_guard<std::mutex> lg(m_blacklist_mutex);
-          if (!m_blacklisted_device_ids.empty()) {
-            for (auto &grp : raw_topology) {
-              grp.erase(
-                std::remove_if(grp.begin(), grp.end(), [this](const std::string &device_id) {
-                  return m_blacklisted_device_ids.count(device_id) > 0;
-                }),
-                grp.end()
-              );
-            }
-            raw_topology.erase(
-              std::remove_if(raw_topology.begin(), raw_topology.end(), [](const std::vector<std::string> &grp) {
-                return grp.empty();
-              }),
-              raw_topology.end()
-            );
-          }
-        }
-        snap.m_topology = raw_topology;
+        // Topology - snapshot is taken before virtual displays are created,
+        // so no filtering is needed.
+        snap.m_topology = m_dd->getCurrentTopology();
 
         // Flatten device ids present in topology
         std::set<std::string> device_ids;
@@ -722,9 +683,6 @@ namespace {
     mutable std::shared_ptr<display_device::WinApiLayer> m_wapi;
     mutable std::shared_ptr<display_device::WinDisplayDevice> m_dd;
     mutable std::unique_ptr<display_device::SettingsManager> m_sm;
-
-    mutable std::mutex m_blacklist_mutex;
-    std::set<std::string> m_blacklisted_device_ids;
 
     void collect_all_device_ids(std::set<std::string> &out) const {
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
@@ -3083,21 +3041,16 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
-    (void) state.promote_current_snapshot_to_previous("pre-apply");
-    const bool snapshot_saved = state.capture_current_snapshot("pre-apply");
+    // Snapshot is taken earlier via SnapshotCurrent before any display enumeration
+    // that might activate external dummy plugs.
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
-    const bool enforce_snapshot = !snapshot_saved;
 
     if (state.controller.soft_test_display_settings(cfg, sunshine_topology)) {
       BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
       const bool task_created = create_restore_scheduled_task();
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
 
-      std::optional<std::string> before_sig;
-      if (enforce_snapshot) {
-        before_sig = state.controller.signature(state.controller.snapshot());
-      }
       if (!state.controller.apply(cfg, sunshine_topology)) {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
@@ -3128,8 +3081,8 @@ namespace {
 
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.schedule_post_apply_tasks(
-        enforce_snapshot,
-        std::move(before_sig),
+        false,
+        std::nullopt,
         wa_hdr_toggle,
         requested_virtual_layout,
         std::move(monitor_position_overrides),
@@ -3168,9 +3121,6 @@ namespace {
     } else if (type == MsgType::SnapshotCurrent) {
       (void) state.promote_current_snapshot_to_previous("snapshot-only");
       (void) state.capture_current_snapshot("snapshot-only");
-    } else if (type == MsgType::Blacklist) {
-      std::string device_id(payload.begin(), payload.end());
-      state.controller.add_blacklisted_display(device_id);
     } else if (type == MsgType::Ping) {
       state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);

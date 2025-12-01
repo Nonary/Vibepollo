@@ -26,11 +26,6 @@ DisplayApplyBuilder &DisplayApplyBuilder::clear_configuration() {
   return *this;
 }
 
-DisplayApplyBuilder &DisplayApplyBuilder::set_device_blacklist(const std::optional<std::string> &device_id) {
-  device_blacklist_ = device_id;
-  return *this;
-}
-
 DisplayApplyBuilder &DisplayApplyBuilder::set_virtual_display_watchdog(const bool enable) {
   enable_virtual_display_watchdog_ = enable;
   return *this;
@@ -63,7 +58,6 @@ DisplayApplyRequest DisplayApplyBuilder::build() const {
   DisplayApplyRequest request;
   request.action = action_;
   request.configuration = configuration_;
-  request.device_blacklist = device_blacklist_;
   request.session_overrides = session_overrides_;
   request.enable_virtual_display_watchdog = enable_virtual_display_watchdog_;
   request.attach_hdr_toggle_flag = attach_hdr_toggle_flag_;

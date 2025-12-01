@@ -281,12 +281,6 @@ namespace display_helper_integration::helpers {
     }
     overrides.framegen_refresh_override = session_.framegen_refresh_rate;
 
-    if (!target_device_id.empty()) {
-      builder.set_device_blacklist(target_device_id);
-    } else {
-      builder.set_device_blacklist(std::nullopt);
-    }
-
     builder.set_configuration(vd_cfg);
     builder.set_virtual_display_watchdog(true);
     builder.set_action(DisplayApplyAction::Apply);
@@ -343,7 +337,6 @@ namespace display_helper_integration::helpers {
       apply_resolution_refresh_overrides(cfg_effective, effective_width, effective_height, display_fps);
 
       builder.set_configuration(cfg_effective);
-      builder.set_device_blacklist(std::nullopt);
       builder.set_virtual_display_watchdog(false);
       builder.set_action(DisplayApplyAction::Apply);
       return true;
@@ -368,7 +361,6 @@ namespace display_helper_integration::helpers {
 
       builder.clear_configuration();
       builder.set_action(DisplayApplyAction::Revert);
-      builder.set_device_blacklist(std::nullopt);
       builder.set_virtual_display_watchdog(false);
       return true;
     }
