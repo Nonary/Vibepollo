@@ -21,6 +21,9 @@ namespace platf::display_helper_client {
   // Best-effort cancel of any pending restore/watchdog activity on the helper
   bool send_disarm_restore();
 
+  // Save the current OS display state to session_current (rotate current->previous) without applying config.
+  bool send_snapshot_current();
+
   // Blacklist a display device_id from topology exports (prevents virtual display from being saved in topology)
   bool send_blacklist(const std::string &device_id);
   

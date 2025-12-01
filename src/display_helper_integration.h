@@ -23,7 +23,7 @@ namespace display_helper_integration {
 
   // Enumerate display devices as a JSON string suitable for API responses.
   // Implemented in the Windows backend.
-  std::string enumerate_devices_json();
+  std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail);
 }  // namespace display_helper_integration
 
 #else
@@ -50,12 +50,14 @@ namespace display_helper_integration {
     return false;
   }
 
-  inline std::string enumerate_devices_json() {
+  inline std::string enumerate_devices_json(
+    [[maybe_unused]] display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
+  ) {
     return "[]";
   }
 
   inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
-    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Full
+    [[maybe_unused]] display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
   ) {
     return std::nullopt;
   }

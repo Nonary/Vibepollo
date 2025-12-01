@@ -60,6 +60,7 @@ namespace platf::display_helper_client {
     Blacklist = 5,  ///< Blacklist a display device_id from topology exports (string payload).
     ApplyResult = 6,  ///< Helper acknowledgement for APPLY (payload: [u8 success][optional message...]).
     Disarm = 7,  ///< Cancel any pending restore/watchdog actions on the helper.
+    SnapshotCurrent = 8,  ///< Save current session snapshot (rotate current->previous) without applying config.
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
@@ -271,6 +272,21 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Disarm, payload)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool send_snapshot_current() {
+    BOOST_LOG(debug) << "Display helper IPC: SNAPSHOT_CURRENT request queued";
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
+      BOOST_LOG(warning) << "Display helper IPC: SNAPSHOT_CURRENT aborted - no connection";
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::SnapshotCurrent, payload)) {
       return true;
     }
     return false;

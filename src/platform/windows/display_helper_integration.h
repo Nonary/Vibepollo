@@ -33,10 +33,11 @@ namespace display_helper_integration {
 
   // Enumerate display devices via helper (or return nullopt on failure).
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
-    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Full);
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal);
 
   // Enumerate display devices and return JSON payload for API.
-  std::string enumerate_devices_json();
+  std::string enumerate_devices_json(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal);
 
   // Capture the currently active topology before applying changes.
   std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
