@@ -317,6 +317,7 @@ namespace confighttp {
   /**
    * @brief Get the list of available display devices.
    * @api_examples{/api/display-devices| GET| [{"device_id":"{...}","display_name":"\\\\.\\DISPLAY1","friendly_name":"Monitor"}, ...]}
+   * @note Pass query param detail=full to include extended metadata (refresh lists, inactive displays).
    */
   void getDisplayDevices(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -324,7 +325,21 @@ namespace confighttp {
     }
 
     try {
-      const auto json_str = display_helper_integration::enumerate_devices_json();
+      display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal;
+      const auto query = request->parse_query_string();
+      if (const auto it = query.find("detail"); it != query.end()) {
+        const auto value = boost::algorithm::to_lower_copy(it->second);
+        if (value == "full") {
+          detail = display_device::DeviceEnumerationDetail::Full;
+        }
+      } else if (const auto full_it = query.find("full"); full_it != query.end()) {
+        const auto value = boost::algorithm::to_lower_copy(full_it->second);
+        if (value == "1" || value == "true" || value == "yes") {
+          detail = display_device::DeviceEnumerationDetail::Full;
+        }
+      }
+
+      const auto json_str = display_helper_integration::enumerate_devices_json(detail);
       nlohmann::json tree = nlohmann::json::parse(json_str);
       send_response(response, tree);
     } catch (const std::exception &e) {

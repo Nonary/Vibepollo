@@ -167,6 +167,7 @@ namespace {
     Blacklist = 5,  // payload: device_id string to blacklist from topology exports
     ApplyResult = 6,  // payload: [u8 success][optional message...]
     Disarm = 7,  // cancel any pending restore requests/watchdogs
+    SnapshotCurrent = 8,  // snapshot current session state (rotate current->previous) without applying
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -282,11 +283,52 @@ namespace {
       if (cfg.m_device_id.empty()) {
         return false;
       }
-      auto info = get_device_info_minimal(cfg.m_device_id);
-      if (!info) {
+
+      try {
+        // Use targeted APIs instead of enumAvailableDevices() which enumerates all devices.
+        // getCurrentDisplayModes/getCurrentHdrStates use queryDisplayConfig() to get active
+        // config and search for specific devices - much faster than full enumeration.
+        const std::set<std::string> device_ids {cfg.m_device_id};
+
+        // Check resolution and refresh rate if specified in config
+        if (cfg.m_resolution || cfg.m_refresh_rate) {
+          auto modes = m_dd->getCurrentDisplayModes(device_ids);
+          auto it = modes.find(cfg.m_device_id);
+          if (it == modes.end()) {
+            return false;  // Device not active or not found
+          }
+          const auto &mode = it->second;
+
+          if (cfg.m_resolution) {
+            if (mode.m_resolution.m_width != cfg.m_resolution->m_width ||
+                mode.m_resolution.m_height != cfg.m_resolution->m_height) {
+              return false;
+            }
+          }
+
+          if (cfg.m_refresh_rate) {
+            auto desired = floating_to_double(*cfg.m_refresh_rate);
+            display_device::FloatingPoint actual_fp = mode.m_refresh_rate;
+            auto actual = floating_to_double(actual_fp);
+            if (!desired || !actual || !nearly_equal(*desired, *actual)) {
+              return false;
+            }
+          }
+        }
+
+        // Check HDR state if specified in config
+        if (cfg.m_hdr_state) {
+          auto hdr_states = m_dd->getCurrentHdrStates(device_ids);
+          auto it = hdr_states.find(cfg.m_device_id);
+          if (it == hdr_states.end() || !it->second || *it->second != *cfg.m_hdr_state) {
+            return false;
+          }
+        }
+
+        return true;
+      } catch (...) {
         return false;
       }
-      return info_matches_config(*info, cfg);
     }
 
     // Capture a full snapshot of current settings.
@@ -1244,6 +1286,8 @@ namespace {
     std::atomic<bool> command_worker_stop {false};
     std::jthread command_worker;
     std::atomic<uint64_t> command_worker_epoch {0};
+    std::mutex async_join_mutex;  // Guards async joiners used to avoid blocking the command loop
+    std::vector<std::jthread> async_join_threads;
 
     static long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1364,6 +1408,56 @@ namespace {
         std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
       }
       return false;
+    }
+
+    // Move the current session snapshot to the previous slot (overwrite) so we keep
+    // one level of history for the restore chain.
+    bool promote_current_snapshot_to_previous(const char *reason = nullptr) {
+      std::error_code ec_exist;
+      if (!std::filesystem::exists(session_current_path, ec_exist) || ec_exist) {
+        return false;
+      }
+
+      std::error_code ec_dir;
+      std::filesystem::create_directories(session_previous_path.parent_path(), ec_dir);
+      (void) ec_dir;
+
+      std::error_code ec_rm_prev;
+      std::filesystem::remove(session_previous_path, ec_rm_prev);
+      (void) ec_rm_prev;
+
+      std::error_code ec_move;
+      std::filesystem::rename(session_current_path, session_previous_path, ec_move);
+      bool ok = !ec_move;
+      if (ec_move) {
+        std::error_code ec_copy;
+        std::filesystem::copy_file(
+          session_current_path,
+          session_previous_path,
+          std::filesystem::copy_options::overwrite_existing,
+          ec_copy
+        );
+        ok = !ec_copy;
+        if (ok) {
+          std::error_code ec_rm_cur;
+          std::filesystem::remove(session_current_path, ec_rm_cur);
+          (void) ec_rm_cur;
+        }
+      }
+
+      const char *why = reason ? reason : "rotation";
+      BOOST_LOG(ok ? info : warning) << "Session snapshot promotion (" << why
+                                     << ") current->previous result=" << (ok ? "true" : "false");
+      return ok;
+    }
+
+    // Capture the current display state to the "current" snapshot slot.
+    bool capture_current_snapshot(const char *reason = nullptr) {
+      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
+      session_saved.store(saved, std::memory_order_release);
+      const char *why = reason ? reason : "apply";
+      BOOST_LOG(info) << "Saved current session snapshot (" << why << "): " << (saved ? "true" : "false");
+      return saved;
     }
 
     void prepare_session_topology() {
@@ -1791,13 +1885,26 @@ namespace {
       return ok;
     }
 
-    // Apply the session baseline snapshot (if available) and verify the system now matches it.
-    bool apply_session_and_confirm(std::stop_token st, uint64_t guard_generation) {
-      auto base = controller.load_display_settings_snapshot(session_current_path);
+    // Apply a session snapshot (current/previous) and verify the system now matches it.
+    bool apply_session_snapshot_from_path(
+      const std::filesystem::path &path,
+      const char *label,
+      std::stop_token st,
+      uint64_t guard_generation,
+      bool &attempted
+    ) {
+      attempted = false;
+      auto base = controller.load_display_settings_snapshot(path);
       if (!base) {
-        BOOST_LOG(info) << "Session baseline snapshot not available.";
+        BOOST_LOG(info) << (label ? label : "session") << " snapshot not available.";
         return false;
       }
+      attempted = true;
+      if (!controller.is_topology_valid(*base)) {
+        BOOST_LOG(info) << (label ? label : "session") << " snapshot rejected due to invalid topology.";
+        return false;
+      }
+
       const auto before_sig = controller.signature(controller.snapshot());
 
       const auto should_cancel = [&]() {
@@ -1820,8 +1927,8 @@ namespace {
         return false;
       }
       bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period(750ms, 150ms, st);
-      BOOST_LOG(info) << "Session restore attempt #1: before_sig=" << before_sig
-                      << ", current_sig=" << controller.signature(cur)
+      BOOST_LOG(info) << "Session restore (" << (label ? label : "session") << ") attempt #1: before_sig="
+                      << before_sig << ", current_sig=" << controller.signature(cur)
                       << ", baseline_sig=" << controller.signature(*base)
                       << ", match=" << (ok ? "true" : "false");
       if (!ok) {
@@ -1839,16 +1946,12 @@ namespace {
           return false;
         }
         ok = got_stable2 && equal_snapshots_strict(cur2, *base) && quiet_period(750ms, 150ms, st);
-        BOOST_LOG(info) << "Session restore attempt #2: current_sig=" << controller.signature(cur2)
+        BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
+                        << ") attempt #2: current_sig=" << controller.signature(cur2)
                         << ", baseline_sig=" << controller.signature(*base) << ", match=" << (ok ? "true" : "false");
       }
 
       if (ok) {
-        // Successful restore: delete current session snapshot and set guard timestamp
-        std::error_code ec_rm;
-        bool removed = std::filesystem::remove(session_current_path, ec_rm);
-        BOOST_LOG(info) << "Session restore confirmed; delete current session snapshot path='"
-                        << session_current_path.string() << "' result=" << (removed && !ec_rm ? "true" : "false");
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()
         )
@@ -1859,7 +1962,7 @@ namespace {
     }
 
     // Attempt a restore once if a valid topology is present. Returns true on
-    // confirmed success, false otherwise. Prefers session baseline, then golden.
+    // confirmed success, false otherwise. Prefers session baseline chain, then golden.
     bool try_restore_once_if_valid(std::stop_token st, uint64_t guard_generation) {
       const auto cancelled = [&]() {
         if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
@@ -1874,16 +1977,39 @@ namespace {
       if (cancelled()) {
         return false;
       }
-      // Session snapshot first
-      if (auto base = controller.load_display_settings_snapshot(session_current_path)) {
-        if (cancelled()) {
-          return false;
+
+      bool attempted_current = false;
+      const bool restored_current = apply_session_snapshot_from_path(
+        session_current_path,
+        "current",
+        st,
+        guard_generation,
+        attempted_current
+      );
+      if (restored_current) {
+        (void) promote_current_snapshot_to_previous("restore success");
+        return true;
+      }
+
+      bool attempted_previous = false;
+      const bool restored_previous = apply_session_snapshot_from_path(
+        session_previous_path,
+        "previous",
+        st,
+        guard_generation,
+        attempted_previous
+      );
+      if (restored_previous) {
+        if (attempted_current) {
+          std::error_code ec_rm_bad;
+          (void) std::filesystem::remove(session_current_path, ec_rm_bad);
         }
-        if (controller.is_topology_valid(*base)) {
-          if (apply_session_and_confirm(st, guard_generation)) {
-            return true;
-          }
-        }
+        return true;
+      }
+      (void) attempted_previous;
+
+      if (cancelled()) {
+        return false;
       }
       if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
         if (cancelled()) {
@@ -1949,10 +2075,7 @@ namespace {
       last_restore_event_ms.store(0, std::memory_order_release);
       restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
       restore_stage_running.store(false, std::memory_order_release);
-      if (restore_poll_thread.joinable()) {
-        restore_poll_thread.request_stop();
-        restore_poll_thread.join();
-      }
+      stop_and_async_join(restore_poll_thread, "restore-poll");
       restore_requested.store(false, std::memory_order_release);
       restore_origin_epoch.store(0, std::memory_order_release);
     }
@@ -2015,13 +2138,30 @@ namespace {
         return false;
       };
 
+      auto run_restore_cleanup = [&](const char *context) {
+        bool allow_cleanup = !cancelled();
+        if (allow_cleanup) {
+          refresh_shell_after_display_change();
+          allow_cleanup = !cancelled();
+        }
+        if (allow_cleanup) {
+          delete_restore_scheduled_task();
+        } else {
+          BOOST_LOG(debug) << "Restore cleanup skipped"
+                           << (context ? std::string(" (") + context + ")" : "")
+                           << " due to cancellation.";
+        }
+      };
+
       // If there is no session or golden snapshot, there is nothing to restore.
       try {
         std::error_code ec1, ec2;
         const bool has_session = std::filesystem::exists(self->session_current_path, ec1);
+        std::error_code ec_prev;
+        const bool has_previous = std::filesystem::exists(self->session_previous_path, ec_prev);
         const bool has_golden = std::filesystem::exists(self->golden_path, ec2);
-        if (!has_session && !has_golden) {
-          BOOST_LOG(info) << "Restore polling: no session or golden snapshot present; exiting helper.";
+        if (!has_session && !has_previous && !has_golden) {
+          BOOST_LOG(info) << "Restore polling: no session/previous or golden snapshot present; exiting helper.";
           if (self->running_flag) {
             self->running_flag->store(false, std::memory_order_release);
           }
@@ -2053,19 +2193,7 @@ namespace {
     } catch (...) {}
 
     if (initial_success) {
-      self->reset_restore_backoff();
-      self->retry_revert_on_topology.store(false, std::memory_order_release);
-        refresh_shell_after_display_change();
-
-        delete_restore_scheduled_task();
-
-        const bool exit_helper = self->should_exit_after_restore();
-        if (exit_helper && self->running_flag) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-          self->running_flag->store(false, std::memory_order_release);
-        } else if (!exit_helper) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
-        }
+      if (cancelled()) {
         self->event_pump.stop();
         self->event_pump_running.store(false, std::memory_order_release);
         self->restore_poll_active.store(false, std::memory_order_release);
@@ -2076,6 +2204,39 @@ namespace {
         self->clear_restore_origin();
         return;
       }
+      self->reset_restore_backoff();
+      self->retry_revert_on_topology.store(false, std::memory_order_release);
+      run_restore_cleanup("initial attempt");
+
+      if (cancelled()) {
+        self->event_pump.stop();
+        self->event_pump_running.store(false, std::memory_order_release);
+        self->restore_poll_active.store(false, std::memory_order_release);
+        self->restore_active_until_ms.store(0, std::memory_order_release);
+        self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+        self->last_restore_event_ms.store(0, std::memory_order_release);
+        self->restore_requested.store(false, std::memory_order_release);
+        self->clear_restore_origin();
+        return;
+      }
+
+      const bool exit_helper = self->should_exit_after_restore();
+      if (exit_helper && self->running_flag) {
+        BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+        self->running_flag->store(false, std::memory_order_release);
+      } else if (!exit_helper) {
+        BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
+      }
+      self->event_pump.stop();
+      self->event_pump_running.store(false, std::memory_order_release);
+      self->restore_poll_active.store(false, std::memory_order_release);
+      self->restore_active_until_ms.store(0, std::memory_order_release);
+      self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+      self->last_restore_event_ms.store(0, std::memory_order_release);
+      self->restore_requested.store(false, std::memory_order_release);
+      self->clear_restore_origin();
+      return;
+    }
 
       if (initial_attempted && !initial_success) {
         self->register_restore_failure();
@@ -2146,11 +2307,32 @@ namespace {
         }
 
         if (success) {
+          if (cancelled()) {
+            self->event_pump.stop();
+            self->event_pump_running.store(false, std::memory_order_release);
+            self->restore_poll_active.store(false, std::memory_order_release);
+            self->restore_active_until_ms.store(0, std::memory_order_release);
+            self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+            self->last_restore_event_ms.store(0, std::memory_order_release);
+            self->restore_requested.store(false, std::memory_order_release);
+            self->clear_restore_origin();
+            return;
+          }
           self->reset_restore_backoff();
           self->retry_revert_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
+          run_restore_cleanup("polling attempt");
 
-          delete_restore_scheduled_task();
+          if (cancelled()) {
+            self->event_pump.stop();
+            self->event_pump_running.store(false, std::memory_order_release);
+            self->restore_poll_active.store(false, std::memory_order_release);
+            self->restore_active_until_ms.store(0, std::memory_order_release);
+            self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+            self->last_restore_event_ms.store(0, std::memory_order_release);
+            self->restore_requested.store(false, std::memory_order_release);
+            self->clear_restore_origin();
+            return;
+          }
 
           const bool exit_helper = self->should_exit_after_restore();
           if (exit_helper && self->running_flag) {
@@ -2235,6 +2417,28 @@ namespace {
       }
     }
 
+    void stop_and_async_join(std::jthread &thread, const char *label) {
+      if (!thread.joinable()) {
+        return;
+      }
+      thread.request_stop();
+      std::jthread joiner([label, t = std::move(thread)]() mutable {
+        const auto start = std::chrono::steady_clock::now();
+        if (t.joinable()) {
+          t.join();
+          const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start
+          );
+          BOOST_LOG(debug) << "Async join completed for " << (label ? label : "thread")
+                           << " after " << elapsed.count() << "ms";
+        }
+      });
+      {
+        std::lock_guard<std::mutex> lg(async_join_mutex);
+        async_join_threads.emplace_back(std::move(joiner));
+      }
+    }
+
     static bool wait_with_stop(std::stop_token st, std::chrono::milliseconds duration) {
       using namespace std::chrono_literals;
       constexpr auto step = 50ms;
@@ -2297,10 +2501,7 @@ namespace {
     }
 
     void cancel_post_apply_tasks() {
-      if (post_apply_thread.joinable()) {
-        post_apply_thread.request_stop();
-        post_apply_thread.join();
-      }
+      stop_and_async_join(post_apply_thread, "post-apply");
     }
 
     void schedule_post_apply_tasks(
@@ -2314,13 +2515,21 @@ namespace {
       cancel_post_apply_tasks();
       post_apply_thread = std::jthread(
         [this,
-         enforce_snapshot,
+        enforce_snapshot,
          before_sig = std::move(before_sig),
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
          monitor_position_overrides = std::move(monitor_position_overrides),
          reapply_delays = std::move(reapply_delays)
         ](std::stop_token st) mutable {
+          const auto apply_epoch = current_connection_epoch();
+          auto cancelled = [&]() {
+            return st.stop_requested() || !is_connection_epoch_current(apply_epoch);
+          };
+          if (cancelled()) {
+            return;
+          }
+
           if (enforce_snapshot && before_sig) {
             display_device::DisplaySettingsSnapshot cur;
             const bool got_stable = read_stable_snapshot(
@@ -2332,25 +2541,49 @@ namespace {
             (void) got_stable;
           }
 
+          if (cancelled()) {
+            return;
+          }
           retry_apply_on_topology.store(false, std::memory_order_release);
           if (!reapply_delays.empty()) {
+            if (cancelled()) {
+              return;
+            }
             schedule_delayed_reapply(std::move(reapply_delays));
           }
+          if (cancelled()) {
+            return;
+          }
           refresh_shell_after_display_change();
+          if (cancelled()) {
+            return;
+          }
           schedule_hdr_blank_if_needed(wa_hdr_toggle);
+          if (cancelled()) {
+            return;
+          }
 
           if (requested_virtual_layout) {
             BOOST_LOG(info) << "Display helper: requested virtual display layout=" << *requested_virtual_layout;
           }
 
+          if (cancelled()) {
+            return;
+          }
           if (!monitor_position_overrides.empty()) {
             bool reposition_result = true;
             for (const auto &[device_id, origin] : monitor_position_overrides) {
+              if (cancelled()) {
+                break;
+              }
               if (device_id.empty()) {
                 continue;
               }
               const bool ok_origin = controller.set_display_origin(device_id, origin);
               reposition_result = reposition_result && ok_origin;
+            }
+            if (cancelled()) {
+              return;
             }
             BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
           }
@@ -2850,71 +3083,11 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
-    if (!state.session_saved.load(std::memory_order_acquire)) {
-      std::error_code ec_exist_cur, ec_exist_prev;
-      const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_exist_cur);
-      const bool prev_exists = std::filesystem::exists(state.session_previous_path, ec_exist_prev);
-
-      if (cur_exists && !ec_exist_cur) {
-        state.session_saved.store(true, std::memory_order_release);
-        BOOST_LOG(info) << "Session current baseline already exists; preserving existing snapshot: "
-                        << state.session_current_path.string();
-      } else {
-        auto pre_snap = state.controller.snapshot();
-        const auto pre_devices = ServiceState::snapshot_device_set(pre_snap);
-        const bool skip_snapshot = state.should_skip_session_snapshot(cfg, pre_snap);
-
-        auto copy_prev_to_current = [&]() -> bool {
-          if (!prev_exists || ec_exist_prev) {
-            return false;
-          }
-          std::error_code ec_copy;
-          std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
-          (void) ec_copy;
-          std::filesystem::remove(state.session_current_path, ec_copy);
-          std::filesystem::copy_file(state.session_previous_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
-          const bool ok = !ec_copy && std::filesystem::exists(state.session_current_path, ec_copy);
-          BOOST_LOG(info) << "Copied previous session baseline to current: result=" << (ok ? "true" : "false");
-          return ok;
-        };
-
-        bool saved = false;
-        bool used_previous = false;
-
-        if (prev_exists && !ec_exist_prev) {
-          bool should_copy_prev = skip_snapshot;
-          if (!should_copy_prev) {
-            if (auto prev_snap = state.controller.load_display_settings_snapshot(state.session_previous_path)) {
-              const auto prev_devices = ServiceState::snapshot_device_set(*prev_snap);
-              if (prev_devices != pre_devices) {
-                should_copy_prev = true;
-              }
-            }
-          }
-          if (should_copy_prev && copy_prev_to_current()) {
-            saved = true;
-            used_previous = true;
-          }
-        }
-
-        if (!saved && !skip_snapshot) {
-          saved = state.controller.save_display_settings_snapshot_to_file(state.session_current_path);
-        }
-
-        state.session_saved.store(saved, std::memory_order_release);
-        if (used_previous) {
-          BOOST_LOG(info) << "Initialized current session baseline from previous.";
-        }
-        if (skip_snapshot && !saved) {
-          BOOST_LOG(info) << "Skipped session baseline snapshot; current layout matches requested single-display configuration.";
-        } else {
-          BOOST_LOG(info) << "Established current session baseline: " << (saved ? "true" : "false");
-        }
-      }
-    }
+    (void) state.promote_current_snapshot_to_previous("pre-apply");
+    const bool snapshot_saved = state.capture_current_snapshot("pre-apply");
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
-    const bool enforce_snapshot = !state.session_saved.load(std::memory_order_acquire);
+    const bool enforce_snapshot = !snapshot_saved;
 
     if (state.controller.soft_test_display_settings(cfg, sunshine_topology)) {
       BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
@@ -2992,6 +3165,9 @@ namespace {
       state.retry_revert_on_topology.store(false, std::memory_order_release);
     } else if (type == MsgType::Disarm) {
       state.disarm_restore_requests("DISARM command received");
+    } else if (type == MsgType::SnapshotCurrent) {
+      (void) state.promote_current_snapshot_to_previous("snapshot-only");
+      (void) state.capture_current_snapshot("snapshot-only");
     } else if (type == MsgType::Blacklist) {
       std::string device_id(payload.begin(), payload.end());
       state.controller.add_blacklisted_display(device_id);
@@ -3167,6 +3343,12 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+    {
+      std::error_code ec_prev_check;
+      if (std::filesystem::exists(state.session_previous_path, ec_prev_check) && !ec_prev_check) {
+        (void) validate_session_snapshot(state, state.session_previous_path);
+      }
+    }
 
     std::atomic<bool> running {true};
     state.running_flag = &running;
@@ -3216,6 +3398,12 @@ int main(int argc, char *argv[]) {
         std::error_code ec_rm;
         (void) std::filesystem::remove(state.session_path, ec_rm);
       }
+    }
+  }
+  {
+    std::error_code ec_prev_check;
+    if (std::filesystem::exists(state.session_previous_path, ec_prev_check) && !ec_prev_check) {
+      (void) validate_session_snapshot(state, state.session_previous_path);
     }
   }
   // Topology-based retries disabled; no watcher needed anymore.

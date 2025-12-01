@@ -1293,7 +1293,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
     try {
       const [rtssResult, displayResult] = await Promise.allSettled([
         http.get('/api/rtss/status', { validateStatus: () => true }),
-        http.get('/api/display-devices', { validateStatus: () => true }),
+        http.get('/api/display-devices?detail=full', { validateStatus: () => true }),
       ]);
 
       const captureValue = (captureMethod.value || '').toString().toLowerCase();

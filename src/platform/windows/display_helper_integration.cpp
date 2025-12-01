@@ -22,6 +22,7 @@
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_display_device.h>
+  #include <nlohmann/json.hpp>
 
   // sunshine
   #include "display_helper_integration.h"
@@ -714,6 +715,56 @@ namespace {
     g_active_session_dd.reset();
   }
 
+  std::optional<std::string> build_helper_apply_payload(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.configuration) {
+      BOOST_LOG(error) << "Display helper: no configuration provided for APPLY payload.";
+      return std::nullopt;
+    }
+
+    bool ok = true;
+    std::string json = display_device::toJson(*request.configuration, 0u, &ok);
+    if (!ok) {
+      BOOST_LOG(error) << "Display helper: failed to serialize configuration for helper APPLY payload.";
+      return std::nullopt;
+    }
+
+    nlohmann::json j = nlohmann::json::parse(json, nullptr, false);
+    if (j.is_discarded()) {
+      BOOST_LOG(error) << "Display helper: failed to parse serialized configuration JSON for helper APPLY payload.";
+      return std::nullopt;
+    }
+
+    if (request.attach_hdr_toggle_flag) {
+      j["wa_hdr_toggle"] = true;
+    }
+
+    if (request.virtual_display_arrangement) {
+      j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
+    }
+
+    if (!request.topology.topology.empty()) {
+      nlohmann::json topo = nlohmann::json::array();
+      for (const auto &grp : request.topology.topology) {
+        nlohmann::json group = nlohmann::json::array();
+        for (const auto &id : grp) {
+          group.push_back(id);
+        }
+        topo.push_back(std::move(group));
+      }
+      j["sunshine_topology"] = std::move(topo);
+    }
+
+    if (!request.topology.monitor_positions.empty()) {
+      nlohmann::json positions = nlohmann::json::object();
+      for (const auto &[device_id, point] : request.topology.monitor_positions) {
+        positions[device_id] = {{"x", point.m_x}, {"y", point.m_y}};
+      }
+      j["sunshine_monitor_positions"] = std::move(positions);
+    }
+
+    return j.dump();
+  }
+
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
     const auto interval = 5s;
@@ -771,18 +822,13 @@ namespace display_helper_integration {
       return false;
     }
 
-    const bool requires_virtual_display =
-      request.enable_virtual_display_watchdog ||
-      request.session_overrides.virtual_display_override.value_or(false);
-
-    // Keep helper around for revert/recovery, but favor in-process applies to avoid IPC overhead.
-    // Force-restart helper for each new stream so Sunshine reconnects quickly to a fresh instance.
-    const bool helper_ready = ensure_helper_started(false, requires_virtual_display);
-    if (!helper_ready && (requires_virtual_display || dd_feature_enabled())) {
-      BOOST_LOG(warning) << "Display helper IPC unavailable after restart; continuing with in-process apply only.";
-    }
-
     if (request.action == DisplayApplyAction::Revert) {
+      const bool helper_ready = ensure_helper_started(false, true);
+      if (!helper_ready) {
+        BOOST_LOG(warning) << "Display helper: REVERT skipped (helper not reachable).";
+        clear_active_session();
+        return false;
+      }
       BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
       const bool ok = platf::display_helper_client::send_revert();
       BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
@@ -794,109 +840,77 @@ namespace display_helper_integration {
       return false;
     }
 
-    const bool virtual_involved = request.session && (request.session->virtual_display ||
-                                                      request.session_overrides.virtual_display_override.value_or(false));
+    const bool system_profile_only = platf::is_running_as_system() && !platf::has_active_console_session();
 
-    auto attempt_apply = [&](const DisplayApplyRequest &payload, const char *label) -> bool {
-      if (!apply_in_process(payload)) {
-        BOOST_LOG(warning) << "Display helper (" << label << ") APPLY failed.";
-        return false;
+    if (!system_profile_only) {
+      bool helper_ready = ensure_helper_started(false, true);
+      if (!helper_ready) {
+        helper_ready = ensure_helper_started(false, true);
       }
 
-      const auto *session = payload.session ? payload.session : request.session;
-      if (!session) {
-        BOOST_LOG(error) << "Display helper: missing session context for APPLY.";
-        return false;
-      }
-
-      const auto device_id = payload.configuration ? payload.configuration->m_device_id : std::string {};
-
-      if (!verify_helper_topology(*session, device_id)) {
-        BOOST_LOG(warning) << "Display helper: topology verification failed after " << label << " APPLY.";
-        return false;
-      }
-
-      if (!apply_topology_definition(payload.topology, label)) {
-        BOOST_LOG(warning) << "Display helper: topology override failed after " << label << " APPLY.";
-        return false;
-      }
-
-      set_active_session(
-        *session,
-        payload.session_overrides.device_id_override,
-        payload.session_overrides.fps_override,
-        payload.session_overrides.width_override,
-        payload.session_overrides.height_override,
-        payload.session_overrides.virtual_display_override,
-        payload.session_overrides.framegen_refresh_override
-      );
-
-      if (payload.enable_virtual_display_watchdog) {
-        platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
-      }
-
-      return true;
-    };
-
-    if (attempt_apply(request, "primary")) {
-      return true;
-    }
-
-    // Staged fallback: make the virtual display primary while keeping others active,
-    // then retry the ensure-only request to avoid full topology drops in one shot.
-    const bool ensure_only_requested =
-      request.configuration &&
-      request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
-    if (virtual_involved && ensure_only_requested && request.session) {
-      auto build_staged_request = [&]() -> std::optional<DisplayApplyRequest> {
-        display_device::SingleDisplayConfiguration staged_cfg = *request.configuration;
-        staged_cfg.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary;
-
-        DisplayApplyBuilder builder;
-        builder.set_action(DisplayApplyAction::Apply)
-               .set_session(*request.session)
-               .set_configuration(staged_cfg)
-               .set_device_blacklist(request.device_blacklist)
-               .set_virtual_display_watchdog(request.enable_virtual_display_watchdog)
-               .set_hdr_toggle_flag(request.attach_hdr_toggle_flag)
-               .set_topology(request.topology)
-               .set_virtual_display_arrangement(VirtualDisplayArrangement::ExtendedPrimary);
-        builder.mutable_session_overrides() = request.session_overrides;
-        return builder.build();
-      };
-
-      if (auto staged_request = build_staged_request()) {
-        if (attempt_apply(*staged_request, "staged-extended-primary")) {
-          if (attempt_apply(request, "ensure-only-after-stage")) {
-            return true;
-          }
-          BOOST_LOG(warning) << "Display helper: ensure-only reapply failed after staged fallback; keeping extended-primary layout active.";
-          return true;
+      if (helper_ready) {
+        if (request.device_blacklist && !request.device_blacklist->empty()) {
+          (void) platf::display_helper_client::send_blacklist(*request.device_blacklist);
         }
+
+        auto payload = build_helper_apply_payload(request);
+        if (!payload) {
+          BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
+          return false;
+        }
+
+        BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
+        const bool ok = platf::display_helper_client::send_apply_json(*payload);
+        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        if (ok && request.session) {
+          set_active_session(
+            *request.session,
+            request.session_overrides.device_id_override,
+            request.session_overrides.fps_override,
+            request.session_overrides.width_override,
+            request.session_overrides.height_override,
+            request.session_overrides.virtual_display_override,
+            request.session_overrides.framegen_refresh_override
+          );
+          if (request.enable_virtual_display_watchdog) {
+            platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+          }
+        }
+        return ok;
       }
+
+      BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
     }
 
-    // If the apply failed and a virtual display is involved, try a targeted disable/enable cycle once.
-    if (virtual_involved) {
-      display_helper_integration::DisplayApplyBuilder rebuild;
-      rebuild.set_action(display_helper_integration::DisplayApplyAction::Apply);
-      if (request.configuration) {
-        rebuild.set_configuration(*request.configuration);
-      }
-      rebuild.set_session(*request.session);
-      rebuild.mutable_session_overrides() = request.session_overrides;
-      rebuild.set_virtual_display_watchdog(request.enable_virtual_display_watchdog);
-      rebuild.set_hdr_toggle_flag(request.attach_hdr_toggle_flag);
-      rebuild.set_topology(request.topology);
-      rebuild.set_virtual_display_arrangement(request.virtual_display_arrangement);
-
-      explicit_virtual_display_reset_and_apply(rebuild, *request.session, [&](const DisplayApplyRequest &req) {
-        return apply_in_process(req);
-      });
+    if (!request.session) {
+      BOOST_LOG(error) << "Display helper: missing session context for in-process APPLY.";
+      return false;
     }
 
-    BOOST_LOG(warning) << "Display helper: retrying primary apply after failure.";
-    return attempt_apply(request, "retry");
+    if (!apply_in_process(request)) {
+      BOOST_LOG(warning) << "Display helper: in-process APPLY failed.";
+      return false;
+    }
+
+    const auto device_id = request.configuration ? request.configuration->m_device_id : std::string {};
+    if (!verify_helper_topology(*request.session, device_id)) {
+      BOOST_LOG(warning) << "Display helper: topology verification failed after in-process APPLY.";
+    }
+    (void) apply_topology_definition(request.topology, "in-process");
+
+    set_active_session(
+      *request.session,
+      request.session_overrides.device_id_override,
+      request.session_overrides.fps_override,
+      request.session_overrides.width_override,
+      request.session_overrides.height_override,
+      request.session_overrides.virtual_display_override,
+      request.session_overrides.framegen_refresh_override
+    );
+    if (request.enable_virtual_display_watchdog) {
+      platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+    }
+    return true;
   }
 
   bool revert() {
@@ -961,10 +975,20 @@ namespace display_helper_integration {
     }
   }
 
-  std::string enumerate_devices_json() {
-    auto devices = enumerate_devices();
+  std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail) {
+    auto devices = enumerate_devices(detail);
     if (!devices) {
       return "[]";
+    }
+    if (detail == display_device::DeviceEnumerationDetail::Minimal) {
+      devices->erase(
+        std::remove_if(
+          devices->begin(),
+          devices->end(),
+          [](const display_device::EnumeratedDevice &device) {
+            return !device.m_info.has_value();
+          }),
+        devices->end());
     }
     return display_device::toJson(*devices);
   }
