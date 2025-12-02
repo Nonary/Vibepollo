@@ -762,6 +762,11 @@ namespace {
       j["sunshine_monitor_positions"] = std::move(positions);
     }
 
+    // Pass golden-first restore preference to helper
+    if (config::video.dd.always_restore_from_golden) {
+      j["sunshine_always_restore_from_golden"] = true;
+    }
+
     return j.dump();
   }
 

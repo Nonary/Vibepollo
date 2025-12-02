@@ -160,6 +160,7 @@ namespace config {
       hdr_option_e hdr_option;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
+      bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       mode_remapping_t mode_remapping;
       workarounds_t wa;

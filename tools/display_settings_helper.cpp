@@ -1313,6 +1313,8 @@ namespace {
     std::atomic<uint64_t> restore_cancel_generation {0};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
+    // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
+    std::atomic<bool> always_restore_from_golden {false};
 
     // Polling-based restore loop state (replaces topology-change-triggered retries)
     std::jthread restore_poll_thread;
@@ -2028,7 +2030,9 @@ namespace {
     }
 
     // Attempt a restore once if a valid topology is present. Returns true on
-    // confirmed success, false otherwise. Prefers session baseline chain, then golden.
+    // confirmed success, false otherwise.
+    // When always_restore_from_golden is true, golden snapshot is preferred with session
+    // snapshots as fallback. Otherwise, prefers session baseline chain, then golden.
     bool try_restore_once_if_valid(std::stop_token st, uint64_t guard_generation) {
       const auto cancelled = [&]() {
         if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
@@ -2044,50 +2048,75 @@ namespace {
         return false;
       }
 
-      bool attempted_current = false;
-      const bool restored_current = apply_session_snapshot_from_path(
-        session_current_path,
-        "current",
-        st,
-        guard_generation,
-        attempted_current
-      );
-      if (restored_current) {
-        (void) promote_current_snapshot_to_previous("restore success");
-        return true;
-      }
+      const bool golden_first = always_restore_from_golden.load(std::memory_order_acquire);
 
-      bool attempted_previous = false;
-      const bool restored_previous = apply_session_snapshot_from_path(
-        session_previous_path,
-        "previous",
-        st,
-        guard_generation,
-        attempted_previous
-      );
-      if (restored_previous) {
-        if (attempted_current) {
-          std::error_code ec_rm_bad;
-          (void) std::filesystem::remove(session_current_path, ec_rm_bad);
-        }
-        return true;
-      }
-      (void) attempted_previous;
-
-      if (cancelled()) {
-        return false;
-      }
-      if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
+      // Lambda to try golden restore
+      auto try_golden = [&]() -> bool {
         if (cancelled()) {
           return false;
         }
-        if (controller.validate_topology_with_os(golden->m_topology)) {
-          if (apply_golden_and_confirm(st, guard_generation)) {
-            return true;
+        if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
+          if (cancelled()) {
+            return false;
+          }
+          if (controller.validate_topology_with_os(golden->m_topology)) {
+            if (apply_golden_and_confirm(st, guard_generation)) {
+              return true;
+            }
           }
         }
+        return false;
+      };
+
+      // Lambda to try session snapshots (current then previous)
+      auto try_session_snapshots = [&]() -> bool {
+        bool attempted_current = false;
+        const bool restored_current = apply_session_snapshot_from_path(
+          session_current_path,
+          "current",
+          st,
+          guard_generation,
+          attempted_current
+        );
+        if (restored_current) {
+          (void) promote_current_snapshot_to_previous("restore success");
+          return true;
+        }
+
+        bool attempted_previous = false;
+        const bool restored_previous = apply_session_snapshot_from_path(
+          session_previous_path,
+          "previous",
+          st,
+          guard_generation,
+          attempted_previous
+        );
+        if (restored_previous) {
+          if (attempted_current) {
+            std::error_code ec_rm_bad;
+            (void) std::filesystem::remove(session_current_path, ec_rm_bad);
+          }
+          return true;
+        }
+        (void) attempted_previous;
+        return false;
+      };
+
+      if (golden_first) {
+        // Prefer golden snapshot, fallback to session snapshots
+        BOOST_LOG(info) << "Restore: using golden-first strategy (always_restore_from_golden=true)";
+        if (try_golden()) {
+          return true;
+        }
+        // Golden failed, try session snapshots as fallback
+        return try_session_snapshots();
+      } else {
+        // Default: prefer session snapshots, fallback to golden
+        if (try_session_snapshots()) {
+          return true;
+        }
+        return try_golden();
       }
-      return false;
     }
 
     // Start a background polling loop that checks every ~3s whether the
@@ -3188,6 +3217,10 @@ namespace {
             sunshine_topology = std::move(topo);
           }
           j.erase("sunshine_topology");
+        }
+        if (j.contains("sunshine_always_restore_from_golden") && j["sunshine_always_restore_from_golden"].is_boolean()) {
+          state.always_restore_from_golden.store(j["sunshine_always_restore_from_golden"].get<bool>(), std::memory_order_release);
+          j.erase("sunshine_always_restore_from_golden");
         }
         sanitized_json = j.dump();
       }

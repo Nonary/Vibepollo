@@ -411,6 +411,19 @@ const isManualEnforcementActive = computed(() => {
                 {{ $t('troubleshooting.dd_golden_delete_error') }}
               </p>
             </transition>
+
+            <!-- Always restore from golden snapshot option -->
+            <div
+              v-if="goldenExists === true"
+              class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3"
+            >
+              <Checkbox
+                id="dd_always_restore_from_golden"
+                v-model="config.dd_always_restore_from_golden"
+                locale-prefix="config"
+                default="false"
+              />
+            </div>
           </template>
         </fieldset>
 
