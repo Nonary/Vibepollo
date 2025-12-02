@@ -541,6 +541,7 @@ namespace config {
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
+      false,  // always_restore_from_golden
       false,  // activate_virtual_display
       {},  // mode_remapping
       {false, false}  // wa
@@ -1318,6 +1319,7 @@ namespace config {
       }
     }
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
+    bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
     // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.

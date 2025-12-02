@@ -543,6 +543,112 @@ namespace {
         BOOST_LOG(warning) << "Skipping display snapshot save; mode set is empty for path=" << path.string();
         return false;
       }
+      // Filter out devices without display_name (e.g., dummy plugs not properly attached to Windows).
+      // These should not be saved as restore targets.
+      {
+        auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+        std::set<std::string> valid_device_ids;
+        for (const auto &d : devices) {
+          if (!d.m_display_name.empty()) {
+            valid_device_ids.insert(d.m_device_id);
+          }
+        }
+
+        // Filter topology groups, removing devices without valid display_name
+        display_device::ActiveTopology filtered_topology;
+        for (const auto &grp : snap.m_topology) {
+          std::vector<std::string> filtered_grp;
+          for (const auto &device_id : grp) {
+            if (valid_device_ids.count(device_id)) {
+              filtered_grp.push_back(device_id);
+            }
+          }
+          if (!filtered_grp.empty()) {
+            filtered_topology.push_back(std::move(filtered_grp));
+          }
+        }
+
+        if (filtered_topology.empty()) {
+          BOOST_LOG(warning) << "Skipping display snapshot save; no devices with valid display_name for path="
+                             << path.string();
+          return false;
+        }
+
+        // Update snapshot with filtered data
+        snap.m_topology = std::move(filtered_topology);
+
+        // Filter modes and hdr_states to only include valid devices
+        for (auto it = snap.m_modes.begin(); it != snap.m_modes.end();) {
+          if (!valid_device_ids.count(it->first)) {
+            it = snap.m_modes.erase(it);
+          } else {
+            ++it;
+          }
+        }
+        for (auto it = snap.m_hdr_states.begin(); it != snap.m_hdr_states.end();) {
+          if (!valid_device_ids.count(it->first)) {
+            it = snap.m_hdr_states.erase(it);
+          } else {
+            ++it;
+          }
+        }
+
+        // Clear primary if it was filtered out
+        if (!valid_device_ids.count(snap.m_primary_device)) {
+          snap.m_primary_device.clear();
+        }
+      }
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+      FILE *f = _wfopen(path.wstring().c_str(), L"wb");
+      if (!f) {
+        return false;
+      }
+      auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
+      std::string out;
+      out += "{\n  \"topology\": [";
+      for (size_t i = 0; i < snap.m_topology.size(); ++i) {
+        const auto &grp = snap.m_topology[i];
+        out += "[";
+        for (size_t j = 0; j < grp.size(); ++j) {
+          out += "\"" + grp[j] + "\"";
+          if (j + 1 < grp.size()) {
+            out += ",";
+          }
+        }
+        out += "]";
+        if (i + 1 < snap.m_topology.size()) {
+          out += ",";
+        }
+      }
+      out += "],\n  \"modes\": {";
+      size_t k = 0;
+      for (const auto &kv : snap.m_modes) {
+        out += "\n    \"" + kv.first + "\": { \"w\": " + std::to_string(kv.second.m_resolution.m_width) + ", \"h\": " + std::to_string(kv.second.m_resolution.m_height) + ", \"num\": " + std::to_string(kv.second.m_refresh_rate.m_numerator) + ", \"den\": " + std::to_string(kv.second.m_refresh_rate.m_denominator) + " }";
+        if (++k < snap.m_modes.size()) {
+          out += ",";
+        }
+      }
+      out += "\n  },\n  \"hdr\": {";
+      k = 0;
+      for (const auto &kh : snap.m_hdr_states) {
+        out += "\n    \"" + kh.first + "\": ";
+        if (!kh.second.has_value()) {
+          out += "null";
+        } else {
+          out += (*kh.second == display_device::HdrState::Enabled) ? "\"on\"" : "\"off\"";
+        }
+        if (++k < snap.m_hdr_states.size()) {
+          out += ",";
+        }
+      }
+      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\"\n}";
+      const auto written = fwrite(out.data(), 1, out.size(), f);
+      return written == out.size();
+    }
+
+    // Save a provided snapshot to file (without validation/filtering).
+    bool save_snapshot_to_file(const display_device::DisplaySettingsSnapshot &snap, const std::filesystem::path &path) const {
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       FILE *f = _wfopen(path.wstring().c_str(), L"wb");
@@ -690,6 +796,7 @@ namespace {
       }
     }
 
+  public:
     display_device::EnumeratedDeviceList enumerate_devices(display_device::DeviceEnumerationDetail detail) const {
       if (!ensure_initialized()) {
         return {};
@@ -701,6 +808,7 @@ namespace {
       }
     }
 
+  private:
     std::optional<std::string> find_primary_in_set(const std::set<std::string> &ids) const {
       if (!ensure_initialized()) {
         return std::nullopt;
@@ -1205,6 +1313,8 @@ namespace {
     std::atomic<uint64_t> restore_cancel_generation {0};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
+    // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
+    std::atomic<bool> always_restore_from_golden {false};
 
     // Polling-based restore loop state (replaces topology-change-triggered retries)
     std::jthread restore_poll_thread;
@@ -1920,7 +2030,9 @@ namespace {
     }
 
     // Attempt a restore once if a valid topology is present. Returns true on
-    // confirmed success, false otherwise. Prefers session baseline chain, then golden.
+    // confirmed success, false otherwise.
+    // When always_restore_from_golden is true, golden snapshot is preferred with session
+    // snapshots as fallback. Otherwise, prefers session baseline chain, then golden.
     bool try_restore_once_if_valid(std::stop_token st, uint64_t guard_generation) {
       const auto cancelled = [&]() {
         if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
@@ -1936,50 +2048,75 @@ namespace {
         return false;
       }
 
-      bool attempted_current = false;
-      const bool restored_current = apply_session_snapshot_from_path(
-        session_current_path,
-        "current",
-        st,
-        guard_generation,
-        attempted_current
-      );
-      if (restored_current) {
-        (void) promote_current_snapshot_to_previous("restore success");
-        return true;
-      }
+      const bool golden_first = always_restore_from_golden.load(std::memory_order_acquire);
 
-      bool attempted_previous = false;
-      const bool restored_previous = apply_session_snapshot_from_path(
-        session_previous_path,
-        "previous",
-        st,
-        guard_generation,
-        attempted_previous
-      );
-      if (restored_previous) {
-        if (attempted_current) {
-          std::error_code ec_rm_bad;
-          (void) std::filesystem::remove(session_current_path, ec_rm_bad);
-        }
-        return true;
-      }
-      (void) attempted_previous;
-
-      if (cancelled()) {
-        return false;
-      }
-      if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
+      // Lambda to try golden restore
+      auto try_golden = [&]() -> bool {
         if (cancelled()) {
           return false;
         }
-        if (controller.validate_topology_with_os(golden->m_topology)) {
-          if (apply_golden_and_confirm(st, guard_generation)) {
-            return true;
+        if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
+          if (cancelled()) {
+            return false;
+          }
+          if (controller.validate_topology_with_os(golden->m_topology)) {
+            if (apply_golden_and_confirm(st, guard_generation)) {
+              return true;
+            }
           }
         }
+        return false;
+      };
+
+      // Lambda to try session snapshots (current then previous)
+      auto try_session_snapshots = [&]() -> bool {
+        bool attempted_current = false;
+        const bool restored_current = apply_session_snapshot_from_path(
+          session_current_path,
+          "current",
+          st,
+          guard_generation,
+          attempted_current
+        );
+        if (restored_current) {
+          (void) promote_current_snapshot_to_previous("restore success");
+          return true;
+        }
+
+        bool attempted_previous = false;
+        const bool restored_previous = apply_session_snapshot_from_path(
+          session_previous_path,
+          "previous",
+          st,
+          guard_generation,
+          attempted_previous
+        );
+        if (restored_previous) {
+          if (attempted_current) {
+            std::error_code ec_rm_bad;
+            (void) std::filesystem::remove(session_current_path, ec_rm_bad);
+          }
+          return true;
+        }
+        (void) attempted_previous;
+        return false;
+      };
+
+      if (golden_first) {
+        // Prefer golden snapshot, fallback to session snapshots
+        BOOST_LOG(info) << "Restore: using golden-first strategy (always_restore_from_golden=true)";
+        if (try_golden()) {
+          return true;
+        }
+        // Golden failed, try session snapshots as fallback
+        return try_session_snapshots();
+      } else {
+        // Default: prefer session snapshots, fallback to golden
+        if (try_session_snapshots()) {
+          return true;
+        }
+        return try_golden();
       }
-      return false;
     }
 
     // Start a background polling loop that checks every ~3s whether the
@@ -2949,7 +3086,67 @@ namespace {
       BOOST_LOG(warning) << "Existing session snapshot is invalid (topology or modes missing); removing path="
                          << path.string();
     } else {
-      return true;
+      // Filter out devices without display_name (e.g., dummy plugs not properly attached to Windows).
+      // These should not be used as restore targets.
+      auto devices = state.controller.enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      std::set<std::string> valid_device_ids;
+      for (const auto &d : devices) {
+        if (!d.m_display_name.empty()) {
+          valid_device_ids.insert(d.m_device_id);
+        }
+      }
+
+      // Filter topology groups, removing devices without valid display_name
+      display_device::ActiveTopology filtered_topology;
+      for (const auto &grp : snap->m_topology) {
+        std::vector<std::string> filtered_grp;
+        for (const auto &device_id : grp) {
+          if (valid_device_ids.count(device_id)) {
+            filtered_grp.push_back(device_id);
+          }
+        }
+        if (!filtered_grp.empty()) {
+          filtered_topology.push_back(std::move(filtered_grp));
+        }
+      }
+
+      if (filtered_topology.empty()) {
+        BOOST_LOG(warning) << "Existing session snapshot rejected: no devices with valid display_name; removing path="
+                           << path.string();
+      } else {
+        // Check if filtering changed anything
+        if (filtered_topology != snap->m_topology) {
+          BOOST_LOG(info) << "Filtering devices without valid display_name from session snapshot: " << path.string();
+
+          // Update snapshot with filtered data
+          snap->m_topology = std::move(filtered_topology);
+
+          // Filter modes and hdr_states to only include valid devices
+          for (auto it = snap->m_modes.begin(); it != snap->m_modes.end();) {
+            if (!valid_device_ids.count(it->first)) {
+              it = snap->m_modes.erase(it);
+            } else {
+              ++it;
+            }
+          }
+          for (auto it = snap->m_hdr_states.begin(); it != snap->m_hdr_states.end();) {
+            if (!valid_device_ids.count(it->first)) {
+              it = snap->m_hdr_states.erase(it);
+            } else {
+              ++it;
+            }
+          }
+
+          // Clear primary if it was filtered out
+          if (!valid_device_ids.count(snap->m_primary_device)) {
+            snap->m_primary_device.clear();
+          }
+
+          // Re-save filtered snapshot (best effort, don't fail validation if save fails)
+          (void) state.controller.save_snapshot_to_file(*snap, path);
+        }
+        return true;
+      }
     }
 
     std::error_code ec_rm;
@@ -3020,6 +3217,10 @@ namespace {
             sunshine_topology = std::move(topo);
           }
           j.erase("sunshine_topology");
+        }
+        if (j.contains("sunshine_always_restore_from_golden") && j["sunshine_always_restore_from_golden"].is_boolean()) {
+          state.always_restore_from_golden.store(j["sunshine_always_restore_from_golden"].get<bool>(), std::memory_order_release);
+          j.erase("sunshine_always_restore_from_golden");
         }
         sanitized_json = j.dump();
       }
