@@ -497,7 +497,7 @@ namespace platf::frame_limiter_nvcp {
           break;
         }
 
-        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *label) -> bool {
+        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *label, bool skip_delete = false) -> bool {
           NVDRS_SETTING setting = {};
           setting.version = NVDRS_SETTING_VER;
           setting.settingId = setting_id;
@@ -512,7 +512,7 @@ namespace platf::frame_limiter_nvcp {
                 log_nvapi_error(s, label);
                 return false;
               }
-            } else {
+            } else if (!skip_delete) {
               NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
               if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
                 log_nvapi_error(s, label);
@@ -527,7 +527,7 @@ namespace platf::frame_limiter_nvcp {
                 log_nvapi_error(s, label);
                 return false;
               }
-            } else {
+            } else if (!skip_delete) {
               NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
               if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
                 log_nvapi_error(s, label);
@@ -557,7 +557,9 @@ namespace platf::frame_limiter_nvcp {
         }
 
         if (restore_data.smooth_motion_applied) {
-          if (!restore_setting(SMOOTH_MOTION_ENABLE_ID, restore_data.smooth_motion_override, restore_data.smooth_motion_value, restore_data.smooth_motion_fallback_value, "DRS_SetSetting(SMOOTH_MOTION restore)")) {
+          // Skip delete for smooth motion settings to avoid breaking driver state.
+          // Deleting undocumented settings can mark them as unsupported in the driver profile.
+          if (!restore_setting(SMOOTH_MOTION_ENABLE_ID, restore_data.smooth_motion_override, restore_data.smooth_motion_value, restore_data.smooth_motion_fallback_value, "DRS_SetSetting(SMOOTH_MOTION restore)", true)) {
             break;
           }
           NvU32 restored_value = restore_data.smooth_motion_override && restore_data.smooth_motion_value ? *restore_data.smooth_motion_value : (restore_data.smooth_motion_fallback_value ? *restore_data.smooth_motion_fallback_value : 0u);
@@ -565,7 +567,9 @@ namespace platf::frame_limiter_nvcp {
         }
 
         if (restore_data.smooth_motion_mask_applied) {
-          if (!restore_setting(SMOOTH_MOTION_API_MASK_ID, restore_data.smooth_motion_mask_override, restore_data.smooth_motion_mask_value, restore_data.smooth_motion_mask_fallback_value, "DRS_SetSetting(SMOOTH_MOTION_MASK restore)")) {
+          // Skip delete for smooth motion settings to avoid breaking driver state.
+          // Deleting undocumented settings can mark them as unsupported in the driver profile.
+          if (!restore_setting(SMOOTH_MOTION_API_MASK_ID, restore_data.smooth_motion_mask_override, restore_data.smooth_motion_mask_value, restore_data.smooth_motion_mask_fallback_value, "DRS_SetSetting(SMOOTH_MOTION_MASK restore)", true)) {
             break;
           }
           NvU32 restored_mask = restore_data.smooth_motion_mask_override && restore_data.smooth_motion_mask_value ? *restore_data.smooth_motion_mask_value : (restore_data.smooth_motion_mask_fallback_value ? *restore_data.smooth_motion_mask_fallback_value : 0u);
