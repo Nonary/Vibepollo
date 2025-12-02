@@ -190,6 +190,12 @@ namespace video {
       std::string cache_key;
       bool valid = false;
       bool hdr_supported = false;
+      bool hevc_passed = false;
+      bool hevc_hdr_supported = false;
+      bool av1_passed = false;
+      bool av1_hdr_supported = false;
+      int hevc_failure_retries = 0;
+      int av1_failure_retries = 0;
 
       // Track failed probe attempts per cache key to allow retries before hard-locking
       std::string failure_cache_key;
@@ -286,12 +292,37 @@ namespace video {
       return oss.str();
     }
 
-    bool probe_cache_matches(const std::string &key, bool want_hdr) {
+    bool probe_cache_matches(const std::string &key,
+                             bool want_hdr,
+                             bool want_hevc,
+                             bool want_hevc_hdr,
+                             bool want_av1,
+                             bool want_av1_hdr) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
 
       // Check if we have a valid cached success
       if (state.valid && state.cache_key == key && (!want_hdr || state.hdr_supported)) {
+        const bool hevc_supported = state.hevc_passed && (!want_hevc_hdr || state.hevc_hdr_supported);
+        const bool av1_supported = state.av1_passed && (!want_av1_hdr || state.av1_hdr_supported);
+
+        if (want_hevc && !hevc_supported) {
+          if (state.hevc_failure_retries < EncoderProbeCacheState::max_failure_retries) {
+            return false;
+          }
+        }
+
+        if (want_av1 && !av1_supported) {
+          if (state.av1_failure_retries < EncoderProbeCacheState::max_failure_retries) {
+            return false;
+          }
+        }
+
+        if ((want_hevc && !hevc_supported) || (want_av1 && !av1_supported)) {
+          // We have exhausted retries for the missing codec(s); honor the cached result.
+          return true;
+        }
+
         return true;
       }
 
@@ -311,20 +342,67 @@ namespace video {
       return false;
     }
 
-    void update_probe_cache(const std::string &key, bool success, bool hdr_supported) {
+    void update_probe_cache(const std::string &key,
+                            bool success,
+                            bool hdr_supported,
+                            bool hevc_passed,
+                            bool hevc_hdr_supported,
+                            bool av1_passed,
+                            bool av1_hdr_supported,
+                            bool hevc_expected,
+                            bool hevc_hdr_expected,
+                            bool av1_expected,
+                            bool av1_hdr_expected) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
+      const bool key_changed = state.cache_key != key;
       if (success) {
         state.cache_key = key;
         state.valid = true;
         state.hdr_supported = hdr_supported;
+        state.hevc_passed = hevc_passed;
+        state.hevc_hdr_supported = hevc_hdr_supported;
+        state.av1_passed = av1_passed;
+        state.av1_hdr_supported = av1_hdr_supported;
         // Clear failure tracking on success
         state.failure_cache_key.clear();
         state.failure_count = 0;
+
+        // Reset per-codec retries when the key changes or the codec passes
+        if (key_changed) {
+          state.hevc_failure_retries = 0;
+          state.av1_failure_retries = 0;
+        }
+
+        if (hevc_expected) {
+          if (hevc_passed && (!hevc_hdr_expected || hevc_hdr_supported)) {
+            state.hevc_failure_retries = 0;
+          } else {
+            state.hevc_failure_retries = std::min(state.hevc_failure_retries + 1, EncoderProbeCacheState::max_failure_retries);
+          }
+        } else {
+          state.hevc_failure_retries = 0;
+        }
+
+        if (av1_expected) {
+          if (av1_passed && (!av1_hdr_expected || av1_hdr_supported)) {
+            state.av1_failure_retries = 0;
+          } else {
+            state.av1_failure_retries = std::min(state.av1_failure_retries + 1, EncoderProbeCacheState::max_failure_retries);
+          }
+        } else {
+          state.av1_failure_retries = 0;
+        }
       } else {
         state.valid = false;
         state.cache_key.clear();
         state.hdr_supported = false;
+        state.hevc_passed = false;
+        state.hevc_hdr_supported = false;
+        state.av1_passed = false;
+        state.av1_hdr_supported = false;
+        state.hevc_failure_retries = 0;
+        state.av1_failure_retries = 0;
         // Track failures to allow retries up to max_failure_retries
         if (state.failure_cache_key == key) {
           state.failure_count++;
@@ -2960,7 +3038,12 @@ namespace video {
   int probe_encoders() {
     const auto cache_key = build_probe_cache_key();
     const bool wants_hdr = (config::video.hevc_mode == 3) || (config::video.av1_mode == 3);
-    if (probe_cache_matches(cache_key, wants_hdr)) {
+    const bool wants_hevc = config::video.hevc_mode >= 2;
+    const bool wants_hevc_hdr = config::video.hevc_mode == 3;
+    const bool wants_av1 = config::video.av1_mode >= 2;
+    const bool wants_av1_hdr = config::video.av1_mode == 3;
+
+    if (probe_cache_matches(cache_key, wants_hdr, wants_hevc, wants_hevc_hdr, wants_av1, wants_av1_hdr)) {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
     }
@@ -2973,7 +3056,7 @@ namespace video {
 
     if (!allow_encoder_probing()) {
       // Error already logged
-      update_probe_cache(cache_key, false, false);
+      update_probe_cache(cache_key, false, false, false, false, false, false, wants_hevc, wants_hevc_hdr, wants_av1, wants_av1_hdr);
       return -1;
     }
 
@@ -3114,7 +3197,7 @@ namespace video {
       } else {
         BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
       }
-      update_probe_cache(cache_key, false, false);
+      update_probe_cache(cache_key, false, false, false, false, false, false, wants_hevc, wants_hevc_hdr, wants_av1, wants_av1_hdr);
       return -1;
     }
 
@@ -3170,8 +3253,22 @@ namespace video {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
-    const bool cache_hdr_supported = encoder.hevc[encoder_t::DYNAMIC_RANGE] || encoder.av1[encoder_t::DYNAMIC_RANGE];
-    update_probe_cache(cache_key, true, cache_hdr_supported);
+    const bool hevc_passed = encoder.hevc[encoder_t::PASSED];
+    const bool hevc_hdr_supported = encoder.hevc[encoder_t::DYNAMIC_RANGE];
+    const bool av1_passed = encoder.av1[encoder_t::PASSED];
+    const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
+    const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
+    update_probe_cache(cache_key,
+                       true,
+                       cache_hdr_supported,
+                       hevc_passed,
+                       hevc_hdr_supported,
+                       av1_passed,
+                       av1_hdr_supported,
+                       wants_hevc,
+                       wants_hevc_hdr,
+                       wants_av1,
+                       wants_av1_hdr);
     restore_previous_probe_state.disable();
     return 0;
   }
