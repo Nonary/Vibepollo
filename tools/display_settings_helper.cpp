@@ -796,6 +796,7 @@ namespace {
       }
     }
 
+  public:
     display_device::EnumeratedDeviceList enumerate_devices(display_device::DeviceEnumerationDetail detail) const {
       if (!ensure_initialized()) {
         return {};
@@ -807,6 +808,7 @@ namespace {
       }
     }
 
+  private:
     std::optional<std::string> find_primary_in_set(const std::set<std::string> &ids) const {
       if (!ensure_initialized()) {
         return std::nullopt;
