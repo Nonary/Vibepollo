@@ -105,6 +105,7 @@ export interface ServerApp {
   'gen2-framegen-fix'?: boolean;
   'dlss-framegen-capture-fix'?: boolean;
   'frame-generation-provider'?: string;
+  'frame-generation-mode'?: string;
   'lossless-scaling-framegen'?: boolean;
   'lossless-scaling-target-fps'?: number | string | null;
   'lossless-scaling-rtss-limit'?: number | string | null;

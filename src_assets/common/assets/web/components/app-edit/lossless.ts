@@ -1,5 +1,6 @@
 import type {
   Anime4kSize,
+  FrameGenerationMode,
   FrameGenerationProvider,
   LosslessProfileDefaults,
   LosslessProfileKey,
@@ -109,6 +110,30 @@ export function normalizeFrameGenerationProvider(value: unknown): FrameGeneratio
     return 'lossless-scaling';
   }
   return 'lossless-scaling';
+}
+
+export function parseFrameGenerationMode(value: unknown): FrameGenerationMode | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const compact = value
+    .toLowerCase()
+    .split('')
+    .filter((ch) => /[a-z0-9]/.test(ch))
+    .join('');
+  if (compact === 'off' || compact === 'none') {
+    return 'off';
+  }
+  if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
+    return 'nvidia-smooth-motion';
+  }
+  if (compact === 'gameprovided' || compact === 'game') {
+    return 'game-provided';
+  }
+  if (compact === 'losslessscaling' || compact === 'lossless') {
+    return 'lossless-scaling';
+  }
+  return null;
 }
 
 export function parseNumeric(value: unknown): number | null {
