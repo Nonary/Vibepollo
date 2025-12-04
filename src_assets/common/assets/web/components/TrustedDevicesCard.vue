@@ -49,7 +49,7 @@
                     t('auth.sessions_last_seen', { time: formatTimestamp(session.last_seen) })
                   }}</span>
                   <span class="opacity-70">{{
-                    t('auth.sessions_expires', { time: formatTimestamp(session.expires_at) })
+                    t('auth.sessions_expires', { time: formatTimestamp(sessionExpiry(session)) })
                   }}</span>
                 </div>
               </td>
@@ -118,6 +118,14 @@ function formatTimestamp(seconds?: number): string {
   if (!seconds) return t('auth.sessions_time_unknown');
   if (!Number.isFinite(seconds)) return t('auth.sessions_time_unknown');
   return formatter.format(new Date(seconds * 1000));
+}
+
+function sessionExpiry(session: AuthSession): number | undefined {
+  const refreshExpiry = session.refresh_expires_at;
+  if (Number.isFinite(refreshExpiry)) {
+    return refreshExpiry;
+  }
+  return session.expires_at;
 }
 
 function primaryLabel(session: AuthSession): string {

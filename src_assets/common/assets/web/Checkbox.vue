@@ -114,8 +114,10 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
 </script>
 
 <template>
-  <div class="form-check">
-    <n-checkbox :id="props.id" v-model:checked="isChecked">
+  <div class="form-check" :id="props.id">
+    <!-- Hidden label for search indexing -->
+    <label :for="props.id" style="display: none">{{ $t(labelField) }}</label>
+    <n-checkbox :id="`${props.id}_cb`" v-model:checked="isChecked">
       {{ $t(labelField) }}
     </n-checkbox>
     <div v-if="showDefValue" class="mt-0 form-text">

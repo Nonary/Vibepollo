@@ -633,6 +633,7 @@ namespace config {
     true,  // system_tray
     {},  // prep commands
     std::chrono::hours {2},  // session_token_ttl default 2h
+    std::chrono::hours {24 * 7},  // remember_me_refresh_token_ttl default 7d
     86400  // update_check_interval_seconds default 24h
   };
 
@@ -1438,6 +1439,19 @@ namespace config {
       int_between_f(vars, "session_token_ttl_seconds", ttl_secs, {1, std::numeric_limits<int>::max()});
       if (ttl_secs > 0) {
         sunshine.session_token_ttl = std::chrono::seconds {ttl_secs};
+      }
+    }
+    // Parse remember-me refresh token TTL (seconds) if provided
+    {
+      int ttl_secs = -1;
+      int_between_f(
+        vars,
+        "remember_me_refresh_token_ttl_seconds",
+        ttl_secs,
+        {1, std::numeric_limits<int>::max()}
+      );
+      if (ttl_secs > 0) {
+        sunshine.remember_me_refresh_token_ttl = std::chrono::seconds {ttl_secs};
       }
     }
 

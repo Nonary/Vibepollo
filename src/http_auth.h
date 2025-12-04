@@ -197,6 +197,7 @@ namespace confighttp {
     std::string username;
     std::chrono::system_clock::time_point created_at;
     std::chrono::system_clock::time_point expires_at;
+    std::chrono::system_clock::time_point refresh_expires_at;
     std::chrono::system_clock::time_point last_seen;
     bool remember_me;
     std::string user_agent;

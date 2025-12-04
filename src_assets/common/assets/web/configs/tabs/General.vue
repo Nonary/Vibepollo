@@ -219,6 +219,24 @@ function removeCmd(index: number) {
       </div>
     </div>
 
+    <!-- Remember-me Refresh Token TTL -->
+    <div class="mb-6">
+      <label
+        for="remember_me_refresh_token_ttl_seconds"
+        class="block text-sm font-medium mb-1 text-dark dark:text-light"
+        >{{ $t('config.remember_me_refresh_token_ttl_seconds') }}</label
+      >
+      <n-input-number
+        id="remember_me_refresh_token_ttl_seconds"
+        v-model:value="config.remember_me_refresh_token_ttl_seconds"
+        :min="3600"
+        :step="3600"
+      />
+      <div class="text-[11px] opacity-60 mt-1">
+        {{ $t('config.remember_me_refresh_token_ttl_seconds_desc') }}
+      </div>
+    </div>
+
     <!-- Update Check Interval (seconds) -->
     <div class="mb-6">
       <label for="update_check_interval" class="form-label">{{

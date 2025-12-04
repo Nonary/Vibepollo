@@ -314,6 +314,7 @@ namespace config {
     bool system_tray;
     std::vector<prep_cmd_t> prep_cmds;
     std::chrono::seconds session_token_ttl;  ///< Session token time-to-live (seconds)
+    std::chrono::seconds remember_me_refresh_token_ttl;  ///< Trusted device (remember-me) refresh TTL
     // Interval in seconds between automatic update checks (0 disables periodic checks)
     int update_check_interval_seconds {86400};
   };
