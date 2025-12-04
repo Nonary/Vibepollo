@@ -48,6 +48,7 @@ namespace playnite_launcher::lossless {
     constexpr int k_flow_scale_max = 100;
     constexpr double k_resolution_factor_min = 1.0;
     constexpr double k_resolution_factor_max = 10.0;
+    constexpr int k_max_frame_latency = 1;
 
     template<typename Fn>
     auto run_with_user_context(Fn &&fn) -> decltype(fn()) {
@@ -711,6 +712,22 @@ namespace playnite_launcher::lossless {
         backup.had_scaling_type = true;
         backup.scaling_type = *scaling_type;
       }
+      if (auto ls1_type = source->get_optional<std::string>("LS1Type")) {
+        backup.had_ls1_type = true;
+        backup.ls1_type = *ls1_type;
+      }
+      if (auto scaling_mode = source->get_optional<std::string>("ScalingMode")) {
+        backup.had_scaling_mode = true;
+        backup.scaling_mode = *scaling_mode;
+      }
+      if (auto resize_before = source->get_optional<bool>("ResizeBeforeScaling")) {
+        backup.had_resize_before_scaling = true;
+        backup.resize_before_scaling = *resize_before;
+      }
+      if (auto scaling_fit_mode = source->get_optional<std::string>("ScalingFitMode")) {
+        backup.had_scaling_fit_mode = true;
+        backup.scaling_fit_mode = *scaling_fit_mode;
+      }
       if (auto scale_factor = source->get_optional<double>("ScaleFactor")) {
         backup.had_scale_factor = true;
         backup.scale_factor = *scale_factor;
@@ -734,6 +751,10 @@ namespace playnite_launcher::lossless {
       if (auto sync = source->get_optional<std::string>("SyncMode")) {
         backup.had_sync_mode = true;
         backup.sync_mode = *sync;
+      }
+      if (auto latency = source->get_optional<int>("MaxFrameLatency")) {
+        backup.had_max_frame_latency = true;
+        backup.max_frame_latency = *latency;
       }
     }
 
@@ -818,9 +839,15 @@ namespace playnite_launcher::lossless {
         boost::algorithm::to_upper(lsfg_mode);
         profile.put("LSFG3Mode1", lsfg_mode);
       }
+      const std::string *scaling_type_for_opts = options.scaling_type ? &(*options.scaling_type) : nullptr;
       if (options.performance_mode.has_value()) {
-        profile.put("LSFGSize", *options.performance_mode ? "PERFORMANCE" : "QUALITY");
+        const bool perf = *options.performance_mode;
+        profile.put("LSFGSize", perf ? "PERFORMANCE" : "BALANCED");
+        if (scaling_type_for_opts && boost::iequals(*scaling_type_for_opts, "LS1")) {
+          profile.put("LS1Type", perf ? "PERFORMANCE" : "BALANCED");
+        }
       }
+      profile.put("MaxFrameLatency", k_max_frame_latency);
       if (options.flow_scale) {
         int flow = std::clamp(*options.flow_scale, k_flow_scale_min, k_flow_scale_max);
         profile.put("LSFGFlowScale", flow);
@@ -829,16 +856,20 @@ namespace playnite_launcher::lossless {
         int target = std::clamp(*options.target_fps, 1, 480);
         profile.put("LSFG3Target", target);
       }
-      if (options.resolution_scale_factor) {
-        double factor = std::clamp(*options.resolution_scale_factor, k_resolution_factor_min, k_resolution_factor_max);
-        profile.put("ScaleFactor", factor);
-        if (options.scaling_type) {
-          profile.put("ScalingType", *options.scaling_type);
-        } else {
-          profile.put("ScalingType", std::abs(factor - 1.0) < 0.01 ? "Off" : "Auto");
-        }
-      } else if (options.scaling_type) {
+      double scale_factor = 1.0;
+      const bool has_resolution_scale = options.resolution_scale_factor.has_value();
+      if (has_resolution_scale) {
+        scale_factor = std::clamp(*options.resolution_scale_factor, k_resolution_factor_min, k_resolution_factor_max);
+        profile.put("ScaleFactor", scale_factor);
+      }
+      if (options.scaling_type) {
         profile.put("ScalingType", *options.scaling_type);
+      } else if (has_resolution_scale) {
+        profile.put("ScalingType", std::abs(scale_factor - 1.0) < 0.01 ? "Off" : "Auto");
+      }
+      if (has_resolution_scale && std::abs(scale_factor - 1.0) > 0.01) {
+        profile.put("ScalingMode", "Custom");
+        profile.put("ResizeBeforeScaling", true);
       }
       if (options.sharpness) {
         int sharpness = std::clamp(*options.sharpness, k_sharpness_min, k_sharpness_max);
@@ -937,12 +968,17 @@ namespace playnite_launcher::lossless {
       restore_string_field(profile, "LSFG3Mode1", backup.had_lsfg3_mode, backup.lsfg3_mode, changed);
       restore_string_field(profile, "FrameGeneration", backup.had_frame_generation, backup.frame_generation, changed);
       restore_string_field(profile, "ScalingType", backup.had_scaling_type, backup.scaling_type, changed);
+      restore_string_field(profile, "LS1Type", backup.had_ls1_type, backup.ls1_type, changed);
+      restore_string_field(profile, "ScalingMode", backup.had_scaling_mode, backup.scaling_mode, changed);
+      restore_bool_field(profile, "ResizeBeforeScaling", backup.had_resize_before_scaling, backup.resize_before_scaling, changed);
+      restore_string_field(profile, "ScalingFitMode", backup.had_scaling_fit_mode, backup.scaling_fit_mode, changed);
       restore_double_field(profile, "ScaleFactor", backup.had_scale_factor, backup.scale_factor, changed);
       restore_int_field(profile, "Sharpness", backup.had_sharpness, backup.sharpness, changed);
       restore_int_field(profile, "LS1Sharpness", backup.had_ls1_sharpness, backup.ls1_sharpness, changed);
       restore_string_field(profile, "Anime4kType", backup.had_anime4k_type, backup.anime4k_type, changed);
       restore_bool_field(profile, "VRS", backup.had_vrs, backup.vrs, changed);
       restore_string_field(profile, "SyncMode", backup.had_sync_mode, backup.sync_mode, changed);
+      restore_int_field(profile, "MaxFrameLatency", backup.had_max_frame_latency, backup.max_frame_latency, changed);
       return changed;
     }
 

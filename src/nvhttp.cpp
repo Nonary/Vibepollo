@@ -1364,12 +1364,17 @@ namespace nvhttp {
             session_locked->virtual_display_ready_since = result.ready_since;
             if (session_locked->virtual_display) {
               auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
-              if (request) {
-                BOOST_LOG(info) << "Virtual display recovery: re-applying display helper configuration after recreation.";
-                (void) display_helper_integration::apply(*request);
-              } else {
+              if (request && display_helper_integration::apply(*request)) {
+                BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
+              } else if (!request) {
                 BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation.";
+              } else {
+                BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation.";
               }
+
+              // Force the capture thread to reinitialize so it rebinds to the recreated display.
+              mail::man->event<int>(mail::switch_display)->raise(0);
+              BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display.";
             }
           }
         };
