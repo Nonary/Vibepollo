@@ -4,6 +4,8 @@
 
 #include "display_helper_builder.h"
 
+#include "rtsp.h"
+
 namespace display_helper_integration {
 
 DisplayApplyBuilder &DisplayApplyBuilder::set_session(const rtsp_stream::launch_session_t &session) {
