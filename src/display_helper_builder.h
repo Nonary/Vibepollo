@@ -4,9 +4,16 @@
  */
 #pragma once
 
-#include "src/rtsp.h"
-
 #include <display_device/types.h>
+
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace rtsp_stream {
+  struct launch_session_t;
+}
 
 #include <map>
 #include <optional>

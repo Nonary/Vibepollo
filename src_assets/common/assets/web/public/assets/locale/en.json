@@ -425,6 +425,8 @@
     "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. A value of 0 is treated as roughly half of the stream's FPS. A setting of 20 is recommended if you stream 24 or 30fps content.",
     "session_token_ttl_seconds": "Web UI Session Timeout (seconds)",
     "session_token_ttl_seconds_desc": "How long a Web UI login session remains valid before requiring re-authentication. Reduce for higher security; increase for convenience.",
+    "remember_me_refresh_token_ttl_seconds": "Trusted device lifetime (seconds)",
+    "remember_me_refresh_token_ttl_seconds_desc": "How long a remembered device stays trusted before requiring sign-in again. Use a lower value for higher security.",
     "min_log_level": "Log Level",
     "min_log_level_0": "Verbose",
     "min_log_level_1": "Debug",

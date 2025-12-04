@@ -24,6 +24,7 @@ export interface AuthSession {
   username: string;
   created_at: number;
   expires_at: number;
+  refresh_expires_at?: number;
   last_seen: number;
   remember_me: boolean;
   current: boolean;

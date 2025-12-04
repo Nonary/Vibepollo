@@ -109,32 +109,15 @@ const error = ref('');
 const success = ref('');
 const submitting = ref(false);
 const rememberStorageKey = 'sunshine.auth.remember';
-
-function loadRememberPreference(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return window.localStorage.getItem(rememberStorageKey) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function persistRememberPreference(value: boolean): void {
+const clearRememberPreference = () => {
   if (typeof window === 'undefined') return;
   try {
-    if (value) {
-      window.localStorage.setItem(rememberStorageKey, '1');
-    } else {
-      window.localStorage.removeItem(rememberStorageKey);
-    }
-  } catch {}
-}
-
-const rememberMe = ref(loadRememberPreference());
-
-watch(rememberMe, (value) => {
-  persistRememberPreference(value);
-});
+    window.localStorage.removeItem(rememberStorageKey);
+  } catch {
+    /* ignore */
+  }
+};
+const rememberMe = ref(false);
 
 watch(visible, (v) => {
   if (v) reset();
@@ -147,7 +130,8 @@ function reset() {
   confirmNewPassword.value = '';
   error.value = '';
   success.value = '';
-  rememberMe.value = loadRememberPreference();
+  clearRememberPreference();
+  rememberMe.value = false;
 }
 
 async function submit() {

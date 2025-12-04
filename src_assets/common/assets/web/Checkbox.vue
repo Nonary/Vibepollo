@@ -116,12 +116,15 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
 <template>
   <div
     class="form-check"
+    :id="props.id"
     :data-search-label="$t(labelField)"
     :data-search-desc="showDesc ? $t(descField) : ''"
     :data-search-default="showDefValue ? $t(defValue) : ''"
     :data-search-target="props.id"
   >
-    <n-checkbox :id="props.id" v-model:checked="isChecked">
+    <!-- Hidden label for search indexing -->
+    <label :for="`${props.id}_cb`" style="display: none">{{ $t(labelField) }}</label>
+    <n-checkbox :id="`${props.id}_cb`" v-model:checked="isChecked">
       {{ $t(labelField) }}
     </n-checkbox>
     <div v-if="showDefValue" class="mt-0 form-text">

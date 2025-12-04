@@ -266,6 +266,7 @@ import {
   clampSharpness,
   defaultRtssFromTarget,
   emptyLosslessProfileState,
+  parseFrameGenerationMode,
   normalizeFrameGenerationProvider,
   parseLosslessOverrides,
   parseLosslessProfileKey,
@@ -439,17 +440,26 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const losslessProfiles = emptyLosslessProfileState();
   losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
   losslessProfiles.custom = parseLosslessOverrides(src['lossless-scaling-custom']);
+  const frameGenerationModeFromConfig = parseFrameGenerationMode(
+    (src as any)?.['frame-generation-mode'],
+  );
   const useAppIdentity = !!src['use-app-identity'];
   const normalizedProvider = normalizeFrameGenerationProvider(src['frame-generation-provider']);
-  let frameGenerationMode: FrameGenerationMode = 'off';
-  if (normalizedProvider === 'nvidia-smooth-motion') {
-    frameGenerationMode = 'nvidia-smooth-motion';
-  } else if (normalizedProvider === 'lossless-scaling') {
-    const hasLosslessFrameGen = lsEnabled || lsTarget !== null || lsLimit !== null;
-    frameGenerationMode = hasLosslessFrameGen ? 'lossless-scaling' : 'off';
-  } else if (normalizedProvider === 'game-provided') {
-    frameGenerationMode = 'game-provided';
+  let frameGenerationMode: FrameGenerationMode = frameGenerationModeFromConfig ?? 'off';
+  if (!frameGenerationModeFromConfig) {
+    if (normalizedProvider === 'nvidia-smooth-motion') {
+      frameGenerationMode = 'nvidia-smooth-motion';
+    } else if (normalizedProvider === 'lossless-scaling') {
+      const hasLosslessFrameGen = lsEnabled || lsTarget !== null || lsLimit !== null;
+      frameGenerationMode = hasLosslessFrameGen ? 'lossless-scaling' : 'off';
+    } else if (normalizedProvider === 'game-provided') {
+      frameGenerationMode = 'game-provided';
+    }
   }
+  const frameGenerationProvider =
+    frameGenerationModeFromConfig && frameGenerationModeFromConfig !== 'off'
+      ? (frameGenerationModeFromConfig as FrameGenerationProvider)
+      : normalizedProvider;
   const rawOutput = String(src.output ?? '');
   const rawVirtualScreen = src['virtual-screen'];
   const virtualScreen =
@@ -501,7 +511,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     gen2FramegenFix: !!src['gen2-framegen-fix'],
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
-    frameGenerationProvider: normalizedProvider,
+    frameGenerationProvider,
     frameGenerationMode,
     losslessScalingEnabled: lsEnabled,
     losslessScalingTargetFps: lsTarget,
@@ -579,9 +589,10 @@ function toServerPayload(f: AppForm): Record<string, any> {
   } else if (mode === 'game-provided') {
     resolvedProvider = 'game-provided';
   } else {
-    resolvedProvider = 'game-provided';
+    resolvedProvider = provider;
   }
   payload['frame-generation-provider'] = resolvedProvider;
+  payload['frame-generation-mode'] = mode;
   const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
   const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
   const losslessRuntimeActive = !!f.losslessScalingEnabled || mode === 'lossless-scaling';

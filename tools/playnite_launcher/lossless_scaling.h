@@ -54,6 +54,14 @@ namespace playnite_launcher::lossless {
     std::string frame_generation;
     bool had_scaling_type = false;
     std::string scaling_type;
+    bool had_ls1_type = false;
+    std::string ls1_type;
+    bool had_scaling_mode = false;
+    std::string scaling_mode;
+    bool had_resize_before_scaling = false;
+    bool resize_before_scaling = false;
+    bool had_scaling_fit_mode = false;
+    std::string scaling_fit_mode;
     bool had_scale_factor = false;
     double scale_factor = 1.0;
     bool had_sharpness = false;
@@ -66,6 +74,8 @@ namespace playnite_launcher::lossless {
     bool vrs = false;
     bool had_sync_mode = false;
     std::string sync_mode;
+    bool had_max_frame_latency = false;
+    int max_frame_latency = 0;
   };
 
   struct lossless_scaling_runtime_state {

@@ -73,6 +73,7 @@ const defaultGroups = [
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
+      remember_me_refresh_token_ttl_seconds: 604800,
     },
   },
   {

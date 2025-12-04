@@ -43,8 +43,16 @@ namespace confighttp {
   SessionTokenAPI session_token_api(session_token_manager);
 
   namespace {
-    constexpr std::chrono::seconds remember_me_token_ttl {std::chrono::hours(24 * 30)};
+    constexpr std::chrono::seconds default_remember_me_token_ttl {std::chrono::hours(24 * 7)};
     constexpr std::chrono::seconds default_refresh_token_ttl {std::chrono::hours(24)};
+
+    std::chrono::seconds remember_me_token_ttl() {
+      const auto configured = config::sunshine.remember_me_refresh_token_ttl;
+      if (configured <= std::chrono::seconds::zero()) {
+        return default_remember_me_token_ttl;
+      }
+      return configured;
+    }
 
     std::string detect_os(const std::string &ua_lower) {
       using boost::algorithm::icontains;
@@ -474,7 +482,7 @@ namespace confighttp {
       session_ttl = config::sunshine.session_token_ttl;
     }
     if (refresh_ttl <= std::chrono::seconds::zero()) {
-      refresh_ttl = remember_me ? remember_me_token_ttl : default_refresh_token_ttl;
+      refresh_ttl = remember_me ? remember_me_token_ttl() : default_refresh_token_ttl;
     }
     if (refresh_ttl < session_ttl) {
       refresh_ttl = session_ttl;
@@ -950,6 +958,7 @@ namespace confighttp {
         token.username,
         token.created_at,
         token.expires_at,
+        token.refresh_expires_at,
         token.last_seen,
         token.remember_me,
         token.user_agent,
@@ -1123,6 +1132,7 @@ namespace confighttp {
       entry["username"] = session.username;
       entry["created_at"] = to_seconds(session.created_at);
       entry["expires_at"] = to_seconds(session.expires_at);
+      entry["refresh_expires_at"] = to_seconds(session.refresh_expires_at);
       entry["last_seen"] = to_seconds(session.last_seen);
       entry["remember_me"] = session.remember_me;
       entry["current"] = (!active_session_hash.empty() && active_session_hash == session.hash);
