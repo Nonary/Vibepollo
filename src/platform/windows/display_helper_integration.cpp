@@ -751,8 +751,6 @@ namespace {
       j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
     }
 
-    j["sunshine_snapshot_exclude_devices"] = config::video.dd.snapshot_exclude_devices;
-
     if (!request.topology.topology.empty()) {
       nlohmann::json topo = nlohmann::json::array();
       for (const auto &grp : request.topology.topology) {

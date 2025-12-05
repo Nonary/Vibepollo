@@ -544,6 +544,10 @@ namespace nvhttp {
             launch_session->virtual_display = app_ctx.virtual_screen;
             launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
             launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+            launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
+            if (!app_ctx.output.empty()) {
+              launch_session->output_name_override = app_ctx.output;
+            }
             launch_session->app_metadata = std::move(metadata);
             break;
           }
@@ -1144,18 +1148,42 @@ namespace nvhttp {
       }
     }
 
+    std::optional<std::string> app_output_override;
+    if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+      app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
+    }
+
+    if (app_output_override &&
+        boost::iequals(*app_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      launch_session->virtual_display = true;
+      app_output_override.reset();
+    }
+
+    if (app_output_override) {
+      config::set_runtime_output_name_override(*app_output_override);
+      pending_output_override = *app_output_override;
+      BOOST_LOG(info) << "App-specific display override requested: output_name=" << *app_output_override;
+    }
+
     bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    if (launch_session->virtual_display_mode_override) {
+      config_requests_virtual =
+        *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
+    }
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
     const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     bool request_virtual_display = config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
     const auto requested_output_name = config::get_active_output_name();
+    const bool has_app_output_override = app_output_override.has_value();
     if (!request_virtual_display && !requested_output_name.empty()) {
       if (!display_device::output_exists(requested_output_name)) {
         BOOST_LOG(warning) << "Requested display '" << requested_output_name
                            << "' not found; initializing virtual display instead.";
-        request_virtual_display = true;
+        if (!has_app_output_override) {
+          request_virtual_display = true;
+        }
       }
     }
 
@@ -1553,6 +1581,15 @@ namespace nvhttp {
     const auto launch_session = make_launch_session(host_audio, args, request);
 
     if (no_active_sessions) {
+      if (
+        launch_session->output_name_override &&
+        !launch_session->output_name_override->empty() &&
+        !launch_session->virtual_display &&
+        !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)
+      ) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      }
+
       const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could

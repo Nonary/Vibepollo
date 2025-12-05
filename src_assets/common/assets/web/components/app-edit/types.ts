@@ -81,6 +81,7 @@ export interface AppForm {
   losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
+  ddConfigurationOption?: 'disabled' | 'verify_only' | 'ensure_active' | 'ensure_primary' | 'ensure_only_display' | null;
 }
 
 export interface ServerApp {
@@ -114,6 +115,7 @@ export interface ServerApp {
   'lossless-scaling-custom'?: Record<string, unknown>;
   'virtual-display-mode'?: string;
   'virtual-display-layout'?: string;
+  'dd-configuration-option'?: string;
 }
 
 export type FrameGenRequirementStatus = 'pass' | 'warn' | 'fail' | 'unknown';
