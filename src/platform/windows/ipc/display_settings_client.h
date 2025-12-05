@@ -16,13 +16,13 @@ namespace platf::display_helper_client {
   bool send_revert();
 
   // Export current OS display settings as a golden restore snapshot
-  bool send_export_golden();
+  bool send_export_golden(const std::string &json_payload = {});
 
   // Best-effort cancel of any pending restore/watchdog activity on the helper
   bool send_disarm_restore();
 
   // Save the current OS display state to session_current (rotate current->previous) without applying config.
-  bool send_snapshot_current();
+  bool send_snapshot_current(const std::string &json_payload = {});
 
   // Reset helper-side persistence/state (best-effort)
   bool send_reset();

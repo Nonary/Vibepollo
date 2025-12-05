@@ -4,10 +4,12 @@
  */
 // standard includes
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -18,6 +20,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <nlohmann/json.hpp>
 
 // local includes
 #include "config.h"
@@ -438,6 +441,68 @@ namespace config {
 
       return output;
     }
+
+    std::vector<std::string> snapshot_exclude_devices_from_view(const std::string_view value) {
+      std::vector<std::string> out;
+      auto add_id = [&out](std::string id) {
+        auto ltrim = [](std::string &s) {
+          s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+        };
+        auto rtrim = [](std::string &s) {
+          s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
+        };
+        ltrim(id);
+        rtrim(id);
+        if (id.size() >= 2 && id.front() == '"' && id.back() == '"') {
+          id = id.substr(1, id.size() - 2);
+        }
+        if (!id.empty()) {
+          out.push_back(std::move(id));
+        }
+      };
+
+      if (value.empty()) {
+        return out;
+      }
+
+      const std::string raw(value);
+      try {
+        auto j = nlohmann::json::parse(raw);
+        const nlohmann::json *arr = &j;
+        nlohmann::json nested;
+        if (j.is_object()) {
+          if (j.contains("exclude_devices")) {
+            nested = j["exclude_devices"];
+            arr = &nested;
+          } else if (j.contains("devices")) {
+            nested = j["devices"];
+            arr = &nested;
+          }
+        }
+        if (arr->is_array()) {
+          for (const auto &el : *arr) {
+            if (el.is_string()) {
+              add_id(el.get<std::string>());
+            } else if (el.is_object()) {
+              if (el.contains("device_id") && el["device_id"].is_string()) {
+                add_id(el["device_id"].get<std::string>());
+              } else if (el.contains("id") && el["id"].is_string()) {
+                add_id(el["id"].get<std::string>());
+              }
+            }
+          }
+        }
+        return out;
+      } catch (...) {
+      }
+
+      std::stringstream ss(raw);
+      std::string item;
+      while (std::getline(ss, item, ',')) {
+        add_id(item);
+      }
+      return out;
+    }
   }  // namespace dd
 
   video_t::virtual_display_mode_e virtual_display_mode_from_view(const ::std::string_view value) {
@@ -535,6 +600,7 @@ namespace config {
       {},  // config_revert_on_disconnect
       false,  // always_restore_from_golden
       false,  // activate_virtual_display
+      {},  // snapshot_exclude_devices
       {},  // mode_remapping
       {false, false, true}  // wa
     },  // display_device
@@ -1238,6 +1304,7 @@ namespace config {
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
+    generic_f(vars, "dd_snapshot_exclude_devices", video.dd.snapshot_exclude_devices, dd::snapshot_exclude_devices_from_view);
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
     // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
     bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
@@ -1665,6 +1732,7 @@ namespace config {
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
+      const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
@@ -1695,13 +1763,14 @@ namespace config {
                                      (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
                                      (prev_dd_hdr_opt != video.dd.hdr_option) ||
                                      (prev_dd_manual_resolution != video.dd.manual_resolution) ||
-                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
-                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
-                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                     (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                     (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
-                                     (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
+                                      (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
+                                      (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
+                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
+                                      (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0) {

@@ -125,6 +125,15 @@ namespace {
     return false;
   }
 
+  std::string build_snapshot_exclude_payload() {
+    try {
+      nlohmann::json j = config::video.dd.snapshot_exclude_devices;
+      return j.dump();
+    } catch (...) {
+      return std::string {};
+    }
+  }
+
   bool wait_for_device_activation(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
     if (device_id.empty()) {
       return false;
@@ -742,6 +751,8 @@ namespace {
       j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
     }
 
+    j["sunshine_snapshot_exclude_devices"] = config::video.dd.snapshot_exclude_devices;
+
     if (!request.topology.topology.empty()) {
       nlohmann::json topo = nlohmann::json::array();
       for (const auto &grp : request.topology.topology) {
@@ -936,7 +947,7 @@ namespace display_helper_integration {
       return false;
     }
     BOOST_LOG(info) << "Display helper: sending EXPORT_GOLDEN request.";
-    const bool ok = platf::display_helper_client::send_export_golden();
+    const bool ok = platf::display_helper_client::send_export_golden(build_snapshot_exclude_payload());
     BOOST_LOG(info) << "Display helper: EXPORT_GOLDEN dispatch result=" << (ok ? "true" : "false");
     return ok;
   }
@@ -958,7 +969,7 @@ namespace display_helper_integration {
       return false;
     }
     BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
-    const bool ok = platf::display_helper_client::send_snapshot_current();
+    const bool ok = platf::display_helper_client::send_snapshot_current(build_snapshot_exclude_payload());
     BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT dispatch result=" << (ok ? "true" : "false");
     return ok;
   }

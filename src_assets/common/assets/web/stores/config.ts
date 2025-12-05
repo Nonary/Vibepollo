@@ -113,6 +113,7 @@ const defaultGroups = [
       dd_hdr_option: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_snapshot_exclude_devices: [] as Array<string>,
       dd_activate_virtual_display: false,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
@@ -561,6 +562,27 @@ export const useConfigStore = defineStore('config', () => {
       }
       return out;
     };
+    const normalizeStringArray = (v: any): string[] => {
+      if (Array.isArray(v)) {
+        return v
+          .map((item) => String(item ?? '').trim())
+          .filter((item) => item.length > 0);
+      }
+      if (typeof v === 'string') {
+        // Try JSON first
+        try {
+          const parsed = JSON.parse(v);
+          return normalizeStringArray(parsed);
+        } catch {
+          /* ignore */
+        }
+        return v
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+      }
+      return [];
+    };
     if (data) {
       const record = data as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_categories')) {
@@ -585,6 +607,11 @@ export const useConfigStore = defineStore('config', () => {
         record['playnite_exclude_games'] = normalizeIdNameArray(
           record['playnite_exclude_games'],
           true,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(record, 'dd_snapshot_exclude_devices')) {
+        record['dd_snapshot_exclude_devices'] = normalizeStringArray(
+          record['dd_snapshot_exclude_devices'],
         );
       }
     }
