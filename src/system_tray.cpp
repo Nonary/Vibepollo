@@ -36,7 +36,6 @@
 
   // lib includes
   #include <boost/filesystem.hpp>
-  #include <boost/process/v1/environment.hpp>
   #include <tray/src/tray.h>
 
   // local includes

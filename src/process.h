@@ -18,7 +18,7 @@
 #include <chrono>
 
 // lib includes
-#include <boost/process/v1.hpp>
+#include "boost_process_shim.h"
 
 // local includes
 #include "config.h"
@@ -34,6 +34,8 @@ namespace VDISPLAY {
 }
 
 #endif
+
+namespace bp = boost_process_shim;
 
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
@@ -129,7 +131,7 @@ namespace proc {
     proc_t &operator=(proc_t &&other) noexcept;
 
     proc_t(
-      boost::process::v1::environment &&env,
+      bp::environment &&env,
       std::vector<ctx_t> &&apps
     ):
         _app_id(0),
@@ -155,16 +157,16 @@ namespace proc {
     void terminate();
 
     // Hot-update app list and environment without disrupting a running app
-    void update_apps(std::vector<ctx_t> &&apps, boost::process::v1::environment &&env);
+    void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
 
     // Helpers for parse/refresh to extract newly parsed state without exposing internals
     std::vector<ctx_t> release_apps();
-    boost::process::v1::environment release_env();
+    bp::environment release_env();
 
   private:
     int _app_id;
 
-    boost::process::v1::environment _env;
+    bp::environment _env;
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
@@ -175,8 +177,8 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
-    boost::process::v1::child _process;
-    boost::process::v1::group _process_group;
+    bp::child _process;
+    bp::group _process_group;
 
 #ifdef _WIN32
     GUID _virtual_display_guid {};
@@ -223,7 +225,7 @@ namespace proc {
    * @param group The group of all children in the process tree.
    * @param exit_timeout The timeout to wait for the process group to gracefully exit.
    */
-  void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout);
+  void terminate_process_group(bp::child &proc, bp::group &group, std::chrono::seconds exit_timeout);
 
   extern proc_t proc;
 }  // namespace proc

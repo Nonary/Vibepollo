@@ -8,6 +8,7 @@
 // lib includes
 #include <miniupnpc/miniupnpc.h>
 #include <miniupnpc/upnpcommands.h>
+#include <boost/algorithm/string/trim.hpp>
 
 // local includes
 #include "config.h"
