@@ -11,10 +11,12 @@
 #include <vector>
 
 // lib includes
-#include <boost/process/v1.hpp>
+#include "src/boost_process_shim.h"
 
 // local includes
 #include "src/platform/common.h"
+
+namespace bp = boost_process_shim;
 
 // Test data structure for parameterized testing
 struct ExternalCommandTestData {
@@ -55,7 +57,7 @@ protected:
 
   // Helper function to run a command using the existing process infrastructure
   static std::pair<int, std::string> runCommand(const std::string &cmd, const std::string_view &working_dir) {
-    const auto env = boost::this_process::environment();
+    const auto env = bp::this_process::env();
 
     // Determine the working directory: use the provided working_dir or fall back to SUNSHINE_SOURCE_DIR
     boost::filesystem::path effective_working_dir;

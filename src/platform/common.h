@@ -15,7 +15,6 @@
 #include <boost/core/noncopyable.hpp>
 #ifndef _WIN32
   #include <boost/asio.hpp>
-  #include <boost/process.hpp>
 #endif
 
 // local includes
@@ -24,6 +23,7 @@
 #include "src/thread_safe.h"
 #include "src/utility.h"
 #include "src/video_colorspace.h"
+#include "src/boost_process_shim.h"
 
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
@@ -38,29 +38,6 @@ struct AVHWFramesContext;
 struct AVCodecContext;
 struct AVDictionary;
 
-#ifdef _WIN32
-// Forward declarations of boost classes to avoid having to include boost headers
-// here, which results in issues with Windows.h and WinSock2.h include order.
-namespace boost {
-  namespace asio {
-    namespace ip {
-      class address;
-    }  // namespace ip
-  }  // namespace asio
-
-  namespace filesystem {
-    class path;
-  }
-
-  namespace process::inline v1 {
-    class child;
-    class group;
-    template<typename Char>
-    class basic_environment;
-    typedef basic_environment<char> environment;
-  }  // namespace process::inline v1
-}  // namespace boost
-#endif
 namespace video {
   struct config_t;
 }  // namespace video
@@ -601,7 +578,9 @@ namespace platf {
    */
   bool needs_encoder_reenumeration();
 
-  boost::process::v1::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const boost::process::v1::environment &env, FILE *file, std::error_code &ec, boost::process::v1::group *group);
+  namespace bp = boost_process_shim;
+
+  bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group);
 
   enum class thread_priority_e : int {
     low,  ///< Low priority

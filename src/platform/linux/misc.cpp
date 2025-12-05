@@ -22,7 +22,8 @@
 // lib includes
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/host_name.hpp>
-#include <boost/process/v1.hpp>
+#include <boost/asio/system_executor.hpp>
+#include <boost/program_options/parsers.hpp>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -34,6 +35,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "vaapi.h"
+#include "src/boost_process_shim.h"
 
 #ifdef __GNUC__
   #define SUNSHINE_GNUC_EXTENSION __extension__
@@ -43,7 +45,8 @@
 
 using namespace std::literals;
 namespace fs = std::filesystem;
-namespace bp = boost::process;
+namespace bp = boost_process_shim;
+namespace v2 = boost::process::v2;
 
 window_system_e window_system;
 
@@ -230,24 +233,76 @@ namespace platf {
   }
 
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
-    // clang-format off
-    if (!group) {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
-      }
+    (void) elevated;
+    (void) interactive;
+    ec.clear();
+
+    std::vector<std::string> parts;
+    try {
+      parts = boost::program_options::split_unix(cmd);
+    } catch (...) {
     }
-    else {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec, *group);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec, *group);
-      }
+
+    if (parts.empty()) {
+      ec = std::make_error_code(std::errc::invalid_argument);
+      return bp::child();
     }
-    // clang-format on
+
+    auto exe_path = v2::filesystem::path(parts.front());
+    // Only PATH-search when there's no directory component (e.g., "foo" not "./foo" or "../foo")
+    if (!exe_path.is_absolute() && exe_path.parent_path().empty()) {
+      exe_path = v2::environment::find_executable(exe_path);
+    }
+
+    if (exe_path.empty()) {
+      ec = std::make_error_code(std::errc::no_such_file_or_directory);
+      return bp::child();
+    }
+
+    std::vector<std::string> args;
+    if (parts.size() > 1) {
+      args.assign(parts.begin() + 1, parts.end());
+    }
+
+    v2::process_stdio stdio {};
+    stdio.in = nullptr;
+    if (file) {
+      stdio.out = file;
+      stdio.err = file;
+    } else {
+      stdio.out = nullptr;
+      stdio.err = nullptr;
+    }
+
+    auto env_init = env.to_process_environment();
+    boost::asio::system_executor exec;
+
+    try {
+#ifndef _WIN32
+      if (group) {
+        if (!working_dir.empty()) {
+          auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+          auto proc = v2::process(exec, exe_path, args, start, stdio, env_init, bp::detail::posix_group_initer {group});
+          return bp::child(std::move(proc));
+        }
+        auto proc = v2::process(exec, exe_path, args, stdio, env_init, bp::detail::posix_group_initer {group});
+        return bp::child(std::move(proc));
+      }
+#endif
+      if (!working_dir.empty()) {
+        auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+        auto proc = v2::process(exec, exe_path, args, start, stdio, env_init);
+        return bp::child(std::move(proc));
+      }
+      auto proc = v2::process(exec, exe_path, args, stdio, env_init);
+      return bp::child(std::move(proc));
+    } catch (const std::system_error &e) {
+      ec = e.code();
+      return bp::child();
+    } catch (...) {
+      ec = std::make_error_code(std::errc::invalid_argument);
+      return bp::child();
+    }
   }
 
   /**
@@ -259,7 +314,7 @@ namespace platf {
     auto working_dir = boost::filesystem::path(std::getenv("HOME"));
     std::string cmd = R"(xdg-open ")" + url + R"(")";
 
-    boost::process::v1::environment _env = boost::this_process::environment();
+    bp::environment _env = bp::this_process::env();
     std::error_code ec;
     auto child = run_command(false, false, cmd, working_dir, _env, nullptr, ec, nullptr);
     if (ec) {

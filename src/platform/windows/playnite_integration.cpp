@@ -46,9 +46,8 @@
 #include <Windows.h>
 #include <winrt/base.h>
 #include <WtsApi32.h>
-// boost env/filesystem for process launch helpers
+// boost filesystem for process launch helpers
 #include <boost/filesystem.hpp>
-#include <boost/process/environment.hpp>
 
 namespace platf::playnite {
 
@@ -1368,7 +1367,7 @@ namespace platf::playnite {
 
     // Non-SYSTEM or fallback path
     {
-      auto env = boost::this_process::environment();
+      auto env = bp::this_process::env();
       auto child2 = platf::run_command(false, true, cmd, boostStartDir, env, nullptr, ec_launch, nullptr);
       if (ec_launch) {
         BOOST_LOG(warning) << "Playnite restart: launch failed: " << ec_launch.message();

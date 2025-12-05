@@ -27,8 +27,6 @@
 #include "system_tray.h"
 #include "utility.h"
 
-#include <boost/process/v1/environment.hpp>
-
 using namespace std::literals;
 
 namespace update {
