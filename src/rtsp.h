@@ -73,6 +73,8 @@ namespace rtsp_stream {
     bool virtual_display_detach_with_app;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
+    std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
+    std::optional<std::string> output_name_override;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;

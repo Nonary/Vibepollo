@@ -9,6 +9,7 @@ set(BOOST_COMPONENTS
         locale
         log
         program_options
+        process
         system
 )
 # system is not used by Sunshine, but by Simple-Web-Server, added here for convenience
@@ -47,7 +48,6 @@ if(NOT Boost_FOUND)
             asio
             crc
             format
-            process
             property_tree)
 
     set(BOOST_ENABLE_CMAKE ON)

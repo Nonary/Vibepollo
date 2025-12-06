@@ -38,6 +38,13 @@ const usingVirtualDisplay = computed(() => {
   return config.output_name === VIRTUAL_DISPLAY_SELECTION;
 });
 
+type DisplayDevice = {
+  device_id?: string;
+  display_name?: string;
+  friendly_name?: string;
+  info?: unknown;
+};
+
 // ----- Types -----
 type RefreshRateOnly = {
   requested_fps: string;
@@ -157,6 +164,10 @@ const goldenBusy = ref(false);
 const exportStatus = ref<null | boolean>(null);
 const deleteStatus = ref<null | boolean>(null);
 const goldenExists = ref<null | boolean>(null);
+const snapshotDevices = ref<DisplayDevice[]>([]);
+const snapshotDevicesLoading = ref(false);
+const snapshotDevicesError = ref('');
+const excludeAllWarning = ref(false);
 
 async function loadGoldenStatus(): Promise<void> {
   try {
@@ -187,6 +198,85 @@ async function exportGolden(): Promise<void> {
   }
 }
 
+async function loadSnapshotDevices(): Promise<void> {
+  snapshotDevicesLoading.value = true;
+  snapshotDevicesError.value = '';
+  try {
+    const res = await http.get<DisplayDevice[]>('/api/display-devices', {
+      params: { detail: 'full' },
+    });
+    snapshotDevices.value = Array.isArray(res.data) ? res.data : [];
+  } catch (e: any) {
+    snapshotDevicesError.value = e?.message || 'Failed to load display devices';
+    snapshotDevices.value = [];
+  } finally {
+    snapshotDevicesLoading.value = false;
+  }
+}
+
+const snapshotExcludeOptions = computed(() => {
+  const opts: Array<{ label: string; value: string; displayName?: string; id?: string }> = [];
+  const seen = new Set<string>();
+  for (const d of snapshotDevices.value) {
+    const value = d.device_id || d.display_name || '';
+    if (!value) continue;
+    const displayName = d.friendly_name || d.display_name || 'Display';
+    const guid = d.device_id || '';
+    const dispName = d.display_name || '';
+    const parts: string[] = [displayName];
+    if (guid) parts.push(guid);
+    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    const label = parts.join(' - ');
+    const idLine = guid && dispName ? `${guid} - ${dispName}` : guid || dispName;
+    opts.push({ label, value, displayName, id: idLine });
+    seen.add(value);
+  }
+
+  const current = Array.isArray((config as any).dd_snapshot_exclude_devices)
+    ? ((config as any).dd_snapshot_exclude_devices as unknown[])
+        .map((v) => String(v ?? '').trim())
+        .filter(Boolean)
+    : [];
+  for (const id of current) {
+    if (!seen.has(id)) {
+      opts.push({ label: id, value: id, displayName: id, id });
+      seen.add(id);
+    }
+  }
+  return opts;
+});
+
+const availableExcludeDeviceIds = computed(() =>
+  snapshotExcludeOptions.value.map((opt) => (opt.value ? String(opt.value) : '')).filter(Boolean),
+);
+
+const excludedSnapshotDevices = computed<string[]>({
+  get() {
+    const raw = (config as any).dd_snapshot_exclude_devices;
+    if (Array.isArray(raw)) {
+      return raw.map((v: any) => String(v ?? '').trim()).filter(Boolean);
+    }
+    return [];
+  },
+  set(next) {
+    excludeAllWarning.value = false;
+    const normalized = Array.isArray(next)
+      ? Array.from(new Set(next.map((v) => String(v ?? '').trim()).filter(Boolean)))
+      : [];
+    const available = availableExcludeDeviceIds.value;
+    const wouldExcludeAll = available.length > 0 && available.every((id) => normalized.includes(id));
+    if (wouldExcludeAll) {
+      excludeAllWarning.value = true;
+      return;
+    }
+    if (typeof store.updateOption === 'function') {
+      store.updateOption('dd_snapshot_exclude_devices', normalized as any);
+    } else {
+      (config as any).dd_snapshot_exclude_devices = normalized as any;
+    }
+  },
+});
+
 async function deleteGolden(): Promise<void> {
   goldenBusy.value = true;
   deleteStatus.value = null;
@@ -203,6 +293,9 @@ async function deleteGolden(): Promise<void> {
 
 onMounted(() => {
   loadGoldenStatus();
+  if (!snapshotDevicesLoading.value && snapshotDevices.value.length === 0) {
+    void loadSnapshotDevices();
+  }
 });
 
 // Build translated option lists as computeds so they react to locale changes
@@ -411,6 +504,65 @@ const isManualEnforcementActive = computed(() => {
                 {{ $t('troubleshooting.dd_golden_delete_error') }}
               </p>
             </transition>
+
+            <div class="mt-4 space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="text-sm font-medium">
+                  {{ $t('config.dd_snapshot_exclude_title') }}
+                </div>
+                <n-button
+                  size="tiny"
+                  quaternary
+                  :loading="snapshotDevicesLoading"
+                  @click="loadSnapshotDevices"
+                >
+                  <i class="fas fa-sync" />
+                </n-button>
+              </div>
+              <p class="text-[11px] opacity-60">
+                {{ $t('config.dd_snapshot_exclude_desc') }}
+              </p>
+              <n-select
+                v-model:value="excludedSnapshotDevices"
+                :options="snapshotExcludeOptions"
+                multiple
+                tag
+                filterable
+                :loading="snapshotDevicesLoading"
+                :disabled="snapshotDevicesLoading"
+                :placeholder="$t('config.dd_snapshot_exclude_placeholder')"
+                @focus="
+                  () => {
+                    if (!snapshotDevicesLoading && snapshotDevices.length === 0) {
+                      void loadSnapshotDevices();
+                    }
+                  }
+                "
+              >
+                <template #option="{ option }">
+                  <div class="leading-tight">
+                    <div class="">{{ option?.displayName || option?.label }}</div>
+                    <div class="text-[12px] opacity-60 font-mono">
+                      {{ option?.id || option?.value }}
+                    </div>
+                  </div>
+                </template>
+                <template #value="{ option }">
+                  <div class="leading-tight">
+                    <div class="">{{ option?.displayName || option?.label }}</div>
+                    <div class="text-[12px] opacity-60 font-mono">
+                      {{ option?.id || option?.value }}
+                    </div>
+                  </div>
+                </template>
+              </n-select>
+              <p v-if="excludeAllWarning" class="text-[11px] text-red-500">
+                {{ $t('config.dd_snapshot_exclude_warning') }}
+              </p>
+              <p v-if="snapshotDevicesError" class="text-[11px] text-red-500">
+                {{ snapshotDevicesError }}
+              </p>
+            </div>
 
             <!-- Always restore from golden snapshot option -->
             <div

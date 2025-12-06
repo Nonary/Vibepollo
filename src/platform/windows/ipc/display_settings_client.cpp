@@ -231,14 +231,14 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  bool send_export_golden() {
+  bool send_export_golden(const std::string &json_payload) {
     BOOST_LOG(debug) << "Display helper IPC: EXPORT_GOLDEN request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
       BOOST_LOG(warning) << "Display helper IPC: EXPORT_GOLDEN aborted - no connection";
       return false;
     }
-    std::vector<uint8_t> payload;
+    std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::ExportGolden, payload)) {
       return true;
@@ -276,14 +276,14 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  bool send_snapshot_current() {
+  bool send_snapshot_current(const std::string &json_payload) {
     BOOST_LOG(debug) << "Display helper IPC: SNAPSHOT_CURRENT request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
       BOOST_LOG(warning) << "Display helper IPC: SNAPSHOT_CURRENT aborted - no connection";
       return false;
     }
-    std::vector<uint8_t> payload;
+    std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::SnapshotCurrent, payload)) {
       return true;

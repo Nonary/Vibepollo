@@ -8,10 +8,6 @@
   #define __kernel_entry
 #endif
 
-#ifndef BOOST_PROCESS_VERSION
-  #define BOOST_PROCESS_VERSION 1
-#endif
-
 // standard includes
 #include <atomic>
 #include <mutex>
@@ -22,11 +18,7 @@
 #include <chrono>
 
 // lib includes
-#include <boost/process/v1/child.hpp>
-#include <boost/process/v1/environment.hpp>
-#include <boost/process/v1/group.hpp>
-#include <boost/process/v1/search_path.hpp>
-#include <boost/property_tree/ptree.hpp>
+#include "boost_process_shim.h"
 #include <nlohmann/json.hpp>
 
 // local includes
@@ -37,7 +29,7 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
-  #include "tools/playnite_launcher/lossless_scaling.h"
+#include "tools/playnite_launcher/lossless_scaling.h"
 
 namespace VDISPLAY {
   enum class DRIVER_STATUS;
@@ -49,6 +41,8 @@ namespace VDISPLAY {
 #define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
 #define REMOTE_INPUT_UUID "8CB5C136-DA67-4F99-B4A1-F9CD35005CF4"
 #define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
+
+namespace bp = boost_process_shim;
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
@@ -144,6 +138,7 @@ namespace proc {
     std::string lossless_scaling_profile {"custom"};
     lossless_scaling_profile_overrides_t lossless_scaling_recommended;
     lossless_scaling_profile_overrides_t lossless_scaling_custom;
+    std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
   };
 
   class proc_t {
@@ -158,7 +153,7 @@ namespace proc {
     bool allow_client_commands = false;
 
     proc_t(
-      boost::process::v1::environment &&env,
+      bp::environment &&env,
       std::vector<ctx_t> &&apps
     ):
         _env(std::move(env)),
@@ -182,28 +177,26 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
-    boost::process::v1::environment get_env();
+    bp::environment get_env();
     void resume();
     void pause();
     void terminate(bool immediate = false, bool needs_refresh = true);
     bool last_run_app_frame_gen_limiter_fix() const;
 
     // Hot-update app list and environment without disrupting a running app
-    void update_apps(std::vector<ctx_t> &&apps, boost::process::v1::environment &&env);
+    void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
 
     // Helpers for parse/refresh to extract newly parsed state without exposing internals
     std::vector<ctx_t> release_apps();
-    boost::process::v1::environment release_env();
+    bp::environment release_env();
 
   private:
     int _app_id = 0;
     std::string _app_name;
 
-    boost::process::v1::environment _env;
-
+    bp::environment _env;
     std::shared_ptr<rtsp_stream::launch_session_t> _launch_session;
     std::shared_ptr<config::input_t> _saved_input_config;
-
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
@@ -214,8 +207,8 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
-    boost::process::v1::child _process;
-    boost::process::v1::group _process_group;
+    bp::child _process;
+    bp::group _process_group;
 
 #ifdef _WIN32
     GUID _virtual_display_guid {};
@@ -241,7 +234,7 @@ namespace proc {
   };
 
   boost::filesystem::path
-    find_working_directory(const std::string &cmd, const boost::process::v1::environment &env);
+    find_working_directory(const std::string &cmd, const bp::environment &env);
 
   /**
    * @brief Calculate a stable id based on name and image data
@@ -266,7 +259,7 @@ namespace proc {
    * @param group The group of all children in the process tree.
    * @param exit_timeout The timeout to wait for the process group to gracefully exit.
    */
-  void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout);
+  void terminate_process_group(bp::child &proc, bp::group &group, std::chrono::seconds exit_timeout);
 
   extern proc_t proc;
 
@@ -275,7 +268,3 @@ namespace proc {
   extern int terminate_app_id;
   extern std::string terminate_app_id_str;
 }  // namespace proc
-
-#ifdef BOOST_PROCESS_VERSION
-  #undef BOOST_PROCESS_VERSION
-#endif

@@ -11,6 +11,7 @@
   #include <chrono>
   #include <condition_variable>
   #include <cstdint>
+  #include <cctype>
   #include <array>
   #include <cstdio>
   #include <cstdlib>
@@ -534,6 +535,14 @@ namespace {
     // Save snapshot to file as JSON-like format.
     bool save_display_settings_snapshot_to_file(const std::filesystem::path &path) const {
       auto snap = snapshot();
+      const auto snapshot_exclusions = snapshot_exclusions_copy();
+      auto is_excluded = [&](const std::string &device_id) {
+        if (snapshot_exclusions.empty()) {
+          return false;
+        }
+        const auto norm = normalize_device_id(device_id);
+        return std::find(snapshot_exclusions.begin(), snapshot_exclusions.end(), norm) != snapshot_exclusions.end();
+      };
       if (!is_topology_valid(snap)) {
         BOOST_LOG(warning) << "Skipping display snapshot save; topology is invalid or empty for path="
                            << path.string();
@@ -550,7 +559,36 @@ namespace {
         std::set<std::string> valid_device_ids;
         for (const auto &d : devices) {
           if (!d.m_display_name.empty()) {
-            valid_device_ids.insert(d.m_device_id);
+            const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+            valid_device_ids.insert(id);
+          }
+        }
+
+        if (!snapshot_exclusions.empty()) {
+          std::set<std::string> filtered_ids;
+          std::vector<std::string> excluded_now;
+          for (const auto &id : valid_device_ids) {
+            if (is_excluded(id)) {
+              excluded_now.push_back(id);
+              continue;
+            }
+            filtered_ids.insert(id);
+          }
+          if (!excluded_now.empty()) {
+            std::string joined;
+            for (size_t i = 0; i < excluded_now.size(); ++i) {
+              if (i > 0) {
+                joined += ", ";
+              }
+              joined += excluded_now[i];
+            }
+            BOOST_LOG(info) << "Display snapshot: excluding devices from snapshot: [" << joined << "]";
+          }
+          valid_device_ids.swap(filtered_ids);
+          if (valid_device_ids.empty()) {
+            BOOST_LOG(warning) << "Skipping display snapshot save; all devices are excluded for path="
+                               << path.string();
+            return false;
           }
         }
 
@@ -745,6 +783,19 @@ namespace {
       }
     }
 
+    void set_snapshot_exclusions(const std::vector<std::string> &ids) {
+      std::lock_guard<std::mutex> lock(snapshot_exclude_mutex_);
+      snapshot_exclude_devices_.clear();
+      std::set<std::string> unique;
+      for (auto id : ids) {
+        id = normalize_device_id(std::move(id));
+        if (!id.empty()) {
+          unique.insert(std::move(id));
+        }
+      }
+      snapshot_exclude_devices_.assign(unique.begin(), unique.end());
+    }
+
   private:
     enum class InitState : uint8_t {
       Uninitialized,
@@ -789,6 +840,20 @@ namespace {
     mutable std::shared_ptr<display_device::WinApiLayer> m_wapi;
     mutable std::shared_ptr<display_device::WinDisplayDevice> m_dd;
     mutable std::unique_ptr<display_device::SettingsManager> m_sm;
+    mutable std::mutex snapshot_exclude_mutex_;
+    std::vector<std::string> snapshot_exclude_devices_;
+
+    static std::string normalize_device_id(std::string id) {
+      id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+      id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), id.end());
+      std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      return id;
+    }
+
+    std::vector<std::string> snapshot_exclusions_copy() const {
+      std::lock_guard<std::mutex> lock(snapshot_exclude_mutex_);
+      return snapshot_exclude_devices_;
+    }
 
     void collect_all_device_ids(std::set<std::string> &out) const {
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
@@ -3154,6 +3219,55 @@ namespace {
     return false;
   }
 
+  std::vector<std::string> parse_snapshot_exclude_json_node(const nlohmann::json &node) {
+    std::vector<std::string> ids;
+    const nlohmann::json *arr = &node;
+    nlohmann::json nested;
+    if (node.is_object()) {
+      if (node.contains("exclude_devices")) {
+        nested = node["exclude_devices"];
+        arr = &nested;
+      } else if (node.contains("devices")) {
+        nested = node["devices"];
+        arr = &nested;
+      }
+    }
+    if (!arr->is_array()) {
+      return ids;
+    }
+    for (const auto &el : *arr) {
+      if (el.is_string()) {
+        ids.push_back(el.get<std::string>());
+      } else if (el.is_object()) {
+        if (el.contains("device_id") && el["device_id"].is_string()) {
+          ids.push_back(el["device_id"].get<std::string>());
+        } else if (el.contains("id") && el["id"].is_string()) {
+          ids.push_back(el["id"].get<std::string>());
+        }
+      }
+    }
+    return ids;
+  }
+
+  std::optional<std::vector<std::string>> parse_snapshot_exclude_payload(std::span<const uint8_t> payload) {
+    if (payload.empty()) {
+      return std::nullopt;
+    }
+    try {
+      std::string raw(reinterpret_cast<const char *>(payload.data()), payload.size());
+      if (raw.empty()) {
+        return std::vector<std::string> {};
+      }
+      auto j = nlohmann::json::parse(raw, nullptr, false);
+      if (j.is_discarded()) {
+        return std::nullopt;
+      }
+      return parse_snapshot_exclude_json_node(j);
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
   bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
@@ -3166,6 +3280,7 @@ namespace {
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
     std::optional<display_device::ActiveTopology> sunshine_topology;
+    std::optional<std::vector<std::string>> snapshot_exclude_devices;
     std::string sanitized_json = json;
     try {
       auto j = nlohmann::json::parse(json);
@@ -3196,6 +3311,10 @@ namespace {
           }
           j.erase("sunshine_monitor_positions");
         }
+        if (j.contains("sunshine_snapshot_exclude_devices")) {
+          snapshot_exclude_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
+          j.erase("sunshine_snapshot_exclude_devices");
+        }
         if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
           display_device::ActiveTopology topo;
           for (const auto &grp_node : j["sunshine_topology"]) {
@@ -3225,6 +3344,10 @@ namespace {
         sanitized_json = j.dump();
       }
     } catch (...) {
+    }
+
+    if (snapshot_exclude_devices.has_value()) {
+      state.controller.set_snapshot_exclusions(*snapshot_exclude_devices);
     }
 
     display_device::SingleDisplayConfiguration cfg {};
@@ -3310,6 +3433,9 @@ namespace {
   }
 
   void handle_misc(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type, std::span<const uint8_t> payload) {
+    if (auto exclusions = parse_snapshot_exclude_payload(payload)) {
+      state.controller.set_snapshot_exclusions(*exclusions);
+    }
     if (type == MsgType::ExportGolden) {
       const bool saved = state.controller.save_display_settings_snapshot_to_file(state.golden_path);
       BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");

@@ -76,7 +76,12 @@
               class="md:col-span-2">
               Per-client App Identity
             </n-checkbox>
-            <n-checkbox v-if="isWindows" v-model:checked="virtualScreenEnabled" size="small" class="md:col-span-2">
+            <n-checkbox
+              v-if="isWindows"
+              v-model:checked="displayOverrideEnabled"
+              size="small"
+              class="md:col-span-2"
+            >
               <div class="flex flex-col">
                 <span>{{ t('config.virtual_display_toggle_label') }}</span>
                 <span class="text-[11px] opacity-60">
@@ -86,8 +91,123 @@
             </n-checkbox>
           </div>
 
-          <div v-if="isWindows && virtualScreenEnabled"
-            class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4">
+          <div
+            v-if="isWindows && displayOverrideEnabled"
+            class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+          >
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.app_display_override_label') }}
+                </span>
+              </div>
+              <p class="text-[11px] opacity-70">{{ t('config.app_display_override_hint') }}</p>
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.app_display_override_virtual') }}
+                </span>
+              </div>
+              <n-radio-group v-model:value="displaySelection" class="flex flex-wrap gap-4">
+                <n-radio value="virtual" class="app-radio-card cursor-pointer">
+                  <span class="app-radio-card-title">{{ t('config.app_display_override_virtual') }}</span>
+                </n-radio>
+              </n-radio-group>
+            </div>
+
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.app_display_physical_label') }}
+                </span>
+                <n-button size="tiny" tertiary :loading="displayDevicesLoading" @click="loadDisplayDevices">
+                  {{ t('_common.refresh') }}
+                </n-button>
+              </div>
+              <p class="text-[11px] opacity-70">{{ t('config.app_display_physical_hint') }}</p>
+              <n-select
+                v-model:value="physicalOutputModel"
+                :options="displayDeviceOptions"
+                :loading="displayDevicesLoading"
+                :placeholder="t('config.app_display_physical_placeholder')"
+                filterable
+                clearable
+                @focus="onDisplaySelectFocus"
+              >
+                <template #option="{ option }">
+                    <div class="leading-tight">
+                    <div class="">{{ option?.displayName || option?.label }}</div>
+                    <div class="text-[12px] opacity-60 font-mono">
+                      {{ option?.id || option?.value }}
+                      <span
+                        v-if="option?.active === true"
+                        class="ml-1 text-green-600 dark:text-green-400"
+                      >
+                        ({{ t('config.app_display_status_active') }})
+                      </span>
+                      <span v-else-if="option?.active === false" class="ml-1 opacity-70">
+                        ({{ t('config.app_display_status_inactive') }})
+                      </span>
+                    </div>
+                  </div>
+                </template>
+                <template #value="{ option }">
+                  <div class="leading-tight">
+                    <div class="">{{ option?.displayName || option?.label }}</div>
+                    <div class="text-[12px] opacity-60 font-mono">
+                      {{ option?.id || option?.value }}
+                      <span
+                        v-if="option?.active === true"
+                        class="ml-1 text-green-600 dark:text-green-400"
+                      >
+                        ({{ t('config.app_display_status_active') }})
+                      </span>
+                      <span v-else-if="option?.active === false" class="ml-1 opacity-70">
+                        ({{ t('config.app_display_status_inactive') }})
+                      </span>
+                    </div>
+                  </div>
+                </template>
+              </n-select>
+              <div class="text-[11px] opacity-70">
+                <span v-if="displayDevicesError" class="text-red-500">{{ displayDevicesError }}</span>
+                <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
+              </div>
+            </div>
+
+            <div v-if="displaySelection === 'physical'" class="space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                  {{ t('config.dd_config_label') }}
+                </span>
+                <n-button
+                  v-if="form.ddConfigurationOption"
+                  size="tiny"
+                  tertiary
+                  @click="form.ddConfigurationOption = null"
+                >
+                  {{ t('config.app_virtual_display_mode_reset') }}
+                </n-button>
+              </div>
+              <p class="text-[11px] opacity-70">{{ t('config.dd_config_hint') }}</p>
+              <n-radio-group
+                v-model:value="form.ddConfigurationOption"
+                class="grid gap-2"
+              >
+                <n-radio
+                  v-for="opt in appDdConfigurationOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </n-radio-group>
+            </div>
+
+            <div
+              v-if="displaySelection === 'virtual'"
+              class="space-y-5 rounded-xl bg-light/40 dark:bg-dark/40 p-3 md:p-4"
+            >
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -137,11 +257,12 @@
               </div>
             </n-radio-group>
           </div>
+        </div>
 
-          <AppEditFrameGenSection v-if="isWindows" v-model:mode="frameGenerationSelection"
-            v-model:gen1="form.gen1FramegenFix" v-model:gen2="form.gen2FramegenFix"
-            v-model:lossless-profile="form.losslessScalingProfile"
-            v-model:lossless-target-fps="form.losslessScalingTargetFps"
+        <AppEditFrameGenSection v-if="isWindows" v-model:mode="frameGenerationSelection"
+          v-model:gen1="form.gen1FramegenFix" v-model:gen2="form.gen2FramegenFix"
+          v-model:lossless-profile="form.losslessScalingProfile"
+          v-model:lossless-target-fps="form.losslessScalingTargetFps"
             v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
             v-model:lossless-flow-scale="losslessFlowScaleModel" :health="frameGenHealth"
             :health-loading="frameGenHealthLoading" :health-error="frameGenHealthError"
@@ -241,7 +362,7 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
-import { NModal, NCard, NButton, NCheckbox, NRadioGroup, NRadio } from 'naive-ui';
+import { NModal, NCard, NButton, NCheckbox, NRadioGroup, NRadio, NSelect } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { useI18n } from 'vue-i18n';
 import type {
@@ -278,6 +399,15 @@ import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vu
 import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
 import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
+type DisplayDevice = {
+  device_id?: string;
+  display_name?: string;
+  friendly_name?: string;
+  info?: {
+    active?: boolean;
+  };
+};
+type DisplaySelection = 'global' | 'virtual' | 'physical';
 interface AppEditModalProps {
   modelValue: boolean;
   app?: ServerApp | null;
@@ -334,6 +464,7 @@ function fresh(): AppForm {
     losslessScalingProfiles: emptyLosslessProfileState(),
     virtualDisplayMode: null,
     virtualDisplayLayout: null,
+    ddConfigurationOption: null,
   };
 }
 const form = ref<AppForm>(fresh());
@@ -472,6 +603,21 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const serverVirtualDisplayLayout = parseAppVirtualDisplayLayout(
     (src as any)?.['virtual-display-layout'],
   );
+  const ddConfigRaw = (src as any)?.['dd-configuration-option'];
+  let ddConfigValue: AppForm['ddConfigurationOption'] = null;
+  if (typeof ddConfigRaw === 'string') {
+    const normalized = ddConfigRaw.trim().toLowerCase();
+    const allowed: AppForm['ddConfigurationOption'][] = [
+      'disabled',
+      'verify_only',
+      'ensure_active',
+      'ensure_primary',
+      'ensure_only_display',
+    ];
+    if (allowed.includes(normalized as AppForm['ddConfigurationOption'])) {
+      ddConfigValue = normalized as AppForm['ddConfigurationOption'];
+    }
+  }
   return {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
@@ -521,6 +667,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingProfiles: losslessProfiles,
     virtualDisplayMode: serverVirtualDisplayMode,
     virtualDisplayLayout: serverVirtualDisplayLayout,
+    ddConfigurationOption: ddConfigValue,
   };
 }
 
@@ -646,6 +793,9 @@ function toServerPayload(f: AppForm): Record<string, any> {
   const globalIsVirtual = _globalOutput === VIRTUAL_DISPLAY_SELECTION;
   if (!!f.virtualScreen !== globalIsVirtual) {
     payload['virtual-screen'] = !!f.virtualScreen;
+  }
+  if (f.ddConfigurationOption) {
+    payload['dd-configuration-option'] = f.ddConfigurationOption;
   }
   return payload;
 }
@@ -1204,6 +1354,10 @@ const ddConfigOption = computed(
 );
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const globalOutputName = computed(() => {
+  const name = (configStore.config as any)?.output_name;
+  return typeof name === 'string' ? name : '';
+});
 const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() => {
   const mode = (configStore.config as any)?.virtual_display_mode;
   return parseAppVirtualDisplayMode(mode) ?? 'disabled';
@@ -1236,6 +1390,13 @@ const appVirtualDisplayLayoutOptions = computed(() =>
     description: t(`config.virtual_display_layout_${value}_desc`),
   })),
 );
+const appDdConfigurationOptions = computed(() => [
+  { label: t('_common.disabled') as string, value: 'disabled' },
+  { label: t('config.dd_config_verify_only') as string, value: 'verify_only' },
+  { label: t('config.dd_config_ensure_active') as string, value: 'ensure_active' },
+  { label: t('config.dd_config_ensure_primary') as string, value: 'ensure_primary' },
+  { label: t('config.dd_config_ensure_only_display') as string, value: 'ensure_only_display' },
+]);
 
 function selectVirtualDisplayLayout(v: unknown) {
   const sv = String(v).trim().toLowerCase();
@@ -1243,6 +1404,70 @@ function selectVirtualDisplayLayout(v: unknown) {
     form.value.virtualDisplayLayout = sv as AppVirtualDisplayLayout;
   }
 }
+const lastPhysicalOutput = ref('');
+const lastVirtualDisplayMode = ref<AppVirtualDisplayMode | null>(null);
+const displaySelection = computed<DisplaySelection>({
+  get: () => {
+    const currentOutput =
+      typeof form.value.output === 'string' ? form.value.output.trim() : '';
+    const globalMode = globalVirtualDisplayMode.value;
+    const appMode = form.value.virtualDisplayMode;
+    if (form.value.virtualScreen || form.value.output === VIRTUAL_DISPLAY_SELECTION) {
+      return 'virtual';
+    }
+    if (currentOutput) {
+      return 'physical';
+    }
+    if (appMode !== null && appMode !== globalMode) {
+      return appMode === 'disabled' ? 'physical' : 'virtual';
+    }
+    return 'global';
+  },
+  set: (selection) => {
+    if (selection === 'virtual') {
+      form.value.virtualScreen = true;
+      if (form.value.virtualDisplayMode === 'disabled') {
+        form.value.virtualDisplayMode =
+          lastVirtualDisplayMode.value ?? globalVirtualDisplayMode.value ?? null;
+      }
+      form.value.output = '';
+      form.value.ddConfigurationOption = null;
+    } else if (selection === 'physical') {
+      if (form.value.virtualDisplayMode && form.value.virtualDisplayMode !== 'disabled') {
+        lastVirtualDisplayMode.value = form.value.virtualDisplayMode;
+      }
+      form.value.virtualDisplayMode = 'disabled';
+      form.value.virtualScreen = false;
+      const current =
+        typeof form.value.output === 'string' ? form.value.output.trim() : '';
+      if (!current || current === VIRTUAL_DISPLAY_SELECTION) {
+        if (lastPhysicalOutput.value) {
+          form.value.output = lastPhysicalOutput.value;
+        } else if (
+          globalOutputName.value &&
+          globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION
+        ) {
+          form.value.output = globalOutputName.value;
+        }
+      }
+    } else {
+      form.value.virtualScreen = false;
+      form.value.virtualDisplayMode = null;
+      form.value.output = '';
+      form.value.ddConfigurationOption = null;
+    }
+  },
+});
+const displayOverrideEnabled = computed<boolean>({
+  get: () => displaySelection.value !== 'global',
+  set: (enabled) => {
+    if (!enabled) {
+      displaySelection.value = 'global';
+    } else if (displaySelection.value === 'global') {
+      displaySelection.value = 'virtual';
+    }
+  },
+});
 const windowsDisplayVersion = computed(() => {
   const v = (configStore.metadata as any)?.windows_display_version;
   return typeof v === 'string' ? v : '';
@@ -1274,12 +1499,9 @@ const virtualOutputName = computed(() => {
   return typeof outputName === 'string' ? outputName : '';
 });
 const usingVirtualDisplay = computed(() => {
-  if (form.value.virtualScreen) {
-    return true;
-  }
-  if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
-    return true;
-  }
+  const selection = displaySelection.value;
+  if (selection === 'virtual') return true;
+  if (selection === 'physical') return false;
   const mode = resolvedVirtualDisplayMode.value;
   if (mode === 'per_client' || mode === 'shared') {
     return true;
@@ -1289,20 +1511,116 @@ const usingVirtualDisplay = computed(() => {
   }
   return false;
 });
-const virtualScreenEnabled = computed<boolean>({
-  get: () => !!form.value.virtualScreen || form.value.output === VIRTUAL_DISPLAY_SELECTION,
-  set: (enabled) => {
-    form.value.virtualScreen = !!enabled;
-    if (!enabled && form.value.output === VIRTUAL_DISPLAY_SELECTION) {
-      form.value.output = '';
+const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
+const displayDevices = ref<DisplayDevice[]>([]);
+const displayDevicesLoading = ref(false);
+const displayDevicesError = ref('');
+const physicalOutputModel = computed<string | null>({
+  get: () => {
+    const value = typeof form.value.output === 'string' ? form.value.output.trim() : '';
+    return value || null;
+  },
+  set: (value) => {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      displaySelection.value = 'global';
+      displayOverrideEnabled.value = false;
+      return;
     }
+    form.value.output = normalized;
+    form.value.virtualScreen = false;
+    lastPhysicalOutput.value = normalized;
+    displaySelection.value = 'physical';
+    displayOverrideEnabled.value = true;
   },
 });
-const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
-const globalOutputName = computed(() => {
-  const name = (configStore.config as any)?.output_name;
-  return typeof name === 'string' ? name : '';
+
+async function loadDisplayDevices(): Promise<void> {
+  displayDevicesLoading.value = true;
+  displayDevicesError.value = '';
+  try {
+    const res = await http.get<DisplayDevice[]>('/api/display-devices', {
+      params: { detail: 'full' },
+    });
+    displayDevices.value = Array.isArray(res.data) ? res.data : [];
+  } catch (e: any) {
+    displayDevicesError.value = e?.message || 'Failed to load display devices';
+    displayDevices.value = [];
+  } finally {
+    displayDevicesLoading.value = false;
+  }
+}
+
+const displayDeviceOptions = computed(() => {
+  const opts: Array<{
+    label: string;
+    value: string;
+    displayName?: string;
+    id?: string;
+    active?: boolean;
+  }> = [];
+  const seen = new Set<string>();
+  for (const d of displayDevices.value) {
+    const value = d.device_id || d.display_name || '';
+    if (!value || seen.has(value)) continue;
+    const displayName = d.friendly_name || d.display_name || 'Display';
+    const guid = d.device_id || '';
+    const dispName = d.display_name || '';
+    const info = d.info as any;
+    let active: boolean | null = null;
+    if (info && typeof info === 'object' && 'active' in info) {
+      active = !!(info as any).active;
+    } else if (info) {
+      active = true;
+    }
+    const parts: string[] = [displayName];
+    if (guid) parts.push(guid);
+    if (dispName) {
+      const status = active === null ? '' : active ? ' (active)' : ' (inactive)';
+      parts.push(dispName + status);
+    }
+    const label = parts.join(' - ');
+    const idLine = guid && dispName ? `${guid} - ${dispName}` : guid || dispName;
+    opts.push({ label, value, displayName, id: idLine, active });
+    seen.add(value);
+  }
+  const current = typeof form.value.output === 'string' ? form.value.output.trim() : '';
+  if (current && !seen.has(current)) {
+    opts.push({ label: current, value: current, displayName: current, id: current, active: null });
+  }
+  if (lastPhysicalOutput.value && !seen.has(lastPhysicalOutput.value) && lastPhysicalOutput.value !== current) {
+    const id = lastPhysicalOutput.value;
+    opts.push({ label: id, value: id, displayName: id, id, active: null });
+  }
+  return opts;
 });
+
+function onDisplaySelectFocus() {
+  if (!displayDevicesLoading.value && displayDevices.value.length === 0) {
+    void loadDisplayDevices();
+  }
+}
+
+watch(
+  () => form.value.output,
+  (value) => {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (normalized && normalized !== VIRTUAL_DISPLAY_SELECTION) {
+      lastPhysicalOutput.value = normalized;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => form.value.virtualDisplayMode,
+  (mode) => {
+    if (mode && mode !== 'disabled') {
+      lastVirtualDisplayMode.value = mode;
+    }
+  },
+  { immediate: true },
+);
 
 const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthLoading = ref(false);
@@ -1312,6 +1630,13 @@ let frameGenHealthPromise: Promise<void> | null = null;
 watch(open, (o) => {
   if (o) {
     form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
+    if (displaySelection.value === 'physical') {
+      const currentOutput =
+        typeof form.value.output === 'string' ? form.value.output.trim() : '';
+      if (!currentOutput && globalOutputName.value && globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION) {
+        form.value.output = globalOutputName.value;
+      }
+    }
     selectedPlayniteId.value = '';
     lockPlaynite.value = false;
     newAppSource.value = 'custom';
@@ -1328,6 +1653,9 @@ watch(open, (o) => {
     }
     if (isWindows.value) {
       refreshLosslessExecutableStatus().catch(() => { });
+      if (displaySelection.value === 'physical' && displayDevices.value.length === 0) {
+        loadDisplayDevices().catch(() => { });
+      }
     }
   } else {
     frameGenHealth.value = null;
@@ -1340,6 +1668,20 @@ watch(
   () => {
     if (!open.value || !isWindows.value) return;
     refreshLosslessExecutableStatus().catch(() => { });
+  },
+);
+
+watch(
+  () => displaySelection.value,
+  (selection) => {
+    if (
+      selection === 'physical' &&
+      isWindows.value &&
+      displayDevices.value.length === 0 &&
+      !displayDevicesLoading.value
+    ) {
+      loadDisplayDevices().catch(() => { });
+    }
   },
 );
 
@@ -1640,24 +1982,24 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
               } else if (evaluationHz >= 180 - tolerance) {
                 displayStatus = 'warn';
                 if (!hasActive && highestSupported !== null) {
-                  displayMessage = `Display supports up to ${Math.round(evaluationHz)} Hz. Configure Display Device Step 1 to enforce the higher refresh or use the "Use Virtual Screen" action below.`;
+                  displayMessage = `Display supports up to ${Math.round(evaluationHz)} Hz. Configure Display Device Step 1 to enforce the higher refresh or use the display override below to switch to the Sunshine virtual display.`;
                 } else if (hasActive) {
                   if (highestFailUnder144 !== null) {
                     displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Streams targeting up to ${highestFailUnder144} FPS need the Sunshine virtual screen or a higher-refresh display.`;
                   } else {
-                    displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. 120 FPS frame generation may stutter without a higher refresh display. Use the "Use Virtual Screen" action below or move the stream to a higher-refresh monitor.`;
+                    displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. 120 FPS frame generation may stutter without a higher refresh display. Use the display override below to switch to the Sunshine virtual display or move the stream to a higher-refresh monitor.`;
                   }
                   if (deltaSupported && highestSupported !== null) {
                     displayMessage += ` Sunshine can switch up to ${Math.round(highestSupported)} Hz if Display Device Step 1 keeps only that monitor active.`;
                   }
                 } else {
                   displayMessage =
-                    'Unable to read the current refresh rate, but the display may not reach the required 240 Hz. Use the "Use Virtual Screen" action below or move the stream to a higher-refresh monitor.';
+                    'Unable to read the current refresh rate, but the display may not reach the required 240 Hz. Use the display override below to switch to the Sunshine virtual display or move the stream to a higher-refresh monitor.';
                 }
               } else {
                 displayStatus = 'fail';
                 if (!hasActive && highestSupported !== null) {
-                  displayMessage = `Display tops out at ${Math.round(evaluationHz)} Hz. Use the "Use Virtual Screen" action below or switch to a 240 Hz display for frame generation.`;
+                  displayMessage = `Display tops out at ${Math.round(evaluationHz)} Hz. Use the display override below to switch to the Sunshine virtual display or switch to a 240 Hz display for frame generation.`;
                 } else if (hasActive) {
                   const mention = highestFailUnder144 ?? 120;
                   displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Streams targeting up to ${mention} FPS need the Sunshine virtual screen or a higher-refresh display.`;
@@ -1666,7 +2008,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                   }
                 } else {
                   displayMessage =
-                    'Display refresh information was unavailable. Use the "Use Virtual Screen" action below or switch to a 240 Hz display for frame generation.';
+                    'Display refresh information was unavailable. Use the display override below to switch to the Sunshine virtual display or switch to a 240 Hz display for frame generation.';
                 }
               }
             } else {
@@ -1729,7 +2071,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       if (highestFailUnder144 !== null) {
         health.suggestion = {
           message:
-            `Enable the "Use Virtual Screen" checkbox above or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+            `Use the display override above to switch to the Sunshine virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
           emphasis: 'warning',
         };
       } else if (captureStatus === 'warn' || captureStatus === 'fail') {
@@ -1764,9 +2106,8 @@ function handleFrameGenHealthRequest() {
 
 function handleEnableVirtualScreen() {
   if (!isWindows.value) return;
-  if (!virtualScreenEnabled.value) {
-    virtualScreenEnabled.value = true;
-  }
+  displayOverrideEnabled.value = true;
+  displaySelection.value = 'virtual';
   refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => { });
 }
 
@@ -1795,7 +2136,7 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
     );
     if (requiresHigh) {
       message.warning(
-        'Use the "Use Virtual Screen" action below or adjust Display Device Step 1 to keep only the high-refresh monitor active.',
+        'Use the display override to switch to the Sunshine virtual display or adjust Display Device Step 1 to keep only the high-refresh monitor active.',
         { duration: 8000 },
       );
     }
@@ -1944,11 +2285,14 @@ watch(
 );
 
 watch(
-  () => virtualScreenEnabled.value,
-  () => {
+  () => displaySelection.value,
+  (selection, prev) => {
     if (!isWindows.value) return;
     if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
-    refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => { });
+    if (selection === prev) return;
+    const reason: FrameGenHealthReason =
+      selection === 'virtual' || prev === 'virtual' ? 'virtual-toggle' : 'output-change';
+    refreshFrameGenHealth({ reason, silent: true }).catch(() => { });
   },
 );
 

@@ -23,7 +23,9 @@
 #include <vector>
 
 // lib includes
+#include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/algorithm/string/trim.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -708,6 +710,10 @@ namespace nvhttp {
             launch_session->virtual_display = app_ctx.virtual_screen;
             launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
             launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+            launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
+            if (!app_ctx.output.empty()) {
+              launch_session->output_name_override = app_ctx.output;
+            }
             launch_session->app_metadata = std::move(metadata);
             break;
           }
@@ -1551,7 +1557,16 @@ namespace nvhttp {
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
+    std::optional<std::string> pending_output_override;
+    auto output_override_guard = util::fail_guard([&]() {
+      if (pending_output_override) {
+        config::set_runtime_output_name_override(std::nullopt);
+      }
+    });
     bool no_active_sessions = (rtsp_stream::session_count() == 0);
+    if (no_active_sessions) {
+      config::set_runtime_output_name_override(std::nullopt);
+    }
 
 #ifdef _WIN32
 
@@ -1570,18 +1585,42 @@ namespace nvhttp {
       }
     }
 
+    std::optional<std::string> app_output_override;
+    if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+      app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
+    }
+
+    if (app_output_override &&
+        boost::iequals(*app_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      launch_session->virtual_display = true;
+      app_output_override.reset();
+    }
+
+    if (app_output_override) {
+      config::set_runtime_output_name_override(*app_output_override);
+      pending_output_override = *app_output_override;
+      BOOST_LOG(info) << "App-specific display override requested: output_name=" << *app_output_override;
+    }
+
     bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+    if (launch_session->virtual_display_mode_override) {
+      config_requests_virtual =
+        *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
+    }
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
     const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     bool request_virtual_display = config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
     const auto requested_output_name = config::get_active_output_name();
+    const bool has_app_output_override = app_output_override.has_value();
     if (!request_virtual_display && !requested_output_name.empty()) {
       if (!display_device::output_exists(requested_output_name)) {
         BOOST_LOG(warning) << "Requested display '" << requested_output_name
                            << "' not found; initializing virtual display instead.";
-        request_virtual_display = true;
+        if (!has_app_output_override) {
+          request_virtual_display = true;
+        }
       }
     }
 
@@ -1972,6 +2011,7 @@ namespace nvhttp {
 
     rtsp_stream::launch_session_raise(launch_session);
     revert_display_configuration = false;
+    output_override_guard.disable();
   }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
@@ -2038,58 +2078,69 @@ namespace nvhttp {
       launch_session->input_only = true;
     }
 
-    // Apply display configuration early if there are no active sessions
-    if (no_active_sessions && !launch_session->input_only) {
-      const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
-      // We want to prepare display only if there are no active sessions at
-      // the moment. This should be done before probing encoders as it could
-      // change the active displays.
+    if (no_active_sessions) {
+      if (
+        launch_session->output_name_override &&
+        !launch_session->output_name_override->empty() &&
+        !launch_session->virtual_display &&
+        !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)
+      ) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      }
+
+      // Apply display configuration early if there are no active sessions
+      if (!launch_session->input_only) {
+        const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
+        // We want to prepare display only if there are no active sessions at
+        // the moment. This should be done before probing encoders as it could
+        // change the active displays.
 
 #ifdef _WIN32
-      if (should_reapply_display) {
-        HANDLE user_token = platf::retrieve_users_token(false);
-        const bool helper_session_available = (user_token != nullptr);
-        if (user_token) {
-          CloseHandle(user_token);
-        }
+        if (should_reapply_display) {
+          HANDLE user_token = platf::retrieve_users_token(false);
+          const bool helper_session_available = (user_token != nullptr);
+          if (user_token) {
+            CloseHandle(user_token);
+          }
 
-        if (helper_session_available) {
-          (void) display_helper_integration::disarm_pending_restore();
-          auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-          if (!request) {
-            BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-          } else if (!display_helper_integration::apply(*request)) {
+          if (helper_session_available) {
+            (void) display_helper_integration::disarm_pending_restore();
+            auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+            if (!request) {
+              BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+            } else if (!display_helper_integration::apply(*request)) {
+              BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+            }
+          } else {
+            BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+          }
+        } else {
+          BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+        }
+#else
+        if (should_reapply_display) {
+          display_helper_integration::DisplayApplyBuilder noop_builder;
+          noop_builder.set_session(*launch_session);
+          if (!display_helper_integration::apply(noop_builder.build())) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         } else {
-          BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+          BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
         }
-      } else {
-        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
-      }
-#else
-      if (should_reapply_display) {
-        display_helper_integration::DisplayApplyBuilder noop_builder;
-        noop_builder.set_session(*launch_session);
-        if (!display_helper_integration::apply(noop_builder.build())) {
-          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-        }
-      } else {
-        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
-      }
 #endif
 
-      // Probe encoders again before streaming to ensure our chosen
-      // encoder matches the active GPU (which could have changed
-      // due to hotplugging, driver crash, primary monitor change,
-      // or any number of other factors).
-      // Skip encoder probing failure for input-only mode
-      if (video::probe_encoders() && !launch_session->input_only) {
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
+        // Probe encoders again before streaming to ensure our chosen
+        // encoder matches the active GPU (which could have changed
+        // due to hotplugging, driver crash, primary monitor change,
+        // or any number of other factors).
+        // Skip encoder probing failure for input-only mode
+        if (video::probe_encoders() && !launch_session->input_only) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
 
-        return;
+          return;
+        }
       }
     }
 

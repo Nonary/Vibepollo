@@ -161,18 +161,34 @@ namespace display_helper_integration::helpers {
   }  // namespace
 
   SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
-      : video_config_ {video_config}, session_ {session} {}
+      : video_config_ {video_config}, effective_video_config_ {video_config}, session_ {session} {
+    if (session.dd_config_option_override) {
+      effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
+    }
+    if (session.virtual_display_mode_override) {
+      effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
+    }
+    if (auto runtime_output_override = config::runtime_output_name_override()) {
+      if (runtime_output_override && !runtime_output_override->empty()) {
+        effective_video_config_.output_name = *runtime_output_override;
+      }
+    }
+    if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
+        !effective_video_config_.output_name.empty()) {
+      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+    }
+  }
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
     builder.set_session(session_);
-    builder.set_hdr_toggle_flag(video_config_.dd.wa.hdr_toggle);
+    builder.set_hdr_toggle_flag(effective_video_config_.dd.wa.hdr_toggle);
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
     }
-    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(video_config_.virtual_display_layout);
+    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(effective_video_config_.virtual_display_layout);
     const auto effective_layout =
-      session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
+      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
     BOOST_LOG(debug) << "effective_layout: " << static_cast<int>(effective_layout);
     const auto layout_flags = describe_layout(effective_layout);
     BOOST_LOG(debug) << "layout_flags.arrangement: " << static_cast<int>(layout_flags.arrangement);
@@ -206,7 +222,7 @@ namespace display_helper_integration::helpers {
     const int display_fps = framegen_display_fps > 0 ? framegen_display_fps : base_fps;
     BOOST_LOG(debug) << "display_fps: " << display_fps;
 
-    const auto config_mode = video_config_.virtual_display_mode;
+    const auto config_mode = effective_video_config_.virtual_display_mode;
     BOOST_LOG(debug) << "config_mode: " << static_cast<int>(config_mode);
     const bool config_selects_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client || config_mode == config::video_t::virtual_display_mode_e::shared);
     BOOST_LOG(debug) << "config_selects_virtual: " << config_selects_virtual;
@@ -214,7 +230,7 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    const bool double_virtual_refresh = session_requests_virtual && video_config_.double_refreshrate;
+    const bool double_virtual_refresh = session_requests_virtual && effective_video_config_.double_refreshrate;
     // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
     const bool needs_double_minimum = double_virtual_refresh || framegen_active;
     const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;
@@ -247,7 +263,7 @@ namespace display_helper_integration::helpers {
     const int display_fps,
     const int minimum_fps
   ) const {
-    const auto parsed = display_device::parse_configuration(video_config_, session_);
+    const auto parsed = display_device::parse_configuration(effective_video_config_, session_);
     const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
     if (!cfg) {
       builder.set_action(DisplayApplyAction::Skip);
@@ -257,7 +273,7 @@ namespace display_helper_integration::helpers {
     auto vd_cfg = *cfg;
 
     std::string target_device_id;
-    if (auto resolved = resolve_virtual_device_id(video_config_, session_)) {
+    if (auto resolved = resolve_virtual_device_id(effective_video_config_, session_)) {
       target_device_id = *resolved;
     }
     vd_cfg.m_device_id = target_device_id;
@@ -295,7 +311,7 @@ namespace display_helper_integration::helpers {
     const int effective_height,
     const int display_fps
   ) const {
-    const bool dummy_plug_mode = video_config_.dd.wa.dummy_plug_hdr10;
+    const bool dummy_plug_mode = effective_video_config_.dd.wa.dummy_plug_hdr10;
     const bool desktop_session = session_targets_desktop(session_);
     const bool gen1_framegen_fix = session_.gen1_framegen_fix;
     const bool gen2_framegen_fix = session_.gen2_framegen_fix;
@@ -306,12 +322,14 @@ namespace display_helper_integration::helpers {
       should_force_refresh = false;
     }
 
-    const auto parsed = display_device::parse_configuration(video_config_, session_);
+    const auto parsed = display_device::parse_configuration(effective_video_config_, session_);
     if (const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
       auto cfg_effective = *cfg;
       if (session_.virtual_display && !session_.virtual_display_device_id.empty()) {
         cfg_effective.m_device_id = session_.virtual_display_device_id;
       }
+      BOOST_LOG(info) << "Display helper apply (standard): target device_id=" << cfg_effective.m_device_id
+                      << " prep=" << static_cast<int>(cfg_effective.m_device_prep);
 
       if (session_.virtual_display) {
         const auto layout_flags = describe_layout(layout);
@@ -346,7 +364,7 @@ namespace display_helper_integration::helpers {
     if (std::holds_alternative<display_device::configuration_disabled_tag_t>(parsed)) {
       if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
         display_device::SingleDisplayConfiguration cfg_override;
-        cfg_override.m_device_id = session_.virtual_display_device_id.empty() ? video_config_.output_name : session_.virtual_display_device_id;
+        cfg_override.m_device_id = session_.virtual_display_device_id.empty() ? effective_video_config_.output_name : session_.virtual_display_device_id;
         if (effective_width >= 0 && effective_height >= 0) {
           cfg_override.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(effective_width),
@@ -371,28 +389,45 @@ namespace display_helper_integration::helpers {
   }
 
   SessionMonitorPositionHelper::SessionMonitorPositionHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
-      : video_config_ {video_config}, session_ {session} {}
+      : video_config_ {video_config}, effective_video_config_ {video_config}, session_ {session} {
+    if (session.dd_config_option_override) {
+      effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
+    }
+    if (session.virtual_display_mode_override) {
+      effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
+    }
+    if (auto runtime_output_override = config::runtime_output_name_override()) {
+      if (runtime_output_override && !runtime_output_override->empty()) {
+        effective_video_config_.output_name = *runtime_output_override;
+      }
+    }
+    if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
+        !effective_video_config_.output_name.empty()) {
+      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+    }
+  }
 
   void SessionMonitorPositionHelper::configure(DisplayApplyBuilder &builder) const {
     auto &topology = builder.mutable_topology();
     std::string default_device_id;
     if (!session_.virtual_display_device_id.empty()) {
       default_device_id = session_.virtual_display_device_id;
-    } else if (!video_config_.output_name.empty()) {
-      default_device_id = video_config_.output_name;
+    } else if (!effective_video_config_.output_name.empty()) {
+      default_device_id = effective_video_config_.output_name;
     } else {
       default_device_id = "";
     }
+    BOOST_LOG(info) << "Display helper topology: default device_id=" << default_device_id;
 
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
     }
-    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(video_config_.virtual_display_layout);
+    BOOST_LOG(debug) << "video_config_.virtual_display_layout: " << static_cast<int>(effective_video_config_.virtual_display_layout);
     const auto effective_layout =
-      session_.virtual_display_layout_override.value_or(video_config_.virtual_display_layout);
+      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
-    const auto resolved_virtual_device_id = resolve_virtual_device_id(video_config_, session_);
+    const auto resolved_virtual_device_id = resolve_virtual_device_id(effective_video_config_, session_);
     const std::string topology_device_id =
       resolved_virtual_device_id && !resolved_virtual_device_id->empty() ? *resolved_virtual_device_id : default_device_id;
     bool topology_overridden = false;

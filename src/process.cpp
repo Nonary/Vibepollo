@@ -4,9 +4,6 @@
  */
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
-#ifndef BOOST_PROCESS_VERSION
-  #define BOOST_PROCESS_VERSION 1
-#endif
 // standard includes
 #include <algorithm>
 #include <array>
@@ -999,7 +996,7 @@ namespace proc {
     return std::make_unique<deinit_t>();
   }
 
-  void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout) {
+  void terminate_process_group(bp::child &proc, bp::group &group, std::chrono::seconds exit_timeout) {
     if (group.valid() && platf::process_group_running((std::uintptr_t) group.native_handle())) {
       if (exit_timeout.count() > 0) {
         // Request processes in the group to exit gracefully
@@ -1037,7 +1034,7 @@ namespace proc {
     }
   }
 
-  boost::filesystem::path find_working_directory(const std::string &cmd, const boost::process::v1::environment &env) {
+  boost::filesystem::path find_working_directory(const std::string &cmd, const bp::environment &env [[maybe_unused]]) {
     // Parse the raw command string into parts to get the actual command portion
 #ifdef _WIN32
     auto parts = boost::program_options::split_winmain(cmd);
@@ -1059,7 +1056,8 @@ namespace proc {
     // If the cmd path is not an absolute path, resolve it using our PATH variable
     boost::filesystem::path cmd_path(parts.at(0));
     if (!cmd_path.is_absolute()) {
-      cmd_path = boost::process::v1::search_path(parts.at(0));
+      auto resolved = bp::search_path(parts.at(0));
+      cmd_path = boost::filesystem::path(resolved.string());
       if (cmd_path.empty()) {
         BOOST_LOG(error) << "Unable to find executable ["sv << parts.at(0) << "]. Is it in your PATH?"sv;
         return boost::filesystem::path();
@@ -2099,8 +2097,8 @@ namespace proc {
 #endif
     // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout)
     terminate_process_group(_process, _process_group, remaining_timeout);
-    _process = boost::process::v1::child();
-    _process_group = boost::process::v1::group();
+    _process = bp::child();
+    _process_group = bp::group();
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
 
@@ -2223,7 +2221,7 @@ namespace proc {
     return _app.uuid;
   }
 
-  boost::process::environment proc_t::get_env() {
+  bp::environment proc_t::get_env() {
     return _env;
   }
 
@@ -2261,7 +2259,7 @@ namespace proc {
     return begin;
   }
 
-  std::string parse_env_val(boost::process::v1::native_environment &env, const std::string_view &val_raw) {
+  std::string parse_env_val(bp::native_environment &env, const std::string_view &val_raw) {
     auto pos = std::begin(val_raw);
     auto dollar = std::find(pos, std::end(val_raw), '$');
 
@@ -2443,9 +2441,9 @@ namespace proc {
    *
    * A migration version is stored in the file tree (under "version") so that future changes can be applied.
    *
-   * @param fileTree_p Pointer to the JSON object representing the file tree.
-   * @param inputTree_p Pointer to the JSON object representing the new app.
-   */
+  * @param fileTree_p Pointer to the JSON object representing the file tree.
+  * @param inputTree_p Pointer to the JSON object representing the new app.
+  */
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p) {
     std::string new_app_uuid;
 
@@ -2615,7 +2613,7 @@ namespace proc {
 
   std::optional<proc::proc_t> parse(const std::string &file_name) {
     // Prepare environment variables.
-    auto this_env = boost::this_process::environment();
+    auto this_env = bp::this_process::env();
 
     std::set<std::string> ids;
     std::vector<proc::ctx_t> apps;
@@ -2889,7 +2887,7 @@ namespace proc {
           break;
         }
 
-        this_env = boost::this_process::environment();
+        this_env = bp::this_process::env();
         ids.clear();
         apps.clear();
         i = 0;
@@ -3084,7 +3082,7 @@ namespace proc {
     }
   }
 
-  void proc_t::update_apps(std::vector<ctx_t> &&apps, boost::process::v1::environment &&env) {
+  void proc_t::update_apps(std::vector<ctx_t> &&apps, bp::environment &&env) {
     // Replace app list and environment while keeping current running app intact
     {
       std::scoped_lock lk(_apps_mutex);
@@ -3097,7 +3095,7 @@ namespace proc {
     return std::move(_apps);
   }
 
-  boost::process::v1::environment proc_t::release_env() {
+  bp::environment proc_t::release_env() {
     return std::move(_env);
   }
 }  // namespace proc

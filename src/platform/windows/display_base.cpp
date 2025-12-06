@@ -16,8 +16,6 @@
 #include <boost/algorithm/string/join.hpp>
 #include <MinHook.h>
 
-// We have to include boost/process/v1.hpp before display.h due to WinSock.h,
-// but that prevents the definition of NTSTATUS so we must define it ourself.
 typedef long NTSTATUS;
 
 // Definition from the WDK's d3dkmthk.h
@@ -89,8 +87,6 @@ namespace platf::dxgi {
       return is_windows_23h2_or_later();
     }
   }  // namespace
-
-  namespace bp = boost::process;
 
   /**
    * DDAPI-specific initialization goes here.

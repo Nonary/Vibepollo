@@ -1413,6 +1413,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_snapshot_exclude_devices
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Comma-separated list or JSON array of display device identifiers to ignore when saving display snapshots.<br>
+            Excluded devices are removed from session and golden snapshots so Sunshine will not restore to transient or dummy displays.<br>
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}[]@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_snapshot_exclude_devices = ["{de9bb7e2-186e-505b-9e93-f48793333810}", "\\\\.\\DISPLAY3"]
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Notes</td>
+        <td colspan="2">
+            Keep at least one display unexcluded so snapshots remain valid.<br>
+            Device IDs accept the GUID reported by `/api/display-devices` (preferred) or the `\\.\DISPLAYX` name.<br>
+            Ideal when using both a virtual display and a physical dummy plug so restores skip the dummy plug.
+        </td>
+    </tr>
+</table>
+
 ### dd_mode_remapping
 
 <table>

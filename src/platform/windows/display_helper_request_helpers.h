@@ -42,6 +42,7 @@ namespace display_helper_integration::helpers {
     ) const;
 
     const config::video_t &video_config_;
+    config::video_t effective_video_config_;
     const rtsp_stream::launch_session_t &session_;
   };
 
@@ -55,6 +56,7 @@ namespace display_helper_integration::helpers {
 
    private:
     const config::video_t &video_config_;
+    config::video_t effective_video_config_;
     const rtsp_stream::launch_session_t &session_;
   };
 

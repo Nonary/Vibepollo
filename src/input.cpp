@@ -201,13 +201,13 @@ namespace input {
    * @return 0 if no shortcut applied, > 0 if shortcut applied.
    */
   inline int apply_shortcut(short keyCode) {
-    constexpr auto VK_F1 = 0x70;
-    constexpr auto VK_F13 = 0x7C;
+    constexpr auto VK_F1_LOCAL = 0x70;
+    constexpr auto VK_F13_LOCAL = 0x7C;
 
     BOOST_LOG(verbose) << "Apply Shortcut: 0x"sv << util::hex((std::uint8_t) keyCode).to_string_view();
 
-    if (keyCode >= VK_F1 && keyCode <= VK_F13) {
-      mail::man->event<int>(mail::switch_display)->raise(keyCode - VK_F1);
+    if (keyCode >= VK_F1_LOCAL && keyCode <= VK_F13_LOCAL) {
+      mail::man->event<int>(mail::switch_display)->raise(keyCode - VK_F1_LOCAL);
       return 1;
     }
 

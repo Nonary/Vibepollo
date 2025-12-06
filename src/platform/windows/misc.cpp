@@ -12,16 +12,9 @@
 #include <sstream>
 #include <vector>
 
-#ifndef BOOST_PROCESS_VERSION
-  #define BOOST_PROCESS_VERSION 1
-#endif
-
 // lib includes
 #include <boost/algorithm/string.hpp>
 #include <boost/asio/ip/address.hpp>
-#include <boost/process/v1/child.hpp>
-#include <boost/process/v1/environment.hpp>
-#include <boost/process/v1/group.hpp>
 #include <boost/program_options/parsers.hpp>
 
 // prevent clang format from "optimizing" the header include order
@@ -56,7 +49,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
-#include "utils.h"
+#include "src/boost_process_shim.h"
 
 // UDP_SEND_MSG_SIZE was added in the Windows 10 20H1 SDK
 #ifndef UDP_SEND_MSG_SIZE
@@ -104,7 +97,7 @@ namespace {
 
 }  // namespace
 
-namespace bp = boost::process;
+namespace bp = boost_process_shim;
 
 static std::string ensureCrLf(const std::string &utf8Str);
 static std::wstring getClipboardData();
@@ -983,7 +976,7 @@ namespace platf {
     });
 
     // Create environment block with user-specific environment variables
-    bp::environment cloned_env = boost::this_process::environment();
+    bp::environment cloned_env = bp::this_process::env();
     if (!merge_user_environment_block(cloned_env, user_token)) {
       ec = std::make_error_code(std::errc::not_enough_memory);
       return false;
@@ -1078,7 +1071,7 @@ namespace platf {
     creation_flags |= interactive ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW;
 
     // Find the PATH variable in our environment block using a case-insensitive search
-    auto sunshine_wenv = boost::this_process::wenvironment();
+    auto sunshine_wenv = bp::this_process::wenv();
     std::wstring path_var_name {L"PATH"};
     std::wstring old_path_val;
     auto itr = std::find_if(sunshine_wenv.cbegin(), sunshine_wenv.cend(), [&](const auto &e) {
@@ -1164,7 +1157,7 @@ namespace platf {
    * @param url The url to open.
    */
   void open_url(const std::string &url) {
-    boost::process::v1::environment _env = boost::this_process::environment();
+    bp::environment _env = bp::this_process::env();
     auto working_dir = boost::filesystem::path();
     std::error_code ec;
 
@@ -2183,6 +2176,3 @@ static int setClipboardData(const std::wstring &utf16Str) {
   return 0;
 }
 
-#ifdef BOOST_PROCESS_VERSION
-  #undef BOOST_PROCESS_VERSION
-#endif
