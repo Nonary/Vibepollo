@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { useI18n } from 'vue-i18n';
 import { NInput, NInputNumber, NSelect, NButton, NModal, NCard, NTag } from 'naive-ui';

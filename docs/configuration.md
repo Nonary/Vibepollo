@@ -250,7 +250,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
+            enabled
             @endcode</td>
     </tr>
     <tr>
@@ -2241,6 +2241,31 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>3</td>
         <td>advertise support for AV1 Main 8-bit and 10-bit (HDR) profiles</td>
+    </tr>
+</table>
+
+### prefer_10bit_sdr
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Capture and encode SDR sessions in 10-bit when the client and encoder negotiate HEVC/AV1 Main10 support.
+            @note{HDR stays disabled.}
+            @note{Applies to HEVC or AV1 only; H.264 streaming remains 8-bit.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            prefer_10bit_sdr = enabled
+            @endcode</td>
     </tr>
 </table>
 
