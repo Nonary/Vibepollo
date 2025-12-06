@@ -28,6 +28,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "nvhttp.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
@@ -1132,6 +1133,17 @@ namespace rtsp_stream {
     }
 
     config.audio.input_only = session.input_only;
+    
+    // Check both global and client-specific prefer_10bit_sdr settings (client takes priority)
+    bool client_prefer_10bit_sdr = nvhttp::get_client_prefer_10bit_sdr(session.client_uuid);
+    if (config::video.prefer_10bit_sdr && client_prefer_10bit_sdr && !session.enable_hdr && config.monitor.dynamicRange == 0) {
+      const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
+      const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
+      if (hevc_main10 || av1_main10) {
+        BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
+        config.monitor.dynamicRange = 1;
+      }
+    }
 
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up

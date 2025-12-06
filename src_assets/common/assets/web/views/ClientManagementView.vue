@@ -305,88 +305,6 @@
                   desc="pin.enable_legacy_ordering_desc"
                   default="true"
                 />
-                <Checkbox
-                  v-if="platform === 'windows'"
-                  id="always_use_virtual_display"
-                  class="mb-1"
-                  v-model="client.editAlwaysUseVirtualDisplay"
-                  label="pin.always_use_virtual_display"
-                  desc="pin.always_use_virtual_display_desc"
-                  default="false"
-                />
-                <div
-                  v-if="platform === 'windows' && client.editAlwaysUseVirtualDisplay"
-                  class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
-                >
-                  <div class="space-y-2">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        {{ t('config.app_virtual_display_mode_label') }}
-                      </span>
-                      <n-button
-                        v-if="client.editVirtualDisplayMode !== null"
-                        size="tiny"
-                        tertiary
-                        @click="client.editVirtualDisplayMode = null"
-                      >
-                        {{ t('config.app_virtual_display_mode_reset') }}
-                      </n-button>
-                    </div>
-                    <p class="text-[11px] opacity-70">{{ t('config.app_virtual_display_mode_hint') }}</p>
-                  </div>
-                  <n-radio-group
-                    :value="resolvedClientVirtualDisplayMode(client)"
-                    @update:value="(value) => updateClientVirtualDisplayMode(client, value)"
-                    class="grid gap-3 sm:grid-cols-3"
-                  >
-                    <n-radio
-                      v-for="option in clientVirtualDisplayModeOptions"
-                      :key="option.value"
-                      :value="option.value"
-                      class="app-radio-card cursor-pointer"
-                    >
-                      <span class="app-radio-card-title">{{ option.label }}</span>
-                    </n-radio>
-                  </n-radio-group>
-
-                  <div class="space-y-2">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        {{ t('config.virtual_display_layout_label') }}
-                      </span>
-                      <n-button
-                        v-if="client.editVirtualDisplayLayout !== null"
-                        size="tiny"
-                        tertiary
-                        @click="client.editVirtualDisplayLayout = null"
-                      >
-                        {{ t('config.app_virtual_display_layout_reset') }}
-                      </n-button>
-                    </div>
-                    <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
-                  </div>
-                  <n-radio-group
-                    :value="resolvedClientVirtualDisplayLayout(client)"
-                    @update:value="(value) => updateClientVirtualDisplayLayout(client, value)"
-                    class="space-y-4"
-                  >
-                    <div
-                      v-for="option in clientVirtualDisplayLayoutOptions"
-                      :key="option.value"
-                      class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
-                      @click="selectClientVirtualDisplayLayout(client, option.value)"
-                      @keydown.enter.prevent="selectClientVirtualDisplayLayout(client, option.value)"
-                      @keydown.space.prevent="selectClientVirtualDisplayLayout(client, option.value)"
-                      tabindex="0"
-                    >
-                      <div class="flex items-center gap-3">
-                        <n-radio :value="option.value" />
-                        <span class="text-sm font-semibold">{{ option.label }}</span>
-                      </div>
-                      <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
-                    </div>
-                  </n-radio-group>
-                </div>
                 <n-form-item :label="$t('pin.display_mode_override')">
                   <n-input v-model:value="client.editDisplayMode" placeholder="1920x1080x59.94" />
                   <template #feedback>
@@ -403,12 +321,186 @@
                     </span>
                   </template>
                 </n-form-item>
+                <n-form-item
+                  v-if="platform === 'windows'"
+                  class="space-y-5"
+                >
+                  <div class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4">
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                          {{ t('config.client_display_override_label') }}
+                        </span>
+                      </div>
+                      <p class="text-[11px] opacity-70">{{ t('config.app_display_override_hint') }}</p>
+                    </div>
+                    <n-radio-group
+                      :value="getClientDisplaySelection(client)"
+                      @update:value="(value) => setClientDisplaySelection(client, value)"
+                      class="grid gap-3 sm:grid-cols-2"
+                    >
+                      <n-radio value="virtual" class="app-radio-card cursor-pointer">
+                        <span class="app-radio-card-title">{{ t('config.app_display_override_virtual') }}</span>
+                      </n-radio>
+                      <n-radio value="physical" class="app-radio-card cursor-pointer">
+                        <span class="app-radio-card-title">{{ t('config.app_display_physical_label') }}</span>
+                      </n-radio>
+                    </n-radio-group>
+
+                    <div
+                      v-if="getClientDisplaySelection(client) === 'physical'"
+                      class="space-y-3 rounded-xl border border-dark/10 dark:border-light/10 bg-light/40 dark:bg-dark/40 p-3 md:p-4"
+                    >
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                          {{ t('config.app_display_physical_label') }}
+                        </span>
+                        <n-button size="tiny" tertiary :loading="displayDevicesLoading" @click="loadDisplayDevices">
+                          {{ t('_common.refresh') }}
+                        </n-button>
+                      </div>
+                      <p class="text-[11px] opacity-70">{{ t('config.app_display_physical_hint') }}</p>
+                      <n-select
+                        v-model:value="client.editPhysicalOutputOverride"
+                        :options="displayDeviceOptions"
+                        :loading="displayDevicesLoading"
+                        :placeholder="t('config.app_display_physical_placeholder')"
+                        filterable
+                        clearable
+                        :fallback-option="(value) => ({ label: value as string, value: value as string })"
+                        class="flex-1"
+                        @focus="ensureDisplayDevicesLoaded"
+                      >
+                        <template #option="{ option }">
+                          <div class="leading-tight">
+                            <div class="">{{ option?.displayName || option?.label }}</div>
+                            <div class="text-[12px] opacity-60 font-mono">
+                              {{ option?.id || option?.value }}
+                              <span
+                                v-if="option?.active === true"
+                                class="ml-1 text-green-600 dark:text-green-400"
+                              >
+                                ({{ t('config.app_display_status_active') }})
+                              </span>
+                              <span v-else-if="option?.active === false" class="ml-1 opacity-70">
+                                ({{ t('config.app_display_status_inactive') }})
+                              </span>
+                            </div>
+                          </div>
+                        </template>
+                        <template #value="{ option }">
+                          <div class="leading-tight">
+                            <div class="">{{ option?.displayName || option?.label }}</div>
+                            <div class="text-[12px] opacity-60 font-mono">
+                              {{ option?.id || option?.value }}
+                              <span
+                                v-if="option?.active === true"
+                                class="ml-1 text-green-600 dark:text-green-400"
+                              >
+                                ({{ t('config.app_display_status_active') }})
+                              </span>
+                              <span v-else-if="option?.active === false" class="ml-1 opacity-70">
+                                ({{ t('config.app_display_status_inactive') }})
+                              </span>
+                            </div>
+                          </div>
+                        </template>
+                      </n-select>
+                      <div class="text-[11px] opacity-70">
+                        <span v-if="displayDevicesError" class="text-red-500">{{ displayDevicesError }}</span>
+                        <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
+                      </div>
+                    </div>
+
+                    <div
+                      v-else
+                      class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/40 dark:bg-dark/40 p-3 md:p-4"
+                    >
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-3">
+                          <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                            {{ t('config.app_virtual_display_mode_label') }}
+                          </span>
+                          <n-button
+                            v-if="client.editVirtualDisplayMode !== null"
+                            size="tiny"
+                            tertiary
+                            @click="client.editVirtualDisplayMode = null"
+                          >
+                            {{ t('config.app_virtual_display_mode_reset') }}
+                          </n-button>
+                        </div>
+                        <p class="text-[11px] opacity-70">{{ t('config.app_virtual_display_mode_hint') }}</p>
+                      </div>
+                      <n-radio-group
+                        :value="resolvedClientVirtualDisplayMode(client)"
+                        @update:value="(value) => updateClientVirtualDisplayMode(client, value)"
+                        class="grid gap-3 sm:grid-cols-3"
+                      >
+                        <n-radio
+                          v-for="option in clientVirtualDisplayModeOptions"
+                          :key="option.value"
+                          :value="option.value"
+                          class="app-radio-card cursor-pointer"
+                        >
+                          <span class="app-radio-card-title">{{ option.label }}</span>
+                        </n-radio>
+                      </n-radio-group>
+
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-3">
+                          <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                            {{ t('config.virtual_display_layout_label') }}
+                          </span>
+                          <n-button
+                            v-if="client.editVirtualDisplayLayout !== null"
+                            size="tiny"
+                            tertiary
+                            @click="client.editVirtualDisplayLayout = null"
+                          >
+                            {{ t('config.app_virtual_display_layout_reset') }}
+                          </n-button>
+                        </div>
+                        <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
+                      </div>
+                      <n-radio-group
+                        :value="resolvedClientVirtualDisplayLayout(client)"
+                        @update:value="(value) => updateClientVirtualDisplayLayout(client, value)"
+                        class="space-y-4"
+                      >
+                        <div
+                          v-for="option in clientVirtualDisplayLayoutOptions"
+                          :key="option.value"
+                          class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                          @click="selectClientVirtualDisplayLayout(client, option.value)"
+                          @keydown.enter.prevent="selectClientVirtualDisplayLayout(client, option.value)"
+                          @keydown.space.prevent="selectClientVirtualDisplayLayout(client, option.value)"
+                          tabindex="0"
+                        >
+                          <div class="flex items-center gap-3">
+                            <n-radio :value="option.value" />
+                            <span class="text-sm font-semibold">{{ option.label }}</span>
+                          </div>
+                          <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+                        </div>
+                      </n-radio-group>
+                    </div>
+                  </div>
+                </n-form-item>
                 <Checkbox
                   id="allow_client_commands"
                   class="mb-1"
                   v-model="client.editAllowClientCommands"
                   label="pin.allow_client_commands"
                   desc="pin.allow_client_commands_desc"
+                  default="true"
+                />
+                <Checkbox
+                  id="prefer_10bit_sdr"
+                  class="mb-1"
+                  v-model="client.editPrefer10BitSdr"
+                  label="pin.client_prefer_10bit_sdr"
+                  desc="pin.client_prefer_10bit_sdr_desc"
                   default="true"
                 />
                 <div
@@ -551,6 +643,7 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NSelect,
   NModal,
   NTabs,
   NTabPane,
@@ -621,6 +714,7 @@ const apiTokenRoutes: ApiTokenRouteDef[] = [
 ];
 
 type CommandType = 'do' | 'undo';
+type ClientDisplaySelection = 'physical' | 'virtual';
 
 type PermissionToggleKey =
   | 'list'
@@ -640,15 +734,24 @@ interface ClientCommand {
   elevated: boolean;
 }
 
+interface DisplayDevice {
+  device_id?: string;
+  display_name?: string;
+  friendly_name?: string;
+  info?: unknown;
+}
+
 interface ClientApiEntry {
   uuid?: string;
   name?: string;
   display_mode?: string;
+  output_name_override?: string;
   perm?: number | string;
   connected?: boolean;
   allow_client_commands?: boolean | string | number;
   enable_legacy_ordering?: boolean | string | number;
   always_use_virtual_display?: boolean | string | number;
+  prefer_10bit_sdr?: boolean | string | number;
   virtual_display_mode?: string;
   virtual_display_layout?: string;
   do?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
@@ -678,11 +781,13 @@ interface SaveClientPayload {
   uuid: string;
   name: string;
   display_mode: string;
+  output_name_override: string;
   virtual_display_mode: string;
   virtual_display_layout: string;
   allow_client_commands: boolean;
   enable_legacy_ordering: boolean;
   always_use_virtual_display: boolean;
+  prefer_10bit_sdr: boolean;
   perm: number;
   do: ClientCommand[];
   undo: ClientCommand[];
@@ -697,11 +802,13 @@ interface ClientViewModel {
   uuid: string;
   name: string;
   displayMode: string;
+  outputOverride: string;
   perm: number;
   connected: boolean;
   allowClientCommands: boolean;
   enableLegacyOrdering: boolean;
   alwaysUseVirtualDisplay: boolean;
+  prefer10BitSdr: boolean;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   doCommands: ClientCommand[];
@@ -709,10 +816,12 @@ interface ClientViewModel {
   editing: boolean;
   editName: string;
   editDisplayMode: string;
+  editPhysicalOutputOverride: string;
   editPerm: number;
   editAllowClientCommands: boolean;
   editEnableLegacyOrdering: boolean;
   editAlwaysUseVirtualDisplay: boolean;
+  editPrefer10BitSdr: boolean;
   editVirtualDisplayMode: AppVirtualDisplayMode | null;
   editVirtualDisplayLayout: AppVirtualDisplayLayout | null;
   editDo: ClientCommand[];
@@ -900,6 +1009,9 @@ const pendingRemoveUuid = ref('');
 const pendingRemoveName = ref('');
 const showConfirmUnpairAll = ref(false);
 const currentEditingClient = ref<ClientViewModel | null>(null);
+const displayDevices = ref<DisplayDevice[]>([]);
+const displayDevicesLoading = ref(false);
+const displayDevicesError = ref('');
 
 const shouldShowQr = computed(() => {
   return (
@@ -989,6 +1101,60 @@ function selectClientVirtualDisplayLayout(client: ClientViewModel, value: AppVir
   updateClientVirtualDisplayLayout(client, value);
 }
 
+async function loadDisplayDevices(): Promise<void> {
+  displayDevicesLoading.value = true;
+  displayDevicesError.value = '';
+  try {
+    const res = await http.get<DisplayDevice[]>('/api/display-devices', { params: { detail: 'full' } });
+    displayDevices.value = Array.isArray(res.data) ? res.data : [];
+  } catch (e: any) {
+    displayDevicesError.value = e?.message || 'Failed to load display devices';
+    displayDevices.value = [];
+  } finally {
+    displayDevicesLoading.value = false;
+  }
+}
+
+const displayDeviceOptions = computed(() => {
+  const opts: Array<{ label: string; value: string; displayName?: string; id?: string; active?: boolean }> = [];
+  const seen = new Set<string>();
+  for (const d of displayDevices.value) {
+    const value = d.device_id || d.display_name || '';
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const displayName = d.friendly_name || d.display_name || 'Display';
+    const guid = d.device_id || '';
+    const dispName = d.display_name || '';
+    const info = d.info as any;
+    let active: boolean | null = null;
+    if (info && typeof info === 'object' && 'active' in info) {
+      active = !!(info as any).active;
+    } else if (info) {
+      active = true;
+    }
+    const parts: string[] = [displayName];
+    if (guid) parts.push(guid);
+    if (dispName) {
+      const status = active === null ? '' : active ? ' (active)' : ' (inactive)';
+      parts.push(dispName + status);
+    }
+    opts.push({
+      label: parts.join(' — '),
+      value,
+      displayName,
+      id: guid,
+      active: active ?? undefined,
+    });
+  }
+  return opts;
+});
+
+function ensureDisplayDevicesLoaded() {
+  if (!displayDevicesLoading.value && displayDevices.value.length === 0) {
+    loadDisplayDevices();
+  }
+}
+
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const doCommands = normalizeCommands(entry.do);
   const undoCommands = normalizeCommands(entry.undo);
@@ -998,20 +1164,24 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
       : Number.parseInt(String(entry.perm ?? '0'), 10) || 0;
   const name = entry.name ?? '';
   const displayMode = entry.display_mode ?? '';
+  const outputOverride = entry.output_name_override ?? '';
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
+  const prefer10BitSdr = toBool(entry.prefer_10bit_sdr, true);
   const virtualDisplayMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualDisplayLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
   return {
     uuid: entry.uuid ?? '',
     name,
     displayMode,
+    outputOverride,
     perm,
     connected: !!entry.connected,
     allowClientCommands: allowCommands,
     enableLegacyOrdering: legacyOrdering,
     alwaysUseVirtualDisplay: alwaysVirtual,
+    prefer10BitSdr,
     virtualDisplayMode,
     virtualDisplayLayout,
     doCommands,
@@ -1019,10 +1189,12 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editing: false,
     editName: name,
     editDisplayMode: displayMode,
+    editPhysicalOutputOverride: outputOverride,
     editPerm: perm,
     editAllowClientCommands: allowCommands,
     editEnableLegacyOrdering: legacyOrdering,
     editAlwaysUseVirtualDisplay: alwaysVirtual,
+    editPrefer10BitSdr: prefer10BitSdr,
     editVirtualDisplayMode: virtualDisplayMode,
     editVirtualDisplayLayout: virtualDisplayLayout,
     editDo: doCommands.map(cloneCommand),
@@ -1033,10 +1205,12 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
 function resetClientEdits(client: ClientViewModel) {
   client.editName = client.name;
   client.editDisplayMode = client.displayMode;
+  client.editPhysicalOutputOverride = client.outputOverride;
   client.editPerm = client.perm;
   client.editAllowClientCommands = client.allowClientCommands;
   client.editEnableLegacyOrdering = client.enableLegacyOrdering;
   client.editAlwaysUseVirtualDisplay = client.alwaysUseVirtualDisplay;
+  client.editPrefer10BitSdr = client.prefer10BitSdr;
   client.editVirtualDisplayMode = client.virtualDisplayMode;
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
   client.editDo = client.doCommands.map(cloneCommand);
@@ -1061,6 +1235,9 @@ async function refreshClients(): Promise<void> {
         return nameA.localeCompare(nameB);
       });
       clients.value = mapped;
+      if (platform.value === 'windows') {
+        ensureDisplayDevicesLoaded();
+      }
     } else {
       clients.value = [];
     }
@@ -1073,6 +1250,17 @@ async function refreshClients(): Promise<void> {
 
 function commandList(client: ClientViewModel, type: CommandType): ClientCommand[] {
   return type === 'do' ? client.editDo : client.editUndo;
+}
+
+function getClientDisplaySelection(client: ClientViewModel): ClientDisplaySelection {
+  return client.editAlwaysUseVirtualDisplay ? 'virtual' : 'physical';
+}
+
+function setClientDisplaySelection(
+  client: ClientViewModel,
+  selection: ClientDisplaySelection | string,
+) {
+  client.editAlwaysUseVirtualDisplay = selection === 'virtual';
 }
 
 function addCmd(list: ClientCommand[], idx: number) {
@@ -1133,6 +1321,7 @@ function cancelEdit(client: ClientViewModel) {
 function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayload) {
   client.name = payload.name;
   client.displayMode = payload.display_mode;
+  client.outputOverride = payload.output_name_override;
   client.perm = payload.perm;
   client.allowClientCommands = payload.allow_client_commands;
   client.enableLegacyOrdering = payload.enable_legacy_ordering;
@@ -1152,6 +1341,8 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     return;
   }
   const trimmedName = client.editName.trim();
+  const trimmedPhysicalOutput = client.editPhysicalOutputOverride.trim();
+  const displaySelection = getClientDisplaySelection(client);
   const cleanedDo = client.editDo.reduce<ClientCommand[]>((acc, entry) => {
     const cmd = entry.cmd.trim();
     if (cmd) acc.push({ cmd, elevated: !!entry.elevated });
@@ -1166,11 +1357,13 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     uuid: client.uuid,
     name: trimmedName,
     display_mode: trimmedDisplayMode,
+    output_name_override: displaySelection === 'physical' ? trimmedPhysicalOutput : '',
     virtual_display_mode: client.editVirtualDisplayMode ?? '',
     virtual_display_layout: client.editVirtualDisplayLayout ?? '',
     allow_client_commands: !!client.editAllowClientCommands,
     enable_legacy_ordering: !!client.editEnableLegacyOrdering,
-    always_use_virtual_display: !!client.editAlwaysUseVirtualDisplay,
+    always_use_virtual_display: displaySelection === 'virtual',
+    prefer_10bit_sdr: !!client.editPrefer10BitSdr,
     perm: client.editPerm & permissionMapping._all,
     do: cleanedDo,
     undo: cleanedUndo,

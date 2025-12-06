@@ -1464,9 +1464,11 @@ namespace confighttp {
       std::string uuid = input_tree.value("uuid", "");
       std::string name = input_tree.value("name", "");
       std::string display_mode = input_tree.value("display_mode", "");
+      std::string output_name_override = input_tree.value("output_name_override", "");
       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
+      bool prefer_10bit_sdr = input_tree.value("prefer_10bit_sdr", true);
       std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
       std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
       auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
@@ -1476,6 +1478,7 @@ namespace confighttp {
         uuid,
         name,
         display_mode,
+        output_name_override,
         do_cmds,
         undo_cmds,
         perm,
@@ -1483,7 +1486,8 @@ namespace confighttp {
         allow_client_commands,
         always_use_virtual_display,
         virtual_display_mode,
-        virtual_display_layout
+        virtual_display_layout,
+        prefer_10bit_sdr
       );
       send_response(response, output_tree);
     } catch (std::exception &e) {

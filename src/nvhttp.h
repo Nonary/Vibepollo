@@ -214,6 +214,13 @@ namespace nvhttp {
   bool unpair_client(std::string_view uuid);
 
   /**
+   * @brief Get a client's prefer_10bit_sdr setting.
+   * @param uuid The UUID of the client.
+   * @return true if the client prefers 10-bit SDR (default), false otherwise.
+   */
+  bool get_client_prefer_10bit_sdr(const std::string &uuid);
+
+  /**
    * @brief Get all paired clients.
    * @return The list of all paired clients.
    * @examples
@@ -284,6 +291,7 @@ namespace nvhttp {
     const std::string &uuid,
     const std::string &name,
     const std::string &display_mode,
+    const std::string &output_name_override,
     const cmd_list_t &do_cmds,
     const cmd_list_t &undo_cmds,
     const crypto::PERM newPerm,
@@ -291,7 +299,8 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
-    const std::string &virtual_display_layout
+    const std::string &virtual_display_layout,
+    const bool prefer_10bit_sdr
   );
 
   /**

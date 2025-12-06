@@ -368,10 +368,14 @@ namespace nvhttp {
         if (!named_cert_p->virtual_display_layout_override.empty()) {
           named_cert_node["virtual_display_layout"] = named_cert_p->virtual_display_layout_override;
         }
+        if (!named_cert_p->output_name_override.empty()) {
+          named_cert_node["output_name_override"] = named_cert_p->output_name_override;
+        }
         named_cert_node["perm"] = static_cast<uint32_t>(named_cert_p->perm);
         named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
         named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
+        named_cert_node["prefer_10bit_sdr"] = named_cert_p->prefer_10bit_sdr;
 
         if (!named_cert_p->do_cmds.empty()) {
           nlohmann::json do_cmds_node = nlohmann::json::array();
@@ -527,10 +531,12 @@ namespace nvhttp {
             named_cert_p->cert = el.get<std::string>();
             named_cert_p->uuid = uuid_util::uuid_t::generate().string();
             named_cert_p->display_mode = "";
+            named_cert_p->output_name_override.clear();
             named_cert_p->perm = PERM::_all;
             named_cert_p->enable_legacy_ordering = true;
             named_cert_p->allow_client_commands = true;
             named_cert_p->always_use_virtual_display = false;
+            named_cert_p->prefer_10bit_sdr = true;
             client.named_devices.emplace_back(named_cert_p);
           }
         }
@@ -544,12 +550,14 @@ namespace nvhttp {
         named_cert_p->cert = el.value("cert", "");
         named_cert_p->uuid = el.value("uuid", "");
         named_cert_p->display_mode = el.value("display_mode", "");
+        named_cert_p->output_name_override = el.value("output_name_override", "");
         named_cert_p->virtual_display_mode_override = el.value("virtual_display_mode", "");
         named_cert_p->virtual_display_layout_override = el.value("virtual_display_layout", "");
         named_cert_p->perm = (PERM) (util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t) PERM::_all)) & PERM::_all;
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
         named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
+        named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", true);
         named_cert_p->do_cmds = extract_command_entries(el, "do");
         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
         client.named_devices.emplace_back(named_cert_p);
@@ -688,6 +696,9 @@ namespace nvhttp {
     launch_session->unique_id = named_cert_p->uuid;
     launch_session->perm = named_cert_p->perm;
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
+    if (!named_cert_p->output_name_override.empty()) {
+      launch_session->output_name_override = named_cert_p->output_name_override;
+    }
 
     if (launch_session->appid > 0) {
       try {
@@ -711,7 +722,7 @@ namespace nvhttp {
             launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
             launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
             launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
-            if (!app_ctx.output.empty()) {
+            if (!app_ctx.output.empty() && (!launch_session->output_name_override || launch_session->output_name_override->empty())) {
               launch_session->output_name_override = app_ctx.output;
             }
             launch_session->app_metadata = std::move(metadata);
@@ -937,6 +948,7 @@ namespace nvhttp {
       named_cert_p->enable_legacy_ordering = true;
       named_cert_p->allow_client_commands = true;
       named_cert_p->always_use_virtual_display = false;
+      named_cert_p->output_name_override.clear();
 
       auto it = map_id_sess.find(client.uniqueID);
       map_id_sess.erase(it);
@@ -1321,6 +1333,17 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  bool get_client_prefer_10bit_sdr(const std::string &uuid) {
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert->uuid == uuid) {
+        return named_cert->prefer_10bit_sdr;
+      }
+    }
+    // Default to true if client not found
+    return true;
+  }
+
   nlohmann::json get_all_clients() {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     client_t &client = client_root;
@@ -1331,12 +1354,14 @@ namespace nvhttp {
       named_cert_node["name"] = named_cert->name;
       named_cert_node["uuid"] = named_cert->uuid;
       named_cert_node["display_mode"] = named_cert->display_mode;
+      named_cert_node["output_name_override"] = named_cert->output_name_override;
       named_cert_node["virtual_display_mode"] = named_cert->virtual_display_mode_override;
       named_cert_node["virtual_display_layout"] = named_cert->virtual_display_layout_override;
       named_cert_node["perm"] = static_cast<uint32_t>(named_cert->perm);
       named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
       named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
       named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
+      named_cert_node["prefer_10bit_sdr"] = named_cert->prefer_10bit_sdr;
 
       // Add "do" commands if available
       if (!named_cert->do_cmds.empty()) {
@@ -1607,13 +1632,18 @@ namespace nvhttp {
       config_requests_virtual =
         *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
     }
+    const bool client_requests_virtual = named_cert_p->always_use_virtual_display;
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
     const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    bool request_virtual_display = config_requests_virtual || session_requests_virtual;
+    bool request_virtual_display = client_requests_virtual || config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
-    const auto requested_output_name = config::get_active_output_name();
+    const auto requested_output_name = app_output_override ? *app_output_override : config::get_active_output_name();
     const bool has_app_output_override = app_output_override.has_value();
+    if (has_app_output_override && !client_requests_virtual) {
+      request_virtual_display = false;
+      disable_virtual_display_request();
+    }
     if (!request_virtual_display && !requested_output_name.empty()) {
       if (!display_device::output_exists(requested_output_name)) {
         BOOST_LOG(warning) << "Requested display '" << requested_output_name
@@ -1627,13 +1657,6 @@ namespace nvhttp {
     if (is_input_only) {
       disable_virtual_display_request();
     } else {
-      bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
-      BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
-      const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-      BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-      bool request_virtual_display = config_requests_virtual || session_requests_virtual;
-      BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
-
       auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
         if (!should_request_virtual_display) {
           disable_virtual_display_request();
@@ -1864,6 +1887,10 @@ namespace nvhttp {
         request_virtual_display = true;
       }
       apply_virtual_display_request(request_virtual_display);
+      if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
+        config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
+        pending_output_override = launch_session->virtual_display_device_id;
+      }
     }
 #endif
 
@@ -2062,6 +2089,9 @@ namespace nvhttp {
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
     const bool no_active_sessions {rtsp_stream::session_count() == 0};
+    if (no_active_sessions) {
+      config::set_runtime_output_name_override(std::nullopt);
+    }
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
@@ -2079,13 +2109,22 @@ namespace nvhttp {
     }
 
     if (no_active_sessions) {
+      std::optional<std::string> session_output_override;
+      if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+        session_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
+      }
+      if (session_output_override &&
+          boost::iequals(*session_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+        launch_session->virtual_display = true;
+        session_output_override.reset();
+      }
+
       if (
-        launch_session->output_name_override &&
-        !launch_session->output_name_override->empty() &&
+        session_output_override &&
         !launch_session->virtual_display &&
-        !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)
+        !session_output_override->empty()
       ) {
-        config::set_runtime_output_name_override(*launch_session->output_name_override);
+        config::set_runtime_output_name_override(*session_output_override);
       }
 
       // Apply display configuration early if there are no active sessions
@@ -2583,6 +2622,7 @@ namespace nvhttp {
     const std::string &uuid,
     const std::string &name,
     const std::string &display_mode,
+    const std::string &output_name_override,
     const cmd_list_t &do_cmds,
     const cmd_list_t &undo_cmds,
     const crypto::PERM newPerm,
@@ -2590,7 +2630,8 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
-    const std::string &virtual_display_layout
+    const std::string &virtual_display_layout,
+    const bool prefer_10bit_sdr
   ) {
     find_and_udpate_session_info(uuid, name, newPerm);
 
@@ -2601,6 +2642,7 @@ namespace nvhttp {
       if (named_cert_p->uuid == uuid) {
         named_cert_p->name = name;
         named_cert_p->display_mode = display_mode;
+        named_cert_p->output_name_override = output_name_override;
         named_cert_p->perm = newPerm;
         named_cert_p->do_cmds = do_cmds;
         named_cert_p->undo_cmds = undo_cmds;
@@ -2609,6 +2651,7 @@ namespace nvhttp {
         named_cert_p->always_use_virtual_display = always_use_virtual_display;
         named_cert_p->virtual_display_mode_override = virtual_display_mode;
         named_cert_p->virtual_display_layout_override = virtual_display_layout;
+        named_cert_p->prefer_10bit_sdr = prefer_10bit_sdr;
         save_state();
         return true;
       }

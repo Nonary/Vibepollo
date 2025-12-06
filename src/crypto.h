@@ -101,6 +101,7 @@ namespace crypto {
     std::string uuid;
     std::string cert;
     std::string display_mode;
+    std::string output_name_override;
     std::string virtual_display_mode_override;
     std::string virtual_display_layout_override;
     std::list<command_entry_t> do_cmds;
@@ -109,6 +110,7 @@ namespace crypto {
     bool enable_legacy_ordering;
     bool allow_client_commands;
     bool always_use_virtual_display;
+    bool prefer_10bit_sdr;
   };
 
   using p_named_cert_t = std::shared_ptr<named_cert_t>;
