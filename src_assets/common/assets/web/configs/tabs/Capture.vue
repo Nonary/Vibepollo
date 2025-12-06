@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { NAlert, NButton, NInput, NModal, NRadio, NRadioGroup, NSelect } from 'naive-ui';
+import { NAlert, NButton, NCheckbox, NInput, NModal, NRadio, NRadioGroup, NSelect } from 'naive-ui';
 import NvidiaNvencEncoder from '@/configs/tabs/encoders/NvidiaNvencEncoder.vue';
 import IntelQuickSyncEncoder from '@/configs/tabs/encoders/IntelQuickSyncEncoder.vue';
 import AmdAmfEncoder from '@/configs/tabs/encoders/AmdAmfEncoder.vue';
@@ -385,6 +385,20 @@ const shouldShowVaapi = computed(
   () => (showAll() || props.currentTab === 'vaapi') && platform.value === 'linux',
 );
 const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw');
+
+const prefer10BitSdr = computed<boolean>({
+  get() {
+    const raw = (config.value as any)?.prefer_10bit_sdr;
+    if (raw === true || raw === false) return raw;
+    const normalized = String(raw ?? '').toLowerCase().trim();
+    if (['1', 'true', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
+    return true; // default is enabled
+  },
+  set(v: boolean) {
+    (config.value as any).prefer_10bit_sdr = v;
+  },
+});
 </script>
 
 <template>
@@ -409,6 +423,12 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
           :data-search-options="encoderOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
         />
         <n-text depth="3" class="text-[11px] block mt-1">{{ $t('config.encoder_desc') }}</n-text>
+      </div>
+      <div class="flex items-center gap-3">
+        <n-checkbox id="prefer_10bit_sdr" v-model:checked="prefer10BitSdr">
+          {{ $t('config.prefer_10bit_sdr') }}
+        </n-checkbox>
+        <n-text depth="3" class="text-[11px]">{{ $t('config.prefer_10bit_sdr_desc') }}</n-text>
       </div>
       <fieldset v-if="platform === 'windows'" class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25">
         <legend class="px-2 text-sm font-medium">Lossless Scaling</legend>

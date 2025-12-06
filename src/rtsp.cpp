@@ -1058,6 +1058,15 @@ namespace rtsp_stream {
       config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
     }
 
+    if (config::video.prefer_10bit_sdr && !session.enable_hdr && config.monitor.dynamicRange == 0) {
+      const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
+      const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
+      if (hevc_main10 || av1_main10) {
+        BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
+        config.monitor.dynamicRange = 1;
+      }
+    }
+
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up
     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate

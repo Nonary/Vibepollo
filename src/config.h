@@ -43,6 +43,7 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
+    bool prefer_10bit_sdr;
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
