@@ -283,7 +283,7 @@
     "virtual_display_status_label": "Sunshine virtual display driver:",
     "virtual_display_status_hint": "Use Sunshine's virtual display to spin up a high-refresh virtual monitor automatically. If the driver reports an error, reinstall Sunshine or repair the driver before streaming.",
     "app_virtual_display_mode_label": "App display preference",
-    "app_virtual_display_mode_hint": "This app overrides the client/global selection. Pick \"Use Physical Display\" to opt out of a global virtual display, or leave at reset to follow client/global.",
+    "app_virtual_display_mode_hint": "When this app runs on the Sunshine virtual display, choose whether to use a per-client or shared virtual screen and configure the layout below. Reset to follow the global display configuration.",
     "app_virtual_display_mode_follow_global": "Following the global display configuration.",
     "app_virtual_display_mode_reset": "Reset to global display",
     "app_virtual_display_layout_reset": "Reset to global layout",

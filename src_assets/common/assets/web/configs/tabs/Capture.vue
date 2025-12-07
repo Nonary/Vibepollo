@@ -424,11 +424,11 @@ const prefer10BitSdr = computed<boolean>({
         />
         <n-text depth="3" class="text-[11px] block mt-1">{{ $t('config.encoder_desc') }}</n-text>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="space-y-1">
         <n-checkbox id="prefer_10bit_sdr" v-model:checked="prefer10BitSdr">
           {{ $t('config.prefer_10bit_sdr') }}
         </n-checkbox>
-        <n-text depth="3" class="text-[11px]">{{ $t('config.prefer_10bit_sdr_desc') }}</n-text>
+        <n-text depth="3" class="text-[11px] block">{{ $t('config.prefer_10bit_sdr_desc') }}</n-text>
       </div>
       <fieldset v-if="platform === 'windows'" class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25">
         <legend class="px-2 text-sm font-medium">Lossless Scaling</legend>
