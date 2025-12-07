@@ -50,7 +50,9 @@ async function loadDisplayDevices() {
   loading.value = true;
   loadError.value = '';
   try {
-    const res = await http.get<DisplayDevice[]>('/api/display-devices');
+    const res = await http.get<DisplayDevice[]>('/api/display-devices', {
+      params: { detail: 'full' },
+    });
     const arr = Array.isArray(res.data) ? res.data : [];
     devices.value = arr;
   } catch (e: any) {

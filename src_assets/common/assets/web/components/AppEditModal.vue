@@ -559,6 +559,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 }
 
 function toServerPayload(f: AppForm): Record<string, any> {
+  const selection = displaySelection.value;
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
@@ -651,7 +652,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   // Only persist output if it differs from global output (including virtual selection flag)
   if (typeof f.output === 'string') {
     const curOut = String(f.output || '');
-    if (curOut !== '' && curOut !== _globalOutput) {
+    if (curOut !== '' && (curOut !== _globalOutput || selection === 'physical')) {
       payload['output'] = curOut;
     }
   }
@@ -1243,8 +1244,11 @@ const displaySelection = computed<DisplaySelection>({
     if (currentOutput) {
       return 'physical';
     }
+    if (appMode === 'disabled') {
+      return 'physical';
+    }
     if (appMode !== null && appMode !== globalMode) {
-      return appMode === 'disabled' ? 'physical' : 'virtual';
+      return 'virtual';
     }
     return 'global';
   },
@@ -1538,6 +1542,9 @@ watch(
     ) {
       loadDisplayDevices().catch(() => { });
     }
+    if (selection === 'physical' && !form.value.ddConfigurationOption) {
+      form.value.ddConfigurationOption = 'verify_only';
+    }
   },
 );
 
@@ -1741,6 +1748,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       }));
       let highestFailUnder144: number | null = null;
       let only144Fails = false;
+      const edidSupport: Record<string, boolean | null> = {};
+      let edidCapHz: number | null = null;
+      let edidFetchError: string | null = null;
 
       if (!usingVirtual) {
         if (displayResult.status === 'fulfilled') {
@@ -1779,14 +1789,70 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                 (target as any)?.supported_refresh_rates ??
                 (target as any)?.supportedRefreshRates;
               const supportedRates = parseRefreshList(supportedRatesRaw);
-              const highestSupported =
+              const highestSupportedDxgi =
                 supportedRates.length > 0 ? supportedRates[supportedRates.length - 1] : null;
+
+              try {
+                const deviceHint = displayId || displayLabel;
+                if (deviceHint) {
+                  const edidRes = await http.get('/api/framegen/edid-refresh', {
+                    params: {
+                      device_id: deviceHint,
+                      targets: fpsTargets.map((fps) => fps * 2).join(','),
+                    },
+                    validateStatus: () => true,
+                  });
+                  if (edidRes.status >= 200 && edidRes.status < 300 && edidRes.data && edidRes.data.status !== false) {
+                    const data: any = edidRes.data;
+                    if (!displayLabel && typeof data?.device_label === 'string') {
+                      displayLabel = data.device_label;
+                    }
+                    const rangeHz = parseRefreshHz((data as any)?.max_vertical_hz);
+                    const timingHz = parseRefreshHz((data as any)?.max_timing_hz);
+                    const capCandidate =
+                      rangeHz !== null && rangeHz > 0
+                        ? rangeHz
+                        : timingHz !== null && timingHz > 0
+                          ? timingHz
+                          : null;
+                    if (capCandidate !== null) {
+                      edidCapHz = capCandidate;
+                    }
+                    const targetEntries = Array.isArray((data as any)?.targets) ? (data as any).targets : [];
+                    for (const entry of targetEntries) {
+                      const hz = parseRefreshHz((entry as any)?.hz);
+                      if (hz === null) continue;
+                      const key = hz.toFixed(3);
+                      if (typeof (entry as any)?.supported === 'boolean') {
+                        edidSupport[key] = (entry as any).supported;
+                      } else if (!(key in edidSupport)) {
+                        edidSupport[key] = null;
+                      }
+                    }
+                  } else if (edidRes.data && typeof (edidRes.data as any).error === 'string') {
+                    edidFetchError = (edidRes.data as any).error;
+                  }
+                }
+              } catch (e: any) {
+                if (!edidFetchError) {
+                  edidFetchError = e?.message || 'EDID refresh validation failed.';
+                }
+              }
+
+              let highestSupported =
+                edidCapHz !== null && Number.isFinite(edidCapHz) ? edidCapHz : highestSupportedDxgi;
 
               displayHz = activeRefresh;
               displayTargets = fpsTargets.map((fps) => {
                 const required = fps * 2;
+                const edidKey = required.toFixed(3);
                 let supported: boolean | null;
-                if (supportedRates.length > 0) {
+                if (
+                  Object.prototype.hasOwnProperty.call(edidSupport, edidKey) &&
+                  typeof edidSupport[edidKey] === 'boolean'
+                ) {
+                  supported = edidSupport[edidKey] as boolean;
+                } else if (supportedRates.length > 0) {
                   supported = supportedRates.some((rate) => rate >= required - tolerance);
                 } else if (activeRefresh !== null) {
                   supported = activeRefresh >= required - tolerance;
@@ -1813,6 +1879,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                 highestSupported !== null &&
                 hasActive &&
                 Math.abs(highestSupported - activeRefresh) > tolerance;
+              if (!displayError && edidFetchError) {
+                displayError = edidFetchError;
+              }
 
               if (evaluationHz === null) {
                 displayStatus = 'unknown';
