@@ -706,8 +706,12 @@ namespace nvhttp {
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
             launch_session->virtual_display = app_ctx.virtual_screen;
-            launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
-            launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+            if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
+              launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
+            }
+            if (!launch_session->virtual_display_layout_override && app_ctx.virtual_display_layout_override) {
+              launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+            }
             launch_session->app_metadata = std::move(metadata);
             break;
           }
