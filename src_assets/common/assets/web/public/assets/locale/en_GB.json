@@ -201,7 +201,7 @@
     "dd_virtual_display_choice_virtual": "Use virtualised display",
     "dd_virtual_display_choice_physical": "Use my own display",
     "app_virtual_display_mode_label": "App display preference",
-    "app_virtual_display_mode_hint": "Override the physical/virtual display selection used when this application starts.",
+    "app_virtual_display_mode_hint": "When this app runs on the Sunshine virtual display, choose whether to use a per-client or shared virtual screen and configure the layout below. Reset to follow the global display configuration.",
     "app_virtual_display_mode_follow_global": "Following the global display configuration.",
     "app_virtual_display_mode_reset": "Reset to global display",
     "app_virtual_display_layout_reset": "Reset to global layout",
