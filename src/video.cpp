@@ -487,6 +487,16 @@ namespace video {
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
     int convert(platf::img_t &img) override {
+      // Verify sw_frame and sws_output_frame are initialized before using them
+      if (!sw_frame) {
+        BOOST_LOG(error) << "sw_frame is null in convert() - this should never happen!";
+        return -1;
+      }
+      if (!sws_output_frame) {
+        BOOST_LOG(error) << "sws_output_frame is null in convert() - this should never happen!";
+        return -1;
+      }
+
       // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
       bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
@@ -533,6 +543,11 @@ namespace video {
     }
 
     int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) override {
+      if (!frame) {
+        BOOST_LOG(error) << "set_frame called with null frame pointer!";
+        return -1;
+      }
+
       this->frame = frame;
 
       // If it's a hwframe, allocate buffers for hardware
