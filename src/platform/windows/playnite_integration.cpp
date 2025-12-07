@@ -1346,7 +1346,8 @@ namespace platf::playnite {
     // 3) Launch Playnite (impersonates active user when running as SYSTEM)
     std::filesystem::path exePath = exe;
     std::filesystem::path startDir = exePath.parent_path();
-    std::string cmd = platf::to_utf8(exe);
+    // Quote the command to survive paths with spaces (new bp::run_command expects a full command line)
+    std::string cmd = "\"" + platf::to_utf8(exe) + "\"";
     std::error_code ec_launch;
     // platf::run_command expects a boost::filesystem::path&
     boost::filesystem::path boostStartDir = boost::filesystem::path(startDir.wstring());
