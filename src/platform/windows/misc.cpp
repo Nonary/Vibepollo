@@ -532,31 +532,61 @@ namespace platf {
    * @return A `bp::child` object representing the new process, or an empty `bp::child` object if the launch failed.
    */
   bp::child create_boost_child_from_results(bool process_launched, const std::string &cmd, std::error_code &ec, PROCESS_INFORMATION &process_info) {
-    // Use RAII to ensure the process is closed when we're done with it, even if there was an error.
-    auto close_process_handles = util::fail_guard([process_launched, process_info]() {
-      if (process_launched) {
+    // Always close the thread handle - we don't need it for waiting
+    auto close_thread_handle = util::fail_guard([process_launched, &process_info]() {
+      if (process_launched && process_info.hThread) {
         CloseHandle(process_info.hThread);
+        process_info.hThread = nullptr;
+      }
+    });
+
+    // Only close the process handle on failure - on success, v2::process takes ownership
+    auto close_process_handle = util::fail_guard([process_launched, &process_info]() {
+      if (process_launched && process_info.hProcess) {
         CloseHandle(process_info.hProcess);
+        process_info.hProcess = nullptr;
       }
     });
 
     if (ec) {
-      // If there was an error, return an empty bp::child object
+      // If there was an error, return an empty bp::child object (fail_guard will close handles)
       return bp::child();
     }
 
     if (process_launched) {
-      // If the launch was successful, create a new bp::child object representing the new process
-      auto child = bp::child((bp::pid_t) process_info.dwProcessId);
-      BOOST_LOG(info) << cmd << " running with PID "sv << child.id();
-      return child;
+      BOOST_LOG(info) << cmd << " running with PID "sv << process_info.dwProcessId;
+
+      // SECURITY NOTE: We construct v2::process directly from the native process handle obtained
+      // from CreateProcessAsUserW, rather than using OpenProcess(pid). This is important because:
+      //
+      // 1. The handle was obtained during process creation with the user's token, so it has exactly
+      //    the access rights appropriate for that context - no more, no less.
+      //
+      // 2. Using OpenProcess(PROCESS_ALL_ACCESS, pid) from a SYSTEM context could potentially grant
+      //    broader access rights than intended, and is susceptible to PID race conditions where we
+      //    might open a different process if the original exited and PIDs were recycled.
+      //
+      // 3. This approach is also more reliable: OpenProcess() can fail if the process was created
+      //    under a different user context via CreateProcessAsUserW, causing wait() to malfunction.
+      //
+      // v2::process takes ownership of the handle, so we must disable our cleanup guard.
+      // The v2::process constructor is noexcept, so there's no risk of handle leakage.
+      close_process_handle.disable();
+
+      boost::process::v2::process proc(
+        boost::asio::system_executor(),
+        static_cast<boost::process::v2::pid_type>(process_info.dwProcessId),
+        process_info.hProcess
+      );
+      return bp::child(std::move(proc));
     } else {
       auto winerror = GetLastError();
       BOOST_LOG(error) << "Failed to launch process: "sv << winerror;
       ec = std::make_error_code(std::errc::invalid_argument);
-      // We must NOT attach the failed process here, since this case can potentially be induced by ACL
-      // manipulation (denying yourself execute permission) to cause an escalation of privilege.
-      // So to protect ourselves against that, we'll return an empty child process instead.
+      // SECURITY: We must NOT attach to any process here. If CreateProcess failed, an attacker
+      // could potentially manipulate ACLs to induce a failure, then race to create their own
+      // process with the same PID. Attaching by PID would then give us a handle to the attacker's
+      // process, potentially enabling privilege escalation. Return empty child instead.
       return bp::child();
     }
   }

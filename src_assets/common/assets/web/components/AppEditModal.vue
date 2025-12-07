@@ -104,19 +104,17 @@
               <p class="text-[11px] opacity-70">{{ t('config.app_display_override_hint') }}</p>
             </div>
             <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  {{ t('config.app_display_override_virtual') }}
-                </span>
-              </div>
-              <n-radio-group v-model:value="displaySelection" class="flex flex-wrap gap-4">
+              <n-radio-group v-model:value="displaySelection" class="grid gap-3 sm:grid-cols-2">
                 <n-radio value="virtual" class="app-radio-card cursor-pointer">
                   <span class="app-radio-card-title">{{ t('config.app_display_override_virtual') }}</span>
+                </n-radio>
+                <n-radio value="physical" class="app-radio-card cursor-pointer">
+                  <span class="app-radio-card-title">{{ t('config.app_display_override_physical') }}</span>
                 </n-radio>
               </n-radio-group>
             </div>
 
-            <div class="space-y-2">
+            <div v-if="displaySelection === 'physical'" class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
                   {{ t('config.app_display_physical_label') }}
@@ -1038,12 +1036,6 @@ function setScalingMode(profile: LosslessProfileKey, value: LosslessScalingMode)
     overrides.resolutionScale = null;
   }
   if (profile === activeLosslessProfile.value) {
-    if (value !== 'off' && !form.value.losslessScalingEnabled) {
-      form.value.losslessScalingEnabled = true;
-    }
-    if (value === 'off' && !losslessFrameGenEnabled.value) {
-      form.value.losslessScalingEnabled = false;
-    }
   }
 }
 
@@ -1378,7 +1370,7 @@ const APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string>
   shared: 'config.virtual_display_mode_shared',
 };
 const appVirtualDisplayModeOptions = computed(() =>
-  APP_VIRTUAL_DISPLAY_MODES.map((value) => ({
+  APP_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled').map((value) => ({
     value,
     label: t(APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
   })),
@@ -1515,6 +1507,7 @@ const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
+const displayNameCache = ref<Record<string, string>>({});
 const physicalOutputModel = computed<string | null>({
   get: () => {
     const value = typeof form.value.output === 'string' ? form.value.output.trim() : '';
@@ -1542,13 +1535,41 @@ async function loadDisplayDevices(): Promise<void> {
     const res = await http.get<DisplayDevice[]>('/api/display-devices', {
       params: { detail: 'full' },
     });
-    displayDevices.value = Array.isArray(res.data) ? res.data : [];
+    const devices = Array.isArray(res.data) ? res.data : [];
+    displayDevices.value = devices;
+    cacheDisplayNames(devices);
   } catch (e: any) {
     displayDevicesError.value = e?.message || 'Failed to load display devices';
     displayDevices.value = [];
   } finally {
     displayDevicesLoading.value = false;
   }
+}
+
+function normalizeDisplayKey(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
+}
+
+function cacheDisplayNames(devices: DisplayDevice[]): void {
+  if (!devices.length) return;
+  const updated = { ...displayNameCache.value };
+  for (const device of devices) {
+    const label = device.friendly_name || device.display_name;
+    if (!label) continue;
+    for (const candidate of [device.device_id, device.display_name]) {
+      const key = normalizeDisplayKey(candidate);
+      if (!key) continue;
+      updated[key] = label;
+    }
+  }
+  displayNameCache.value = updated;
+}
+
+function getCachedDisplayLabel(value: string): string | null {
+  const key = normalizeDisplayKey(value);
+  if (!key) return null;
+  return displayNameCache.value[key] ?? null;
 }
 
 const displayDeviceOptions = computed(() => {
@@ -1586,11 +1607,13 @@ const displayDeviceOptions = computed(() => {
   }
   const current = typeof form.value.output === 'string' ? form.value.output.trim() : '';
   if (current && !seen.has(current)) {
-    opts.push({ label: current, value: current, displayName: current, id: current, active: null });
+    const label = getCachedDisplayLabel(current) ?? current;
+    opts.push({ label, value: current, displayName: label, id: current, active: null });
   }
   if (lastPhysicalOutput.value && !seen.has(lastPhysicalOutput.value) && lastPhysicalOutput.value !== current) {
     const id = lastPhysicalOutput.value;
-    opts.push({ label: id, value: id, displayName: id, id, active: null });
+    const label = getCachedDisplayLabel(id) ?? id;
+    opts.push({ label, value: id, displayName: label, id, active: null });
   }
   return opts;
 });

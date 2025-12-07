@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(rg:*)",
+      "Bash(PATH=\"D:/Software/MSYS2/ucrt64/bin;$env:PATH\" D:/Software/MSYS2/ucrt64/bin/cmake.exe:*)",
+      "Bash(Select-Object -First 50)",
+      "Bash(PATH=\"D:/Software/MSYS2/ucrt64/bin:$PATH\" cmake --build:*)"
     ],
     "deny": [],
     "ask": []

@@ -319,7 +319,7 @@
     "virtual_display_layout_extended_primary_isolated": "Extended + Primary (Isolated)",
     "virtual_display_layout_extended_primary_isolated_desc": "Combine primary + isolation: make the virtual display primary while keeping it out of reach of physical monitors.",
     "app_virtual_display_mode_label": "App display preference",
-    "app_virtual_display_mode_hint": "This app overrides the client/global selection. Pick \"Use Physical Display\" to opt out of a global virtual display, or leave at reset to follow client/global.",
+    "app_virtual_display_mode_hint": "When this app runs on the Sunshine virtual display, choose whether to use a per-client or shared virtual screen and configure the layout below. Reset to follow the global display configuration.",
     "app_virtual_display_mode_follow_global": "Following the global display configuration.",
     "app_virtual_display_mode_reset": "Reset to global display",
     "app_virtual_display_layout_reset": "Reset to global layout",
