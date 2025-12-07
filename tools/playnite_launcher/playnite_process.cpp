@@ -152,37 +152,61 @@ namespace playnite_launcher::playnite {
   }
 
   bool launch_uri_detached_parented(const std::wstring &uri) {
+    // Try to parent the explorer-launched process to the shell; fall back to a vanilla launch if that fails.
     HANDLE parent = open_explorer_parent_handle();
     if (!parent) {
       BOOST_LOG(warning) << "Unable to open explorer.exe as parent; proceeding without parent override";
     }
-    STARTUPINFOEXW si {};
-    si.StartupInfo.cb = sizeof(si);
-    LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
-    if (parent && !assign_parent_attributes(parent, si, attrList)) {
-      CloseHandle(parent);
-      parent = nullptr;
+
+    auto attempt_launch = [&](bool use_parent) -> std::pair<bool, DWORD> {
+      STARTUPINFOEXW si {};
+      si.StartupInfo.cb = sizeof(si);
+      LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
+
+      if (use_parent) {
+        if (!assign_parent_attributes(parent, si, attrList)) {
+          // Attribute wiring failed; drop back to a non-parented launch.
+          use_parent = false;
+        }
+      }
+
+      std::wstring exe = get_explorer_path();
+      std::wstring cmd = L"\"" + exe + L"\"";
+      if (!uri.empty()) {
+        cmd += L" ";
+        cmd += uri;
+      }
+
+      DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
+      if (use_parent) {
+        flags |= EXTENDED_STARTUPINFO_PRESENT;
+      }
+
+      PROCESS_INFORMATION pi {};
+      BOOL ok = launch_detached_command(exe.c_str(), cmd, si, pi, flags);
+      DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+
+      free_parent_attributes(attrList);
+      if (ok) {
+        close_process_info(pi);
+      }
+      return {ok != FALSE, err};
+    };
+
+    auto result = attempt_launch(parent != nullptr);
+    if (!result.first && result.second == ERROR_INVALID_HANDLE) {
+      BOOST_LOG(warning) << "CreateProcessW(explorer uri) failed with ERROR_INVALID_HANDLE; retrying without explicit parent";
+      result = attempt_launch(false);
     }
-    std::wstring exe = get_explorer_path();
-    std::wstring cmd = L"\"" + exe + L"\"";
-    if (!uri.empty()) {
-      cmd += L" ";
-      cmd += uri;
-    }
-    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
-                  CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
-    PROCESS_INFORMATION pi {};
-    BOOL ok = launch_detached_command(exe.c_str(), cmd, si, pi, flags);
-    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
-    free_parent_attributes(attrList);
+
     if (parent) {
       CloseHandle(parent);
     }
-    if (!ok) {
-      BOOST_LOG(warning) << "CreateProcessW(explorer uri) failed: " << err;
+
+    if (!result.first) {
+      BOOST_LOG(warning) << "CreateProcessW(explorer uri) failed: " << result.second;
       return false;
     }
-    close_process_info(pi);
     return true;
   }
 
