@@ -386,7 +386,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             </div>
             <div
               :class="[
-                'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[12px] font-semibold',
+                'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[12px] font-semibold whitespace-nowrap',
                 statusClasses(row.status),
               ]"
             >

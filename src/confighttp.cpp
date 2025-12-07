@@ -525,6 +525,98 @@ namespace confighttp {
 
 #ifdef _WIN32
   /**
+   * @brief Validate refresh capabilities for a display via EDID for frame generation health checks.
+   * @api_examples{/api/framegen/edid-refresh?device_id=\\.\DISPLAY1| GET| {"status":true,"targets":[{"hz":120,"supported":true,"method":"range"}]}}
+   */
+  void getFramegenEdidRefresh(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    try {
+      const auto query = request->parse_query_string();
+      auto read_first = [&](std::initializer_list<std::string> keys) -> std::string {
+        for (const auto &key : keys) {
+          const auto it = query.find(key);
+          if (it != query.end()) {
+            auto value = boost::algorithm::trim_copy(it->second);
+            if (!value.empty()) {
+              return value;
+            }
+          }
+        }
+        return {};
+      };
+
+      std::string device_hint = read_first({"device_id", "device", "id", "display"});
+      if (device_hint.empty()) {
+        bad_request(response, request, "device_id query parameter is required");
+        return;
+      }
+
+      std::vector<int> targets {120, 180, 240, 288};
+      if (const auto it = query.find("targets"); it != query.end()) {
+        std::vector<int> parsed;
+        std::vector<std::string> parts;
+        boost::split(parts, it->second, boost::is_any_of(","));
+        for (auto part : parts) {
+          boost::algorithm::trim(part);
+          if (part.empty()) {
+            continue;
+          }
+          try {
+            int hz = std::stoi(part);
+            if (hz > 0) {
+              parsed.push_back(hz);
+            }
+          } catch (...) {
+            // ignore invalid entries
+          }
+        }
+        if (!parsed.empty()) {
+          targets = std::move(parsed);
+        }
+      }
+
+      auto result = display_helper_integration::framegen_edid_refresh_support(device_hint, targets);
+      nlohmann::json out;
+      if (!result) {
+        out["status"] = false;
+        out["error"] = "Display device not found for EDID refresh validation.";
+        send_response(response, out);
+        return;
+      }
+
+      out["status"] = true;
+      out["device_id"] = result->device_id;
+      out["device_label"] = result->device_label;
+      out["edid_present"] = result->edid_present;
+      if (result->max_vertical_hz) {
+        out["max_vertical_hz"] = *result->max_vertical_hz;
+      }
+      if (result->max_timing_hz) {
+        out["max_timing_hz"] = *result->max_timing_hz;
+      }
+
+      nlohmann::json targets_json = nlohmann::json::array();
+      for (const auto &entry : result->targets) {
+        nlohmann::json target_json;
+        target_json["hz"] = entry.hz;
+        target_json["supported"] = entry.supported.has_value() ? nlohmann::json(*entry.supported) : nlohmann::json(nullptr);
+        target_json["method"] = entry.method;
+        targets_json.push_back(std::move(target_json));
+      }
+      out["targets"] = std::move(targets_json);
+
+      send_response(response, out);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    } catch (...) {
+      bad_request(response, request, "Failed to validate display refresh via EDID.");
+    }
+  }
+
+  /**
    * @brief Health check for ViGEm (Virtual Gamepad) installation on Windows.
    * @api_examples{/api/health/vigem| GET| {"installed":true,"version":"<hint>"}}
    */
@@ -2740,6 +2832,7 @@ namespace confighttp {
     server.resource["^/api/password$"]["POST"] = savePassword;
     server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
 #ifdef _WIN32
+    server.resource["^/api/framegen/edid-refresh$"]["GET"] = getFramegenEdidRefresh;
     server.resource["^/api/health/vigem$"]["GET"] = getVigemHealth;
     server.resource["^/api/health/crashdump$"]["GET"] = getCrashDumpStatus;
     server.resource["^/api/health/crashdump/dismiss$"]["POST"] = postCrashDumpDismiss;

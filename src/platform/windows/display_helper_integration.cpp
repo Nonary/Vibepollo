@@ -7,6 +7,7 @@
 
   // standard
   #include <algorithm>
+  #include <cmath>
   #include <chrono>
   #include <filesystem>
   #include <mutex>
@@ -21,6 +22,7 @@
   #include <display_device/json.h>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_api_recovery.h>
+  #include <display_device/windows/win_api_utils.h>
   #include <display_device/windows/win_display_device.h>
   #include <nlohmann/json.hpp>
 
@@ -970,6 +972,234 @@ namespace display_helper_integration {
     const bool ok = platf::display_helper_client::send_snapshot_current(build_snapshot_exclude_payload());
     BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT dispatch result=" << (ok ? "true" : "false");
     return ok;
+  }
+
+  namespace {
+    constexpr double kEdidRefreshToleranceHz = 0.5;
+
+    struct ParsedEdidRefreshInfo {
+      bool present {false};
+      std::optional<int> max_vertical_hz;
+      double max_timing_hz {0.0};
+    };
+
+    void consider_timing(double hz, ParsedEdidRefreshInfo &out) {
+      if (!std::isfinite(hz) || hz <= 0.0) {
+        return;
+      }
+      if (hz > out.max_timing_hz) {
+        out.max_timing_hz = hz;
+      }
+    }
+
+    void parse_detailed_descriptor(const uint8_t *descriptor, ParsedEdidRefreshInfo &out) {
+      if (!descriptor) {
+        return;
+      }
+
+      const uint16_t pixel_clock = static_cast<uint16_t>(descriptor[0] | (static_cast<uint16_t>(descriptor[1]) << 8));
+      if (pixel_clock == 0) {
+        if (descriptor[3] == 0xFD) {
+          const int max_vertical = static_cast<int>(descriptor[6]);
+          if (max_vertical > 0 && max_vertical < 2000) {
+            if (!out.max_vertical_hz || max_vertical > *out.max_vertical_hz) {
+              out.max_vertical_hz = max_vertical;
+            }
+          }
+        }
+        return;
+      }
+
+      const uint16_t h_active = static_cast<uint16_t>(descriptor[2] | (static_cast<uint16_t>(descriptor[4] & 0xF0) << 4));
+      const uint16_t h_blanking = static_cast<uint16_t>(descriptor[3] | (static_cast<uint16_t>(descriptor[4] & 0x0F) << 8));
+      const uint16_t v_active = static_cast<uint16_t>(descriptor[5] | (static_cast<uint16_t>(descriptor[7] & 0xF0) << 4));
+      const uint16_t v_blanking = static_cast<uint16_t>(descriptor[6] | (static_cast<uint16_t>(descriptor[7] & 0x0F) << 8));
+      const uint32_t h_total = static_cast<uint32_t>(h_active) + static_cast<uint32_t>(h_blanking);
+      const uint32_t v_total = static_cast<uint32_t>(v_active) + static_cast<uint32_t>(v_blanking);
+      if (h_total == 0 || v_total == 0) {
+        return;
+      }
+
+      const double pixel_clock_hz = static_cast<double>(pixel_clock) * 10000.0;
+      double refresh_hz = pixel_clock_hz / (static_cast<double>(h_total) * static_cast<double>(v_total));
+      if ((descriptor[17] & 0x80) != 0) {
+        refresh_hz *= 2.0;
+      }
+
+      consider_timing(refresh_hz, out);
+    }
+
+    ParsedEdidRefreshInfo parse_edid_refresh(const std::vector<std::byte> &edid) {
+      ParsedEdidRefreshInfo info;
+      if (edid.empty()) {
+        return info;
+      }
+      info.present = true;
+      if (edid.size() < 128) {
+        return info;
+      }
+
+      const auto *bytes = reinterpret_cast<const uint8_t *>(edid.data());
+      const auto parse_block_descriptors = [&](const uint8_t *block, std::size_t start, std::size_t end) {
+        if (!block || start >= end) {
+          return;
+        }
+        for (std::size_t offset = start; offset + 17 < end; offset += 18) {
+          parse_detailed_descriptor(block + offset, info);
+        }
+      };
+
+      parse_block_descriptors(bytes, 54, 126);
+
+      const std::size_t block_count = edid.size() / 128;
+      const uint8_t extension_count = bytes[126];
+      const std::size_t max_extensions = std::min<std::size_t>(extension_count, block_count > 0 ? block_count - 1 : 0);
+      for (std::size_t idx = 0; idx < max_extensions; ++idx) {
+        const std::size_t block_start = (idx + 1) * 128;
+        if (block_start + 128 > edid.size()) {
+          break;
+        }
+        const auto *ext = bytes + block_start;
+        if (ext[0] == 0x02) {
+          const uint8_t dtd_offset = ext[2];
+          if (dtd_offset >= 4 && dtd_offset < 127) {
+            const std::size_t start = block_start + dtd_offset;
+            const std::size_t end = block_start + 127;
+            for (std::size_t offset = start; offset + 17 < end; offset += 18) {
+              parse_detailed_descriptor(bytes + offset, info);
+            }
+          }
+        }
+      }
+
+      return info;
+    }
+
+    std::vector<std::byte> read_edid_for_device_id(const std::string &device_id) {
+      if (device_id.empty()) {
+        return {};
+      }
+      try {
+        display_device::DisplayRecoveryBehaviorGuard guard(display_device::DisplayRecoveryBehavior::Skip);
+        auto api = std::make_shared<display_device::WinApiLayer>();
+        auto display_data = api->queryDisplayConfig(display_device::QueryType::All);
+        if (!display_data) {
+          return {};
+        }
+
+        auto source_data = display_device::win_utils::collectSourceDataForMatchingPaths(*api, display_data->m_paths);
+        auto it = source_data.find(device_id);
+        if (it == source_data.end()) {
+          for (const auto &entry : source_data) {
+            if (boost::iequals(entry.first, device_id)) {
+              it = source_data.find(entry.first);
+              break;
+            }
+          }
+        }
+
+        if (it == source_data.end() || it->second.m_source_id_to_path_index.empty()) {
+          return {};
+        }
+
+        const UINT32 source_id = it->second.m_active_source.value_or(it->second.m_source_id_to_path_index.begin()->first);
+        const auto path_it = it->second.m_source_id_to_path_index.find(source_id);
+        if (path_it == it->second.m_source_id_to_path_index.end()) {
+          return {};
+        }
+
+        const std::size_t path_index = path_it->second;
+        if (path_index >= display_data->m_paths.size()) {
+          return {};
+        }
+
+        const auto &path = display_data->m_paths[path_index];
+        return api->getEdid(path);
+      } catch (const std::exception &ex) {
+        BOOST_LOG(warning) << "Display helper: failed to read EDID for device " << device_id << ": " << ex.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Display helper: failed to read EDID for device " << device_id << " due to unknown error.";
+      }
+
+      return {};
+    }
+
+    std::optional<display_device::EnumeratedDevice> find_device_for_hint(const std::string &hint) {
+      if (hint.empty()) {
+        return std::nullopt;
+      }
+
+      auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return std::nullopt;
+      }
+
+      for (const auto &device : *devices) {
+        if (device_id_equals_ci(device.m_device_id, hint) || device_id_equals_ci(device.m_display_name, hint) ||
+            device_id_equals_ci(device.m_friendly_name, hint)) {
+          return device;
+        }
+      }
+
+      return std::nullopt;
+    }
+  }  // namespace
+
+  std::optional<FramegenEdidSupportResult> framegen_edid_refresh_support(
+    const std::string &device_hint,
+    const std::vector<int> &targets_hz
+  ) {
+    const auto resolved_device = find_device_for_hint(device_hint);
+    if (!resolved_device) {
+      return std::nullopt;
+    }
+
+    FramegenEdidSupportResult result;
+    result.device_id = resolved_device->m_device_id;
+    if (!resolved_device->m_friendly_name.empty()) {
+      result.device_label = resolved_device->m_friendly_name;
+    } else if (!resolved_device->m_display_name.empty()) {
+      result.device_label = resolved_device->m_display_name;
+    } else {
+      result.device_label = resolved_device->m_device_id;
+    }
+
+    const auto edid_bytes = read_edid_for_device_id(result.device_id);
+    const auto parsed = parse_edid_refresh(edid_bytes);
+    result.edid_present = parsed.present;
+    if (parsed.max_vertical_hz) {
+      result.max_vertical_hz = parsed.max_vertical_hz;
+    }
+    if (parsed.max_timing_hz > 0.0) {
+      result.max_timing_hz = parsed.max_timing_hz;
+    }
+
+    for (int hz : targets_hz) {
+      FramegenEdidTargetSupport target {};
+      target.hz = hz;
+      if (!parsed.present || edid_bytes.empty()) {
+        target.supported = std::nullopt;
+        target.method = "unknown";
+      } else if (parsed.max_vertical_hz && static_cast<double>(*parsed.max_vertical_hz) + kEdidRefreshToleranceHz >= static_cast<double>(hz)) {
+        target.supported = true;
+        target.method = "range";
+      } else if (parsed.max_timing_hz > 0.0 && parsed.max_timing_hz + kEdidRefreshToleranceHz >= static_cast<double>(hz)) {
+        target.supported = true;
+        target.method = "timing";
+      } else if (parsed.max_vertical_hz) {
+        target.supported = false;
+        target.method = "range";
+      } else if (parsed.max_timing_hz > 0.0) {
+        target.supported = false;
+        target.method = "timing";
+      } else {
+        target.supported = std::nullopt;
+        target.method = "unknown";
+      }
+      result.targets.push_back(std::move(target));
+    }
+
+    return result;
   }
 
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
