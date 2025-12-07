@@ -585,6 +585,20 @@ namespace video {
     }
 
     int init(int in_width, int in_height, AVFrame *frame, AVPixelFormat format, bool hardware) {
+      // Validate input parameters
+      if (!frame) {
+        BOOST_LOG(error) << "init() called with null frame pointer!";
+        return -1;
+      }
+      if (in_width <= 0 || in_height <= 0) {
+        BOOST_LOG(error) << "init() called with invalid dimensions: " << in_width << "x" << in_height;
+        return -1;
+      }
+      if (frame->width <= 0 || frame->height <= 0) {
+        BOOST_LOG(error) << "init() called with invalid frame dimensions: " << frame->width << "x" << frame->height;
+        return -1;
+      }
+
       // If the device used is hardware, yet the image resides on main memory
       if (hardware) {
         sw_frame.reset(av_frame_alloc());
