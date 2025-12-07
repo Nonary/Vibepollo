@@ -590,11 +590,11 @@ namespace video {
         BOOST_LOG(error) << "init() called with null frame pointer!";
         return -1;
       }
-      if (in_width <= 0 || in_height <= 0) {
+      if (in_width < 1 || in_height < 1) {
         BOOST_LOG(error) << "init() called with invalid dimensions: " << in_width << "x" << in_height;
         return -1;
       }
-      if (frame->width <= 0 || frame->height <= 0) {
+      if (frame->width < 1 || frame->height < 1) {
         BOOST_LOG(error) << "init() called with invalid frame dimensions: " << frame->width << "x" << frame->height;
         return -1;
       }
