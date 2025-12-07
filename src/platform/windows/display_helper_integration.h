@@ -45,6 +45,28 @@ namespace display_helper_integration {
   // Capture the currently active topology before applying changes.
   std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
 
+#ifdef _WIN32
+  struct FramegenEdidTargetSupport {
+    int hz {0};
+    std::optional<bool> supported;
+    std::string method;
+  };
+
+  struct FramegenEdidSupportResult {
+    std::string device_id;
+    std::string device_label;
+    bool edid_present {false};
+    std::optional<int> max_vertical_hz;
+    std::optional<double> max_timing_hz;
+    std::vector<FramegenEdidTargetSupport> targets;
+  };
+
+  // Read EDID for a specific device and evaluate refresh support for requested targets.
+  std::optional<FramegenEdidSupportResult> framegen_edid_refresh_support(
+    const std::string &device_hint,
+    const std::vector<int> &targets_hz);
+#endif
+
   // Start a lightweight watchdog during active streams that pings the helper periodically
   // and restarts/re-handshakes if it crashes. No-ops if already running.
   void start_watchdog();
