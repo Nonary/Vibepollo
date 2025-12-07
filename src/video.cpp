@@ -487,13 +487,17 @@ namespace video {
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
     int convert(platf::img_t &img) override {
-      // Verify sw_frame and sws_output_frame are initialized before using them
+      // Verify all required frames are initialized before using them
       if (!sw_frame) {
         BOOST_LOG(error) << "sw_frame is null in convert() - this should never happen!";
         return -1;
       }
       if (!sws_output_frame) {
         BOOST_LOG(error) << "sws_output_frame is null in convert() - this should never happen!";
+        return -1;
+      }
+      if (!sws_input_frame) {
+        BOOST_LOG(error) << "sws_input_frame is null in convert() - this should never happen!";
         return -1;
       }
 
