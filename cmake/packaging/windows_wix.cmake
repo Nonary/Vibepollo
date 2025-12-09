@@ -51,9 +51,10 @@ set(CPACK_WIX_EXTRA_SOURCES
 # ----------------------------------------------------------------------------
 # Sanitize version for WiX: must be x.x.x.x with integers [0,65534]
 # ----------------------------------------------------------------------------
-# Prefer PROJECT_VERSION which our build logic guarantees is set from env/tags.
-# CMAKE_PROJECT_VERSION may be stale in cache depending on configure order.
-set(_RAW_VER "${PROJECT_VERSION}")
+# Use PROJECT_VERSION_NUMERIC which is guaranteed to be stripped of prerelease suffixes.
+# This ensures WiX gets a clean numeric version (e.g., 1.2.3) while C++ code uses
+# the full version with prerelease info (e.g., 1.2.3-beta.1).
+set(_RAW_VER "${PROJECT_VERSION_NUMERIC}")
 set(_WIX_MAJ 0)
 set(_WIX_MIN 0)
 set(_WIX_PAT 0)
@@ -91,7 +92,7 @@ set(CPACK_WIX_PRODUCT_VERSION "${_WIX_MAJ}.${_WIX_MIN}.${_WIX_PAT}.${_WIX_REV}")
 set(CPACK_PACKAGE_VERSION "${CPACK_WIX_PRODUCT_VERSION}")
 
 # Helpful for diagnostics in CI/local logs
-message(STATUS "CPACK_WIX_PRODUCT_VERSION = ${CPACK_WIX_PRODUCT_VERSION} (from ${_RAW_VER})")
+message(STATUS "CPACK_WIX_PRODUCT_VERSION = ${CPACK_WIX_PRODUCT_VERSION} (from ${PROJECT_VERSION_FULL})")
 
 
 # Merge our custom actions and sequencing directly into the generated Product
