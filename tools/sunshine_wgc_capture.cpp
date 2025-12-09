@@ -1048,6 +1048,13 @@ public:
    * @param sender The frame pool that triggered the event.
    */
   void process_frame(Direct3D11CaptureFramePool const &sender) {
+    // Track callback invocations
+    static std::atomic<uint64_t> callback_count {0};
+    auto cc = ++callback_count;
+    if (cc == 1) {
+      BOOST_LOG(info) << "First FrameArrived callback invoked";
+    }
+
     if (auto frame = sender.TryGetNextFrame(); frame) {
       // Frame successfully retrieved
       auto surface = frame.Surface();
@@ -1173,7 +1180,14 @@ private:
     frame_msg.frame_qpc = frame_qpc;
 
     std::span<const uint8_t> msg_span(reinterpret_cast<const uint8_t *>(&frame_msg), sizeof(frame_msg));
-    _deps->pipe.send(msg_span, 5000);
+    bool send_ok = _deps->pipe.send(msg_span, 5000);
+
+    // Log first frame and occasional subsequent frames
+    static std::atomic<uint64_t> frame_count {0};
+    auto count = ++frame_count;
+    if (count == 1 || count == 100 || (count % 1000 == 0)) {
+      BOOST_LOG(info) << "Sent frame " << count << " to main process (send_ok=" << send_ok << ")";
+    }
   }
 
 public:
