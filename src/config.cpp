@@ -34,6 +34,7 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "state_storage.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -1613,6 +1614,10 @@ namespace config {
       // the path is incorrect or inaccessible.
       apply_config(std::move(vars));
       config_loaded = true;
+
+      // Persist snapshot exclusion devices to vibeshine_state.json on startup so the display
+      // helper can read them directly without depending on IPC from Sunshine.
+      statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
     } catch (const std::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
     } catch (const boost::filesystem::filesystem_error &err) {
@@ -1753,6 +1758,11 @@ namespace config {
       if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
         logging::reconfigure_min_log_level(sunshine.min_log_level);
       }
+
+      // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
+      // can read them directly without depending on IPC from Sunshine.
+      // This is done unconditionally to ensure the state file is always up-to-date.
+      statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
 
       // Check if any DD configuration changed and handle hot-apply when no active sessions
       using dd_cfg_e = config::video_t::dd_t::config_option_e;

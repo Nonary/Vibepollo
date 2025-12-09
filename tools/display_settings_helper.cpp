@@ -762,6 +762,95 @@ namespace {
       parse_topology_field(topo_s, snap);
       parse_modes_field(modes_s, snap);
       parse_hdr_field(hdr_s, snap);
+
+      // Filter snapshot using current exclusion list and devices with a valid display_name.
+      std::set<std::string> valid_devices_norm;
+      std::vector<std::string> filtered_out_excluded;
+      const auto exclusions = snapshot_exclusions_copy();
+      std::set<std::string> exclusions_norm;
+      for (auto id : exclusions) {
+        exclusions_norm.insert(normalize_device_id(std::move(id)));
+      }
+
+      for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+        if (d.m_display_name.empty()) {
+          continue;
+        }
+        auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        auto norm = normalize_device_id(id);
+        if (!exclusions_norm.empty() && exclusions_norm.count(norm)) {
+          filtered_out_excluded.push_back(id);
+          continue;
+        }
+        valid_devices_norm.insert(std::move(norm));
+      }
+
+      if (valid_devices_norm.empty()) {
+        BOOST_LOG(warning) << "Snapshot load rejected: no valid devices available for path=" << path.string();
+        return std::nullopt;
+      }
+
+      auto is_allowed = [&](const std::string &device_id) {
+        const auto norm = normalize_device_id(device_id);
+        if (!valid_devices_norm.count(norm)) {
+          return false;
+        }
+        return exclusions_norm.empty() || !exclusions_norm.count(norm);
+      };
+
+      display_device::ActiveTopology filtered_topology;
+      for (const auto &grp : snap.m_topology) {
+        std::vector<std::string> filtered_grp;
+        for (const auto &device_id : grp) {
+          if (is_allowed(device_id)) {
+            filtered_grp.push_back(device_id);
+          } else if (!exclusions_norm.empty() && exclusions_norm.count(normalize_device_id(device_id))) {
+            filtered_out_excluded.push_back(device_id);
+          }
+        }
+        if (!filtered_grp.empty()) {
+          filtered_topology.push_back(std::move(filtered_grp));
+        }
+      }
+
+      if (filtered_topology.empty()) {
+        BOOST_LOG(warning) << "Snapshot load rejected: all devices filtered for path=" << path.string();
+        return std::nullopt;
+      }
+
+      snap.m_topology = std::move(filtered_topology);
+
+      for (auto it = snap.m_modes.begin(); it != snap.m_modes.end();) {
+        if (!is_allowed(it->first)) {
+          it = snap.m_modes.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      for (auto it = snap.m_hdr_states.begin(); it != snap.m_hdr_states.end();) {
+        if (!is_allowed(it->first)) {
+          it = snap.m_hdr_states.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (!snap.m_primary_device.empty() && !is_allowed(snap.m_primary_device)) {
+        snap.m_primary_device.clear();
+      }
+
+      if (!filtered_out_excluded.empty()) {
+        std::sort(filtered_out_excluded.begin(), filtered_out_excluded.end());
+        filtered_out_excluded.erase(std::unique(filtered_out_excluded.begin(), filtered_out_excluded.end()), filtered_out_excluded.end());
+        std::string joined;
+        for (size_t i = 0; i < filtered_out_excluded.size(); ++i) {
+          if (i > 0) {
+            joined += ", ";
+          }
+          joined += filtered_out_excluded[i];
+        }
+        BOOST_LOG(info) << "Snapshot load: excluded devices filtered from " << path.string() << ": [" << joined << "]";
+      }
+
       return snap;
     }
 
@@ -794,6 +883,10 @@ namespace {
         }
       }
       snapshot_exclude_devices_.assign(unique.begin(), unique.end());
+    }
+
+    std::vector<std::string> snapshot_exclusions_copy_public() const {
+      return snapshot_exclusions_copy();
     }
 
   private:
@@ -3151,23 +3244,43 @@ namespace {
       BOOST_LOG(warning) << "Existing session snapshot is invalid (topology or modes missing); removing path="
                          << path.string();
     } else {
-      // Filter out devices without display_name (e.g., dummy plugs not properly attached to Windows).
-      // These should not be used as restore targets.
+      // Filter out devices without display_name and devices on the exclusion list.
       auto devices = state.controller.enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      std::set<std::string> valid_device_ids;
+      std::set<std::string> valid_device_ids_norm;
+      std::set<std::string> exclusions_norm;
+      auto normalize = [](std::string id) {
+        id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+        id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), id.end());
+        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return id;
+      };
+      for (auto id : state.controller.snapshot_exclusions_copy_public()) {
+        exclusions_norm.insert(normalize(std::move(id)));
+      }
       for (const auto &d : devices) {
         if (!d.m_display_name.empty()) {
-          valid_device_ids.insert(d.m_device_id);
+          valid_device_ids_norm.insert(normalize(d.m_device_id));
         }
       }
 
-      // Filter topology groups, removing devices without valid display_name
+      auto is_allowed = [&](const std::string &device_id) {
+        const auto norm = normalize(device_id);
+        if (!valid_device_ids_norm.count(norm)) {
+          return false;
+        }
+        return exclusions_norm.empty() || !exclusions_norm.count(norm);
+      };
+
+      // Filter topology groups, removing devices without valid display_name or excluded ones
       display_device::ActiveTopology filtered_topology;
+      std::vector<std::string> filtered_out_excluded;
       for (const auto &grp : snap->m_topology) {
         std::vector<std::string> filtered_grp;
         for (const auto &device_id : grp) {
-          if (valid_device_ids.count(device_id)) {
+          if (is_allowed(device_id)) {
             filtered_grp.push_back(device_id);
+          } else if (!exclusions_norm.empty() && exclusions_norm.count(normalize(device_id))) {
+            filtered_out_excluded.push_back(device_id);
           }
         }
         if (!filtered_grp.empty()) {
@@ -3180,22 +3293,22 @@ namespace {
                            << path.string();
       } else {
         // Check if filtering changed anything
-        if (filtered_topology != snap->m_topology) {
-          BOOST_LOG(info) << "Filtering devices without valid display_name from session snapshot: " << path.string();
+        if (filtered_topology != snap->m_topology || !filtered_out_excluded.empty()) {
+          BOOST_LOG(info) << "Filtering devices from session snapshot: " << path.string();
 
           // Update snapshot with filtered data
           snap->m_topology = std::move(filtered_topology);
 
-          // Filter modes and hdr_states to only include valid devices
+          // Filter modes and hdr_states to only include allowed devices
           for (auto it = snap->m_modes.begin(); it != snap->m_modes.end();) {
-            if (!valid_device_ids.count(it->first)) {
+            if (!is_allowed(it->first)) {
               it = snap->m_modes.erase(it);
             } else {
               ++it;
             }
           }
           for (auto it = snap->m_hdr_states.begin(); it != snap->m_hdr_states.end();) {
-            if (!valid_device_ids.count(it->first)) {
+            if (!is_allowed(it->first)) {
               it = snap->m_hdr_states.erase(it);
             } else {
               ++it;
@@ -3203,8 +3316,21 @@ namespace {
           }
 
           // Clear primary if it was filtered out
-          if (!valid_device_ids.count(snap->m_primary_device)) {
+          if (!snap->m_primary_device.empty() && !is_allowed(snap->m_primary_device)) {
             snap->m_primary_device.clear();
+          }
+
+          if (!filtered_out_excluded.empty()) {
+            std::sort(filtered_out_excluded.begin(), filtered_out_excluded.end());
+            filtered_out_excluded.erase(std::unique(filtered_out_excluded.begin(), filtered_out_excluded.end()), filtered_out_excluded.end());
+            std::string joined;
+            for (size_t i = 0; i < filtered_out_excluded.size(); ++i) {
+              if (i > 0) {
+                joined += ", ";
+              }
+              joined += filtered_out_excluded[i];
+            }
+            BOOST_LOG(info) << "Excluded devices removed from session snapshot: [" << joined << "]";
           }
 
           // Re-save filtered snapshot (best effort, don't fail validation if save fails)
@@ -3266,6 +3392,56 @@ namespace {
     } catch (...) {
       return std::nullopt;
     }
+  }
+
+  /**
+   * @brief Load snapshot exclusion devices from vibeshine_state.json.
+   *
+   * This reads the exclusion list that Sunshine persists to the state file,
+   * allowing the display helper to know which devices to exclude without
+   * depending on IPC from Sunshine.
+   *
+   * @param path Path to vibeshine_state.json
+   * @param ids_out Output vector for device IDs
+   * @return true if loaded successfully, false otherwise
+   */
+  bool load_vibeshine_snapshot_exclusions(const std::filesystem::path &path, std::vector<std::string> &ids_out) {
+    ids_out.clear();
+    if (path.empty()) {
+      return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) {
+      return false;
+    }
+    try {
+      FILE *f = _wfopen(path.wstring().c_str(), L"rb");
+      if (!f) {
+        return false;
+      }
+      auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
+      std::string data;
+      char buf[4096];
+      while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        data.append(buf, n);
+      }
+      auto j = nlohmann::json::parse(data, nullptr, false);
+      if (j.is_discarded()) {
+        return false;
+      }
+      // vibeshine_state.json format: { "root": { "snapshot_exclude_devices": [...] } }
+      if (j.is_object() && j.contains("root")) {
+        const auto &root = j["root"];
+        if (root.is_object() && root.contains("snapshot_exclude_devices")) {
+          ids_out = parse_snapshot_exclude_json_node(root["snapshot_exclude_devices"]);
+          return !ids_out.empty() || root["snapshot_exclude_devices"].is_array();
+        }
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Failed to parse vibeshine_state.json for snapshot exclusions: " << e.what();
+    } catch (...) {
+    }
+    return false;
   }
 
   bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
@@ -3556,7 +3732,7 @@ namespace {
   }
 }  // namespace
 
-int main(int argc, char *argv[]) {
+  int main(int argc, char *argv[]) {
   bool restore_mode = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
@@ -3584,6 +3760,7 @@ int main(int argc, char *argv[]) {
   const auto sessionfile = (logdir / L"display_session_restore.json");
   const auto session_current = (logdir / L"display_session_current.json");
   const auto session_previous = (logdir / L"display_session_previous.json");
+  const auto vibeshine_state_file = (logdir / L"vibeshine_state.json");
   auto _log_guard = logging::init_append(2 /*info*/, logfile);
 
   if (restore_mode) {
@@ -3594,6 +3771,14 @@ int main(int argc, char *argv[]) {
     state.session_path = sessionfile;
     state.session_current_path = session_current;
     state.session_previous_path = session_previous;
+    {
+      // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine)
+      std::vector<std::string> persisted;
+      if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
+        BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size() << ")";
+        state.controller.set_snapshot_exclusions(persisted);
+      }
+    }
 
     {
       std::error_code ec_cur, ec_legacy;
@@ -3652,6 +3837,14 @@ int main(int argc, char *argv[]) {
   state.session_path = sessionfile;  // legacy
   state.session_current_path = session_current;
   state.session_previous_path = session_previous;
+  {
+    // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine)
+    std::vector<std::string> persisted;
+    if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
+      BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size() << ")";
+      state.controller.set_snapshot_exclusions(persisted);
+    }
+  }
   {
     std::error_code ec_cur, ec_legacy;
     const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);

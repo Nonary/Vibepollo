@@ -136,4 +136,72 @@ namespace statefile {
     });
   }
 
+  void save_snapshot_exclude_devices(const std::vector<std::string> &devices) {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      BOOST_LOG(warning) << "statefile: cannot save snapshot exclusions - vibeshine state path is empty";
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+
+    pt::ptree root;
+    (void) load_tree_if_exists(path, root);
+
+    // Build the exclusion list as a property tree array
+    pt::ptree exclusions_pt;
+    for (const auto &device_id : devices) {
+      if (!device_id.empty()) {
+        pt::ptree item;
+        item.put_value(device_id);
+        exclusions_pt.push_back({"", item});
+      }
+    }
+
+    auto &root_node = ensure_root(root);
+    root_node.put_child("snapshot_exclude_devices", exclusions_pt);
+
+    write_tree(path, root);
+    BOOST_LOG(info) << "statefile: persisted " << devices.size() << " snapshot exclusion device(s) to vibeshine state";
+  }
+
+  std::vector<std::string> load_snapshot_exclude_devices() {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return {};
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+
+    pt::ptree root;
+    if (!load_tree_if_exists(path, root)) {
+      return {};
+    }
+
+    std::vector<std::string> devices;
+    try {
+      auto root_node_opt = root.get_child_optional("root");
+      if (!root_node_opt) {
+        return {};
+      }
+      auto exclusions_opt = root_node_opt->get_child_optional("snapshot_exclude_devices");
+      if (!exclusions_opt) {
+        return {};
+      }
+      for (const auto &item : *exclusions_opt) {
+        const auto device_id = item.second.get_value<std::string>("");
+        if (!device_id.empty()) {
+          devices.push_back(device_id);
+        }
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "statefile: failed to parse snapshot exclusions: " << e.what();
+    }
+    return devices;
+  }
+
 }  // namespace statefile
