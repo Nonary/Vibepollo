@@ -257,11 +257,12 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Override dimensions with config values (base class sets them to monitor native resolution)
-    width = config.width;
-    height = config.height;
-    width_before_rotation = config.width;
-    height_before_rotation = config.height;
+    // Initialize capture format to unknown - will be determined from first frame
+    capture_format = DXGI_FORMAT_UNKNOWN;
+
+    // Note: WGC captures at monitor native resolution, not the requested config resolution.
+    // The display helper handles resolution changes before capture starts if needed.
+    // We use the dimensions set by display_base_t::init() which reflect the actual monitor size.
 
     // Create session
     _ipc_session = std::make_unique<ipc_session_t>();
@@ -324,9 +325,10 @@ namespace platf::dxgi {
       BOOST_LOG(info) << "Capture format [" << dxgi_format_to_string(capture_format) << ']';
     }
 
-    // Check for size changes
-    if (desc.Width != width || desc.Height != height) {
-      BOOST_LOG(info) << "Capture size changed [" << width << 'x' << height << " -> " << desc.Width << 'x' << desc.Height << ']';
+    // Check for size changes - use width_before_rotation/height_before_rotation since WGC
+    // captures textures in unrotated physical pixel dimensions, same as VRAM path
+    if (desc.Width != width_before_rotation || desc.Height != height_before_rotation) {
+      BOOST_LOG(info) << "Capture size changed [" << width_before_rotation << 'x' << height_before_rotation << " -> " << desc.Width << 'x' << desc.Height << ']';
       _ipc_session->release();
       return capture_e::reinit;
     }
@@ -339,14 +341,14 @@ namespace platf::dxgi {
     }
 
     // Create or recreate staging texture if needed
-    // Use OUR dimensions (width/height), not the source texture dimensions
+    // Use unrotated dimensions to match the captured texture size
     if (!texture ||
-        width != _last_width ||
-        height != _last_height ||
+        width_before_rotation != _last_width ||
+        height_before_rotation != _last_height ||
         capture_format != _last_format) {
       D3D11_TEXTURE2D_DESC t {};
-      t.Width = width;  // Use display dimensions, not session dimensions
-      t.Height = height;  // Use display dimensions, not session dimensions
+      t.Width = width_before_rotation;
+      t.Height = height_before_rotation;
       t.Format = capture_format;
       t.ArraySize = 1;
       t.MipLevels = 1;
@@ -361,20 +363,23 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
-      _last_width = width;
-      _last_height = height;
+      _last_width = width_before_rotation;
+      _last_height = height_before_rotation;
       _last_format = capture_format;
 
       BOOST_LOG(info) << "[display_wgc_ipc_ram_t] Created staging texture: "
-                      << width << "x" << height << ", format: " << capture_format;
+                      << width_before_rotation << "x" << height_before_rotation << ", format: " << capture_format;
     }
 
-    // Copy from GPU to CPU
+    // Copy from shared texture to staging texture (queues GPU work)
     device_ctx->CopyResource(texture.get(), gpu_tex.get());
+
+    // CRITICAL: Release the keyed mutex BEFORE blocking on Map()
+    // The helper needs the mutex to write the next frame while we're reading this one
+    _ipc_session->release();
 
     // Get a free image from the pool
     if (!pull_free_image_cb(img_out)) {
-      _ipc_session->release();
       return capture_e::interrupted;
     }
 
@@ -382,18 +387,14 @@ namespace platf::dxgi {
 
     // If we don't know the final capture format yet, encode a dummy image
     if (capture_format == DXGI_FORMAT_UNKNOWN) {
-      BOOST_LOG(debug) << "Capture format is still unknown. Encoding a blank image";
-
       if (dummy_img(img)) {
-        _ipc_session->release();
         return capture_e::error;
       }
     } else {
-      // Map the staging texture for CPU access (making it inaccessible for the GPU)
+      // Map the staging texture for CPU access (blocks until GPU copy completes)
       auto hr = device_ctx->Map(texture.get(), 0, D3D11_MAP_READ, 0, &img_info);
       if (FAILED(hr)) {
         BOOST_LOG(error) << "[display_wgc_ipc_ram_t] Failed to map staging texture: " << hr;
-        _ipc_session->release();
         return capture_e::error;
       }
 
@@ -401,12 +402,11 @@ namespace platf::dxgi {
       if (complete_img(img, false)) {
         device_ctx->Unmap(texture.get(), 0);
         img_info.pData = nullptr;
-        _ipc_session->release();
         return capture_e::error;
       }
 
-      // Copy exactly like display_ram.cpp: height * img_info.RowPitch
-      std::copy_n((std::uint8_t *) img_info.pData, height * img_info.RowPitch, img->data);
+      // Copy data - use height_before_rotation since WGC captures unrotated texture
+      std::copy_n((std::uint8_t *) img_info.pData, height_before_rotation * img_info.RowPitch, img->data);
 
       // Unmap the staging texture to allow GPU access again
       device_ctx->Unmap(texture.get(), 0);
@@ -414,14 +414,12 @@ namespace platf::dxgi {
     }
 
     // Set frame timestamp
-
     auto frame_timestamp = std::chrono::steady_clock::now() - qpc_time_difference(qpc_counter(), frame_qpc);
     img->frame_timestamp = frame_timestamp;
 
     // Cache this frame for potential reuse in constant FPS mode
     last_cached_frame = img_out;
 
-    _ipc_session->release();
     return capture_e::ok;
   }
 
