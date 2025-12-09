@@ -112,12 +112,20 @@ else()
     endif()
 endif()
 
-# Enforce numeric Major.Minor.Patch versioning for this build by stripping any
-# prerelease (e.g., -beta.1) or build metadata (e.g., +20240101) suffixes that
-# may appear on tags or CI-provided versions.
+# Split version into numeric base and prerelease suffix.
+# PROJECT_VERSION_FULL retains prerelease/build metadata (e.g., 1.2.3-beta.1)
+# PROJECT_VERSION_NUMERIC is stripped for CMake/WiX (e.g., 1.2.3)
 if(DEFINED PROJECT_VERSION)
-    string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION "${PROJECT_VERSION}")
-    set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
+    set(PROJECT_VERSION_FULL "${PROJECT_VERSION}")
+    string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION_NUMERIC "${PROJECT_VERSION}")
+    # Extract prerelease suffix (e.g., "-beta.1" or "-alpha.2")
+    string(REGEX MATCH "[-+].*$" PROJECT_VERSION_PRERELEASE "${PROJECT_VERSION}")
+    # CMake requires numeric version for compatibility
+    set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION_NUMERIC})
+else()
+    set(PROJECT_VERSION_FULL "0.0.0")
+    set(PROJECT_VERSION_NUMERIC "0.0.0")
+    set(PROJECT_VERSION_PRERELEASE "")
 endif()
 
 # Propagate branch information as a compile definition if available.
@@ -185,8 +193,8 @@ if(PROJECT_VERSION MATCHES "^([0-9][0-9][0-9][0-9])\\.([0-9][0-9][0-9][0-9]?)\\.
     endif()
 endif()
 
-# Parse PROJECT_VERSION to extract major, minor, and patch components
-if(PROJECT_VERSION MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+# Parse PROJECT_VERSION_NUMERIC to extract major, minor, and patch components
+if(PROJECT_VERSION_NUMERIC MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+)")
     set(PROJECT_VERSION_MAJOR "${CMAKE_MATCH_1}")
     set(CMAKE_PROJECT_VERSION_MAJOR "${CMAKE_MATCH_1}")
 
@@ -198,7 +206,9 @@ if(PROJECT_VERSION MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+)")
 endif()
 
 message("PROJECT_NAME: ${PROJECT_NAME}")
-message("PROJECT_VERSION: ${PROJECT_VERSION}")
+message("PROJECT_VERSION_FULL: ${PROJECT_VERSION_FULL}")
+message("PROJECT_VERSION_NUMERIC: ${PROJECT_VERSION_NUMERIC}")
+message("PROJECT_VERSION_PRERELEASE: ${PROJECT_VERSION_PRERELEASE}")
 message("PROJECT_VERSION_MAJOR: ${PROJECT_VERSION_MAJOR}")
 message("PROJECT_VERSION_MINOR: ${PROJECT_VERSION_MINOR}")
 message("PROJECT_VERSION_PATCH: ${PROJECT_VERSION_PATCH}")
@@ -208,10 +218,11 @@ message("CMAKE_PROJECT_VERSION_MINOR: ${CMAKE_PROJECT_VERSION_MINOR}")
 message("CMAKE_PROJECT_VERSION_PATCH: ${CMAKE_PROJECT_VERSION_PATCH}")
 
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_NAME="${PROJECT_NAME}")
-list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION="${PROJECT_VERSION}")
+list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION="${PROJECT_VERSION_FULL}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_MAJOR="${PROJECT_VERSION_MAJOR}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
+list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_PRERELEASE="${PROJECT_VERSION_PRERELEASE}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_COMMIT="${GITHUB_COMMIT}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_BRANCH="${PROJECT_VERSION_BRANCH}")
 

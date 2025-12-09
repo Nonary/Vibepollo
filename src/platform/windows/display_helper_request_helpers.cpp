@@ -107,15 +107,19 @@ namespace display_helper_integration::helpers {
       display_device::SingleDisplayConfiguration &config,
       int effective_width,
       int effective_height,
-      int display_fps
+      int display_fps,
+      bool resolution_disabled,
+      bool refresh_rate_disabled
     ) {
-      if (!config.m_resolution && effective_width > 0 && effective_height > 0) {
+      // Only apply resolution override if resolution changes are not disabled by user
+      if (!resolution_disabled && !config.m_resolution && effective_width > 0 && effective_height > 0) {
         config.m_resolution = display_device::Resolution {
           static_cast<unsigned int>(effective_width),
           static_cast<unsigned int>(effective_height)
         };
       }
-      if (!config.m_refresh_rate && display_fps > 0) {
+      // Only apply refresh rate override if refresh rate changes are not disabled by user
+      if (!refresh_rate_disabled && !config.m_refresh_rate && display_fps > 0) {
         config.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
       }
     }
@@ -282,7 +286,9 @@ namespace display_helper_integration::helpers {
     if (minimum_fps > 0 && vd_cfg.m_refresh_rate) {
       ensure_minimum_refresh_if_present(vd_cfg.m_refresh_rate, minimum_fps);
     }
-    apply_resolution_refresh_overrides(vd_cfg, effective_width, effective_height, display_fps);
+    const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
+    const bool refresh_rate_disabled = effective_video_config_.dd.refresh_rate_option == config::video_t::dd_t::refresh_rate_option_e::disabled;
+    apply_resolution_refresh_overrides(vd_cfg, effective_width, effective_height, display_fps, resolution_disabled, refresh_rate_disabled);
 
     auto &overrides = builder.mutable_session_overrides();
     overrides.device_id_override = target_device_id.empty() ? std::nullopt : std::optional<std::string>(target_device_id);
@@ -343,9 +349,13 @@ namespace display_helper_integration::helpers {
       if (dummy_plug_mode && (gen1_framegen_fix || gen2_framegen_fix) && !desktop_session) {
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
+      const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
+      const bool refresh_rate_disabled = effective_video_config_.dd.refresh_rate_option == config::video_t::dd_t::refresh_rate_option_e::disabled;
+
       if (should_force_refresh) {
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
-        if (!cfg_effective.m_resolution && effective_width >= 0 && effective_height >= 0) {
+        // Only set resolution if user hasn't explicitly disabled resolution changes
+        if (!resolution_disabled && !cfg_effective.m_resolution && effective_width >= 0 && effective_height >= 0) {
           cfg_effective.m_resolution = display_device::Resolution {
             static_cast<unsigned int>(effective_width),
             static_cast<unsigned int>(effective_height)
@@ -353,7 +363,7 @@ namespace display_helper_integration::helpers {
         }
       }
 
-      apply_resolution_refresh_overrides(cfg_effective, effective_width, effective_height, display_fps);
+      apply_resolution_refresh_overrides(cfg_effective, effective_width, effective_height, display_fps, resolution_disabled, refresh_rate_disabled);
 
       builder.set_configuration(cfg_effective);
       builder.set_virtual_display_watchdog(false);

@@ -1689,6 +1689,11 @@ namespace confighttp {
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
     output_tree["commit"] = PROJECT_VERSION_COMMIT;
+#ifdef PROJECT_VERSION_PRERELEASE
+    output_tree["prerelease"] = PROJECT_VERSION_PRERELEASE;
+#else
+    output_tree["prerelease"] = "";
+#endif
 #ifdef PROJECT_VERSION_BRANCH
     output_tree["branch"] = PROJECT_VERSION_BRANCH;
 #else
