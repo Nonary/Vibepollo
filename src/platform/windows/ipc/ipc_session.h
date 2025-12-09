@@ -157,7 +157,6 @@ namespace platf::dxgi {
     std::atomic<bool> _force_reinit {false};  ///< True if reinit required due to errors.
     UINT _width = 0;  ///< Shared texture width.
     UINT _height = 0;  ///< Shared texture height.
-    uint32_t _timeout_count = 0;  ///< Consecutive acquire timeout counter.
     ::video::config_t _config;  ///< Cached video config.
     std::string _display_name;  ///< Display name copy.
     std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
