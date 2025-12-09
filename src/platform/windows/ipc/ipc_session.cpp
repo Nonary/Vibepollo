@@ -287,11 +287,7 @@ namespace platf::dxgi {
         _frame_qpc = frame_msg.frame_qpc;
         _frame_ready = true;
         return true;
-      } else {
-        BOOST_LOG(warning) << "wait_for_frame: unexpected message_type=" << static_cast<int>(frame_msg.message_type) << " (expected " << static_cast<int>(FRAME_READY_MSG) << ")";
       }
-    } else if (result != PipeResult::Timeout) {
-      BOOST_LOG(debug) << "wait_for_frame: receive_latest result=" << static_cast<int>(result) << ", bytesRead=" << bytesRead;
     }
     return false;
   }
@@ -330,13 +326,8 @@ namespace platf::dxgi {
 
   capture_e ipc_session_t::acquire(std::chrono::milliseconds timeout, winrt::com_ptr<ID3D11Texture2D> &gpu_tex_out, uint64_t &frame_qpc_out) {
     if (!wait_for_frame(timeout)) {
-      _timeout_count++;
-      if (_timeout_count == 1 || _timeout_count == 10 || _timeout_count == 50) {
-        BOOST_LOG(warning) << "ipc_session_t::acquire: timeout waiting for frame (count=" << _timeout_count << ")";
-      }
       return capture_e::timeout;
     }
-    _timeout_count = 0;  // Reset on successful frame
 
     // Additional validation: ensure required resources are available
     if (!_shared_texture || !_keyed_mutex) {
