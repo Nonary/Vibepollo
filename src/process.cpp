@@ -1482,6 +1482,8 @@ namespace proc {
         BOOST_LOG(error) << "Failed to launch Playnite game."sv;
         return -1;
       }
+      // Start Playnite IPC client to receive game events (gameStopped, etc.)
+      platf::playnite::start_client_for_session();
       // Track the helper process; when it exits, Sunshine will terminate the stream automatically
       placebo = false;
     } else
@@ -1531,6 +1533,8 @@ namespace proc {
         BOOST_LOG(error) << "Failed to launch Playnite fullscreen."sv;
         return -1;
       }
+      // Start Playnite IPC client to receive game events (gameStopped, etc.)
+      platf::playnite::start_client_for_session();
       placebo = false;
     } else
 #endif
@@ -1648,6 +1652,11 @@ namespace proc {
           remaining_timeout -= 1s;
         }
       } catch (...) {}
+      // Stop the IPC client since the Playnite session is ending
+      platf::playnite::stop_client_for_session();
+    } else if (_app.playnite_fullscreen) {
+      // For fullscreen mode, also stop the IPC client
+      platf::playnite::stop_client_for_session();
     }
 #endif
     // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout)

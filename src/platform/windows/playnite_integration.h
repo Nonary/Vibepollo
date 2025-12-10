@@ -31,6 +31,25 @@ namespace platf::playnite {
   bool is_active();
 
   /**
+   * @brief Ensure the IPC client is started for API access.
+   * Call this before any API operation that needs fresh Playnite data.
+   * The client will automatically stop after inactivity.
+   */
+  void ensure_client_for_api();
+
+  /**
+   * @brief Start the IPC client for a Playnite game session.
+   * Call this when launching a Playnite-backed game.
+   */
+  void start_client_for_session();
+
+  /**
+   * @brief Stop the IPC client after a session ends.
+   * Call this when a Playnite game session terminates.
+   */
+  void stop_client_for_session();
+
+  /**
    * @brief Attempt to install the Playnite plugin in the default location.
    * @param[out] error Set to a human-readable error message on failure.
    * @return `true` on successful installation, `false` on failure.

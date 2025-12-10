@@ -10,6 +10,7 @@
 
 #ifndef SUNSHINE_PLAYNITE_LAUNCHER
   #include "src/platform/windows/misc.h"
+
 #endif
 #include "src/utility.h"
 
@@ -76,6 +77,8 @@ namespace platf::playnite {
           BOOST_LOG(debug) << "Playnite IPC: Playnite not running; deferring client connection";
           no_playnite_logged_ = true;
         }
+        // IPC client is only started when there's a session or API activity,
+        // so use a reasonable retry interval (not aggressive polling)
         std::this_thread::sleep_for(2s);
         continue;
       }
