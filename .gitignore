@@ -56,3 +56,4 @@ package-lock.json
 # Python
 *.pyc
 venv/
+_codeql_detected_source_root
