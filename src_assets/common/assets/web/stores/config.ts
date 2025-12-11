@@ -197,7 +197,7 @@ const defaultGroups = [
       min_threads: 2,
       hevc_mode: 0,
       av1_mode: 0,
-      prefer_10bit_sdr: true,
+      prefer_10bit_sdr: false,
       capture: '',
       encoder: '',
       limit_framerate: 'enabled',

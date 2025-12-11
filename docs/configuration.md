@@ -2194,6 +2194,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Capture and encode SDR sessions in 10-bit when the client and encoder negotiate HEVC/AV1 Main10 support.
             @note{HDR stays disabled.}
             @note{Applies to HEVC or AV1 only; H.264 streaming remains 8-bit.}
+            @warning{May cause crashes on client devices with older GPUs that don't support HEVC 10-bit decoding.}
         </td>
     </tr>
     <tr>
