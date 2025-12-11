@@ -39,6 +39,9 @@ namespace video {
        HDR encoding activates when color depth is higher than 8-bit and the display which is being captured is operating in HDR mode */
     int dynamicRange;
 
+    // Set when we bumped dynamicRange to 10-bit for SDR-only encoding (prefer_10bit_sdr)
+    bool prefer_sdr_10bit;
+
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
