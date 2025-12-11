@@ -50,7 +50,7 @@ if exist "%OLD_DIR%\covers\" (
         move "%OLD_DIR%\covers" "%NEW_DIR%\"
 
         rem Fix apps.json image path values that point at the old covers directory
-        powershell -NoProfile -c "(Get-Content '%NEW_DIR%\apps.json').replace('.\/covers\/', '.\/config\/covers\/') | Set-Content '%NEW_DIR%\apps.json'"
+        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -c "(Get-Content '%NEW_DIR%\apps.json').replace('.\/covers\/', '.\/config\/covers\/') | Set-Content '%NEW_DIR%\apps.json'"
     )
 )
 
