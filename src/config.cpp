@@ -535,7 +535,7 @@ namespace config {
 
     0,  // hevc_mode
     0,  // av1_mode
-    true,  // prefer_10bit_sdr
+    false,  // prefer_10bit_sdr
 
     2,  // min_threads
     {
