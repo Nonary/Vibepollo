@@ -1012,7 +1012,7 @@ namespace rtsp_stream {
     args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
 
-    stream::config_t config;
+    stream::config_t config {};
     config.gen1_framegen_fix = false;
     config.gen2_framegen_fix = false;
 
@@ -1142,6 +1142,7 @@ namespace rtsp_stream {
       if (hevc_main10 || av1_main10) {
         BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
         config.monitor.dynamicRange = 1;
+        config.monitor.prefer_sdr_10bit = true;
       }
     }
 

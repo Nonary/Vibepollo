@@ -20,13 +20,15 @@ namespace video {
   }
 
   sunshine_colorspace_t colorspace_from_client_config(const config_t &config, bool hdr_display) {
+    const bool prefer_sdr_10bit = config.prefer_sdr_10bit && config.dynamicRange > 0;
+    const bool effective_hdr_display = hdr_display && !prefer_sdr_10bit;
     sunshine_colorspace_t colorspace;
 
     /* See video::config_t declaration for details */
 
     BOOST_LOG(info) << "Client dynamicRange: " << config.dynamicRange << ", Display is HDR: " << hdr_display;
 
-    if (config.dynamicRange > 0 && hdr_display) {
+    if (config.dynamicRange > 0 && effective_hdr_display) {
       // Rec. 2020 with ST 2084 perceptual quantizer
       colorspace.colorspace = colorspace_e::bt2020;
     } else {
@@ -123,7 +125,69 @@ namespace video {
   }
 
   const color_t *color_vectors_from_colorspace(const sunshine_colorspace_t &colorspace) {
-    return color_vectors_from_colorspace(colorspace.colorspace, colorspace.full_range);
+    // For 8-bit, use the original static lookup for efficiency
+    if (colorspace.bit_depth == 8) {
+      return color_vectors_from_colorspace(colorspace.colorspace, colorspace.full_range);
+    }
+
+    // For 10-bit (and potentially other bit depths), generate bit-depth-aware normalized color vectors.
+    // This ensures proper limited range scaling for 10-bit encoding (Y: 64-940, UV: 64-960 instead of
+    // the 8-bit scaled values which would be slightly off due to different max values 255 vs 1023).
+    using float2 = float[2];
+    constexpr auto make_color_matrix = [](float Cr, float Cb, const float2 &range_Y, const float2 &range_UV, unsigned bit_depth) -> color_t {
+      float Cg = 1.0f - Cr - Cb;
+
+      float Cr_i = 1.0f - Cr;
+      float Cb_i = 1.0f - Cb;
+
+      // Use the maximum value for the given bit depth as the divisor
+      float max_value = static_cast<float>((1 << bit_depth) - 1);
+
+      float shift_y = range_Y[0] / max_value;
+      float shift_uv = range_UV[0] / max_value;
+
+      float scale_y = (range_Y[1] - range_Y[0]) / max_value;
+      float scale_uv = (range_UV[1] - range_UV[0]) / max_value;
+      return {
+        {Cr, Cg, Cb, 0.0f},
+        {-(Cr * 0.5f / Cb_i), -(Cg * 0.5f / Cb_i), 0.5f, 0.5f},
+        {0.5f, -(Cg * 0.5f / Cr_i), -(Cb * 0.5f / Cr_i), 0.5f},
+        {scale_y, shift_y},
+        {scale_uv, shift_uv},
+      };
+    };
+
+    // Pre-computed 10-bit color matrices
+    static const color_t colors_10bit[] {
+      make_color_matrix(0.299f, 0.114f, {64.0f, 940.0f}, {64.0f, 960.0f}, 10),  // BT601 MPEG 10-bit
+      make_color_matrix(0.299f, 0.114f, {0.0f, 1023.0f}, {0.0f, 1023.0f}, 10),  // BT601 JPEG 10-bit
+      make_color_matrix(0.2126f, 0.0722f, {64.0f, 940.0f}, {64.0f, 960.0f}, 10),  // BT709 MPEG 10-bit
+      make_color_matrix(0.2126f, 0.0722f, {0.0f, 1023.0f}, {0.0f, 1023.0f}, 10),  // BT709 JPEG 10-bit
+      make_color_matrix(0.2627f, 0.0593f, {64.0f, 940.0f}, {64.0f, 960.0f}, 10),  // BT2020 MPEG 10-bit
+      make_color_matrix(0.2627f, 0.0593f, {0.0f, 1023.0f}, {0.0f, 1023.0f}, 10),  // BT2020 JPEG 10-bit
+    };
+
+    const color_t *result = nullptr;
+
+    switch (colorspace.colorspace) {
+      case colorspace_e::rec601:
+      default:
+        result = &colors_10bit[0];
+        break;
+      case colorspace_e::rec709:
+        result = &colors_10bit[2];
+        break;
+      case colorspace_e::bt2020:
+      case colorspace_e::bt2020sdr:
+        result = &colors_10bit[4];
+        break;
+    }
+
+    if (colorspace.full_range) {
+      result++;
+    }
+
+    return result;
   }
 
   const color_t *color_vectors_from_colorspace(colorspace_e colorspace, bool full_range) {
