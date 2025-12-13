@@ -9,6 +9,7 @@ extern "C" {
 }
 
 // standard includes
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -169,6 +170,7 @@ namespace input {
         client_context {platf::allocate_client_input_context(platf_input)},
         touch_port_event {std::move(touch_port_event)},
         feedback_queue {std::move(feedback_queue)},
+        input_queue_task_scheduled {false},
         mouse_left_button_timeout {},
         touch_port {{0, 0, 0, 0}, 0, 0, 1.0f},
         accumulated_vscroll_delta {},
@@ -186,6 +188,7 @@ namespace input {
 
     std::list<std::vector<uint8_t>> input_queue;
     std::mutex input_queue_lock;
+    std::atomic_bool input_queue_task_scheduled;
 
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;
 
@@ -1491,6 +1494,7 @@ namespace input {
 
       // If all entries have already been processed, nothing to do
       if (input->input_queue.empty()) {
+        input->input_queue_task_scheduled.store(false, std::memory_order_release);
         return;
       }
 
@@ -1569,6 +1573,19 @@ namespace input {
         passthrough(input, (PSS_CONTROLLER_BATTERY_PACKET) payload);
         break;
     }
+
+    bool schedule_next = false;
+    {
+      std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (!input->input_queue.empty()) {
+        schedule_next = true;
+      } else {
+        input->input_queue_task_scheduled.store(false, std::memory_order_release);
+      }
+    }
+    if (schedule_next) {
+      task_pool.push(passthrough_next_message, std::move(input));
+    }
   }
 
   /**
@@ -1577,11 +1594,15 @@ namespace input {
    * @param input_data The input message.
    */
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data) {
+    bool schedule_input_task = false;
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
       input->input_queue.push_back(std::move(input_data));
+      schedule_input_task = !input->input_queue_task_scheduled.exchange(true, std::memory_order_acq_rel);
     }
-    task_pool.push(passthrough_next_message, input);
+    if (schedule_input_task) {
+      task_pool.push(passthrough_next_message, input);
+    }
   }
 
   void reset(std::shared_ptr<input_t> &input) {
