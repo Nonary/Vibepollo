@@ -393,7 +393,7 @@ const prefer10BitSdr = computed<boolean>({
     const normalized = String(raw ?? '').toLowerCase().trim();
     if (['1', 'true', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
     if (['0', 'false', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
-    return true; // default is enabled
+    return false; // default is disabled
   },
   set(v: boolean) {
     (config.value as any).prefer_10bit_sdr = v;

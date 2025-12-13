@@ -216,7 +216,7 @@ namespace nvhttp {
   /**
    * @brief Get a client's prefer_10bit_sdr setting.
    * @param uuid The UUID of the client.
-   * @return true if the client prefers 10-bit SDR (default), false otherwise.
+   * @return true if the client prefers 10-bit SDR, false otherwise (default).
    */
   bool get_client_prefer_10bit_sdr(const std::string &uuid);
 

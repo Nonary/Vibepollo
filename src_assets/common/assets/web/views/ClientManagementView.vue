@@ -1168,7 +1168,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
-  const prefer10BitSdr = toBool(entry.prefer_10bit_sdr, true);
+  const prefer10BitSdr = toBool(entry.prefer_10bit_sdr, false);
   const virtualDisplayMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualDisplayLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
   return {

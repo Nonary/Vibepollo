@@ -536,7 +536,7 @@ namespace nvhttp {
             named_cert_p->enable_legacy_ordering = true;
             named_cert_p->allow_client_commands = true;
             named_cert_p->always_use_virtual_display = false;
-            named_cert_p->prefer_10bit_sdr = true;
+            named_cert_p->prefer_10bit_sdr = false;
             client.named_devices.emplace_back(named_cert_p);
           }
         }
@@ -557,7 +557,7 @@ namespace nvhttp {
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
         named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
-        named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", true);
+        named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
         named_cert_p->do_cmds = extract_command_entries(el, "do");
         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
         client.named_devices.emplace_back(named_cert_p);
