@@ -783,7 +783,8 @@ namespace {
 
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
-    const auto interval = 5s;
+    constexpr auto kActiveInterval = 5s;
+    constexpr auto kSuspendedInterval = 20s;
     bool helper_ready = false;
 
     while (!st.stop_requested()) {
@@ -792,7 +793,7 @@ namespace {
           platf::display_helper_client::reset_connection();
           helper_ready = false;
         }
-        for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
+        for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
           std::this_thread::sleep_for(100ms);
         }
         continue;
@@ -801,7 +802,7 @@ namespace {
       if (!helper_ready) {
         helper_ready = ensure_helper_started();
         if (!helper_ready) {
-          for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
+          for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
             std::this_thread::sleep_for(100ms);
           }
           continue;
@@ -809,6 +810,8 @@ namespace {
         (void) platf::display_helper_client::send_ping();
       }
 
+      const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
+      const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
       for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
         std::this_thread::sleep_for(100ms);
       }
