@@ -798,54 +798,36 @@ namespace confighttp {
       } catch (...) {}
     }
 
-    try {
-      auto add_user_sunshine_logs = [&](REFKNOWNFOLDERID id) {
-        platf::dxgi::safe_token user_token;
-        user_token.reset(platf::dxgi::retrieve_users_token(false));
-        PWSTR baseW = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
-          std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
-          CoTaskMemFree(baseW);
-          {
-            std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
-            std::string data;
-            if (read_file_if_exists(p, data)) {
-              entries.emplace_back(p.filename().string(), std::move(data));
-            }
-          }
-          {
-            std::filesystem::path p = base / L"sunshine_launcher.log";
-            std::string data;
-            if (read_file_if_exists(p, data)) {
-              entries.emplace_back(p.filename().string(), std::move(data));
-            }
-          }
-          {
-            std::filesystem::path p = base / L"sunshine_display_helper.log";
-            std::string data;
-            if (read_file_if_exists(p, data)) {
-              entries.emplace_back(p.filename().string(), std::move(data));
-            }
-          }
-          {
-            std::filesystem::path p = base / L"sunshine_wgc_helper.log";
-            std::string data;
-            if (read_file_if_exists(p, data)) {
-              entries.emplace_back(p.filename().string(), std::move(data));
-            }
-          }
+    auto add_session_logs_with_prefix = [&](const std::filesystem::path &dir, const std::string &prefix) {
+      std::error_code ec;
+      for (std::filesystem::directory_iterator it(dir, ec); it != std::filesystem::directory_iterator(); ++it) {
+        if (ec) {
+          break;
         }
-      };
-      add_user_sunshine_logs(FOLDERID_RoamingAppData);
-      add_user_sunshine_logs(FOLDERID_LocalAppData);
-    } catch (...) {}
-
-    auto try_add_sunshine_logs = [&](int csidl) {
-      wchar_t baseW[MAX_PATH] = {};
-      if (!SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
-        return;
+        std::error_code file_ec;
+        if (!it->is_regular_file(file_ec)) {
+          continue;
+        }
+        const auto filename = it->path().filename().string();
+        if (filename.rfind(prefix, 0) != 0) {
+          continue;
+        }
+        std::string data;
+        if (read_file_if_exists(it->path(), data)) {
+          entries.emplace_back(filename, std::move(data));
+        }
       }
-      std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
+    };
+
+    auto add_user_helper_logs = [&](const std::filesystem::path &base) {
+      // Legacy single-file helper logs (kept for backwards compatibility).
+      {
+        std::filesystem::path p = base / L"sunshine_playnite.log";
+        std::string data;
+        if (read_file_if_exists(p, data)) {
+          entries.emplace_back(p.filename().string(), std::move(data));
+        }
+      }
       {
         std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
         std::string data;
@@ -874,6 +856,38 @@ namespace confighttp {
           entries.emplace_back(p.filename().string(), std::move(data));
         }
       }
+
+      // Session-mode helper logs live under Roaming/LocalAppData\\Sunshine\\logs.
+      const auto log_dir = base / L"logs";
+      add_session_logs_with_prefix(log_dir, "sunshine_playnite-");
+      add_session_logs_with_prefix(log_dir, "sunshine_playnite_launcher-");
+      add_session_logs_with_prefix(log_dir, "sunshine_launcher-");
+      add_session_logs_with_prefix(log_dir, "sunshine_display_helper-");
+      add_session_logs_with_prefix(log_dir, "sunshine_wgc_helper-");
+    };
+
+    try {
+      auto add_user_sunshine_logs = [&](REFKNOWNFOLDERID id) {
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+        PWSTR baseW = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
+          std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
+          CoTaskMemFree(baseW);
+          add_user_helper_logs(base);
+        }
+      };
+      add_user_sunshine_logs(FOLDERID_RoamingAppData);
+      add_user_sunshine_logs(FOLDERID_LocalAppData);
+    } catch (...) {}
+
+    auto try_add_sunshine_logs = [&](int csidl) {
+      wchar_t baseW[MAX_PATH] = {};
+      if (!SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
+        return;
+      }
+      std::filesystem::path base = std::filesystem::path(baseW) / L"Sunshine";
+      add_user_helper_logs(base);
     };
 
     try_add_sunshine_logs(CSIDL_APPDATA);

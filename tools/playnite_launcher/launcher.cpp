@@ -51,7 +51,7 @@ namespace playnite_launcher {
     FreeConsole();
 
     auto log_path = detail::resolve_log_path();
-    auto log_guard = logging::init_append(2, log_path.string());
+    auto log_guard = logging::init(2, log_path.string());
     BOOST_LOG(info) << "Playnite launcher starting; pid=" << GetCurrentProcessId();
 
     auto lossless_options = lossless::read_lossless_scaling_options();

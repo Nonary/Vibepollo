@@ -84,22 +84,64 @@ function Resolve-LogPath {
   try {
     $appData = $env:APPDATA
     if ($appData) {
-      $dir = Join-Path $appData 'Sunshine'
+      $base = Join-Path $appData 'Sunshine'
+      $dir = Join-Path $base 'logs'
       try { if (-not (Test-Path $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) } } catch {}
-      return (Join-Path $dir 'sunshine_playnite.log')
+      $now = Get-Date
+      $label = "sunshine_playnite-$($now.ToString('yyyyMMdd-HHmmss'))-$($now.ToString('fff'))"
+      return (Join-Path $dir ($label + '.log'))
     }
   } catch {}
   try {
     if ($PSScriptRoot) {
-      return (Join-Path $PSScriptRoot 'sunshine_playnite.log')
+      $dir = Join-Path $PSScriptRoot 'logs'
+      try { if (-not (Test-Path $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) } } catch {}
+      $now = Get-Date
+      $label = "sunshine_playnite-$($now.ToString('yyyyMMdd-HHmmss'))-$($now.ToString('fff'))"
+      return (Join-Path $dir ($label + '.log'))
     }
   } catch {}
+  try {
+    $dir = Join-Path $env:TEMP 'Sunshine\\logs'
+    try { if (-not (Test-Path $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) } } catch {}
+    $now = Get-Date
+    $label = "sunshine_playnite-$($now.ToString('yyyyMMdd-HHmmss'))-$($now.ToString('fff'))"
+    return (Join-Path $dir ($label + '.log'))
+  } catch {}
   return (Join-Path $env:TEMP 'sunshine_playnite.log')
+}
+
+function Purge-OldLogSessions {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)] [string]$LogDir,
+    [Parameter(Mandatory=$true)] [string]$Prefix,
+    [int]$MaxSessions = 30
+  )
+
+  try {
+    if (-not (Test-Path $LogDir)) { return }
+    $sessions = Get-ChildItem -Path $LogDir -Filter ($Prefix + '-*.log') -File -ErrorAction SilentlyContinue | Sort-Object Name
+    if (-not $sessions) { return }
+    if ($sessions.Count -le $MaxSessions) { return }
+    $toRemove = $sessions | Select-Object -First ($sessions.Count - $MaxSessions)
+    foreach ($f in $toRemove) {
+      try {
+        Get-ChildItem -Path $LogDir -File -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -eq $f.Name -or $_.Name -like ($f.Name + '.*') } |
+          ForEach-Object { Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue }
+      } catch {}
+    }
+  } catch {}
 }
 
 function Initialize-Logging {
   try {
     if (-not $script:LogPath) { $script:LogPath = Resolve-LogPath }
+    if (-not $script:LogBasePath) { $script:LogBasePath = $script:LogPath }
+    if (-not $script:LogRolloverIndex) { $script:LogRolloverIndex = 0 }
+    if (-not $script:LogRolloverBytes) { $script:LogRolloverBytes = 2MB }
+    if (-not $script:LogMaxRollovers) { $script:LogMaxRollovers = 10 }
     # Initialize log level from env, default to DEBUG (slightly excessive, but controlled)
     if (-not $script:LogLevel) {
       $lvl = $env:SUNSHINE_PLAYNITE_LOGLEVEL
@@ -107,13 +149,6 @@ function Initialize-Logging {
       $script:LogLevel = ($lvl.Trim().ToUpperInvariant())
     }
     if (Get-Variable -Name __logger -Scope Global -ErrorAction SilentlyContinue) { $script:HostLogger = $__logger } else { $script:HostLogger = $null }
-    # Basic log rotation (~1 MB)
-    if (Test-Path $script:LogPath) {
-      $len = (Get-Item $script:LogPath).Length
-      if ($len -gt 1MB) {
-        Remove-Item -Path $script:LogPath -ErrorAction SilentlyContinue
-      }
-    }
     $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
     $hdr = @(
       "[$ts] === Sunshine Playnite Connector starting ===",
@@ -127,6 +162,10 @@ function Initialize-Logging {
       # Fallback to Out-File if static write fails
       $hdr | Out-File -FilePath $script:LogPath -Encoding utf8
     }
+    try {
+      $dir = Split-Path -Parent $script:LogPath
+      Purge-OldLogSessions -LogDir $dir -Prefix 'sunshine_playnite' -MaxSessions 30
+    } catch {}
     if ($script:HostLogger) { $script:HostLogger.Info("SunshinePlaynite: logging initialized at $script:LogPath (level=$script:LogLevel)") }
   }
   catch {}
@@ -201,6 +240,19 @@ function Write-Log {
       try { $script:LogPath = Resolve-LogPath } catch {}
     }
     if ($script:LogPath) {
+      try {
+        if (Test-Path $script:LogPath) {
+          $len = (Get-Item $script:LogPath).Length
+          if ($script:LogRolloverBytes -and $len -ge $script:LogRolloverBytes) {
+            if (-not $script:LogBasePath) { $script:LogBasePath = $script:LogPath }
+            if (-not $script:LogRolloverIndex) { $script:LogRolloverIndex = 0 }
+            $next = [int]$script:LogRolloverIndex + 1
+            if ($script:LogMaxRollovers -and $next -gt [int]$script:LogMaxRollovers) { $next = 1 }
+            $script:LogRolloverIndex = $next
+            $script:LogPath = "$($script:LogBasePath).$($script:LogRolloverIndex)"
+          }
+        }
+      } catch {}
       try {
         [System.IO.File]::AppendAllText($script:LogPath, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
       }
