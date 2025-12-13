@@ -11,7 +11,6 @@
 #ifndef BOOST_PROCESS_V2_HEADER_ONLY
   #define BOOST_PROCESS_V2_HEADER_ONLY
 #endif
-
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/system_executor.hpp>
 #include <boost/process/v2.hpp>

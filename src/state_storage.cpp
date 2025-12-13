@@ -186,7 +186,6 @@ namespace statefile {
 
     return false;
   }
-
   void save_snapshot_exclude_devices(const std::vector<std::string> &devices) {
     migrate_recent_state_keys();
     const auto &path_str = vibeshine_state_path();

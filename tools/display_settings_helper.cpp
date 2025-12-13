@@ -3761,7 +3761,7 @@ namespace {
   const auto session_current = (logdir / L"display_session_current.json");
   const auto session_previous = (logdir / L"display_session_previous.json");
   const auto vibeshine_state_file = (logdir / L"vibeshine_state.json");
-  auto _log_guard = logging::init_append(2 /*info*/, logfile);
+  auto _log_guard = logging::init(2 /*info*/, logfile);
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";

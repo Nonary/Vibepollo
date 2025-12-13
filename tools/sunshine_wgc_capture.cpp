@@ -1182,10 +1182,10 @@ private:
     std::span<const uint8_t> msg_span(reinterpret_cast<const uint8_t *>(&frame_msg), sizeof(frame_msg));
     bool send_ok = _deps->pipe.send(msg_span, 5000);
 
-    // Log first frame and occasional subsequent frames
+    // Log first frame and frame 100 for quick sanity checks, but avoid long-running spam.
     static std::atomic<uint64_t> frame_count {0};
-    auto count = ++frame_count;
-    if (count == 1 || count == 100 || (count % 1000 == 0)) {
+    const auto count = ++frame_count;
+    if (count == 1 || count == 100) {
       BOOST_LOG(info) << "Sent frame " << count << " to main process (send_ok=" << send_ok << ")";
     }
   }
@@ -1360,7 +1360,9 @@ std::filesystem::path get_roaming_log_directory() {
 /**
  * @brief Helper function to get the WGC helper log path.
  *
- * Logs now live under Roaming/Sunshine so they sit with the other Sunshine logs.
+ * Logs live under Roaming/Sunshine so they sit with the other Sunshine logs.
+ * When session-mode logging is enabled, the returned file path is used to derive
+ * the base name and output directory (typically Roaming/Sunshine/logs).
  * Falls back to the system temporary directory (or current directory) if the roaming
  * folder cannot be resolved.
  *
@@ -1502,7 +1504,8 @@ bool setup_desktop_switch_hook() {
  */
 int main(int argc, char *argv[]) {
   // Set up default config and log level
-  auto log_deinit = logging::init_single_file(2, get_temp_log_path());
+  // Use session-mode logs so rare startup deadlocks don't get overwritten by the next helper run.
+  auto log_deinit = logging::init(2, get_temp_log_path());
 
   // Check command line arguments for pipe names
   if (argc < 3) {

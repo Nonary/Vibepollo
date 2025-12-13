@@ -85,12 +85,21 @@ namespace platf {
 
     thread_pool_util::ThreadPool::task_id_t repeat_task {};
     std::chrono::steady_clock::time_point last_report_ts;
+    std::chrono::steady_clock::time_point last_accel_motion_ts;
+    std::chrono::steady_clock::time_point last_gyro_motion_ts;
+    std::chrono::steady_clock::time_point last_motion_request_ts;
 
     gamepad_feedback_msg_t last_rumble;
     gamepad_feedback_msg_t last_rgb_led;
   };
 
   constexpr float EARTH_G = 9.80665f;
+  constexpr float DS4_MAX_ACCEL_MPS2 = 200.0f;
+  constexpr float DS4_MAX_GYRO_DPS = 4000.0f;
+  constexpr auto DS4_KEEPALIVE_INTERVAL = 100ms;
+  constexpr auto DS4_MOTION_STALE_TIMEOUT = 250ms;
+  constexpr auto DS4_MOTION_RE_REQUEST_AFTER = 2s;
+  constexpr auto DS4_MOTION_RE_REQUEST_COOLDOWN = 5s;
 
 #define MPS2_TO_DS4_ACCEL(x) (int32_t) (((x) / EARTH_G) * 8192)
 #define DPS_TO_DS4_GYRO(x) (int32_t) ((x) * (1024 / 64))
@@ -143,11 +152,19 @@ namespace platf {
   static void ds4_update_motion(gamepad_context_t &gamepad, uint8_t motion_type, float x, float y, float z) {
     auto &report = gamepad.report.ds4.Report;
 
+    x = std::isfinite(x) ? x : 0.0f;
+    y = std::isfinite(y) ? y : 0.0f;
+    z = std::isfinite(z) ? z : 0.0f;
+
     // Use int32 to process this data, so we can clamp if needed.
     int32_t intX, intY, intZ;
 
     switch (motion_type) {
       case LI_MOTION_TYPE_ACCEL:
+        x = std::clamp(x, -DS4_MAX_ACCEL_MPS2, DS4_MAX_ACCEL_MPS2);
+        y = std::clamp(y, -DS4_MAX_ACCEL_MPS2, DS4_MAX_ACCEL_MPS2);
+        z = std::clamp(z, -DS4_MAX_ACCEL_MPS2, DS4_MAX_ACCEL_MPS2);
+
         // Convert to the DS4's accelerometer scale
         intX = MPS2_TO_DS4_ACCEL(x);
         intY = MPS2_TO_DS4_ACCEL(y);
@@ -159,6 +176,10 @@ namespace platf {
         intZ = APPLY_CALIBRATION(intZ, -512, 1.024768f);
         break;
       case LI_MOTION_TYPE_GYRO:
+        x = std::clamp(x, -DS4_MAX_GYRO_DPS, DS4_MAX_GYRO_DPS);
+        y = std::clamp(y, -DS4_MAX_GYRO_DPS, DS4_MAX_GYRO_DPS);
+        z = std::clamp(z, -DS4_MAX_GYRO_DPS, DS4_MAX_GYRO_DPS);
+
         // Convert to the DS4's gyro scale
         intX = DPS_TO_DS4_GYRO(x);
         intY = DPS_TO_DS4_GYRO(y);
@@ -227,6 +248,9 @@ namespace platf {
 
       gamepad.client_relative_index = id.clientRelativeIndex;
       gamepad.last_report_ts = std::chrono::steady_clock::now();
+      gamepad.last_accel_motion_ts = gamepad.last_report_ts;
+      gamepad.last_gyro_motion_ts = gamepad.last_report_ts;
+      gamepad.last_motion_request_ts = gamepad.last_report_ts;
 
       // Establish a connect to the ViGEm driver if we don't have one yet
       if (!client) {
@@ -257,6 +281,7 @@ namespace platf {
         // Request motion events from the client at 100 Hz
         feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
         feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+        gamepad.last_motion_request_ts = std::chrono::steady_clock::now();
 
         // We support pointer index 0 and 1
         gamepad.available_pointers = 0x3;
@@ -1451,17 +1476,39 @@ namespace platf {
    * @param vigem The global ViGEm context object.
    * @param nr The global gamepad index.
    */
+  void ds4_update_ts_and_send(vigem_t *vigem, int nr);
+
+  static void ds4_keepalive_send(vigem_t *vigem, int nr) {
+    auto &gamepad = vigem->gamepads[nr];
+    gamepad.repeat_task = nullptr;
+    ds4_update_ts_and_send(vigem, nr);
+  }
+
   void ds4_update_ts_and_send(vigem_t *vigem, int nr) {
     auto &gamepad = vigem->gamepads[nr];
 
-    // Cancel any pending updates. We will requeue one here when we're finished.
-    if (gamepad.repeat_task) {
-      task_pool.cancel(gamepad.repeat_task);
-      gamepad.repeat_task = nullptr;
-    }
-
     if (gamepad.gp && vigem_target_is_attached(gamepad.gp.get())) {
       auto now = std::chrono::steady_clock::now();
+
+      const auto gyro_stale = now - gamepad.last_gyro_motion_ts;
+      if (gyro_stale > DS4_MOTION_STALE_TIMEOUT) {
+        auto &report = gamepad.report.ds4.Report;
+        if (report.wGyroX != 0 || report.wGyroY != 0 || report.wGyroZ != 0) {
+          ds4_update_motion(gamepad, LI_MOTION_TYPE_GYRO, 0.0f, 0.0f, 0.0f);
+        }
+
+        if (gyro_stale > DS4_MOTION_RE_REQUEST_AFTER && now - gamepad.last_motion_request_ts > DS4_MOTION_RE_REQUEST_COOLDOWN) {
+          if (gamepad.feedback_queue) {
+            BOOST_LOG(debug) << "DS4 gyro stale for "sv
+                             << std::chrono::duration_cast<std::chrono::milliseconds>(gyro_stale).count()
+                             << "ms; re-requesting motion events from client"sv;
+            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
+            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+            gamepad.last_motion_request_ts = now;
+          }
+        }
+      }
+
       auto delta_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - gamepad.last_report_ts);
 
       // Timestamp is reported in 5.333us units
@@ -1476,7 +1523,11 @@ namespace platf {
 
       // Repeat at least every 100ms to keep the 16-bit timestamp field from overflowing
       gamepad.last_report_ts = now;
-      gamepad.repeat_task = task_pool.pushDelayed(ds4_update_ts_and_send, 100ms, vigem, nr).task_id;
+      if (gamepad.repeat_task) {
+        task_pool.delay(gamepad.repeat_task, DS4_KEEPALIVE_INTERVAL);
+      } else {
+        gamepad.repeat_task = task_pool.pushDelayed(ds4_keepalive_send, DS4_KEEPALIVE_INTERVAL, vigem, nr).task_id;
+      }
     }
   }
 
@@ -1640,6 +1691,13 @@ namespace platf {
     // Motion is only supported on DualShock 4 controllers
     if (vigem_target_get_type(gamepad.gp.get()) != DualShock4Wired) {
       return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (motion.motionType == LI_MOTION_TYPE_ACCEL) {
+      gamepad.last_accel_motion_ts = now;
+    } else if (motion.motionType == LI_MOTION_TYPE_GYRO) {
+      gamepad.last_gyro_motion_ts = now;
     }
 
     ds4_update_motion(gamepad, motion.motionType, motion.x, motion.y, motion.z);

@@ -191,6 +191,7 @@ namespace nvhttp {
     void cleanup_virtual_display_state() {
       VDISPLAY::setWatchdogFeedingEnabled(false);
       VDISPLAY::removeAllVirtualDisplays();
+      display_helper_integration::stop_watchdog();
       display_helper_integration::revert();
     }
 

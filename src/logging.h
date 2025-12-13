@@ -144,7 +144,7 @@ namespace logging {
    * @brief List the most recent session logs stored in the log directory.
    * @param max_sessions Maximum number of sessions to include.
    */
-  [[nodiscard]] std::vector<std::filesystem::path> recent_session_logs(std::size_t max_sessions = 10);
+  [[nodiscard]] std::vector<std::filesystem::path> recent_session_logs(std::size_t max_sessions = 30);
 
   /**
    * @brief A helper class for tracking and logging numerical values across a period of time

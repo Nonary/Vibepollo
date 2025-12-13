@@ -62,12 +62,12 @@ See below for details on token endpoints and usage examples.
 ## GET /api/logs
 @copydoc confighttp::getLogs()
 
-- Returns the most recent session log from the managed `logs` folder (Sunshine keeps the last 10 sessions with rollovers for files that exceed ~2MB).
+- Returns the most recent session log from the managed `logs` folder (Sunshine keeps the last 30 sessions with rollovers for files that exceed ~2MB).
 
 ## GET /api/logs/export
 Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).
 
-- Includes: Sunshine session logs (current and up to 9 previous sessions, including rollovers), Playnite logs (`playnite.log`, `extensions.log`, `launcher.log`), Sunshine Playnite plugin log (`sunshine_playnite.log`), launcher helper logs (`sunshine_playnite_launcher.log`/`sunshine_launcher.log`), and display helper log (`sunshine_display_helper.log`) when present.
+- Includes: Sunshine session logs (current and up to 29 previous sessions, including rollovers), Playnite logs (`playnite.log`, `extensions.log`, `launcher.log`), Sunshine Playnite plugin logs (`sunshine_playnite-*.log*` and legacy `sunshine_playnite.log`), launcher helper logs (`sunshine_playnite_launcher-*.log*` / `sunshine_launcher-*.log*` and legacy `sunshine_playnite_launcher.log` / `sunshine_launcher.log`), display helper logs (`sunshine_display_helper-*.log*` and legacy `sunshine_display_helper.log`), and WGC helper logs (`sunshine_wgc_helper-*.log*` and legacy `sunshine_wgc_helper.log`) when present.
 - Requires authentication.
 
 ## POST /api/password

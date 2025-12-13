@@ -48,6 +48,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/process.h"
 #include "src/utility.h"
 #include "src/boost_process_shim.h"
 
@@ -1347,8 +1348,15 @@ namespace platf {
   }
 
   void streaming_will_stop() {
-    // Stop display helper watchdog when streams stop
-    display_helper_integration::stop_watchdog();
+    // If the client disconnected without /cancel, Sunshine can leave the app running to allow /resume.
+    // In that "paused" state, we must keep feeding the display helper heartbeat to prevent it from
+    // autonomously reverting the virtual display configuration.
+    const bool is_paused = (proc::proc.running() > 0);
+    if (!is_paused) {
+      display_helper_integration::stop_watchdog();
+    } else {
+      BOOST_LOG(debug) << "Display helper: keeping watchdog alive while session is paused (awaiting /resume).";
+    }
     // Demote ourselves back to normal priority class
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 

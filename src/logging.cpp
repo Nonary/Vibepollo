@@ -53,7 +53,7 @@ using namespace std::literals;
 
 namespace logging {
   namespace detail {
-    constexpr std::size_t k_max_session_count = 10;
+    constexpr std::size_t k_max_session_count = 30;
     constexpr std::size_t k_max_session_rollovers = 10;
     constexpr std::uintmax_t k_rollover_size_bytes = 2ull * 1024ull * 1024ull;
     inline std::filesystem::path log_root;

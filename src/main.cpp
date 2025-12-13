@@ -274,8 +274,10 @@ int main(int argc, char *argv[]) {
   task_pool.start(1);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-  // create tray thread and detach it
-  system_tray::run_tray();
+  // create tray thread and detach it if enabled in config
+  if (config::sunshine.system_tray) {
+    system_tray::run_tray();
+  }
   // Schedule periodic update checks if configured
   if (config::sunshine.update_check_interval_seconds > 0) {
     // Trigger an immediate update check on startup so users don't wait
