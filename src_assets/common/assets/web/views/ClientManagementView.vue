@@ -501,7 +501,7 @@
                   v-model="client.editPrefer10BitSdr"
                   label="pin.client_prefer_10bit_sdr"
                   desc="pin.client_prefer_10bit_sdr_desc"
-                  default="true"
+                  :default="globalPrefer10BitSdr"
                 />
                 <div
                   v-for="cmdType in commandTypes"
@@ -787,7 +787,8 @@ interface SaveClientPayload {
   allow_client_commands: boolean;
   enable_legacy_ordering: boolean;
   always_use_virtual_display: boolean;
-  prefer_10bit_sdr: boolean;
+  // When omitted or null, the client inherits the global prefer_10bit_sdr value.
+  prefer_10bit_sdr?: boolean | null;
   perm: number;
   do: ClientCommand[];
   undo: ClientCommand[];
@@ -808,7 +809,8 @@ interface ClientViewModel {
   allowClientCommands: boolean;
   enableLegacyOrdering: boolean;
   alwaysUseVirtualDisplay: boolean;
-  prefer10BitSdr: boolean;
+  // Null means inherit global prefer_10bit_sdr.
+  prefer10BitSdr: boolean | null;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   doCommands: ClientCommand[];
@@ -821,7 +823,7 @@ interface ClientViewModel {
   editAllowClientCommands: boolean;
   editEnableLegacyOrdering: boolean;
   editAlwaysUseVirtualDisplay: boolean;
-  editPrefer10BitSdr: boolean;
+  editPrefer10BitSdr: boolean | null;
   editVirtualDisplayMode: AppVirtualDisplayMode | null;
   editVirtualDisplayLayout: AppVirtualDisplayLayout | null;
   editDo: ClientCommand[];
@@ -927,6 +929,9 @@ const { t } = useI18n();
 const message = useMessage();
 const authStore = useAuthStore();
 const configStore = useConfigStore();
+const globalPrefer10BitSdr = computed<boolean>(() =>
+  toBool((configStore.config as any)?.prefer_10bit_sdr, false),
+);
 const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() =>
   parseClientVirtualDisplayMode((configStore.config as any)?.virtual_display_mode) ?? 'disabled',
 );
@@ -1168,7 +1173,10 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
-  const prefer10BitSdr = toBool(entry.prefer_10bit_sdr, false);
+  const prefer10BitSdr =
+    entry.prefer_10bit_sdr === undefined || entry.prefer_10bit_sdr === null
+      ? null
+      : toBool(entry.prefer_10bit_sdr, false);
   const virtualDisplayMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualDisplayLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
   return {
@@ -1326,6 +1334,7 @@ function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayl
   client.allowClientCommands = payload.allow_client_commands;
   client.enableLegacyOrdering = payload.enable_legacy_ordering;
   client.alwaysUseVirtualDisplay = payload.always_use_virtual_display;
+  client.prefer10BitSdr = payload.prefer_10bit_sdr === undefined ? null : payload.prefer_10bit_sdr;
   client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
   client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
   client.doCommands = payload.do.map(cloneCommand);
@@ -1363,11 +1372,13 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     allow_client_commands: !!client.editAllowClientCommands,
     enable_legacy_ordering: !!client.editEnableLegacyOrdering,
     always_use_virtual_display: displaySelection === 'virtual',
-    prefer_10bit_sdr: !!client.editPrefer10BitSdr,
     perm: client.editPerm & permissionMapping._all,
     do: cleanedDo,
     undo: cleanedUndo,
   };
+  if (client.editPrefer10BitSdr !== null) {
+    payload.prefer_10bit_sdr = !!client.editPrefer10BitSdr;
+  }
   client.editing = false;
   currentEditingClient.value = null;
   try {

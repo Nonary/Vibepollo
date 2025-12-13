@@ -375,7 +375,9 @@ namespace nvhttp {
         named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
         named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
-        named_cert_node["prefer_10bit_sdr"] = named_cert_p->prefer_10bit_sdr;
+        if (named_cert_p->prefer_10bit_sdr.has_value()) {
+          named_cert_node["prefer_10bit_sdr"] = *named_cert_p->prefer_10bit_sdr;
+        }
 
         if (!named_cert_p->do_cmds.empty()) {
           nlohmann::json do_cmds_node = nlohmann::json::array();
@@ -536,7 +538,7 @@ namespace nvhttp {
             named_cert_p->enable_legacy_ordering = true;
             named_cert_p->allow_client_commands = true;
             named_cert_p->always_use_virtual_display = false;
-            named_cert_p->prefer_10bit_sdr = false;
+            named_cert_p->prefer_10bit_sdr.reset();
             client.named_devices.emplace_back(named_cert_p);
           }
         }
@@ -557,7 +559,11 @@ namespace nvhttp {
         named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
         named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
         named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
-        named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
+        if (el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null()) {
+          named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
+        } else {
+          named_cert_p->prefer_10bit_sdr.reset();
+        }
         named_cert_p->do_cmds = extract_command_entries(el, "do");
         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
         client.named_devices.emplace_back(named_cert_p);
@@ -1341,15 +1347,14 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
-  bool get_client_prefer_10bit_sdr(const std::string &uuid) {
+  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid) {
     client_t &client = client_root;
     for (auto &named_cert : client.named_devices) {
       if (named_cert->uuid == uuid) {
         return named_cert->prefer_10bit_sdr;
       }
     }
-    // Default to true if client not found
-    return true;
+    return std::nullopt;
   }
 
   nlohmann::json get_all_clients() {
@@ -1369,7 +1374,9 @@ namespace nvhttp {
       named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
       named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
       named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
-      named_cert_node["prefer_10bit_sdr"] = named_cert->prefer_10bit_sdr;
+      if (named_cert->prefer_10bit_sdr.has_value()) {
+        named_cert_node["prefer_10bit_sdr"] = *named_cert->prefer_10bit_sdr;
+      }
 
       // Add "do" commands if available
       if (!named_cert->do_cmds.empty()) {
@@ -2639,7 +2646,7 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const bool prefer_10bit_sdr
+    const std::optional<bool> prefer_10bit_sdr
   ) {
     find_and_udpate_session_info(uuid, name, newPerm);
 

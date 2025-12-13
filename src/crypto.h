@@ -6,6 +6,7 @@
 
 // standard includes
 #include <array>
+#include <optional>
 
 // lib includes
 #include <list>
@@ -110,7 +111,8 @@ namespace crypto {
     bool enable_legacy_ordering;
     bool allow_client_commands;
     bool always_use_virtual_display;
-    bool prefer_10bit_sdr;
+    // When unset, the client inherits the global prefer_10bit_sdr value.
+    std::optional<bool> prefer_10bit_sdr;
   };
 
   using p_named_cert_t = std::shared_ptr<named_cert_t>;

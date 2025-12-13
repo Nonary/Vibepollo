@@ -8,6 +8,7 @@
 // standard includes
 #include <chrono>
 #include <list>
+#include <optional>
 #include <string>
 
 // lib includes
@@ -214,11 +215,11 @@ namespace nvhttp {
   bool unpair_client(std::string_view uuid);
 
   /**
-   * @brief Get a client's prefer_10bit_sdr setting.
+   * @brief Get a client's prefer_10bit_sdr override.
    * @param uuid The UUID of the client.
-   * @return true if the client prefers 10-bit SDR, false otherwise (default).
+   * @return The client's override value, or std::nullopt to inherit the global value.
    */
-  bool get_client_prefer_10bit_sdr(const std::string &uuid);
+  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
 
   /**
    * @brief Get all paired clients.
@@ -300,7 +301,7 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const bool prefer_10bit_sdr
+    const std::optional<bool> prefer_10bit_sdr
   );
 
   /**

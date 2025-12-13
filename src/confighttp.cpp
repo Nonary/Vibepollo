@@ -1560,7 +1560,12 @@ namespace confighttp {
       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      bool prefer_10bit_sdr = input_tree.value("prefer_10bit_sdr", false);
+      std::optional<bool> prefer_10bit_sdr;
+      if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
+        prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
+      } else {
+        prefer_10bit_sdr.reset();
+      }
       std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
       std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
       auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
