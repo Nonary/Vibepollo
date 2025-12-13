@@ -943,6 +943,8 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    // On-demand start for web/API-driven launches
+    inst->ensure_started_for_api();
     // Build a simple command JSON that the plugin reads line-delimited
     nlohmann::json j;
     j["type"] = "command";
@@ -957,6 +959,8 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    // Ensure IPC is up when announced via API/launcher tooling
+    inst->ensure_started_for_api();
     nlohmann::json j;
     j["type"] = "launcher";
     j["command"] = "announce";
@@ -974,6 +978,8 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    // Web/API access should spin up IPC client on-demand and update activity timestamp.
+    inst->ensure_started_for_api();
     nlohmann::json arr = nlohmann::json::array();
     std::vector<platf::playnite::Game> copy;
     inst->snapshot_games(copy);
@@ -1000,6 +1006,7 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    inst->ensure_started_for_api();
     std::vector<platf::playnite::Category> cats;
     inst->snapshot_categories(cats);
     if (cats.empty()) {
@@ -1036,6 +1043,7 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    inst->ensure_started_for_api();
     std::vector<platf::playnite::Plugin> plugins;
     inst->snapshot_plugins(plugins);
     if (plugins.empty()) {
@@ -1251,6 +1259,7 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    inst->ensure_started_for_api();
     nlohmann::json j;
     j["type"] = "command";
     j["command"] = "stop";
@@ -1265,6 +1274,7 @@ namespace platf::playnite {
     if (!inst) {
       return false;
     }
+    inst->ensure_started_for_api();
     inst->trigger_sync();
     return true;
   }
