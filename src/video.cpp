@@ -2828,55 +2828,84 @@ namespace video {
   };
 
   int validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
-    auto encode_device = make_encode_device(*disp, encoder, config);
-    if (!encode_device) {
-      return -1;
-    }
-
-    auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
-    if (!session) {
-      return -1;
-    }
-
-    {
-      // Image buffers are large, so we use a separate scope to free it immediately after convert()
-      auto img = disp->alloc_img();
-      if (!img || disp->dummy_img(img.get()) || session->convert(*img)) {
-        return -1;
+    const int max_attempts = config.videoFormat >= 1 ? 3 : 1;  // HEVC/AV1 can fail transiently during probing
+    const auto codec_name = [&]() -> std::string_view {
+      switch (config.videoFormat) {
+        case 0: return "H.264"sv;
+        case 1: return "HEVC"sv;
+        case 2: return "AV1"sv;
+        default: return "codec"sv;
       }
-    }
+    }();
 
-    session->request_idr_frame();
-
-    auto packets = mail::man->queue<packet_t>(mail::video_packets);
-    while (!packets->peek()) {
-      if (encode(1, *session, packets, nullptr, {})) {
-        return -1;
-      }
-    }
-
-    auto packet = packets->pop();
-    if (!packet->is_idr()) {
-      BOOST_LOG(error) << "First packet type is not an IDR frame"sv;
-
-      return -1;
-    }
-
-    int flag = 0;
-
-    // This check only applies for H.264 and HEVC
-    if (config.videoFormat <= 1) {
-      if (auto packet_avcodec = dynamic_cast<packet_raw_avcodec *>(packet.get())) {
-        if (cbs::validate_sps(packet_avcodec->av_packet, config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264)) {
-          flag |= VUI_PARAMS;
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+      auto validate_once = [&]() -> util::optional_t<int> {
+        auto encode_device = make_encode_device(*disp, encoder, config);
+        if (!encode_device) {
+          return util::false_v<util::optional_t<int>>;
         }
-      } else {
-        // Don't check it for non-avcodec encoders.
-        flag |= VUI_PARAMS;
+
+        auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
+        if (!session) {
+          return util::false_v<util::optional_t<int>>;
+        }
+
+        {
+          // Image buffers are large, so we use a separate scope to free it immediately after convert()
+          auto img = disp->alloc_img();
+          if (!img || disp->dummy_img(img.get()) || session->convert(*img)) {
+            return util::false_v<util::optional_t<int>>;
+          }
+        }
+
+        session->request_idr_frame();
+
+        // Use a probe-local mail/queue to avoid stale packets from previous encoder sessions.
+        auto probe_mail = std::make_shared<safe::mail_raw_t>();
+        auto packets = probe_mail->queue<packet_t>(mail::video_packets);
+
+        while (!packets->peek()) {
+          if (encode(1, *session, packets, nullptr, {})) {
+            return util::false_v<util::optional_t<int>>;
+          }
+        }
+
+        auto packet = packets->pop();
+        if (!packet->is_idr()) {
+          BOOST_LOG(error) << "First packet type is not an IDR frame"sv;
+          return util::false_v<util::optional_t<int>>;
+        }
+
+        int flag = 0;
+
+        // This check only applies for H.264 and HEVC
+        if (config.videoFormat <= 1) {
+          if (auto packet_avcodec = dynamic_cast<packet_raw_avcodec *>(packet.get())) {
+            if (cbs::validate_sps(packet_avcodec->av_packet, config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264)) {
+              flag |= VUI_PARAMS;
+            }
+          } else {
+            // Don't check it for non-avcodec encoders.
+            flag |= VUI_PARAMS;
+          }
+        }
+
+        return flag;
+      };
+
+      auto result = validate_once();
+      if (result) {
+        return *result;
+      }
+
+      if (attempt < max_attempts) {
+        BOOST_LOG(debug) << "Encoder probe: failed to validate "sv << codec_name << " config (attempt "sv
+                         << attempt << "/" << max_attempts << "), retrying."sv;
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
       }
     }
 
-    return flag;
+    return -1;
   }
 
   static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
