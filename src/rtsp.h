@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -55,6 +56,8 @@ namespace rtsp_stream {
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
+    bool client_display_mode_override;
+    bool client_requests_virtual_display;
     bool virtual_display;
     bool virtual_display_detach_with_app;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
@@ -96,6 +99,17 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();
+
+  /**
+   * @brief Get the client UUIDs for all active sessions.
+   */
+  std::list<std::string> get_all_session_client_uuids();
+
+  /**
+   * @brief Stop any active sessions for a given client UUID.
+   * @return True if one or more sessions were stopped.
+   */
+  bool disconnect_client_sessions(const std::string &client_uuid);
 
   /**
    * @brief Runs the RTSP server loop.

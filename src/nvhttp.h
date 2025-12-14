@@ -6,7 +6,9 @@
 #pragma once
 
 // standard includes
+#include <optional>
 #include <string>
+#include <unordered_map>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -192,6 +194,34 @@ namespace nvhttp {
    * @examples_end
    */
   nlohmann::json get_all_clients();
+
+  /**
+   * @brief Update stored settings for a paired client.
+   * @return True if the client was found and updated.
+   */
+  bool update_device_info(
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const std::string &output_name_override,
+    bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout,
+    std::optional<std::unordered_map<std::string, std::string>> config_overrides,
+    std::optional<bool> prefer_10bit_sdr,
+    std::optional<std::string> hdr_profile
+  );
+
+  /**
+   * @brief Disconnect any active sessions for a paired client.
+   * @return True if one or more sessions were stopped.
+   */
+  bool disconnect_client(const std::string &uuid);
+
+  /**
+   * @brief Get a client's prefer_10bit_sdr override.
+   */
+  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
 
   /**
    * @brief Persist a per-client HDR color profile selection (Windows only).

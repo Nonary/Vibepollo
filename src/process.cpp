@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -31,6 +32,7 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -1718,6 +1720,17 @@ namespace proc {
     _active_client_uuid.clear();
     _app_launch_time = {};
     _app_id = -1;
+
+    // Clear any per-app runtime config overrides now that the app is terminating.
+    // If we can safely hot-apply immediately, restore global config now; otherwise defer.
+    if (has_run) {
+      config::clear_runtime_config_overrides();
+      if (rtsp_stream::session_count() == 0) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    }
   }
 
   active_session_guard_t proc_t::active_session_guard() const {
@@ -1955,9 +1968,32 @@ namespace proc {
 
   std::optional<proc::proc_t> parse(const std::string &file_name) {
     pt::ptree tree;
+    nlohmann::json json_tree;
+    std::string file_content;
 
     try {
-      pt::read_json(file_name, tree);
+      {
+        std::ifstream in(file_name, std::ios::binary);
+        if (!in) {
+          BOOST_LOG(error) << "Unable to open apps file: "sv << file_name;
+          return std::nullopt;
+        }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        file_content = ss.str();
+      }
+
+      try {
+        json_tree = nlohmann::json::parse(file_content);
+      } catch (...) {
+        // Ignore JSON parsing failures for the supplemental view; property_tree parse below is authoritative.
+        json_tree = nlohmann::json();
+      }
+
+      {
+        std::istringstream in(file_content);
+        pt::read_json(in, tree);
+      }
 
       auto &apps_node = tree.get_child("apps"s);
       auto &env_vars = tree.get_child("env"s);
@@ -1976,6 +2012,7 @@ namespace proc {
       std::vector<proc::ctx_t> apps;
       int i = 0;
       for (auto &[_, app_node] : apps_node) {
+        const int json_index = i;
         proc::ctx_t ctx;
 
         auto prep_nodes_opt = app_node.get_child_optional("prep-cmd"s);
@@ -2002,6 +2039,37 @@ namespace proc {
         auto virtual_display_mode = app_node.get_optional<std::string>("virtual-display-mode"s);
         auto virtual_display_layout = app_node.get_optional<std::string>("virtual-display-layout"s);
         auto dd_config_override = app_node.get_optional<std::string>("dd-configuration-option"s);
+
+        // Parse per-app global config overrides from the JSON view (preserves types for nested values).
+        // We keep values in the raw config-file representation (strings are raw, non-strings use JSON dump).
+        try {
+          if (json_tree.is_object() && json_tree.contains("apps") && json_tree["apps"].is_array()) {
+            const auto &japps = json_tree["apps"];
+            if (json_index >= 0 && json_index < static_cast<int>(japps.size()) && japps[json_index].is_object()) {
+              const auto &japp = japps[json_index];
+              if (japp.contains("config-overrides") && japp["config-overrides"].is_object()) {
+                for (const auto &item : japp["config-overrides"].items()) {
+                  const std::string &key = item.key();
+                  const auto &val = item.value();
+                  if (val.is_null()) {
+                    continue;
+                  }
+                  std::string encoded;
+                  if (val.is_string()) {
+                    encoded = parse_env_val(this_env, val.get<std::string>());
+                  } else {
+                    encoded = val.dump();
+                  }
+                  if (!encoded.empty()) {
+                    ctx.config_overrides.emplace(key, std::move(encoded));
+                  }
+                }
+              }
+            }
+          }
+        } catch (...) {
+          // ignore overrides parse errors; continue without them
+        }
 
         ctx.lossless_scaling_framegen = lossless_scaling_framegen.value_or(false);
         ctx.frame_generation_provider = frame_generation_provider ? normalize_frame_generation_provider(*frame_generation_provider) : "lossless-scaling";

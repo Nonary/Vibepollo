@@ -182,7 +182,6 @@ namespace nvhttp {
     void cleanup_virtual_display_state() {
       VDISPLAY::setWatchdogFeedingEnabled(false);
       VDISPLAY::removeAllVirtualDisplays();
-      display_helper_integration::stop_watchdog();
       display_helper_integration::revert();
     }
 
@@ -219,6 +218,13 @@ namespace nvhttp {
     std::string uuid;
     std::string cert;
     std::string hdr_profile;
+    std::string display_mode;
+    std::string output_name_override;
+    std::string virtual_display_mode_override;
+    std::string virtual_display_layout_override;
+    bool always_use_virtual_display = false;
+    std::optional<bool> prefer_10bit_sdr;
+    std::unordered_map<std::string, std::string> config_overrides;
   };
 
   struct client_t {
@@ -287,6 +293,31 @@ namespace nvhttp {
       named_cert_node.put("uuid"s, named_cert.uuid);
       if (!named_cert.hdr_profile.empty()) {
         named_cert_node.put("hdr_profile"s, named_cert.hdr_profile);
+      }
+      if (!named_cert.display_mode.empty()) {
+        named_cert_node.put("display_mode"s, named_cert.display_mode);
+      }
+      if (!named_cert.output_name_override.empty()) {
+        named_cert_node.put("output_name_override"s, named_cert.output_name_override);
+      }
+      if (!named_cert.virtual_display_mode_override.empty()) {
+        named_cert_node.put("virtual_display_mode"s, named_cert.virtual_display_mode_override);
+      }
+      if (!named_cert.virtual_display_layout_override.empty()) {
+        named_cert_node.put("virtual_display_layout"s, named_cert.virtual_display_layout_override);
+      }
+      if (named_cert.always_use_virtual_display) {
+        named_cert_node.put("always_use_virtual_display"s, true);
+      }
+      if (named_cert.prefer_10bit_sdr.has_value()) {
+        named_cert_node.put("prefer_10bit_sdr"s, *named_cert.prefer_10bit_sdr);
+      }
+      if (!named_cert.config_overrides.empty()) {
+        pt::ptree overrides_node;
+        for (const auto &[k, v] : named_cert.config_overrides) {
+          overrides_node.put(k, v);
+        }
+        named_cert_node.put_child("config_overrides", overrides_node);
       }
       named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
@@ -417,6 +448,25 @@ namespace nvhttp {
           named_cert.cert = el.get_child("cert").get_value<std::string>();
           named_cert.uuid = el.get_child("uuid").get_value<std::string>();
           named_cert.hdr_profile = el.get<std::string>("hdr_profile", "");
+          named_cert.display_mode = el.get<std::string>("display_mode", "");
+          named_cert.output_name_override = el.get<std::string>("output_name_override", "");
+          named_cert.virtual_display_mode_override = el.get<std::string>("virtual_display_mode", "");
+          named_cert.virtual_display_layout_override = el.get<std::string>("virtual_display_layout", "");
+          named_cert.always_use_virtual_display = el.get<bool>("always_use_virtual_display", false);
+          if (auto prefer_10bit_sdr = el.get_optional<bool>("prefer_10bit_sdr")) {
+            named_cert.prefer_10bit_sdr = *prefer_10bit_sdr;
+          } else {
+            named_cert.prefer_10bit_sdr.reset();
+          }
+          named_cert.config_overrides.clear();
+          if (auto overrides_node = el.get_child_optional("config_overrides")) {
+            for (auto &[k, v] : *overrides_node) {
+              if (k.empty()) {
+                continue;
+              }
+              named_cert.config_overrides[k] = v.get_value<std::string>();
+            }
+          }
           client.named_devices.emplace_back(named_cert);
         }
       }
@@ -438,6 +488,14 @@ namespace nvhttp {
     named_cert.cert = std::move(cert);
     named_cert.uuid = uuid_util::uuid_t::generate().string();
     named_cert.hdr_profile.clear();
+    named_cert.hdr_profile.clear();
+    named_cert.display_mode.clear();
+    named_cert.output_name_override.clear();
+    named_cert.virtual_display_mode_override.clear();
+    named_cert.virtual_display_layout_override.clear();
+    named_cert.always_use_virtual_display = false;
+    named_cert.prefer_10bit_sdr.reset();
+    named_cert.config_overrides.clear();
     client.named_devices.emplace_back(named_cert);
 
     if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
@@ -480,6 +538,62 @@ namespace nvhttp {
     return get_client_uuid_from_peer_cert(tl_peer_certificate, client_name_out);
   }
 
+  named_cert_t *get_named_cert_by_uuid(const std::string &uuid) {
+    if (uuid.empty()) {
+      return nullptr;
+    }
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert.uuid == uuid) {
+        return &named_cert;
+      }
+    }
+    return nullptr;
+  }
+
+  std::optional<config::video_t::virtual_display_mode_e> parse_virtual_display_mode_override(const std::string &value) {
+    const auto trimmed = boost::algorithm::trim_copy(value);
+    if (trimmed.empty()) {
+      return std::nullopt;
+    }
+    using mode_e = config::video_t::virtual_display_mode_e;
+    if (boost::iequals(trimmed, "disabled")) {
+      return mode_e::disabled;
+    }
+    if (boost::iequals(trimmed, "per_client")) {
+      return mode_e::per_client;
+    }
+    if (boost::iequals(trimmed, "shared")) {
+      return mode_e::shared;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<config::video_t::virtual_display_layout_e> parse_virtual_display_layout_override(const std::string &value) {
+    const auto trimmed = boost::algorithm::trim_copy(value);
+    if (trimmed.empty()) {
+      return std::nullopt;
+    }
+    using layout_e = config::video_t::virtual_display_layout_e;
+    if (boost::iequals(trimmed, "exclusive")) {
+      return layout_e::exclusive;
+    }
+    if (boost::iequals(trimmed, "extended")) {
+      return layout_e::extended;
+    }
+    if (boost::iequals(trimmed, "extended_primary")) {
+      return layout_e::extended_primary;
+    }
+    if (boost::iequals(trimmed, "extended_isolated")) {
+      return layout_e::extended_isolated;
+    }
+    if (boost::iequals(trimmed, "extended_primary_isolated")) {
+      return layout_e::extended_primary_isolated;
+    }
+    return std::nullopt;
+  }
+
   std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args, req_https_t request = nullptr) {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
@@ -500,9 +614,18 @@ namespace nvhttp {
     launch_session->client_uuid.clear();
     launch_session->client_name.clear();
     launch_session->hdr_profile.reset();
+    launch_session->client_display_mode_override = false;
+    launch_session->client_requests_virtual_display = false;
+    launch_session->hdr_profile.reset();
 
     if (request) {
       launch_session->client_uuid = get_client_uuid_from_request(request, &launch_session->client_name);
+    }
+
+    // Some launch paths may not provide a peer certificate (e.g. non-TLS resume).
+    // Fall back to the client-provided unique ID so per-client settings still apply.
+    if (launch_session->client_uuid.empty()) {
+      launch_session->client_uuid = get_arg(args, "uniqueid", "");
     }
 
     auto client_name_arg = get_arg(args, "clientName", "");
@@ -514,21 +637,69 @@ namespace nvhttp {
     std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
 
     launch_session->host_audio = host_audio;
-    std::stringstream mode = std::stringstream(get_arg(args, "mode", "0x0x0"));
-    // Split mode by the char "x", to populate width/height/fps
-    int x = 0;
-    std::string segment;
-    while (std::getline(mode, segment, 'x')) {
-      if (x == 0) {
-        launch_session->width = atoi(segment.c_str());
+    named_cert_t *client_settings = get_named_cert_by_uuid(launch_session->client_uuid);
+    auto parse_mode_string = [&](const std::string &mode_str) -> bool {
+      std::stringstream mode(mode_str);
+      int x = 0;
+      std::string segment;
+      int width = 0;
+      int height = 0;
+      int fps = 0;
+      while (std::getline(mode, segment, 'x')) {
+        if (x == 0) {
+          width = std::atoi(segment.c_str());
+        } else if (x == 1) {
+          height = std::atoi(segment.c_str());
+        } else if (x == 2) {
+          const double raw_fps = std::atof(segment.c_str());
+          int parsed = 0;
+          if (raw_fps > 0) {
+            parsed = static_cast<int>(raw_fps + 0.5);
+            // If someone provided millihz-style FPS (e.g. 60000), normalize to Hz.
+            if (parsed >= 1000 && parsed % 1000 == 0) {
+              parsed /= 1000;
+            }
+          }
+          fps = parsed;
+        }
+        ++x;
       }
-      if (x == 1) {
-        launch_session->height = atoi(segment.c_str());
+      if (x < 3) {
+        return false;
       }
-      if (x == 2) {
-        launch_session->fps = atoi(segment.c_str());
+      launch_session->width = width;
+      launch_session->height = height;
+      launch_session->fps = fps;
+      return true;
+    };
+
+    // Start with the client requested mode
+    (void) parse_mode_string(get_arg(args, "mode", "0x0x0"));
+
+    // Apply client display mode override if present
+    if (client_settings && !client_settings->display_mode.empty()) {
+      if (parse_mode_string(client_settings->display_mode)) {
+        launch_session->client_display_mode_override = true;
+      } else {
+        BOOST_LOG(warning) << "Failed to parse client display mode override: " << client_settings->display_mode;
       }
-      x++;
+    }
+
+    if (client_settings) {
+      launch_session->client_requests_virtual_display = client_settings->always_use_virtual_display;
+      if (!client_settings->output_name_override.empty()) {
+        launch_session->output_name_override = client_settings->output_name_override;
+      }
+      if (!client_settings->virtual_display_mode_override.empty()) {
+        if (auto parsed_mode = parse_virtual_display_mode_override(client_settings->virtual_display_mode_override)) {
+          launch_session->virtual_display_mode_override = *parsed_mode;
+        }
+      }
+      if (!client_settings->virtual_display_layout_override.empty()) {
+        if (auto parsed_layout = parse_virtual_display_layout_override(client_settings->virtual_display_layout_override)) {
+          launch_session->virtual_display_layout_override = *parsed_layout;
+        }
+      }
     }
 
     if (!launch_session->client_uuid.empty()) {
@@ -561,11 +732,19 @@ namespace nvhttp {
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
             launch_session->virtual_display = app_ctx.virtual_screen;
-            launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
-            launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
-            launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
-            if (!app_ctx.output.empty()) {
-              launch_session->output_name_override = app_ctx.output;
+            if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
+              launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
+            }
+            if (!launch_session->virtual_display_layout_override && app_ctx.virtual_display_layout_override) {
+              launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+            }
+            if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
+              launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
+            }
+            if (!launch_session->output_name_override || launch_session->output_name_override->empty()) {
+              if (!app_ctx.output.empty()) {
+                launch_session->output_name_override = app_ctx.output;
+              }
             }
             launch_session->app_metadata = std::move(metadata);
             break;
@@ -1062,11 +1241,47 @@ namespace nvhttp {
   nlohmann::json get_all_clients() {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     client_t &client = client_root;
+    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_client_uuids();
     for (auto &named_cert : client.named_devices) {
       nlohmann::json named_cert_node;
       named_cert_node["name"] = named_cert.name;
       named_cert_node["uuid"] = named_cert.uuid;
       named_cert_node["hdr_profile"] = named_cert.hdr_profile;
+      named_cert_node["display_mode"] = named_cert.display_mode;
+      named_cert_node["output_name_override"] = named_cert.output_name_override;
+      named_cert_node["virtual_display_mode"] = named_cert.virtual_display_mode_override;
+      named_cert_node["virtual_display_layout"] = named_cert.virtual_display_layout_override;
+      named_cert_node["always_use_virtual_display"] = named_cert.always_use_virtual_display;
+      named_cert_node["hdr_profile"] = named_cert.hdr_profile;
+      if (named_cert.prefer_10bit_sdr.has_value()) {
+        named_cert_node["prefer_10bit_sdr"] = *named_cert.prefer_10bit_sdr;
+      }
+      if (!named_cert.config_overrides.empty()) {
+        nlohmann::json overrides = nlohmann::json::object();
+        for (const auto &[k, v] : named_cert.config_overrides) {
+          if (k.empty()) {
+            continue;
+          }
+          try {
+            overrides[k] = nlohmann::json::parse(v);
+          } catch (...) {
+            overrides[k] = v;
+          }
+        }
+        named_cert_node["config_overrides"] = std::move(overrides);
+      }
+
+      bool connected = false;
+      if (!connected_uuids.empty()) {
+        for (auto it = connected_uuids.begin(); it != connected_uuids.end(); ++it) {
+          if (*it == named_cert.uuid) {
+            connected = true;
+            connected_uuids.erase(it);
+            break;
+          }
+        }
+      }
+      named_cert_node["connected"] = connected;
       named_cert_nodes.push_back(named_cert_node);
     }
 
@@ -1144,6 +1359,65 @@ namespace nvhttp {
     }
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+
+    const bool no_active_sessions = (rtsp_stream::session_count() == 0);
+
+    // Apply per-application runtime config overrides before we build session metadata or
+    // prepare display/capture so the effective config is used everywhere.
+    bool runtime_overrides_applied = false;
+    bool keep_runtime_overrides = false;
+    auto runtime_overrides_guard = util::fail_guard([&]() {
+      if (!runtime_overrides_applied || keep_runtime_overrides) {
+        return;
+      }
+
+      config::clear_runtime_config_overrides();
+
+      // Restore global config immediately when safe; otherwise defer.
+      if (rtsp_stream::session_count() == 0) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    });
+
+    try {
+      // Find the target app and apply its config overrides (if any), then layer on client overrides.
+      std::unordered_map<std::string, std::string> overrides;
+      const std::string id = std::to_string(appid);
+      const auto apps = proc::proc.get_apps();
+      const auto it = std::find_if(apps.begin(), apps.end(), [&](const auto &a) {
+        return a.id == id;
+      });
+      if (it != apps.end()) {
+        overrides = it->config_overrides;
+      }
+
+      std::string client_uuid;
+      if (request) {
+        client_uuid = get_client_uuid_from_request(request);
+      }
+      if (client_uuid.empty()) {
+        client_uuid = get_arg(args, "uniqueid", "");
+      }
+      if (auto *client_settings = get_named_cert_by_uuid(client_uuid)) {
+        for (const auto &[k, v] : client_settings->config_overrides) {
+          overrides.insert_or_assign(k, v);
+        }
+      }
+
+      config::set_runtime_config_overrides(std::move(overrides));
+      runtime_overrides_applied = true;
+
+      // Re-apply config so overrides take effect in config::video/config::input/etc.
+      config::apply_config_now();
+    } catch (...) {
+      // If something goes wrong, fall back to global config only.
+      config::clear_runtime_config_overrides();
+      config::apply_config_now();
+      runtime_overrides_applied = true;
+    }
+
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
     auto launch_session = make_launch_session(host_audio, args, request);
@@ -1153,7 +1427,6 @@ namespace nvhttp {
         config::set_runtime_output_name_override(std::nullopt);
       }
     });
-    const bool no_active_sessions = (rtsp_stream::session_count() == 0);
     if (no_active_sessions) {
       config::set_runtime_output_name_override(std::nullopt);
     }
@@ -1191,12 +1464,17 @@ namespace nvhttp {
         *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
     }
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
+    const bool client_requests_virtual = launch_session->client_requests_virtual_display;
+    BOOST_LOG(debug) << "client_requests_virtual: " << client_requests_virtual;
     const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    bool request_virtual_display = config_requests_virtual || session_requests_virtual;
+    bool request_virtual_display = client_requests_virtual || config_requests_virtual || session_requests_virtual;
     BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
     const auto requested_output_name = config::get_active_output_name();
     const bool has_app_output_override = app_output_override.has_value();
+    if (has_app_output_override && !client_requests_virtual) {
+      request_virtual_display = false;
+    }
     if (!request_virtual_display && !requested_output_name.empty()) {
       if (!display_device::output_exists(requested_output_name)) {
         BOOST_LOG(warning) << "Requested display '" << requested_output_name
@@ -1269,7 +1547,10 @@ namespace nvhttp {
         return generated;
       };
 
-      const bool shared_mode = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+      const auto effective_virtual_display_mode =
+        launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool shared_mode =
+        (effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
       uuid_util::uuid_t session_uuid;
       if (shared_mode) {
         session_uuid = ensure_shared_guid();
@@ -1546,6 +1827,10 @@ namespace nvhttp {
       }
     }
 
+    // From this point forward, the app is considered started and runtime overrides (if any)
+    // should remain active until the app terminates.
+    keep_runtime_overrides = true;
+
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put(
       "root.sessionUrl0",
@@ -1561,6 +1846,7 @@ namespace nvhttp {
 
     rtsp_stream::launch_session_raise(launch_session);
     output_override_guard.disable();
+    runtime_overrides_guard.disable();
 
     // Stream was started successfully, we will revert the config when the app or session terminates
     revert_display_configuration = false;
@@ -1938,6 +2224,54 @@ namespace nvhttp {
     save_state();
   }
 
+  bool update_device_info(
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const std::string &output_name_override,
+    const bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout,
+    std::optional<std::unordered_map<std::string, std::string>> config_overrides,
+    const std::optional<bool> prefer_10bit_sdr,
+    const std::optional<std::string> hdr_profile
+  ) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    const auto trimmed_name = boost::algorithm::trim_copy(name);
+    const auto trimmed_display_mode = boost::algorithm::trim_copy(display_mode);
+    const auto trimmed_output_override = boost::algorithm::trim_copy(output_name_override);
+    const auto trimmed_vd_mode = boost::algorithm::trim_copy(virtual_display_mode);
+    const auto trimmed_vd_layout = boost::algorithm::trim_copy(virtual_display_layout);
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert.uuid != uuid) {
+        continue;
+      }
+
+      named_cert.name = trimmed_name;
+      named_cert.display_mode = trimmed_display_mode;
+      named_cert.always_use_virtual_display = always_use_virtual_display;
+      named_cert.output_name_override = always_use_virtual_display ? "" : trimmed_output_override;
+      named_cert.virtual_display_mode_override = trimmed_vd_mode;
+      named_cert.virtual_display_layout_override = trimmed_vd_layout;
+      named_cert.prefer_10bit_sdr = prefer_10bit_sdr;
+      if (config_overrides) {
+        named_cert.config_overrides = std::move(*config_overrides);
+      }
+      if (hdr_profile.has_value()) {
+        named_cert.hdr_profile = boost::algorithm::trim_copy(*hdr_profile);
+      }
+      save_state();
+      return true;
+    }
+
+    return false;
+  }
+
   bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile) {
     if (uuid.empty()) {
       return false;
@@ -1959,6 +2293,19 @@ namespace nvhttp {
     return false;
   }
 
+  bool disconnect_client(const std::string &uuid) {
+    return rtsp_stream::disconnect_client_sessions(uuid);
+  }
+
+  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid) {
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert.uuid == uuid) {
+        return named_cert.prefer_10bit_sdr;
+      }
+    }
+    return std::nullopt;
+  }
   // (Windows-only) display_helper_integration is included above
 
   bool unpair_client(const std::string_view uuid) {

@@ -342,6 +342,13 @@ namespace config {
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
 
+  // Runtime, non-persisted config overrides (e.g. per-application overrides).
+  // Values use the same raw representation as the config file (strings for string keys,
+  // JSON dumps for non-string keys).
+  void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides);
+  void clear_runtime_config_overrides();
+  bool has_runtime_config_overrides();
+
   void set_runtime_output_name_override(std::optional<std::string> output_name);
   std::optional<std::string> runtime_output_name_override();
   std::string get_active_output_name();
