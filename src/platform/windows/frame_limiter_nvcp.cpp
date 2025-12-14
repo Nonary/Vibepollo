@@ -673,7 +673,7 @@ namespace platf::frame_limiter_nvcp {
     return status == NVAPI_OK;
   }
 
-  bool streaming_start(int fps, bool apply_frame_limit, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
+  bool streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
     maybe_restore_from_overrides_file();
 
     g_state.frame_limit_applied = false;
@@ -699,8 +699,12 @@ namespace platf::frame_limiter_nvcp {
     g_state.original_smooth_motion_override = false;
     g_state.original_smooth_motion_mask_override = false;
 
-    if (!apply_frame_limit && !force_vsync_off && !force_low_latency_off && !apply_smooth_motion) {
+    if (!apply_frame_limit && !force_frame_limit_off && !force_vsync_off && !force_low_latency_off && !apply_smooth_motion) {
       return false;
+    }
+
+    if (apply_frame_limit && force_frame_limit_off) {
+      force_frame_limit_off = false;
     }
 
     if (apply_frame_limit && fps <= 0) {
@@ -716,27 +720,41 @@ namespace platf::frame_limiter_nvcp {
     bool frame_limit_success = false;
     bool smooth_motion_already_enabled = false;
 
-    if (apply_frame_limit) {
-      NvAPI_Status status = get_current_setting(FRL_FPS_ID, g_state.original_frame_limit);
+    if (apply_frame_limit || force_frame_limit_off) {
+      NvU32 current_value = 0;
+      NvAPI_Status status = get_current_setting(FRL_FPS_ID, g_state.original_frame_limit, nullptr, &current_value);
       if (status != NVAPI_OK) {
         log_nvapi_error(status, "DRS_GetSetting(FRL_FPS)");
       } else {
+        const bool already_disabled = current_value == FRL_FPS_DISABLED;
         NVDRS_SETTING setting = {};
         setting.version = NVDRS_SETTING_VER;
         setting.settingId = FRL_FPS_ID;
         setting.settingType = NVDRS_DWORD_TYPE;
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
-        int clamped_fps = std::clamp(fps, (int) (FRL_FPS_MIN + 1), (int) FRL_FPS_MAX);
-        setting.u32CurrentValue = (NvU32) clamped_fps;
-
-        status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
-        if (status != NVAPI_OK) {
-          log_nvapi_error(status, "DRS_SetSetting(FRL_FPS)");
+        int clamped_fps = 0;
+        if (apply_frame_limit) {
+          clamped_fps = std::clamp(fps, (int) (FRL_FPS_MIN + 1), (int) FRL_FPS_MAX);
+          setting.u32CurrentValue = (NvU32) clamped_fps;
         } else {
-          g_state.frame_limit_applied = true;
-          dirty = true;
-          frame_limit_success = true;
-          BOOST_LOG(info) << "NVIDIA Control Panel frame limiter set to " << clamped_fps;
+          clamped_fps = 0;
+          setting.u32CurrentValue = FRL_FPS_DISABLED;
+        }
+
+        if (!already_disabled || apply_frame_limit) {
+          status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+          if (status != NVAPI_OK) {
+            log_nvapi_error(status, "DRS_SetSetting(FRL_FPS)");
+          } else {
+            g_state.frame_limit_applied = true;
+            dirty = true;
+            frame_limit_success = true;
+            if (apply_frame_limit) {
+              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter set to " << clamped_fps;
+            } else {
+              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter disabled for stream";
+            }
+          }
         }
       }
     }

@@ -157,6 +157,7 @@ namespace platf {
           bool ok = frame_limiter_nvcp::streaming_start(
             effective_limit,
             true,
+            false,
             want_nv_vsync_override,
             false,
             want_smooth_motion
@@ -190,10 +191,13 @@ namespace platf {
       }
     }
 
-    if ((want_nv_vsync_override || want_smooth_motion) && !nvcp_already_invoked) {
+    const bool want_disable_nv_frame_limit = g_active_provider == frame_limiter_provider::rtss && nvidia_gpu_present && nvcp_ready;
+
+    if ((want_disable_nv_frame_limit || want_nv_vsync_override || want_smooth_motion) && !nvcp_already_invoked) {
       bool nvcp_result = frame_limiter_nvcp::streaming_start(
         effective_limit,
         false,
+        want_disable_nv_frame_limit,
         want_nv_vsync_override,
         false,
         want_smooth_motion
