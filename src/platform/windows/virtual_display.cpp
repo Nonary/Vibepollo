@@ -1486,34 +1486,51 @@ namespace VDISPLAY {
       return state.params.should_abort && state.params.should_abort();
     }
 
-    bool monitor_target_present(const RecoveryMonitorState &state) {
+    enum class MonitorTargetPresence {
+      missing,
+      present_inactive,
+      present_active,
+    };
+
+    MonitorTargetPresence monitor_target_presence(const RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
-        return false;
+        return MonitorTargetPresence::missing;
       }
 
+      bool matched_inactive = false;
       for (const auto &device : *devices) {
         if (!is_virtual_display_device(device)) {
           continue;
         }
-        if (state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
-          if (equals_ci(device.m_device_id, *state.current_device_id)) {
-            return true;
-          }
+
+        bool matches = false;
+        if (!matches && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
+          matches = equals_ci(device.m_device_id, *state.current_device_id);
         }
-        if (state.normalized_display_name) {
+        if (!matches && state.normalized_display_name) {
           auto normalized_display = normalize_display_name(device.m_display_name);
           if (!normalized_display.empty() && normalized_display == *state.normalized_display_name) {
-            return true;
-          }
-          auto normalized_friendly = normalize_display_name(device.m_friendly_name);
-          if (!normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name) {
-            return true;
+            matches = true;
+          } else {
+            auto normalized_friendly = normalize_display_name(device.m_friendly_name);
+            if (!normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name) {
+              matches = true;
+            }
           }
         }
+        if (!matches) {
+          continue;
+        }
+
+        const bool is_active = device.m_info.has_value() || !device.m_display_name.empty();
+        if (is_active) {
+          return MonitorTargetPresence::present_active;
+        }
+        matched_inactive = true;
       }
 
-      return false;
+      return matched_inactive ? MonitorTargetPresence::present_inactive : MonitorTargetPresence::missing;
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state) {
@@ -1556,6 +1573,7 @@ namespace VDISPLAY {
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
       unsigned int attempts = 0;
       bool observed_present = false;
+      bool observed_active = false;
       auto stable_since = std::chrono::steady_clock::now();
 
       while (true) {
@@ -1565,7 +1583,14 @@ namespace VDISPLAY {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (monitor_target_present(state)) {
+        const auto presence = monitor_target_presence(state);
+        if (presence == MonitorTargetPresence::present_active) {
+          observed_active = true;
+        }
+
+        const bool treat_as_present = (presence != MonitorTargetPresence::missing) &&
+                                      (!observed_active || presence == MonitorTargetPresence::present_active);
+        if (treat_as_present) {
           if (!observed_present) {
             observed_present = true;
             stable_since = now;
