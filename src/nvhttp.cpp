@@ -701,6 +701,7 @@ namespace nvhttp {
 
     launch_session->device_name = named_cert_p->name.empty() ? "ApolloDisplay"s : named_cert_p->name;
     launch_session->unique_id = named_cert_p->uuid;
+    launch_session->client_uuid = named_cert_p->uuid;
     launch_session->perm = named_cert_p->perm;
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
     if (!named_cert_p->output_name_override.empty()) {
