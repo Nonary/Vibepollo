@@ -189,7 +189,10 @@ namespace {
     std::set<std::string> enum_all_device_ids() const {
       std::set<std::string> ids;
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
-        ids.insert(d.m_device_id);
+        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (!id.empty()) {
+          ids.insert(id);
+        }
       }
       return ids;
     }
@@ -763,9 +766,24 @@ namespace {
       parse_modes_field(modes_s, snap);
       parse_hdr_field(hdr_s, snap);
 
-      // Filter snapshot using current exclusion list and devices with a valid display_name.
+      // Filter snapshot using current exclusion list and currently enumerated devices.
+      // Note: `m_display_name` is only populated for active displays in libdisplaydevice, so
+      // using it here would incorrectly treat inactive-but-connected monitors as missing.
+      const auto join = [](const auto &items) {
+        std::string out;
+        bool first = true;
+        for (const auto &item : items) {
+          if (!first) {
+            out += ", ";
+          }
+          first = false;
+          out += item;
+        }
+        return out;
+      };
       std::set<std::string> valid_devices_norm;
       std::vector<std::string> filtered_out_excluded;
+      std::vector<std::string> enumerated_devices;
       const auto exclusions = snapshot_exclusions_copy();
       std::set<std::string> exclusions_norm;
       for (auto id : exclusions) {
@@ -773,10 +791,11 @@ namespace {
       }
 
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
-        if (d.m_display_name.empty()) {
+        auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (id.empty()) {
           continue;
         }
-        auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        enumerated_devices.push_back(id);
         auto norm = normalize_device_id(id);
         if (!exclusions_norm.empty() && exclusions_norm.count(norm)) {
           filtered_out_excluded.push_back(id);
@@ -787,6 +806,8 @@ namespace {
 
       if (valid_devices_norm.empty()) {
         BOOST_LOG(warning) << "Snapshot load rejected: no valid devices available for path=" << path.string();
+        BOOST_LOG(debug) << "Snapshot load rejected details: enumerated_devices=[" << join(enumerated_devices)
+                         << "], exclusions=[" << join(exclusions_norm) << "]";
         return std::nullopt;
       }
 
@@ -815,6 +836,15 @@ namespace {
 
       if (filtered_topology.empty()) {
         BOOST_LOG(warning) << "Snapshot load rejected: all devices filtered for path=" << path.string();
+        std::vector<std::string> snapshot_devices;
+        for (const auto &grp : snap.m_topology) {
+          snapshot_devices.insert(snapshot_devices.end(), grp.begin(), grp.end());
+        }
+        std::sort(snapshot_devices.begin(), snapshot_devices.end());
+        snapshot_devices.erase(std::unique(snapshot_devices.begin(), snapshot_devices.end()), snapshot_devices.end());
+        BOOST_LOG(debug) << "Snapshot load rejected details: snapshot_devices=[" << join(snapshot_devices)
+                         << "], present_devices=[" << join(valid_devices_norm)
+                         << "], exclusions=[" << join(exclusions_norm) << "]";
         return std::nullopt;
       }
 
@@ -950,7 +980,10 @@ namespace {
 
     void collect_all_device_ids(std::set<std::string> &out) const {
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
-        out.insert(d.m_device_id);
+        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (!id.empty()) {
+          out.insert(id);
+        }
       }
     }
 
@@ -3243,8 +3276,8 @@ namespace {
     } else if (!state.controller.is_topology_valid(*snap) || snap->m_modes.empty()) {
       BOOST_LOG(warning) << "Existing session snapshot is invalid (topology or modes missing); removing path="
                          << path.string();
-    } else {
-      // Filter out devices without display_name and devices on the exclusion list.
+      } else {
+      // Filter out devices not currently enumerated and devices on the exclusion list.
       auto devices = state.controller.enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       std::set<std::string> valid_device_ids_norm;
       std::set<std::string> exclusions_norm;
@@ -3258,8 +3291,9 @@ namespace {
         exclusions_norm.insert(normalize(std::move(id)));
       }
       for (const auto &d : devices) {
-        if (!d.m_display_name.empty()) {
-          valid_device_ids_norm.insert(normalize(d.m_device_id));
+        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (!id.empty()) {
+          valid_device_ids_norm.insert(normalize(id));
         }
       }
 
@@ -3271,7 +3305,7 @@ namespace {
         return exclusions_norm.empty() || !exclusions_norm.count(norm);
       };
 
-      // Filter topology groups, removing devices without valid display_name or excluded ones
+      // Filter topology groups, removing devices that are not currently enumerated or are excluded.
       display_device::ActiveTopology filtered_topology;
       std::vector<std::string> filtered_out_excluded;
       for (const auto &grp : snap->m_topology) {
@@ -3289,7 +3323,7 @@ namespace {
       }
 
       if (filtered_topology.empty()) {
-        BOOST_LOG(warning) << "Existing session snapshot rejected: no devices with valid display_name; removing path="
+        BOOST_LOG(warning) << "Existing session snapshot rejected: no applicable devices remain after filtering; removing path="
                            << path.string();
       } else {
         // Check if filtering changed anything
