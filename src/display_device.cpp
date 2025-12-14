@@ -214,6 +214,21 @@ namespace display_device {
     bool parse_resolution_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using resolution_option_e = config::video_t::dd_t::resolution_option_e;
 
+      // Client display_mode override takes highest priority
+      if (session.client_display_mode_override) {
+        if (session.width >= 0 && session.height >= 0) {
+          config.m_resolution = Resolution {
+            static_cast<unsigned int>(session.width),
+            static_cast<unsigned int>(session.height)
+          };
+          BOOST_LOG(debug) << "Using client display mode override for resolution: " << session.width << "x" << session.height;
+        } else {
+          BOOST_LOG(error) << "Resolution provided by client display mode override is invalid: " << session.width << "x" << session.height;
+          return false;
+        }
+        return true;
+      }
+
       switch (video_config.dd.resolution_option) {
         case resolution_option_e::automatic:
           {
@@ -265,6 +280,21 @@ namespace display_device {
      */
     bool parse_refresh_rate_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using refresh_rate_option_e = config::video_t::dd_t::refresh_rate_option_e;
+
+      // Client display_mode override takes highest priority
+      if (session.client_display_mode_override) {
+        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
+                                 ? *session.framegen_refresh_rate
+                                 : session.fps;
+        if (target_fps >= 0) {
+          config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1};
+          BOOST_LOG(debug) << "Using client display mode override for refresh rate: " << target_fps << " Hz";
+        } else {
+          BOOST_LOG(error) << "FPS value provided by client display mode override is invalid: " << target_fps;
+          return false;
+        }
+        return true;
+      }
 
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
@@ -439,6 +469,12 @@ namespace display_device {
      * @examples_end
      */
     bool remap_display_mode_if_needed(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+      // Client display_mode override takes highest priority - skip remapping
+      if (session.client_display_mode_override) {
+        BOOST_LOG(debug) << "Skipping display mode remapping because client has display mode override active.";
+        return true;
+      }
+
       const auto remapping_type {determine_remapping_type(video_config)};
       if (!remapping_type) {
         return true;

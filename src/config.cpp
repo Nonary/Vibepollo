@@ -13,6 +13,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 // lib includes
@@ -1695,6 +1696,86 @@ namespace config {
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
     std::shared_mutex g_output_override_mutex;
     std::optional<std::string> g_runtime_output_name_override;
+
+    // Runtime config override map applied on top of config file values (not persisted).
+    // Used for per-application overrides so we can keep the effective config consistent
+    // across hot-apply and deferred reloads while an app is running.
+    std::mutex g_runtime_overrides_mutex;
+    std::unordered_map<std::string, std::string> g_runtime_config_overrides;
+
+    bool is_valid_override_key(const std::string_view key) {
+      if (key.empty() || key.size() > 128) {
+        return false;
+      }
+      for (const char c : key) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_')) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    bool is_allowed_override_key(const std::string_view key) {
+      // Allow only specific Playnite behavior settings to vary per-app.
+      // All Playnite sync/catalog settings are global and may mutate apps.json.
+      if (key.rfind("playnite_", 0) == 0) {
+        static const std::unordered_set<std::string_view> kPlayniteAllowed = {
+          "playnite_focus_attempts",
+          "playnite_focus_timeout_secs",
+          "playnite_focus_exit_on_first",
+        };
+        return kPlayniteAllowed.contains(key);
+      }
+
+      // Disallow keys that are global/system/network scoped and not intended to vary per application.
+      static const std::unordered_set<std::string_view> kBlocked = {
+        // Network / identity / credentials
+        "flags",
+        "port",
+        "address_family",
+        "upnp",
+        "origin_web_ui_allowed",
+        "external_ip",
+        "lan_encryption_mode",
+        "wan_encryption_mode",
+        "ping_timeout",
+        "fec_percentage",
+        "pkey",
+        "cert",
+
+        // Per-app display selection is handled via apps.json metadata (output/virtual-screen/virtual-display-*).
+        "virtual_display_mode",
+        "virtual_display_layout",
+
+        // File paths / state
+        "file_apps",
+        "credentials_file",
+        "log_path",
+        "file_state",
+        "vibeshine_file_state",
+
+        // Global UX / program settings
+        "sunshine_name",
+        "locale",
+        "min_log_level",
+        "notify_pre_releases",
+        "system_tray",
+        "update_check_interval",
+        "session_token_ttl_seconds",
+        "remember_me_refresh_token_ttl_seconds",
+
+        // Global command list (apps already have per-app prep-cmd + exclude-global-prep-cmd)
+        "global_prep_cmd",
+      };
+
+      return !kBlocked.contains(key);
+    }
+
+    std::unordered_map<std::string, std::string> runtime_overrides_snapshot() {
+      std::scoped_lock lk(g_runtime_overrides_mutex);
+      return g_runtime_config_overrides;
+    }
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
@@ -1748,6 +1829,13 @@ namespace config {
       for (const auto &[name, value] : command_line_overrides) {
         vars.insert_or_assign(name, value);
       }
+
+      // Apply runtime overrides (per-app) on top of file values so hot-apply and deferred reloads
+      // keep the effective config consistent while an app is running.
+      const auto runtime_overrides = runtime_overrides_snapshot();
+      for (const auto &[name, value] : runtime_overrides) {
+        vars.insert_or_assign(name, value);
+      }
       // Track old logging params to adjust sinks if needed
       const int old_min_level = sunshine.min_log_level;
       const std::string old_log_file = sunshine.log_file;
@@ -1785,7 +1873,7 @@ namespace config {
                                       (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
-      if (dd_config_changed && rtsp_stream::session_count() == 0) {
+      if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
         display_helper_integration::revert();
 
@@ -1798,6 +1886,31 @@ namespace config {
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
     }
+  }
+
+  void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides) {
+    std::unordered_map<std::string, std::string> filtered;
+    filtered.reserve(overrides.size());
+
+    for (auto &[k, v] : overrides) {
+      if (!is_valid_override_key(k) || !is_allowed_override_key(k)) {
+        continue;
+      }
+      filtered.emplace(std::move(k), std::move(v));
+    }
+
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    g_runtime_config_overrides = std::move(filtered);
+  }
+
+  void clear_runtime_config_overrides() {
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    g_runtime_config_overrides.clear();
+  }
+
+  bool has_runtime_config_overrides() {
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    return !g_runtime_config_overrides.empty();
   }
 
   void mark_deferred_reload() {

@@ -59,6 +59,7 @@ export interface AppForm {
   workingDir: string;
   imagePath: string;
   excludeGlobalPrepCmd: boolean;
+  configOverrides: Record<string, unknown>;
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
@@ -92,6 +93,7 @@ export interface ServerApp {
   'working-dir'?: string;
   'image-path'?: string;
   'exclude-global-prep-cmd'?: boolean;
+  'config-overrides'?: Record<string, unknown>;
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;

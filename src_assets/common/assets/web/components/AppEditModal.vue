@@ -249,6 +249,8 @@
           </div>
         </div>
 
+        <AppEditConfigOverridesSection v-model:overrides="form.configOverrides" />
+
         <AppEditFrameGenSection v-if="isWindows" v-model:mode="frameGenerationSelection"
           v-model:gen1="form.gen1FramegenFix" v-model:gen2="form.gen2FramegenFix"
           v-model:lossless-profile="form.losslessScalingProfile"
@@ -344,6 +346,7 @@ import {
   parseNumeric,
 } from './app-edit/lossless';
 import AppEditBasicsSection from './app-edit/AppEditBasicsSection.vue';
+import AppEditConfigOverridesSection from './app-edit/AppEditConfigOverridesSection.vue';
 import AppEditLosslessScalingSection from './app-edit/AppEditLosslessScalingSection.vue';
 import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vue';
 import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
@@ -383,6 +386,7 @@ function fresh(): AppForm {
     workingDir: '',
     imagePath: '',
     excludeGlobalPrepCmd: false,
+    configOverrides: {},
     elevated: false,
     autoDetach: true,
     waitAll: true,
@@ -529,6 +533,12 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
     excludeGlobalPrepCmd: !!src['exclude-global-prep-cmd'],
+    configOverrides:
+      (src as any)?.['config-overrides'] &&
+      typeof (src as any)['config-overrides'] === 'object' &&
+      !Array.isArray((src as any)['config-overrides'])
+        ? JSON.parse(JSON.stringify((src as any)['config-overrides']))
+        : {},
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
@@ -568,6 +578,19 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'working-dir': f.workingDir,
     'image-path': String(f.imagePath || '').replace(/\"/g, ''),
     'exclude-global-prep-cmd': !!f.excludeGlobalPrepCmd,
+    ...(f.configOverrides &&
+    typeof f.configOverrides === 'object' &&
+    !Array.isArray(f.configOverrides) &&
+    Object.keys(f.configOverrides).length
+      ? {
+          'config-overrides': Object.fromEntries(
+            Object.entries(f.configOverrides).filter(
+              ([k, v]) =>
+                typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
+            ),
+          ),
+        }
+      : {}),
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,

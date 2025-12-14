@@ -122,6 +122,10 @@ namespace proc {
     lossless_scaling_profile_overrides_t lossless_scaling_recommended;
     lossless_scaling_profile_overrides_t lossless_scaling_custom;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
+
+    // Per-application overrides for global config keys (raw config-file value representation).
+    // These are applied at runtime and are not persisted to the global config file.
+    std::unordered_map<std::string, std::string> config_overrides;
   };
 
   class proc_t {
