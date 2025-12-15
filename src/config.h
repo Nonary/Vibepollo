@@ -140,6 +140,12 @@ namespace config {
         automatic  ///< Change HDR settings and use the state requested by Moonlight.
       };
 
+      enum class hdr_request_override_e {
+        automatic,  ///< Use HDR state requested by the client.
+        force_on,  ///< Force HDR enabled for the session.
+        force_off  ///< Force HDR disabled for the session.
+      };
+
       struct mode_remapping_entry_t {
         std::string requested_resolution;
         std::string requested_fps;
@@ -159,6 +165,7 @@ namespace config {
       refresh_rate_option_e refresh_rate_option;
       std::string manual_refresh_rate;  ///< Manual refresh rate in case `refresh_rate_option == refresh_rate_option_e::manual`.
       hdr_option_e hdr_option;
+      hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
