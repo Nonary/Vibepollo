@@ -70,7 +70,7 @@
       </transition>
     </div>
 
-    <div v-if="overrideKeys.length === 0" class="text-[12px] opacity-60">No overrides.</div>
+    <div v-if="overrideEntries.length === 0" class="text-[12px] opacity-60">No overrides.</div>
 
     <div v-else class="space-y-2">
       <div
@@ -86,7 +86,7 @@
             </div>
             <div class="text-[11px] opacity-60 truncate">{{ entry.path }}</div>
             <div v-if="entry.desc" class="text-[11px] opacity-70 mt-1">{{ entry.desc }}</div>
-            <div class="text-[11px] opacity-50 mt-1">
+            <div v-if="!entry.synthetic" class="text-[11px] opacity-50 mt-1">
               Global:
               <span class="font-mono">{{ formatValueForKey(entry.key, entry.globalValue) }}</span>
             </div>
@@ -97,7 +97,30 @@
         </div>
 
         <div class="mt-3">
-          <template v-if="editorKind(entry.key) === 'boolean'">
+          <template v-if="isSyntheticKey(entry.key)">
+            <n-input
+              v-if="entry.key === SYN_KEYS.configureDisplayResolution"
+              :value="forcedResolution"
+              placeholder="e.g. 1920x1080"
+              class="font-mono"
+              @update:value="(v) => setForcedResolution(String(v || ''))"
+            />
+            <n-input
+              v-else-if="entry.key === SYN_KEYS.configureDisplayRefreshRate"
+              :value="forcedRefreshRate"
+              placeholder="e.g. 60"
+              class="font-mono"
+              @update:value="(v) => setForcedRefreshRate(String(v || ''))"
+            />
+            <n-select
+              v-else-if="entry.key === SYN_KEYS.configureDisplayHdr"
+              :value="forcedHdr"
+              :options="forcedHdrOptions"
+              @update:value="(v) => setForcedHdr(String(v || ''))"
+            />
+          </template>
+
+          <template v-else-if="editorKind(entry.key) === 'boolean'">
             <n-checkbox
               :checked="boolChecked(entry.key)"
               @update:checked="(v) => setBool(entry.key, !!v)"
@@ -170,6 +193,7 @@ type Entry = {
   path: string;
   groupId: string;
   groupName: string;
+  synthetic?: boolean;
   globalValue: unknown;
   options: OverrideSelectOption[];
   optionsText: string;
@@ -202,6 +226,20 @@ const configStore = useConfigStore();
 const configRef = (configStore as any).config;
 const tabsRef = (configStore as any).tabs;
 const metadataRef = (configStore as any).metadata;
+
+const DD_KEYS = {
+  configurationOption: 'dd_configuration_option',
+  resolutionOption: 'dd_resolution_option',
+  manualResolution: 'dd_manual_resolution',
+  refreshRateOption: 'dd_refresh_rate_option',
+  manualRefreshRate: 'dd_manual_refresh_rate',
+  hdrOption: 'dd_hdr_option',
+  hdrRequestOverride: 'dd_hdr_request_override',
+} as const;
+
+function isHiddenOverrideKey(key: string): boolean {
+  return key.startsWith('dd_');
+}
 
 function getConfigState(): any {
   return (configRef as any)?.value ?? configRef;
@@ -335,15 +373,182 @@ function ensureOverridesObject(): void {
   }
 }
 
+function setOverrideKey(key: string, value: unknown): void {
+  ensureOverridesObject();
+  (overrides.value as any)[key] = value;
+}
+
+function clearOverrideKey(key: string): void {
+  ensureOverridesObject();
+  try {
+    delete (overrides.value as any)[key];
+  } catch {}
+  clearJsonState(key);
+}
+
 const overrideKeys = computed<string[]>(() => {
   const o = overrides.value;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return [];
   return Object.keys(o).filter((k) => typeof k === 'string' && k.length > 0);
 });
 
+const visibleOverrideKeys = computed<string[]>(() => overrideKeys.value.filter((k) => !isHiddenOverrideKey(k)));
+
+const SYN_KEYS = {
+  configureDisplayResolution: 'configure_display_resolution',
+  configureDisplayRefreshRate: 'configure_display_refresh_rate',
+  configureDisplayHdr: 'configure_display_hdr',
+} as const;
+
+const SYNTHETIC_KEYS = new Set<string>(Object.values(SYN_KEYS));
+
+function isSyntheticKey(key: string): boolean {
+  return SYNTHETIC_KEYS.has(key);
+}
+
+function isWindowsPlatform(): boolean {
+  return platformKey() === 'windows';
+}
+
+function getOverrideString(key: string): string | null {
+  const o = overrides.value as any;
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  const v = o[key];
+  if (v === undefined || v === null) return null;
+  return String(v);
+}
+
+function globalDdConfigDisabled(): boolean {
+  const gv = getGlobalValue(DD_KEYS.configurationOption);
+  return String(gv ?? 'disabled') === 'disabled';
+}
+
+function ensureDdEnabledForDisplayOverrides(): void {
+  if (!globalDdConfigDisabled()) return;
+  const cur = getOverrideString(DD_KEYS.configurationOption);
+  if (!cur || cur === 'disabled') {
+    setOverrideKey(DD_KEYS.configurationOption, 'verify_only');
+  }
+}
+
+function cleanupDdConfigurationOptionIfUnused(): void {
+  if (!globalDdConfigDisabled()) return;
+  const o = overrides.value as any;
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+  const ddKeys = Object.keys(o).filter((k) => k.startsWith('dd_'));
+  const hasOtherDdKeys = ddKeys.some((k) => k !== DD_KEYS.configurationOption);
+  if (!hasOtherDdKeys && o[DD_KEYS.configurationOption] === 'verify_only') {
+    clearOverrideKey(DD_KEYS.configurationOption);
+  }
+}
+
+function isForcedResolutionActive(): boolean {
+  if (!isWindowsPlatform()) return false;
+  const opt = getOverrideString(DD_KEYS.resolutionOption);
+  if (opt === 'manual') return true;
+  const o = overrides.value as any;
+  return !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualResolution] !== undefined;
+}
+
+function isForcedRefreshRateActive(): boolean {
+  if (!isWindowsPlatform()) return false;
+  const opt = getOverrideString(DD_KEYS.refreshRateOption);
+  if (opt === 'manual') return true;
+  const o = overrides.value as any;
+  return !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualRefreshRate] !== undefined;
+}
+
+function isForcedHdrActive(): boolean {
+  if (!isWindowsPlatform()) return false;
+  const req = getOverrideString(DD_KEYS.hdrRequestOverride);
+  return req === 'force_on' || req === 'force_off';
+}
+
+const forcedResolution = computed<string>(() => getOverrideString(DD_KEYS.manualResolution) ?? '');
+const forcedRefreshRate = computed<string>(() => getOverrideString(DD_KEYS.manualRefreshRate) ?? '');
+
+const forcedHdrOptions = [
+  { label: 'On', value: 'on' },
+  { label: 'Off', value: 'off' },
+];
+
+const forcedHdr = computed<'on' | 'off'>(() => {
+  const req = getOverrideString(DD_KEYS.hdrRequestOverride);
+  return req === 'force_off' ? 'off' : 'on';
+});
+
+function setForcedResolution(value: string): void {
+  if (!isWindowsPlatform()) return;
+  ensureDdEnabledForDisplayOverrides();
+  setOverrideKey(DD_KEYS.resolutionOption, 'manual');
+  setOverrideKey(DD_KEYS.manualResolution, String(value ?? ''));
+}
+
+function clearForcedResolution(): void {
+  clearOverrideKey(DD_KEYS.resolutionOption);
+  clearOverrideKey(DD_KEYS.manualResolution);
+  cleanupDdConfigurationOptionIfUnused();
+}
+
+function setForcedRefreshRate(value: string): void {
+  if (!isWindowsPlatform()) return;
+  ensureDdEnabledForDisplayOverrides();
+  setOverrideKey(DD_KEYS.refreshRateOption, 'manual');
+  setOverrideKey(DD_KEYS.manualRefreshRate, String(value ?? ''));
+}
+
+function clearForcedRefreshRate(): void {
+  clearOverrideKey(DD_KEYS.refreshRateOption);
+  clearOverrideKey(DD_KEYS.manualRefreshRate);
+  cleanupDdConfigurationOptionIfUnused();
+}
+
+function setForcedHdr(value: string): void {
+  if (!isWindowsPlatform()) return;
+  ensureDdEnabledForDisplayOverrides();
+  setOverrideKey(DD_KEYS.hdrOption, 'auto');
+  setOverrideKey(DD_KEYS.hdrRequestOverride, value === 'off' ? 'force_off' : 'force_on');
+}
+
+function clearForcedHdr(): void {
+  clearOverrideKey(DD_KEYS.hdrRequestOverride);
+  clearOverrideKey(DD_KEYS.hdrOption);
+  cleanupDdConfigurationOptionIfUnused();
+}
+
+const activeSyntheticKeys = computed<string[]>(() => {
+  const keys: string[] = [];
+  if (isForcedResolutionActive()) keys.push(SYN_KEYS.configureDisplayResolution);
+  if (isForcedRefreshRateActive()) keys.push(SYN_KEYS.configureDisplayRefreshRate);
+  if (isForcedHdrActive()) keys.push(SYN_KEYS.configureDisplayHdr);
+  return keys;
+});
+
+function addSyntheticOverride(key: string): void {
+  if (!isWindowsPlatform()) return;
+  if (key === SYN_KEYS.configureDisplayResolution) {
+    setForcedResolution(forcedResolution.value);
+  } else if (key === SYN_KEYS.configureDisplayRefreshRate) {
+    setForcedRefreshRate(forcedRefreshRate.value);
+  } else if (key === SYN_KEYS.configureDisplayHdr) {
+    setForcedHdr(forcedHdr.value);
+  }
+}
+
+function removeSyntheticOverride(key: string): void {
+  if (key === SYN_KEYS.configureDisplayResolution) {
+    clearForcedResolution();
+  } else if (key === SYN_KEYS.configureDisplayRefreshRate) {
+    clearForcedRefreshRate();
+  } else if (key === SYN_KEYS.configureDisplayHdr) {
+    clearForcedHdr();
+  }
+}
+
 const allEntries = computed<Entry[]>(() => {
   const out: Entry[] = [];
   const tabList = getTabsState();
+  const platform = platformKey();
   for (const tab of tabList) {
     const groupId = String((tab as any)?.id ?? '');
     const groupName = String((tab as any)?.name ?? groupId);
@@ -354,7 +559,7 @@ const allEntries = computed<Entry[]>(() => {
       const globalValue = getGlobalValue(key);
       const selectOptions = getOverrideSelectOptions(key, {
         t,
-        platform: platformKey(),
+        platform,
         metadata: getMetadataState(),
         currentValue: globalValue,
       });
@@ -371,6 +576,49 @@ const allEntries = computed<Entry[]>(() => {
       });
     }
   }
+
+  if (platform === 'windows') {
+    const groupId = 'display';
+    const groupName = 'Display';
+    out.push(
+      {
+        key: SYN_KEYS.configureDisplayResolution,
+        label: 'Configure Resolution',
+        desc: 'Configure a specific display resolution during streams (uses display automation behind the scenes).',
+        path: `${groupName} > Configure Resolution`,
+        groupId,
+        groupName,
+        synthetic: true,
+        globalValue: undefined,
+        options: [],
+        optionsText: '',
+      },
+      {
+        key: SYN_KEYS.configureDisplayRefreshRate,
+        label: 'Configure Refresh Rate',
+        desc: 'Configure a specific display refresh rate during streams (uses display automation behind the scenes).',
+        path: `${groupName} > Configure Refresh Rate`,
+        groupId,
+        groupName,
+        synthetic: true,
+        globalValue: undefined,
+        options: [],
+        optionsText: '',
+      },
+      {
+        key: SYN_KEYS.configureDisplayHdr,
+        label: 'Configure HDR',
+        desc: 'Configure HDR on or off during streams (uses display automation behind the scenes).',
+        path: `${groupName} > Configure HDR`,
+        groupId,
+        groupName,
+        synthetic: true,
+        globalValue: undefined,
+        options: forcedHdrOptions as any,
+        optionsText: buildOverrideOptionsText(forcedHdrOptions as any),
+      },
+    );
+  }
   return out;
 });
 
@@ -382,7 +630,7 @@ const searchResults = computed<Entry[]>(() => {
   const terms = v.split(/\s+/).filter(Boolean);
   if (!terms.length) return [];
 
-  const used = new Set(overrideKeys.value);
+  const used = new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]);
   const scoreFor = (it: Entry): number => {
     const lv = it.label.toLowerCase();
     const kv = it.key.toLowerCase();
@@ -414,7 +662,7 @@ const searchResults = computed<Entry[]>(() => {
   };
 
   return allEntries.value
-    .filter((e) => !used.has(e.key))
+    .filter((e) => !used.has(e.key) && !isHiddenOverrideKey(e.key))
     .map((it) => ({ it, s: scoreFor(it) }))
     .filter((x) => x.s > 0)
     .sort((a, b) => b.s - a.s)
@@ -443,6 +691,13 @@ function addFirstResult() {
 
 function addOverride(key: string) {
   if (!isAllowedKey(key)) return;
+  if (isHiddenOverrideKey(key)) return;
+  if (isSyntheticKey(key)) {
+    addSyntheticOverride(key);
+    searchQuery.value = '';
+    searchOpen.value = false;
+    return;
+  }
   ensureOverridesObject();
   if ((overrides.value as any)[key] !== undefined) return;
   const current = getGlobalValue(key);
@@ -452,6 +707,10 @@ function addOverride(key: string) {
 }
 
 function removeOverride(key: string) {
+  if (isSyntheticKey(key)) {
+    removeSyntheticOverride(key);
+    return;
+  }
   ensureOverridesObject();
   try {
     delete (overrides.value as any)[key];
@@ -466,7 +725,7 @@ function clearAll() {
 }
 
 const overrideEntries = computed<Entry[]>(() => {
-  const keys = overrideKeys.value;
+  const keys = Array.from(new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]));
   const byKey = new Map(allEntries.value.map((e) => [e.key, e] as const));
   return keys
     .map((k) => {
@@ -478,6 +737,7 @@ const overrideEntries = computed<Entry[]>(() => {
         path: base?.path ?? k,
         groupId: base?.groupId ?? 'unknown',
         groupName: base?.groupName ?? 'Unknown',
+        synthetic: base?.synthetic,
         globalValue: base?.globalValue,
         options: base?.options ?? [],
         optionsText: base?.optionsText ?? '',

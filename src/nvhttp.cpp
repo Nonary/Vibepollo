@@ -781,6 +781,21 @@ namespace nvhttp {
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));
     launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+#ifdef _WIN32
+    {
+      using override_e = config::video_t::dd_t::hdr_request_override_e;
+      switch (config::video.dd.hdr_request_override) {
+        case override_e::force_on:
+          launch_session->enable_hdr = true;
+          break;
+        case override_e::force_off:
+          launch_session->enable_hdr = false;
+          break;
+        case override_e::automatic:
+          break;
+      }
+    }
+#endif
 
     // Encrypted RTSP is enabled with client reported corever >= 1
     auto corever = util::from_view(get_arg(args, "corever", "0"));
@@ -1682,33 +1697,64 @@ namespace nvhttp {
         recovery_params.max_attempts = 3;
 
         GUID recovery_guid = virtual_display_guid;
-        recovery_params.should_abort = [recovery_guid]() {
-          return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
-        };
-        std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
-        recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
-          if (auto session_locked = session_weak.lock()) {
-            if (result.device_id && !result.device_id->empty()) {
-              session_locked->virtual_display_device_id = *result.device_id;
-              config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
-            }
-            session_locked->virtual_display_ready_since = result.ready_since;
-            if (session_locked->virtual_display) {
-              auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
-              if (request && display_helper_integration::apply(*request)) {
-                BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
-              } else if (!request) {
-                BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation.";
-              } else {
-                BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation.";
-              }
+         recovery_params.should_abort = [recovery_guid]() {
+           return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
+         };
+         std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
+         recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
+           if (auto session_locked = session_weak.lock()) {
+             if (result.device_id && !result.device_id->empty()) {
+               session_locked->virtual_display_device_id = *result.device_id;
+               config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
+             }
+             session_locked->virtual_display_ready_since = result.ready_since;
+             if (session_locked->virtual_display) {
+              // Re-apply display configuration. This can fail transiently if the display stack is still
+              // stabilizing after the virtual display recreation or if a restore is in progress.
+              auto session_shared = session_locked;
+              std::thread([session_shared]() {
+                constexpr int kMaxApplyAttempts = 5;
+                bool applied = false;
 
-              // Force the capture thread to reinitialize so it rebinds to the recreated display.
-              mail::man->event<int>(mail::switch_display)->raise(0);
-              BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display.";
+                for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
+                  // Disarm any in-flight restore logic in the helper before re-applying a session config.
+                  // This recovery path can run while the helper is still restoring after a disconnect/
+                  // topology churn, and REVERT/restore work can race with APPLY.
+                  const bool disarmed = display_helper_integration::disarm_pending_restore();
+                  BOOST_LOG(debug) << "Virtual display recovery: helper DISARM before APPLY (attempt "
+                                   << attempt << "/" << kMaxApplyAttempts << ") result="
+                                   << (disarmed ? "true" : "false");
+
+                  auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_shared);
+                  if (!request) {
+                    BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
+                                       << attempt << "/" << kMaxApplyAttempts << ").";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    continue;
+                  }
+
+                  if (display_helper_integration::apply(*request)) {
+                    BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
+                    applied = true;
+                    break;
+                  }
+
+                  BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
+                                     << attempt << "/" << kMaxApplyAttempts << ").";
+                  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                }
+
+                // Force the capture thread to reinitialize so it rebinds to the recreated display.
+                // Prefer to do this after a successful APPLY so HDR/refresh/res changes are reflected immediately.
+                if (mail::man) {
+                  mail::man->event<int>(mail::switch_display)->raise(0);
+                }
+                BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
+                                << (applied ? "." : " (apply did not succeed).");
+              }).detach();
+              }
             }
-          }
-        };
+          };
 
         VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
       } else {

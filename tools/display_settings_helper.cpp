@@ -3594,6 +3594,12 @@ namespace {
       constexpr int kMaxSyncVerifyAttempts = 2;
       bool verified_sync = false;
       std::vector<std::chrono::milliseconds> reapply_delays {750ms};
+      if (cfg.m_hdr_state) {
+        // HDR state can be (re)applied asynchronously by Windows shortly after topology/mode changes,
+        // especially for virtual displays. Schedule a few extra best-effort re-apply attempts to
+        // enforce the requested HDR state.
+        reapply_delays = {750ms, 2500ms, 5500ms};
+      }
 
       for (int attempt = 1; attempt <= kMaxSyncVerifyAttempts; ++attempt) {
         if (state.verify_last_configuration_sticky(ServiceState::kVerificationSettleDelay)) {

@@ -417,6 +417,19 @@ namespace config {
       return video_t::dd_t::hdr_option_e::disabled;  // Default to this if value is invalid
     }
 
+    video_t::dd_t::hdr_request_override_e hdr_request_override_from_view(const std::string_view value) {
+#define _CONVERT_2_ARG_(str, val) \
+  if (value == #str##sv) \
+  return video_t::dd_t::hdr_request_override_e::val
+#define _CONVERT_(x) _CONVERT_2_ARG_(x, x)
+      _CONVERT_2_ARG_(auto, automatic);
+      _CONVERT_(force_on);
+      _CONVERT_(force_off);
+#undef _CONVERT_
+#undef _CONVERT_2_ARG_
+      return video_t::dd_t::hdr_request_override_e::automatic;
+    }
+
     video_t::dd_t::mode_remapping_t mode_remapping_from_view(const std::string_view value) {
       const auto parse_entry_list {[](const auto &entry_list, auto &output_field) {
         for (auto &[_, entry] : entry_list) {
@@ -599,6 +612,7 @@ namespace config {
       video_t::dd_t::refresh_rate_option_e::automatic,  // refresh_rate_option
       {},  // manual_refresh_rate
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
+      video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
       false,  // always_restore_from_golden
@@ -1298,6 +1312,7 @@ namespace config {
     generic_f(vars, "dd_refresh_rate_option", video.dd.refresh_rate_option, dd::refresh_rate_option_from_view);
     string_f(vars, "dd_manual_refresh_rate", video.dd.manual_refresh_rate);
     generic_f(vars, "dd_hdr_option", video.dd.hdr_option, dd::hdr_option_from_view);
+    generic_f(vars, "dd_hdr_request_override", video.dd.hdr_request_override, dd::hdr_request_override_from_view);
     {
       int value = -1;
       int_between_f(vars, "dd_config_revert_delay", value, {0, std::numeric_limits<int>::max()});
@@ -1815,6 +1830,7 @@ namespace config {
       const auto prev_dd_resolution_opt = video.dd.resolution_option;
       const auto prev_dd_refresh_rate_opt = video.dd.refresh_rate_option;
       const auto prev_dd_hdr_opt = video.dd.hdr_option;
+      const auto prev_dd_hdr_req_override = video.dd.hdr_request_override;
       const auto prev_dd_manual_resolution = video.dd.manual_resolution;
       const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
@@ -1862,6 +1878,7 @@ namespace config {
                                      (prev_dd_resolution_opt != video.dd.resolution_option) ||
                                      (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
                                      (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                     (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
                                      (prev_dd_manual_resolution != video.dd.manual_resolution) ||
                                       (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                       (prev_dd_revert_delay != video.dd.config_revert_delay) ||
