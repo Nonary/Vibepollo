@@ -264,6 +264,7 @@
     "virtual_display_toggle_hint": "Override the display Sunshine uses for this app: switch to the Sunshine virtual display or pick a specific physical monitor. Leave unchecked to follow the global/client choice.",
     "app_display_override_label": "Per-app display override",
     "client_display_override_label": "Per-client display override",
+    "client_display_override_hint": "Override how Sunshine chooses a display for this client. Leave unchecked to follow the global display settings.",
     "app_display_override_hint": "Choose whether this app should launch on the Sunshine virtual display or target a specific physical monitor instead of the global default.",
     "app_display_override_virtual": "Use Sunshine virtual display",
     "app_display_override_physical": "Use a physical display",

@@ -1243,6 +1243,7 @@ namespace confighttp {
       const bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
       const std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
       const std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
+      const std::string hdr_profile = input_tree.value("hdr_profile", "");
 
       std::optional<std::unordered_map<std::string, std::string>> config_overrides;
       if (input_tree.contains("config_overrides")) {
@@ -1283,6 +1284,7 @@ namespace confighttp {
         always_use_virtual_display,
         virtual_display_mode,
         virtual_display_layout,
+        hdr_profile,
         std::move(config_overrides),
         prefer_10bit_sdr,
         hdr_profile

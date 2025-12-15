@@ -720,6 +720,65 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    std::optional<fs::path> find_hdr_profile_by_selection(const std::string &selection_utf8) {
+      if (selection_utf8.empty()) {
+        return std::nullopt;
+      }
+
+      const auto selection_w = platf::from_utf8(selection_utf8);
+      if (selection_w.empty()) {
+        return std::nullopt;
+      }
+
+      const fs::path color_dir = default_color_profile_directory();
+
+      // Only allow selecting a filename in the system color profile directory.
+      const auto selection_name = fs::path(selection_w).filename().wstring();
+      if (selection_name.empty()) {
+        return std::nullopt;
+      }
+
+      const auto normalized = normalize_profile_key(selection_name);
+      if (normalized.empty()) {
+        return std::nullopt;
+      }
+
+      const auto has_extension = selection_name.find(L'.') != std::wstring::npos;
+      const auto make_candidates = [&]() {
+        std::vector<std::wstring> names;
+        names.push_back(selection_name);
+        if (!has_extension) {
+          names.push_back(selection_name + L".icm");
+          names.push_back(selection_name + L".icc");
+        }
+        return names;
+      };
+
+      for (const auto &name : make_candidates()) {
+        fs::path candidate = color_dir / name;
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec)) {
+          return candidate;
+        }
+      }
+
+      try {
+        for (const auto &entry : fs::directory_iterator(color_dir)) {
+          std::error_code ec;
+          if (!entry.is_regular_file(ec)) {
+            continue;
+          }
+          const auto file_name = entry.path().filename().wstring();
+          if (normalize_profile_key(file_name) == normalized || normalize_profile_key(entry.path().stem().wstring()) == normalized) {
+            return entry.path();
+          }
+        }
+      } catch (...) {
+      }
+
+      return std::nullopt;
+    }
+
     // Forward declaration for the retrying resolver
     std::optional<std::wstring> resolve_monitor_device_path(
       const std::optional<std::wstring> &display_name,

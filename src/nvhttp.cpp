@@ -222,6 +222,7 @@ namespace nvhttp {
     std::string output_name_override;
     std::string virtual_display_mode_override;
     std::string virtual_display_layout_override;
+    std::string hdr_profile_override;
     bool always_use_virtual_display = false;
     std::optional<bool> prefer_10bit_sdr;
     std::unordered_map<std::string, std::string> config_overrides;
@@ -305,6 +306,9 @@ namespace nvhttp {
       }
       if (!named_cert.virtual_display_layout_override.empty()) {
         named_cert_node.put("virtual_display_layout"s, named_cert.virtual_display_layout_override);
+      }
+      if (!named_cert.hdr_profile_override.empty()) {
+        named_cert_node.put("hdr_profile"s, named_cert.hdr_profile_override);
       }
       if (named_cert.always_use_virtual_display) {
         named_cert_node.put("always_use_virtual_display"s, true);
@@ -452,6 +456,7 @@ namespace nvhttp {
           named_cert.output_name_override = el.get<std::string>("output_name_override", "");
           named_cert.virtual_display_mode_override = el.get<std::string>("virtual_display_mode", "");
           named_cert.virtual_display_layout_override = el.get<std::string>("virtual_display_layout", "");
+          named_cert.hdr_profile_override = el.get<std::string>("hdr_profile", "");
           named_cert.always_use_virtual_display = el.get<bool>("always_use_virtual_display", false);
           if (auto prefer_10bit_sdr = el.get_optional<bool>("prefer_10bit_sdr")) {
             named_cert.prefer_10bit_sdr = *prefer_10bit_sdr;
@@ -493,6 +498,7 @@ namespace nvhttp {
     named_cert.output_name_override.clear();
     named_cert.virtual_display_mode_override.clear();
     named_cert.virtual_display_layout_override.clear();
+    named_cert.hdr_profile_override.clear();
     named_cert.always_use_virtual_display = false;
     named_cert.prefer_10bit_sdr.reset();
     named_cert.config_overrides.clear();
@@ -699,6 +705,9 @@ namespace nvhttp {
         if (auto parsed_layout = parse_virtual_display_layout_override(client_settings->virtual_display_layout_override)) {
           launch_session->virtual_display_layout_override = *parsed_layout;
         }
+      }
+      if (!client_settings->hdr_profile_override.empty()) {
+        launch_session->hdr_profile = client_settings->hdr_profile_override;
       }
     }
 
@@ -1266,6 +1275,7 @@ namespace nvhttp {
       named_cert_node["output_name_override"] = named_cert.output_name_override;
       named_cert_node["virtual_display_mode"] = named_cert.virtual_display_mode_override;
       named_cert_node["virtual_display_layout"] = named_cert.virtual_display_layout_override;
+      named_cert_node["hdr_profile"] = named_cert.hdr_profile_override;
       named_cert_node["always_use_virtual_display"] = named_cert.always_use_virtual_display;
       named_cert_node["hdr_profile"] = named_cert.hdr_profile;
       if (named_cert.prefer_10bit_sdr.has_value()) {
@@ -2278,6 +2288,7 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
+    const std::string &hdr_profile,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
     const std::optional<bool> prefer_10bit_sdr,
     const std::optional<std::string> hdr_profile
@@ -2291,6 +2302,7 @@ namespace nvhttp {
     const auto trimmed_output_override = boost::algorithm::trim_copy(output_name_override);
     const auto trimmed_vd_mode = boost::algorithm::trim_copy(virtual_display_mode);
     const auto trimmed_vd_layout = boost::algorithm::trim_copy(virtual_display_layout);
+    const auto trimmed_hdr_profile = boost::algorithm::trim_copy(hdr_profile);
 
     client_t &client = client_root;
     for (auto &named_cert : client.named_devices) {
@@ -2304,6 +2316,7 @@ namespace nvhttp {
       named_cert.output_name_override = always_use_virtual_display ? "" : trimmed_output_override;
       named_cert.virtual_display_mode_override = trimmed_vd_mode;
       named_cert.virtual_display_layout_override = trimmed_vd_layout;
+      named_cert.hdr_profile_override = trimmed_hdr_profile;
       named_cert.prefer_10bit_sdr = prefer_10bit_sdr;
       if (config_overrides) {
         named_cert.config_overrides = std::move(*config_overrides);
