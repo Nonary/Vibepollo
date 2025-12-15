@@ -105,7 +105,7 @@
                 size="small"
                 type="success"
                 quaternary
-                :disabled="saving[client.uuid] === true"
+                :disabled="saving[client.uuid] === true || !isClientDisplayOverrideValid"
                 @click="saveClient(client)"
               >
                 <i class="fas fa-check" />
@@ -154,14 +154,57 @@
               </n-form-item>
 
               <div v-if="isWindows" class="space-y-3">
-                <div class="text-sm font-medium">{{ t('config.client_display_override_label') }}</div>
-                <div class="space-y-3">
-                  <n-radio-group v-model:value="client.editDisplaySelection" class="flex gap-4">
-                    <n-radio value="virtual">{{ t('config.app_display_override_virtual') }}</n-radio>
-                    <n-radio value="physical">{{ t('config.app_display_override_physical') }}</n-radio>
-                  </n-radio-group>
+                <n-checkbox
+                  v-model:checked="client.editDisplayOverrideEnabled"
+                  size="small"
+                  @update:checked="(v) => applyClientDisplayOverrideEnabled(client, v)"
+                >
+                  <div class="flex flex-col">
+                    <span>{{ t('config.client_display_override_label') }}</span>
+                    <span class="text-[11px] opacity-60">
+                      {{ t('config.client_display_override_hint') }}
+                    </span>
+                  </div>
+                </n-checkbox>
+
+                <div
+                  v-if="client.editDisplayOverrideEnabled"
+                  class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+                >
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        {{ t('config.client_display_override_label') }}
+                      </span>
+                    </div>
+                    <p class="text-[11px] opacity-70">{{ t('config.client_display_override_hint') }}</p>
+                  </div>
+
+                  <div class="space-y-2">
+                    <n-radio-group
+                      :value="client.editDisplaySelection"
+                      @update:value="(v) => applyClientDisplaySelection(client, v as ClientDisplaySelection)"
+                      class="grid gap-3 sm:grid-cols-2"
+                    >
+                      <n-radio value="virtual" class="app-radio-card cursor-pointer">
+                        <span class="app-radio-card-title">{{ t('config.app_display_override_virtual') }}</span>
+                      </n-radio>
+                      <n-radio value="physical" class="app-radio-card cursor-pointer">
+                        <span class="app-radio-card-title">{{ t('config.app_display_override_physical') }}</span>
+                      </n-radio>
+                    </n-radio-group>
+                  </div>
 
                   <div v-if="client.editDisplaySelection === 'physical'" class="space-y-2">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        {{ t('config.app_display_physical_label') }}
+                      </span>
+                      <n-button size="tiny" tertiary :loading="displayDevicesLoading" @click="loadDisplayDevices">
+                        {{ t('_common.refresh') }}
+                      </n-button>
+                    </div>
+                    <p class="text-[11px] opacity-70">{{ t('config.app_display_physical_hint') }}</p>
                     <n-select
                       v-model:value="client.editPhysicalOutputOverride"
                       :options="displayDeviceOptions"
@@ -169,34 +212,122 @@
                       :placeholder="t('config.app_display_physical_placeholder')"
                       filterable
                       clearable
-                      :fallback-option="(value) => ({ label: value as string, value: value as string })"
+                      :fallback-option="(value) => ({ label: value as string, value: value as string, displayName: value as string, id: value as string, active: null })"
                       @focus="ensureDisplayDevicesLoaded"
-                    />
-                    <div class="text-xs opacity-70">
+                    >
+                      <template #option="{ option }">
+                        <div class="leading-tight">
+                          <div class="">{{ option?.displayName || option?.label }}</div>
+                          <div class="text-[12px] opacity-60 font-mono">
+                            {{ option?.id || option?.value }}
+                            <span
+                              v-if="option?.active === true"
+                              class="ml-1 text-green-600 dark:text-green-400"
+                            >
+                              ({{ t('config.app_display_status_active') }})
+                            </span>
+                            <span v-else-if="option?.active === false" class="ml-1 opacity-70">
+                              ({{ t('config.app_display_status_inactive') }})
+                            </span>
+                          </div>
+                        </div>
+                      </template>
+                      <template #value="{ option }">
+                        <div class="leading-tight">
+                          <div class="">{{ option?.displayName || option?.label }}</div>
+                          <div class="text-[12px] opacity-60 font-mono">
+                            {{ option?.id || option?.value }}
+                          </div>
+                        </div>
+                      </template>
+                    </n-select>
+                    <div class="text-[11px] opacity-70">
                       <span v-if="displayDevicesError" class="text-red-500">{{ displayDevicesError }}</span>
                       <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
                     </div>
                   </div>
 
-                  <n-form-item :label="t('config.app_virtual_display_mode_label')">
-                    <n-select
-                      v-model:value="client.editVirtualDisplayMode"
-                      :options="virtualDisplayModeOptions"
-                      clearable
-                      :placeholder="t('config.app_virtual_display_mode_follow_global')"
-                    />
-                  </n-form-item>
+                  <div v-else class="space-y-5">
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                          {{ t('config.virtual_display_mode_label') }}
+                        </span>
+                      </div>
+                      <p class="text-[11px] opacity-70">{{ t('config.virtual_display_mode_step_hint') }}</p>
+                      <n-radio-group v-model:value="client.editVirtualDisplayMode" class="grid gap-3 sm:grid-cols-2">
+                        <n-radio
+                          v-for="option in virtualDisplayModeOptions"
+                          :key="option.value"
+                          :value="option.value"
+                          class="app-radio-card cursor-pointer"
+                        >
+                          <span class="app-radio-card-title">{{ option.label }}</span>
+                        </n-radio>
+                      </n-radio-group>
+                    </div>
 
-                  <n-form-item :label="t('config.virtual_display_layout_label')">
-                    <n-select
-                      v-model:value="client.editVirtualDisplayLayout"
-                      :options="virtualDisplayLayoutOptions"
-                      clearable
-                      :placeholder="t('config.app_virtual_display_layout_follow_global')"
-                    />
-                  </n-form-item>
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                          {{ t('config.virtual_display_layout_label') }}
+                        </span>
+                        <n-button
+                          v-if="client.editVirtualDisplayLayout !== null"
+                          size="tiny"
+                          tertiary
+                          @click="client.editVirtualDisplayLayout = null"
+                        >
+                          {{ t('config.app_virtual_display_layout_reset') }}
+                        </n-button>
+                      </div>
+                      <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
+                      <n-radio-group
+                        :value="client.editVirtualDisplayLayout ?? globalVirtualDisplayLayout ?? 'exclusive'"
+                        @update:value="(v) => (client.editVirtualDisplayLayout = v === globalVirtualDisplayLayout ? null : (v as any))"
+                        class="space-y-4"
+                      >
+                        <div
+                          v-for="option in virtualDisplayLayoutOptions"
+                          :key="option.value"
+                          class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                          @click="client.editVirtualDisplayLayout = option.value === globalVirtualDisplayLayout ? null : option.value"
+                          @keydown.enter.prevent="client.editVirtualDisplayLayout = option.value === globalVirtualDisplayLayout ? null : option.value"
+                          @keydown.space.prevent="client.editVirtualDisplayLayout = option.value === globalVirtualDisplayLayout ? null : option.value"
+                          tabindex="0"
+                        >
+                          <div class="flex items-center gap-3">
+                            <n-radio :value="option.value" />
+                            <span class="text-sm font-semibold">{{ option.label }}</span>
+                          </div>
+                          <span class="text-[11px] opacity-70 leading-snug ml-6">
+                            {{ t(`config.virtual_display_layout_${option.value}_desc`) }}
+                          </span>
+                        </div>
+                      </n-radio-group>
+                      <div v-if="client.editVirtualDisplayLayout === null" class="text-[11px] opacity-70">
+                        {{ t('config.app_virtual_display_layout_follow_global') }}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
+
+              <n-form-item v-if="isWindows" :label="t('clients.hdr_profile_label')">
+                <n-select
+                  v-model:value="client.editHdrProfile"
+                  :options="hdrProfileOptions"
+                  :loading="hdrProfilesLoading"
+                  :placeholder="t('clients.hdr_profile_placeholder')"
+                  filterable
+                  clearable
+                  @focus="ensureHdrProfilesLoaded"
+                />
+                <template #feedback>
+                  <span class="text-xs opacity-70">{{ t('clients.hdr_profile_desc') }}</span>
+                  <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{ hdrProfilesError }}</span>
+                </template>
+              </n-form-item>
 
               <n-form-item :label="t('config.prefer_10bit_sdr')">
                 <n-select
@@ -328,6 +459,7 @@ interface ClientApiEntry {
   always_use_virtual_display?: boolean | string | number;
   virtual_display_mode?: string;
   virtual_display_layout?: string;
+  hdr_profile?: string;
   prefer_10bit_sdr?: boolean | string | number | null;
   config_overrides?: Record<string, unknown> | null;
 }
@@ -345,6 +477,7 @@ interface ClientViewModel {
   displayMode: string;
   outputOverride: string;
   alwaysUseVirtualDisplay: boolean;
+  hdrProfile: string;
   prefer10BitSdr: ClientPrefer10BitSdrOverride;
   virtualDisplayMode: ClientVirtualDisplayMode;
   virtualDisplayLayout: ClientVirtualDisplayLayout;
@@ -353,10 +486,12 @@ interface ClientViewModel {
   editing: boolean;
   editName: string;
   editDisplayMode: string;
+  editDisplayOverrideEnabled: boolean;
   editDisplaySelection: ClientDisplaySelection;
   editPhysicalOutputOverride: string | null;
   editVirtualDisplayMode: ClientVirtualDisplayMode;
   editVirtualDisplayLayout: ClientVirtualDisplayLayout;
+  editHdrProfile: string | null;
   editPrefer10BitSdr: ClientPrefer10BitSdrOverride;
   editConfigOverrides: Record<string, unknown>;
 }
@@ -442,6 +577,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const displayMode = entry.display_mode ?? '';
   const outputOverride = entry.output_name_override ?? '';
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
+  const hdrProfile = String(entry.hdr_profile ?? '');
   const configOverrides =
     entry.config_overrides && typeof entry.config_overrides === 'object' && !Array.isArray(entry.config_overrides)
       ? JSON.parse(JSON.stringify(entry.config_overrides))
@@ -454,14 +590,18 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
         : 'disabled';
   const virtualMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
-  const selection: ClientDisplaySelection = alwaysVirtual ? 'virtual' : 'physical';
-  return {
+  const overrideEnabled =
+    alwaysVirtual || !!outputOverride.trim() || virtualMode !== null || virtualLayout !== null;
+  const selection: ClientDisplaySelection =
+    alwaysVirtual || (virtualMode !== null && virtualMode !== 'disabled') ? 'virtual' : 'physical';
+  const client: ClientViewModel = {
     uuid: entry.uuid ?? '',
     name,
     connected: !!entry.connected,
     displayMode,
     outputOverride,
     alwaysUseVirtualDisplay: alwaysVirtual,
+    hdrProfile,
     prefer10BitSdr: prefer10,
     virtualDisplayMode: virtualMode,
     virtualDisplayLayout: virtualLayout,
@@ -469,31 +609,60 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editing: false,
     editName: name,
     editDisplayMode: displayMode,
+    editDisplayOverrideEnabled: overrideEnabled,
     editDisplaySelection: selection,
     editPhysicalOutputOverride: outputOverride || null,
     editVirtualDisplayMode: virtualMode,
     editVirtualDisplayLayout: virtualLayout,
+    editHdrProfile: hdrProfile || null,
     editPrefer10BitSdr: prefer10,
     editConfigOverrides: JSON.parse(JSON.stringify(configOverrides)),
   };
+
+  if (client.editDisplayOverrideEnabled) {
+    applyClientDisplaySelection(client, client.editDisplaySelection);
+  }
+
+  return client;
 }
 
 function resetClientEdits(client: ClientViewModel): void {
   client.editName = client.name;
   client.editDisplayMode = client.displayMode;
-  client.editDisplaySelection = client.alwaysUseVirtualDisplay ? 'virtual' : 'physical';
+  client.editDisplayOverrideEnabled =
+    client.alwaysUseVirtualDisplay ||
+    !!(client.outputOverride || '').trim() ||
+    client.virtualDisplayMode !== null ||
+    client.virtualDisplayLayout !== null;
+  client.editDisplaySelection =
+    client.alwaysUseVirtualDisplay ||
+    (client.virtualDisplayMode !== null && client.virtualDisplayMode !== 'disabled')
+      ? 'virtual'
+      : 'physical';
   client.editPhysicalOutputOverride = client.outputOverride || null;
   client.editVirtualDisplayMode = client.virtualDisplayMode;
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
+  client.editHdrProfile = client.hdrProfile || null;
   client.editPrefer10BitSdr = client.prefer10BitSdr;
   client.editConfigOverrides = JSON.parse(JSON.stringify(client.configOverrides || {}));
+
+  if (client.editDisplayOverrideEnabled) {
+    applyClientDisplaySelection(client, client.editDisplaySelection);
+  }
 }
 
 const virtualDisplayModeOptions = computed(() => [
-  { label: t('config.virtual_display_mode_disabled'), value: 'disabled' },
   { label: t('config.virtual_display_mode_per_client'), value: 'per_client' },
   { label: t('config.virtual_display_mode_shared'), value: 'shared' },
 ]);
+
+const globalVirtualDisplayMode = computed<ClientVirtualDisplayMode>(() =>
+  parseClientVirtualDisplayMode((configStore.config as any)?.virtual_display_mode),
+);
+
+const globalVirtualDisplayLayout = computed<ClientVirtualDisplayLayout>(() =>
+  parseClientVirtualDisplayLayout((configStore.config as any)?.virtual_display_layout),
+);
 
 const virtualDisplayLayoutOptions = computed(() => {
   const values: Array<Exclude<ClientVirtualDisplayLayout, null>> = [
@@ -504,6 +673,48 @@ const virtualDisplayLayoutOptions = computed(() => {
     'extended_primary_isolated',
   ];
   return values.map((value) => ({ label: t(`config.virtual_display_layout_${value}`), value }));
+});
+
+function applyClientDisplayOverrideEnabled(client: ClientViewModel, enabled: boolean): void {
+  client.editDisplayOverrideEnabled = enabled;
+  if (!enabled) {
+    client.editDisplaySelection = 'physical';
+    client.editPhysicalOutputOverride = null;
+    client.editVirtualDisplayMode = null;
+    client.editVirtualDisplayLayout = null;
+    return;
+  }
+
+  applyClientDisplaySelection(client, client.editDisplaySelection);
+}
+
+function applyClientDisplaySelection(client: ClientViewModel, selection: ClientDisplaySelection): void {
+  client.editDisplaySelection = selection;
+  if (selection === 'physical') {
+    client.editVirtualDisplayMode = 'disabled';
+    client.editVirtualDisplayLayout = null;
+    return;
+  }
+
+  client.editPhysicalOutputOverride = null;
+  const resolvedMode = globalVirtualDisplayMode.value;
+  if (client.editVirtualDisplayMode === null || client.editVirtualDisplayMode === 'disabled') {
+    client.editVirtualDisplayMode = resolvedMode && resolvedMode !== 'disabled' ? resolvedMode : 'per_client';
+  }
+}
+
+const isClientDisplayOverrideValid = computed(() => {
+  for (const client of clients.value) {
+    if (!client.editing) continue;
+    if (!client.editDisplayOverrideEnabled) continue;
+
+    if (client.editDisplaySelection === 'virtual') {
+      if (client.editVirtualDisplayMode !== 'per_client' && client.editVirtualDisplayMode !== 'shared') {
+        return false;
+      }
+    }
+  }
+  return true;
 });
 
 async function refreshClients(): Promise<void> {
@@ -636,6 +847,7 @@ function editClient(client: ClientViewModel): void {
   resetClientEdits(client);
   client.editing = true;
   ensureDisplayDevicesLoaded();
+  ensureHdrProfilesLoaded();
 }
 
 function cancelEdit(client: ClientViewModel): void {
@@ -651,14 +863,30 @@ async function saveClient(client: ClientViewModel): Promise<void> {
       uuid: client.uuid,
       name: (client.editName || '').trim(),
       display_mode: (client.editDisplayMode || '').trim(),
-      output_name_override:
-        client.editDisplaySelection === 'physical'
-          ? String(client.editPhysicalOutputOverride || '').trim()
-          : '',
-      always_use_virtual_display: client.editDisplaySelection === 'virtual',
-      virtual_display_mode: client.editVirtualDisplayMode ?? '',
-      virtual_display_layout: client.editVirtualDisplayLayout ?? '',
     };
+
+    if (!client.editDisplayOverrideEnabled) {
+      payload.output_name_override = '';
+      payload.always_use_virtual_display = false;
+      payload.virtual_display_mode = '';
+      payload.virtual_display_layout = '';
+    } else if (client.editDisplaySelection === 'physical') {
+      payload.output_name_override = String(client.editPhysicalOutputOverride || '').trim();
+      payload.always_use_virtual_display = false;
+      payload.virtual_display_mode = 'disabled';
+      payload.virtual_display_layout = '';
+    } else {
+      payload.output_name_override = '';
+      payload.always_use_virtual_display = true;
+      payload.virtual_display_mode = client.editVirtualDisplayMode ?? '';
+      payload.virtual_display_layout = client.editVirtualDisplayLayout ?? '';
+    }
+
+    if (!isClientDisplayOverrideValid.value) {
+      message.error(t('clients.update_failed'));
+      return;
+    }
+
     payload.config_overrides =
       client.editConfigOverrides &&
       typeof client.editConfigOverrides === 'object' &&
@@ -672,6 +900,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     if (client.editPrefer10BitSdr !== null) {
       payload.prefer_10bit_sdr = client.editPrefer10BitSdr === 'enabled';
     }
+    payload.hdr_profile = String(client.editHdrProfile ?? '').trim();
 
     const r = await http.post('./api/clients/update', payload, { validateStatus: () => true });
     const ok = r && r.status >= 200 && r.status < 300 && r.data?.status === true;
@@ -686,6 +915,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     client.alwaysUseVirtualDisplay = payload.always_use_virtual_display;
     client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
     client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
+    client.hdrProfile = payload.hdr_profile || '';
     client.prefer10BitSdr =
       payload.prefer_10bit_sdr === undefined ? null : payload.prefer_10bit_sdr ? 'enabled' : 'disabled';
     client.configOverrides =
@@ -729,6 +959,65 @@ const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
 
+interface HdrProfileEntry {
+  filename?: string;
+  added_ms?: number;
+}
+
+interface HdrProfilesResponse {
+  status?: boolean;
+  profiles?: HdrProfileEntry[];
+  error?: string;
+}
+
+const hdrProfiles = ref<HdrProfileEntry[]>([]);
+const hdrProfilesLoading = ref(false);
+const hdrProfilesError = ref('');
+
+const hdrProfileOptions = computed(() => {
+  const list = Array.isArray(hdrProfiles.value) ? [...hdrProfiles.value] : [];
+  list.sort((a, b) => (Number(b.added_ms || 0) || 0) - (Number(a.added_ms || 0) || 0));
+
+  const options: Array<{ label: string; value: string | null }> = [
+    { label: t('clients.hdr_profile_auto'), value: null },
+  ];
+  for (const p of list) {
+    const filename = String(p?.filename || '').trim();
+    if (!filename) continue;
+    options.push({ label: filename, value: filename });
+  }
+  return options;
+});
+
+async function loadHdrProfiles(): Promise<void> {
+  if (!isWindows.value) return;
+  hdrProfilesLoading.value = true;
+  hdrProfilesError.value = '';
+  try {
+    const r = await http.get<HdrProfilesResponse>('./api/clients/hdr-profiles', { validateStatus: () => true });
+    const response = r.data || ({} as HdrProfilesResponse);
+    const ok = r.status >= 200 && r.status < 300 && response.status === true && Array.isArray(response.profiles);
+    if (!ok) {
+      hdrProfiles.value = [];
+      hdrProfilesError.value = response.error || t('clients.hdr_profile_load_failed');
+      return;
+    }
+    hdrProfiles.value = response.profiles || [];
+  } catch (e: any) {
+    hdrProfiles.value = [];
+    hdrProfilesError.value = e?.message || t('clients.hdr_profile_load_failed');
+  } finally {
+    hdrProfilesLoading.value = false;
+  }
+}
+
+function ensureHdrProfilesLoaded(): void {
+  if (!isWindows.value) return;
+  if (hdrProfilesLoading.value) return;
+  if (hdrProfiles.value.length > 0) return;
+  loadHdrProfiles();
+}
+
 async function loadDisplayDevices(): Promise<void> {
   if (!isWindows.value) return;
   displayDevicesLoading.value = true;
@@ -752,7 +1041,13 @@ function ensureDisplayDevicesLoaded(): void {
 }
 
 const displayDeviceOptions = computed(() => {
-  const opts: Array<{ label: string; value: string }> = [];
+  const opts: Array<{
+    label: string;
+    value: string;
+    displayName: string;
+    id: string;
+    active: boolean | null;
+  }> = [];
   const seen = new Set<string>();
   for (const d of displayDevices.value) {
     const value = d.device_id || d.display_name || '';
@@ -771,7 +1066,7 @@ const displayDeviceOptions = computed(() => {
         : active
           ? ` (${t('config.app_display_status_active')})`
           : ` (${t('config.app_display_status_inactive')})`;
-    opts.push({ label: `${displayName} - ${value}${suffix}`, value });
+    opts.push({ label: `${displayName} - ${value}${suffix}`, value, displayName, id: value, active });
     seen.add(value);
   }
   return opts;

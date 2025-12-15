@@ -705,6 +705,65 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    std::optional<fs::path> find_hdr_profile_by_selection(const std::string &selection_utf8) {
+      if (selection_utf8.empty()) {
+        return std::nullopt;
+      }
+
+      const auto selection_w = platf::from_utf8(selection_utf8);
+      if (selection_w.empty()) {
+        return std::nullopt;
+      }
+
+      const fs::path color_dir = default_color_profile_directory();
+
+      // Only allow selecting a filename in the system color profile directory.
+      const auto selection_name = fs::path(selection_w).filename().wstring();
+      if (selection_name.empty()) {
+        return std::nullopt;
+      }
+
+      const auto normalized = normalize_profile_key(selection_name);
+      if (normalized.empty()) {
+        return std::nullopt;
+      }
+
+      const auto has_extension = selection_name.find(L'.') != std::wstring::npos;
+      const auto make_candidates = [&]() {
+        std::vector<std::wstring> names;
+        names.push_back(selection_name);
+        if (!has_extension) {
+          names.push_back(selection_name + L".icm");
+          names.push_back(selection_name + L".icc");
+        }
+        return names;
+      };
+
+      for (const auto &name : make_candidates()) {
+        fs::path candidate = color_dir / name;
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec)) {
+          return candidate;
+        }
+      }
+
+      try {
+        for (const auto &entry : fs::directory_iterator(color_dir)) {
+          std::error_code ec;
+          if (!entry.is_regular_file(ec)) {
+            continue;
+          }
+          const auto file_name = entry.path().filename().wstring();
+          if (normalize_profile_key(file_name) == normalized || normalize_profile_key(entry.path().stem().wstring()) == normalized) {
+            return entry.path();
+          }
+        }
+      } catch (...) {
+      }
+
+      return std::nullopt;
+    }
+
     // Forward declaration for the retrying resolver
     std::optional<std::wstring> resolve_monitor_device_path(
       const std::optional<std::wstring> &display_name,
@@ -841,6 +900,7 @@ namespace VDISPLAY {
       const std::optional<std::string> &device_id,
       const std::optional<std::wstring> &monitor_device_path,
       const std::optional<std::string> &client_name_utf8,
+      const std::optional<std::string> &hdr_profile_utf8,
       bool is_virtual_display = true
     ) {
       // For virtual displays, we need to check if a profile exists and clear it if it doesn't match
@@ -873,37 +933,66 @@ namespace VDISPLAY {
         return;
       }
 
-      const auto profile_path = find_hdr_profile_for_client(*client_name_utf8);
+      std::optional<fs::path> profile_path;
+      if (hdr_profile_utf8 && !hdr_profile_utf8->empty()) {
+        profile_path = find_hdr_profile_by_selection(*hdr_profile_utf8);
+        if (!profile_path) {
+          BOOST_LOG(warning) << "HDR profile: configured profile '" << *hdr_profile_utf8 << "' not found in '"
+                             << platf::to_utf8(default_color_profile_directory().wstring()) << "' for client '" << *client_name_utf8
+                             << "'.";
+        }
+      }
+      if (!profile_path) {
+        profile_path = find_hdr_profile_for_client(*client_name_utf8);
+      }
+      if (!profile_path) {
+        BOOST_LOG(debug) << "HDR profile: no matching profile found for client '" << *client_name_utf8
+                         << "' in '" << platf::to_utf8(default_color_profile_directory().wstring()) << "'.";
+      }
 
       // Run asynchronously to avoid blocking stream startup
       std::thread([
         profile_path,
         client_name = *client_name_utf8,
         monitor_path = monitor_device_path,
+        display_name,
+        device_id,
         should_clear_mismatched
       ]() {
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
-          device_name_w = resolve_monitor_device_path(std::nullopt, std::nullopt, 50, std::chrono::milliseconds(100), client_name);
+          device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), client_name);
         }
         if (!device_name_w || device_name_w->empty()) {
           if (profile_path) {
             BOOST_LOG(warning) << "HDR profile: skipped - monitor device path unavailable for '" << client_name << "'.";
+            BOOST_LOG(debug) << "HDR profile: resolve context display_name='"
+                             << (display_name ? platf::to_utf8(*display_name) : std::string("(none)"))
+                             << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'.";
           }
           return;
         }
 
         HANDLE user_token = platf::retrieve_users_token(false);
         if (!user_token) {
+          if (profile_path) {
+            BOOST_LOG(warning) << "HDR profile: skipped - unable to retrieve user token for '" << client_name << "'.";
+          }
           return;
         }
 
         bool success = false;
+        bool already_associated = false;
+        bool cleared_mismatched = false;
         (void) platf::impersonate_current_user(user_token, [&]() {
+          std::optional<std::wstring> existing;
+          if (should_clear_mismatched || profile_path) {
+            existing = read_color_profile_from_registry(*device_name_w);
+          }
+
           // Check existing profile and handle mismatches for virtual displays
           if (should_clear_mismatched) {
-            auto existing = read_color_profile_from_registry(*device_name_w);
             if (existing && !existing->empty()) {
               // Determine expected filename
               std::wstring expected_filename;
@@ -915,7 +1004,12 @@ namespace VDISPLAY {
               if (expected_filename.empty() || _wcsicmp(existing->c_str(), expected_filename.c_str()) != 0) {
                 BOOST_LOG(debug) << "HDR profile: clearing mismatched profile '" << platf::to_utf8(*existing)
                                  << "' from virtual display for client '" << client_name << "'.";
-                clear_color_profile_from_registry(*device_name_w);
+                if (clear_color_profile_from_registry(*device_name_w)) {
+                  cleared_mismatched = true;
+                } else {
+                  BOOST_LOG(debug) << "HDR profile: failed to clear mismatched profile association for client '" << client_name
+                                   << "' (monitor path: '" << platf::to_utf8(*device_name_w) << "').";
+                }
               }
             }
           }
@@ -923,26 +1017,45 @@ namespace VDISPLAY {
           // If we have a profile to apply, do it
           if (profile_path) {
             const auto profile_filename = profile_path->filename().wstring();
+
+            if (!cleared_mismatched && existing && !existing->empty() && _wcsicmp(existing->c_str(), profile_filename.c_str()) == 0) {
+              already_associated = true;
+              success = true;
+              return;
+            }
+
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
 
             // Install the color profile if needed
             if (!InstallColorProfileW(nullptr, profile_path->c_str())) {
               const auto err = GetLastError();
               if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
-                return;
+                BOOST_LOG(warning) << "HDR profile: InstallColorProfileW failed (" << err << ") for '"
+                                   << platf::to_utf8(profile_path->filename().wstring()) << "'; attempting registry association anyway.";
               }
             }
 
             // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
             success = write_color_profile_to_registry(*device_name_w, profile_filename);
+            if (!success) {
+              BOOST_LOG(warning) << "HDR profile: failed to associate '" << platf::to_utf8(profile_filename)
+                                 << "' with monitor '" << platf::to_utf8(*device_name_w) << "' for client '" << client_name << "'.";
+            }
           }
         });
 
         CloseHandle(user_token);
 
         if (success && profile_path) {
-          BOOST_LOG(info) << "Applied HDR color profile '" << platf::to_utf8(profile_path->filename().wstring())
-                          << "' for client '" << client_name << "'.";
+          if (already_associated) {
+            BOOST_LOG(info) << "HDR color profile '" << platf::to_utf8(profile_path->filename().wstring())
+                            << "' already associated for client '" << client_name << "'.";
+          } else {
+            BOOST_LOG(info) << "Applied HDR color profile '" << platf::to_utf8(profile_path->filename().wstring())
+                            << "' for client '" << client_name << "'.";
+          }
+        } else if (cleared_mismatched && !profile_path) {
+          BOOST_LOG(info) << "Cleared mismatched HDR color profile association for client '" << client_name << "'.";
         }
       }).detach();
     }
@@ -1551,6 +1664,7 @@ namespace VDISPLAY {
       auto recreation = createVirtualDisplay(
         state.params.client_uid.c_str(),
         state.params.client_name.c_str(),
+        state.params.hdr_profile ? state.params.hdr_profile->c_str() : nullptr,
         state.params.width,
         state.params.height,
         state.params.fps,
@@ -2233,7 +2347,8 @@ namespace VDISPLAY {
     return true;
   }
 
-    std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
+  std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
+      const char *s_hdr_profile,
       const char *s_client_uid,
       const char *s_client_name,
       uint32_t width,
@@ -2253,6 +2368,7 @@ namespace VDISPLAY {
     // Log entry and inputs for deeper diagnostics
     BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
                      << "' client_name='" << (s_client_name ? s_client_name : "(null)")
+                     << "' hdr_profile='" << (s_hdr_profile ? s_hdr_profile : "(null)")
                      << "' width=" << width << " height=" << height << " fps=" << fps
                      << " guid=" << requested_uuid.string();
 
@@ -2315,7 +2431,11 @@ namespace VDISPLAY {
           result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
           result.reused_existing = true;
           result.ready_since = ready_since;
-          apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name);
+          std::optional<std::string> hdr_profile;
+          if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
+            hdr_profile = std::string(s_hdr_profile);
+          }
+          apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
           return result;
         }
       }
@@ -2400,12 +2520,11 @@ namespace VDISPLAY {
     }
     result.reused_existing = false;
     result.ready_since = ready_since;
-    apply_hdr_profile_if_available(
-      result.display_name,
-      result.device_id,
-      result.monitor_device_path,
-      result.client_name
-    );
+    std::optional<std::string> hdr_profile;
+    if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
+      hdr_profile = std::string(s_hdr_profile);
+    }
+    apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
     return result;
   }
 
@@ -2414,6 +2533,7 @@ namespace VDISPLAY {
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
+    const char *s_hdr_profile,
     uint32_t width,
     uint32_t height,
     uint32_t fps,
@@ -2433,6 +2553,7 @@ namespace VDISPLAY {
       }
 
       auto result = create_virtual_display_once(
+        s_hdr_profile,
         s_client_uid,
         s_client_name,
         width,
@@ -2809,6 +2930,7 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   auto display_info = createVirtualDisplay(
     "sunshine-ensure",
     "Sunshine Temporary",
+    nullptr,
     1920u,
     1080u,
     60000u,

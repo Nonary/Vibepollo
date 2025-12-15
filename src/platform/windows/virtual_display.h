@@ -58,6 +58,7 @@ namespace VDISPLAY {
     bool framegen_refresh_active = false;
     std::string client_uid;
     std::string client_name;
+    std::optional<std::string> hdr_profile;
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
     unsigned int max_attempts = 3;
@@ -67,6 +68,7 @@ namespace VDISPLAY {
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
+    const char *s_hdr_profile,
     uint32_t width,
     uint32_t height,
     uint32_t fps,
