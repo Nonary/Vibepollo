@@ -769,6 +769,7 @@ namespace {
       // Filter snapshot using current exclusion list and currently enumerated devices.
       // Note: `m_display_name` is only populated for active displays in libdisplaydevice, so
       // using it here would incorrectly treat inactive-but-connected monitors as missing.
+      // For loading/restore, we only require a matching device id (display_name is not required).
       const auto join = [](const auto &items) {
         std::string out;
         bool first = true;
