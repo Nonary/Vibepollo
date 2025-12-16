@@ -358,6 +358,8 @@ const ROUTE_OPTIONS: RouteDef[] = [
   { path: '/api/apps/([0-9]+)', methods: ['DELETE'] },
   { path: '/api/clients/unpair-all', methods: ['POST'] },
   { path: '/api/clients/list', methods: ['GET'] },
+  { path: '/api/clients/hdr-profiles', methods: ['GET'] },
+  { path: '/api/clients/update', methods: ['POST'] },
   { path: '/api/clients/unpair', methods: ['POST'] },
   { path: '/api/apps/close', methods: ['POST'] },
   { path: '/api/covers/upload', methods: ['POST'] },

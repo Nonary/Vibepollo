@@ -218,6 +218,7 @@ namespace nvhttp {
     std::string name;
     std::string uuid;
     std::string cert;
+    std::string hdr_profile;
   };
 
   struct client_t {
@@ -284,6 +285,9 @@ namespace nvhttp {
       named_cert_node.put("name"s, named_cert.name);
       named_cert_node.put("cert"s, named_cert.cert);
       named_cert_node.put("uuid"s, named_cert.uuid);
+      if (!named_cert.hdr_profile.empty()) {
+        named_cert_node.put("hdr_profile"s, named_cert.hdr_profile);
+      }
       named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
     root_node.put_child("named_devices", named_cert_nodes);
@@ -412,6 +416,7 @@ namespace nvhttp {
           named_cert.name = el.get_child("name").get_value<std::string>();
           named_cert.cert = el.get_child("cert").get_value<std::string>();
           named_cert.uuid = el.get_child("uuid").get_value<std::string>();
+          named_cert.hdr_profile = el.get<std::string>("hdr_profile", "");
           client.named_devices.emplace_back(named_cert);
         }
       }
@@ -432,6 +437,7 @@ namespace nvhttp {
     named_cert.name = name;
     named_cert.cert = std::move(cert);
     named_cert.uuid = uuid_util::uuid_t::generate().string();
+    named_cert.hdr_profile.clear();
     client.named_devices.emplace_back(named_cert);
 
     if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
@@ -493,6 +499,7 @@ namespace nvhttp {
     launch_session->app_metadata.reset();
     launch_session->client_uuid.clear();
     launch_session->client_name.clear();
+    launch_session->hdr_profile.reset();
 
     if (request) {
       launch_session->client_uuid = get_client_uuid_from_request(request, &launch_session->client_name);
@@ -522,6 +529,16 @@ namespace nvhttp {
         launch_session->fps = atoi(segment.c_str());
       }
       x++;
+    }
+
+    if (!launch_session->client_uuid.empty()) {
+      client_t &client = client_root;
+      for (auto &named_cert : client.named_devices) {
+        if (named_cert.uuid == launch_session->client_uuid && !named_cert.hdr_profile.empty()) {
+          launch_session->hdr_profile = named_cert.hdr_profile;
+          break;
+        }
+      }
     }
     launch_session->unique_id = (get_arg(args, "uniqueid", "unknown"));
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
@@ -1049,6 +1066,7 @@ namespace nvhttp {
       nlohmann::json named_cert_node;
       named_cert_node["name"] = named_cert.name;
       named_cert_node["uuid"] = named_cert.uuid;
+      named_cert_node["hdr_profile"] = named_cert.hdr_profile;
       named_cert_nodes.push_back(named_cert_node);
     }
 
@@ -1339,6 +1357,7 @@ namespace nvhttp {
       auto display_info = VDISPLAY::createVirtualDisplay(
         display_uuid_source.c_str(),
         client_label.c_str(),
+        launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
         vd_width,
         vd_height,
         vd_fps,
@@ -1370,9 +1389,10 @@ namespace nvhttp {
         recovery_params.fps = vd_fps;
         recovery_params.base_fps_millihz = base_vd_fps_millihz;
         recovery_params.framegen_refresh_active = framegen_refresh_active;
-        recovery_params.client_uid = display_uuid_source;
-        recovery_params.client_name = client_label;
-        recovery_params.display_name = display_info->display_name;
+         recovery_params.client_uid = display_uuid_source;
+         recovery_params.client_name = client_label;
+         recovery_params.hdr_profile = launch_session->hdr_profile;
+         recovery_params.display_name = display_info->display_name;
         if (display_info->device_id && !display_info->device_id->empty()) {
           recovery_params.device_id = *display_info->device_id;
         } else if (!launch_session->virtual_display_device_id.empty()) {
@@ -1453,8 +1473,19 @@ namespace nvhttp {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         }
+
       } else {
         BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+      }
+
+      // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
+      if (!launch_session->virtual_display) {
+        const auto active_output = config::get_active_output_name();
+        VDISPLAY::applyHdrProfileToOutput(
+          launch_session->client_name.c_str(),
+          launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
+          active_output.empty() ? nullptr : active_output.c_str()
+        );
       }
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
@@ -1613,11 +1644,22 @@ namespace nvhttp {
           } else if (!display_helper_integration::apply(*request)) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
+
         } else {
           BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
         }
       } else {
         BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+      }
+
+      // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
+      if (!launch_session->virtual_display) {
+        const auto active_output = config::get_active_output_name();
+        VDISPLAY::applyHdrProfileToOutput(
+          launch_session->client_name.c_str(),
+          launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
+          active_output.empty() ? nullptr : active_output.c_str()
+        );
       }
 #else
       if (should_reapply_display) {
@@ -1894,6 +1936,27 @@ namespace nvhttp {
     client_root = client;
     cert_chain.clear();
     save_state();
+  }
+
+  bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    const auto trimmed_hdr_profile = boost::algorithm::trim_copy(hdr_profile);
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert.uuid != uuid) {
+        continue;
+      }
+
+      named_cert.hdr_profile = trimmed_hdr_profile;
+      save_state();
+      return true;
+    }
+
+    return false;
   }
 
   // (Windows-only) display_helper_integration is included above

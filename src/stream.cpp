@@ -1995,6 +1995,7 @@ namespace stream {
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32
+        VDISPLAY::restorePhysicalHdrProfiles();
         platf::rtss_set_sync_limiter_override(std::nullopt);
         platf::frame_limiter_streaming_stop();
 #endif

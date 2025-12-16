@@ -91,21 +91,80 @@
         <li
           v-for="client in clients"
           :key="client.uuid"
-          class="flex items-center py-2 px-2 rounded hover:bg-primary/5 transition"
+          class="py-2 px-2 rounded hover:bg-primary/5 transition"
         >
-          <div class="flex-1 truncate">
-            {{ client.name !== '' ? client.name : $t('troubleshooting.unpair_single_unknown') }}
+          <div class="flex items-center gap-2">
+            <div class="flex-1 truncate">
+              {{ client.name !== '' ? client.name : $t('troubleshooting.unpair_single_unknown') }}
+            </div>
+
+            <div class="flex items-center gap-2">
+              <n-button
+                v-if="isEditing(client)"
+                size="small"
+                type="success"
+                quaternary
+                :disabled="hdrSaving === true"
+                aria-label="Save"
+                @click="saveEdit(client)"
+              >
+                <i class="fas fa-check" />
+              </n-button>
+              <n-button
+                v-if="isEditing(client)"
+                size="small"
+                quaternary
+                :disabled="hdrSaving === true"
+                aria-label="Cancel"
+                @click="cancelEdit"
+              >
+                <i class="fas fa-times" />
+              </n-button>
+              <n-button
+                v-if="!isEditing(client)"
+                size="small"
+                quaternary
+                type="primary"
+                aria-label="Edit"
+                @click="editClient(client)"
+              >
+                <i class="fas fa-edit" />
+              </n-button>
+              <n-button
+                type="error"
+                strong
+                size="small"
+                :disabled="removing[client.uuid] === true"
+                aria-label="Remove"
+                @click="askConfirmUnpair(client.uuid)"
+              >
+                <i class="fas fa-trash" />
+              </n-button>
+            </div>
           </div>
-          <n-button
-            type="error"
-            strong
-            size="small"
-            :disabled="removing[client.uuid] === true"
-            aria-label="Remove"
-            @click="askConfirmUnpair(client.uuid)"
-          >
-            <i class="fas fa-trash" />
-          </n-button>
+
+          <div v-if="isEditing(client)" class="mt-3 space-y-2">
+            <n-alert v-if="hdrProfilesError" type="error" class="text-sm">
+              {{ hdrProfilesError }}
+            </n-alert>
+            <n-form label-placement="top" @submit.prevent>
+              <n-form-item :label="$t('clients.hdr_profile_label')">
+                <n-select
+                  v-model:value="hdrSelected"
+                  :options="hdrProfileOptions"
+                  :loading="hdrProfilesLoading"
+                  :placeholder="$t('clients.hdr_profile_placeholder')"
+                  filterable
+                  clearable
+                />
+                <template #feedback>
+                  <span class="text-xs opacity-70">{{ $t('clients.hdr_profile_desc') }}</span>
+                </template>
+              </n-form-item>
+            </n-form>
+            <n-alert v-if="hdrSaveStatus === true" type="success">{{ $t('clients.update_success') }}</n-alert>
+            <n-alert v-if="hdrSaveStatus === false" type="error">{{ $t('clients.update_failed') }}</n-alert>
+          </div>
         </li>
       </ul>
       <div v-else class="p-4 text-center italic opacity-75">
@@ -168,25 +227,39 @@
         </template>
       </n-card>
     </n-modal>
+
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { http } from '@/http';
-import { NCard, NButton, NAlert, NModal, NInput, NForm, NFormItem } from 'naive-ui';
+import { NCard, NButton, NAlert, NModal, NInput, NForm, NFormItem, NSelect } from 'naive-ui';
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import { useAuthStore } from '@/stores/auth';
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
 
 // ----- Types -----
 interface ClientInfo {
   uuid: string;
   name: string;
+  hdr_profile?: string;
 }
 interface ClientsListResponse {
   status: boolean;
   named_certs: ClientInfo[];
+}
+interface HdrProfileEntry {
+  filename?: string;
+  added_ms?: number;
+}
+interface HdrProfilesResponse {
+  status?: boolean;
+  profiles?: HdrProfileEntry[];
+  error?: string;
 }
 
 // ----- Client pairing & management state -----
@@ -202,6 +275,29 @@ const showConfirmRemove = ref<boolean>(false);
 const pendingRemoveUuid = ref<string>('');
 const pendingRemoveName = ref<string>('');
 const showConfirmUnpairAll = ref<boolean>(false);
+
+const editingUuid = ref<string>('');
+const hdrSelected = ref<string | null>(null);
+const hdrSaveStatus = ref<boolean | null>(null);
+const hdrSaving = ref<boolean>(false);
+
+const hdrProfiles = ref<HdrProfileEntry[]>([]);
+const hdrProfilesLoading = ref<boolean>(false);
+const hdrProfilesError = ref<string>('');
+
+const hdrProfileOptions = computed(() => {
+  const list = Array.isArray(hdrProfiles.value) ? [...hdrProfiles.value] : [];
+  list.sort((a, b) => (Number(b.added_ms || 0) || 0) - (Number(a.added_ms || 0) || 0));
+  const options: Array<{ label: string; value: string | null }> = [
+    { label: t('clients.hdr_profile_auto'), value: null },
+  ];
+  for (const p of list) {
+    const filename = String(p?.filename || '').trim();
+    if (!filename) continue;
+    options.push({ label: filename, value: filename });
+  }
+  return options;
+});
 
 async function refreshClients(): Promise<void> {
   const auth = useAuthStore();
@@ -224,6 +320,67 @@ async function refreshClients(): Promise<void> {
     }
   } catch {
     clients.value = [];
+  }
+}
+
+async function loadHdrProfiles(): Promise<void> {
+  hdrProfilesLoading.value = true;
+  hdrProfilesError.value = '';
+  try {
+    const r = await http.get<HdrProfilesResponse>('./api/clients/hdr-profiles', { validateStatus: () => true });
+    const response = r.data || ({} as HdrProfilesResponse);
+    const ok = r.status >= 200 && r.status < 300 && response.status === true && Array.isArray(response.profiles);
+    if (!ok) {
+      hdrProfiles.value = [];
+      hdrProfilesError.value = response.error || t('clients.hdr_profile_load_failed');
+      return;
+    }
+    hdrProfiles.value = response.profiles || [];
+  } catch (e: any) {
+    hdrProfiles.value = [];
+    hdrProfilesError.value = e?.message || t('clients.hdr_profile_load_failed');
+  } finally {
+    hdrProfilesLoading.value = false;
+  }
+}
+
+function isEditing(client: ClientInfo): boolean {
+  return !!editingUuid.value && editingUuid.value === client.uuid;
+}
+
+async function editClient(client: ClientInfo): Promise<void> {
+  editingUuid.value = client.uuid;
+  hdrSelected.value = (client.hdr_profile || '').trim() || null;
+  hdrSaveStatus.value = null;
+  if (hdrProfiles.value.length === 0 && !hdrProfilesLoading.value) {
+    await loadHdrProfiles();
+  }
+}
+
+function cancelEdit(): void {
+  editingUuid.value = '';
+  hdrSelected.value = null;
+  hdrSaveStatus.value = null;
+}
+
+async function saveEdit(client: ClientInfo): Promise<void> {
+  const uuid = client.uuid;
+  if (!uuid || hdrSaving.value) return;
+  hdrSaving.value = true;
+  hdrSaveStatus.value = null;
+  try {
+    const payload = { uuid, hdr_profile: String(hdrSelected.value ?? '').trim() };
+    const r = await http.post('./api/clients/update', payload, { validateStatus: () => true });
+    const ok = r && r.status >= 200 && r.status < 300 && r.data?.status === true;
+    hdrSaveStatus.value = !!ok;
+    if (ok) {
+      await refreshClients();
+      cancelEdit();
+    }
+  } catch {
+    hdrSaveStatus.value = false;
+  } finally {
+    hdrSaving.value = false;
   }
 }
 

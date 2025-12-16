@@ -35,6 +35,7 @@ namespace rtsp_stream {
     std::string client_uuid;
     std::string client_name;
     std::string device_name;
+    std::optional<std::string> hdr_profile;
     int width;
     int height;
     int fps;

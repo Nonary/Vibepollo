@@ -194,6 +194,12 @@ namespace nvhttp {
   nlohmann::json get_all_clients();
 
   /**
+   * @brief Persist a per-client HDR color profile selection (Windows only).
+   * @return True if the client was found and updated.
+   */
+  bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile);
+
+  /**
    * @brief Remove all paired clients.
    * @examples
    * nvhttp::erase_all_clients();

@@ -1091,8 +1091,134 @@ namespace confighttp {
   }
 
 #ifdef _WIN32
+  static std::optional<uint64_t> file_creation_time_ms(const std::filesystem::path &path) {
+    WIN32_FILE_ATTRIBUTE_DATA data {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+      return std::nullopt;
+    }
+    ULARGE_INTEGER t {};
+    t.LowPart = data.ftCreationTime.dwLowDateTime;
+    t.HighPart = data.ftCreationTime.dwHighDateTime;
+
+    // FILETIME is in 100ns units since 1601-01-01.
+    constexpr uint64_t kEpochDiff100ns = 116444736000000000ULL;  // 1970-01-01 - 1601-01-01
+    if (t.QuadPart < kEpochDiff100ns) {
+      return std::nullopt;
+    }
+    return (t.QuadPart - kEpochDiff100ns) / 10000ULL;
+  }
+
+  static std::filesystem::path windows_color_profile_dir() {
+    wchar_t system_root[MAX_PATH] = {};
+    if (GetSystemWindowsDirectoryW(system_root, _countof(system_root)) == 0) {
+      return std::filesystem::path(L"C:\\Windows\\System32\\spool\\drivers\\color");
+    }
+    std::filesystem::path root(system_root);
+    return root / L"System32" / L"spool" / L"drivers" / L"color";
+  }
+#endif
+
+  /**
+   * @brief Get a list of available HDR color profiles (Windows only).
+   *
+   * @api_examples{/api/clients/hdr-profiles| GET| null}
+   */
+  void getHdrProfiles(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    nlohmann::json profiles = nlohmann::json::array();
+
+#ifdef _WIN32
+    try {
+      const auto dir = windows_color_profile_dir();
+      struct entry_t {
+        std::string filename;
+        uint64_t added_ms;
+      };
+      std::vector<entry_t> entries;
+      for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        std::error_code ec;
+        if (!entry.is_regular_file(ec)) {
+          continue;
+        }
+
+        auto ext = entry.path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+        if (ext != L".icm" && ext != L".icc") {
+          continue;
+        }
+
+        const auto filename_utf8 = platf::to_utf8(entry.path().filename().wstring());
+        const auto added_ms = file_creation_time_ms(entry.path()).value_or(0);
+        entries.push_back({filename_utf8, added_ms});
+      }
+
+      std::sort(entries.begin(), entries.end(), [](const entry_t &a, const entry_t &b) {
+        if (a.added_ms != b.added_ms) {
+          return a.added_ms > b.added_ms;
+        }
+        return a.filename < b.filename;
+      });
+
+      for (const auto &e : entries) {
+        nlohmann::json node;
+        node["filename"] = e.filename;
+        node["added_ms"] = e.added_ms;
+        profiles.push_back(std::move(node));
+      }
+    } catch (const std::exception &e) {
+      output_tree["status"] = false;
+      output_tree["error"] = e.what();
+    } catch (...) {
+      output_tree["status"] = false;
+      output_tree["error"] = "unknown error";
+    }
+#endif
+
+    output_tree["profiles"] = std::move(profiles);
+    send_response(response, output_tree);
+  }
+
+#ifdef _WIN32
   // removed unused forward declaration for default_playnite_ext_dir()
 #endif
+
+  /**
+   * @brief Update stored settings for a paired client (HDR profile only).
+   */
+  void updateClient(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+
+    try {
+      const nlohmann::json input_tree = nlohmann::json::parse(ss);
+      nlohmann::json output_tree;
+
+      const std::string uuid = input_tree.value("uuid", "");
+      const std::string hdr_profile = input_tree.value("hdr_profile", "");
+
+      output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, hdr_profile);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "UpdateClient: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
 
   /**
    * @brief Unpair a client.
@@ -2182,6 +2308,8 @@ namespace confighttp {
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
+    server.resource["^/api/clients/hdr-profiles$"]["GET"] = getHdrProfiles;
+    server.resource["^/api/clients/update$"]["POST"] = updateClient;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
