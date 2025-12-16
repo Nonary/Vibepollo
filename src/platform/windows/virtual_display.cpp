@@ -2705,11 +2705,11 @@ namespace VDISPLAY {
     return false;
   }
 
-  bool confirm_virtual_display_persistence(
-    const VirtualDisplayCreationResult &result,
-    uint32_t width,
-    uint32_t height
-  ) {
+    bool confirm_virtual_display_persistence(
+      const VirtualDisplayCreationResult &result,
+      uint32_t width,
+      uint32_t height
+    ) {
     (void) width;
     (void) height;
 
@@ -2734,6 +2734,10 @@ namespace VDISPLAY {
     BOOST_LOG(debug) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
                      << "' remained present after " << delay_ms << "ms stability recheck.";
     return true;
+  }
+
+  bool is_gdi_display_name(const std::wstring &name) {
+    return name.size() >= 4 && name[0] == L'\\' && name[1] == L'\\' && name[2] == L'.' && name[3] == L'\\';
   }
 
   std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
@@ -2817,6 +2821,17 @@ namespace VDISPLAY {
           if (s_client_name && std::strlen(s_client_name) > 0) {
             result.client_name = std::string(s_client_name);
           }
+
+          // Prefer a real GDI display name (\\.\DISPLAYx) over a GUID-like placeholder when available.
+          if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
+            if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
+              if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
+                BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after reuse.";
+                result.display_name = gdi_name;
+              }
+            }
+          }
+
           result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
           result.reused_existing = true;
           result.ready_since = ready_since;
@@ -2888,6 +2903,16 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
+    if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
+      if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
+        if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
+          BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
+          resolved_display_name = gdi_name;
+        }
+      }
+    }
+
     if (resolved_display_name) {
       wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", resolved_display_name->c_str());
     } else {
@@ -2904,7 +2929,11 @@ namespace VDISPLAY {
     if (s_client_name && std::strlen(s_client_name) > 0) {
       result.client_name = std::string(s_client_name);
     }
-    if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
+    if (auto refreshed_identity = query_display_config_identity(output)) {
+      if (refreshed_identity->monitor_device_path && !refreshed_identity->monitor_device_path->empty()) {
+        result.monitor_device_path = refreshed_identity->monitor_device_path;
+      }
+    } else if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
       result.monitor_device_path = display_config_identity->monitor_device_path;
     }
     result.reused_existing = false;
