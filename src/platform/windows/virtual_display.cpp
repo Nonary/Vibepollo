@@ -1569,6 +1569,15 @@ namespace VDISPLAY {
       UINT32 sourceID
     );
 
+    using ColorProfileAddDisplayAssociationFn = HRESULT (WINAPI *)(
+      WCS_PROFILE_MANAGEMENT_SCOPE scope,
+      PCWSTR profileName,
+      LUID targetAdapterID,
+      UINT32 sourceID,
+      BOOL setAsDefault,
+      BOOL associateAsAdvancedColor
+    );
+
     ColorProfileSetDisplayDefaultAssociationFn color_profile_set_display_default_association() {
       static std::once_flag once;
       static ColorProfileSetDisplayDefaultAssociationFn fn = nullptr;
@@ -1581,6 +1590,22 @@ namespace VDISPLAY {
           return;
         }
         fn = reinterpret_cast<ColorProfileSetDisplayDefaultAssociationFn>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
+      });
+      return fn;
+    }
+
+    ColorProfileAddDisplayAssociationFn color_profile_add_display_association() {
+      static std::once_flag once;
+      static ColorProfileAddDisplayAssociationFn fn = nullptr;
+      std::call_once(once, []() {
+        HMODULE module = GetModuleHandleW(L"mscms.dll");
+        if (!module) {
+          module = LoadLibraryW(L"mscms.dll");
+        }
+        if (!module) {
+          return;
+        }
+        fn = reinterpret_cast<ColorProfileAddDisplayAssociationFn>(GetProcAddress(module, "ColorProfileAddDisplayAssociation"));
       });
       return fn;
     }
@@ -1648,10 +1673,11 @@ namespace VDISPLAY {
       color_profile_scope_e scope,
       bool log_failures
     ) {
-      auto fn = color_profile_set_display_default_association();
-      if (!fn) {
+      auto add_fn = color_profile_add_display_association();
+      auto set_fn = color_profile_set_display_default_association();
+      if (!add_fn && !set_fn) {
         if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation unavailable; falling back.";
+          BOOST_LOG(debug) << "HDR profile: mscms display association APIs unavailable; falling back.";
         }
         return E_NOTIMPL;
       }
@@ -1665,22 +1691,50 @@ namespace VDISPLAY {
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
       }
 
-      const HRESULT hr = fn(
-        color_profile_wcs_scope(scope),
+      const auto wcs_scope = color_profile_wcs_scope(scope);
+
+      if (add_fn) {
+        const HRESULT hr_add = add_fn(
+          wcs_scope,
+          profile_filename.c_str(),
+          ids->adapter_id,
+          ids->source_id,
+          TRUE,
+          TRUE
+        );
+        if (SUCCEEDED(hr_add)) {
+          BOOST_LOG(debug) << "HDR profile: ColorProfileAddDisplayAssociation succeeded for monitor '"
+                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
+          return S_OK;
+        }
+        if (log_failures) {
+          BOOST_LOG(debug) << "HDR profile: ColorProfileAddDisplayAssociation failed (" << hr_add << ") for monitor '"
+                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
+        }
+      }
+
+      if (!set_fn) {
+        return E_NOTIMPL;
+      }
+
+      const HRESULT hr_set = set_fn(
+        wcs_scope,
         profile_filename.c_str(),
         CPT_ICC,
         static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
         ids->adapter_id,
         ids->source_id
       );
-      if (FAILED(hr)) {
+      if (FAILED(hr_set)) {
         if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr << ") for monitor '"
+          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr_set << ") for monitor '"
                            << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
         }
-        return hr;
+        return hr_set;
       }
 
+      BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation succeeded for monitor '"
+                       << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
       return S_OK;
     }
 
