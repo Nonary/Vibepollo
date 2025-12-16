@@ -1038,6 +1038,8 @@ namespace VDISPLAY {
             // Prefer the supported API when available (Windows 10 build 20348+), otherwise fall back to a registry write.
             success = set_hdr_profile_with_supported_api(*device_name_w, profile_filename);
             if (!success) {
+              BOOST_LOG(debug) << "HDR profile: supported API unavailable/failed; falling back to registry association for monitor '"
+                               << platf::to_utf8(*device_name_w) << "'.";
               // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
               success = write_color_profile_to_registry(*device_name_w, profile_filename);
               if (!success) {
@@ -1527,11 +1529,14 @@ namespace VDISPLAY {
     bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename) {
       auto fn = color_profile_set_display_default_association();
       if (!fn) {
+        BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation unavailable; falling back.";
         return false;
       }
 
       auto ids = find_display_config_ids_for_monitor_path(monitor_device_path);
       if (!ids) {
+        BOOST_LOG(debug) << "HDR profile: unable to resolve display config IDs for monitor '" << platf::to_utf8(monitor_device_path)
+                         << "'; falling back.";
         return false;
       }
 
