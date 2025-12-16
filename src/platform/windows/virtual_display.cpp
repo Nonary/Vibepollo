@@ -729,6 +729,8 @@ namespace VDISPLAY {
       const std::optional<std::string> &client_name = std::nullopt
     );
 
+    std::optional<std::wstring> resolve_virtual_display_name_from_devices();
+
     bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename);
 
     // Helper to compute the registry path for color profile associations from a device path
@@ -891,13 +893,33 @@ namespace VDISPLAY {
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
-          std::optional<std::string> resolve_client_name;
           if (should_clear_mismatched) {
-            resolve_client_name = client_name;
-          } else if ((!display_name || display_name->empty()) && (!device_id || device_id->empty())) {
-            BOOST_LOG(debug) << "HDR profile: no output identifier provided; defaulting to primary display for client '" << client_name << "'.";
+            // Virtual displays: avoid relying on the client name (it may be stale/incorrect) and instead target the
+            // active Sunshine virtual display when present. Prefer the explicit display identifiers first.
+            device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+
+            if (!device_name_w || device_name_w->empty()) {
+              const auto active_vd_name = resolve_virtual_display_name_from_devices();
+              const auto active_vd_device_id = resolveAnyVirtualDisplayDeviceId();
+              if (active_vd_name || active_vd_device_id) {
+                BOOST_LOG(debug) << "HDR profile: virtual display monitor path unresolved; falling back to active virtual display."
+                                 << " active_name='" << (active_vd_name ? platf::to_utf8(*active_vd_name) : std::string("(none)"))
+                                 << "' active_device_id='" << (active_vd_device_id ? *active_vd_device_id : std::string("(none)")) << "'.";
+                device_name_w = resolve_monitor_device_path(active_vd_name, active_vd_device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+              }
+            }
+
+            if ((!device_name_w || device_name_w->empty()) && !client_name.empty() && client_name != "unknown") {
+              // Last resort for older setups: try matching the monitor friendly name to the client name.
+              BOOST_LOG(debug) << "HDR profile: virtual display monitor path still unresolved; trying client name hint for '" << client_name << "'.";
+              device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), client_name);
+            }
+          } else {
+            if ((!display_name || display_name->empty()) && (!device_id || device_id->empty())) {
+              BOOST_LOG(debug) << "HDR profile: no output identifier provided; defaulting to primary display for client '" << client_name << "'.";
+            }
+            device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), std::nullopt);
           }
-          device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), resolve_client_name);
         }
         if (!device_name_w || device_name_w->empty()) {
           if (profile_path) {
