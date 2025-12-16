@@ -676,8 +676,54 @@ namespace VDISPLAY {
       return "unknown";
     }
 
-    HKEY color_profile_registry_root(color_profile_scope_e scope) {
-      return (scope == color_profile_scope_e::system_wide) ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+    struct scoped_reg_key_t {
+      HKEY key = nullptr;
+      bool close = false;
+
+      scoped_reg_key_t() = default;
+      scoped_reg_key_t(HKEY k, bool should_close): key(k), close(should_close) {}
+
+      scoped_reg_key_t(const scoped_reg_key_t &) = delete;
+      scoped_reg_key_t &operator=(const scoped_reg_key_t &) = delete;
+
+      scoped_reg_key_t(scoped_reg_key_t &&other) noexcept {
+        key = other.key;
+        close = other.close;
+        other.key = nullptr;
+        other.close = false;
+      }
+      scoped_reg_key_t &operator=(scoped_reg_key_t &&other) noexcept {
+        if (this != &other) {
+          if (close && key) {
+            RegCloseKey(key);
+          }
+          key = other.key;
+          close = other.close;
+          other.key = nullptr;
+          other.close = false;
+        }
+        return *this;
+      }
+
+      ~scoped_reg_key_t() {
+        if (close && key) {
+          RegCloseKey(key);
+        }
+      }
+    };
+
+    scoped_reg_key_t open_color_profile_registry_root(color_profile_scope_e scope, REGSAM sam_desired) {
+      if (scope == color_profile_scope_e::system_wide) {
+        return scoped_reg_key_t {HKEY_LOCAL_MACHINE, false};
+      }
+
+      HKEY key = nullptr;
+      const LSTATUS status = RegOpenCurrentUser(sam_desired, &key);
+      if (status != ERROR_SUCCESS || !key) {
+        BOOST_LOG(debug) << "HDR profile: RegOpenCurrentUser failed (status=" << status << ").";
+        return scoped_reg_key_t {};
+      }
+      return scoped_reg_key_t {key, true};
     }
 
     WCS_PROFILE_MANAGEMENT_SCOPE color_profile_wcs_scope(color_profile_scope_e scope) {
@@ -805,9 +851,13 @@ namespace VDISPLAY {
         return std::nullopt;
       }
 
+      auto root = open_color_profile_registry_root(scope, KEY_READ);
+      if (!root.key) {
+        return std::nullopt;
+      }
+
       HKEY profile_key = nullptr;
-      const HKEY root = color_profile_registry_root(scope);
-      const LSTATUS open_status = RegOpenKeyExW(root, profile_path->c_str(), 0, KEY_READ, &profile_key);
+      const LSTATUS open_status = RegOpenKeyExW(root.key, profile_path->c_str(), 0, KEY_READ, &profile_key);
       if (open_status != ERROR_SUCCESS) {
         return std::nullopt;
       }
@@ -838,9 +888,13 @@ namespace VDISPLAY {
         return false;
       }
 
+      auto root = open_color_profile_registry_root(scope, KEY_SET_VALUE);
+      if (!root.key) {
+        return false;
+      }
+
       HKEY profile_key = nullptr;
-      const HKEY root = color_profile_registry_root(scope);
-      const LSTATUS open_status = RegOpenKeyExW(root, profile_path->c_str(), 0, KEY_SET_VALUE, &profile_key);
+      const LSTATUS open_status = RegOpenKeyExW(root.key, profile_path->c_str(), 0, KEY_SET_VALUE, &profile_key);
       if (open_status != ERROR_SUCCESS) {
         BOOST_LOG(debug) << "HDR profile: failed to open registry key for clearing (scope=" << color_profile_scope_label(scope)
                          << ", status=" << open_status << ", path='" << platf::to_utf8(*profile_path) << "').";
@@ -874,10 +928,17 @@ namespace VDISPLAY {
         return false;
       }
 
+      auto root = open_color_profile_registry_root(scope, KEY_CREATE_SUB_KEY | KEY_SET_VALUE | KEY_QUERY_VALUE);
+      if (!root.key) {
+        if (out_status) {
+          *out_status = ERROR_ACCESS_DENIED;
+        }
+        return false;
+      }
+
       HKEY profile_key = nullptr;
-      const HKEY root = color_profile_registry_root(scope);
-      LSTATUS status = RegCreateKeyExW(root, profile_assoc_path->c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
-                                      &profile_key, nullptr);
+      LSTATUS status = RegCreateKeyExW(root.key, profile_assoc_path->c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
+                                       &profile_key, nullptr);
       if (status != ERROR_SUCCESS) {
         if (out_status) {
           *out_status = status;
