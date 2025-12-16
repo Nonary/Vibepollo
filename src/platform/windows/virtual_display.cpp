@@ -661,6 +661,30 @@ namespace VDISPLAY {
     std::mutex g_physical_hdr_profile_restore_mutex;
     std::unordered_map<std::wstring, std::optional<std::wstring>> g_physical_hdr_profile_restore;
 
+    enum class color_profile_scope_e {
+      current_user,
+      system_wide,
+    };
+
+    const char *color_profile_scope_label(color_profile_scope_e scope) {
+      switch (scope) {
+        case color_profile_scope_e::current_user:
+          return "current_user";
+        case color_profile_scope_e::system_wide:
+          return "system_wide";
+      }
+      return "unknown";
+    }
+
+    HKEY color_profile_registry_root(color_profile_scope_e scope) {
+      return (scope == color_profile_scope_e::system_wide) ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+    }
+
+    WCS_PROFILE_MANAGEMENT_SCOPE color_profile_wcs_scope(color_profile_scope_e scope) {
+      return (scope == color_profile_scope_e::system_wide) ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
+                                                           : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+    }
+
     std::optional<fs::path> find_hdr_profile_by_selection(const std::string &selection_utf8) {
       if (selection_utf8.empty()) {
         return std::nullopt;
@@ -731,7 +755,8 @@ namespace VDISPLAY {
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices();
 
-    bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename);
+    HRESULT set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename,
+                                               color_profile_scope_e scope, bool log_failures = true);
 
     // Helper to compute the registry path for color profile associations from a device path
     std::optional<std::wstring> get_color_profile_registry_path(const std::wstring &device_path) {
@@ -774,14 +799,16 @@ namespace VDISPLAY {
     }
 
     // Read the current color profile from registry for a display
-    std::optional<std::wstring> read_color_profile_from_registry(const std::wstring &device_path) {
+    std::optional<std::wstring> read_color_profile_from_registry(const std::wstring &device_path, color_profile_scope_e scope) {
       auto profile_path = get_color_profile_registry_path(device_path);
       if (!profile_path) {
         return std::nullopt;
       }
 
       HKEY profile_key = nullptr;
-      if (RegOpenKeyExW(HKEY_CURRENT_USER, profile_path->c_str(), 0, KEY_READ, &profile_key) != ERROR_SUCCESS) {
+      const HKEY root = color_profile_registry_root(scope);
+      const LSTATUS open_status = RegOpenKeyExW(root, profile_path->c_str(), 0, KEY_READ, &profile_key);
+      if (open_status != ERROR_SUCCESS) {
         return std::nullopt;
       }
 
@@ -805,14 +832,18 @@ namespace VDISPLAY {
     }
 
     // Clear the color profile association from registry for a display
-    bool clear_color_profile_from_registry(const std::wstring &device_path) {
+    bool clear_color_profile_from_registry(const std::wstring &device_path, color_profile_scope_e scope) {
       auto profile_path = get_color_profile_registry_path(device_path);
       if (!profile_path) {
         return false;
       }
 
       HKEY profile_key = nullptr;
-      if (RegOpenKeyExW(HKEY_CURRENT_USER, profile_path->c_str(), 0, KEY_SET_VALUE, &profile_key) != ERROR_SUCCESS) {
+      const HKEY root = color_profile_registry_root(scope);
+      const LSTATUS open_status = RegOpenKeyExW(root, profile_path->c_str(), 0, KEY_SET_VALUE, &profile_key);
+      if (open_status != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "HDR profile: failed to open registry key for clearing (scope=" << color_profile_scope_label(scope)
+                         << ", status=" << open_status << ", path='" << platf::to_utf8(*profile_path) << "').";
         return false;
       }
 
@@ -820,27 +851,46 @@ namespace VDISPLAY {
       LSTATUS status = RegDeleteValueW(profile_key, L"ICMProfileAC");
       RegCloseKey(profile_key);
 
+      if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+        BOOST_LOG(debug) << "HDR profile: failed to clear registry association (scope=" << color_profile_scope_label(scope)
+                         << ", status=" << status << ", path='" << platf::to_utf8(*profile_path) << "').";
+      }
+
       return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
     }
 
     // Write color profile association directly to registry for a virtual display
-    bool write_color_profile_to_registry(const std::wstring &device_path, const std::wstring &profile_filename) {
+    bool write_color_profile_to_registry(
+      const std::wstring &device_path,
+      const std::wstring &profile_filename,
+      color_profile_scope_e scope,
+      LSTATUS *out_status = nullptr
+    ) {
       auto profile_assoc_path = get_color_profile_registry_path(device_path);
       if (!profile_assoc_path) {
+        if (out_status) {
+          *out_status = ERROR_PATH_NOT_FOUND;
+        }
         return false;
       }
 
       HKEY profile_key = nullptr;
-      LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, profile_assoc_path->c_str(), 0, nullptr,
-                               REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &profile_key, nullptr);
+      const HKEY root = color_profile_registry_root(scope);
+      LSTATUS status = RegCreateKeyExW(root, profile_assoc_path->c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
+                                      &profile_key, nullptr);
       if (status != ERROR_SUCCESS) {
+        if (out_status) {
+          *out_status = status;
+        }
+        BOOST_LOG(debug) << "HDR profile: failed to open/create registry key (scope=" << color_profile_scope_label(scope)
+                         << ", status=" << status << ", path='" << platf::to_utf8(*profile_assoc_path) << "').";
         return false;
       }
 
       // Write UsePerUserProfiles = 1
       DWORD use_per_user = 1;
-      RegSetValueExW(profile_key, L"UsePerUserProfiles", 0, REG_DWORD,
-                     reinterpret_cast<const BYTE *>(&use_per_user), sizeof(use_per_user));
+      (void) RegSetValueExW(profile_key, L"UsePerUserProfiles", 0, REG_DWORD, reinterpret_cast<const BYTE *>(&use_per_user),
+                            sizeof(use_per_user));
 
       // Write ICMProfileAC as REG_MULTI_SZ
       std::vector<wchar_t> multi_sz(profile_filename.begin(), profile_filename.end());
@@ -851,6 +901,15 @@ namespace VDISPLAY {
                               reinterpret_cast<const BYTE *>(multi_sz.data()),
                               static_cast<DWORD>(multi_sz.size() * sizeof(wchar_t)));
       RegCloseKey(profile_key);
+
+      if (out_status) {
+        *out_status = status;
+      }
+
+      if (status != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "HDR profile: failed to write registry association (scope=" << color_profile_scope_label(scope)
+                         << ", status=" << status << ", path='" << platf::to_utf8(*profile_assoc_path) << "').";
+      }
 
       return status == ERROR_SUCCESS;
     }
@@ -935,14 +994,19 @@ namespace VDISPLAY {
         bool already_associated = false;
         bool cleared_mismatched = false;
 
-        auto apply_profile = [&]() {
+        const bool running_as_system = platf::is_running_as_system();
+
+        auto apply_profile_for_scope = [&](color_profile_scope_e scope) -> std::pair<bool, bool> {
+          bool local_success = false;
+          bool local_access_denied = false;
+
           std::optional<std::wstring> existing;
           if (should_clear_mismatched || profile_path) {
-            existing = read_color_profile_from_registry(*device_name_w);
+            existing = read_color_profile_from_registry(*device_name_w, scope);
           }
 
           // For physical displays, remember the pre-stream association so we can restore it on stream end.
-          if (!should_clear_mismatched && profile_path) {
+          if (scope == color_profile_scope_e::current_user && !should_clear_mismatched && profile_path) {
             const bool has_existing = existing && !existing->empty();
             std::lock_guard<std::mutex> lock(g_physical_hdr_profile_restore_mutex);
             if (g_physical_hdr_profile_restore.find(*device_name_w) == g_physical_hdr_profile_restore.end()) {
@@ -967,7 +1031,7 @@ namespace VDISPLAY {
               if (expected_filename.empty() || _wcsicmp(existing->c_str(), expected_filename.c_str()) != 0) {
                 BOOST_LOG(debug) << "HDR profile: clearing mismatched profile '" << platf::to_utf8(*existing)
                                  << "' from virtual display for client '" << client_name << "'.";
-                if (clear_color_profile_from_registry(*device_name_w)) {
+                if (clear_color_profile_from_registry(*device_name_w, scope)) {
                   cleared_mismatched = true;
                 } else {
                   BOOST_LOG(debug) << "HDR profile: failed to clear mismatched profile association for client '" << client_name
@@ -983,8 +1047,8 @@ namespace VDISPLAY {
 
             if (!cleared_mismatched && existing && !existing->empty() && _wcsicmp(existing->c_str(), profile_filename.c_str()) == 0) {
               already_associated = true;
-              success = true;
-              return;
+              local_success = true;
+              return {local_success, local_access_denied};
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
@@ -999,23 +1063,51 @@ namespace VDISPLAY {
             }
 
             // Prefer the supported API when available (Windows 10 build 20348+), otherwise fall back to a registry write.
-            success = set_hdr_profile_with_supported_api(*device_name_w, profile_filename);
-            if (!success) {
-              BOOST_LOG(debug) << "HDR profile: supported API unavailable/failed; falling back to registry association for monitor '"
-                               << platf::to_utf8(*device_name_w) << "'.";
-              // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
-              success = write_color_profile_to_registry(*device_name_w, profile_filename);
-              if (!success) {
-                BOOST_LOG(warning) << "HDR profile: failed to associate '" << platf::to_utf8(profile_filename)
-                                   << "' with monitor '" << platf::to_utf8(*device_name_w) << "' for client '" << client_name << "'.";
-              }
+            const HRESULT hr = set_hdr_profile_with_supported_api(*device_name_w, profile_filename, scope);
+            if (SUCCEEDED(hr)) {
+              local_success = true;
+              return {local_success, local_access_denied};
             }
+
+            if (hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) {
+              local_access_denied = true;
+            }
+
+            BOOST_LOG(debug) << "HDR profile: supported API unavailable/failed; falling back to registry association for monitor '"
+                             << platf::to_utf8(*device_name_w) << "' (scope=" << color_profile_scope_label(scope) << ").";
+            // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
+            LSTATUS reg_status = ERROR_SUCCESS;
+            local_success = write_color_profile_to_registry(*device_name_w, profile_filename, scope, &reg_status);
+            if (!local_success) {
+              if (reg_status == ERROR_ACCESS_DENIED) {
+                local_access_denied = true;
+              }
+              BOOST_LOG(warning) << "HDR profile: failed to associate '" << platf::to_utf8(profile_filename)
+                                 << "' with monitor '" << platf::to_utf8(*device_name_w) << "' for client '" << client_name
+                                 << "' (scope=" << color_profile_scope_label(scope) << ").";
+            }
+          }
+          return {local_success, local_access_denied};
+        };
+
+        auto apply_profile = [&]() {
+          const auto [local_success, local_access_denied] = apply_profile_for_scope(color_profile_scope_e::current_user);
+          success = local_success;
+
+          if (!success && should_clear_mismatched && running_as_system && local_access_denied) {
+            BOOST_LOG(debug) << "HDR profile: access denied in current-user scope; retrying system-wide association for monitor '"
+                             << platf::to_utf8(*device_name_w) << "'.";
+            const auto [system_success, _] = apply_profile_for_scope(color_profile_scope_e::system_wide);
+            success = system_success;
           }
         };
 
         HANDLE user_token = platf::retrieve_users_token(false);
         if (user_token) {
-          (void) platf::impersonate_current_user(user_token, apply_profile);
+          const auto impersonation_ec = platf::impersonate_current_user(user_token, apply_profile);
+          if (impersonation_ec) {
+            BOOST_LOG(debug) << "HDR profile: impersonation failed (ec=" << impersonation_ec.value() << ") for '" << client_name << "'.";
+          }
           CloseHandle(user_token);
         } else {
           DWORD session_id = 0;
@@ -1489,22 +1581,31 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
-    bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename) {
+    HRESULT set_hdr_profile_with_supported_api(
+      const std::wstring &monitor_device_path,
+      const std::wstring &profile_filename,
+      color_profile_scope_e scope,
+      bool log_failures
+    ) {
       auto fn = color_profile_set_display_default_association();
       if (!fn) {
-        BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation unavailable; falling back.";
-        return false;
+        if (log_failures) {
+          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation unavailable; falling back.";
+        }
+        return E_NOTIMPL;
       }
 
       auto ids = find_display_config_ids_for_monitor_path(monitor_device_path);
       if (!ids) {
-        BOOST_LOG(debug) << "HDR profile: unable to resolve display config IDs for monitor '" << platf::to_utf8(monitor_device_path)
-                         << "'; falling back.";
-        return false;
+        if (log_failures) {
+          BOOST_LOG(debug) << "HDR profile: unable to resolve display config IDs for monitor '" << platf::to_utf8(monitor_device_path)
+                           << "'; falling back.";
+        }
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
       }
 
       const HRESULT hr = fn(
-        WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+        color_profile_wcs_scope(scope),
         profile_filename.c_str(),
         CPT_ICC,
         static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
@@ -1512,12 +1613,14 @@ namespace VDISPLAY {
         ids->source_id
       );
       if (FAILED(hr)) {
-        BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr << ") for monitor '"
-                         << platf::to_utf8(monitor_device_path) << "'.";
-        return false;
+        if (log_failures) {
+          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr << ") for monitor '"
+                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
+        }
+        return hr;
       }
 
-      return true;
+      return S_OK;
     }
 
     std::optional<std::wstring> resolve_monitor_device_path(
@@ -1985,9 +2088,9 @@ namespace VDISPLAY {
           }
           bool ok = false;
           if (previous && !previous->empty()) {
-            ok = write_color_profile_to_registry(monitor_path, *previous);
+            ok = write_color_profile_to_registry(monitor_path, *previous, color_profile_scope_e::current_user);
           } else {
-            ok = clear_color_profile_from_registry(monitor_path);
+            ok = clear_color_profile_from_registry(monitor_path, color_profile_scope_e::current_user);
           }
           if (ok) {
             BOOST_LOG(info) << "HDR profile: restored physical display color profile association for '"
