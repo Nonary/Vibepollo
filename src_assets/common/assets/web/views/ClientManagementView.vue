@@ -585,7 +585,6 @@ function parseClientVirtualDisplayLayout(value: unknown): ClientVirtualDisplayLa
 
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const name = entry.name ?? '';
-  const hdrProfile = (entry.hdr_profile ?? '').trim();
   const displayMode = entry.display_mode ?? '';
   const outputOverride = entry.output_name_override ?? '';
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);

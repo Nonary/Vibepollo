@@ -207,7 +207,6 @@ namespace nvhttp {
     bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const std::string &hdr_profile,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
     std::optional<bool> prefer_10bit_sdr,
     std::optional<std::string> hdr_profile
