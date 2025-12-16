@@ -726,11 +726,6 @@ namespace VDISPLAY {
       return scoped_reg_key_t {key, true};
     }
 
-    WCS_PROFILE_MANAGEMENT_SCOPE color_profile_wcs_scope(color_profile_scope_e scope) {
-      return (scope == color_profile_scope_e::system_wide) ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
-                                                           : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
-    }
-
     std::optional<fs::path> find_hdr_profile_by_selection(const std::string &selection_utf8) {
       if (selection_utf8.empty()) {
         return std::nullopt;
@@ -790,6 +785,23 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    std::optional<std::wstring> primary_gdi_display_name() {
+      POINT pt {0, 0};
+      HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+      if (!mon) {
+        return std::nullopt;
+      }
+      MONITORINFOEXW info {};
+      info.cbSize = sizeof(info);
+      if (!GetMonitorInfoW(mon, &info)) {
+        return std::nullopt;
+      }
+      if (info.szDevice[0] == L'\0') {
+        return std::nullopt;
+      }
+      return std::wstring(info.szDevice);
+    }
+
     // Forward declaration for the retrying resolver
     std::optional<std::wstring> resolve_monitor_device_path(
       const std::optional<std::wstring> &display_name,
@@ -800,9 +812,6 @@ namespace VDISPLAY {
     );
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices();
-
-    HRESULT set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename,
-                                               color_profile_scope_e scope, bool log_failures = true);
 
     // Helper to compute the registry path for color profile associations from a device path
     std::optional<std::wstring> get_color_profile_registry_path(const std::wstring &device_path) {
@@ -1028,17 +1037,19 @@ namespace VDISPLAY {
                 device_name_w = resolve_monitor_device_path(active_vd_name, active_vd_device_id, 50, std::chrono::milliseconds(100), std::nullopt);
               }
             }
-
-            if ((!device_name_w || device_name_w->empty()) && !client_name.empty() && client_name != "unknown") {
-              // Last resort for older setups: try matching the monitor friendly name to the client name.
-              BOOST_LOG(debug) << "HDR profile: virtual display monitor path still unresolved; trying client name hint for '" << client_name << "'.";
-              device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), client_name);
-            }
           } else {
-            if ((!display_name || display_name->empty()) && (!device_id || device_id->empty())) {
-              BOOST_LOG(debug) << "HDR profile: no output identifier provided; defaulting to primary display for client '" << client_name << "'.";
+            // Physical displays: prefer explicit identifiers (device_id/display_name) and fall back to the current primary.
+            std::optional<std::wstring> physical_display_name = display_name;
+            std::optional<std::string> physical_device_id = device_id;
+            if ((!physical_display_name || physical_display_name->empty()) && (!physical_device_id || physical_device_id->empty())) {
+              physical_display_name = primary_gdi_display_name();
+              BOOST_LOG(debug) << "HDR profile: applying to primary physical display for client '" << client_name << "'.";
+            } else {
+              BOOST_LOG(debug) << "HDR profile: applying to physical display for client '" << client_name
+                               << "' display_name='" << (physical_display_name ? platf::to_utf8(*physical_display_name) : std::string("(none)"))
+                               << "' device_id='" << (physical_device_id ? *physical_device_id : std::string("(none)")) << "'.";
             }
-            device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+            device_name_w = resolve_monitor_device_path(physical_display_name, physical_device_id, 50, std::chrono::milliseconds(100), std::nullopt);
           }
         }
         if (!device_name_w || device_name_w->empty()) {
@@ -1106,10 +1117,14 @@ namespace VDISPLAY {
           if (profile_path) {
             const auto profile_filename = profile_path->filename().wstring();
 
-            if (!cleared_mismatched && existing && !existing->empty() && _wcsicmp(existing->c_str(), profile_filename.c_str()) == 0) {
+            const bool desired_already_associated =
+              !cleared_mismatched &&
+              existing &&
+              !existing->empty() &&
+              _wcsicmp(existing->c_str(), profile_filename.c_str()) == 0;
+
+            if (desired_already_associated) {
               already_associated = true;
-              local_success = true;
-              return {local_success, local_access_denied};
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
@@ -1123,19 +1138,6 @@ namespace VDISPLAY {
               }
             }
 
-            // Prefer the supported API when available (Windows 10 build 20348+), otherwise fall back to a registry write.
-            const HRESULT hr = set_hdr_profile_with_supported_api(*device_name_w, profile_filename, scope);
-            if (SUCCEEDED(hr)) {
-              local_success = true;
-              return {local_success, local_access_denied};
-            }
-
-            if (hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) {
-              local_access_denied = true;
-            }
-
-            BOOST_LOG(debug) << "HDR profile: supported API unavailable/failed; falling back to registry association for monitor '"
-                             << platf::to_utf8(*device_name_w) << "' (scope=" << color_profile_scope_label(scope) << ").";
             // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
             LSTATUS reg_status = ERROR_SUCCESS;
             local_success = write_color_profile_to_registry(*device_name_w, profile_filename, scope, &reg_status);
@@ -1558,184 +1560,6 @@ namespace VDISPLAY {
       }
 
       return std::nullopt;
-    }
-
-    using ColorProfileSetDisplayDefaultAssociationFn = HRESULT (WINAPI *)(
-      WCS_PROFILE_MANAGEMENT_SCOPE scope,
-      PCWSTR profileName,
-      COLORPROFILETYPE profileType,
-      COLORPROFILESUBTYPE profileSubType,
-      LUID targetAdapterID,
-      UINT32 sourceID
-    );
-
-    using ColorProfileAddDisplayAssociationFn = HRESULT (WINAPI *)(
-      WCS_PROFILE_MANAGEMENT_SCOPE scope,
-      PCWSTR profileName,
-      LUID targetAdapterID,
-      UINT32 sourceID,
-      BOOL setAsDefault,
-      BOOL associateAsAdvancedColor
-    );
-
-    ColorProfileSetDisplayDefaultAssociationFn color_profile_set_display_default_association() {
-      static std::once_flag once;
-      static ColorProfileSetDisplayDefaultAssociationFn fn = nullptr;
-      std::call_once(once, []() {
-        HMODULE module = GetModuleHandleW(L"mscms.dll");
-        if (!module) {
-          module = LoadLibraryW(L"mscms.dll");
-        }
-        if (!module) {
-          return;
-        }
-        fn = reinterpret_cast<ColorProfileSetDisplayDefaultAssociationFn>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
-      });
-      return fn;
-    }
-
-    ColorProfileAddDisplayAssociationFn color_profile_add_display_association() {
-      static std::once_flag once;
-      static ColorProfileAddDisplayAssociationFn fn = nullptr;
-      std::call_once(once, []() {
-        HMODULE module = GetModuleHandleW(L"mscms.dll");
-        if (!module) {
-          module = LoadLibraryW(L"mscms.dll");
-        }
-        if (!module) {
-          return;
-        }
-        fn = reinterpret_cast<ColorProfileAddDisplayAssociationFn>(GetProcAddress(module, "ColorProfileAddDisplayAssociation"));
-      });
-      return fn;
-    }
-
-    struct DisplayConfigIds {
-      LUID adapter_id {};
-      UINT32 source_id = 0;
-    };
-
-    std::optional<DisplayConfigIds> find_display_config_ids_for_monitor_path(const std::wstring &monitor_device_path) {
-      if (monitor_device_path.empty()) {
-        return std::nullopt;
-      }
-
-      UINT path_count = 0;
-      UINT mode_count = 0;
-      UINT flags = QDC_ALL_PATHS;
-
-      LONG buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
-      if (buffer_result != ERROR_SUCCESS) {
-        flags = QDC_ONLY_ACTIVE_PATHS;
-        buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
-      }
-      if (buffer_result != ERROR_SUCCESS) {
-        return std::nullopt;
-      }
-
-      std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
-      std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
-      LONG qdc_result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
-      if (qdc_result != ERROR_SUCCESS) {
-        return std::nullopt;
-      }
-
-      for (UINT i = 0; i < path_count; ++i) {
-        const auto &path = paths[i];
-
-        DISPLAYCONFIG_TARGET_DEVICE_NAME target_name {};
-        target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
-        target_name.header.size = sizeof(target_name);
-        target_name.header.adapterId = path.targetInfo.adapterId;
-        target_name.header.id = path.targetInfo.id;
-        if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS) {
-          continue;
-        }
-        if (target_name.monitorDevicePath[0] == L'\0') {
-          continue;
-        }
-        if (_wcsicmp(target_name.monitorDevicePath, monitor_device_path.c_str()) != 0) {
-          continue;
-        }
-
-        DisplayConfigIds ids;
-        ids.adapter_id = path.targetInfo.adapterId;
-        ids.source_id = path.sourceInfo.id;
-        return ids;
-      }
-
-      return std::nullopt;
-    }
-
-    HRESULT set_hdr_profile_with_supported_api(
-      const std::wstring &monitor_device_path,
-      const std::wstring &profile_filename,
-      color_profile_scope_e scope,
-      bool log_failures
-    ) {
-      auto add_fn = color_profile_add_display_association();
-      auto set_fn = color_profile_set_display_default_association();
-      if (!add_fn && !set_fn) {
-        if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: mscms display association APIs unavailable; falling back.";
-        }
-        return E_NOTIMPL;
-      }
-
-      auto ids = find_display_config_ids_for_monitor_path(monitor_device_path);
-      if (!ids) {
-        if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: unable to resolve display config IDs for monitor '" << platf::to_utf8(monitor_device_path)
-                           << "'; falling back.";
-        }
-        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
-      }
-
-      const auto wcs_scope = color_profile_wcs_scope(scope);
-
-      if (add_fn) {
-        const HRESULT hr_add = add_fn(
-          wcs_scope,
-          profile_filename.c_str(),
-          ids->adapter_id,
-          ids->source_id,
-          TRUE,
-          TRUE
-        );
-        if (SUCCEEDED(hr_add)) {
-          BOOST_LOG(debug) << "HDR profile: ColorProfileAddDisplayAssociation succeeded for monitor '"
-                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
-          return S_OK;
-        }
-        if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: ColorProfileAddDisplayAssociation failed (" << hr_add << ") for monitor '"
-                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
-        }
-      }
-
-      if (!set_fn) {
-        return E_NOTIMPL;
-      }
-
-      const HRESULT hr_set = set_fn(
-        wcs_scope,
-        profile_filename.c_str(),
-        CPT_ICC,
-        static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
-        ids->adapter_id,
-        ids->source_id
-      );
-      if (FAILED(hr_set)) {
-        if (log_failures) {
-          BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr_set << ") for monitor '"
-                           << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
-        }
-        return hr_set;
-      }
-
-      BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation succeeded for monitor '"
-                       << platf::to_utf8(monitor_device_path) << "' (scope=" << color_profile_scope_label(scope) << ").";
-      return S_OK;
     }
 
     std::optional<std::wstring> resolve_monitor_device_path(
@@ -3018,6 +2842,23 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    auto query_monitor_device_path_with_retries = [&](const VIRTUAL_DISPLAY_ADD_OUT &out) -> std::optional<std::wstring> {
+      // QueryDisplayConfig can lag for newly-added virtual displays; retry briefly to capture the monitor path.
+      constexpr int kAttempts = 25;
+      constexpr auto kDelay = std::chrono::milliseconds(100);
+      for (int i = 0; i < kAttempts; ++i) {
+        if (auto identity = query_display_config_identity(out)) {
+          if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {
+            return identity->monitor_device_path;
+          }
+        }
+        if (i + 1 < kAttempts) {
+          std::this_thread::sleep_for(kDelay);
+        }
+      }
+      return std::nullopt;
+    };
+
     // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
     if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
       if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
@@ -3044,10 +2885,8 @@ namespace VDISPLAY {
     if (s_client_name && std::strlen(s_client_name) > 0) {
       result.client_name = std::string(s_client_name);
     }
-    if (auto refreshed_identity = query_display_config_identity(output)) {
-      if (refreshed_identity->monitor_device_path && !refreshed_identity->monitor_device_path->empty()) {
-        result.monitor_device_path = refreshed_identity->monitor_device_path;
-      }
+    if (auto monitor_path = query_monitor_device_path_with_retries(output)) {
+      result.monitor_device_path = monitor_path;
     } else if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
       result.monitor_device_path = display_config_identity->monitor_device_path;
     }

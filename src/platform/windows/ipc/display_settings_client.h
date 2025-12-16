@@ -6,6 +6,7 @@
 
 #ifdef _WIN32
 
+  #include <cstdint>
   #include <string>
 
 namespace platf::display_helper_client {
