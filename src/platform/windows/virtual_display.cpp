@@ -729,6 +729,8 @@ namespace VDISPLAY {
       const std::optional<std::string> &client_name = std::nullopt
     );
 
+    bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename);
+
     // Helper to compute the registry path for color profile associations from a device path
     std::optional<std::wstring> get_color_profile_registry_path(const std::wstring &device_path) {
       // Parse the device path to extract the instance ID
@@ -889,7 +891,13 @@ namespace VDISPLAY {
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
-          device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), client_name);
+          std::optional<std::string> resolve_client_name;
+          if (should_clear_mismatched) {
+            resolve_client_name = client_name;
+          } else if ((!display_name || display_name->empty()) && (!device_id || device_id->empty())) {
+            BOOST_LOG(debug) << "HDR profile: no output identifier provided; defaulting to primary display for client '" << client_name << "'.";
+          }
+          device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), resolve_client_name);
         }
         if (!device_name_w || device_name_w->empty()) {
           if (profile_path) {
@@ -901,18 +909,11 @@ namespace VDISPLAY {
           return;
         }
 
-        HANDLE user_token = platf::retrieve_users_token(false);
-        if (!user_token) {
-          if (profile_path) {
-            BOOST_LOG(warning) << "HDR profile: skipped - unable to retrieve user token for '" << client_name << "'.";
-          }
-          return;
-        }
-
         bool success = false;
         bool already_associated = false;
         bool cleared_mismatched = false;
-        (void) platf::impersonate_current_user(user_token, [&]() {
+
+        auto apply_profile = [&]() {
           std::optional<std::wstring> existing;
           if (should_clear_mismatched || profile_path) {
             existing = read_color_profile_from_registry(*device_name_w);
@@ -975,16 +976,34 @@ namespace VDISPLAY {
               }
             }
 
-            // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
-            success = write_color_profile_to_registry(*device_name_w, profile_filename);
+            // Prefer the supported API when available (Windows 10 build 20348+), otherwise fall back to a registry write.
+            success = set_hdr_profile_with_supported_api(*device_name_w, profile_filename);
             if (!success) {
-              BOOST_LOG(warning) << "HDR profile: failed to associate '" << platf::to_utf8(profile_filename)
-                                 << "' with monitor '" << platf::to_utf8(*device_name_w) << "' for client '" << client_name << "'.";
+              // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
+              success = write_color_profile_to_registry(*device_name_w, profile_filename);
+              if (!success) {
+                BOOST_LOG(warning) << "HDR profile: failed to associate '" << platf::to_utf8(profile_filename)
+                                   << "' with monitor '" << platf::to_utf8(*device_name_w) << "' for client '" << client_name << "'.";
+              }
             }
           }
-        });
+        };
 
-        CloseHandle(user_token);
+        HANDLE user_token = platf::retrieve_users_token(false);
+        if (user_token) {
+          (void) platf::impersonate_current_user(user_token, apply_profile);
+          CloseHandle(user_token);
+        } else {
+          DWORD session_id = 0;
+          if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id) || session_id == 0) {
+            if (profile_path) {
+              BOOST_LOG(warning) << "HDR profile: skipped - unable to retrieve user token for '" << client_name << "'.";
+            }
+            return;
+          }
+          BOOST_LOG(debug) << "HDR profile: no user token; applying in current user context for '" << client_name << "'.";
+          apply_profile();
+        }
 
         if (success && profile_path) {
           if (already_associated) {
@@ -1222,6 +1241,7 @@ namespace VDISPLAY {
       if (client_name && !client_name->empty()) {
         normalized_client_name = normalize_display_name(*client_name);
       }
+      const bool has_any_criteria = normalized_target || normalized_device_id || normalized_client_name;
 
       // Use QDC_ALL_PATHS to include virtual displays that may not be "active" yet
       UINT path_count = 0;
@@ -1242,6 +1262,67 @@ namespace VDISPLAY {
       std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
       LONG qdc_result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
       if (qdc_result != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      // If no identifiers are provided (e.g., physical output_name unset), default to the primary display.
+      if (!has_any_criteria) {
+        const auto read_monitor_path = [&](const DISPLAYCONFIG_PATH_INFO &path) -> std::optional<std::wstring> {
+          DISPLAYCONFIG_TARGET_DEVICE_NAME target_name {};
+          target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+          target_name.header.size = sizeof(target_name);
+          target_name.header.adapterId = path.targetInfo.adapterId;
+          target_name.header.id = path.targetInfo.id;
+          if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS) {
+            return std::nullopt;
+          }
+          if (target_name.monitorDevicePath[0] == L'\0') {
+            return std::nullopt;
+          }
+          return std::wstring(target_name.monitorDevicePath);
+        };
+
+        const auto is_primary_path = [&](const DISPLAYCONFIG_PATH_INFO &path) -> bool {
+          if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+            return false;
+          }
+          const auto source_idx = path.sourceInfo.modeInfoIdx;
+          if (source_idx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || source_idx >= mode_count) {
+            return false;
+          }
+          const auto &mode = modes[source_idx];
+          if (mode.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+            return false;
+          }
+          return mode.sourceMode.position.x == 0 && mode.sourceMode.position.y == 0;
+        };
+
+        for (UINT i = 0; i < path_count; ++i) {
+          const auto &path = paths[i];
+          if (!is_primary_path(path)) {
+            continue;
+          }
+          if (auto found = read_monitor_path(path)) {
+            return found;
+          }
+        }
+
+        for (UINT i = 0; i < path_count; ++i) {
+          const auto &path = paths[i];
+          if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+            continue;
+          }
+          if (auto found = read_monitor_path(path)) {
+            return found;
+          }
+        }
+
+        for (UINT i = 0; i < path_count; ++i) {
+          if (auto found = read_monitor_path(paths[i])) {
+            return found;
+          }
+        }
+
         return std::nullopt;
       }
 
@@ -1300,6 +1381,116 @@ namespace VDISPLAY {
       }
 
       return std::nullopt;
+    }
+
+    using ColorProfileSetDisplayDefaultAssociationFn = HRESULT (WINAPI *)(
+      WCS_PROFILE_MANAGEMENT_SCOPE scope,
+      PCWSTR profileName,
+      COLORPROFILETYPE profileType,
+      COLORPROFILESUBTYPE profileSubType,
+      LUID targetAdapterID,
+      UINT32 sourceID
+    );
+
+    ColorProfileSetDisplayDefaultAssociationFn color_profile_set_display_default_association() {
+      static std::once_flag once;
+      static ColorProfileSetDisplayDefaultAssociationFn fn = nullptr;
+      std::call_once(once, []() {
+        HMODULE module = GetModuleHandleW(L"mscms.dll");
+        if (!module) {
+          module = LoadLibraryW(L"mscms.dll");
+        }
+        if (!module) {
+          return;
+        }
+        fn = reinterpret_cast<ColorProfileSetDisplayDefaultAssociationFn>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
+      });
+      return fn;
+    }
+
+    struct DisplayConfigIds {
+      LUID adapter_id {};
+      UINT32 source_id = 0;
+    };
+
+    std::optional<DisplayConfigIds> find_display_config_ids_for_monitor_path(const std::wstring &monitor_device_path) {
+      if (monitor_device_path.empty()) {
+        return std::nullopt;
+      }
+
+      UINT path_count = 0;
+      UINT mode_count = 0;
+      UINT flags = QDC_ALL_PATHS;
+
+      LONG buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      if (buffer_result != ERROR_SUCCESS) {
+        flags = QDC_ONLY_ACTIVE_PATHS;
+        buffer_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      }
+      if (buffer_result != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+      std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+      LONG qdc_result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+      if (qdc_result != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      for (UINT i = 0; i < path_count; ++i) {
+        const auto &path = paths[i];
+
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target_name {};
+        target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        target_name.header.size = sizeof(target_name);
+        target_name.header.adapterId = path.targetInfo.adapterId;
+        target_name.header.id = path.targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS) {
+          continue;
+        }
+        if (target_name.monitorDevicePath[0] == L'\0') {
+          continue;
+        }
+        if (_wcsicmp(target_name.monitorDevicePath, monitor_device_path.c_str()) != 0) {
+          continue;
+        }
+
+        DisplayConfigIds ids;
+        ids.adapter_id = path.targetInfo.adapterId;
+        ids.source_id = path.sourceInfo.id;
+        return ids;
+      }
+
+      return std::nullopt;
+    }
+
+    bool set_hdr_profile_with_supported_api(const std::wstring &monitor_device_path, const std::wstring &profile_filename) {
+      auto fn = color_profile_set_display_default_association();
+      if (!fn) {
+        return false;
+      }
+
+      auto ids = find_display_config_ids_for_monitor_path(monitor_device_path);
+      if (!ids) {
+        return false;
+      }
+
+      const HRESULT hr = fn(
+        WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+        profile_filename.c_str(),
+        CPT_ICC,
+        static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
+        ids->adapter_id,
+        ids->source_id
+      );
+      if (FAILED(hr)) {
+        BOOST_LOG(debug) << "HDR profile: ColorProfileSetDisplayDefaultAssociation failed (" << hr << ") for monitor '"
+                         << platf::to_utf8(monitor_device_path) << "'.";
+        return false;
+      }
+
+      return true;
     }
 
     std::optional<std::wstring> resolve_monitor_device_path(
@@ -1760,13 +1951,7 @@ namespace VDISPLAY {
     }
 
     std::thread([entries = std::move(to_restore)]() mutable {
-      HANDLE user_token = platf::retrieve_users_token(false);
-      if (!user_token) {
-        BOOST_LOG(warning) << "HDR profile: unable to restore physical display profiles (no user token).";
-        return;
-      }
-
-      (void) platf::impersonate_current_user(user_token, [&]() {
+      auto restore_profiles = [&]() {
         for (const auto &[monitor_path, previous] : entries) {
           if (monitor_path.empty()) {
             continue;
@@ -1785,9 +1970,23 @@ namespace VDISPLAY {
                                << platf::to_utf8(monitor_path) << "'.";
           }
         }
-      });
+      };
 
-      CloseHandle(user_token);
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (user_token) {
+        (void) platf::impersonate_current_user(user_token, restore_profiles);
+        CloseHandle(user_token);
+        return;
+      }
+
+      DWORD session_id = 0;
+      if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id) || session_id == 0) {
+        BOOST_LOG(warning) << "HDR profile: unable to restore physical display profiles (no user token).";
+        return;
+      }
+
+      BOOST_LOG(debug) << "HDR profile: no user token; restoring physical display profiles in current user context.";
+      restore_profiles();
     }).detach();
   }
 
