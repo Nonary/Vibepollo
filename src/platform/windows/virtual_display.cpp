@@ -33,6 +33,8 @@
 #include <initguid.h>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -1486,6 +1488,42 @@ namespace VDISPLAY {
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
+    std::mutex g_virtual_display_recovery_abort_mutex;
+    std::map<uuid_util::uuid_t, std::weak_ptr<std::atomic_bool>> g_virtual_display_recovery_abort;
+
+    std::shared_ptr<std::atomic_bool> reset_recovery_monitor_abort_flag(const uuid_util::uuid_t &guid_uuid) {
+      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
+      auto &entry = g_virtual_display_recovery_abort[guid_uuid];
+      if (auto existing = entry.lock()) {
+        existing->store(true, std::memory_order_release);
+      }
+      auto flag = std::make_shared<std::atomic_bool>(false);
+      entry = flag;
+      return flag;
+    }
+
+    void abort_recovery_monitor(const uuid_util::uuid_t &guid_uuid) {
+      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
+      auto it = g_virtual_display_recovery_abort.find(guid_uuid);
+      if (it == g_virtual_display_recovery_abort.end()) {
+        return;
+      }
+      if (auto flag = it->second.lock()) {
+        flag->store(true, std::memory_order_release);
+      }
+      g_virtual_display_recovery_abort.erase(it);
+    }
+
+    void abort_all_recovery_monitors() {
+      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
+      for (auto &[_, weak_flag] : g_virtual_display_recovery_abort) {
+        if (auto flag = weak_flag.lock()) {
+          flag->store(true, std::memory_order_release);
+        }
+      }
+      g_virtual_display_recovery_abort.clear();
+    }
+
     struct RecoveryMonitorState {
       VirtualDisplayRecoveryParams params;
       uuid_util::uuid_t guid_uuid;
@@ -1585,6 +1623,9 @@ namespace VDISPLAY {
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state) {
+      if (monitor_should_abort(state)) {
+        return false;
+      }
       if (!ensure_driver_is_ready()) {
         BOOST_LOG(warning) << "Virtual display recovery: driver not ready for " << state.describe_target();
         return false;
@@ -1669,6 +1710,10 @@ namespace VDISPLAY {
                            << state.describe_target() << " (attempt "
                            << attempts << '/' << state.params.max_attempts << ").";
 
+        if (monitor_should_abort(state)) {
+          BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
+          return;
+        }
         const bool recovered = attempt_virtual_display_recovery(state);
         if (!recovered) {
           std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
@@ -1755,6 +1800,7 @@ namespace VDISPLAY {
       return;
     }
 
+    const auto guid_uuid = guid_to_uuid(params.guid);
     const bool has_device_id = params.device_id && !params.device_id->empty();
     const bool has_display_name = params.display_name && !params.display_name->empty();
     if (!has_device_id && !has_display_name) {
@@ -1762,7 +1808,17 @@ namespace VDISPLAY {
       return;
     }
 
-    RecoveryMonitorState state(params);
+    const auto abort_flag = reset_recovery_monitor_abort_flag(guid_uuid);
+    VirtualDisplayRecoveryParams wrapped = params;
+    const auto external_abort = params.should_abort;
+    wrapped.should_abort = [abort_flag, external_abort]() {
+      if (abort_flag->load(std::memory_order_acquire)) {
+        return true;
+      }
+      return external_abort ? external_abort() : false;
+    };
+
+    RecoveryMonitorState state(wrapped);
     BOOST_LOG(debug) << "Virtual display recovery monitor scheduled for " << state.describe_target()
                      << " (max_attempts=" << params.max_attempts << ").";
     std::thread monitor_thread([state = std::move(state)]() mutable {
@@ -2628,6 +2684,7 @@ namespace VDISPLAY {
   }
 
   bool removeAllVirtualDisplays() {
+    abort_all_recovery_monitors();
     auto all_guids = active_virtual_display_tracker().all();
     if (all_guids.empty()) {
       BOOST_LOG(debug) << "No active virtual displays to remove.";
@@ -2654,6 +2711,7 @@ namespace VDISPLAY {
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    abort_recovery_monitor(guid_to_uuid(guid));
     auto cached_display_name = resolve_virtual_display_name_from_devices();
 
     const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
