@@ -420,6 +420,7 @@ namespace stream {
 
     safe::mail_raw_t::event_t<bool> shutdown_event;
     safe::signal_t controlEnd;
+    safe::signal_t hdr_sent_signal;  // Signaled when HDR mode has been sent to client
 
     std::atomic<session::state_e> state;
 
@@ -1167,6 +1168,10 @@ namespace stream {
               auto hdr_info = hdr_queue->pop();
 
               send_hdr_mode(session, std::move(hdr_info));
+
+              // Signal that HDR mode has been sent to the client
+              // This allows the video capture thread to start sending frames
+              session->hdr_sent_signal.raise(true);
             }
           }
 
@@ -1929,8 +1934,16 @@ namespace stream {
   namespace session {
     std::atomic_uint running_sessions;
 
+    unsigned int active_session_count() {
+      return running_sessions.load(std::memory_order_relaxed);
+    }
+
     state_e state(session_t &session) {
       return session.state.load(std::memory_order_relaxed);
+    }
+
+    bool wait_for_hdr_sent(session_t &session, std::chrono::milliseconds timeout) {
+      return (bool) session.hdr_sent_signal.view(timeout);
     }
 
     void stop(session_t &session) {
@@ -1992,6 +2005,9 @@ namespace stream {
         if (revert_display_config && !skip_display_revert) {
           display_helper_integration::revert();
         }
+
+        // Process termination may request that we revert display helper state once streaming has fully stopped.
+        display_helper_integration::maybe_run_deferred_revert();
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32

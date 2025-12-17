@@ -57,6 +57,7 @@
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
 #endif
+#include "stream.h"
 #include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
@@ -1714,7 +1715,14 @@ namespace proc {
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif
 
-      display_helper_integration::revert();
+      // Process termination should always revert display helper state, but only once the streaming
+      // session teardown has completed to avoid HDR/display mode transitions mid-teardown.
+      display_helper_integration::request_deferred_revert();
+      if (stream::session::active_session_count() == 0) {
+        display_helper_integration::maybe_run_deferred_revert();
+      } else {
+        BOOST_LOG(debug) << "Deferring display helper revert until streaming session teardown completes.";
+      }
     }
 
     _active_client_uuid.clear();

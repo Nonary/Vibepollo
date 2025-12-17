@@ -49,6 +49,7 @@
 #endif
 #include "process.h"
 #include "rtsp.h"
+#include "stream.h"
 #include "system_tray.h"
 #include "update.h"
 #include "utility.h"
@@ -186,27 +187,32 @@ namespace nvhttp {
     }
 
     void schedule_virtual_display_cleanup() {
-    bool expected = false;
-    if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
-      return;
-    }
+      bool expected = false;
+      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
+        return;
+      }
 
-    std::thread([] {
-      auto guard = util::fail_guard([]() {
-        virtual_display_cleanup_pending.store(false, std::memory_order_release);
-      });
-      try {
-        // If a new session spun up while we were scheduling cleanup, leave displays alone.
-        if (rtsp_stream::session_count() > 0) {
-          BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
-          return;
-        }
+      std::thread([] {
+        auto guard = util::fail_guard([]() {
+          virtual_display_cleanup_pending.store(false, std::memory_order_release);
+        });
+        try {
+          // If a session is active (or teardown is still in-flight), wait for it to end.
+          constexpr auto kCleanupWaitTimeout = std::chrono::seconds(10);
+          const auto deadline = std::chrono::steady_clock::now() + kCleanupWaitTimeout;
+          while (stream::session::active_session_count() > 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+          if (stream::session::active_session_count() > 0) {
+            BOOST_LOG(warning) << "Skipping virtual display cleanup because a streaming session is still active after waiting.";
+            return;
+          }
 
-        cleanup_virtual_display_state();
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
-      } catch (...) {
-        BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+          cleanup_virtual_display_state();
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
         }
       }).detach();
     }
@@ -615,6 +621,7 @@ namespace nvhttp {
     launch_session->hdr_profile.reset();
     launch_session->client_display_mode_override = false;
     launch_session->client_requests_virtual_display = false;
+    launch_session->force_sdr_10bit = false;
     launch_session->hdr_profile.reset();
 
     if (request) {

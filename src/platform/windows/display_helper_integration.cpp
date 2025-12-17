@@ -913,6 +913,22 @@ namespace {
 }  // namespace
 
 namespace display_helper_integration {
+  namespace {
+    std::atomic<bool> g_deferred_revert_requested {false};
+  }
+
+  void request_deferred_revert() {
+    g_deferred_revert_requested.store(true, std::memory_order_relaxed);
+  }
+
+  void maybe_run_deferred_revert() {
+    if (!g_deferred_revert_requested.exchange(false, std::memory_order_relaxed)) {
+      return;
+    }
+
+    (void) revert();
+  }
+
   bool apply(const DisplayApplyRequest &request) {
     if (request.action == DisplayApplyAction::Skip) {
       BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";

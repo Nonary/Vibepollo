@@ -34,6 +34,7 @@ extern "C" {
 #include "logging.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
+#include "stream.h"
 #include "sync.h"
 #include "video.h"
 
@@ -2543,6 +2544,21 @@ namespace video {
       synced_sessions.emplace_back(std::move(*synced_session));
     }
 
+    // Wait for HDR info to be sent to the client before starting frame transmission.
+    // This ensures the client receives HDR mode before any video frames.
+    if (!synced_session_ctxs.empty()) {
+      auto session_ptr = static_cast<stream::session_t *>(synced_session_ctxs.front()->channel_data);
+      if (session_ptr) {
+        constexpr auto kHdrReadyTimeout = 3s;
+        BOOST_LOG(debug) << "Waiting for HDR mode to be sent to client...";
+        if (!stream::session::wait_for_hdr_sent(*session_ptr, kHdrReadyTimeout)) {
+          BOOST_LOG(warning) << "HDR send timeout - proceeding with frame transmission";
+        } else {
+          BOOST_LOG(debug) << "HDR mode sent to client, starting frame transmission";
+        }
+      }
+    }
+
     auto ec = platf::capture_e::ok;
     while (encode_session_ctx_queue.running()) {
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
@@ -2735,6 +2751,19 @@ namespace video {
         }
       }
       hdr_event->raise(std::move(hdr_info));
+
+      // Wait for HDR info to be sent to the client before starting frame transmission.
+      // This ensures the client receives HDR mode before any video frames.
+      auto session_ptr = static_cast<stream::session_t *>(channel_data);
+      if (session_ptr) {
+        constexpr auto kHdrReadyTimeout = 3s;
+        BOOST_LOG(debug) << "Waiting for HDR mode to be sent to client...";
+        if (!stream::session::wait_for_hdr_sent(*session_ptr, kHdrReadyTimeout)) {
+          BOOST_LOG(warning) << "HDR send timeout - proceeding with frame transmission";
+        } else {
+          BOOST_LOG(debug) << "HDR mode sent to client, starting frame transmission";
+        }
+      }
 
       encode_run(
         frame_nr,

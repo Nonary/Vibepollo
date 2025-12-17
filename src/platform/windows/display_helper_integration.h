@@ -21,6 +21,15 @@ namespace display_helper_integration {
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();
 
+  // Request that a REVERT be executed once streaming has fully stopped.
+  // Intended for callers that must not block on session teardown (e.g. control thread).
+  // Multiple requests are coalesced into a single deferred revert.
+  void request_deferred_revert();
+
+  // Execute a previously requested deferred revert, if any.
+  // Safe to call unconditionally (no-op if nothing is pending).
+  void maybe_run_deferred_revert();
+
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.
   bool disarm_pending_restore();

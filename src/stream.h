@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <chrono>
 #include <optional>
 #include <string>
 #include <utility>
@@ -59,5 +60,7 @@ namespace stream {
     void stop(session_t &session);
     void join(session_t &session);
     state_e state(session_t &session);
+    bool wait_for_hdr_sent(session_t &session, std::chrono::milliseconds timeout);
+    unsigned int active_session_count();
   }  // namespace session
 }  // namespace stream

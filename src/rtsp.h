@@ -56,6 +56,7 @@ namespace rtsp_stream {
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
+    bool force_sdr_10bit;
     bool client_display_mode_override;
     bool client_requests_virtual_display;
     bool virtual_display;
