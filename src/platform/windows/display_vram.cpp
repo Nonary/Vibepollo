@@ -899,6 +899,14 @@ namespace platf::dxgi {
 
     ::video::color_t *color_p;
 
+    // Keep the underlying D3D device/context alive until after all dependent resources have been released.
+    device_t device;
+    device_ctx_t device_ctx;
+
+    texture2d_t output_texture;
+    texture2d_t black_texture_for_clear;
+    shader_res_t black_texture_for_clear_srv;
+
     buf_t subsample_offset;
     buf_t color_matrix;
 
@@ -929,13 +937,6 @@ namespace platf::dxgi {
     D3D11_VIEWPORT out_UV_viewport, out_UV_viewport_for_clear;
 
     DXGI_FORMAT format;
-
-    device_t device;
-    device_ctx_t device_ctx;
-
-    texture2d_t output_texture;
-    texture2d_t black_texture_for_clear;
-    shader_res_t black_texture_for_clear_srv;
   };
 
   class d3d_avcodec_encode_device_t: public avcodec_encode_device_t {
@@ -1039,6 +1040,16 @@ namespace platf::dxgi {
 
       if (base.init(display, adapter_p, pix_fmt)) {
         return false;
+      }
+
+      // Async encoder teardown may destroy D3D resources on a different thread.
+      // Enable D3D multithread protection for safety.
+      multithread_t mt;
+      auto status = base.device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
+      if (SUCCEEDED(status)) {
+        mt->SetMultithreadProtected(TRUE);
+      } else {
+        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
       }
 
       if (pix_fmt == pix_fmt_e::yuv444p16) {
