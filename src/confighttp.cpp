@@ -1517,6 +1517,102 @@ namespace confighttp {
     output_tree["platform"] = "windows";
 #endif
     output_tree["status"] = true;
+    output_tree["platform"] = SUNSHINE_PLATFORM;
+    send_response(response, output_tree);
+  }
+
+#ifdef _WIN32
+  static std::optional<uint64_t> file_creation_time_ms(const std::filesystem::path &path) {
+    WIN32_FILE_ATTRIBUTE_DATA data {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+      return std::nullopt;
+    }
+    ULARGE_INTEGER t {};
+    t.LowPart = data.ftCreationTime.dwLowDateTime;
+    t.HighPart = data.ftCreationTime.dwHighDateTime;
+
+    // FILETIME is in 100ns units since 1601-01-01.
+    constexpr uint64_t kEpochDiff100ns = 116444736000000000ULL;  // 1970-01-01 - 1601-01-01
+    if (t.QuadPart < kEpochDiff100ns) {
+      return std::nullopt;
+    }
+    return (t.QuadPart - kEpochDiff100ns) / 10000ULL;
+  }
+
+  static std::filesystem::path windows_color_profile_dir() {
+    wchar_t system_root[MAX_PATH] = {};
+    if (GetSystemWindowsDirectoryW(system_root, _countof(system_root)) == 0) {
+      return std::filesystem::path(L"C:\\Windows\\System32\\spool\\drivers\\color");
+    }
+    std::filesystem::path root(system_root);
+    return root / L"System32" / L"spool" / L"drivers" / L"color";
+  }
+#endif
+
+  /**
+   * @brief Get a list of available HDR color profiles (Windows only).
+   *
+   * @api_examples{/api/clients/hdr-profiles| GET| null}
+   */
+  void getHdrProfiles(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    nlohmann::json profiles = nlohmann::json::array();
+
+#ifdef _WIN32
+    try {
+      const auto dir = windows_color_profile_dir();
+      struct entry_t {
+        std::string filename;
+        uint64_t added_ms;
+      };
+      std::vector<entry_t> entries;
+      for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        std::error_code ec;
+        if (!entry.is_regular_file(ec)) {
+          continue;
+        }
+
+        auto ext = entry.path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+        if (ext != L".icm" && ext != L".icc") {
+          continue;
+        }
+
+        const auto filename_utf8 = platf::to_utf8(entry.path().filename().wstring());
+        const auto added_ms = file_creation_time_ms(entry.path()).value_or(0);
+        entries.push_back({filename_utf8, added_ms});
+      }
+
+      std::sort(entries.begin(), entries.end(), [](const entry_t &a, const entry_t &b) {
+        if (a.added_ms != b.added_ms) {
+          return a.added_ms > b.added_ms;
+        }
+        return a.filename < b.filename;
+      });
+
+      for (const auto &e : entries) {
+        nlohmann::json node;
+        node["filename"] = e.filename;
+        node["added_ms"] = e.added_ms;
+        profiles.push_back(std::move(node));
+      }
+    } catch (const std::exception &e) {
+      output_tree["status"] = false;
+      output_tree["error"] = e.what();
+    } catch (...) {
+      output_tree["status"] = false;
+      output_tree["error"] = "unknown error";
+    }
+#endif
+
+    output_tree["profiles"] = std::move(profiles);
     send_response(response, output_tree);
   }
 
@@ -1553,24 +1649,89 @@ namespace confighttp {
     try {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
-      std::string uuid = input_tree.value("uuid", "");
-      std::string name = input_tree.value("name", "");
-      std::string display_mode = input_tree.value("display_mode", "");
-      std::string output_name_override = input_tree.value("output_name_override", "");
-      bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
-      bool allow_client_commands = input_tree.value("allow_client_commands", true);
-      bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      std::optional<bool> prefer_10bit_sdr;
-      if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
-        prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
-      } else {
-        prefer_10bit_sdr.reset();
+      const std::string uuid = input_tree.value("uuid", "");
+
+      std::optional<std::string> hdr_profile;
+      if (input_tree.contains("hdr_profile")) {
+        if (input_tree["hdr_profile"].is_null()) {
+          hdr_profile = std::string {};
+        } else {
+          hdr_profile = input_tree.value("hdr_profile", "");
+        }
       }
-      std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
-      std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
-      auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
-      auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
-      auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
+
+      std::optional<std::unordered_map<std::string, std::string>> config_overrides;
+      if (input_tree.contains("config_overrides")) {
+        if (input_tree["config_overrides"].is_null()) {
+          config_overrides = std::unordered_map<std::string, std::string> {};
+        } else if (input_tree["config_overrides"].is_object()) {
+          std::unordered_map<std::string, std::string> overrides;
+          for (const auto &item : input_tree["config_overrides"].items()) {
+            const std::string &key = item.key();
+            const auto &val = item.value();
+            if (key.empty() || val.is_null()) {
+              continue;
+            }
+            std::string encoded;
+            if (val.is_string()) {
+              encoded = val.get<std::string>();
+            } else {
+              encoded = val.dump();
+            }
+            overrides.emplace(key, std::move(encoded));
+          }
+          config_overrides = std::move(overrides);
+        }
+      }
+
+      const bool has_extended_fields =
+        input_tree.contains("name") ||
+        input_tree.contains("display_mode") ||
+        input_tree.contains("output_name_override") ||
+        input_tree.contains("enable_legacy_ordering") ||
+        input_tree.contains("allow_client_commands") ||
+        input_tree.contains("always_use_virtual_display") ||
+        input_tree.contains("virtual_display_mode") ||
+        input_tree.contains("virtual_display_layout") ||
+        input_tree.contains("config_overrides") ||
+        input_tree.contains("prefer_10bit_sdr") ||
+        input_tree.contains("do") ||
+        input_tree.contains("undo") ||
+        input_tree.contains("perm");
+
+      if (!has_extended_fields) {
+        if (hdr_profile.has_value()) {
+          output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, *hdr_profile);
+        } else {
+          output_tree["status"] = false;
+        }
+        send_response(response, output_tree);
+        return;
+      }
+
+      const std::string name = input_tree.value("name", "");
+      const std::string display_mode = input_tree.value("display_mode", "");
+      const std::string output_name_override = input_tree.value("output_name_override", "");
+      const bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
+      const bool allow_client_commands = input_tree.value("allow_client_commands", true);
+      const bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
+
+      std::optional<bool> prefer_10bit_sdr;
+      if (input_tree.contains("prefer_10bit_sdr")) {
+        if (input_tree["prefer_10bit_sdr"].is_null()) {
+          prefer_10bit_sdr.reset();
+        } else {
+          prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
+        }
+      } else {
+        prefer_10bit_sdr = nvhttp::get_client_prefer_10bit_sdr_override(uuid);
+      }
+
+      const std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
+      const std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
+      const auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
+      const auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
+      const auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
       output_tree["status"] = nvhttp::update_device_info(
         uuid,
         name,
@@ -1584,7 +1745,9 @@ namespace confighttp {
         always_use_virtual_display,
         virtual_display_mode,
         virtual_display_layout,
-        prefer_10bit_sdr
+        std::move(config_overrides),
+        prefer_10bit_sdr,
+        hdr_profile
       );
       send_response(response, output_tree);
     } catch (std::exception &e) {
@@ -2725,7 +2888,7 @@ namespace confighttp {
       nlohmann::json output_tree;
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       std::string uuid = input_tree.value("uuid", "");
-      output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
+      output_tree["status"] = nvhttp::disconnect_client(uuid);
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Disconnect: "sv << e.what();
@@ -2850,6 +3013,7 @@ namespace confighttp {
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
+    server.resource["^/api/clients/hdr-profiles$"]["GET"] = getHdrProfiles;
     server.resource["^/api/clients/update$"]["POST"] = updateClient;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
     server.resource["^/api/clients/disconnect$"]["POST"] = disconnect;

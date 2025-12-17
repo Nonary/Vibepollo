@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -31,6 +32,7 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -1338,13 +1340,19 @@ namespace proc {
           target_fps *= 1000;
         }
 
+        const uint32_t base_fps_millihz = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : static_cast<uint32_t>(target_fps);
+        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0 && static_cast<uint32_t>(*launch_session->framegen_refresh_rate) != base_fps_millihz;
+
         auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
           device_name.c_str(),
+          launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
           render_width,
           render_height,
-          target_fps,
-          launch_session->display_guid
+          static_cast<uint32_t>(target_fps),
+          launch_session->display_guid,
+          base_fps_millihz,
+          framegen_refresh_active
         );
 
         if (display_info) {
@@ -2187,6 +2195,17 @@ namespace proc {
       _saved_input_config.reset();
     }
 
+    // Clear any per-app runtime config overrides now that the app is terminating.
+    // If we can safely hot-apply immediately, restore global config now; otherwise defer.
+    if (has_run) {
+      config::clear_runtime_config_overrides();
+      if (rtsp_stream::session_count() == 0) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    }
+
     if (needs_refresh) {
       refresh(config::stream.file_apps, false);
     }
@@ -2827,6 +2846,26 @@ namespace proc {
         ctx.frame_generation_provider = "lossless-scaling";
         if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
           ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
+        }
+
+        // Per-app global config overrides (raw config-file value representation).
+        if (auto it = app_node.find("config-overrides"); it != app_node.end() && it->is_object()) {
+          for (const auto &item : it->items()) {
+            const std::string &key = item.key();
+            const auto &val = item.value();
+            if (key.empty() || val.is_null()) {
+              continue;
+            }
+            std::string encoded;
+            if (val.is_string()) {
+              encoded = parse_env_val(this_env, val.get<std::string>());
+            } else {
+              encoded = val.dump();
+            }
+            if (!encoded.empty()) {
+              ctx.config_overrides.emplace(key, std::move(encoded));
+            }
+          }
         }
         ctx.lossless_scaling_target_fps.reset();
         double lossless_target_fps = util::get_non_string_json_value<double>(app_node, "lossless-scaling-target-fps", 0.0);

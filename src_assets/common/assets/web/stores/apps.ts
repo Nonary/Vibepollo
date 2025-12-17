@@ -17,6 +17,7 @@ export interface App {
   'image-path'?: string;
   'exclude-global-prep-cmd'?: boolean;
   'exclude-global-state-cmd'?: boolean;
+  'config-overrides'?: Record<string, unknown>;
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;

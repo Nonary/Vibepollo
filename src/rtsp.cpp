@@ -535,8 +535,8 @@ namespace rtsp_stream {
      * @return Count of active sessions.
      */
     int session_count() {
-      auto lg = _session_slots.lock();
-      return _session_slots->size();
+      auto lg = _session_state.lock();
+      return static_cast<int>(_session_state->sessions.size());
     }
 
     safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
@@ -555,16 +555,18 @@ namespace rtsp_stream {
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
 
       {
-        auto lg = _session_slots.lock();
+        auto lg = _session_state.lock();
 
-        for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+        for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
           auto &slot = *(*i);
           if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
             // Make a copy to operate on after releasing the lock
-            to_cleanup.emplace_back(*i);
+            auto session = *i;
+            to_cleanup.emplace_back(session);
 
             // Remove from the active set now so counts reflect pending removal
-            i = _session_slots->erase(i);
+            _session_state->client_uuids.erase(session.get());
+            i = _session_state->sessions.erase(i);
           } else {
             ++i;
           }
@@ -583,18 +585,64 @@ namespace rtsp_stream {
      * @param session The session to remove.
      */
     void remove(const std::shared_ptr<stream::session_t> &session) {
-      auto lg = _session_slots.lock();
-      _session_slots->erase(session);
+      auto lg = _session_state.lock();
+      _session_state->sessions.erase(session);
+      _session_state->client_uuids.erase(session.get());
     }
 
     /**
      * @brief Inserts the provided session into the set of sessions.
      * @param session The session to insert.
      */
-    void insert(const std::shared_ptr<stream::session_t> &session) {
-      auto lg = _session_slots.lock();
-      _session_slots->emplace(session);
-      BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_slots->size() << ']';
+    void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid) {
+      auto lg = _session_state.lock();
+      _session_state->sessions.emplace(session);
+      if (!client_uuid.empty()) {
+        _session_state->client_uuids[session.get()] = client_uuid;
+      } else {
+        _session_state->client_uuids.erase(session.get());
+      }
+      BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_state->sessions.size() << ']';
+    }
+
+    std::list<std::string> get_all_client_uuids() {
+      std::list<std::string> out;
+      auto lg = _session_state.lock();
+      for (const auto &[_, uuid] : _session_state->client_uuids) {
+        if (!uuid.empty()) {
+          out.push_back(uuid);
+        }
+      }
+      return out;
+    }
+
+    bool disconnect_client(const std::string &client_uuid) {
+      if (client_uuid.empty()) {
+        return false;
+      }
+
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      {
+        auto lg = _session_state.lock();
+        for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
+          auto session = *i;
+          const auto it_uuid = _session_state->client_uuids.find(session.get());
+          if (it_uuid != _session_state->client_uuids.end() && it_uuid->second == client_uuid) {
+            to_cleanup.emplace_back(session);
+            _session_state->client_uuids.erase(session.get());
+            i = _session_state->sessions.erase(i);
+          } else {
+            ++i;
+          }
+        }
+      }
+
+      for (auto &slot : to_cleanup) {
+        stream::session::stop(*slot);
+        stream::session::join(*slot);
+      }
+
+      return !to_cleanup.empty();
     }
 
     /**
@@ -621,11 +669,10 @@ namespace rtsp_stream {
 
     std::shared_ptr<stream::session_t>
       find_session(const std::string_view &uuid) {
-      auto lg = _session_slots.lock();
-
-      for (auto &slot : *_session_slots) {
-        if (slot && stream::session::uuid_match(*slot, uuid)) {
-          return slot;
+      auto lg = _session_state.lock();
+      for (const auto &session : _session_state->sessions) {
+        if (session && stream::session::uuid_match(*session, uuid)) {
+          return session;
         }
       }
 
@@ -635,10 +682,10 @@ namespace rtsp_stream {
     std::list<std::string>
       get_all_session_uuids() {
       std::list<std::string> uuids;
-      auto lg = _session_slots.lock();
-      for (auto &slot : *_session_slots) {
-        if (slot) {
-          uuids.push_back(stream::session::uuid(*slot));
+      auto lg = _session_state.lock();
+      for (const auto &session : _session_state->sessions) {
+        if (session) {
+          uuids.push_back(stream::session::uuid(*session));
         }
       }
       return uuids;
@@ -647,7 +694,12 @@ namespace rtsp_stream {
   private:
     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
 
-    sync_util::sync_t<std::set<std::shared_ptr<stream::session_t>>> _session_slots;
+    struct session_state_t {
+      std::set<std::shared_ptr<stream::session_t>> sessions;
+      std::unordered_map<const stream::session_t *, std::string> client_uuids;
+    };
+
+    sync_util::sync_t<session_state_t> _session_state;
 
     boost::asio::io_context io_context;
     tcp::acceptor acceptor {io_context};
@@ -683,6 +735,16 @@ namespace rtsp_stream {
 
   void terminate_sessions() {
     server.clear(true);
+  }
+
+  std::list<std::string> get_all_session_client_uuids() {
+    server.clear(false);
+    return server.get_all_client_uuids();
+  }
+
+  bool disconnect_client_sessions(const std::string &client_uuid) {
+    server.clear(false);
+    return server.disconnect_client(client_uuid);
   }
 
   int send(tcp::socket &sock, const std::string_view &sv) {
@@ -1133,7 +1195,7 @@ namespace rtsp_stream {
     }
 
     config.audio.input_only = session.input_only;
-    
+
     // Prefer 10-bit SDR encoding when enabled globally or overridden per-client.
     const auto client_prefer_10bit_sdr_override = nvhttp::get_client_prefer_10bit_sdr_override(session.client_uuid);
     const bool prefer_10bit_sdr = client_prefer_10bit_sdr_override.value_or(config::video.prefer_10bit_sdr);
@@ -1212,7 +1274,7 @@ namespace rtsp_stream {
     config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
     config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
     auto stream_session = stream::session::alloc(config, session);
-    server->insert(stream_session);
+    server->insert(stream_session, session.client_uuid);
 
     if (stream::session::start(*stream_session, sock.remote_endpoint().address().to_string())) {
       BOOST_LOG(error) << "Failed to start a streaming session"sv;

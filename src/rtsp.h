@@ -45,6 +45,7 @@ namespace rtsp_stream {
     std::string unique_id;
     std::string client_uuid;
     std::string client_name;
+    std::optional<std::string> hdr_profile;
     crypto::PERM perm;
     int appid;
 
@@ -68,6 +69,8 @@ namespace rtsp_stream {
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
+    bool client_display_mode_override;
+    bool client_requests_virtual_display;
     bool virtual_display;
     uint32_t scale_factor;
     bool virtual_display_detach_with_app;
@@ -82,7 +85,6 @@ namespace rtsp_stream {
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool lossless_scaling_framegen;
-    bool client_display_mode_override;
     std::optional<int> framegen_refresh_rate;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
@@ -124,6 +126,17 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();
+
+  /**
+   * @brief Get the client UUIDs for all active sessions.
+   */
+  std::list<std::string> get_all_session_client_uuids();
+
+  /**
+   * @brief Stop any active sessions for a given client UUID.
+   * @return True if one or more sessions were stopped.
+   */
+  bool disconnect_client_sessions(const std::string &client_uuid);
 
   /**
    * @brief Runs the RTSP server loop.

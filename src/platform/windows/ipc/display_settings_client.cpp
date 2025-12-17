@@ -124,8 +124,8 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> out;
     out.reserve(1 + payload.size());
-   out.push_back(static_cast<uint8_t>(type));
-   out.insert(out.end(), payload.begin(), payload.end());
+    out.push_back(static_cast<uint8_t>(type));
+    out.insert(out.end(), payload.begin(), payload.end());
     const bool ok = pipe.send(out, effective_send_timeout());
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: send result=" << (ok ? "true" : "false");

@@ -487,6 +487,21 @@
                     </div>
                   </div>
                 </n-form-item>
+                <n-form-item v-if="platform === 'windows'" :label="$t('clients.hdr_profile_label')">
+                  <n-select
+                    v-model:value="client.editHdrProfile"
+                    :options="hdrProfileOptions"
+                    :loading="hdrProfilesLoading"
+                    :placeholder="$t('clients.hdr_profile_placeholder')"
+                    filterable
+                    clearable
+                    @focus="ensureHdrProfilesLoaded"
+                  />
+                  <template #feedback>
+                    <span class="text-xs opacity-70">{{ $t('clients.hdr_profile_desc') }}</span>
+                    <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{ hdrProfilesError }}</span>
+                  </template>
+                </n-form-item>
                 <Checkbox
                   id="allow_client_commands"
                   class="mb-1"
@@ -502,6 +517,10 @@
                   label="pin.client_prefer_10bit_sdr"
                   desc="pin.client_prefer_10bit_sdr_desc"
                   :default="globalPrefer10BitSdr"
+                />
+                <AppEditConfigOverridesSection
+                  v-model:overrides="client.editConfigOverrides"
+                  scope-label="client"
                 />
                 <div
                   v-for="cmdType in commandTypes"
@@ -652,6 +671,7 @@ import {
 } from 'naive-ui';
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
+import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
 import Checkbox from '@/Checkbox.vue';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
@@ -704,6 +724,7 @@ const apiTokenRoutes: ApiTokenRouteDef[] = [
   { path: '/api/auth/sessions', methods: ['GET'] },
   { path: '/api/auth/sessions/([A-Fa-f0-9]+)', methods: ['DELETE'] },
   { path: '/api/clients/list', methods: ['GET'] },
+  { path: '/api/clients/hdr-profiles', methods: ['GET'] },
   { path: '/api/clients/unpair', methods: ['POST'] },
   { path: '/api/clients/unpair-all', methods: ['POST'] },
   { path: '/api/clients/update', methods: ['POST'] },
@@ -744,6 +765,7 @@ interface DisplayDevice {
 interface ClientApiEntry {
   uuid?: string;
   name?: string;
+  hdr_profile?: string;
   display_mode?: string;
   output_name_override?: string;
   perm?: number | string;
@@ -754,6 +776,7 @@ interface ClientApiEntry {
   prefer_10bit_sdr?: boolean | string | number;
   virtual_display_mode?: string;
   virtual_display_layout?: string;
+  config_overrides?: Record<string, unknown> | null;
   do?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
   undo?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
 }
@@ -762,6 +785,17 @@ interface ClientsListResponse {
   status?: boolean;
   named_certs?: ClientApiEntry[];
   platform?: string;
+}
+
+interface HdrProfileEntry {
+  filename?: string;
+  added_ms?: number;
+}
+
+interface HdrProfilesResponse {
+  status?: boolean;
+  profiles?: HdrProfileEntry[];
+  error?: string;
 }
 
 interface PinResponse {
@@ -780,6 +814,7 @@ interface OtpResponse {
 interface SaveClientPayload {
   uuid: string;
   name: string;
+  hdr_profile?: string | null;
   display_mode: string;
   output_name_override: string;
   virtual_display_mode: string;
@@ -789,6 +824,7 @@ interface SaveClientPayload {
   always_use_virtual_display: boolean;
   // When omitted or null, the client inherits the global prefer_10bit_sdr value.
   prefer_10bit_sdr?: boolean | null;
+  config_overrides: Record<string, unknown>;
   perm: number;
   do: ClientCommand[];
   undo: ClientCommand[];
@@ -802,6 +838,7 @@ interface HostInfo {
 interface ClientViewModel {
   uuid: string;
   name: string;
+  hdrProfile: string;
   displayMode: string;
   outputOverride: string;
   perm: number;
@@ -813,9 +850,11 @@ interface ClientViewModel {
   prefer10BitSdr: boolean | null;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
+  configOverrides: Record<string, unknown>;
   doCommands: ClientCommand[];
   undoCommands: ClientCommand[];
   editing: boolean;
+  editHdrProfile: string | null;
   editName: string;
   editDisplayMode: string;
   editPhysicalOutputOverride: string;
@@ -826,6 +865,7 @@ interface ClientViewModel {
   editPrefer10BitSdr: boolean | null;
   editVirtualDisplayMode: AppVirtualDisplayMode | null;
   editVirtualDisplayLayout: AppVirtualDisplayLayout | null;
+  editConfigOverrides: Record<string, unknown>;
   editDo: ClientCommand[];
   editUndo: ClientCommand[];
 }
@@ -1017,6 +1057,9 @@ const currentEditingClient = ref<ClientViewModel | null>(null);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
+const hdrProfiles = ref<HdrProfileEntry[]>([]);
+const hdrProfilesLoading = ref(false);
+const hdrProfilesError = ref('');
 
 const shouldShowQr = computed(() => {
   return (
@@ -1154,6 +1197,53 @@ const displayDeviceOptions = computed(() => {
   return opts;
 });
 
+const hdrProfileOptions = computed(() => {
+  const list = Array.isArray(hdrProfiles.value) ? [...hdrProfiles.value] : [];
+  list.sort((a, b) => (Number(b.added_ms || 0) || 0) - (Number(a.added_ms || 0) || 0));
+  const options: Array<{ label: string; value: string | null }> = [
+    { label: t('clients.hdr_profile_auto'), value: null },
+  ];
+  for (const p of list) {
+    const filename = String(p?.filename || '').trim();
+    if (!filename) continue;
+    options.push({ label: filename, value: filename });
+  }
+  return options;
+});
+
+async function loadHdrProfiles(): Promise<void> {
+  if (platform.value !== 'windows') return;
+  hdrProfilesLoading.value = true;
+  hdrProfilesError.value = '';
+  try {
+    const r = await http.get<HdrProfilesResponse>('./api/clients/hdr-profiles', { validateStatus: () => true });
+    const response = r.data ?? {};
+    const ok =
+      r.status >= 200 &&
+      r.status < 300 &&
+      response.status === true &&
+      Array.isArray(response.profiles);
+    if (!ok) {
+      hdrProfiles.value = [];
+      hdrProfilesError.value = response.error || t('clients.hdr_profile_load_failed');
+      return;
+    }
+    hdrProfiles.value = response.profiles || [];
+  } catch (e: any) {
+    hdrProfiles.value = [];
+    hdrProfilesError.value = e?.message || t('clients.hdr_profile_load_failed');
+  } finally {
+    hdrProfilesLoading.value = false;
+  }
+}
+
+function ensureHdrProfilesLoaded(): void {
+  if (platform.value !== 'windows') return;
+  if (!hdrProfilesLoading.value && hdrProfiles.value.length === 0) {
+    void loadHdrProfiles();
+  }
+}
+
 function ensureDisplayDevicesLoaded() {
   if (!displayDevicesLoading.value && displayDevices.value.length === 0) {
     loadDisplayDevices();
@@ -1168,8 +1258,13 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
       ? entry.perm
       : Number.parseInt(String(entry.perm ?? '0'), 10) || 0;
   const name = entry.name ?? '';
+  const hdrProfile = String(entry.hdr_profile ?? '').trim();
   const displayMode = entry.display_mode ?? '';
   const outputOverride = entry.output_name_override ?? '';
+  const configOverrides =
+    entry.config_overrides && typeof entry.config_overrides === 'object' && !Array.isArray(entry.config_overrides)
+      ? JSON.parse(JSON.stringify(entry.config_overrides))
+      : {};
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
@@ -1182,6 +1277,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   return {
     uuid: entry.uuid ?? '',
     name,
+    hdrProfile,
     displayMode,
     outputOverride,
     perm,
@@ -1192,9 +1288,11 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     prefer10BitSdr,
     virtualDisplayMode,
     virtualDisplayLayout,
+    configOverrides,
     doCommands,
     undoCommands,
     editing: false,
+    editHdrProfile: hdrProfile || null,
     editName: name,
     editDisplayMode: displayMode,
     editPhysicalOutputOverride: outputOverride,
@@ -1205,12 +1303,14 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editPrefer10BitSdr: prefer10BitSdr,
     editVirtualDisplayMode: virtualDisplayMode,
     editVirtualDisplayLayout: virtualDisplayLayout,
+    editConfigOverrides: JSON.parse(JSON.stringify(configOverrides)),
     editDo: doCommands.map(cloneCommand),
     editUndo: undoCommands.map(cloneCommand),
   };
 }
 
 function resetClientEdits(client: ClientViewModel) {
+  client.editHdrProfile = (client.hdrProfile || '').trim() || null;
   client.editName = client.name;
   client.editDisplayMode = client.displayMode;
   client.editPhysicalOutputOverride = client.outputOverride;
@@ -1221,6 +1321,7 @@ function resetClientEdits(client: ClientViewModel) {
   client.editPrefer10BitSdr = client.prefer10BitSdr;
   client.editVirtualDisplayMode = client.virtualDisplayMode;
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
+  client.editConfigOverrides = JSON.parse(JSON.stringify(client.configOverrides || {}));
   client.editDo = client.doCommands.map(cloneCommand);
   client.editUndo = client.undoCommands.map(cloneCommand);
 }
@@ -1316,6 +1417,10 @@ function editClient(client: ClientViewModel) {
   resetClientEdits(client);
   client.editing = true;
   currentEditingClient.value = client;
+  if (platform.value === 'windows') {
+    ensureDisplayDevicesLoaded();
+    ensureHdrProfilesLoaded();
+  }
 }
 
 function cancelEdit(client: ClientViewModel) {
@@ -1328,6 +1433,9 @@ function cancelEdit(client: ClientViewModel) {
 
 function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayload) {
   client.name = payload.name;
+  if (payload.hdr_profile !== undefined) {
+    client.hdrProfile = String(payload.hdr_profile ?? '').trim();
+  }
   client.displayMode = payload.display_mode;
   client.outputOverride = payload.output_name_override;
   client.perm = payload.perm;
@@ -1337,6 +1445,10 @@ function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayl
   client.prefer10BitSdr = payload.prefer_10bit_sdr === undefined ? null : payload.prefer_10bit_sdr;
   client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
   client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
+  client.configOverrides =
+    payload.config_overrides && typeof payload.config_overrides === 'object' && !Array.isArray(payload.config_overrides)
+      ? JSON.parse(JSON.stringify(payload.config_overrides))
+      : {};
   client.doCommands = payload.do.map(cloneCommand);
   client.undoCommands = payload.undo.map(cloneCommand);
   resetClientEdits(client);
@@ -1372,10 +1484,23 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     allow_client_commands: !!client.editAllowClientCommands,
     enable_legacy_ordering: !!client.editEnableLegacyOrdering,
     always_use_virtual_display: displaySelection === 'virtual',
+    config_overrides:
+      client.editConfigOverrides &&
+      typeof client.editConfigOverrides === 'object' &&
+      !Array.isArray(client.editConfigOverrides)
+        ? Object.fromEntries(
+            Object.entries(client.editConfigOverrides).filter(
+              ([k, v]) => typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
+            ),
+          )
+        : {},
     perm: client.editPerm & permissionMapping._all,
     do: cleanedDo,
     undo: cleanedUndo,
   };
+  if (platform.value === 'windows') {
+    payload.hdr_profile = client.editHdrProfile ? String(client.editHdrProfile).trim() : null;
+  }
   if (client.editPrefer10BitSdr !== null) {
     payload.prefer_10bit_sdr = !!client.editPrefer10BitSdr;
   }

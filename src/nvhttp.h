@@ -10,6 +10,7 @@
 #include <list>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -231,6 +232,40 @@ namespace nvhttp {
   nlohmann::json get_all_clients();
 
   /**
+   * @brief Update stored settings for a paired client.
+   * @return True if the client was found and updated.
+   */
+  bool update_device_info(
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const std::string &output_name_override,
+    const cmd_list_t &do_cmds,
+    const cmd_list_t &undo_cmds,
+    const crypto::PERM newPerm,
+    const bool enable_legacy_ordering,
+    const bool allow_client_commands,
+    const bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout,
+    std::optional<std::unordered_map<std::string, std::string>> config_overrides,
+    std::optional<bool> prefer_10bit_sdr,
+    std::optional<std::string> hdr_profile
+  );
+
+  /**
+   * @brief Disconnect any active sessions for a paired client.
+   * @return True if one or more sessions were stopped.
+   */
+  bool disconnect_client(const std::string &uuid);
+
+  /**
+   * @brief Persist a per-client HDR color profile selection (Windows only).
+   * @return True if the client was found and updated.
+   */
+  bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile);
+
+  /**
    * @brief Remove all paired clients.
    * @examples
    * nvhttp::erase_all_clients();
@@ -271,38 +306,6 @@ namespace nvhttp {
    * @param[in]  newPerm  New permission
    */
   bool find_and_udpate_session_info(const std::string &uuid, const std::string &name, const crypto::PERM newPerm);
-
-  /**
-   * @brief      Update device info
-   *
-   * @param[in]  uuid       The uuid string
-   * @param[in]  name       New name
-   * @param[in]  do_cmds    The do commands
-   * @param[in]  undo_cmds  The undo commands
-   * @param[in]  newPerm    New permission
-   * @param[in]  enable_legacy_ordering  Enable legacy ordering
-   * @param[in]  allow_client_commands  Allow client commands
-   * @param[in]  always_use_virtual_display  Always use virtual display
-   * @param[in]  virtual_display_mode  Virtual display mode override
-   * @param[in]  virtual_display_layout  Virtual display layout override
-   *
-   * @return     Whether the update is successful
-   */
-  bool update_device_info(
-    const std::string &uuid,
-    const std::string &name,
-    const std::string &display_mode,
-    const std::string &output_name_override,
-    const cmd_list_t &do_cmds,
-    const cmd_list_t &undo_cmds,
-    const crypto::PERM newPerm,
-    const bool enable_legacy_ordering,
-    const bool allow_client_commands,
-    const bool always_use_virtual_display,
-    const std::string &virtual_display_mode,
-    const std::string &virtual_display_layout,
-    const std::optional<bool> prefer_10bit_sdr
-  );
 
   /**
    * @brief Persist current nvhttp-related state (paired clients, update subsystem markers, etc.).

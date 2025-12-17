@@ -388,6 +388,7 @@ const DEFAULT_ROUTE_OPTIONS: RouteDef[] = [
   { path: '/api/auth/sessions', methods: ['GET'] },
   { path: '/api/auth/sessions/([A-Fa-f0-9]+)', methods: ['DELETE'] },
   { path: '/api/clients/list', methods: ['GET'] },
+  { path: '/api/clients/hdr-profiles', methods: ['GET'] },
   { path: '/api/clients/unpair', methods: ['POST'] },
   { path: '/api/clients/unpair-all', methods: ['POST'] },
   { path: '/api/clients/update', methods: ['POST'] },
