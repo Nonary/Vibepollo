@@ -1447,6 +1447,21 @@ namespace nvhttp {
       }
     }
 
+    std::optional<bool> display_helper_session_available_cache;
+    auto display_helper_session_available = [&]() -> bool {
+      if (display_helper_session_available_cache.has_value()) {
+        return *display_helper_session_available_cache;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      const bool available = (user_token != nullptr);
+      if (user_token) {
+        CloseHandle(user_token);
+      }
+      display_helper_session_available_cache = available;
+      return available;
+    };
+
     std::optional<std::string> app_output_override;
     if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
       app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
@@ -1487,6 +1502,20 @@ namespace nvhttp {
                            << "' not found; initializing virtual display instead.";
         if (!has_app_output_override) {
           request_virtual_display = true;
+        }
+      } else if (!display_device::output_is_active(requested_output_name)) {
+        // The output exists but is currently inactive (no \\\\.\\DISPLAY# assigned). If we cannot
+        // run the display helper to activate it (no signed-in user session), fall back to a
+        // virtual display so capture can still start.
+        if (no_active_sessions && !display_helper_session_available()) {
+          BOOST_LOG(warning) << "Requested display '" << requested_output_name
+                             << "' is present but inactive and cannot be activated without a signed-in user; initializing virtual display instead.";
+          if (!has_app_output_override) {
+            request_virtual_display = true;
+          }
+        } else {
+          BOOST_LOG(info) << "Requested display '" << requested_output_name
+                          << "' is present but inactive; attempting activation via display helper.";
         }
       }
     }
@@ -1773,13 +1802,9 @@ namespace nvhttp {
       revert_display_configuration = true;
 
 #ifdef _WIN32
-      HANDLE user_token = platf::retrieve_users_token(false);
-      const bool helper_session_available = (user_token != nullptr);
-      if (user_token) {
-        CloseHandle(user_token);
-      }
+      const bool can_use_display_helper = display_helper_session_available();
 
-      if (helper_session_available) {
+      if (can_use_display_helper) {
         (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {

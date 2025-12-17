@@ -34,9 +34,9 @@ namespace platf::dxgi {
   class ipc_session_t {
   public:
     /**
-     * @brief Default destructor.
+     * @brief Destructor. Stops the helper process and tears down IPC.
      */
-    ~ipc_session_t() = default;
+    ~ipc_session_t();
 
     /**
      * @brief Initialize the IPC session.
@@ -126,9 +126,9 @@ namespace platf::dxgi {
     /**
      * @brief Wait for a new frame to become available or until timeout expires.
      * @param timeout Maximum duration to wait for a frame.
-     * @return `true` if a frame became available; `false` if the timeout expired.
+     * @return Capture result enum indicating success, timeout, reinit, or failure.
      */
-    bool wait_for_frame(std::chrono::milliseconds timeout);
+    capture_e wait_for_frame(std::chrono::milliseconds timeout);
 
     /**
      * @brief Retrieve the adapter LUID for the current D3D11 device.

@@ -168,8 +168,11 @@ namespace platf::dxgi {
       if (_locked) {
         return true;
       }
-      HRESULT status = _mutex->AcquireSync(0, INFINITE);
-      if (status == S_OK) {
+      HRESULT status = _mutex->AcquireSync(0, 3000);
+      if (status == S_OK || status == WAIT_ABANDONED) {
+        if (status == WAIT_ABANDONED) {
+          BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
+        }
         _locked = true;
       } else {
         BOOST_LOG(error) << "Failed to acquire texture mutex [0x"sv << util::hex(status).to_string_view() << ']';
@@ -375,12 +378,27 @@ namespace platf::dxgi {
           return -1;
         }
 
-        // Acquire encoder mutex to synchronize with capture code
-        auto status = img_ctx.encoder_mutex->AcquireSync(0, INFINITE);
-        if (status != S_OK) {
+        // Acquire encoder mutex to synchronize with capture code.
+        // Use a finite timeout to avoid hard-deadlocks during display re-init / device loss.
+        auto status = img_ctx.encoder_mutex->AcquireSync(0, 3000);
+        if (status == WAIT_TIMEOUT) {
+          BOOST_LOG(error) << "Timed out acquiring encoder mutex; capture/encoder sync likely wedged";
+          return -1;
+        }
+        if (status != S_OK && status != WAIT_ABANDONED) {
           BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
           return -1;
         }
+        if (status == WAIT_ABANDONED) {
+          BOOST_LOG(error) << "Encoder mutex was abandoned; continuing with lock held";
+        }
+
+        auto release_encoder_mutex = util::fail_guard([&]() {
+          const HRESULT hr = img_ctx.encoder_mutex->ReleaseSync(0);
+          if (FAILED(hr)) {
+            BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(hr).to_string_view() << ']';
+          }
+        });
 
         auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport) {
           device_ctx->PSSetShaderResources(0, 1, &input);
@@ -417,7 +435,12 @@ namespace platf::dxgi {
         draw(img_ctx.encoder_input_res, out_Y_or_YUV_viewports, out_UV_viewport);
 
         // Release encoder mutex to allow capture code to reuse this image
-        img_ctx.encoder_mutex->ReleaseSync(0);
+        const HRESULT release_hr = img_ctx.encoder_mutex->ReleaseSync(0);
+        if (SUCCEEDED(release_hr)) {
+          release_encoder_mutex.disable();
+        } else {
+          BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(release_hr).to_string_view() << ']';
+        }
 
         ID3D11ShaderResourceView *emptyShaderResourceView = nullptr;
         device_ctx->PSSetShaderResources(0, 1, &emptyShaderResourceView);

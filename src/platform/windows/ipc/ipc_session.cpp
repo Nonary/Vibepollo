@@ -30,6 +30,40 @@
 
 namespace platf::dxgi {
 
+  ipc_session_t::~ipc_session_t() {
+    // Best-effort shutdown. Avoid throwing from a destructor.
+    try {
+      _initialized = false;
+      _force_reinit = true;
+
+      // Flush any pending work on the capture device before tearing down shared resources.
+      if (_device) {
+        winrt::com_ptr<ID3D11DeviceContext> ctx;
+        _device->GetImmediateContext(ctx.put());
+        if (ctx) {
+          ctx->Flush();
+        }
+      }
+
+      if (_pipe) {
+        _pipe->stop();
+        _pipe.reset();
+      }
+
+      if (_frame_queue_pipe) {
+        _frame_queue_pipe->disconnect();
+        _frame_queue_pipe.reset();
+      }
+
+      _shared_texture = nullptr;
+      _keyed_mutex = nullptr;
+
+      stop_helper_process();
+    } catch (...) {
+      // Intentionally swallow all exceptions.
+    }
+  }
+
   void ipc_session_t::handle_secure_desktop_message(std::span<const uint8_t> msg) {
     if (msg.size() == 1 && msg[0] == SECURE_DESKTOP_MSG) {
       // secure desktop detected
@@ -85,6 +119,9 @@ namespace platf::dxgi {
     _shared_texture = nullptr;
     _keyed_mutex = nullptr;
     _frame_ready = false;
+    _frame_qpc = 0;
+    _force_reinit = false;
+    _should_swap_to_dxgi = false;
 
     // Ensure previous helper is fully stopped before restarting. This avoids overlapping D3D11 allocations
     // across rapid re-inits that have been observed to destabilize the NVIDIA driver stack.
@@ -277,19 +314,55 @@ namespace platf::dxgi {
     _initialized = true;
   }
 
-  bool ipc_session_t::wait_for_frame(std::chrono::milliseconds timeout) {
+  capture_e ipc_session_t::wait_for_frame(std::chrono::milliseconds timeout) {
+    if (!_frame_queue_pipe) {
+      return capture_e::error;
+    }
+
     frame_ready_msg_t frame_msg {};
     size_t bytesRead = 0;
     // Use a span over the frame_msg buffer
     auto result = _frame_queue_pipe->receive_latest(std::span<uint8_t>(reinterpret_cast<uint8_t *>(&frame_msg), sizeof(frame_msg)), bytesRead, static_cast<int>(timeout.count()));
-    if (result == PipeResult::Success && bytesRead == sizeof(frame_ready_msg_t)) {
-      if (frame_msg.message_type == FRAME_READY_MSG) {
-        _frame_qpc = frame_msg.frame_qpc;
-        _frame_ready = true;
-        return true;
-      }
+
+    switch (result) {
+      case PipeResult::Success:
+        {
+          if (bytesRead == sizeof(frame_ready_msg_t)) {
+            if (frame_msg.message_type == FRAME_READY_MSG) {
+              _frame_qpc = frame_msg.frame_qpc;
+              _frame_ready = true;
+              return capture_e::ok;
+            }
+
+            BOOST_LOG(warning) << "Ignoring unexpected frame queue message type ("
+                               << static_cast<int>(frame_msg.message_type) << ')';
+            return capture_e::error;
+          }
+
+          if (bytesRead == 1) {
+            // Allow secure-desktop notifications to flow over either pipe.
+            handle_secure_desktop_message(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&frame_msg), 1));
+            return capture_e::reinit;
+          }
+
+          if (bytesRead > 0) {
+            BOOST_LOG(warning) << "Ignoring unexpected frame queue payload (" << bytesRead << " bytes)";
+          }
+          return capture_e::error;
+        }
+
+      case PipeResult::Timeout:
+        return capture_e::timeout;
+
+      case PipeResult::BrokenPipe:
+      case PipeResult::Disconnected:
+      case PipeResult::Error:
+      default:
+        BOOST_LOG(warning) << "Frame queue pipe error (" << static_cast<int>(result) << "); forcing re-init";
+        _force_reinit = true;
+        _initialized = false;
+        return capture_e::reinit;
     }
-    return false;
   }
 
   bool ipc_session_t::try_get_adapter_luid(LUID &luid_out) {
@@ -325,13 +398,16 @@ namespace platf::dxgi {
   }
 
   capture_e ipc_session_t::acquire(std::chrono::milliseconds timeout, winrt::com_ptr<ID3D11Texture2D> &gpu_tex_out, uint64_t &frame_qpc_out) {
-    if (!wait_for_frame(timeout)) {
-      return capture_e::timeout;
+    auto wait_status = wait_for_frame(timeout);
+    if (wait_status != capture_e::ok) {
+      return wait_status;
     }
 
     // Additional validation: ensure required resources are available
     if (!_shared_texture || !_keyed_mutex) {
-      return capture_e::error;
+      _force_reinit = true;
+      _initialized = false;
+      return capture_e::reinit;
     }
 
     HRESULT hr = _keyed_mutex->AcquireSync(0, 3000);
@@ -340,9 +416,25 @@ namespace platf::dxgi {
       BOOST_LOG(error) << "Helper process abandoned the keyed mutex, implying it may have crashed or was forcefully terminated.";
       _should_swap_to_dxgi = false;  // Don't swap to DXGI, just reinit
       _force_reinit = true;
+      _initialized = false;
+
+      // If WAIT_ABANDONED implies ownership, release immediately to avoid leaving the mutex held.
+      (void) _keyed_mutex->ReleaseSync(0);
       return capture_e::reinit;
-    } else if (hr != S_OK || hr == WAIT_TIMEOUT) {
-      return capture_e::error;
+    }
+
+    if (hr == WAIT_TIMEOUT) {
+      BOOST_LOG(error) << "Timed out waiting for keyed mutex; forcing re-init";
+      _force_reinit = true;
+      _initialized = false;
+      return capture_e::reinit;
+    }
+
+    if (hr != S_OK) {
+      BOOST_LOG(error) << "Failed to acquire keyed mutex [0x"sv << util::hex(hr).to_string_view() << "]; forcing re-init";
+      _force_reinit = true;
+      _initialized = false;
+      return capture_e::reinit;
     }
 
     // Set output parameters
@@ -354,7 +446,10 @@ namespace platf::dxgi {
 
   void ipc_session_t::release() {
     if (_keyed_mutex) {
-      _keyed_mutex->ReleaseSync(0);
+      const HRESULT hr = _keyed_mutex->ReleaseSync(0);
+      if (FAILED(hr)) {
+        BOOST_LOG(warning) << "Failed to release keyed mutex [0x"sv << util::hex(hr).to_string_view() << ']';
+      }
     }
   }
 
@@ -400,7 +495,7 @@ namespace platf::dxgi {
       }
     });
 
-    auto device1 = _device.as<ID3D11Device1>();
+    auto device1 = _device.try_as<ID3D11Device1>();
     if (!device1) {
       BOOST_LOG(error) << "Failed to get ID3D11Device1 interface for duplicated handle";
       return false;
@@ -408,22 +503,32 @@ namespace platf::dxgi {
 
     winrt::com_ptr<IUnknown> unknown;
     HRESULT hr = device1->OpenSharedResource1(duplicated_handle, __uuidof(IUnknown), winrt::put_abi(unknown));
-    auto texture = unknown.as<ID3D11Texture2D>();
-    if (FAILED(hr) || !texture) {
+    if (FAILED(hr) || !unknown) {
       BOOST_LOG(error) << "Failed to open shared texture from duplicated handle: 0x" << std::hex << hr << " (decimal: " << std::dec << (int32_t) hr << ")";
+      return false;
+    }
+
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    hr = unknown->QueryInterface(__uuidof(ID3D11Texture2D), texture.put_void());
+    if (FAILED(hr) || !texture) {
+      BOOST_LOG(error) << "Failed to query ID3D11Texture2D from shared resource: 0x" << std::hex << hr << " (decimal: " << std::dec << (int32_t) hr << ")";
       return false;
     }
 
     // Verify texture properties
     D3D11_TEXTURE2D_DESC desc;
     texture->GetDesc(&desc);
+    if (desc.Width != width || desc.Height != height) {
+      BOOST_LOG(warning) << "Shared texture size mismatch (expected " << width << "x" << height
+                         << ", got " << desc.Width << "x" << desc.Height << ")";
+    }
 
     _shared_texture = texture;
     _width = width;
     _height = height;
 
     // Get keyed mutex interface for synchronization
-    _keyed_mutex = _shared_texture.as<IDXGIKeyedMutex>();
+    _keyed_mutex = _shared_texture.try_as<IDXGIKeyedMutex>();
     if (!_keyed_mutex) {
       BOOST_LOG(error) << "Failed to get keyed mutex interface from shared texture";
       _shared_texture = nullptr;

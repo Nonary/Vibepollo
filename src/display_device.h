@@ -41,6 +41,14 @@ namespace display_device {
   [[nodiscard]] bool output_exists(const std::string &output_name);
 
   /**
+   * @brief Check whether a configured output is currently active/attached to the desktop.
+   *
+   * On Windows this indicates whether the output has a logical `\\\\.\\DISPLAY#` name, which
+   * is required by DXGI-based capture backends.
+   */
+  [[nodiscard]] bool output_is_active(const std::string &output_name);
+
+  /**
    * @brief A tag structure indicating that configuration parsing has failed.
    */
   struct failed_to_parse_tag_t {};
