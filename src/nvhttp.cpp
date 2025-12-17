@@ -1426,6 +1426,13 @@ namespace nvhttp {
 
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
+
+#ifdef _WIN32
+    // First step on stream start: stop any in-flight helper restore loop immediately.
+    // This must happen before any other display helper work to prevent restore/crash loops on virtual displays.
+    (void) display_helper_integration::disarm_pending_restore();
+#endif
+
     auto launch_session = make_launch_session(host_audio, args, request);
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
