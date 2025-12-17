@@ -380,6 +380,9 @@ namespace config {
   // Runtime, non-persisted config overrides (e.g. per-application overrides).
   // Values use the same raw representation as the config file (strings for string keys,
   // JSON dumps for non-string keys).
+  std::unordered_map<std::string, std::string> sanitize_runtime_config_overrides(
+    std::unordered_map<std::string, std::string> overrides
+  );
   void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides);
   void clear_runtime_config_overrides();
   bool has_runtime_config_overrides();

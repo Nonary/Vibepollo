@@ -169,14 +169,24 @@ bool ProcessHandler::wait(DWORD &exit_code) {
     return false;
   }
   BOOL got_code = GetExitCodeProcess(pi_.hProcess, &exit_code);
+
+  // The process has exited; release OS handles and clear state to allow clean restarts.
   running_ = false;
+  if (pi_.hThread) {
+    CloseHandle(pi_.hThread);
+  }
+  if (pi_.hProcess) {
+    CloseHandle(pi_.hProcess);
+  }
+  ZeroMemory(&pi_, sizeof(pi_));
   return got_code != 0;
 }
 
 void ProcessHandler::terminate() {
   if (running_ && pi_.hProcess) {
     TerminateProcess(pi_.hProcess, 1);
-    running_ = false;
+    // Do not clear running_/handles here: callers may need to wait() for full teardown
+    // to avoid overlapping helper instances and destabilizing the driver stack.
   }
 }
 

@@ -285,6 +285,14 @@ const DISALLOWED_KEYS = new Set<string>([
   'virtual_display_mode',
   'virtual_display_layout',
 
+  // Administrative / UX behavior
+  'hide_tray_controls',
+  'enable_pairing',
+  'enable_discovery',
+  'install_steam_audio_drivers',
+  'envvar_compatibility_mode',
+  'legacy_ordering',
+
   'file_apps',
   'credentials_file',
   'log_path',
@@ -299,6 +307,8 @@ const DISALLOWED_KEYS = new Set<string>([
   'session_token_ttl_seconds',
   'remember_me_refresh_token_ttl_seconds',
   'global_prep_cmd',
+  'global_state_cmd',
+  'server_cmd',
 
   // Playnite sync/catalog settings (global)
   'playnite_auto_sync',
@@ -316,6 +326,10 @@ const DISALLOWED_KEYS = new Set<string>([
   'playnite_fullscreen_entry_enabled',
   'playnite_install_dir',
   'playnite_extensions_dir',
+
+  // Local file paths
+  'rtss_install_path',
+  'lossless_scaling_path',
 ]);
 
 function isAllowedKey(key: string): boolean {
@@ -389,7 +403,7 @@ function clearOverrideKey(key: string): void {
 const overrideKeys = computed<string[]>(() => {
   const o = overrides.value;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return [];
-  return Object.keys(o).filter((k) => typeof k === 'string' && k.length > 0);
+  return Object.keys(o).filter((k) => typeof k === 'string' && k.length > 0 && isAllowedKey(k));
 });
 
 const visibleOverrideKeys = computed<string[]>(() => overrideKeys.value.filter((k) => !isHiddenOverrideKey(k)));
@@ -926,6 +940,20 @@ function clearJsonState(key: string) {
   jsonDrafts.value = d;
   jsonErrors.value = e;
 }
+
+watch(
+  overrides,
+  () => {
+    const o = overrides.value;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const key of Object.keys(o)) {
+      if (!isAllowedKey(key)) {
+        clearOverrideKey(key);
+      }
+    }
+  },
+  { deep: true, immediate: true },
+);
 
 function jsonDraft(key: string): string {
   if (Object.prototype.hasOwnProperty.call(jsonDrafts.value, key)) {

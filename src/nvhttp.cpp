@@ -1757,6 +1757,12 @@ namespace nvhttp {
 
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
+#ifdef _WIN32
+    // First step on stream start: stop any in-flight helper restore loop immediately.
+    // This must happen before any other display helper work to prevent restore/crash loops on virtual displays.
+    (void) display_helper_integration::disarm_pending_restore();
+#endif
+
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
@@ -1784,6 +1790,21 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Display helper snapshot before session start was not accepted.";
       }
     }
+
+    std::optional<bool> display_helper_session_available_cache;
+    auto display_helper_session_available = [&]() -> bool {
+      if (display_helper_session_available_cache.has_value()) {
+        return *display_helper_session_available_cache;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      const bool available = (user_token != nullptr);
+      if (user_token) {
+        CloseHandle(user_token);
+      }
+      display_helper_session_available_cache = available;
+      return available;
+    };
 
     std::optional<std::string> app_output_override;
     if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
@@ -1826,6 +1847,20 @@ namespace nvhttp {
                            << "' not found; initializing virtual display instead.";
         if (!has_app_output_override) {
           request_virtual_display = true;
+        }
+      } else if (!display_device::output_is_active(requested_output_name)) {
+        // The output exists but is currently inactive (no \\\\.\\DISPLAY# assigned). If we cannot
+        // run the display helper to activate it (no signed-in user session), fall back to a
+        // virtual display so capture can still start.
+        if (no_active_sessions && !display_helper_session_available()) {
+          BOOST_LOG(warning) << "Requested display '" << requested_output_name
+                             << "' is present but inactive and cannot be activated without a signed-in user; initializing virtual display instead.";
+          if (!has_app_output_override) {
+            request_virtual_display = true;
+          }
+        } else {
+          BOOST_LOG(info) << "Requested display '" << requested_output_name
+                          << "' is present but inactive; attempting activation via display helper.";
         }
       }
     }
@@ -2109,28 +2144,9 @@ namespace nvhttp {
       revert_display_configuration = true;
 
 #ifdef _WIN32
-      HANDLE user_token = platf::retrieve_users_token(false);
-      const bool helper_session_available = (user_token != nullptr);
-      if (user_token) {
-        CloseHandle(user_token);
-      }
-
-      if (helper_session_available) {
-        (void) display_helper_integration::disarm_pending_restore();
-        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-        if (!request) {
-          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        }
-
-        if (request) {
-          if (!display_helper_integration::apply(*request)) {
-            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-          }
-        }
-
-      } else {
-        BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
-      }
+      // Avoid applying display configuration twice on stream start.
+      // The app launch path (proc::proc.execute) will apply any needed display configuration
+      // before encoder probing and RTSP setup, matching Sunshine's single-APPLY behavior.
 
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
       if (!launch_session->virtual_display) {
@@ -2148,21 +2164,6 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
-
-      // Probe encoders again before streaming to ensure our chosen
-      // encoder matches the active GPU (which could have changed
-      // due to hotplugging, driver crash, primary monitor change,
-      // or any number of other factors).
-      bool encoder_probe_failed = video::probe_encoders();
-
-      if (encoder_probe_failed && !is_input_only) {
-        BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
-        tree.put("root.gamesession", 0);
-
-        return;
-      }
     }
 
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
@@ -2902,7 +2903,7 @@ namespace nvhttp {
         named_cert_p->virtual_display_layout_override = trimmed_vd_layout;
         named_cert_p->prefer_10bit_sdr = prefer_10bit_sdr;
         if (config_overrides) {
-          named_cert_p->config_overrides = std::move(*config_overrides);
+          named_cert_p->config_overrides = config::sanitize_runtime_config_overrides(std::move(*config_overrides));
         }
         if (hdr_profile.has_value()) {
           named_cert_p->hdr_profile = boost::algorithm::trim_copy(*hdr_profile);

@@ -185,6 +185,50 @@ namespace {
   public:
     DisplayController() = default;
 
+    static std::string ascii_lower(std::string s) {
+      for (char &ch : s) {
+        if (ch >= 'A' && ch <= 'Z') {
+          ch = static_cast<char>(ch - 'A' + 'a');
+        }
+      }
+      return s;
+    }
+
+    static std::vector<std::string> flatten_topology_device_ids(const display_device::ActiveTopology &topology) {
+      std::vector<std::string> ids;
+      for (const auto &group : topology) {
+        for (const auto &id : group) {
+          if (!id.empty()) {
+            ids.push_back(id);
+          }
+        }
+      }
+      std::sort(ids.begin(), ids.end());
+      ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+      return ids;
+    }
+
+    std::vector<std::string> missing_devices_for_topology(const display_device::ActiveTopology &topology) const {
+      const auto topo_ids = flatten_topology_device_ids(topology);
+      if (topo_ids.empty()) {
+        return {};
+      }
+
+      const auto current_ids = enum_all_device_ids();
+      std::set<std::string> current_norm;
+      for (const auto &id : current_ids) {
+        current_norm.insert(ascii_lower(id));
+      }
+
+      std::vector<std::string> missing;
+      for (const auto &id : topo_ids) {
+        if (current_norm.find(ascii_lower(id)) == current_norm.end()) {
+          missing.push_back(id);
+        }
+      }
+      return missing;
+    }
+
     // Enumerate all currently available display device IDs (active or inactive).
     std::set<std::string> enum_all_device_ids() const {
       std::set<std::string> ids;
@@ -1627,6 +1671,21 @@ namespace {
       restore_next_allowed_ms.store(0, std::memory_order_release);
     }
 
+    void arm_restore_grace(std::chrono::milliseconds delay, const char *reason) {
+      if (delay <= std::chrono::milliseconds::zero()) {
+        return;
+      }
+      const auto now = steady_now_ms();
+      const auto target = now + delay.count();
+      const auto existing = restore_next_allowed_ms.load(std::memory_order_acquire);
+      if (existing != 0 && existing >= target) {
+        return;
+      }
+      restore_next_allowed_ms.store(target, std::memory_order_release);
+      BOOST_LOG(debug) << "Restore grace armed for " << delay.count() << "ms"
+                       << (reason ? std::string(" (") + reason + ")" : "");
+    }
+
     void request_restore_cancel() {
       restore_cancel_generation.fetch_add(1, std::memory_order_acq_rel);
       signal_restore_event(nullptr);
@@ -2124,7 +2183,9 @@ namespace {
       if (should_cancel()) {
         return false;
       }
-      std::this_thread::sleep_for(700ms);
+      if (!wait_with_cancel(st, 700ms, should_cancel)) {
+        return false;
+      }
       if (should_cancel()) {
         return false;
       }
@@ -2160,6 +2221,17 @@ namespace {
         return false;
       }
       attempted = true;
+      if (auto missing = controller.missing_devices_for_topology(base->m_topology); !missing.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < missing.size(); ++i) {
+          if (i > 0) {
+            joined += ", ";
+          }
+          joined += missing[i];
+        }
+        BOOST_LOG(info) << (label ? label : "session") << " snapshot skipped (missing devices): [" << joined << "]";
+        return false;
+      }
       if (!controller.is_topology_valid(*base)) {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot rejected due to invalid topology.";
         return false;
@@ -2195,7 +2267,9 @@ namespace {
         if (should_cancel()) {
           return false;
         }
-        std::this_thread::sleep_for(700ms);
+        if (!wait_with_cancel(st, 700ms, should_cancel)) {
+          return false;
+        }
         if (should_cancel()) {
           return false;
         }
@@ -2249,6 +2323,17 @@ namespace {
         }
         if (auto golden = controller.load_display_settings_snapshot(golden_path)) {
           if (cancelled()) {
+            return false;
+          }
+          if (auto missing = controller.missing_devices_for_topology(golden->m_topology); !missing.empty()) {
+            std::string joined;
+            for (size_t i = 0; i < missing.size(); ++i) {
+              if (i > 0) {
+                joined += ", ";
+              }
+              joined += missing[i];
+            }
+            BOOST_LOG(info) << "Golden snapshot skipped (missing devices): [" << joined << "]";
             return false;
           }
           if (controller.validate_topology_with_os(golden->m_topology)) {
@@ -2362,7 +2447,7 @@ namespace {
       last_restore_event_ms.store(0, std::memory_order_release);
       restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
       restore_stage_running.store(false, std::memory_order_release);
-      stop_and_async_join(restore_poll_thread, "restore-poll");
+      stop_and_join(restore_poll_thread, "restore-poll");
       restore_requested.store(false, std::memory_order_release);
       restore_origin_epoch.store(0, std::memory_order_release);
     }
@@ -2370,9 +2455,13 @@ namespace {
     void disarm_restore_requests(const char *reason = nullptr) {
       const bool had_pending = restore_requested.load(std::memory_order_acquire);
       stop_restore_polling();
+      cancel_delayed_reapply();
+      cancel_post_apply_tasks();
       delete_restore_scheduled_task();
       direct_revert_bypass_grace.store(false, std::memory_order_release);
       exit_after_revert.store(false, std::memory_order_release);
+      retry_apply_on_topology.store(false, std::memory_order_release);
+      retry_revert_on_topology.store(false, std::memory_order_release);
       if (reason) {
         BOOST_LOG(info) << reason << " (pending_restore=" << (had_pending ? "true" : "false") << ")";
       } else if (had_pending) {
@@ -2726,6 +2815,20 @@ namespace {
       }
     }
 
+    void stop_and_join(std::jthread &thread, const char *label) {
+      if (!thread.joinable()) {
+        return;
+      }
+      thread.request_stop();
+      const auto start = std::chrono::steady_clock::now();
+      thread.join();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start
+      );
+      BOOST_LOG(debug) << "Join completed for " << (label ? label : "thread")
+                       << " after " << elapsed.count() << "ms";
+    }
+
     static bool wait_with_stop(std::stop_token st, std::chrono::milliseconds duration) {
       using namespace std::chrono_literals;
       constexpr auto step = 50ms;
@@ -2741,12 +2844,28 @@ namespace {
       return !st.stop_requested();
     }
 
+    template <typename CancelPredicate>
+    static bool wait_with_cancel(std::stop_token st, std::chrono::milliseconds duration, CancelPredicate cancelled) {
+      using namespace std::chrono_literals;
+      constexpr auto step = 50ms;
+      auto remaining = duration;
+      while (remaining > std::chrono::milliseconds::zero()) {
+        if (st.stop_requested() || cancelled()) {
+          return false;
+        }
+        const auto slice = remaining > step ? step : remaining;
+        std::this_thread::sleep_for(slice);
+        remaining -= slice;
+      }
+      return !(st.stop_requested() || cancelled());
+    }
+
     static void delayed_reapply_proc(std::stop_token st, ServiceState *self, std::vector<std::chrono::milliseconds> delays) {
       for (auto delay : delays) {
         if (!wait_with_stop(st, delay)) {
           return;
         }
-        if (self->verify_last_configuration_sticky(kVerificationSettleDelay)) {
+        if (self->verify_last_configuration_sticky(kVerificationSettleDelay, st)) {
           continue;
         }
         BOOST_LOG(info) << "Delayed re-apply attempt after activation 213Q902";
@@ -2763,7 +2882,7 @@ namespace {
       } catch (...) {}
     }
 
-    bool verify_last_configuration_sticky(std::chrono::milliseconds settle_delay = kVerificationSettleDelay) {
+    bool verify_last_configuration_sticky(std::chrono::milliseconds settle_delay = kVerificationSettleDelay, std::stop_token st = {}) {
       if (!last_cfg) {
         return true;
       }
@@ -2774,7 +2893,9 @@ namespace {
         return false;
       }
       if (settle_delay > std::chrono::milliseconds::zero()) {
-        std::this_thread::sleep_for(settle_delay);
+        if (!wait_with_stop(st, settle_delay)) {
+          return false;
+        }
         return matches();
       }
       return true;
@@ -2788,7 +2909,7 @@ namespace {
     }
 
     void cancel_post_apply_tasks() {
-      stop_and_async_join(post_apply_thread, "post-apply");
+      stop_and_join(post_apply_thread, "post-apply");
     }
 
     void schedule_post_apply_tasks(
@@ -3646,6 +3767,9 @@ namespace {
     state.restore_requested.store(true, std::memory_order_release);
     state.restore_origin_epoch.store(state.current_connection_epoch(), std::memory_order_release);
 
+    // Give Sunshine a short window to immediately start a new session and DISARM,
+    // avoiding costly restore/apply thrash during fast client switching.
+    state.arm_restore_grace(5000ms, "revert");
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 
@@ -3742,6 +3866,7 @@ namespace {
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
     state.restore_origin_epoch.store(connection_epoch, std::memory_order_release);
+    state.arm_restore_grace(5000ms, "disconnect");
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 

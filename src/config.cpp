@@ -1875,6 +1875,10 @@ namespace config {
 
         // Global UX / program settings
         "sunshine_name",
+        "hide_tray_controls",
+        "enable_pairing",
+        "enable_discovery",
+        "install_steam_audio_drivers",
         "envvar_compatibility_mode",
         "locale",
         "min_log_level",
@@ -1889,6 +1893,10 @@ namespace config {
         "global_prep_cmd",
         "global_state_cmd",
         "server_cmd",
+
+        // Local file paths
+        "rtss_install_path",
+        "lossless_scaling_path",
       };
 
       return !kBlocked.contains(key);
@@ -1899,6 +1907,22 @@ namespace config {
       return g_runtime_config_overrides;
     }
   }  // namespace
+
+  std::unordered_map<std::string, std::string> sanitize_runtime_config_overrides(
+    std::unordered_map<std::string, std::string> overrides
+  ) {
+    std::unordered_map<std::string, std::string> filtered;
+    filtered.reserve(overrides.size());
+
+    for (auto &[k, v] : overrides) {
+      if (!is_valid_override_key(k) || !is_allowed_override_key(k)) {
+        continue;
+      }
+      filtered.emplace(std::move(k), std::move(v));
+    }
+
+    return filtered;
+  }
 
   // Acquire a shared lock while preparing/starting sessions.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate() {
@@ -2013,15 +2037,7 @@ namespace config {
   }
 
   void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides) {
-    std::unordered_map<std::string, std::string> filtered;
-    filtered.reserve(overrides.size());
-
-    for (auto &[k, v] : overrides) {
-      if (!is_valid_override_key(k) || !is_allowed_override_key(k)) {
-        continue;
-      }
-      filtered.emplace(std::move(k), std::move(v));
-    }
+    auto filtered = sanitize_runtime_config_overrides(std::move(overrides));
 
     std::scoped_lock lk(g_runtime_overrides_mutex);
     g_runtime_config_overrides = std::move(filtered);

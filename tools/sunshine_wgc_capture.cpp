@@ -453,7 +453,7 @@ public:
     }
 
     // Set GPU thread priority to 7 for optimal capture performance under high GPU load
-    _dxgi_device = _device.as<IDXGIDevice>();
+    _dxgi_device = _device.try_as<IDXGIDevice>();
     if (_dxgi_device) {
       hr = _dxgi_device->SetGPUThreadPriority(7);
       if (FAILED(hr)) {
@@ -485,7 +485,7 @@ public:
       return false;
     }
 
-    _dxgi_device = _device.as<IDXGIDevice>();
+    _dxgi_device = _device.try_as<IDXGIDevice>();
     if (!_dxgi_device) {
       BOOST_LOG(error) << "Failed to get DXGI device";
       return false;
@@ -497,7 +497,11 @@ public:
       return false;
     }
 
-    _winrt_device = _interop_device.as<IDirect3DDevice>();
+    _winrt_device = _interop_device.try_as<IDirect3DDevice>();
+    if (!_winrt_device) {
+      BOOST_LOG(error) << "Failed to query IDirect3DDevice from interop device";
+      return false;
+    }
     return true;
   }
 
@@ -782,7 +786,7 @@ public:
       return false;
     }
 
-    _keyed_mutex = _shared_texture.as<IDXGIKeyedMutex>();
+    _keyed_mutex = _shared_texture.try_as<IDXGIKeyedMutex>();
     if (!_keyed_mutex) {
       BOOST_LOG(error) << "Failed to get keyed mutex";
       return false;
@@ -801,7 +805,7 @@ public:
       return false;
     }
 
-    winrt::com_ptr<IDXGIResource1> dxgi_resource1 = _shared_texture.as<IDXGIResource1>();
+    winrt::com_ptr<IDXGIResource1> dxgi_resource1 = _shared_texture.try_as<IDXGIResource1>();
     if (!dxgi_resource1) {
       BOOST_LOG(error) << "Failed to query DXGI resource1 interface";
       return false;
@@ -942,9 +946,16 @@ public:
     cleanup_capture_session();
     cleanup_frame_pool();
 
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-    while (_outstanding_frames.load(std::memory_order_acquire) > 0 &&
-           std::chrono::steady_clock::now() < deadline) {
+    // Ensure any in-flight FrameArrived callbacks have finished before destructing.
+    // This avoids use-after-free on shutdown paths triggered by display reinit/HDR changes.
+    auto last_log = std::chrono::steady_clock::now();
+    while (_outstanding_frames.load(std::memory_order_acquire) > 0) {
+      auto now = std::chrono::steady_clock::now();
+      if (now - last_log > std::chrono::seconds(2)) {
+        last_log = now;
+        BOOST_LOG(warning) << "Waiting for " << _outstanding_frames.load(std::memory_order_relaxed)
+                           << " in-flight frame(s) to finish before shutdown...";
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
@@ -1075,9 +1086,6 @@ public:
       BOOST_LOG(info) << "Frame drop detected (total drops in 5s window: " << _drop_timestamps.size() << ")";
     }
 
-    // Decrement outstanding frame count (always called whether frame retrieved or not)
-    --_outstanding_frames;
-
     // Check if we need to adjust frame buffer size
     check_and_adjust_frame_buffer();
   }
@@ -1166,21 +1174,32 @@ private:
     }
 
     HRESULT hr = _deps->resource_manager.get_keyed_mutex()->AcquireSync(0, 200);
-    if (hr != S_OK) {
+    if (hr == WAIT_TIMEOUT) {
+      BOOST_LOG(error) << "Timed out acquiring keyed mutex; dropping frame";
+      return;
+    }
+    if (hr != S_OK && hr != WAIT_ABANDONED) {
       BOOST_LOG(error) << "Failed to acquire mutex key 0: " << std::format(": 0x{:08X}", hr);
       return;
+    }
+    if (hr == WAIT_ABANDONED) {
+      BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
     }
 
     // Copy frame data and release mutex
     _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
-    _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
+    const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
+    if (FAILED(rel_hr)) {
+      BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", rel_hr);
+    }
 
     // Send frame ready message with QPC timing data
     frame_ready_msg_t frame_msg;
     frame_msg.frame_qpc = frame_qpc;
 
     std::span<const uint8_t> msg_span(reinterpret_cast<const uint8_t *>(&frame_msg), sizeof(frame_msg));
-    bool send_ok = _deps->pipe.send(msg_span, 5000);
+    // Keep this short: if the main process stops reading, we must not deadlock the WGC callback thread.
+    bool send_ok = _deps->pipe.send(msg_span, 250);
 
     // Log first frame and frame 100 for quick sanity checks, but avoid long-running spam.
     static std::atomic<uint64_t> frame_count {0};
@@ -1210,15 +1229,25 @@ public:
         return;
       }
 
-      const int outstanding = _outstanding_frames.fetch_add(1, std::memory_order_acq_rel) + 1;
+      struct outstanding_guard_t {
+        std::atomic<int> &counter;
+        const int value;
+
+        explicit outstanding_guard_t(std::atomic<int> &c):
+            counter(c),
+            value(c.fetch_add(1, std::memory_order_acq_rel) + 1) {}
+
+        ~outstanding_guard_t() {
+          counter.fetch_sub(1, std::memory_order_acq_rel);
+        }
+      } guard {_outstanding_frames};
+
       int prev_peak = _peak_outstanding.load(std::memory_order_relaxed);
-      while (outstanding > prev_peak &&
-             !_peak_outstanding.compare_exchange_weak(prev_peak, outstanding, std::memory_order_release, std::memory_order_relaxed)) {
+      while (guard.value > prev_peak &&
+             !_peak_outstanding.compare_exchange_weak(prev_peak, guard.value, std::memory_order_release, std::memory_order_relaxed)) {
       }
 
       process_frame(sender);
-
-      _outstanding_frames.fetch_sub(1, std::memory_order_acq_rel);
     });
 
     try {
@@ -1554,6 +1583,11 @@ int main(int argc, char *argv[]) {
     waited_ms += poll_interval_ms;
   }
 
+  if (!g_config_received) {
+    BOOST_LOG(error) << "Timed out waiting for config data from main process (" << max_wait_ms << "ms)";
+    return 1;
+  }
+
   // Create D3D11 device and context using the same adapter as the main process
   D3D11DeviceManager d3d11_manager;
   if (!d3d11_manager.initialize_all(g_config.adapter_luid)) {
@@ -1601,8 +1635,18 @@ int main(int argc, char *argv[]) {
 
   // Wait for connection and send the handle data
   BOOST_LOG(info) << "Waiting for main process to connect...";
-  while (!pipe_shared->is_connected()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  {
+    constexpr int connect_timeout_ms = 5000;
+    int connect_waited_ms = 0;
+    while (!pipe_shared->is_connected() && connect_waited_ms < connect_timeout_ms) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      connect_waited_ms += 50;
+    }
+
+    if (!pipe_shared->is_connected()) {
+      BOOST_LOG(error) << "Timed out waiting for main process to connect (" << connect_timeout_ms << "ms)";
+      return 1;
+    }
   }
   BOOST_LOG(info) << "Connected! Sending duplicated handle data...";
   pipe_shared->send(handle_message);

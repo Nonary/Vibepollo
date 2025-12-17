@@ -22,6 +22,10 @@ namespace platf::display_helper_client {
   // Best-effort cancel of any pending restore/watchdog activity on the helper
   bool send_disarm_restore();
 
+  // Fast, best-effort DISARM that will not block longer than timeout_ms for connect/send.
+  // Intended for stream start paths where we must stop helper activity immediately.
+  bool send_disarm_restore_fast(int timeout_ms);
+
   // Save the current OS display state to session_current (rotate current->previous) without applying config.
   bool send_snapshot_current(const std::string &json_payload = {});
 

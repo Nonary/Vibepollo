@@ -2842,23 +2842,6 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
-    auto query_monitor_device_path_with_retries = [&](const VIRTUAL_DISPLAY_ADD_OUT &out) -> std::optional<std::wstring> {
-      // QueryDisplayConfig can lag for newly-added virtual displays; retry briefly to capture the monitor path.
-      constexpr int kAttempts = 25;
-      constexpr auto kDelay = std::chrono::milliseconds(100);
-      for (int i = 0; i < kAttempts; ++i) {
-        if (auto identity = query_display_config_identity(out)) {
-          if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {
-            return identity->monitor_device_path;
-          }
-        }
-        if (i + 1 < kAttempts) {
-          std::this_thread::sleep_for(kDelay);
-        }
-      }
-      return std::nullopt;
-    };
-
     // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
     if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
       if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
@@ -2885,10 +2868,12 @@ namespace VDISPLAY {
     if (s_client_name && std::strlen(s_client_name) > 0) {
       result.client_name = std::string(s_client_name);
     }
-    if (auto monitor_path = query_monitor_device_path_with_retries(output)) {
-      result.monitor_device_path = monitor_path;
-    } else if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
+    if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
       result.monitor_device_path = display_config_identity->monitor_device_path;
+    } else if (auto identity = query_display_config_identity(output)) {
+      if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {
+        result.monitor_device_path = identity->monitor_device_path;
+      }
     }
     result.reused_existing = false;
     result.ready_since = ready_since;
