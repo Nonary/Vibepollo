@@ -62,7 +62,6 @@ namespace {
   }
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
-  constexpr DWORD kHelperStopGracePeriodMs = 2000;
   constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
   constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
 
@@ -293,7 +292,6 @@ namespace {
 
     return ok;
   }
-  constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
   bool wait_for_helper_ipc_ready_locked() {
@@ -560,8 +558,7 @@ namespace {
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
         BOOST_LOG(debug) << "Display helper already running (pid=" << pid << ")";
-        bool need_restart = force_restart;
-        if (!need_restart) {
+        if (!force_restart) {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
@@ -576,68 +573,29 @@ namespace {
           platf::display_helper_client::reset_connection();
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
           return false;
+        }
+
+        BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
+                           << ") with no grace period.";
+        platf::display_helper_client::reset_connection();
+        helper_proc().terminate();
+
+        DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
+        if (wait_result == WAIT_OBJECT_0) {
+          DWORD exit_code = 0;
+          GetExitCodeProcess(h, &exit_code);
+          BOOST_LOG(info) << "Display helper exited after forced termination (code=" << exit_code << ").";
+        } else if (wait_result == WAIT_TIMEOUT) {
+          BOOST_LOG(warning) << "Display helper: process did not exit within " << kHelperForceKillWaitMs
+                             << " ms after termination request; continuing with cleanup.";
         } else {
-          BOOST_LOG(info) << "Display helper restart requested (force).";
+          DWORD wait_err = GetLastError();
+          BOOST_LOG(warning) << "Display helper: wait after termination failed (winerr=" << wait_err
+                             << "); continuing with cleanup.";
         }
-        if (need_restart) {
-          bool graceful_shutdown = false;
-          bool stop_sent = platf::display_helper_client::send_stop();
-          if (stop_sent) {
-            DWORD wait_stop = WaitForSingleObject(h, kHelperStopGracePeriodMs);
-            if (wait_stop == WAIT_OBJECT_0) {
-              DWORD exit_code = 0;
-              GetExitCodeProcess(h, &exit_code);
-              BOOST_LOG(info) << "Display helper exited after STOP request (code=" << exit_code << ").";
-              graceful_shutdown = true;
-            } else if (wait_stop == WAIT_TIMEOUT) {
-              DWORD remaining = (kHelperStopTotalWaitMs > kHelperStopGracePeriodMs) ? (kHelperStopTotalWaitMs - kHelperStopGracePeriodMs) : 0;
-              if (remaining > 0) {
-                DWORD wait_more = WaitForSingleObject(h, remaining);
-                if (wait_more == WAIT_OBJECT_0) {
-                  DWORD exit_code = 0;
-                  GetExitCodeProcess(h, &exit_code);
-                  BOOST_LOG(info) << "Display helper exited after extended STOP wait (code=" << exit_code << ").";
-                  graceful_shutdown = true;
-                } else if (wait_more == WAIT_TIMEOUT) {
-                  BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopTotalWaitMs
-                                     << " ms; will force termination.";
-                } else {
-                  DWORD wait_err = GetLastError();
-                  BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err
-                                   << "); will force termination.";
-                }
-              } else {
-                BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopGracePeriodMs
-                                   << " ms; will force termination.";
-              }
-            } else {
-              DWORD wait_err = GetLastError();
-              BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err << "); will force termination.";
-            }
-          } else {
-            BOOST_LOG(warning) << "Display helper STOP request failed; will force termination.";
-          }
-          platf::display_helper_client::reset_connection();
-          if (!graceful_shutdown) {
-            helper_proc().terminate();
-            DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
-            if (wait_result == WAIT_OBJECT_0) {
-              DWORD exit_code = 0;
-              GetExitCodeProcess(h, &exit_code);
-              BOOST_LOG(info) << "Display helper terminated after forced shutdown (code=" << exit_code << ").";
-            } else if (wait_result == WAIT_TIMEOUT) {
-              BOOST_LOG(error) << "Display helper process still running after forced termination wait of "
-                               << kHelperForceKillWaitMs << " ms; deferring restart.";
-              return false;
-            } else {
-              DWORD wait_err = GetLastError();
-              BOOST_LOG(error) << "Display helper forced termination wait failed (winerr=" << wait_err
-                               << "); deferring restart.";
-              return false;
-            }
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(800));
-        }
+
+        // Small delay to reduce the chance of named pipe / mutex conflicts during rapid restart.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } else {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
@@ -668,7 +626,15 @@ namespace {
     }
 
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    const bool started = helper_proc().start(helper.wstring(), L"");
+    bool started = helper_proc().start(helper.wstring(), L"");
+    if (!started && force_restart) {
+      // If we were asked to hard-restart, tolerate a brief overlap window where the old
+      // instance is still tearing down and retry quickly.
+      for (int attempt = 0; attempt < 5 && !started; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        started = helper_proc().start(helper.wstring(), L"");
+      }
+    }
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
@@ -940,9 +906,12 @@ namespace display_helper_integration {
     const bool system_profile_only = platf::is_running_as_system() && !platf::has_active_console_session();
 
     if (!system_profile_only) {
-      bool helper_ready = ensure_helper_started(false, true);
+      // Stream-start policy: if a helper is already running, hard-restart it immediately
+      // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
+      const bool hard_restart = (request.session != nullptr);
+      bool helper_ready = ensure_helper_started(hard_restart, true);
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(false, true);
+        helper_ready = ensure_helper_started(hard_restart, true);
       }
 
       if (helper_ready) {
