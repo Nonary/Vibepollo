@@ -1714,7 +1714,13 @@ namespace proc {
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif
 
-      display_helper_integration::revert();
+      const bool reverted = display_helper_integration::revert();
+#ifdef _WIN32
+      if (reverted && rtsp_stream::session_count() == 0) {
+        BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
+        display_helper_integration::stop_watchdog();
+      }
+#endif
     }
 
     _active_client_uuid.clear();

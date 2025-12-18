@@ -31,6 +31,17 @@ namespace display_helper_integration::helpers {
       bool isolated = false;
     };
 
+    int safe_add_int(int value, int delta) {
+      const auto result = static_cast<long long>(value) + static_cast<long long>(delta);
+      if (result > std::numeric_limits<int>::max()) {
+        return std::numeric_limits<int>::max();
+      }
+      if (result < std::numeric_limits<int>::min()) {
+        return std::numeric_limits<int>::min();
+      }
+      return static_cast<int>(result);
+    }
+
     layout_flags_t describe_layout(const config::video_t::virtual_display_layout_e layout) {
       using enum display_helper_integration::VirtualDisplayArrangement;
       using Prep = display_device::SingleDisplayConfiguration::DevicePreparation;
@@ -80,26 +91,6 @@ namespace display_helper_integration::helpers {
         return video_config.output_name;
       }
 
-      return std::nullopt;
-    }
-
-    std::optional<std::string> resolve_current_primary_device_id(const std::optional<std::string> &virtual_device_id) {
-      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      if (!devices) {
-        return std::nullopt;
-      }
-      for (const auto &device : *devices) {
-        if (device.m_device_id.empty()) {
-          continue;
-        }
-        if (!device.m_info || !device.m_info->m_primary) {
-          continue;
-        }
-        if (virtual_device_id && boost::iequals(device.m_device_id, *virtual_device_id)) {
-          continue;
-        }
-        return device.m_device_id;
-      }
       return std::nullopt;
     }
 
@@ -474,17 +465,64 @@ namespace display_helper_integration::helpers {
       return;
     }
 
-    std::string isolated_device_id = default_device_id;
     if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::ExtendedPrimaryIsolated) {
-      if (auto primary_device_id = resolve_current_primary_device_id(resolved_virtual_device_id)) {
-        isolated_device_id = *primary_device_id;
-      } else if (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) {
-        isolated_device_id = *resolved_virtual_device_id;
+      const std::string virtual_device_id =
+        (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
+      if (virtual_device_id.empty()) {
+        return;
       }
-    } else if (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) {
-      isolated_device_id = *resolved_virtual_device_id;
+
+      // Primary displays typically want to live at (0,0), so in primary+isolated mode we keep the virtual
+      // display at the origin and shift every other display far away so the mouse cannot escape.
+      topology.monitor_positions[virtual_device_id] = display_device::Point {0, 0};
+
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return;
+      }
+
+      bool have_non_virtual = false;
+      int min_x = 0;
+      int min_y = 0;
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || !device.m_info) {
+          continue;
+        }
+        if (boost::iequals(device.m_device_id, virtual_device_id)) {
+          continue;
+        }
+        const auto &pt = device.m_info->m_origin_point;
+        if (!have_non_virtual) {
+          min_x = pt.m_x;
+          min_y = pt.m_y;
+          have_non_virtual = true;
+        } else {
+          min_x = std::min(min_x, pt.m_x);
+          min_y = std::min(min_y, pt.m_y);
+        }
+      }
+
+      if (!have_non_virtual) {
+        return;
+      }
+
+      const int dx = kIsolatedVirtualDisplayOffset - min_x;
+      const int dy = kIsolatedVirtualDisplayOffset - min_y;
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || !device.m_info) {
+          continue;
+        }
+        if (boost::iequals(device.m_device_id, virtual_device_id)) {
+          continue;
+        }
+        const auto &pt = device.m_info->m_origin_point;
+        topology.monitor_positions[device.m_device_id] = display_device::Point {safe_add_int(pt.m_x, dx), safe_add_int(pt.m_y, dy)};
+      }
+      return;
     }
 
+    std::string isolated_device_id =
+      (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
     if (isolated_device_id.empty()) {
       return;
     }

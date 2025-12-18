@@ -1990,7 +1990,15 @@ namespace stream {
 #endif
 
         if (revert_display_config && !skip_display_revert) {
-          display_helper_integration::revert();
+          const bool reverted = display_helper_integration::revert();
+#ifdef _WIN32
+          if (reverted) {
+            // If we reverted the display configuration, the helper watchdog is no longer needed.
+            display_helper_integration::stop_watchdog();
+          } else {
+            BOOST_LOG(debug) << "Display helper: revert failed; leaving watchdog running.";
+          }
+#endif
         }
 
         // Restore any Windows-only integrations first
