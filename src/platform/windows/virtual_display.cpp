@@ -64,6 +64,7 @@ namespace VDISPLAY {
     constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
     constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(5);
     constexpr auto DRIVER_RESTART_POLL_INTERVAL = std::chrono::milliseconds(500);
+    constexpr auto DRIVER_RESTART_FAILURE_COOLDOWN = std::chrono::seconds(10);
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
     constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
@@ -72,6 +73,7 @@ namespace VDISPLAY {
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::atomic<std::int64_t> g_last_teardown_ns {0};
+    std::atomic<std::int64_t> g_last_restart_failure_ns {0};
 
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -108,6 +110,24 @@ namespace VDISPLAY {
         return false;
       }
       return now < time_from_steady_ticks(deadline_ticks);
+    }
+
+    bool should_skip_restart_attempt(std::chrono::steady_clock::time_point now, std::chrono::milliseconds &cooldown_remaining) {
+      const auto last_failure = g_last_restart_failure_ns.load(std::memory_order_acquire);
+      if (last_failure <= 0) {
+        return false;
+      }
+      const auto last_time = time_from_steady_ticks(last_failure);
+      const auto deadline = last_time + DRIVER_RESTART_FAILURE_COOLDOWN;
+      if (now >= deadline) {
+        return false;
+      }
+      cooldown_remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      return true;
+    }
+
+    void note_restart_failure(std::chrono::steady_clock::time_point now) {
+      g_last_restart_failure_ns.store(steady_ticks_from_time(now), std::memory_order_release);
     }
 
     bool driver_handle_responsive(HANDLE handle) {
@@ -2208,10 +2228,19 @@ namespace VDISPLAY {
       return true;
     }
 
+    const auto now = std::chrono::steady_clock::now();
+    std::chrono::milliseconds cooldown_remaining {0};
+    if (should_skip_restart_attempt(now, cooldown_remaining)) {
+      BOOST_LOG(warning) << "Skipping SudoVDA restart attempt due to recent failure (cooldown "
+                         << cooldown_remaining.count() << " ms remaining).";
+      return false;
+    }
+
     bool waited_for_restart = false;
     auto instance_id = find_sudovda_device_instance_id();
     if (!instance_id) {
       BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
+      note_restart_failure(now);
       return false;
     }
 
@@ -2219,6 +2248,7 @@ namespace VDISPLAY {
 
     if (!restart_sudovda_device(*instance_id)) {
       BOOST_LOG(error) << "SudoVDA adapter restart failed; streaming will continue with the active display. A reboot may be required.";
+      note_restart_failure(now);
       return false;
     }
 
@@ -2236,6 +2266,7 @@ namespace VDISPLAY {
     }
 
     BOOST_LOG(error) << "SudoVDA driver did not respond within the restart timeout; streaming will continue with the active display. A reboot may be required.";
+    note_restart_failure(std::chrono::steady_clock::now());
     return false;
   }
 

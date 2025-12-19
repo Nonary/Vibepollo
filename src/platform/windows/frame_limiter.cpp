@@ -99,7 +99,9 @@ namespace platf {
 
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
     const bool rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
-    const bool allow_gen1_rtss_override = !provider_overridden;
+    const auto configured_provider = parse_provider(config::frame_limiter.provider);
+    const bool provider_explicit = configured_provider != frame_limiter_provider::auto_detect;
+    const bool allow_gen1_rtss_override = !(provider_overridden && provider_explicit);
 
     // Gen1 fix: Force RTSS with front-edge sync (for DLSS3, FSR3, Lossless Scaling)
     // Respect explicit provider overrides so users can force NVCP.

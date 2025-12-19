@@ -29,6 +29,7 @@ namespace platf::frame_limiter_nvcp {
     struct state_t {
       NvDRSSessionHandle session = nullptr;
       NvDRSProfileHandle profile = nullptr;
+      bool profile_is_global = false;
       bool initialized = false;
       bool frame_limit_applied = false;
       bool vsync_applied = false;
@@ -65,6 +66,7 @@ namespace platf::frame_limiter_nvcp {
     constexpr NvU32 SMOOTH_MOTION_API_MASK_VALUE = 0x00000007;
     constexpr NvU32 SMOOTH_MOTION_MIN_DRIVER_VERSION = 57186;
     constexpr NvU32 NVAPI_DRIVER_AND_BRANCH_VERSION_ID = 0x2926AAAD;
+    constexpr NvU32 NVAPI_DRS_GET_CURRENT_GLOBAL_PROFILE_ID = 0x617bff9f;
     constexpr NvU32 ULTRA_LOW_LATENCY_CPL_STATE_ID = 0x0005F543;
     constexpr NvU32 ULTRA_LOW_LATENCY_ENABLED_ID = 0x10835000;
     constexpr NvU32 ULTRA_LOW_LATENCY_CPL_STATE_ULTRA = 0x00000002;
@@ -72,6 +74,7 @@ namespace platf::frame_limiter_nvcp {
 
     using query_interface_fn = void *(__cdecl *) (NvU32);
     using driver_version_fn = NvAPI_Status(__cdecl *)(NvU32 *, NvAPI_ShortString);
+    using get_current_global_profile_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle *);
 
     void log_nvapi_error(NvAPI_Status status, const char *label) {
       NvAPI_ShortString message = {};
@@ -142,6 +145,22 @@ namespace platf::frame_limiter_nvcp {
       return fn(version, branch);
     }
 
+    NvAPI_Status get_current_global_profile(NvDRSSessionHandle session, NvDRSProfileHandle *profile) {
+      static get_current_global_profile_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        auto query = resolve_query_interface();
+        if (query) {
+          fn = reinterpret_cast<get_current_global_profile_fn>(query(NVAPI_DRS_GET_CURRENT_GLOBAL_PROFILE_ID));
+        }
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      return fn(session, profile);
+    }
+
     void cleanup() {
       if (g_state.session) {
         NvAPI_DRS_DestroySession(g_state.session);
@@ -152,6 +171,7 @@ namespace platf::frame_limiter_nvcp {
         g_state.initialized = false;
       }
       g_state.profile = nullptr;
+      g_state.profile_is_global = false;
       g_state.frame_limit_applied = false;
       g_state.vsync_applied = false;
       g_state.llm_applied = false;
@@ -177,6 +197,8 @@ namespace platf::frame_limiter_nvcp {
       g_state.smooth_motion_supported = false;
       g_state.driver_version = 0;
     }
+
+    NvDRSProfileHandle resolve_profile(NvDRSSessionHandle session, bool *is_global);
 
     bool ensure_initialized() {
       if (g_state.initialized && g_state.session && g_state.profile) {
@@ -218,9 +240,8 @@ namespace platf::frame_limiter_nvcp {
         return false;
       }
 
-      status = NvAPI_DRS_GetBaseProfile(g_state.session, &g_state.profile);
-      if (status != NVAPI_OK) {
-        log_nvapi_error(status, "DRS_GetBaseProfile");
+      g_state.profile = resolve_profile(g_state.session, &g_state.profile_is_global);
+      if (!g_state.profile) {
         cleanup();
         return false;
       }
@@ -233,13 +254,17 @@ namespace platf::frame_limiter_nvcp {
       existing.version = NVDRS_SETTING_VER;
       NvAPI_Status status = NvAPI_DRS_GetSetting(g_state.session, g_state.profile, setting_id, &existing);
       if (status == NVAPI_OK) {
+        const bool setting_in_profile =
+          existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION ||
+          (g_state.profile_is_global && existing.settingLocation == NVDRS_GLOBAL_PROFILE_LOCATION) ||
+          (!g_state.profile_is_global && existing.settingLocation == NVDRS_BASE_PROFILE_LOCATION);
         if (had_override) {
-          *had_override = existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION;
+          *had_override = setting_in_profile;
         }
         if (current_value) {
           *current_value = existing.u32CurrentValue;
         }
-        if (existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION) {
+        if (setting_in_profile) {
           storage = existing.u32CurrentValue;
         } else {
           storage.reset();
@@ -258,6 +283,36 @@ namespace platf::frame_limiter_nvcp {
         *had_override = false;
       }
       return status;
+    }
+
+    NvDRSProfileHandle resolve_profile(NvDRSSessionHandle session, bool *is_global) {
+      if (is_global) {
+        *is_global = false;
+      }
+
+      NVDRS_SETTING probe = {};
+      probe.version = NVDRS_SETTING_VER;
+      NvDRSProfileHandle profile = nullptr;
+      NvAPI_Status status = get_current_global_profile(session, &profile);
+      if (status == NVAPI_OK && profile) {
+        NvAPI_Status probe_status = NvAPI_DRS_GetSetting(session, profile, FRL_FPS_ID, &probe);
+        if (probe_status == NVAPI_OK || probe_status == NVAPI_SETTING_NOT_FOUND) {
+          if (is_global) {
+            *is_global = true;
+          }
+          return profile;
+        }
+        log_nvapi_error(probe_status, "DRS_GetSetting(FRL_FPS global)");
+      } else if (status != NVAPI_OK && status != NVAPI_NO_IMPLEMENTATION) {
+        log_nvapi_error(status, "DRS_GetCurrentGlobalProfile");
+      }
+
+      status = NvAPI_DRS_GetBaseProfile(session, &profile);
+      if (status != NVAPI_OK) {
+        log_nvapi_error(status, "DRS_GetBaseProfile");
+        return nullptr;
+      }
+      return profile;
     }
 
     struct restore_info_t {
@@ -522,10 +577,10 @@ namespace platf::frame_limiter_nvcp {
           break;
         }
 
-        NvDRSProfileHandle profile = nullptr;
-        result = NvAPI_DRS_GetBaseProfile(session, &profile);
-        if (result != NVAPI_OK) {
-          log_nvapi_error(result, "DRS_GetBaseProfile(restore)");
+        bool profile_is_global = false;
+        NvDRSProfileHandle profile = resolve_profile(session, &profile_is_global);
+        if (!profile) {
+          result = NVAPI_ERROR;
           break;
         }
 
