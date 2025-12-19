@@ -1008,6 +1008,124 @@ namespace platf {
     return g_limit_active;
   }
 
+  bool rtss_streaming_refresh(int fps) {
+    if (!config::frame_limiter.enable) {
+      return false;
+    }
+
+    if (!g_limit_active && !g_settings_dirty) {
+      return rtss_streaming_start(fps);
+    }
+
+    g_rtss_root = resolve_rtss_root();
+    if (!fs::exists(g_rtss_root)) {
+      BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
+      return false;
+    }
+
+    ensure_rtss_running(g_rtss_root);
+
+    if (!g_hooks) {
+      (void) load_hooks(g_rtss_root);
+    }
+
+    bool dirty = false;
+
+    if (g_hooks) {
+      DWORD current_flags = g_hooks.GetFlags();
+      if (!g_original_flags.has_value()) {
+        g_original_flags = current_flags;
+      }
+      if (current_flags & k_rtss_flag_limiter_disabled) {
+        constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
+        DWORD updated_flags = g_hooks.SetFlags(~limiter_mask, 0);
+        if (!(updated_flags & limiter_mask)) {
+          g_flags_modified = true;
+          dirty = true;
+        }
+      }
+    }
+
+    int current_denominator = 1;
+    auto old_den = set_limit_denominator(g_rtss_root, current_denominator);
+    if (old_den.has_value() && *old_den != current_denominator) {
+      if (!g_original_denominator.has_value()) {
+        g_original_denominator = *old_den;
+      }
+      g_denominator_modified = true;
+      dirty = true;
+    }
+    if (g_hooks) {
+      g_hooks.UpdateProfiles();
+    }
+
+    std::optional<int> sync_limiter_value;
+    std::optional<std::string> sync_limiter_label;
+    if (g_sync_limiter_override && !g_sync_limiter_override->empty()) {
+      if (auto mapped = map_sync_limiter(*g_sync_limiter_override)) {
+        sync_limiter_value = mapped;
+        sync_limiter_label = *g_sync_limiter_override;
+      }
+    }
+    if (!sync_limiter_value) {
+      if (auto v = map_sync_limiter(config::rtss.frame_limit_type)) {
+        sync_limiter_value = v;
+        if (!config::rtss.frame_limit_type.empty()) {
+          sync_limiter_label = config::rtss.frame_limit_type;
+        }
+      }
+    }
+    if (sync_limiter_value) {
+      bool applied = false;
+      if (g_hooks) {
+        set_profile_property_int("SyncLimiter", *sync_limiter_value);
+        applied = true;
+      } else if (write_profile_value_int(g_rtss_root, "SyncLimiter", *sync_limiter_value)) {
+        applied = true;
+      }
+      if (applied) {
+        g_sync_limiter_modified = true;
+        dirty = true;
+        if (sync_limiter_label) {
+          BOOST_LOG(info) << "RTSS SyncLimiter refreshed ("sv << *sync_limiter_label << ')';
+        } else {
+          BOOST_LOG(info) << "RTSS SyncLimiter refreshed";
+        }
+      }
+    }
+
+    int scaled_limit = fps;
+    bool applied_limit = false;
+    if (g_hooks) {
+      set_profile_property_int("FramerateLimit", scaled_limit);
+      applied_limit = true;
+    } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", scaled_limit)) {
+      applied_limit = true;
+    }
+    if (applied_limit) {
+      g_limit_active = true;
+      g_limit_modified = true;
+      dirty = true;
+      BOOST_LOG(info) << "RTSS refreshed framerate limit=" << scaled_limit << " (denominator=" << current_denominator << ")";
+    }
+
+    if (dirty && !g_settings_dirty) {
+      g_settings_dirty = true;
+      recovery_snapshot_t snapshot;
+      snapshot.flags_modified = g_flags_modified && g_original_flags.has_value();
+      snapshot.original_flags = g_original_flags;
+      snapshot.denominator_modified = g_denominator_modified && g_original_denominator.has_value();
+      snapshot.original_denominator = g_original_denominator;
+      snapshot.limit_modified = g_limit_modified;
+      snapshot.original_limit = g_original_limit;
+      snapshot.sync_limiter_modified = g_sync_limiter_modified;
+      snapshot.original_sync_limiter = g_original_sync_limiter;
+      g_recovery_file_owned = write_overrides_file(snapshot);
+    }
+
+    return applied_limit;
+  }
+
   void rtss_streaming_stop() {
     g_sync_limiter_override.reset();
     auto cleanup = [&]() {

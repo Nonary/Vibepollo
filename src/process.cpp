@@ -1035,15 +1035,13 @@ namespace proc {
     terminate();
 
 #ifdef _WIN32
-    std::unordered_set<DWORD> lossless_baseline_pids;
-    playnite_launcher::lossless::lossless_scaling_app_metadata lossless_metadata;
-    bool should_start_lossless_support = false;
-    bool lossless_monitor_started = false;
-    std::string lossless_install_dir_hint;
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
     _virtual_display_guid = GUID {};
+    _deferred_launch = false;
+    _lossless_should_start_support = false;
+    _lossless_metadata = {};
 #endif
 
     auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
@@ -1188,30 +1186,30 @@ namespace proc {
       auto runtime = compute_lossless_runtime(_app, wants_lossless_framegen);
 #ifdef _WIN32
       bool has_launch_commands = !_app.cmd.empty() || !_app.detached.empty();
-      should_start_lossless_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
-      if (should_start_lossless_support) {
-        lossless_metadata.enabled = true;
-        lossless_metadata.target_fps = effective_lossless_target;
-        lossless_metadata.rtss_limit = effective_lossless_rtss;
+      _lossless_should_start_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
+      if (_lossless_should_start_support) {
+        _lossless_metadata.enabled = true;
+        _lossless_metadata.target_fps = effective_lossless_target;
+        _lossless_metadata.rtss_limit = effective_lossless_rtss;
         if (resolved_lossless_exe_path) {
-          lossless_metadata.configured_path = *resolved_lossless_exe_path;
+          _lossless_metadata.configured_path = *resolved_lossless_exe_path;
         } else if (!config::lossless_scaling.exe_path.empty()) {
-          lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
+          _lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
         }
-        lossless_metadata.active_profile = runtime.profile;
-        lossless_metadata.capture_api = runtime.capture_api;
-        lossless_metadata.queue_target = runtime.queue_target;
-        lossless_metadata.hdr_enabled = runtime.hdr_enabled;
-        lossless_metadata.flow_scale = runtime.flow_scale;
-        lossless_metadata.performance_mode = runtime.performance_mode;
-        lossless_metadata.resolution_scale_factor = runtime.resolution_scale_factor;
-        lossless_metadata.frame_generation_mode = runtime.frame_generation;
-        lossless_metadata.lsfg3_mode = runtime.lsfg3_mode;
-        lossless_metadata.scaling_type = runtime.scaling_type;
-        lossless_metadata.sharpness = runtime.sharpness;
-        lossless_metadata.ls1_sharpness = runtime.ls1_sharpness;
-        lossless_metadata.anime4k_type = runtime.anime4k_type;
-        lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
+        _lossless_metadata.active_profile = runtime.profile;
+        _lossless_metadata.capture_api = runtime.capture_api;
+        _lossless_metadata.queue_target = runtime.queue_target;
+        _lossless_metadata.hdr_enabled = runtime.hdr_enabled;
+        _lossless_metadata.flow_scale = runtime.flow_scale;
+        _lossless_metadata.performance_mode = runtime.performance_mode;
+        _lossless_metadata.resolution_scale_factor = runtime.resolution_scale_factor;
+        _lossless_metadata.frame_generation_mode = runtime.frame_generation;
+        _lossless_metadata.lsfg3_mode = runtime.lsfg3_mode;
+        _lossless_metadata.scaling_type = runtime.scaling_type;
+        _lossless_metadata.sharpness = runtime.sharpness;
+        _lossless_metadata.ls1_sharpness = runtime.ls1_sharpness;
+        _lossless_metadata.anime4k_type = runtime.anime4k_type;
+        _lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
       }
 #endif
 
@@ -1293,11 +1291,45 @@ namespace proc {
 #endif
     }
 
+#ifdef _WIN32
+    const auto requires_user_session = [&]() {
+      return !_app.prep_cmds.empty() ||
+             !_app.detached.empty() ||
+             !_app.cmd.empty() ||
+             !_app.playnite_id.empty() ||
+             _app.playnite_fullscreen;
+    };
+    const auto user_session_ready = [&]() {
+      HANDLE user_token = platf::dxgi::retrieve_users_token(false);
+      if (!user_token) {
+        return false;
+      }
+      CloseHandle(user_token);
+      return true;
+    };
+
+    if (platf::is_running_as_system() && requires_user_session() && !user_session_ready()) {
+      BOOST_LOG(info) << "No active user session; deferring app launch until sign-in.";
+      _deferred_launch = true;
+      return 0;
+    }
+#endif
+
+    return launch_app_commands();
+  }
+
+  int proc_t::launch_app_commands() {
     std::error_code ec;
     // Executed when returning from function
     auto fg = util::fail_guard([&]() {
       terminate();
     });
+
+#ifdef _WIN32
+    std::unordered_set<DWORD> lossless_baseline_pids;
+    bool lossless_monitor_started = false;
+    std::string lossless_install_dir_hint;
+#endif
 
     for (; _app_prep_it != std::end(_app.prep_cmds); ++_app_prep_it) {
       auto &cmd = *_app_prep_it;
@@ -1336,10 +1368,10 @@ namespace proc {
                                               find_working_directory(cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
 #ifdef _WIN32
-      if (should_start_lossless_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
+      if (_lossless_should_start_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
         lossless_baseline_pids = capture_process_baseline_for_lossless();
       }
-      if (should_start_lossless_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
+      if (_lossless_should_start_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
         try {
           lossless_install_dir_hint = platf::dxgi::wide_to_utf8(working_dir.wstring());
         } catch (...) {
@@ -1364,11 +1396,11 @@ namespace proc {
       } else {
         child.detach();
 #ifdef _WIN32
-        if (should_start_lossless_support && !lossless_monitor_started) {
+        if (_lossless_should_start_support && !lossless_monitor_started) {
           if (lossless_baseline_pids.empty()) {
             lossless_baseline_pids = capture_process_baseline_for_lossless();
           }
-          start_lossless_scaling_support(std::move(lossless_baseline_pids), lossless_metadata, std::move(lossless_install_dir_hint), detached_pid);
+          start_lossless_scaling_support(std::move(lossless_baseline_pids), _lossless_metadata, std::move(lossless_install_dir_hint), detached_pid);
           lossless_monitor_started = true;
         }
 #endif
@@ -1549,10 +1581,10 @@ namespace proc {
                                               find_working_directory(_app.cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
 #ifdef _WIN32
-      if (should_start_lossless_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
+      if (_lossless_should_start_support && !lossless_monitor_started && lossless_baseline_pids.empty()) {
         lossless_baseline_pids = capture_process_baseline_for_lossless();
       }
-      if (should_start_lossless_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
+      if (_lossless_should_start_support && !lossless_monitor_started && lossless_install_dir_hint.empty()) {
         try {
           lossless_install_dir_hint = platf::dxgi::wide_to_utf8(working_dir.wstring());
         } catch (...) {
@@ -1569,7 +1601,7 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    if (should_start_lossless_support && !lossless_monitor_started) {
+    if (_lossless_should_start_support && !lossless_monitor_started) {
       if (lossless_baseline_pids.empty()) {
         lossless_baseline_pids = capture_process_baseline_for_lossless();
       }
@@ -1587,7 +1619,7 @@ namespace proc {
           candidate_pid = 0;
         }
       }
-      start_lossless_scaling_support(std::move(lossless_baseline_pids), lossless_metadata, std::move(lossless_install_dir_hint), candidate_pid);
+      start_lossless_scaling_support(std::move(lossless_baseline_pids), _lossless_metadata, std::move(lossless_install_dir_hint), candidate_pid);
       lossless_monitor_started = true;
     }
 #endif
@@ -1608,6 +1640,52 @@ namespace proc {
     auto reaper = util::fail_guard([]() {
       while (waitpid(-1, nullptr, WNOHANG) > 0);
     });
+#endif
+
+#ifdef _WIN32
+    if (_deferred_launch) {
+      if (platf::is_running_as_system()) {
+        HANDLE user_token = platf::dxgi::retrieve_users_token(false);
+        if (!user_token) {
+          return _app_id;
+        }
+        CloseHandle(user_token);
+      }
+      std::optional<int> rtss_warmup_limit;
+      if (_lossless_metadata.enabled && _lossless_metadata.rtss_limit && *_lossless_metadata.rtss_limit > 0) {
+        rtss_warmup_limit = *_lossless_metadata.rtss_limit;
+      }
+      const bool wants_frame_limit = config::frame_limiter.enable ||
+                                     _app.gen1_framegen_fix ||
+                                     _app.gen2_framegen_fix ||
+                                     (rtss_warmup_limit && *rtss_warmup_limit > 0);
+      if (wants_frame_limit) {
+        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
+        const bool provider_auto = config::frame_limiter.provider.empty() ||
+                                   boost::iequals(config::frame_limiter.provider, "auto");
+        const bool provider_rtss = boost::iequals(config::frame_limiter.provider, "rtss");
+        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.gen1_framegen_fix);
+        if (should_wait_rtss) {
+          const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+          bool running = false;
+          while (std::chrono::steady_clock::now() < deadline) {
+            if (platf::rtss_get_status().process_running) {
+              running = true;
+              break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+          BOOST_LOG(info) << "RTSS warmup " << (running ? "complete" : "timeout") << " after deferred login.";
+        }
+      }
+      BOOST_LOG(info) << "User session detected; resuming deferred launch for app '" << _app.name << "'.";
+      _deferred_launch = false;
+      int err = launch_app_commands();
+      if (err != 0) {
+        BOOST_LOG(error) << "Deferred launch failed; terminating session.";
+        return 0;
+      }
+    }
 #endif
 
     if (placebo) {
@@ -1640,6 +1718,8 @@ namespace proc {
     std::error_code ec;
     placebo = false;
 #ifdef _WIN32
+    _deferred_launch = false;
+    _lossless_should_start_support = false;
     stop_lossless_scaling_support();
 #endif
     // For Playnite-managed apps, request a graceful stop via Playnite first

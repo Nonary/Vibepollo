@@ -17,6 +17,12 @@ namespace display_helper_integration {
   // Returns true if the helper accepted the command; false to allow fallback.
   bool apply(const DisplayApplyRequest &request);
 
+  // Retry a deferred APPLY request once a user session is available.
+  bool apply_pending_if_ready();
+
+  // Clear any deferred APPLY request (used when sessions end).
+  void clear_pending_apply();
+
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
   bool revert();

@@ -168,6 +168,8 @@ namespace proc {
     bp::environment release_env();
 
   private:
+    int launch_app_commands();
+
     int _app_id;
 
     bp::environment _env;
@@ -180,6 +182,12 @@ namespace proc {
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
+
+#ifdef _WIN32
+    bool _deferred_launch {false};
+    bool _lossless_should_start_support {false};
+    playnite_launcher::lossless::lossless_scaling_app_metadata _lossless_metadata {};
+#endif
 
     bp::child _process;
     bp::group _process_group;

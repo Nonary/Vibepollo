@@ -16,6 +16,7 @@
 #include "src/platform/windows/image_convert.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/misc.h"
+#include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/playnite_ipc.h"
 #include "src/platform/windows/playnite_protocol.h"
 #include "src/platform/windows/playnite_sync.h"
@@ -650,6 +651,7 @@ namespace platf::playnite {
                          << "' installDir='" << msg.status_install_dir << "'";
         if (msg.status_name == "gameStarted") {
           playnite_session_tracker().on_started(msg.status_game_id);
+          platf::frame_limiter_streaming_refresh();
         } else if (msg.status_name == "gameStopped") {
           auto guard = proc::proc.active_session_guard();
           if (!guard.has_active_app || !guard.uses_playnite) {

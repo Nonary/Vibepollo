@@ -754,6 +754,7 @@ namespace nvhttp {
             metadata.virtual_screen = app_ctx.virtual_screen;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
+            metadata.playnite_fullscreen = app_ctx.playnite_fullscreen;
             launch_session->virtual_display = app_ctx.virtual_screen;
             if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
@@ -1871,23 +1872,19 @@ namespace nvhttp {
       revert_display_configuration = true;
 
 #ifdef _WIN32
-      const bool can_use_display_helper = display_helper_session_available();
+      const bool helper_session_available = display_helper_session_available();
+      (void) display_helper_integration::disarm_pending_restore();
+      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+      if (!request) {
+        BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+      }
 
-      if (can_use_display_helper) {
-        (void) display_helper_integration::disarm_pending_restore();
-        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-        if (!request) {
-          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        }
-
-        if (request) {
-          if (!display_helper_integration::apply(*request)) {
+      if (request) {
+        if (!display_helper_integration::apply(*request)) {
+          if (helper_session_available) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         }
-
-      } else {
-        BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
 
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
@@ -2053,17 +2050,14 @@ namespace nvhttp {
           CloseHandle(user_token);
         }
 
-        if (helper_session_available) {
-          (void) display_helper_integration::disarm_pending_restore();
-          auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-          if (!request) {
-            BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-          } else if (!display_helper_integration::apply(*request)) {
+        (void) display_helper_integration::disarm_pending_restore();
+        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+        if (!request) {
+          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+        } else if (!display_helper_integration::apply(*request)) {
+          if (helper_session_available) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
-
-        } else {
-          BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
         }
       } else {
         BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";

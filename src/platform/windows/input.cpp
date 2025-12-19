@@ -97,7 +97,7 @@ namespace platf {
   constexpr float DS4_MAX_ACCEL_MPS2 = 200.0f;
   constexpr float DS4_MAX_GYRO_DPS = 4000.0f;
   constexpr auto DS4_KEEPALIVE_INTERVAL = 100ms;
-  constexpr auto DS4_MOTION_STALE_TIMEOUT = 250ms;
+  constexpr auto DS4_MOTION_STALE_TIMEOUT = 750ms;
   constexpr auto DS4_MOTION_RE_REQUEST_AFTER = 2s;
   constexpr auto DS4_MOTION_RE_REQUEST_COOLDOWN = 5s;
 
