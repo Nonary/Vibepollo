@@ -357,6 +357,7 @@ namespace config {
   // JSON dumps for non-string keys).
   void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides);
   void clear_runtime_config_overrides();
+  bool has_runtime_config_override(std::string_view key);
   bool has_runtime_config_overrides();
 
   void set_runtime_output_name_override(std::optional<std::string> output_name);

@@ -174,6 +174,10 @@ namespace display_helper_integration::helpers {
   }
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
+    if (session_.virtual_display_failed) {
+      BOOST_LOG(error) << "Display helper: virtual display initialization failed; skipping display configuration changes to avoid disrupting active displays.";
+      return false;
+    }
     builder.set_session(session_);
     builder.set_hdr_toggle_flag(effective_video_config_.dd.wa.hdr_toggle);
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();

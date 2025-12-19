@@ -97,18 +97,31 @@ namespace platf {
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
     const bool want_smooth_motion = smooth_motion && nvidia_gpu_present;
 
+    const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
+    const bool rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
+    const bool allow_gen1_rtss_override = !provider_overridden;
+
     // Gen1 fix: Force RTSS with front-edge sync (for DLSS3, FSR3, Lossless Scaling)
+    // Respect explicit provider overrides so users can force NVCP.
     if (gen1_framegen_fix) {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
       g_prev_frame_limiter_provider = config::frame_limiter.provider;
       g_prev_frame_limiter_provider_set = true;
       g_prev_disable_vsync = config::frame_limiter.disable_vsync;
-      g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
-      g_prev_rtss_frame_limit_type_set = true;
       config::frame_limiter.enable = true;
-      config::frame_limiter.provider = "rtss";
       config::frame_limiter.disable_vsync = true;
-      config::rtss.frame_limit_type = "front edge sync";
+      if (allow_gen1_rtss_override) {
+        config::frame_limiter.provider = "rtss";
+        if (!rtss_sync_overridden) {
+          g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
+          g_prev_rtss_frame_limit_type_set = true;
+          config::rtss.frame_limit_type = "front edge sync";
+        } else {
+          g_prev_rtss_frame_limit_type_set = false;
+        }
+      } else {
+        g_prev_rtss_frame_limit_type_set = false;
+      }
     }
     // Gen2 fix: Force NVIDIA Control Panel limiter (for DLSS4)
     else if (gen2_framegen_fix) {
@@ -224,9 +237,23 @@ namespace platf {
 
     const bool rtss_available = rtss_is_configured();
     bool want_rtss = false;
+    const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
 
     if (gen1_framegen_fix) {
-      want_rtss = rtss_available;
+      if (provider_overridden) {
+        auto configured = parse_provider(config::frame_limiter.provider);
+        switch (configured) {
+          case frame_limiter_provider::rtss:
+          case frame_limiter_provider::auto_detect:
+            want_rtss = rtss_available;
+            break;
+          default:
+            want_rtss = false;
+            break;
+        }
+      } else {
+        want_rtss = rtss_available;
+      }
     } else {
       auto configured = parse_provider(config::frame_limiter.provider);
       switch (configured) {

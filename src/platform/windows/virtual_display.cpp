@@ -62,7 +62,7 @@ using namespace SUDOVDA;
 namespace VDISPLAY {
   namespace {
     constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
-    constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(15);
+    constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(5);
     constexpr auto DRIVER_RESTART_POLL_INTERVAL = std::chrono::milliseconds(500);
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
@@ -2211,14 +2211,14 @@ namespace VDISPLAY {
     bool waited_for_restart = false;
     auto instance_id = find_sudovda_device_instance_id();
     if (!instance_id) {
-      BOOST_LOG(warning) << "Unable to locate SudoVDA adapter for recovery.";
+      BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
       return false;
     }
 
     BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << '.';
 
     if (!restart_sudovda_device(*instance_id)) {
-      BOOST_LOG(warning) << "SudoVDA adapter restart failed.";
+      BOOST_LOG(error) << "SudoVDA adapter restart failed; streaming will continue with the active display. A reboot may be required.";
       return false;
     }
 
@@ -2235,7 +2235,7 @@ namespace VDISPLAY {
       std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
     }
 
-    BOOST_LOG(warning) << "SudoVDA driver did not respond within the restart timeout.";
+    BOOST_LOG(error) << "SudoVDA driver did not respond within the restart timeout; streaming will continue with the active display. A reboot may be required.";
     return false;
   }
 

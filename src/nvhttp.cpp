@@ -645,6 +645,7 @@ namespace nvhttp {
     launch_session->hdr_profile.reset();
     launch_session->client_display_mode_override = false;
     launch_session->client_requests_virtual_display = false;
+    launch_session->virtual_display_failed = false;
     launch_session->hdr_profile.reset();
 
     if (request) {
@@ -1586,6 +1587,7 @@ namespace nvhttp {
     auto apply_virtual_display_request = [&](bool should_request_virtual_display) {
       if (!should_request_virtual_display) {
         launch_session->virtual_display = false;
+        launch_session->virtual_display_failed = false;
         launch_session->virtual_display_guid_bytes.fill(0);
         launch_session->virtual_display_device_id.clear();
         launch_session->virtual_display_ready_since.reset();
@@ -1596,12 +1598,14 @@ namespace nvhttp {
         auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId();
         if (existing_device) {
           launch_session->virtual_display = true;
+          launch_session->virtual_display_failed = false;
           launch_session->virtual_display_device_id = *existing_device;
           launch_session->virtual_display_ready_since = std::chrono::steady_clock::now();
           BOOST_LOG(info) << "Virtual display already active (device_id=" << *existing_device
                           << "). Skipping additional creation because another session is running.";
         } else {
           launch_session->virtual_display = false;
+          launch_session->virtual_display_failed = false;
           launch_session->virtual_display_device_id.clear();
           launch_session->virtual_display_ready_since.reset();
           BOOST_LOG(info) << "Skipping virtual display creation because another session is running and no reusable device was found.";
@@ -1747,6 +1751,7 @@ namespace nvhttp {
 
       if (display_info) {
         launch_session->virtual_display = true;
+        launch_session->virtual_display_failed = false;
         if (display_info->device_id && !display_info->device_id->empty()) {
           launch_session->virtual_display_device_id = *display_info->device_id;
         } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
@@ -1842,6 +1847,7 @@ namespace nvhttp {
         VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
       } else {
         launch_session->virtual_display = false;
+        launch_session->virtual_display_failed = true;
         launch_session->virtual_display_guid_bytes.fill(0);
         launch_session->virtual_display_device_id.clear();
         launch_session->virtual_display_ready_since.reset();

@@ -1927,6 +1927,14 @@ namespace config {
     g_runtime_config_overrides.clear();
   }
 
+  bool has_runtime_config_override(std::string_view key) {
+    if (!is_valid_override_key(key)) {
+      return false;
+    }
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    return g_runtime_config_overrides.find(std::string(key)) != g_runtime_config_overrides.end();
+  }
+
   bool has_runtime_config_overrides() {
     std::scoped_lock lk(g_runtime_overrides_mutex);
     return !g_runtime_config_overrides.empty();
