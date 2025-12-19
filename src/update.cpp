@@ -118,6 +118,14 @@ namespace update {
       state.check_in_progress = false;
     });
     try {
+      const bool allow_prerelease_updates = [&]() {
+#ifdef PROJECT_VERSION_PRERELEASE
+        const std::string installed_prerelease = PROJECT_VERSION_PRERELEASE;
+        return config::sunshine.notify_pre_releases || !installed_prerelease.empty();
+#else
+        return config::sunshine.notify_pre_releases;
+#endif
+      }();
       // Fetch releases list once and compute latest stable/prerelease
       BOOST_LOG(info) << "Update check: querying GitHub releases from repo "sv
                       << SUNSHINE_REPO_OWNER << '/' << SUNSHINE_REPO_NAME;
@@ -278,7 +286,7 @@ namespace update {
               best_stable.is_prerelease = false;
               best_stable.assets = assets;
             }
-          } else if (config::sunshine.notify_pre_releases) {
+          } else if (allow_prerelease_updates) {
             if (best_pre.version.empty() || cmp_semver_full(best_pre.version, tag) < 0) {
               best_pre.version = tag;
               best_pre.url = rel.value("html_url", "");
@@ -411,7 +419,7 @@ namespace update {
       const std::string latest_stable_tag = state.latest_release.version;
       const std::string latest_pre_tag = state.latest_prerelease.version;
       bool stable_available = !latest_stable_tag.empty() && (cmp_semver(installed_version_tag, latest_stable_tag) < 0);
-      bool prerelease_available = config::sunshine.notify_pre_releases &&
+      bool prerelease_available = allow_prerelease_updates &&
                                   !latest_pre_tag.empty() &&
                                   (cmp_semver(installed_version_tag, latest_pre_tag) < 0) &&
                                   (!latest_stable_tag.empty() ? (cmp_semver(latest_stable_tag, latest_pre_tag) < 0) : true);
