@@ -125,7 +125,10 @@ namespace platf {
     const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || gen1_framegen_fix || gen2_framegen_fix) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
-    const int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
+    int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
+    if (config::frame_limiter.fps_limit > 0) {
+      effective_limit = config::frame_limiter.fps_limit;
+    }
 
     if (frame_limit_enabled) {
       auto configured = parse_provider(config::frame_limiter.provider);

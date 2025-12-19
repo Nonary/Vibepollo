@@ -789,6 +789,8 @@ const BOOL_STRING_PAIRS = [
   ['1', '0'],
 ] as const;
 
+const NUMERIC_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
+
 function boolPairFromValue(value: unknown): BoolPair | null {
   if (value === true || value === false) return { truthy: true, falsy: false };
   if (value === 1 || value === 0) return { truthy: 1, falsy: 0 };
@@ -835,6 +837,7 @@ function editorKind(key: string): 'boolean' | 'select' | 'number' | 'string' | '
   if (opts && opts.length) return 'select';
 
   const gv = getGlobalValue(key);
+  if (NUMERIC_OVERRIDE_KEYS.has(key)) return 'number';
   if (boolPairFromValue(gv)) return 'boolean';
   if (typeof gv === 'number') return 'number';
   if (typeof gv === 'string') return 'string';

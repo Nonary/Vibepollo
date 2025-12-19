@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -224,8 +225,18 @@ namespace nvhttp {
     std::string virtual_display_layout_override;
     bool always_use_virtual_display = false;
     std::optional<bool> prefer_10bit_sdr;
+    std::optional<std::int64_t> last_seen;
     std::unordered_map<std::string, std::string> config_overrides;
   };
+
+  namespace {
+    std::int64_t now_seconds() {
+      return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch()
+      )
+        .count();
+    }
+  }  // namespace
 
   struct client_t {
     std::vector<named_cert_t> named_devices;
@@ -312,6 +323,9 @@ namespace nvhttp {
       if (named_cert.prefer_10bit_sdr.has_value()) {
         named_cert_node.put("prefer_10bit_sdr"s, *named_cert.prefer_10bit_sdr);
       }
+      if (named_cert.last_seen.has_value()) {
+        named_cert_node.put("last_seen"s, *named_cert.last_seen);
+      }
       if (!named_cert.config_overrides.empty()) {
         pt::ptree overrides_node;
         for (const auto &[k, v] : named_cert.config_overrides) {
@@ -359,6 +373,16 @@ namespace nvhttp {
         vibe_root.put("shared_virtual_display_guid", http::shared_virtual_display_guid);
       }
 #endif
+      {
+        pt::ptree last_seen_nodes;
+        for (const auto &named_cert : client_root.named_devices) {
+          if (!named_cert.last_seen.has_value()) {
+            continue;
+          }
+          last_seen_nodes.put(named_cert.uuid, *named_cert.last_seen);
+        }
+        vibe_root.put_child("client_last_seen", last_seen_nodes);
+      }
 
       try {
         pt::write_json(vibeshine_path, vibeshine_tree);
@@ -458,6 +482,11 @@ namespace nvhttp {
           } else {
             named_cert.prefer_10bit_sdr.reset();
           }
+          if (auto last_seen = el.get_optional<std::int64_t>("last_seen")) {
+            named_cert.last_seen = *last_seen;
+          } else {
+            named_cert.last_seen.reset();
+          }
           named_cert.config_overrides.clear();
           if (auto overrides_node = el.get_child_optional("config_overrides")) {
             for (auto &[k, v] : *overrides_node) {
@@ -494,6 +523,7 @@ namespace nvhttp {
     named_cert.virtual_display_layout_override.clear();
     named_cert.always_use_virtual_display = false;
     named_cert.prefer_10bit_sdr.reset();
+    named_cert.last_seen.reset();
     named_cert.config_overrides.clear();
     client.named_devices.emplace_back(named_cert);
 
@@ -1262,6 +1292,9 @@ namespace nvhttp {
       if (named_cert.prefer_10bit_sdr.has_value()) {
         named_cert_node["prefer_10bit_sdr"] = *named_cert.prefer_10bit_sdr;
       }
+      if (named_cert.last_seen.has_value()) {
+        named_cert_node["last_seen"] = *named_cert.last_seen;
+      }
       if (!named_cert.config_overrides.empty()) {
         nlohmann::json overrides = nlohmann::json::object();
         for (const auto &[k, v] : named_cert.config_overrides) {
@@ -1292,6 +1325,29 @@ namespace nvhttp {
     }
 
     return named_cert_nodes;
+  }
+
+  void mark_client_last_seen(const std::string &uuid) {
+    if (uuid.empty()) {
+      return;
+    }
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert.uuid != uuid) {
+        continue;
+      }
+
+      const auto now = now_seconds();
+      if (named_cert.last_seen.has_value() && *named_cert.last_seen == now) {
+        return;
+      }
+      named_cert.last_seen = now;
+      if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
+        save_state();
+      }
+      return;
+    }
   }
 
   void applist(resp_https_t response, req_https_t request) {

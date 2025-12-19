@@ -686,6 +686,7 @@ namespace config {
   frame_limiter_t frame_limiter {
     false,  // enable
     "auto",  // provider
+    0,  // fps_limit
     false  // disable_vsync
   };
 
@@ -1347,6 +1348,7 @@ namespace config {
     if (frame_limiter.provider.empty()) {
       frame_limiter.provider = "auto";
     }
+    int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     string_f(vars, "rtss_install_path", rtss.install_path);

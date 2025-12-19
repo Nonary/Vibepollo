@@ -59,6 +59,15 @@
 
       <div class="flex flex-col gap-3 md:flex-row md:items-center">
         <p class="text-sm opacity-75 md:flex-1">{{ $t('troubleshooting.unpair_desc') }}</p>
+        <div class="flex items-center gap-2">
+          <span class="text-xs opacity-70">{{ $t('clients.sort_label') }}</span>
+          <n-select
+            v-model:value="clientSortMode"
+            :options="clientSortOptions"
+            size="small"
+            class="min-w-[160px]"
+          />
+        </div>
         <n-button
           class="md:ml-auto"
           type="error"
@@ -80,7 +89,7 @@
 
       <div v-if="clients.length > 0" class="mt-4 space-y-4">
         <div
-          v-for="client in clients"
+          v-for="client in sortedClients"
           :key="client.uuid"
           class="rounded-2xl border border-dark/[0.06] bg-light/[0.02] p-4 shadow-sm dark:border-light/[0.12]"
         >
@@ -139,6 +148,7 @@
               </n-button>
             </div>
           </div>
+          <div class="mt-1 text-xs opacity-60">{{ lastSeenLabel(client) }}</div>
 
           <div v-if="client.editing" class="mt-4">
             <n-form label-placement="top" class="space-y-4" @submit.prevent>
@@ -416,7 +426,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { http } from '@/http';
 import {
@@ -449,11 +459,13 @@ type ClientVirtualDisplayLayout =
   | 'extended_primary_isolated'
   | null;
 type ClientPrefer10BitSdrOverride = 'enabled' | 'disabled' | null;
+type ClientSortMode = 'recent' | 'name';
 
 interface ClientApiEntry {
   uuid?: string;
   name?: string;
   connected?: boolean;
+  last_seen?: number | string | null;
   hdr_profile?: string;
   display_mode?: string;
   output_name_override?: string;
@@ -485,6 +497,7 @@ interface ClientViewModel {
   uuid: string;
   name: string;
   connected: boolean;
+  lastSeen: number | null;
   hdrProfile: string;
   displayMode: string;
   outputOverride: string;
@@ -527,6 +540,7 @@ const prefer10BitSdrOptions = computed(() => [
 
 const clients = ref<ClientViewModel[]>([]);
 const platform = ref<string>('');
+const clientSortMode = ref<ClientSortMode>('recent');
 
 const pin = ref<string>('');
 const deviceName = ref<string>('');
@@ -538,6 +552,7 @@ const unpairAllStatus = ref<boolean | null>(null);
 const removing = ref<Record<string, boolean>>({});
 const saving = ref<Record<string, boolean>>({});
 const disconnecting = ref<Record<string, boolean>>({});
+let refreshIntervalId: ReturnType<typeof setInterval> | null = null;
 
 const showConfirmRemove = ref<boolean>(false);
 const pendingRemoveUuid = ref<string>('');
@@ -583,12 +598,22 @@ function parseClientVirtualDisplayLayout(value: unknown): ClientVirtualDisplayLa
   return null;
 }
 
+function parseLastSeen(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const name = entry.name ?? '';
   const displayMode = entry.display_mode ?? '';
   const outputOverride = entry.output_name_override ?? '';
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
   const hdrProfile = String(entry.hdr_profile ?? '').trim();
+  const lastSeen = parseLastSeen(entry.last_seen);
   const configOverrides =
     entry.config_overrides && typeof entry.config_overrides === 'object' && !Array.isArray(entry.config_overrides)
       ? JSON.parse(JSON.stringify(entry.config_overrides))
@@ -609,6 +634,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     uuid: entry.uuid ?? '',
     name,
     connected: !!entry.connected,
+    lastSeen,
     hdrProfile,
     displayMode,
     outputOverride,
@@ -783,14 +809,16 @@ async function refreshClients(): Promise<void> {
       platform.value = response.platform;
     }
     if (response.status === true && Array.isArray(response.named_certs)) {
-      const mapped = response.named_certs.map(createClientViewModel);
-      mapped.sort((a, b) => {
-        const nameA = (a.name || '').toLowerCase();
-        const nameB = (b.name || '').toLowerCase();
-        if (nameA === nameB) return a.uuid.localeCompare(b.uuid);
-        if (nameA === '') return 1;
-        if (nameB === '') return -1;
-        return nameA.localeCompare(nameB);
+      const prior = new Map(clients.value.map((client) => [client.uuid, client] as const));
+      const mapped = response.named_certs.map((entry) => {
+        const uuid = entry.uuid ?? '';
+        const existing = uuid ? prior.get(uuid) : undefined;
+        if (existing?.editing) {
+          existing.connected = !!entry.connected;
+          existing.lastSeen = parseLastSeen(entry.last_seen);
+          return existing;
+        }
+        return createClientViewModel(entry);
       });
       clients.value = mapped;
       ensureDisplayDevicesLoaded();
@@ -801,6 +829,52 @@ async function refreshClients(): Promise<void> {
     clients.value = [];
   }
 }
+
+const clientSortOptions = computed(() => [
+  { label: t('clients.sort_recent'), value: 'recent' },
+  { label: t('clients.sort_name'), value: 'name' },
+]);
+
+function compareByName(a: ClientViewModel, b: ClientViewModel): number {
+  const nameA = (a.name || '').toLowerCase();
+  const nameB = (b.name || '').toLowerCase();
+  if (nameA === nameB) return a.uuid.localeCompare(b.uuid);
+  if (nameA === '') return 1;
+  if (nameB === '') return -1;
+  return nameA.localeCompare(nameB);
+}
+
+const clientTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
+function formatClientTimestamp(seconds: number): string {
+  return clientTimeFormatter.format(new Date(seconds * 1000));
+}
+
+function lastSeenLabel(client: ClientViewModel): string {
+  if (!client.lastSeen || !Number.isFinite(client.lastSeen)) {
+    return t('clients.last_seen_unknown');
+  }
+  return t('clients.last_seen', { time: formatClientTimestamp(client.lastSeen) });
+}
+
+const sortedClients = computed<ClientViewModel[]>(() => {
+  const list = [...clients.value];
+  if (clientSortMode.value === 'recent') {
+    list.sort((a, b) => {
+      if (a.connected !== b.connected) return a.connected ? -1 : 1;
+      const lastA = a.lastSeen ?? 0;
+      const lastB = b.lastSeen ?? 0;
+      if (lastA !== lastB) return lastB - lastA;
+      return compareByName(a, b);
+    });
+    return list;
+  }
+  list.sort(compareByName);
+  return list;
+});
 
 async function registerDevice(): Promise<void> {
   if (pairing.value) return;
@@ -1076,6 +1150,18 @@ onMounted(async () => {
   await configStore.fetchConfig().catch(() => {});
   await auth.waitForAuthentication();
   await refreshClients();
+  if (refreshIntervalId === null) {
+    refreshIntervalId = setInterval(() => {
+      void refreshClients();
+    }, 5000);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (refreshIntervalId !== null) {
+    clearInterval(refreshIntervalId);
+    refreshIntervalId = null;
+  }
 });
 </script>
 

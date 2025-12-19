@@ -196,6 +196,11 @@ namespace nvhttp {
   nlohmann::json get_all_clients();
 
   /**
+   * @brief Record a client's last seen time (seconds since epoch).
+   */
+  void mark_client_last_seen(const std::string &uuid);
+
+  /**
    * @brief Update stored settings for a paired client.
    * @return True if the client was found and updated.
    */

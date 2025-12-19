@@ -595,12 +595,18 @@ namespace rtsp_stream {
      * @param session The session to insert.
      */
     void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid) {
-      auto lg = _session_state.lock();
-      _session_state->sessions.emplace(session);
-      if (!client_uuid.empty()) {
-        _session_state->client_uuids[session.get()] = client_uuid;
-      } else {
-        _session_state->client_uuids.erase(session.get());
+      const bool has_uuid = !client_uuid.empty();
+      {
+        auto lg = _session_state.lock();
+        _session_state->sessions.emplace(session);
+        if (has_uuid) {
+          _session_state->client_uuids[session.get()] = client_uuid;
+        } else {
+          _session_state->client_uuids.erase(session.get());
+        }
+      }
+      if (has_uuid) {
+        nvhttp::mark_client_last_seen(client_uuid);
       }
       BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_state->sessions.size() << ']';
     }
@@ -642,6 +648,9 @@ namespace rtsp_stream {
         stream::session::join(*slot);
       }
 
+      if (!to_cleanup.empty()) {
+        nvhttp::mark_client_last_seen(client_uuid);
+      }
       return !to_cleanup.empty();
     }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useConfigStore } from '@/stores/config';
-import { NSwitch, NSelect, NInput, NButton, NTable } from 'naive-ui';
+import { NSwitch, NSelect, NInput, NInputNumber, NButton, NTable } from 'naive-ui';
 import { http } from '@/http';
 import { useI18n } from 'vue-i18n';
 
@@ -313,6 +313,22 @@ onMounted(() => {
           />
           <p class="form-text">{{ t('frameLimiter.providerHint') }}</p>
         </div>
+      </div>
+
+      <div class="space-y-2">
+        <label class="form-label" for="frame_limiter_fps_limit">{{
+          t('frameLimiter.limitLabel')
+        }}</label>
+        <n-input-number
+          id="frame_limiter_fps_limit"
+          v-model:value="config.frame_limiter_fps_limit"
+          :min="0"
+          :max="1000"
+          :step="1"
+          :precision="0"
+          :placeholder="t('frameLimiter.limitPlaceholder')"
+        />
+        <p class="form-text">{{ t('frameLimiter.limitHint') }}</p>
       </div>
 
       <div class="space-y-2">
