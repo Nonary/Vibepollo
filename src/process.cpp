@@ -2848,9 +2848,28 @@ namespace proc {
             ctx.working_dir += '\\';
 #endif
         }
-        if (app_node.contains("image-path")) {
-          ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
-        }
+          if (app_node.contains("image-path")) {
+            ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
+          }
+
+          // Parse per-app global config overrides, keeping values in raw config-file format.
+          if (app_node.contains("config-overrides") && app_node["config-overrides"].is_object()) {
+            for (const auto &item : app_node["config-overrides"].items()) {
+              const auto &val = item.value();
+              if (val.is_null()) {
+                continue;
+              }
+              std::string encoded;
+              if (val.is_string()) {
+                encoded = parse_env_val(this_env, val.get<std::string>());
+              } else {
+                encoded = val.dump();
+              }
+              if (!encoded.empty()) {
+                ctx.config_overrides.emplace(item.key(), std::move(encoded));
+              }
+            }
+          }
 
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
