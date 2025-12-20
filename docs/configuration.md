@@ -1503,6 +1503,69 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_snapshot_restore_hotkey
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+              Keyboard shortcut key that restores the display snapshot and tears down any virtual displays.
+              <br>
+              Useful for forcing virtual displays off and restoring snapshots when Sunshine is paused or stuck.
+              The modifier keys for this hotkey are configured separately via dd_snapshot_restore_hotkey_modifiers.
+              Accepts function keys (F1-F24), letters, digits, or a virtual-key code.
+              @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_snapshot_restore_hotkey = F12
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_snapshot_restore_hotkey = 0x7B
+            @endcode</td>
+    </tr>
+</table>
+
+### dd_snapshot_restore_hotkey_modifiers
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+              Modifier keys for the snapshot restore hotkey.
+              <br>
+              Accepts a delimiter-separated list (e.g., ctrl+alt+shift, ctrl|shift, win, none).
+              Supported tokens: ctrl/control, alt, shift, win/windows/meta, none/off/disabled.
+              @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{ctrl+alt+shift}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_snapshot_restore_hotkey_modifiers = ctrl+alt
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_snapshot_restore_hotkey_modifiers = none
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_mode_remapping
 
 <table>

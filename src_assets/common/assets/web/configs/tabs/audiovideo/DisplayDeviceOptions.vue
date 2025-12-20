@@ -357,6 +357,86 @@ function isRefreshFieldValid(v: string | undefined | null): boolean {
 const isManualEnforcementActive = computed(() => {
   return config.dd_resolution_option === 'manual' || config.dd_refresh_rate_option === 'manual';
 });
+
+const hotkeyComboPreview = computed(() => {
+  const key = String(config.dd_snapshot_restore_hotkey || '').trim();
+  if (!key) return '';
+
+  const raw = String(config.dd_snapshot_restore_hotkey_modifiers || '').trim();
+  if (!raw) return key;
+
+  const lower = raw.toLowerCase();
+  if (lower === 'none' || lower === 'off' || lower === 'disabled') {
+    return key;
+  }
+
+  const tokens = lower.split(/[\s+|,;]+/).filter(Boolean);
+  const hasCtrl = tokens.includes('ctrl') || tokens.includes('control');
+  const hasAlt = tokens.includes('alt');
+  const hasShift = tokens.includes('shift');
+  const hasWin = tokens.includes('win') || tokens.includes('windows') || tokens.includes('meta');
+  const parts: string[] = [];
+  if (hasCtrl) parts.push('Ctrl');
+  if (hasAlt) parts.push('Alt');
+  if (hasShift) parts.push('Shift');
+  if (hasWin) parts.push('Win');
+  if (parts.length === 0) {
+    return key;
+  }
+  return `${parts.join('+')}+${key}`;
+});
+
+const hotkeyCaptureActive = ref(false);
+const hotkeyCaptureError = ref('');
+
+function normalizeHotkeyKey(raw: string): string | null {
+  if (/^F\d{1,2}$/i.test(raw)) {
+    const num = Number(raw.slice(1));
+    if (Number.isInteger(num) && num >= 1 && num <= 24) {
+      return `F${num}`;
+    }
+    return null;
+  }
+  if (raw.length === 1) {
+    if (/[a-z]/i.test(raw)) {
+      return raw.toUpperCase();
+    }
+    if (/[0-9]/.test(raw)) {
+      return raw;
+    }
+  }
+  return null;
+}
+
+function updateSnapshotHotkey(e: KeyboardEvent): void {
+  const key = e.key || '';
+  const ignored = ['Shift', 'Control', 'Alt', 'Meta'];
+  if (ignored.includes(key)) {
+    return;
+  }
+
+  e.preventDefault();
+  hotkeyCaptureError.value = '';
+  const normalizedKey = normalizeHotkeyKey(key);
+  if (!normalizedKey) {
+    hotkeyCaptureError.value = t('config.dd_snapshot_restore_hotkey_invalid');
+    return;
+  }
+
+  const modifiers: string[] = [];
+  if (e.ctrlKey) modifiers.push('ctrl');
+  if (e.altKey) modifiers.push('alt');
+  if (e.shiftKey) modifiers.push('shift');
+  if (e.metaKey) modifiers.push('win');
+  config.dd_snapshot_restore_hotkey = normalizedKey;
+  config.dd_snapshot_restore_hotkey_modifiers = modifiers.length > 0 ? modifiers.join('+') : 'none';
+}
+
+function clearSnapshotHotkey(): void {
+  hotkeyCaptureError.value = '';
+  config.dd_snapshot_restore_hotkey = '';
+  config.dd_snapshot_restore_hotkey_modifiers = '';
+}
 </script>
 
 <template>
@@ -575,6 +655,36 @@ const isManualEnforcementActive = computed(() => {
                 locale-prefix="config"
                 default="false"
               />
+            </div>
+
+            <div class="mt-4 space-y-2">
+              <label for="dd_snapshot_restore_hotkey" class="form-label">
+                {{ $t('config.dd_snapshot_restore_hotkey') }}
+              </label>
+              <n-input
+                id="dd_snapshot_restore_hotkey"
+                :value="hotkeyComboPreview"
+                placeholder="Click and press a combo"
+                class="font-mono w-full"
+                readonly
+                @focus="hotkeyCaptureActive = true"
+                @blur="hotkeyCaptureActive = false"
+                @keydown="updateSnapshotHotkey"
+              />
+              <p class="text-[11px] opacity-60">
+                {{ $t('config.dd_snapshot_restore_hotkey_desc') }}
+              </p>
+              <div class="flex items-center gap-2">
+                <n-button size="tiny" quaternary @click="clearSnapshotHotkey">
+                  {{ $t('config.dd_snapshot_restore_hotkey_reset') }}
+                </n-button>
+                <p class="text-[11px] opacity-60">
+                  {{ hotkeyCaptureActive ? $t('config.dd_snapshot_restore_hotkey_capture') : ' ' }}
+                </p>
+              </div>
+              <p v-if="hotkeyCaptureError" class="text-[11px] text-red-500">
+                {{ hotkeyCaptureError }}
+              </p>
             </div>
           </template>
         </fieldset>

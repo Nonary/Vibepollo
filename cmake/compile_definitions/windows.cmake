@@ -67,6 +67,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.h"

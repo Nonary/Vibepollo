@@ -114,6 +114,8 @@ const defaultGroups = [
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
       dd_snapshot_exclude_devices: [] as Array<string>,
+      dd_snapshot_restore_hotkey: '',
+      dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_activate_virtual_display: false,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,

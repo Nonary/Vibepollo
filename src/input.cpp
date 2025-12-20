@@ -209,6 +209,7 @@ namespace input {
 
     BOOST_LOG(verbose) << "Apply Shortcut: 0x"sv << util::hex((std::uint8_t) keyCode).to_string_view();
 
+
     if (keyCode >= VK_F1_LOCAL && keyCode <= VK_F13_LOCAL) {
       mail::man->event<int>(mail::switch_display)->raise(keyCode - VK_F1_LOCAL);
       return 1;
