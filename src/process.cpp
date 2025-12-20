@@ -1247,26 +1247,7 @@ namespace proc {
     }
 
     bool dd_api_handled = false;
-    if (!forced_sudavda_virtual_display &&
-        (!should_use_virtual_display || (dd_config_option != dd_config_option_e::disabled && !headless_mode))) {
-#ifdef _WIN32
-      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-      if (request) {
-        dd_api_handled = display_helper_integration::apply(*request);
-      }
-#endif
-      if (dd_api_handled) {
-        const bool virtual_display_requested = session_requests_virtual || app_requests_virtual;
-        const bool still_missing_active_display = !video::allow_encoder_probing();
-
-        if (!virtual_display_requested && !still_missing_active_display) {
-          BOOST_LOG(info) << "Display configuration handled by DD API, skipping SudoVDA virtual display.";
-          should_use_virtual_display = false;
-        } else {
-          BOOST_LOG(info) << "Display configuration handled by DD API but virtual display support remains required; keeping SudoVDA virtual display active.";
-        }
-      }
-    }
+    // Display helper APPLY is handled in nvhttp to avoid duplicate helper restarts.
 
     if (should_use_virtual_display && !dd_api_handled && !already_has_virtual_guid) {
       if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
@@ -1390,15 +1371,6 @@ namespace proc {
     } else if (already_has_virtual_guid) {
       std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
       _virtual_display_active = true;
-    }
-
-    if (!dd_api_handled && !this->virtual_display) {
-#ifdef _WIN32
-      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-      if (request) {
-        display_helper_integration::apply(*request);
-      }
-#endif
     }
 
     if (this->virtual_display) {
