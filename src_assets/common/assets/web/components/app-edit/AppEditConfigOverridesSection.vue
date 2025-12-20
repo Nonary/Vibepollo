@@ -139,7 +139,18 @@
           </template>
 
           <template v-else-if="editorKind(entry.key) === 'number'">
+            <n-input
+              v-if="NUMERIC_TEXT_OVERRIDE_KEYS.has(entry.key)"
+              :value="numericTextDraft(entry.key)"
+              placeholder="(number)"
+              class="font-mono"
+              inputmode="numeric"
+              @update:value="(v) => updateNumericTextDraft(entry.key, v)"
+              @blur="() => commitNumericText(entry.key)"
+              @keydown.enter.prevent="() => commitNumericText(entry.key)"
+            />
             <n-input-number
+              v-else
               :value="numberValue(entry.key)"
               placeholder="(number)"
               @update:value="(v) => setNumber(entry.key, v)"
@@ -384,6 +395,7 @@ function clearOverrideKey(key: string): void {
     delete (overrides.value as any)[key];
   } catch {}
   clearJsonState(key);
+  clearNumericTextState(key);
 }
 
 const overrideKeys = computed<string[]>(() => {
@@ -722,6 +734,7 @@ function clearAll() {
   overrides.value = {};
   jsonDrafts.value = {};
   jsonErrors.value = {};
+  numericTextDrafts.value = {};
 }
 
 const overrideEntries = computed<Entry[]>(() => {
@@ -790,6 +803,7 @@ const BOOL_STRING_PAIRS = [
 ] as const;
 
 const NUMERIC_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
+const NUMERIC_TEXT_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
 
 function boolPairFromValue(value: unknown): BoolPair | null {
   if (value === true || value === false) return { truthy: true, falsy: false };
@@ -920,6 +934,7 @@ function setString(key: string, value: string): void {
 
 const jsonDrafts = ref<Record<string, string>>({});
 const jsonErrors = ref<Record<string, string>>({});
+const numericTextDrafts = ref<Record<string, string>>({});
 
 function clearJsonState(key: string) {
   const d = { ...jsonDrafts.value };
@@ -928,6 +943,49 @@ function clearJsonState(key: string) {
   delete e[key];
   jsonDrafts.value = d;
   jsonErrors.value = e;
+}
+
+function clearNumericTextState(key: string) {
+  const next = { ...numericTextDrafts.value };
+  delete next[key];
+  numericTextDrafts.value = next;
+}
+
+function numericTextDraft(key: string): string {
+  if (Object.prototype.hasOwnProperty.call(numericTextDrafts.value, key)) {
+    return numericTextDrafts.value[key] ?? '';
+  }
+  const cur = (overrides.value as any)?.[key];
+  const base =
+    typeof cur === 'number' && Number.isFinite(cur)
+      ? String(cur)
+      : typeof cur === 'string'
+        ? cur
+        : '';
+  numericTextDrafts.value = { ...numericTextDrafts.value, [key]: base };
+  return base;
+}
+
+function updateNumericTextDraft(key: string, value: string) {
+  numericTextDrafts.value = { ...numericTextDrafts.value, [key]: String(value ?? '') };
+}
+
+function commitNumericText(key: string) {
+  const raw = (numericTextDrafts.value[key] ?? '').trim();
+  if (!raw) {
+    setOverrideKey(key, 0);
+    updateNumericTextDraft(key, '0');
+    return;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return;
+  }
+  let next = Math.trunc(parsed);
+  if (next < 0) next = 0;
+  if (next > 1000) next = 1000;
+  setOverrideKey(key, next);
+  updateNumericTextDraft(key, String(next));
 }
 
 function jsonDraft(key: string): string {
