@@ -169,6 +169,15 @@
       <div class="space-y-4">
         <div class="flex flex-col gap-3 md:flex-row md:items-center">
           <p class="text-sm opacity-75 md:flex-1">{{ $t('pin.device_management_desc') }}</p>
+          <div class="flex items-center gap-2">
+            <span class="text-xs opacity-70">{{ $t('clients.sort_label') }}</span>
+            <n-select
+              v-model:value="clientSortMode"
+              :options="clientSortOptions"
+              size="small"
+              class="min-w-[160px]"
+            />
+          </div>
           <n-button
             class="md:ml-auto"
             type="error"
@@ -205,7 +214,7 @@
         }}</n-alert>
         <div v-if="clients.length > 0" class="space-y-4">
           <div
-            v-for="client in clients"
+            v-for="client in sortedClients"
             :key="client.uuid"
             class="rounded-2xl border border-dark/[0.06] bg-light/[0.02] p-4 shadow-sm transition hover:border-brand/40 dark:border-light/[0.12]"
           >
@@ -265,6 +274,7 @@
                 </n-button>
               </div>
             </div>
+            <div class="mt-1 text-xs opacity-60">{{ lastSeenLabel(client) }}</div>
             <div v-if="client.editing" class="mt-4 space-y-5">
               <n-form label-placement="top" class="space-y-4" @submit.prevent>
                 <n-form-item :label="$t('pin.device_name')">
@@ -487,6 +497,25 @@
                     </div>
                   </div>
                 </n-form-item>
+                <n-form-item v-if="platform === 'windows'" :label="t('clients.hdr_profile_label')">
+                  <n-select
+                    v-model:value="client.editHdrProfile"
+                    :options="hdrProfileOptions"
+                    :loading="hdrProfilesLoading"
+                    :placeholder="t('clients.hdr_profile_placeholder')"
+                    filterable
+                    clearable
+                    @focus="ensureHdrProfilesLoaded"
+                  />
+                  <template #feedback>
+                    <span class="text-xs opacity-70">{{ t('clients.hdr_profile_desc') }}</span>
+                    <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{ hdrProfilesError }}</span>
+                  </template>
+                </n-form-item>
+                <AppEditConfigOverridesSection
+                  v-model:overrides="client.editConfigOverrides"
+                  scope-label="client"
+                />
                 <Checkbox
                   id="allow_client_commands"
                   class="mb-1"
@@ -653,6 +682,7 @@ import {
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import Checkbox from '@/Checkbox.vue';
+import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
@@ -745,13 +775,16 @@ interface ClientApiEntry {
   uuid?: string;
   name?: string;
   display_mode?: string;
+  hdr_profile?: string;
   output_name_override?: string;
   perm?: number | string;
   connected?: boolean;
+  last_seen?: number | string | null;
   allow_client_commands?: boolean | string | number;
   enable_legacy_ordering?: boolean | string | number;
   always_use_virtual_display?: boolean | string | number;
   prefer_10bit_sdr?: boolean | string | number;
+  config_overrides?: Record<string, unknown> | null;
   virtual_display_mode?: string;
   virtual_display_layout?: string;
   do?: Array<{ cmd?: string; elevated?: boolean | string | number }>;
@@ -762,6 +795,17 @@ interface ClientsListResponse {
   status?: boolean;
   named_certs?: ClientApiEntry[];
   platform?: string;
+}
+
+interface HdrProfileEntry {
+  filename?: string;
+  added_ms?: number;
+}
+
+interface HdrProfilesResponse {
+  status?: boolean;
+  profiles?: HdrProfileEntry[];
+  error?: string;
 }
 
 interface PinResponse {
@@ -780,6 +824,7 @@ interface OtpResponse {
 interface SaveClientPayload {
   uuid: string;
   name: string;
+  hdr_profile?: string;
   display_mode: string;
   output_name_override: string;
   virtual_display_mode: string;
@@ -787,6 +832,7 @@ interface SaveClientPayload {
   allow_client_commands: boolean;
   enable_legacy_ordering: boolean;
   always_use_virtual_display: boolean;
+  config_overrides?: Record<string, unknown> | null;
   // When omitted or null, the client inherits the global prefer_10bit_sdr value.
   prefer_10bit_sdr?: boolean | null;
   perm: number;
@@ -803,14 +849,17 @@ interface ClientViewModel {
   uuid: string;
   name: string;
   displayMode: string;
+  hdrProfile: string;
   outputOverride: string;
   perm: number;
   connected: boolean;
+  lastSeen: number | null;
   allowClientCommands: boolean;
   enableLegacyOrdering: boolean;
   alwaysUseVirtualDisplay: boolean;
   // Null means inherit global prefer_10bit_sdr.
   prefer10BitSdr: boolean | null;
+  configOverrides: Record<string, unknown>;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   doCommands: ClientCommand[];
@@ -818,12 +867,14 @@ interface ClientViewModel {
   editing: boolean;
   editName: string;
   editDisplayMode: string;
+  editHdrProfile: string | null;
   editPhysicalOutputOverride: string;
   editPerm: number;
   editAllowClientCommands: boolean;
   editEnableLegacyOrdering: boolean;
   editAlwaysUseVirtualDisplay: boolean;
   editPrefer10BitSdr: boolean | null;
+  editConfigOverrides: Record<string, unknown>;
   editVirtualDisplayMode: AppVirtualDisplayMode | null;
   editVirtualDisplayLayout: AppVirtualDisplayLayout | null;
   editDo: ClientCommand[];
@@ -925,6 +976,15 @@ function parseClientVirtualDisplayLayout(value: unknown): AppVirtualDisplayLayou
   return null;
 }
 
+function parseLastSeen(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 const { t } = useI18n();
 const message = useMessage();
 const authStore = useAuthStore();
@@ -1006,6 +1066,7 @@ const clients = ref<ClientViewModel[]>([]);
 const platform = ref('');
 const removing = ref<Record<string, boolean>>({});
 const disconnecting = ref<Record<string, boolean>>({});
+const clientSortMode = ref<'recent' | 'name'>('recent');
 const showApplyMessage = ref(false);
 const unpairAllPressed = ref(false);
 const unpairAllStatus = ref<boolean | null>(null);
@@ -1017,6 +1078,70 @@ const currentEditingClient = ref<ClientViewModel | null>(null);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
+const isWindows = computed(() => platform.value === 'windows');
+const hdrProfiles = ref<HdrProfileEntry[]>([]);
+const hdrProfilesLoading = ref(false);
+const hdrProfilesError = ref('');
+
+const hdrProfileOptions = computed(() => {
+  const list = Array.isArray(hdrProfiles.value) ? [...hdrProfiles.value] : [];
+  list.sort((a, b) => (Number(b.added_ms || 0) || 0) - (Number(a.added_ms || 0) || 0));
+  const options: Array<{ label: string; value: string | null }> = [
+    { label: t('clients.hdr_profile_auto'), value: null },
+  ];
+  for (const p of list) {
+    const filename = String(p?.filename || '').trim();
+    if (!filename) continue;
+    options.push({ label: filename, value: filename });
+  }
+  return options;
+});
+
+const clientSortOptions = computed(() => [
+  { label: t('clients.sort_recent'), value: 'recent' },
+  { label: t('clients.sort_name'), value: 'name' },
+]);
+
+function compareByName(a: ClientViewModel, b: ClientViewModel): number {
+  const nameA = (a.name || '').toLowerCase();
+  const nameB = (b.name || '').toLowerCase();
+  if (nameA === nameB) return a.uuid.localeCompare(b.uuid);
+  if (nameA === '') return 1;
+  if (nameB === '') return -1;
+  return nameA.localeCompare(nameB);
+}
+
+const clientTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
+function formatClientTimestamp(seconds: number): string {
+  return clientTimeFormatter.format(new Date(seconds * 1000));
+}
+
+function lastSeenLabel(client: ClientViewModel): string {
+  if (!client.lastSeen || !Number.isFinite(client.lastSeen)) {
+    return t('clients.last_seen_unknown');
+  }
+  return t('clients.last_seen', { time: formatClientTimestamp(client.lastSeen) });
+}
+
+const sortedClients = computed<ClientViewModel[]>(() => {
+  const list = [...clients.value];
+  if (clientSortMode.value === 'recent') {
+    list.sort((a, b) => {
+      if (a.connected !== b.connected) return a.connected ? -1 : 1;
+      const lastA = a.lastSeen ?? 0;
+      const lastB = b.lastSeen ?? 0;
+      if (lastA !== lastB) return lastB - lastA;
+      return compareByName(a, b);
+    });
+  } else {
+    list.sort(compareByName);
+  }
+  return list;
+});
 
 const shouldShowQr = computed(() => {
   return (
@@ -1160,6 +1285,41 @@ function ensureDisplayDevicesLoaded() {
   }
 }
 
+async function loadHdrProfiles(): Promise<void> {
+  if (!isWindows.value) return;
+  hdrProfilesLoading.value = true;
+  hdrProfilesError.value = '';
+  try {
+    const r = await http.get<HdrProfilesResponse>('./api/clients/hdr-profiles', {
+      validateStatus: () => true,
+    });
+    const response = r.data ?? {};
+    const ok =
+      r.status >= 200 &&
+      r.status < 300 &&
+      response.status === true &&
+      Array.isArray(response.profiles);
+    if (!ok) {
+      hdrProfiles.value = [];
+      hdrProfilesError.value = response.error || t('clients.hdr_profile_load_failed');
+      return;
+    }
+    hdrProfiles.value = response.profiles ?? [];
+  } catch (e: any) {
+    hdrProfiles.value = [];
+    hdrProfilesError.value = e?.message || t('clients.hdr_profile_load_failed');
+  } finally {
+    hdrProfilesLoading.value = false;
+  }
+}
+
+function ensureHdrProfilesLoaded(): void {
+  if (!isWindows.value) return;
+  if (!hdrProfilesLoading.value && hdrProfiles.value.length === 0) {
+    void loadHdrProfiles();
+  }
+}
+
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const doCommands = normalizeCommands(entry.do);
   const undoCommands = normalizeCommands(entry.undo);
@@ -1169,10 +1329,16 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
       : Number.parseInt(String(entry.perm ?? '0'), 10) || 0;
   const name = entry.name ?? '';
   const displayMode = entry.display_mode ?? '';
+  const hdrProfile = String(entry.hdr_profile ?? '').trim();
   const outputOverride = entry.output_name_override ?? '';
   const allowCommands = toBool(entry.allow_client_commands, true);
   const legacyOrdering = toBool(entry.enable_legacy_ordering, true);
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
+  const lastSeen = parseLastSeen(entry.last_seen);
+  const configOverrides =
+    entry.config_overrides && typeof entry.config_overrides === 'object' && !Array.isArray(entry.config_overrides)
+      ? JSON.parse(JSON.stringify(entry.config_overrides))
+      : {};
   const prefer10BitSdr =
     entry.prefer_10bit_sdr === undefined || entry.prefer_10bit_sdr === null
       ? null
@@ -1183,13 +1349,16 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     uuid: entry.uuid ?? '',
     name,
     displayMode,
+    hdrProfile,
     outputOverride,
     perm,
     connected: !!entry.connected,
+    lastSeen,
     allowClientCommands: allowCommands,
     enableLegacyOrdering: legacyOrdering,
     alwaysUseVirtualDisplay: alwaysVirtual,
     prefer10BitSdr,
+    configOverrides,
     virtualDisplayMode,
     virtualDisplayLayout,
     doCommands,
@@ -1197,12 +1366,14 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editing: false,
     editName: name,
     editDisplayMode: displayMode,
+    editHdrProfile: hdrProfile || null,
     editPhysicalOutputOverride: outputOverride,
     editPerm: perm,
     editAllowClientCommands: allowCommands,
     editEnableLegacyOrdering: legacyOrdering,
     editAlwaysUseVirtualDisplay: alwaysVirtual,
     editPrefer10BitSdr: prefer10BitSdr,
+    editConfigOverrides: JSON.parse(JSON.stringify(configOverrides)),
     editVirtualDisplayMode: virtualDisplayMode,
     editVirtualDisplayLayout: virtualDisplayLayout,
     editDo: doCommands.map(cloneCommand),
@@ -1213,12 +1384,14 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
 function resetClientEdits(client: ClientViewModel) {
   client.editName = client.name;
   client.editDisplayMode = client.displayMode;
+  client.editHdrProfile = client.hdrProfile || null;
   client.editPhysicalOutputOverride = client.outputOverride;
   client.editPerm = client.perm;
   client.editAllowClientCommands = client.allowClientCommands;
   client.editEnableLegacyOrdering = client.enableLegacyOrdering;
   client.editAlwaysUseVirtualDisplay = client.alwaysUseVirtualDisplay;
   client.editPrefer10BitSdr = client.prefer10BitSdr;
+  client.editConfigOverrides = JSON.parse(JSON.stringify(client.configOverrides || {}));
   client.editVirtualDisplayMode = client.virtualDisplayMode;
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
   client.editDo = client.doCommands.map(cloneCommand);
@@ -1231,16 +1404,20 @@ async function refreshClients(): Promise<void> {
       validateStatus: () => true,
     });
     const response = r.data ?? {};
+    if (typeof response.platform === 'string') {
+      platform.value = response.platform;
+    }
     if (response.status && Array.isArray(response.named_certs)) {
-      platform.value = typeof response.platform === 'string' ? response.platform : '';
-      const mapped = response.named_certs.map(createClientViewModel);
-      mapped.sort((a, b) => {
-        const nameA = a.name.toLowerCase();
-        const nameB = b.name.toLowerCase();
-        if (nameA === nameB) return a.uuid.localeCompare(b.uuid);
-        if (nameA === '') return 1;
-        if (nameB === '') return -1;
-        return nameA.localeCompare(nameB);
+      const prior = new Map(clients.value.map((client) => [client.uuid, client] as const));
+      const mapped = response.named_certs.map((entry) => {
+        const uuid = entry.uuid ?? '';
+        const existing = uuid ? prior.get(uuid) : undefined;
+        if (existing?.editing) {
+          existing.connected = !!entry.connected;
+          existing.lastSeen = parseLastSeen(entry.last_seen);
+          return existing;
+        }
+        return createClientViewModel(entry);
       });
       clients.value = mapped;
       if (platform.value === 'windows') {
@@ -1316,6 +1493,7 @@ function editClient(client: ClientViewModel) {
   resetClientEdits(client);
   client.editing = true;
   currentEditingClient.value = client;
+  ensureHdrProfilesLoaded();
 }
 
 function cancelEdit(client: ClientViewModel) {
@@ -1329,12 +1507,17 @@ function cancelEdit(client: ClientViewModel) {
 function applyClientEditsToBase(client: ClientViewModel, payload: SaveClientPayload) {
   client.name = payload.name;
   client.displayMode = payload.display_mode;
+  client.hdrProfile = payload.hdr_profile ? payload.hdr_profile : '';
   client.outputOverride = payload.output_name_override;
   client.perm = payload.perm;
   client.allowClientCommands = payload.allow_client_commands;
   client.enableLegacyOrdering = payload.enable_legacy_ordering;
   client.alwaysUseVirtualDisplay = payload.always_use_virtual_display;
   client.prefer10BitSdr = payload.prefer_10bit_sdr === undefined ? null : payload.prefer_10bit_sdr;
+  client.configOverrides =
+    payload.config_overrides && typeof payload.config_overrides === 'object' && !Array.isArray(payload.config_overrides)
+      ? JSON.parse(JSON.stringify(payload.config_overrides))
+      : {};
   client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
   client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
   client.doCommands = payload.do.map(cloneCommand);
@@ -1350,6 +1533,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     return;
   }
   const trimmedName = client.editName.trim();
+  const trimmedHdrProfile = String(client.editHdrProfile ?? '').trim();
   const trimmedPhysicalOutput = client.editPhysicalOutputOverride.trim();
   const displaySelection = getClientDisplaySelection(client);
   const cleanedDo = client.editDo.reduce<ClientCommand[]>((acc, entry) => {
@@ -1365,6 +1549,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
   const payload: SaveClientPayload = {
     uuid: client.uuid,
     name: trimmedName,
+    hdr_profile: trimmedHdrProfile,
     display_mode: trimmedDisplayMode,
     output_name_override: displaySelection === 'physical' ? trimmedPhysicalOutput : '',
     virtual_display_mode: client.editVirtualDisplayMode ?? '',
@@ -1379,6 +1564,16 @@ async function saveClient(client: ClientViewModel): Promise<void> {
   if (client.editPrefer10BitSdr !== null) {
     payload.prefer_10bit_sdr = !!client.editPrefer10BitSdr;
   }
+  payload.config_overrides =
+    client.editConfigOverrides &&
+    typeof client.editConfigOverrides === 'object' &&
+    !Array.isArray(client.editConfigOverrides)
+      ? Object.fromEntries(
+          Object.entries(client.editConfigOverrides).filter(
+            ([k, v]) => typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
+          ),
+        )
+      : {};
   client.editing = false;
   currentEditingClient.value = null;
   try {

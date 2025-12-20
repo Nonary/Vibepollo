@@ -212,6 +212,7 @@ const defaultGroups = [
     options: {
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
+      frame_limiter_fps_limit: 0,
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
       frame_limiter_disable_vsync: false,

@@ -13,6 +13,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 // lib includes
@@ -421,7 +422,20 @@ namespace config {
       return video_t::dd_t::hdr_option_e::disabled;  // Default to this if value is invalid
     }
 
-    video_t::dd_t::mode_remapping_t mode_remapping_from_view(const ::std::string_view value) {
+    video_t::dd_t::hdr_request_override_e hdr_request_override_from_view(const std::string_view value) {
+#define _CONVERT_2_ARG_(str, val) \
+  if (value == #str##sv) \
+  return video_t::dd_t::hdr_request_override_e::val
+#define _CONVERT_(x) _CONVERT_2_ARG_(x, x)
+      _CONVERT_2_ARG_(auto, automatic);
+      _CONVERT_(force_on);
+      _CONVERT_(force_off);
+#undef _CONVERT_
+#undef _CONVERT_2_ARG_
+      return video_t::dd_t::hdr_request_override_e::automatic;
+    }
+
+    video_t::dd_t::mode_remapping_t mode_remapping_from_view(const std::string_view value) {
       const auto parse_entry_list {[](const auto &entry_list, auto &output_field) {
         for (auto &[_, entry] : entry_list) {
           auto requested_resolution = entry.template get_optional<std::string>("requested_resolution"s);
@@ -606,6 +620,7 @@ namespace config {
       video_t::dd_t::refresh_rate_option_e::automatic,  // refresh_rate_option
       {},  // manual_refresh_rate
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
+      video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
       false,  // always_restore_from_golden
@@ -686,6 +701,7 @@ namespace config {
   frame_limiter_t frame_limiter {
     false,  // enable
     "auto",  // provider
+    0,  // fps_limit
     false  // disable_vsync
   };
 
@@ -1381,6 +1397,7 @@ namespace config {
     generic_f(vars, "dd_refresh_rate_option", video.dd.refresh_rate_option, dd::refresh_rate_option_from_view);
     string_f(vars, "dd_manual_refresh_rate", video.dd.manual_refresh_rate);
     generic_f(vars, "dd_hdr_option", video.dd.hdr_option, dd::hdr_option_from_view);
+    generic_f(vars, "dd_hdr_request_override", video.dd.hdr_request_override, dd::hdr_request_override_from_view);
     {
       int value = -1;
       int_between_f(vars, "dd_config_revert_delay", value, {0, std::numeric_limits<int>::max()});
@@ -1417,6 +1434,7 @@ namespace config {
     if (frame_limiter.provider.empty()) {
       frame_limiter.provider = "auto";
     }
+    int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     string_f(vars, "rtss_install_path", rtss.install_path);
@@ -1798,6 +1816,86 @@ namespace config {
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
     std::shared_mutex g_output_override_mutex;
     std::optional<std::string> g_runtime_output_name_override;
+
+    // Runtime config override map applied on top of config file values (not persisted).
+    // Used for per-application overrides so we can keep the effective config consistent
+    // across hot-apply and deferred reloads while an app is running.
+    std::mutex g_runtime_overrides_mutex;
+    std::unordered_map<std::string, std::string> g_runtime_config_overrides;
+
+    bool is_valid_override_key(const std::string_view key) {
+      if (key.empty() || key.size() > 128) {
+        return false;
+      }
+      for (const char c : key) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_')) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    bool is_allowed_override_key(const std::string_view key) {
+      // Allow only specific Playnite behavior settings to vary per-app.
+      // All Playnite sync/catalog settings are global and may mutate apps.json.
+      if (key.rfind("playnite_", 0) == 0) {
+        static const std::unordered_set<std::string_view> kPlayniteAllowed = {
+          "playnite_focus_attempts",
+          "playnite_focus_timeout_secs",
+          "playnite_focus_exit_on_first",
+        };
+        return kPlayniteAllowed.contains(key);
+      }
+
+      // Disallow keys that are global/system/network scoped and not intended to vary per application.
+      static const std::unordered_set<std::string_view> kBlocked = {
+        // Network / identity / credentials
+        "flags",
+        "port",
+        "address_family",
+        "upnp",
+        "origin_web_ui_allowed",
+        "external_ip",
+        "lan_encryption_mode",
+        "wan_encryption_mode",
+        "ping_timeout",
+        "fec_percentage",
+        "pkey",
+        "cert",
+
+        // Per-app display selection is handled via apps.json metadata (output/virtual-screen/virtual-display-*).
+        "virtual_display_mode",
+        "virtual_display_layout",
+
+        // File paths / state
+        "file_apps",
+        "credentials_file",
+        "log_path",
+        "file_state",
+        "vibeshine_file_state",
+
+        // Global UX / program settings
+        "sunshine_name",
+        "locale",
+        "min_log_level",
+        "notify_pre_releases",
+        "system_tray",
+        "update_check_interval",
+        "session_token_ttl_seconds",
+        "remember_me_refresh_token_ttl_seconds",
+
+        // Global command list (apps already have per-app prep-cmd + exclude-global-prep-cmd)
+        "global_prep_cmd",
+      };
+
+      return !kBlocked.contains(key);
+    }
+
+    std::unordered_map<std::string, std::string> runtime_overrides_snapshot() {
+      std::scoped_lock lk(g_runtime_overrides_mutex);
+      return g_runtime_config_overrides;
+    }
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
@@ -1837,6 +1935,7 @@ namespace config {
       const auto prev_dd_resolution_opt = video.dd.resolution_option;
       const auto prev_dd_refresh_rate_opt = video.dd.refresh_rate_option;
       const auto prev_dd_hdr_opt = video.dd.hdr_option;
+      const auto prev_dd_hdr_req_override = video.dd.hdr_request_override;
       const auto prev_dd_manual_resolution = video.dd.manual_resolution;
       const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
@@ -1849,6 +1948,13 @@ namespace config {
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       for (const auto &[name, value] : command_line_overrides) {
+        vars.insert_or_assign(name, value);
+      }
+
+      // Apply runtime overrides (per-app) on top of file values so hot-apply and deferred reloads
+      // keep the effective config consistent while an app is running.
+      const auto runtime_overrides = runtime_overrides_snapshot();
+      for (const auto &[name, value] : runtime_overrides) {
         vars.insert_or_assign(name, value);
       }
       // Track old logging params to adjust sinks if needed
@@ -1877,6 +1983,7 @@ namespace config {
                                      (prev_dd_resolution_opt != video.dd.resolution_option) ||
                                      (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
                                      (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                     (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
                                      (prev_dd_manual_resolution != video.dd.manual_resolution) ||
                                      (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
@@ -1888,7 +1995,7 @@ namespace config {
                                      (prev_double_refreshrate != video.double_refreshrate);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
-      if (dd_config_changed && rtsp_stream::session_count() == 0) {
+      if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
         display_helper_integration::revert();
 
@@ -1901,6 +2008,39 @@ namespace config {
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
     }
+  }
+
+  void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides) {
+    std::unordered_map<std::string, std::string> filtered;
+    filtered.reserve(overrides.size());
+
+    for (auto &[k, v] : overrides) {
+      if (!is_valid_override_key(k) || !is_allowed_override_key(k)) {
+        continue;
+      }
+      filtered.emplace(std::move(k), std::move(v));
+    }
+
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    g_runtime_config_overrides = std::move(filtered);
+  }
+
+  void clear_runtime_config_overrides() {
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    g_runtime_config_overrides.clear();
+  }
+
+  bool has_runtime_config_override(std::string_view key) {
+    if (!is_valid_override_key(key)) {
+      return false;
+    }
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    return g_runtime_config_overrides.find(std::string(key)) != g_runtime_config_overrides.end();
+  }
+
+  bool has_runtime_config_overrides() {
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    return !g_runtime_config_overrides.empty();
   }
 
   void mark_deferred_reload() {

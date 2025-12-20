@@ -116,7 +116,12 @@ namespace platf::display_helper_client {
     }
   }  // namespace
 
-  static bool send_message(platf::dxgi::INamedPipe &pipe, MsgType type, const std::vector<uint8_t> &payload) {
+  static bool send_message(
+    platf::dxgi::INamedPipe &pipe,
+    MsgType type,
+    const std::vector<uint8_t> &payload,
+    std::optional<int> send_timeout_override_ms = std::nullopt
+  ) {
     const bool is_ping = (type == MsgType::Ping);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
@@ -124,9 +129,10 @@ namespace platf::display_helper_client {
     }
     std::vector<uint8_t> out;
     out.reserve(1 + payload.size());
-   out.push_back(static_cast<uint8_t>(type));
-   out.insert(out.end(), payload.begin(), payload.end());
-    const bool ok = pipe.send(out, effective_send_timeout());
+    out.push_back(static_cast<uint8_t>(type));
+    out.insert(out.end(), payload.begin(), payload.end());
+    const int timeout_ms = send_timeout_override_ms.value_or(effective_send_timeout());
+    const bool ok = pipe.send(out, timeout_ms);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: send result=" << (ok ? "true" : "false");
     }
@@ -148,12 +154,23 @@ namespace platf::display_helper_client {
   }
 
   // Ensure connected while holding the pipe mutex. Returns true on success.
-  static bool ensure_connected_locked() {
+  static bool ensure_connected_locked(std::optional<int> connect_timeout_override_ms = std::nullopt) {
     auto &pipe = pipe_singleton();
     if (pipe && pipe->is_connected()) {
       return true;
     }
     BOOST_LOG(debug) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
+    const int connect_timeout_ms = connect_timeout_override_ms.value_or(effective_connect_timeout());
+    const auto connect_start = std::chrono::steady_clock::now();
+    auto remaining_connect_timeout_ms = [&]() -> int {
+      if (!connect_timeout_override_ms) {
+        return connect_timeout_ms;
+      }
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - connect_start);
+      const long long remaining = static_cast<long long>(connect_timeout_ms) - elapsed.count();
+      return static_cast<int>(std::max<long long>(0LL, remaining));
+    };
     auto creator_anon = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
       platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
       return ff.create_client("sunshine_display_helper");
@@ -161,7 +178,7 @@ namespace platf::display_helper_client {
     pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_anon);
     bool ok = false;
     if (pipe) {
-      pipe->wait_for_client_connection(effective_connect_timeout());
+      pipe->wait_for_client_connection(remaining_connect_timeout_ms());
       ok = pipe->is_connected();
     }
     if (!ok) {
@@ -172,7 +189,7 @@ namespace platf::display_helper_client {
       };
       pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_named);
       if (pipe) {
-        pipe->wait_for_client_connection(effective_connect_timeout());
+        pipe->wait_for_client_connection(remaining_connect_timeout_ms());
         ok = pipe->is_connected();
       } else {
         ok = false;
@@ -271,6 +288,20 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Disarm, payload)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool send_disarm_restore_fast(int timeout_ms) {
+    BOOST_LOG(debug) << "Display helper IPC: DISARM (fast) request queued (timeout_ms=" << timeout_ms << ")";
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked(timeout_ms)) {
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::Disarm, payload, timeout_ms)) {
       return true;
     }
     return false;

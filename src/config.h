@@ -141,6 +141,12 @@ namespace config {
         automatic  ///< Change HDR settings and use the state requested by Moonlight.
       };
 
+      enum class hdr_request_override_e {
+        automatic,  ///< Use HDR state requested by the client.
+        force_on,  ///< Force HDR enabled for the session.
+        force_off  ///< Force HDR disabled for the session.
+      };
+
       struct mode_remapping_entry_t {
         std::string requested_resolution;
         std::string requested_fps;
@@ -160,6 +166,7 @@ namespace config {
       refresh_rate_option_e refresh_rate_option;
       std::string manual_refresh_rate;  ///< Manual refresh rate in case `refresh_rate_option == refresh_rate_option_e::manual`.
       hdr_option_e hdr_option;
+      hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
@@ -250,6 +257,9 @@ namespace config {
 
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
     std::string provider;
+
+    // Optional FPS limit override. 0 uses the stream's requested FPS.
+    int fps_limit {0};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
@@ -369,6 +379,14 @@ namespace config {
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+
+  // Runtime, non-persisted config overrides (e.g. per-application overrides).
+  // Values use the same raw representation as the config file (strings for string keys,
+  // JSON dumps for non-string keys).
+  void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides);
+  void clear_runtime_config_overrides();
+  bool has_runtime_config_override(std::string_view key);
+  bool has_runtime_config_overrides();
 
   void set_runtime_output_name_override(std::optional<std::string> output_name);
   std::optional<std::string> runtime_output_name_override();

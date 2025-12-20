@@ -8,6 +8,8 @@
 // standard includes
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -73,6 +75,15 @@ namespace nvhttp {
 
   using p_named_cert_t = crypto::p_named_cert_t;
   using PERM = crypto::PERM;
+
+  namespace {
+    std::int64_t now_seconds() {
+      return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch()
+      )
+        .count();
+    }
+  }  // namespace
 
   struct client_t {
     std::vector<p_named_cert_t> named_devices;
@@ -369,6 +380,9 @@ namespace nvhttp {
         if (!named_cert_p->virtual_display_layout_override.empty()) {
           named_cert_node["virtual_display_layout"] = named_cert_p->virtual_display_layout_override;
         }
+        if (!named_cert_p->hdr_profile.empty()) {
+          named_cert_node["hdr_profile"] = named_cert_p->hdr_profile;
+        }
         if (!named_cert_p->output_name_override.empty()) {
           named_cert_node["output_name_override"] = named_cert_p->output_name_override;
         }
@@ -378,6 +392,12 @@ namespace nvhttp {
         named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
         if (named_cert_p->prefer_10bit_sdr.has_value()) {
           named_cert_node["prefer_10bit_sdr"] = *named_cert_p->prefer_10bit_sdr;
+        }
+        if (named_cert_p->last_seen.has_value()) {
+          named_cert_node["last_seen"] = *named_cert_p->last_seen;
+        }
+        if (!named_cert_p->config_overrides.empty()) {
+          named_cert_node["config_overrides"] = named_cert_p->config_overrides;
         }
 
         if (!named_cert_p->do_cmds.empty()) {
@@ -553,6 +573,7 @@ namespace nvhttp {
         named_cert_p->cert = el.value("cert", "");
         named_cert_p->uuid = el.value("uuid", "");
         named_cert_p->display_mode = el.value("display_mode", "");
+        named_cert_p->hdr_profile = el.value("hdr_profile", "");
         named_cert_p->output_name_override = el.value("output_name_override", "");
         named_cert_p->virtual_display_mode_override = el.value("virtual_display_mode", "");
         named_cert_p->virtual_display_layout_override = el.value("virtual_display_layout", "");
@@ -564,6 +585,20 @@ namespace nvhttp {
           named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
         } else {
           named_cert_p->prefer_10bit_sdr.reset();
+        }
+        if (el.contains("last_seen") && !el["last_seen"].is_null()) {
+          named_cert_p->last_seen = util::get_non_string_json_value<std::int64_t>(el, "last_seen", 0);
+        } else {
+          named_cert_p->last_seen.reset();
+        }
+        named_cert_p->config_overrides.clear();
+        if (el.contains("config_overrides") && el["config_overrides"].is_object()) {
+          for (const auto &entry : el["config_overrides"].items()) {
+            if (entry.key().empty()) {
+              continue;
+            }
+            named_cert_p->config_overrides[entry.key()] = entry.value().get<std::string>();
+          }
         }
         named_cert_p->do_cmds = extract_command_entries(el, "do");
         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
@@ -611,11 +646,24 @@ namespace nvhttp {
     launch_session->virtual_display = false;
     launch_session->virtual_display_guid_bytes.fill(0);
     launch_session->virtual_display_device_id.clear();
+    launch_session->virtual_display_ready_since.reset();
     launch_session->app_metadata.reset();
+    launch_session->client_uuid = named_cert_p ? named_cert_p->uuid : std::string();
+    launch_session->client_name = named_cert_p ? named_cert_p->name : std::string();
+    launch_session->hdr_profile.reset();
+    launch_session->client_requests_virtual_display = false;
+    launch_session->virtual_display_failed = false;
 
     auto client_name_arg = get_arg(args, "clientName", "");
-    if (launch_session->device_name.empty() && !client_name_arg.empty()) {
+    if (!client_name_arg.empty()) {
+      if (launch_session->client_name.empty()) {
+        launch_session->client_name = client_name_arg;
+      }
       launch_session->device_name = client_name_arg;
+    }
+
+    if (launch_session->client_uuid.empty()) {
+      launch_session->client_uuid = get_arg(args, "uniqueid", "");
     }
 
     // If launched from client
@@ -670,6 +718,10 @@ namespace nvhttp {
         launch_session->virtual_display_layout_override = *parsed_layout;
       }
     }
+    launch_session->client_requests_virtual_display = named_cert_p->always_use_virtual_display;
+    if (!named_cert_p->hdr_profile.empty()) {
+      launch_session->hdr_profile = named_cert_p->hdr_profile;
+    }
 
     // Split mode by the char "x", to populate width/height/fps
     int x = 0;
@@ -699,9 +751,7 @@ namespace nvhttp {
       launch_session->fps = 60000;  // 60fps * 1000 denominator
     }
 
-    launch_session->device_name = named_cert_p->name.empty() ? "ApolloDisplay"s : named_cert_p->name;
-    launch_session->unique_id = named_cert_p->uuid;
-    launch_session->client_uuid = named_cert_p->uuid;
+    launch_session->unique_id = get_arg(args, "uniqueid", "unknown");
     launch_session->perm = named_cert_p->perm;
     launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
     if (!named_cert_p->output_name_override.empty()) {
@@ -780,6 +830,21 @@ namespace nvhttp {
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));
     launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+#ifdef _WIN32
+    {
+      using override_e = config::video_t::dd_t::hdr_request_override_e;
+      switch (config::video.dd.hdr_request_override) {
+        case override_e::force_on:
+          launch_session->enable_hdr = true;
+          break;
+        case override_e::force_off:
+          launch_session->enable_hdr = false;
+          break;
+        case override_e::automatic:
+          break;
+      }
+    }
+#endif
     launch_session->virtual_display = util::from_view(get_arg(args, "virtualDisplay", "0")) || named_cert_p->always_use_virtual_display;
     launch_session->scale_factor = util::from_view(get_arg(args, "scaleFactor", "100"));
 
@@ -824,6 +889,9 @@ namespace nvhttp {
 
     tree.put("root.paired", 1);
     tree.put("root.plaincert", util::hex_vec(conf_intern.servercert, true));
+    // From this point forward, runtime overrides (if any) should remain active until the app terminates.
+    keep_runtime_overrides = true;
+
     tree.put("root.<xmlattr>.status_code", 200);
   }
 
@@ -1359,6 +1427,20 @@ namespace nvhttp {
     return std::nullopt;
   }
 
+  crypto::named_cert_t *get_named_cert_by_uuid(const std::string &uuid) {
+    if (uuid.empty()) {
+      return nullptr;
+    }
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert->uuid == uuid) {
+        return named_cert.get();
+      }
+    }
+    return nullptr;
+  }
+
   nlohmann::json get_all_clients() {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     client_t &client = client_root;
@@ -1369,6 +1451,9 @@ namespace nvhttp {
       named_cert_node["name"] = named_cert->name;
       named_cert_node["uuid"] = named_cert->uuid;
       named_cert_node["display_mode"] = named_cert->display_mode;
+      if (!named_cert->hdr_profile.empty()) {
+        named_cert_node["hdr_profile"] = named_cert->hdr_profile;
+      }
       named_cert_node["output_name_override"] = named_cert->output_name_override;
       named_cert_node["virtual_display_mode"] = named_cert->virtual_display_mode_override;
       named_cert_node["virtual_display_layout"] = named_cert->virtual_display_layout_override;
@@ -1378,6 +1463,12 @@ namespace nvhttp {
       named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
       if (named_cert->prefer_10bit_sdr.has_value()) {
         named_cert_node["prefer_10bit_sdr"] = *named_cert->prefer_10bit_sdr;
+      }
+      if (named_cert->last_seen.has_value()) {
+        named_cert_node["last_seen"] = *named_cert->last_seen;
+      }
+      if (!named_cert->config_overrides.empty()) {
+        named_cert_node["config_overrides"] = named_cert->config_overrides;
       }
 
       // Add "do" commands if available
@@ -1417,6 +1508,29 @@ namespace nvhttp {
     }
 
     return named_cert_nodes;
+  }
+
+  void mark_client_last_seen(const std::string &uuid) {
+    if (uuid.empty()) {
+      return;
+    }
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert->uuid != uuid) {
+        continue;
+      }
+
+      const auto now = now_seconds();
+      if (named_cert->last_seen.has_value() && *named_cert->last_seen == now) {
+        return;
+      }
+      named_cert->last_seen = now;
+      if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
+        save_state();
+      }
+      return;
+    }
   }
 
   void applist(resp_https_t response, req_https_t request) {
@@ -1596,8 +1710,67 @@ namespace nvhttp {
     }
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+
+    no_active_sessions = (rtsp_stream::session_count() == 0);
+
+    // Apply per-application runtime config overrides before we build session metadata or
+    // prepare display/capture so the effective config is used everywhere.
+    bool runtime_overrides_applied = false;
+    bool keep_runtime_overrides = false;
+    auto runtime_overrides_guard = util::fail_guard([&]() {
+      if (!runtime_overrides_applied || keep_runtime_overrides) {
+        return;
+      }
+
+      config::clear_runtime_config_overrides();
+
+      // Restore global config immediately when safe; otherwise defer.
+      if (rtsp_stream::session_count() == 0) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    });
+
+    try {
+      // Find the target app and apply its config overrides (if any), then layer on client overrides.
+      std::unordered_map<std::string, std::string> overrides;
+      const auto apps = proc::proc.get_apps();
+      const auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
+        if (!appuuid_str.empty()) {
+          return app.uuid == appuuid_str;
+        }
+        return app.id == appid_str;
+      });
+      if (app_iter != apps.end()) {
+        overrides = app_iter->config_overrides;
+      }
+
+      if (named_cert_p) {
+        for (const auto &[k, v] : named_cert_p->config_overrides) {
+          overrides.insert_or_assign(k, v);
+        }
+      }
+
+      config::set_runtime_config_overrides(std::move(overrides));
+      runtime_overrides_applied = true;
+
+      // Re-apply config so overrides take effect in config::video/config::input/etc.
+      config::apply_config_now();
+    } catch (...) {
+      // If something goes wrong, fall back to global config only.
+      config::clear_runtime_config_overrides();
+      config::apply_config_now();
+      runtime_overrides_applied = true;
+    }
+
     // Prevent interleaving with hot-apply while we prep/start a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
+#ifdef _WIN32
+    // First step on stream start: stop any in-flight helper restore loop immediately.
+    // This must happen before any other display helper work to prevent restore/crash loops on virtual displays.
+    (void) display_helper_integration::disarm_pending_restore();
+#endif
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
@@ -1614,8 +1787,10 @@ namespace nvhttp {
 
     auto disable_virtual_display_request = [&]() {
       launch_session->virtual_display = false;
+      launch_session->virtual_display_failed = false;
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
+      launch_session->virtual_display_ready_since.reset();
     };
     
     // Snapshot current display state BEFORE any display enumeration.
@@ -1649,7 +1824,7 @@ namespace nvhttp {
       config_requests_virtual =
         *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
     }
-    const bool client_requests_virtual = named_cert_p->always_use_virtual_display;
+    const bool client_requests_virtual = launch_session->client_requests_virtual_display;
     BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
     const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
@@ -1684,7 +1859,9 @@ namespace nvhttp {
           auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId();
           if (existing_device) {
             launch_session->virtual_display = true;
+            launch_session->virtual_display_failed = false;
             launch_session->virtual_display_device_id = *existing_device;
+            launch_session->virtual_display_ready_since = std::chrono::steady_clock::now();
             BOOST_LOG(info) << "Virtual display already active (device_id=" << *existing_device
                             << "). Skipping additional creation because another session is running.";
           } else {
@@ -1828,6 +2005,7 @@ namespace nvhttp {
 
         if (display_info) {
           launch_session->virtual_display = true;
+          launch_session->virtual_display_failed = false;
           if (display_info->device_id && !display_info->device_id->empty()) {
             launch_session->virtual_display_device_id = *display_info->device_id;
           } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
@@ -1892,6 +2070,7 @@ namespace nvhttp {
         } else {
           disable_virtual_display_request();
           launch_session->virtual_display = false;
+          launch_session->virtual_display_failed = true;
           launch_session->virtual_display_guid_bytes.fill(0);
           launch_session->virtual_display_device_id.clear();
           launch_session->virtual_display_ready_since.reset();
@@ -2056,6 +2235,7 @@ namespace nvhttp {
     rtsp_stream::launch_session_raise(launch_session);
     revert_display_configuration = false;
     output_override_guard.disable();
+    runtime_overrides_guard.disable();
   }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
@@ -2172,6 +2352,16 @@ namespace nvhttp {
           }
         } else {
           BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+        }
+
+        // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
+        if (!launch_session->virtual_display) {
+          const auto active_output = config::get_active_output_name();
+          VDISPLAY::applyHdrProfileToOutput(
+            launch_session->client_name.c_str(),
+            launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
+            active_output.empty() ? nullptr : active_output.c_str()
+          );
         }
 #else
         if (should_reapply_display) {
@@ -2622,6 +2812,10 @@ namespace nvhttp {
     return false;
   }
 
+  bool disconnect_client(const std::string &uuid) {
+    return rtsp_stream::disconnect_client_sessions(uuid);
+  }
+
   void update_session_info(stream::session_t &session, const std::string &name, const crypto::PERM newPerm) {
     stream::session::update_device_info(session, name, newPerm);
   }
@@ -2632,6 +2826,75 @@ namespace nvhttp {
       update_session_info(*session, name, newPerm);
       return true;
     }
+    return false;
+  }
+
+  bool update_device_info(
+    const std::string &uuid,
+    const std::string &name,
+    const std::string &display_mode,
+    const std::string &output_name_override,
+    const bool always_use_virtual_display,
+    const std::string &virtual_display_mode,
+    const std::string &virtual_display_layout,
+    std::optional<std::unordered_map<std::string, std::string>> config_overrides,
+    const std::optional<bool> prefer_10bit_sdr,
+    const std::optional<std::string> hdr_profile
+  ) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    const auto trimmed_name = boost::algorithm::trim_copy(name);
+    const auto trimmed_display_mode = boost::algorithm::trim_copy(display_mode);
+    const auto trimmed_output_override = boost::algorithm::trim_copy(output_name_override);
+    const auto trimmed_vd_mode = boost::algorithm::trim_copy(virtual_display_mode);
+    const auto trimmed_vd_layout = boost::algorithm::trim_copy(virtual_display_layout);
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert->uuid != uuid) {
+        continue;
+      }
+
+      named_cert->name = trimmed_name;
+      named_cert->display_mode = trimmed_display_mode;
+      named_cert->always_use_virtual_display = always_use_virtual_display;
+      named_cert->output_name_override = always_use_virtual_display ? "" : trimmed_output_override;
+      named_cert->virtual_display_mode_override = trimmed_vd_mode;
+      named_cert->virtual_display_layout_override = trimmed_vd_layout;
+      named_cert->prefer_10bit_sdr = prefer_10bit_sdr;
+      if (config_overrides) {
+        named_cert->config_overrides = std::move(*config_overrides);
+      }
+      if (hdr_profile.has_value()) {
+        named_cert->hdr_profile = boost::algorithm::trim_copy(*hdr_profile);
+      }
+      save_state();
+      return true;
+    }
+
+    return false;
+  }
+
+  bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    const auto trimmed_hdr_profile = boost::algorithm::trim_copy(hdr_profile);
+
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_devices) {
+      if (named_cert->uuid != uuid) {
+        continue;
+      }
+
+      named_cert->hdr_profile = trimmed_hdr_profile;
+      save_state();
+      return true;
+    }
+
     return false;
   }
 

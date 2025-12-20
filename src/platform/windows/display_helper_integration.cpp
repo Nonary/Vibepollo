@@ -7,8 +7,10 @@
 
   // standard
   #include <algorithm>
+  #include <atomic>
   #include <cmath>
   #include <chrono>
+  #include <cstdint>
   #include <filesystem>
   #include <mutex>
   #include <optional>
@@ -60,9 +62,12 @@ namespace {
   }
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
-  constexpr DWORD kHelperStopGracePeriodMs = 2000;
   constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
   constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
+
+  // Stream-start requirement: stop any helper restore activity immediately.
+  constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
+  constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
 
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
@@ -287,7 +292,6 @@ namespace {
 
     return ok;
   }
-  constexpr DWORD kHelperStopTotalWaitMs = 2000;
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
   bool wait_for_helper_ipc_ready_locked() {
@@ -402,6 +406,20 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
+
+  // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
+  // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
+  static std::atomic<bool> g_restore_expected {false};
+  static std::atomic<std::uint64_t> g_restore_generation {0};
+  static std::atomic<std::uint64_t> g_disarm_generation_sent {0};
+  static std::atomic<std::int64_t> g_last_revert_us {0};
+  static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
+  static std::atomic<std::int64_t> g_last_disarm_success_us {0};
+
+  static std::int64_t now_steady_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+  }
   // Active session display parameters snapshot for re-apply on reconnect.
   // We do NOT cache serialized JSON, only the subset of session fields that
   // affect display configuration. On reconnect, we rebuild the full
@@ -437,7 +455,7 @@ namespace {
   }
 
   bool disarm_helper_restore_if_running() {
-    if (!dd_feature_enabled() || shutdown_requested()) {
+    if (shutdown_requested()) {
       return false;
     }
 
@@ -450,23 +468,81 @@ namespace {
     }
 
     if (!helper_running) {
-      helper_running = ensure_helper_started();
-    }
-
-    if (!helper_running) {
-      platf::display_helper_client::reset_connection();
-      BOOST_LOG(debug) << "Display helper: DISARM skipped (helper not reachable).";
       return false;
     }
 
-    bool ok = platf::display_helper_client::send_disarm_restore();
-    if (!ok) {
-      BOOST_LOG(warning) << "Display helper: DISARM send failed; retrying after connection reset.";
-      platf::display_helper_client::reset_connection();
-      ok = platf::display_helper_client::send_disarm_restore();
+    const bool restore_expected = g_restore_expected.load(std::memory_order_relaxed);
+    const auto now_us = now_steady_us();
+    const auto last_attempt_us = g_last_disarm_attempt_us.load(std::memory_order_relaxed);
+
+    // Don't spam DISARM frames (they share the helper's job/message queues with APPLY/REVERT).
+    if ((now_us - last_attempt_us) < (kDisarmRetryThrottle.count() * 1000)) {
+      const auto last_success_us = g_last_disarm_success_us.load(std::memory_order_relaxed);
+      return (now_us - last_success_us) < (kDisarmRetryThrottle.count() * 1000);
     }
-    BOOST_LOG(info) << "Display helper: DISARM dispatch result=" << (ok ? "true" : "false");
-    return ok;
+
+    // If we believe a restore loop is active, ensure we only issue one DISARM per restore generation unless it fails
+    // and the throttle allows a retry.
+    const auto restore_generation = g_restore_generation.load(std::memory_order_relaxed);
+    if (restore_expected) {
+      const auto disarmed_generation = g_disarm_generation_sent.load(std::memory_order_relaxed);
+      if (disarmed_generation >= restore_generation) {
+        const auto last_success_us = g_last_disarm_success_us.load(std::memory_order_relaxed);
+        return (now_us - last_success_us) < (kDisarmRetryThrottle.count() * 1000);
+      }
+    }
+
+    using namespace std::chrono;
+    const auto start = steady_clock::now();
+    const auto deadline = start + kDisarmRestoreBudget;
+    auto remaining_ms = [&]() -> int {
+      const auto now = steady_clock::now();
+      if (now >= deadline) {
+        return 0;
+      }
+      return static_cast<int>(duration_cast<milliseconds>(deadline - now).count());
+    };
+
+    // Bound total blocking to kDisarmRestoreBudget by splitting the budget across connect+send.
+    auto try_send_fast = [&](int max_total_ms) -> bool {
+      const int per_op_ms = std::max(10, max_total_ms / 2);
+      return platf::display_helper_client::send_disarm_restore_fast(per_op_ms);
+    };
+
+    g_last_disarm_attempt_us.store(now_us, std::memory_order_relaxed);
+    bool ok = try_send_fast(static_cast<int>(kDisarmRestoreBudget.count()));
+    if (!ok) {
+      const int rem = remaining_ms();
+      if (rem > 20) {
+        platf::display_helper_client::reset_connection();
+        ok = try_send_fast(rem);
+      }
+    }
+
+    if (ok) {
+      g_last_disarm_success_us.store(now_us, std::memory_order_relaxed);
+      g_disarm_generation_sent.store(restore_generation, std::memory_order_relaxed);
+      g_restore_expected.store(false, std::memory_order_relaxed);
+      BOOST_LOG(info) << "Display helper: DISARM dispatched (fast).";
+      return true;
+    }
+
+    // Fail-safe: if we recently initiated a helper restore, and DISARM couldn't be delivered quickly,
+    // terminate the helper so restore activity stops immediately (prevents virtual display crash loops).
+    const auto last_revert_us = g_last_revert_us.load(std::memory_order_relaxed);
+    const bool revert_recent = (now_us - last_revert_us) < (30LL * 1000LL * 1000LL);
+    if (revert_recent) {
+      BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
+                         << kDisarmRestoreBudget.count() << "ms; terminating helper to stop restore activity.";
+      {
+        std::lock_guard<std::mutex> lg(helper_mutex());
+        helper_proc().terminate();
+      }
+      platf::display_helper_client::reset_connection();
+      g_restore_expected.store(false, std::memory_order_relaxed);
+    }
+
+    return false;
   }
 
   bool ensure_helper_started(bool force_restart, bool force_enable) {
@@ -482,8 +558,7 @@ namespace {
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
         BOOST_LOG(debug) << "Display helper already running (pid=" << pid << ")";
-        bool need_restart = force_restart;
-        if (!need_restart) {
+        if (!force_restart) {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
@@ -498,68 +573,29 @@ namespace {
           platf::display_helper_client::reset_connection();
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
           return false;
+        }
+
+        BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
+                           << ") with no grace period.";
+        platf::display_helper_client::reset_connection();
+        helper_proc().terminate();
+
+        DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
+        if (wait_result == WAIT_OBJECT_0) {
+          DWORD exit_code = 0;
+          GetExitCodeProcess(h, &exit_code);
+          BOOST_LOG(info) << "Display helper exited after forced termination (code=" << exit_code << ").";
+        } else if (wait_result == WAIT_TIMEOUT) {
+          BOOST_LOG(warning) << "Display helper: process did not exit within " << kHelperForceKillWaitMs
+                             << " ms after termination request; continuing with cleanup.";
         } else {
-          BOOST_LOG(info) << "Display helper restart requested (force).";
+          DWORD wait_err = GetLastError();
+          BOOST_LOG(warning) << "Display helper: wait after termination failed (winerr=" << wait_err
+                             << "); continuing with cleanup.";
         }
-        if (need_restart) {
-          bool graceful_shutdown = false;
-          bool stop_sent = platf::display_helper_client::send_stop();
-          if (stop_sent) {
-            DWORD wait_stop = WaitForSingleObject(h, kHelperStopGracePeriodMs);
-            if (wait_stop == WAIT_OBJECT_0) {
-              DWORD exit_code = 0;
-              GetExitCodeProcess(h, &exit_code);
-              BOOST_LOG(info) << "Display helper exited after STOP request (code=" << exit_code << ").";
-              graceful_shutdown = true;
-            } else if (wait_stop == WAIT_TIMEOUT) {
-              DWORD remaining = (kHelperStopTotalWaitMs > kHelperStopGracePeriodMs) ? (kHelperStopTotalWaitMs - kHelperStopGracePeriodMs) : 0;
-              if (remaining > 0) {
-                DWORD wait_more = WaitForSingleObject(h, remaining);
-                if (wait_more == WAIT_OBJECT_0) {
-                  DWORD exit_code = 0;
-                  GetExitCodeProcess(h, &exit_code);
-                  BOOST_LOG(info) << "Display helper exited after extended STOP wait (code=" << exit_code << ").";
-                  graceful_shutdown = true;
-                } else if (wait_more == WAIT_TIMEOUT) {
-                  BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopTotalWaitMs
-                                     << " ms; will force termination.";
-                } else {
-                  DWORD wait_err = GetLastError();
-                  BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err
-                                   << "); will force termination.";
-                }
-              } else {
-                BOOST_LOG(warning) << "Display helper STOP request timed out after " << kHelperStopGracePeriodMs
-                                   << " ms; will force termination.";
-              }
-            } else {
-              DWORD wait_err = GetLastError();
-              BOOST_LOG(error) << "Display helper STOP wait failed (winerr=" << wait_err << "); will force termination.";
-            }
-          } else {
-            BOOST_LOG(warning) << "Display helper STOP request failed; will force termination.";
-          }
-          platf::display_helper_client::reset_connection();
-          if (!graceful_shutdown) {
-            helper_proc().terminate();
-            DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
-            if (wait_result == WAIT_OBJECT_0) {
-              DWORD exit_code = 0;
-              GetExitCodeProcess(h, &exit_code);
-              BOOST_LOG(info) << "Display helper terminated after forced shutdown (code=" << exit_code << ").";
-            } else if (wait_result == WAIT_TIMEOUT) {
-              BOOST_LOG(error) << "Display helper process still running after forced termination wait of "
-                               << kHelperForceKillWaitMs << " ms; deferring restart.";
-              return false;
-            } else {
-              DWORD wait_err = GetLastError();
-              BOOST_LOG(error) << "Display helper forced termination wait failed (winerr=" << wait_err
-                               << "); deferring restart.";
-              return false;
-            }
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(800));
-        }
+
+        // Small delay to reduce the chance of named pipe / mutex conflicts during rapid restart.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } else {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
@@ -590,7 +626,15 @@ namespace {
     }
 
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    const bool started = helper_proc().start(helper.wstring(), L"");
+    bool started = helper_proc().start(helper.wstring(), L"");
+    if (!started && force_restart) {
+      // If we were asked to hard-restart, tolerate a brief overlap window where the old
+      // instance is still tearing down and retry quickly.
+      for (int attempt = 0; attempt < 5 && !started; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        started = helper_proc().start(helper.wstring(), L"");
+      }
+    }
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
@@ -862,9 +906,12 @@ namespace display_helper_integration {
     const bool system_profile_only = platf::is_running_as_system() && !platf::has_active_console_session();
 
     if (!system_profile_only) {
-      bool helper_ready = ensure_helper_started(false, true);
+      // Stream-start policy: if a helper is already running, hard-restart it immediately
+      // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
+      const bool hard_restart = (request.session != nullptr);
+      bool helper_ready = ensure_helper_started(hard_restart, true);
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(false, true);
+        helper_ready = ensure_helper_started(hard_restart, true);
       }
 
       if (helper_ready) {
@@ -936,6 +983,11 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: sending REVERT request.";
     const bool ok = platf::display_helper_client::send_revert();
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+    if (ok) {
+      g_restore_expected.store(true, std::memory_order_relaxed);
+      g_last_revert_us.store(now_steady_us(), std::memory_order_relaxed);
+      g_restore_generation.fetch_add(1, std::memory_order_relaxed);
+    }
     clear_active_session();
     return ok;
   }

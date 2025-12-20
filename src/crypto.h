@@ -6,7 +6,9 @@
 
 // standard includes
 #include <array>
+#include <cstdint>
 #include <optional>
+#include <unordered_map>
 
 // lib includes
 #include <list>
@@ -102,6 +104,7 @@ namespace crypto {
     std::string uuid;
     std::string cert;
     std::string display_mode;
+    std::string hdr_profile;
     std::string output_name_override;
     std::string virtual_display_mode_override;
     std::string virtual_display_layout_override;
@@ -113,6 +116,8 @@ namespace crypto {
     bool always_use_virtual_display;
     // When unset, the client inherits the global prefer_10bit_sdr value.
     std::optional<bool> prefer_10bit_sdr;
+    std::optional<std::int64_t> last_seen;
+    std::unordered_map<std::string, std::string> config_overrides;
   };
 
   using p_named_cert_t = std::shared_ptr<named_cert_t>;

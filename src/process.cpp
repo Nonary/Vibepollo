@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -31,6 +32,7 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -2168,7 +2170,13 @@ namespace proc {
       // Restore output name to its original value
       config::video.output_name = initial_display;
 
-      display_helper_integration::revert();
+      const bool reverted = display_helper_integration::revert();
+#ifdef _WIN32
+      if (reverted && rtsp_stream::session_count() == 0) {
+        BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
+        display_helper_integration::stop_watchdog();
+      }
+#endif
     }
 
     _active_client_uuid.clear();
@@ -2189,6 +2197,18 @@ namespace proc {
 
     if (needs_refresh) {
       refresh(config::stream.file_apps, false);
+    }
+
+    // Clear any per-app runtime config overrides now that the app is terminating.
+    // If we can safely hot-apply immediately, restore global config now; otherwise defer.
+    if (has_run) {
+      config::clear_runtime_config_overrides();
+      if (rtsp_stream::session_count() == 0) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    }
     }
   }
 

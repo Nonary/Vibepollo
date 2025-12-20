@@ -1517,6 +1517,102 @@ namespace confighttp {
     output_tree["platform"] = "windows";
 #endif
     output_tree["status"] = true;
+    output_tree["platform"] = SUNSHINE_PLATFORM;
+    send_response(response, output_tree);
+  }
+
+#ifdef _WIN32
+  static std::optional<uint64_t> file_creation_time_ms(const std::filesystem::path &path) {
+    WIN32_FILE_ATTRIBUTE_DATA data {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+      return std::nullopt;
+    }
+    ULARGE_INTEGER t {};
+    t.LowPart = data.ftCreationTime.dwLowDateTime;
+    t.HighPart = data.ftCreationTime.dwHighDateTime;
+
+    // FILETIME is in 100ns units since 1601-01-01.
+    constexpr uint64_t kEpochDiff100ns = 116444736000000000ULL;  // 1970-01-01 - 1601-01-01
+    if (t.QuadPart < kEpochDiff100ns) {
+      return std::nullopt;
+    }
+    return (t.QuadPart - kEpochDiff100ns) / 10000ULL;
+  }
+
+  static std::filesystem::path windows_color_profile_dir() {
+    wchar_t system_root[MAX_PATH] = {};
+    if (GetSystemWindowsDirectoryW(system_root, _countof(system_root)) == 0) {
+      return std::filesystem::path(L"C:\\Windows\\System32\\spool\\drivers\\color");
+    }
+    std::filesystem::path root(system_root);
+    return root / L"System32" / L"spool" / L"drivers" / L"color";
+  }
+#endif
+
+  /**
+   * @brief Get a list of available HDR color profiles (Windows only).
+   *
+   * @api_examples{/api/clients/hdr-profiles| GET| null}
+   */
+  void getHdrProfiles(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    nlohmann::json profiles = nlohmann::json::array();
+
+#ifdef _WIN32
+    try {
+      const auto dir = windows_color_profile_dir();
+      struct entry_t {
+        std::string filename;
+        uint64_t added_ms;
+      };
+      std::vector<entry_t> entries;
+      for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        std::error_code ec;
+        if (!entry.is_regular_file(ec)) {
+          continue;
+        }
+
+        auto ext = entry.path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+        if (ext != L".icm" && ext != L".icc") {
+          continue;
+        }
+
+        const auto filename_utf8 = platf::to_utf8(entry.path().filename().wstring());
+        const auto added_ms = file_creation_time_ms(entry.path()).value_or(0);
+        entries.push_back({filename_utf8, added_ms});
+      }
+
+      std::sort(entries.begin(), entries.end(), [](const entry_t &a, const entry_t &b) {
+        if (a.added_ms != b.added_ms) {
+          return a.added_ms > b.added_ms;
+        }
+        return a.filename < b.filename;
+      });
+
+      for (const auto &e : entries) {
+        nlohmann::json node;
+        node["filename"] = e.filename;
+        node["added_ms"] = e.added_ms;
+        profiles.push_back(std::move(node));
+      }
+    } catch (const std::exception &e) {
+      output_tree["status"] = false;
+      output_tree["error"] = e.what();
+    } catch (...) {
+      output_tree["status"] = false;
+      output_tree["error"] = "unknown error";
+    }
+#endif
+
+    output_tree["profiles"] = std::move(profiles);
     send_response(response, output_tree);
   }
 
@@ -1525,7 +1621,139 @@ namespace confighttp {
 #endif
 
   /**
-   * @brief Update client information.
+   * @brief Update stored settings for a paired client.
+   */
+  void updateClient(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+
+    try {
+      const nlohmann::json input_tree = nlohmann::json::parse(ss);
+      nlohmann::json output_tree;
+
+      const std::string uuid = input_tree.value("uuid", "");
+
+      std::optional<std::string> hdr_profile;
+      if (input_tree.contains("hdr_profile")) {
+        if (input_tree["hdr_profile"].is_null()) {
+          hdr_profile = std::string {};
+        } else {
+          hdr_profile = input_tree.value("hdr_profile", "");
+        }
+      }
+
+      const bool has_extended_fields =
+        input_tree.contains("name") ||
+        input_tree.contains("display_mode") ||
+        input_tree.contains("output_name_override") ||
+        input_tree.contains("always_use_virtual_display") ||
+        input_tree.contains("virtual_display_mode") ||
+        input_tree.contains("virtual_display_layout") ||
+        input_tree.contains("config_overrides") ||
+        input_tree.contains("prefer_10bit_sdr");
+
+      if (!has_extended_fields) {
+        output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, hdr_profile.value_or(""));
+        send_response(response, output_tree);
+        return;
+      }
+
+      const std::string name = input_tree.value("name", "");
+      const std::string display_mode = input_tree.value("display_mode", "");
+      const std::string output_name_override = input_tree.value("output_name_override", "");
+      const bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
+      const std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
+      const std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
+
+      std::optional<std::unordered_map<std::string, std::string>> config_overrides;
+      if (input_tree.contains("config_overrides")) {
+        if (input_tree["config_overrides"].is_null()) {
+          config_overrides = std::unordered_map<std::string, std::string> {};
+        } else if (input_tree["config_overrides"].is_object()) {
+          std::unordered_map<std::string, std::string> overrides;
+          for (const auto &item : input_tree["config_overrides"].items()) {
+            const std::string &key = item.key();
+            const auto &val = item.value();
+            if (key.empty() || val.is_null()) {
+              continue;
+            }
+            std::string encoded;
+            if (val.is_string()) {
+              encoded = val.get<std::string>();
+            } else {
+              encoded = val.dump();
+            }
+            overrides.emplace(key, std::move(encoded));
+          }
+          config_overrides = std::move(overrides);
+        }
+      }
+
+      std::optional<bool> prefer_10bit_sdr;
+      if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
+        prefer_10bit_sdr = input_tree["prefer_10bit_sdr"].get<bool>();
+      } else {
+        prefer_10bit_sdr.reset();
+      }
+
+      output_tree["status"] = nvhttp::update_device_info(
+        uuid,
+        name,
+        display_mode,
+        output_name_override,
+        always_use_virtual_display,
+        virtual_display_mode,
+        virtual_display_layout,
+        std::move(config_overrides),
+        prefer_10bit_sdr,
+        hdr_profile
+      );
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "UpdateClient: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  /**
+   * @brief Disconnect a client session without unpairing it.
+   */
+  void disconnectClient(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+
+    try {
+      const nlohmann::json input_tree = nlohmann::json::parse(ss);
+      nlohmann::json output_tree;
+      const std::string uuid = input_tree.value("uuid", "");
+      output_tree["status"] = nvhttp::disconnect_client(uuid);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "DisconnectClient: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  /**
+   * @brief Unpair a client.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
@@ -2850,9 +3078,10 @@ namespace confighttp {
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
+    server.resource["^/api/clients/hdr-profiles$"]["GET"] = getHdrProfiles;
     server.resource["^/api/clients/update$"]["POST"] = updateClient;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
-    server.resource["^/api/clients/disconnect$"]["POST"] = disconnect;
+    server.resource["^/api/clients/disconnect$"]["POST"] = disconnectClient;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
     // Keep legacy cover upload endpoint present in upstream master

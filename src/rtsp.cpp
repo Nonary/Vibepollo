@@ -535,8 +535,8 @@ namespace rtsp_stream {
      * @return Count of active sessions.
      */
     int session_count() {
-      auto lg = _session_slots.lock();
-      return _session_slots->size();
+      auto lg = _session_state.lock();
+      return static_cast<int>(_session_state->sessions.size());
     }
 
     safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
@@ -555,16 +555,18 @@ namespace rtsp_stream {
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
 
       {
-        auto lg = _session_slots.lock();
+        auto lg = _session_state.lock();
 
-        for (auto i = _session_slots->begin(); i != _session_slots->end();) {
+        for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
           auto &slot = *(*i);
           if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
             // Make a copy to operate on after releasing the lock
-            to_cleanup.emplace_back(*i);
+            auto session = *i;
+            to_cleanup.emplace_back(session);
 
             // Remove from the active set now so counts reflect pending removal
-            i = _session_slots->erase(i);
+            _session_state->client_uuids.erase(session.get());
+            i = _session_state->sessions.erase(i);
           } else {
             ++i;
           }
@@ -583,18 +585,73 @@ namespace rtsp_stream {
      * @param session The session to remove.
      */
     void remove(const std::shared_ptr<stream::session_t> &session) {
-      auto lg = _session_slots.lock();
-      _session_slots->erase(session);
+      auto lg = _session_state.lock();
+      _session_state->sessions.erase(session);
+      _session_state->client_uuids.erase(session.get());
     }
 
     /**
      * @brief Inserts the provided session into the set of sessions.
      * @param session The session to insert.
      */
-    void insert(const std::shared_ptr<stream::session_t> &session) {
-      auto lg = _session_slots.lock();
-      _session_slots->emplace(session);
-      BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_slots->size() << ']';
+    void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid) {
+      const bool has_uuid = !client_uuid.empty();
+      {
+        auto lg = _session_state.lock();
+        _session_state->sessions.emplace(session);
+        if (has_uuid) {
+          _session_state->client_uuids[session.get()] = client_uuid;
+        } else {
+          _session_state->client_uuids.erase(session.get());
+        }
+      }
+      if (has_uuid) {
+        nvhttp::mark_client_last_seen(client_uuid);
+      }
+      BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_state->sessions.size() << ']';
+    }
+
+    std::list<std::string> get_all_client_uuids() {
+      std::list<std::string> out;
+      auto lg = _session_state.lock();
+      for (const auto &[_, uuid] : _session_state->client_uuids) {
+        if (!uuid.empty()) {
+          out.push_back(uuid);
+        }
+      }
+      return out;
+    }
+
+    bool disconnect_client(const std::string &client_uuid) {
+      if (client_uuid.empty()) {
+        return false;
+      }
+
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      {
+        auto lg = _session_state.lock();
+        for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
+          auto session = *i;
+          const auto it_uuid = _session_state->client_uuids.find(session.get());
+          if (it_uuid != _session_state->client_uuids.end() && it_uuid->second == client_uuid) {
+            to_cleanup.emplace_back(session);
+            _session_state->client_uuids.erase(session.get());
+            i = _session_state->sessions.erase(i);
+          } else {
+            ++i;
+          }
+        }
+      }
+
+      for (auto &slot : to_cleanup) {
+        stream::session::stop(*slot);
+        stream::session::join(*slot);
+      }
+
+      if (!to_cleanup.empty()) {
+        nvhttp::mark_client_last_seen(client_uuid);
+      }
+      return !to_cleanup.empty();
     }
 
     /**
@@ -647,7 +704,12 @@ namespace rtsp_stream {
   private:
     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
 
-    sync_util::sync_t<std::set<std::shared_ptr<stream::session_t>>> _session_slots;
+    struct session_state_t {
+      std::set<std::shared_ptr<stream::session_t>> sessions;
+      std::unordered_map<const stream::session_t *, std::string> client_uuids;
+    };
+
+    sync_util::sync_t<session_state_t> _session_state;
 
     boost::asio::io_context io_context;
     tcp::acceptor acceptor {io_context};
@@ -683,6 +745,16 @@ namespace rtsp_stream {
 
   void terminate_sessions() {
     server.clear(true);
+  }
+
+  std::list<std::string> get_all_session_client_uuids() {
+    server.clear(false);
+    return server.get_all_client_uuids();
+  }
+
+  bool disconnect_client_sessions(const std::string &client_uuid) {
+    server.clear(false);
+    return server.disconnect_client(client_uuid);
   }
 
   int send(tcp::socket &sock, const std::string_view &sv) {
@@ -1212,7 +1284,7 @@ namespace rtsp_stream {
     config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
     config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
     auto stream_session = stream::session::alloc(config, session);
-    server->insert(stream_session);
+    server->insert(stream_session, session.client_uuid);
 
     if (stream::session::start(*stream_session, sock.remote_endpoint().address().to_string())) {
       BOOST_LOG(error) << "Failed to start a streaming session"sv;
