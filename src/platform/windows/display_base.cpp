@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <thread>
 
 // platform includes
@@ -43,6 +45,14 @@ namespace platf {
 namespace platf::dxgi {
   namespace {
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
+
+    std::mutex g_adapter_luid_mutex;
+    std::optional<LUID> g_last_wgc_adapter_luid;
+    std::optional<LUID> g_dxgi_adapter_luid_override;
+
+    bool luid_equal(const LUID &lhs, const LUID &rhs) {
+      return lhs.HighPart == rhs.HighPart && lhs.LowPart == rhs.LowPart;
+    }
 
     bool is_windows_23h2_or_later() {
       static const bool is_modern = []() {
@@ -169,6 +179,26 @@ namespace platf::dxgi {
     BOOST_LOG(info) << "Requested frame rate [" << display->client_frame_rate << "fps]";
     display->display_refresh_rate_rounded = lround(display_refresh_rate_decimal);
     return 0;
+  }
+
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid) {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    g_last_wgc_adapter_luid = luid;
+  }
+
+  std::optional<LUID> get_last_wgc_adapter_luid() {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    return g_last_wgc_adapter_luid;
+  }
+
+  void set_dxgi_adapter_luid_override(std::optional<LUID> luid) {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    g_dxgi_adapter_luid_override = luid;
+  }
+
+  std::optional<LUID> get_dxgi_adapter_luid_override() {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    return g_dxgi_adapter_luid_override;
   }
 
   capture_e duplication_t::next_frame(DXGI_OUTDUPL_FRAME_INFO &frame_info, std::chrono::milliseconds timeout, resource_t::pointer *res_p) {
@@ -516,6 +546,7 @@ namespace platf::dxgi {
     auto adapter_name = from_utf8(config::video.adapter_name);
     auto output_name = from_utf8(display_name);
 
+    const auto adapter_luid_override = dxgi::get_dxgi_adapter_luid_override();
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
       for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
@@ -523,6 +554,10 @@ namespace platf::dxgi {
 
         DXGI_ADAPTER_DESC1 adapter_desc;
         adapter_tmp->GetDesc1(&adapter_desc);
+
+        if (adapter_luid_override && !luid_equal(adapter_desc.AdapterLuid, *adapter_luid_override)) {
+          continue;
+        }
 
         if (!adapter_name.empty() && adapter_desc.Description != adapter_name) {
           continue;
@@ -584,6 +619,9 @@ namespace platf::dxgi {
     }
 
     if (!output) {
+      if (adapter_luid_override) {
+        BOOST_LOG(warning) << "DXGI adapter override did not match any adapter for output '" << display_name << '\'';
+      }
       BOOST_LOG(error) << "Failed to locate an output device"sv;
       return -1;
     }

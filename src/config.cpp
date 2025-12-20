@@ -43,6 +43,8 @@
   #include "platform/windows/utils.h"
 
   #include <shellapi.h>
+  #include <Windows.h>
+  #include "platform/windows/hotkey_manager.h"
 #endif
 
 #if !defined(__ANDROID__) && !defined(__APPLE__)
@@ -523,6 +525,137 @@ namespace config {
       }
       return out;
     }
+
+    int snapshot_restore_hotkey_from_view(const std::string_view value) {
+      std::string raw(value);
+      auto trim = [](std::string &text) {
+        text.erase(
+          text.begin(),
+          std::find_if(text.begin(), text.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+          })
+        );
+        text.erase(
+          std::find_if(text.rbegin(), text.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+          }).base(),
+          text.end()
+        );
+      };
+      trim(raw);
+      if (raw.empty()) {
+        return 0;
+      }
+
+      std::string lower = raw;
+      for (auto &ch : lower) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      }
+
+      if (lower == "disabled"sv || lower == "none"sv || lower == "off"sv) {
+        return 0;
+      }
+
+      if (lower.rfind("vk_", 0) == 0) {
+        lower.erase(0, 3);
+      }
+
+      if (lower.rfind("0x", 0) == 0 && lower.size() > 2) {
+        int v = util::from_hex<int>(lower.substr(2));
+        return (v > 0 && v <= 0xFF) ? v : 0;
+      }
+
+      if (lower.size() >= 2 && lower[0] == 'f') {
+        int fkey = (int) util::from_view(std::string_view {lower}.substr(1));
+        if (fkey >= 1 && fkey <= 24) {
+          return 0x70 + (fkey - 1);
+        }
+      }
+
+      if (lower.size() == 1) {
+        unsigned char ch = static_cast<unsigned char>(lower[0]);
+        if (ch >= 'a' && ch <= 'z') {
+          return static_cast<int>(std::toupper(ch));
+        }
+        if (ch >= '0' && ch <= '9') {
+          return static_cast<int>(ch);
+        }
+      }
+
+      int v = (int) util::from_view(lower);
+      return (v > 0 && v <= 0xFF) ? v : 0;
+    }
+
+#ifdef _WIN32
+    std::uint32_t snapshot_restore_hotkey_modifiers_from_view(const std::string_view value) {
+      std::string raw(value);
+      auto trim = [](std::string &text) {
+        text.erase(
+          text.begin(),
+          std::find_if(text.begin(), text.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+          })
+        );
+        text.erase(
+          std::find_if(text.rbegin(), text.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+          }).base(),
+          text.end()
+        );
+      };
+      trim(raw);
+      if (raw.empty()) {
+        return 0;
+      }
+
+      std::string lower = raw;
+      for (auto &ch : lower) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      }
+
+      if (lower == "default"sv) {
+        return MOD_CONTROL | MOD_ALT | MOD_SHIFT;
+      }
+
+      if (lower == "disabled"sv || lower == "none"sv || lower == "off"sv) {
+        return 0;
+      }
+
+      for (auto &ch : lower) {
+        if (ch == '+' || ch == '|' || ch == ',' || ch == ';') {
+          ch = ' ';
+        }
+      }
+
+      std::uint32_t modifiers = 0;
+      std::stringstream ss(lower);
+      std::string token;
+      while (ss >> token) {
+        if (token == "ctrl"sv || token == "control"sv) {
+          modifiers |= MOD_CONTROL;
+          continue;
+        }
+        if (token == "alt"sv) {
+          modifiers |= MOD_ALT;
+          continue;
+        }
+        if (token == "shift"sv) {
+          modifiers |= MOD_SHIFT;
+          continue;
+        }
+        if (token == "win"sv || token == "windows"sv || token == "meta"sv) {
+          modifiers |= MOD_WIN;
+          continue;
+        }
+      }
+
+      return modifiers;
+    }
+#else
+    std::uint32_t snapshot_restore_hotkey_modifiers_from_view(const std::string_view) {
+      return 0;
+    }
+#endif
   }  // namespace dd
 
   video_t::virtual_display_mode_e virtual_display_mode_from_view(const ::std::string_view value) {
@@ -624,6 +757,12 @@ namespace config {
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
       false,  // always_restore_from_golden
+      0,  // snapshot_restore_hotkey
+#ifdef _WIN32
+      MOD_CONTROL | MOD_ALT | MOD_SHIFT,  // snapshot_restore_hotkey_modifiers
+#else
+      0,  // snapshot_restore_hotkey_modifiers
+#endif
       false,  // activate_virtual_display
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
@@ -1409,6 +1548,20 @@ namespace config {
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     generic_f(vars, "dd_snapshot_exclude_devices", video.dd.snapshot_exclude_devices, dd::snapshot_exclude_devices_from_view);
+    {
+      auto it = vars.find("dd_snapshot_restore_hotkey");
+      if (it != std::end(vars)) {
+        video.dd.snapshot_restore_hotkey = dd::snapshot_restore_hotkey_from_view(it->second);
+        vars.erase(it);
+      }
+    }
+    {
+      auto it = vars.find("dd_snapshot_restore_hotkey_modifiers");
+      if (it != std::end(vars)) {
+        video.dd.snapshot_restore_hotkey_modifiers = dd::snapshot_restore_hotkey_modifiers_from_view(it->second);
+        vars.erase(it);
+      }
+    }
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
     // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
     bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
@@ -1639,6 +1792,13 @@ namespace config {
         sunshine.remember_me_refresh_token_ttl = std::chrono::seconds {ttl_secs};
       }
     }
+
+#ifdef _WIN32
+    platf::hotkey::update_restore_hotkey(
+      video.dd.snapshot_restore_hotkey,
+      video.dd.snapshot_restore_hotkey_modifiers
+    );
+#endif
 
     if (sunshine.min_log_level <= 3) {
       for (auto &[var, _] : vars) {

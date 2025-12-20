@@ -18,6 +18,7 @@
 #include "ipc_session.h"
 #include "misc_utils.h"
 #include "src/logging.h"
+#include "src/platform/windows/display.h"
 #include "src/platform/windows/misc.h"
 #include "src/utility.h"
 
@@ -394,6 +395,7 @@ namespace platf::dxgi {
     }
 
     luid_out = desc.AdapterLuid;
+    set_last_wgc_adapter_luid(luid_out);
     return true;
   }
 
