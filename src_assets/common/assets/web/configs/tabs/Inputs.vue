@@ -298,14 +298,6 @@ const gamepadOptions = computed(() => {
       default="true"
     ></Checkbox>
 
-    <Checkbox
-      v-if="config.mouse === 'enabled'"
-      id="native_pen_touch"
-      v-model="config.native_pen_touch"
-      class="mb-3"
-      locale-prefix="config"
-      default="true"
-    />
   </div>
 </template>
 
