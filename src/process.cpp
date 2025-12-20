@@ -1652,7 +1652,11 @@ namespace proc {
     }
 #endif
 
-    return launch_app_commands();
+    int err = launch_app_commands();
+    if (!err) {
+      fg.disable();
+    }
+    return err;
   }
 
   int proc_t::launch_app_commands() {
@@ -1962,8 +1966,6 @@ namespace proc {
 #endif
 
     _app_launch_time = std::chrono::steady_clock::now();
-
-    fg.disable();
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_playing(_app.name);

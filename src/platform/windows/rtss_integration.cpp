@@ -1019,7 +1019,7 @@ namespace platf {
     }
 
     if (!g_limit_active && !g_settings_dirty) {
-      return rtss_streaming_start(fps);
+      return rtss_streaming_start(fps, 1);
     }
 
     g_rtss_root = resolve_rtss_root();
