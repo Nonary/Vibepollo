@@ -1025,6 +1025,7 @@ const deviceName = ref('');
 const pairing = ref(false);
 const pairStatus = ref<boolean | null>(null);
 let pairStatusReset: number | null = null;
+let refreshIntervalId: number | null = null;
 
 const passphrase = ref('');
 const otpDeviceName = ref('');
@@ -1973,7 +1974,13 @@ watch([deepLink, shouldShowQr], async ([link, show]) => {
 
 onMounted(async () => {
   await authStore.waitForAuthentication();
+  await configStore.fetchConfig().catch(() => {});
   await refreshClients();
+  if (refreshIntervalId === null) {
+    refreshIntervalId = window.setInterval(() => {
+      void refreshClients();
+    }, 5000);
+  }
   if (pairTab.value === 'otp' && shouldShowQr.value && deepLink.value) {
     await nextTick();
     await renderQr(deepLink.value);
@@ -1981,6 +1988,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (refreshIntervalId !== null) {
+    clearInterval(refreshIntervalId);
+    refreshIntervalId = null;
+  }
   clearOtpResetTimer();
   if (pairStatusReset !== null && typeof window !== 'undefined') {
     window.clearTimeout(pairStatusReset);
