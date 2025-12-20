@@ -10,8 +10,11 @@
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/system_executor.hpp>
-#include <boost/process/v2.hpp>
+#include <boost/process/v2/process.hpp>
 #include <boost/process/v2/environment.hpp>
+#ifndef _WIN32
+  #include <boost/process/v2/posix/default_launcher.hpp>
+#endif
 #include <boost/filesystem/path.hpp>
 
 #include <algorithm>
