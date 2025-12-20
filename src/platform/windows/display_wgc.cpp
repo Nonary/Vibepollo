@@ -6,6 +6,7 @@
 // standard includes
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
@@ -22,6 +23,24 @@
 #include <winrt/base.h>
 
 namespace platf::dxgi {
+  namespace {
+    class adapter_luid_override_guard {
+    public:
+      explicit adapter_luid_override_guard(const std::optional<LUID> &luid) {
+        previous_ = get_dxgi_adapter_luid_override();
+        if (luid.has_value()) {
+          set_dxgi_adapter_luid_override(luid);
+        }
+      }
+
+      ~adapter_luid_override_guard() {
+        set_dxgi_adapter_luid_override(previous_);
+      }
+
+    private:
+      std::optional<LUID> previous_;
+    };
+  }
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
@@ -213,6 +232,7 @@ namespace platf::dxgi {
 
   int display_wgc_ipc_vram_t::dummy_img(platf::img_t *img_base) {
     auto temp_dxgi = std::make_unique<display_ddup_vram_t>();
+    adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
     if (temp_dxgi->init(_config, _display_name) == 0) {
       return temp_dxgi->dummy_img(img_base);
     } else {
@@ -227,6 +247,7 @@ namespace platf::dxgi {
     if (platf::dxgi::is_secure_desktop_active()) {
       // Secure desktop is active, use DXGI fallback
       BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (VRAM)";
+      adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_vram_t>();
       if (!disp->init(config, display_name)) {
         return disp;
@@ -429,8 +450,8 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ipc_ram_t::dummy_img(platf::img_t *img_base) {
-
     auto temp_dxgi = std::make_unique<display_ddup_ram_t>();
+    adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
     if (temp_dxgi->init(_config, _display_name) == 0) {
       return temp_dxgi->dummy_img(img_base);
     } else {
@@ -445,6 +466,7 @@ namespace platf::dxgi {
     if (platf::dxgi::is_secure_desktop_active()) {
       // Secure desktop is active, use DXGI fallback
       BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (RAM)";
+      adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_ram_t>();
       if (!disp->init(config, display_name)) {
         return disp;

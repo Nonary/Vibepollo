@@ -6,6 +6,7 @@
 
 // standard includes
 #include <atomic>
+#include <optional>
 
 // platform includes
 #include <d3d11.h>
@@ -39,6 +40,11 @@ namespace platf::dxgi {
 
   using factory1_t = util::safe_ptr<IDXGIFactory1, Release<IDXGIFactory1>>;
   using dxgi_t = util::safe_ptr<IDXGIDevice, Release<IDXGIDevice>>;
+
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid);
+  std::optional<LUID> get_last_wgc_adapter_luid();
+  void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
+  std::optional<LUID> get_dxgi_adapter_luid_override();
   using dxgi1_t = util::safe_ptr<IDXGIDevice1, Release<IDXGIDevice1>>;
   using device_t = util::safe_ptr<ID3D11Device, Release<ID3D11Device>>;
   using device1_t = util::safe_ptr<ID3D11Device1, Release<ID3D11Device1>>;
