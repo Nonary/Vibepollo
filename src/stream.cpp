@@ -44,6 +44,7 @@ extern "C" {
 #include "utility.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
+  #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
 #endif
@@ -103,6 +104,10 @@ namespace stream {
     video,  ///< Video
     audio  ///< Audio
   };
+
+  namespace session {
+    extern std::atomic_uint running_sessions;
+  }
 
 #pragma pack(push, 1)
 
@@ -506,6 +511,81 @@ namespace stream {
   void end_broadcast(broadcast_ctx_t &ctx);
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
+
+#ifdef _WIN32
+  struct deferred_stream_start_t {
+    int fps = 0;
+    int fps_scaled = 0;
+    bool gen1_framegen_fix = false;
+    bool gen2_framegen_fix = false;
+    std::optional<int> lossless_rtss_limit;
+    bool smooth_motion = false;
+  };
+
+  std::mutex &deferred_stream_start_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  std::optional<deferred_stream_start_t> &deferred_stream_start_state() {
+    static std::optional<deferred_stream_start_t> state;
+    return state;
+  }
+
+  bool user_session_ready() {
+    HANDLE user_token = platf::dxgi::retrieve_users_token(false);
+    if (!user_token) {
+      return false;
+    }
+    CloseHandle(user_token);
+    return true;
+  }
+
+  void defer_stream_start_actions(deferred_stream_start_t deferred) {
+    std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+    deferred_stream_start_state() = std::move(deferred);
+  }
+
+  void clear_deferred_stream_start_actions() {
+    std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+    deferred_stream_start_state().reset();
+  }
+
+  bool apply_deferred_stream_start_actions_if_ready() {
+    {
+      std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+      if (!deferred_stream_start_state()) {
+        return false;
+      }
+    }
+
+    if (!user_session_ready()) {
+      return false;
+    }
+
+    std::optional<deferred_stream_start_t> deferred;
+    {
+      std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+      if (!deferred_stream_start_state()) {
+        return false;
+      }
+      deferred = std::move(*deferred_stream_start_state());
+      deferred_stream_start_state().reset();
+    }
+
+    BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
+    platf::frame_limiter_streaming_start(
+      deferred->fps,
+      deferred->fps_scaled,
+      deferred->gen1_framegen_fix,
+      deferred->gen2_framegen_fix,
+      deferred->lossless_rtss_limit,
+      deferred->smooth_motion
+    );
+    platf::streaming_will_start();
+    return true;
+  }
+#endif
 
   session_t *control_server_t::get_session(const net::peer_t peer, uint32_t connect_data) {
     {
@@ -1238,6 +1318,13 @@ namespace stream {
           ++pos;
         })
       }
+
+#ifdef _WIN32
+      if (session::running_sessions.load(std::memory_order_relaxed) > 0) {
+        (void) display_helper_integration::apply_pending_if_ready();
+        (void) apply_deferred_stream_start_actions_if_ready();
+      }
+#endif
 
       // Don't break until any pending sessions either expire or connect
       if (proc::proc.running() == 0 && !has_session_awaiting_peer) {
@@ -2118,6 +2205,10 @@ namespace stream {
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
         config::set_runtime_output_name_override(std::nullopt);
+#ifdef _WIN32
+        display_helper_integration::clear_pending_apply();
+        clear_deferred_stream_start_actions();
+#endif
         // Only revert on disconnect when explicitly enabled by config.
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
 
@@ -2213,17 +2304,36 @@ namespace stream {
               }
             }
           }
-          platf::frame_limiter_streaming_start(
-            session.config.monitor.framerate,
-            session.config.monitor.encodingFramerate,
-            session.config.gen1_framegen_fix,
-            session.config.gen2_framegen_fix,
-            lossless_rtss_limit,
-            using_smooth_motion
-          );
+
+          const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
+          if (defer_stream_start) {
+            deferred_stream_start_t deferred {
+              .fps = session.config.monitor.framerate,
+              .fps_scaled = session.config.monitor.encodingFramerate,
+              .gen1_framegen_fix = session.config.gen1_framegen_fix,
+              .gen2_framegen_fix = session.config.gen2_framegen_fix,
+              .lossless_rtss_limit = lossless_rtss_limit,
+              .smooth_motion = using_smooth_motion,
+            };
+            defer_stream_start_actions(std::move(deferred));
+            BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
+          } else {
+            platf::frame_limiter_streaming_start(
+              session.config.monitor.framerate,
+              session.config.monitor.encodingFramerate,
+              session.config.gen1_framegen_fix,
+              session.config.gen2_framegen_fix,
+              lossless_rtss_limit,
+              using_smooth_motion
+            );
+            platf::streaming_will_start();
+          }
+        } else {
+          platf::streaming_will_start();
         }
-#endif
+#else
         platf::streaming_will_start();
+#endif
         proc::proc.resume();
       }
 

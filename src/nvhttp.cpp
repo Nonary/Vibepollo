@@ -776,6 +776,7 @@ namespace nvhttp {
             metadata.virtual_screen = app_ctx.virtual_screen || app_ctx.virtual_display;
             metadata.has_command = !app_ctx.cmd.empty();
             metadata.has_playnite = !app_ctx.playnite_id.empty();
+            metadata.playnite_fullscreen = app_ctx.playnite_fullscreen;
             launch_session->virtual_display = app_ctx.virtual_screen;
             if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
@@ -2100,20 +2101,16 @@ namespace nvhttp {
         CloseHandle(user_token);
       }
 
-      if (helper_session_available) {
+      if (!helper_session_available) {
+        BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+      } else {
         (void) display_helper_integration::disarm_pending_restore();
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+        } else if (!display_helper_integration::apply(*request)) {
+          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
-
-        if (request) {
-          if (!display_helper_integration::apply(*request)) {
-            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-          }
-        }
-      } else {
-        BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
       }
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
@@ -2339,7 +2336,9 @@ namespace nvhttp {
             CloseHandle(user_token);
           }
 
-          if (helper_session_available) {
+          if (!helper_session_available) {
+            BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
+          } else {
             (void) display_helper_integration::disarm_pending_restore();
             auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
             if (!request) {
@@ -2347,8 +2346,6 @@ namespace nvhttp {
             } else if (!display_helper_integration::apply(*request)) {
               BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
             }
-          } else {
-            BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
           }
         } else {
           BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";

@@ -25,6 +25,9 @@ namespace platf {
   // Apply RTSS frame limit and related settings at stream start.
   bool rtss_streaming_start(int scaled_limit, int denominator);
 
+  // Re-apply RTSS frame limit and related settings without resetting originals.
+  bool rtss_streaming_refresh(int fps);
+
   // Restore any RTSS settings modified at stream start.
   void rtss_streaming_stop();
 

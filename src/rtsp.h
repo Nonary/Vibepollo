@@ -62,6 +62,7 @@ namespace rtsp_stream {
       bool virtual_screen;
       bool has_command;
       bool has_playnite;
+      bool playnite_fullscreen;
     };
 
     std::optional<app_metadata_t> app_metadata;

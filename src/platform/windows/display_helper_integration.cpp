@@ -38,6 +38,7 @@
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
+  #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
@@ -61,6 +62,49 @@ namespace {
     return h;
   }
 
+  struct PendingSessionSnapshot {
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+    bool enable_hdr = false;
+    bool enable_sops = false;
+    bool virtual_display = false;
+    std::string virtual_display_device_id;
+    std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    std::optional<int> framegen_refresh_rate;
+    bool gen1_framegen_fix = false;
+    bool gen2_framegen_fix = false;
+  };
+
+  struct PendingApplyState {
+    display_helper_integration::DisplayApplyRequest request;
+    PendingSessionSnapshot session_snapshot;
+    uint32_t session_id {0};
+    bool has_session {false};
+    int attempts {0};
+    std::optional<std::chrono::steady_clock::time_point> ready_since;
+    std::chrono::steady_clock::time_point next_attempt {};
+  };
+
+  std::mutex &pending_apply_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  std::optional<PendingApplyState> &pending_apply_state() {
+    static std::optional<PendingApplyState> state;
+    return state;
+  }
+
+  bool user_session_ready() {
+    HANDLE user_token = platf::dxgi::retrieve_users_token(false);
+    if (!user_token) {
+      return false;
+    }
+    CloseHandle(user_token);
+    return true;
+  }
+
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
   constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
   constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
@@ -68,9 +112,25 @@ namespace {
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
+  constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
+  constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
+  constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
+  constexpr int kMaxDeferredApplyAttempts = 6;
 
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
+
+  std::chrono::milliseconds deferred_apply_retry_delay(int attempts) {
+    if (attempts <= 0) {
+      return kDeferredApplyRetryBase;
+    }
+    const int shift = std::min(attempts - 1, 5);
+    auto delay = kDeferredApplyRetryBase * (1 << shift);
+    if (delay > kDeferredApplyRetryMax) {
+      delay = kDeferredApplyRetryMax;
+    }
+    return delay;
+  }
 
   struct InProcessDisplayContext {
     std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
@@ -885,6 +945,38 @@ namespace display_helper_integration {
       return false;
     }
 
+    if (request.action == DisplayApplyAction::Apply &&
+        platf::is_running_as_system() &&
+        !user_session_ready()) {
+      if (request.session) {
+        std::lock_guard<std::mutex> lock(pending_apply_mutex());
+        pending_apply_state().emplace();
+        auto &pending = *pending_apply_state();
+        pending.request = request;
+        pending.has_session = true;
+        pending.session_id = request.session->id;
+        pending.session_snapshot.width = request.session->width;
+        pending.session_snapshot.height = request.session->height;
+        pending.session_snapshot.fps = request.session->fps;
+        pending.session_snapshot.enable_hdr = request.session->enable_hdr;
+        pending.session_snapshot.enable_sops = request.session->enable_sops;
+        pending.session_snapshot.virtual_display = request.session->virtual_display;
+        pending.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
+        pending.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
+        pending.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+        pending.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
+        pending.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
+        pending.attempts = 0;
+        pending.ready_since.reset();
+        pending.next_attempt = std::chrono::steady_clock::time_point {};
+        pending.request.session = nullptr;
+        BOOST_LOG(info) << "Display helper: deferring APPLY until user session is ready.";
+      } else {
+        BOOST_LOG(warning) << "Display helper: no user session available; skipping APPLY.";
+      }
+      return false;
+    }
+
     if (request.action == DisplayApplyAction::Revert) {
       const bool helper_ready = ensure_helper_started(false, true);
       if (!helper_ready) {
@@ -903,7 +995,7 @@ namespace display_helper_integration {
       return false;
     }
 
-    const bool system_profile_only = platf::is_running_as_system() && !platf::has_active_console_session();
+    const bool system_profile_only = platf::is_running_as_system() && !user_session_ready();
 
     if (!system_profile_only) {
       // Stream-start policy: if a helper is already running, hard-restart it immediately
@@ -976,6 +1068,7 @@ namespace display_helper_integration {
   }
 
   bool revert() {
+    clear_pending_apply();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
@@ -1027,6 +1120,91 @@ namespace display_helper_integration {
     const bool ok = platf::display_helper_client::send_snapshot_current(build_snapshot_exclude_payload());
     BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT dispatch result=" << (ok ? "true" : "false");
     return ok;
+  }
+
+  bool apply_pending_if_ready() {
+    {
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        return false;
+      }
+    }
+
+    if (!user_session_ready()) {
+      return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    PendingApplyState pending;
+    {
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        return false;
+      }
+      auto &state = *pending_apply_state();
+      if (!state.ready_since) {
+        state.ready_since = now;
+        state.next_attempt = now + kDeferredApplyInitialDelay;
+        BOOST_LOG(info) << "Display helper: user session detected; delaying deferred APPLY for "
+                        << kDeferredApplyInitialDelay.count() << "ms.";
+        return false;
+      }
+      if (now < state.next_attempt) {
+        return false;
+      }
+      if (state.attempts >= kMaxDeferredApplyAttempts) {
+        BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up on session "
+                           << state.session_id << ".";
+        pending_apply_state().reset();
+        return false;
+      }
+      pending = state;
+      pending_apply_state().reset();
+    }
+
+    std::optional<rtsp_stream::launch_session_t> session;
+    if (pending.has_session) {
+      rtsp_stream::launch_session_t snapshot {};
+      snapshot.width = pending.session_snapshot.width;
+      snapshot.height = pending.session_snapshot.height;
+      snapshot.fps = pending.session_snapshot.fps;
+      snapshot.enable_hdr = pending.session_snapshot.enable_hdr;
+      snapshot.enable_sops = pending.session_snapshot.enable_sops;
+      snapshot.virtual_display = pending.session_snapshot.virtual_display;
+      snapshot.virtual_display_device_id = pending.session_snapshot.virtual_display_device_id;
+      snapshot.virtual_display_ready_since = pending.session_snapshot.virtual_display_ready_since;
+      snapshot.framegen_refresh_rate = pending.session_snapshot.framegen_refresh_rate;
+      snapshot.gen1_framegen_fix = pending.session_snapshot.gen1_framegen_fix;
+      snapshot.gen2_framegen_fix = pending.session_snapshot.gen2_framegen_fix;
+      session = std::move(snapshot);
+      pending.request.session = &*session;
+    } else {
+      pending.request.session = nullptr;
+    }
+
+    BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
+    const bool ok = apply(pending.request);
+    if (!ok) {
+      pending.attempts += 1;
+      pending.request.session = nullptr;
+      const auto delay = deferred_apply_retry_delay(pending.attempts);
+      pending.next_attempt = std::chrono::steady_clock::now() + delay;
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        pending_apply_state() = pending;
+        BOOST_LOG(warning) << "Display helper: deferred APPLY failed; retrying in "
+                           << delay.count() << "ms (attempt " << pending.attempts
+                           << "/" << kMaxDeferredApplyAttempts << ").";
+      } else {
+        BOOST_LOG(info) << "Display helper: deferred APPLY failed but a newer pending configuration is queued; dropping retry.";
+      }
+    }
+    return ok;
+  }
+
+  void clear_pending_apply() {
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    pending_apply_state().reset();
   }
 
   namespace {

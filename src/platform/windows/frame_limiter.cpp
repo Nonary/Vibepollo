@@ -28,6 +28,7 @@ namespace platf {
     bool g_nvcp_started = false;
     bool g_gen1_framegen_fix_active = false;
     bool g_gen2_framegen_fix_active = false;
+    int g_last_effective_limit = 0;
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
@@ -145,6 +146,7 @@ namespace platf {
     if (config::frame_limiter.fps_limit > 0) {
       effective_limit = config::frame_limiter.fps_limit;
     }
+    g_last_effective_limit = effective_limit;
 
     int rtss_limit_value = effective_limit;
     int rtss_limit_denominator = 1;
@@ -337,6 +339,17 @@ namespace platf {
 
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
+    g_last_effective_limit = 0;
+  }
+
+  void frame_limiter_streaming_refresh() {
+    if (g_active_provider != frame_limiter_provider::rtss || g_last_effective_limit <= 0) {
+      return;
+    }
+
+    if (rtss_streaming_refresh(g_last_effective_limit)) {
+      BOOST_LOG(info) << "Frame limiter provider 'rtss' refreshed";
+    }
   }
 
   frame_limiter_provider frame_limiter_active_provider() {

@@ -143,6 +143,14 @@ list(APPEND SUNSHINE_DEFINITIONS SETUP_LIBDISPLAYDEVICE_LOGGING="1")
 
 include_directories(BEFORE "${CMAKE_SOURCE_DIR}")
 
+set(SUNSHINE_FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS})
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(SUNSHINE_FFMPEG_INCLUDE_DIRS "")
+    foreach(ffmpeg_dir IN LISTS FFMPEG_INCLUDE_DIRS)
+        add_compile_options("-idirafter" "${ffmpeg_dir}")
+    endforeach()
+endif()
+
 include_directories(
         BEFORE
         SYSTEM
@@ -150,7 +158,7 @@ include_directories(
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/enet/include"
         "${CMAKE_SOURCE_DIR}/third-party/nanors"
         "${CMAKE_SOURCE_DIR}/third-party/nanors/deps/obl"
-        ${FFMPEG_INCLUDE_DIRS}
+        ${SUNSHINE_FFMPEG_INCLUDE_DIRS}
         ${Boost_INCLUDE_DIRS}  # has to be the last, or we get runtime error on macOS ffmpeg encoder
 )
 
