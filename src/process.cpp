@@ -1340,9 +1340,11 @@ namespace proc {
           target_fps *= 1000;
         }
 
+        const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
         auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
           device_name.c_str(),
+          hdr_profile,
           render_width,
           render_height,
           target_fps,
@@ -2208,7 +2210,6 @@ namespace proc {
       } else {
         config::mark_deferred_reload();
       }
-    }
     }
   }
 

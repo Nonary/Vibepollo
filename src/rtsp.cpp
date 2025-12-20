@@ -678,11 +678,11 @@ namespace rtsp_stream {
 
     std::shared_ptr<stream::session_t>
       find_session(const std::string_view &uuid) {
-      auto lg = _session_slots.lock();
+      auto lg = _session_state.lock();
 
-      for (auto &slot : *_session_slots) {
-        if (slot && stream::session::uuid_match(*slot, uuid)) {
-          return slot;
+      for (auto &session : _session_state->sessions) {
+        if (stream::session::uuid_match(*session, uuid)) {
+          return session;
         }
       }
 
@@ -692,11 +692,9 @@ namespace rtsp_stream {
     std::list<std::string>
       get_all_session_uuids() {
       std::list<std::string> uuids;
-      auto lg = _session_slots.lock();
-      for (auto &slot : *_session_slots) {
-        if (slot) {
-          uuids.push_back(stream::session::uuid(*slot));
-        }
+      auto lg = _session_state.lock();
+      for (auto &session : _session_state->sessions) {
+        uuids.push_back(stream::session::uuid(*session));
       }
       return uuids;
     }

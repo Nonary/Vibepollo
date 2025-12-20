@@ -1623,107 +1623,6 @@ namespace confighttp {
   /**
    * @brief Update stored settings for a paired client.
    */
-  void updateClient(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
-      return;
-    }
-    if (!authenticate(response, request)) {
-      return;
-    }
-
-    print_req(request);
-
-    std::stringstream ss;
-    ss << request->content.rdbuf();
-
-    try {
-      const nlohmann::json input_tree = nlohmann::json::parse(ss);
-      nlohmann::json output_tree;
-
-      const std::string uuid = input_tree.value("uuid", "");
-
-      std::optional<std::string> hdr_profile;
-      if (input_tree.contains("hdr_profile")) {
-        if (input_tree["hdr_profile"].is_null()) {
-          hdr_profile = std::string {};
-        } else {
-          hdr_profile = input_tree.value("hdr_profile", "");
-        }
-      }
-
-      const bool has_extended_fields =
-        input_tree.contains("name") ||
-        input_tree.contains("display_mode") ||
-        input_tree.contains("output_name_override") ||
-        input_tree.contains("always_use_virtual_display") ||
-        input_tree.contains("virtual_display_mode") ||
-        input_tree.contains("virtual_display_layout") ||
-        input_tree.contains("config_overrides") ||
-        input_tree.contains("prefer_10bit_sdr");
-
-      if (!has_extended_fields) {
-        output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, hdr_profile.value_or(""));
-        send_response(response, output_tree);
-        return;
-      }
-
-      const std::string name = input_tree.value("name", "");
-      const std::string display_mode = input_tree.value("display_mode", "");
-      const std::string output_name_override = input_tree.value("output_name_override", "");
-      const bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      const std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
-      const std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
-
-      std::optional<std::unordered_map<std::string, std::string>> config_overrides;
-      if (input_tree.contains("config_overrides")) {
-        if (input_tree["config_overrides"].is_null()) {
-          config_overrides = std::unordered_map<std::string, std::string> {};
-        } else if (input_tree["config_overrides"].is_object()) {
-          std::unordered_map<std::string, std::string> overrides;
-          for (const auto &item : input_tree["config_overrides"].items()) {
-            const std::string &key = item.key();
-            const auto &val = item.value();
-            if (key.empty() || val.is_null()) {
-              continue;
-            }
-            std::string encoded;
-            if (val.is_string()) {
-              encoded = val.get<std::string>();
-            } else {
-              encoded = val.dump();
-            }
-            overrides.emplace(key, std::move(encoded));
-          }
-          config_overrides = std::move(overrides);
-        }
-      }
-
-      std::optional<bool> prefer_10bit_sdr;
-      if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
-        prefer_10bit_sdr = input_tree["prefer_10bit_sdr"].get<bool>();
-      } else {
-        prefer_10bit_sdr.reset();
-      }
-
-      output_tree["status"] = nvhttp::update_device_info(
-        uuid,
-        name,
-        display_mode,
-        output_name_override,
-        always_use_virtual_display,
-        virtual_display_mode,
-        virtual_display_layout,
-        std::move(config_overrides),
-        prefer_10bit_sdr,
-        hdr_profile
-      );
-      send_response(response, output_tree);
-    } catch (std::exception &e) {
-      BOOST_LOG(warning) << "UpdateClient: "sv << e.what();
-      bad_request(response, request, e.what());
-    }
-  }
-
   /**
    * @brief Disconnect a client session without unpairing it.
    */
@@ -1782,6 +1681,36 @@ namespace confighttp {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
       std::string uuid = input_tree.value("uuid", "");
+      std::optional<std::string> hdr_profile;
+      if (input_tree.contains("hdr_profile")) {
+        if (input_tree["hdr_profile"].is_null()) {
+          hdr_profile = std::string {};
+        } else {
+          hdr_profile = input_tree.value("hdr_profile", "");
+        }
+      }
+
+      const bool has_extended_fields =
+        input_tree.contains("name") ||
+        input_tree.contains("display_mode") ||
+        input_tree.contains("output_name_override") ||
+        input_tree.contains("always_use_virtual_display") ||
+        input_tree.contains("virtual_display_mode") ||
+        input_tree.contains("virtual_display_layout") ||
+        input_tree.contains("config_overrides") ||
+        input_tree.contains("prefer_10bit_sdr") ||
+        input_tree.contains("enable_legacy_ordering") ||
+        input_tree.contains("allow_client_commands") ||
+        input_tree.contains("perm") ||
+        input_tree.contains("do") ||
+        input_tree.contains("undo");
+
+      if (!has_extended_fields && hdr_profile.has_value()) {
+        output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, hdr_profile.value());
+        send_response(response, output_tree);
+        return;
+      }
+
       std::string name = input_tree.value("name", "");
       std::string display_mode = input_tree.value("display_mode", "");
       std::string output_name_override = input_tree.value("output_name_override", "");
@@ -1794,12 +1723,35 @@ namespace confighttp {
       } else {
         prefer_10bit_sdr.reset();
       }
+      std::optional<std::unordered_map<std::string, std::string>> config_overrides;
+      if (input_tree.contains("config_overrides")) {
+        if (input_tree["config_overrides"].is_null()) {
+          config_overrides = std::unordered_map<std::string, std::string> {};
+        } else if (input_tree["config_overrides"].is_object()) {
+          std::unordered_map<std::string, std::string> overrides;
+          for (const auto &item : input_tree["config_overrides"].items()) {
+            const std::string &key = item.key();
+            const auto &val = item.value();
+            if (key.empty() || val.is_null()) {
+              continue;
+            }
+            std::string encoded;
+            if (val.is_string()) {
+              encoded = val.get<std::string>();
+            } else {
+              encoded = val.dump();
+            }
+            overrides.emplace(key, std::move(encoded));
+          }
+          config_overrides = std::move(overrides);
+        }
+      }
       std::string virtual_display_mode = input_tree.value("virtual_display_mode", "");
       std::string virtual_display_layout = input_tree.value("virtual_display_layout", "");
       auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
       auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
       auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
-      output_tree["status"] = nvhttp::update_device_info(
+      bool updated = nvhttp::update_device_info(
         uuid,
         name,
         display_mode,
@@ -1814,6 +1766,22 @@ namespace confighttp {
         virtual_display_layout,
         prefer_10bit_sdr
       );
+      if (config_overrides.has_value() || hdr_profile.has_value()) {
+        updated = nvhttp::update_device_info(
+          uuid,
+          name,
+          display_mode,
+          output_name_override,
+          always_use_virtual_display,
+          virtual_display_mode,
+          virtual_display_layout,
+          std::move(config_overrides),
+          prefer_10bit_sdr,
+          hdr_profile
+        )
+                  && updated;
+      }
+      output_tree["status"] = updated;
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update Client: "sv << e.what();

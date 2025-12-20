@@ -41,6 +41,10 @@ namespace rtsp_stream {
     std::string av_ping_payload;
     uint32_t control_connect_data;
 
+    std::string device_name;
+    std::string unique_id;
+    std::string client_uuid;
+    std::string client_name;
     std::optional<std::string> hdr_profile;
     crypto::PERM perm;
     int appid;

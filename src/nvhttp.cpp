@@ -889,9 +889,6 @@ namespace nvhttp {
 
     tree.put("root.paired", 1);
     tree.put("root.plaincert", util::hex_vec(conf_intern.servercert, true));
-    // From this point forward, runtime overrides (if any) should remain active until the app terminates.
-    keep_runtime_overrides = true;
-
     tree.put("root.<xmlattr>.status_code", 200);
   }
 
@@ -1711,7 +1708,7 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
 
-    no_active_sessions = (rtsp_stream::session_count() == 0);
+    bool no_active_sessions = (rtsp_stream::session_count() == 0);
 
     // Apply per-application runtime config overrides before we build session metadata or
     // prepare display/capture so the effective config is used everywhere.
@@ -1778,7 +1775,7 @@ namespace nvhttp {
         config::set_runtime_output_name_override(std::nullopt);
       }
     });
-    bool no_active_sessions = (rtsp_stream::session_count() == 0);
+    no_active_sessions = (rtsp_stream::session_count() == 0);
     if (no_active_sessions) {
       config::set_runtime_output_name_override(std::nullopt);
     }
@@ -1992,9 +1989,11 @@ namespace nvhttp {
         }
 
         VDISPLAY::setWatchdogFeedingEnabled(true);
+        const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
         auto display_info = VDISPLAY::createVirtualDisplay(
           display_uuid_source.c_str(),
           client_label.c_str(),
+          hdr_profile,
           vd_width,
           vd_height,
           vd_fps,
@@ -2229,6 +2228,7 @@ namespace nvhttp {
         static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))
       )
     );
+    keep_runtime_overrides = true;
     tree.put("root.gamesession", 1);
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
