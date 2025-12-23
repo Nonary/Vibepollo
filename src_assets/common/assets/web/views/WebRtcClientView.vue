@@ -3,7 +3,7 @@
     <div class="flex flex-col gap-2">
       <h2 class="text-2xl font-semibold tracking-tight">WebRTC Client</h2>
       <p class="text-sm opacity-80">
-        Prototype web client using a placeholder Web API and mock server-side WebRTC stream.
+        WebRTC client using Sunshine's WebRTC session API.
       </p>
     </div>
 
@@ -158,7 +158,7 @@ import {
   NFormItem,
   useMessage,
 } from 'naive-ui';
-import { MockWebRtcApi } from '@/services/webrtcApi';
+import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
 import { attachInputCapture } from '@/utils/webrtc/input';
 import { StreamConfig, WebRtcStatsSnapshot } from '@/types/webrtc';
@@ -201,7 +201,7 @@ function appSubtitle(app: App): string {
   return 'Custom';
 }
 
-const api = new MockWebRtcApi();
+const api = new WebRtcHttpApi();
 const client = new WebRtcClient(api);
 
 const isConnecting = ref(false);
@@ -252,7 +252,8 @@ async function connect() {
       },
     });
   } catch (error) {
-    message.error('Failed to establish WebRTC session.');
+    const msg = error instanceof Error ? error.message : 'Failed to establish WebRTC session.';
+    message.error(msg);
     console.error(error);
   } finally {
     isConnecting.value = false;

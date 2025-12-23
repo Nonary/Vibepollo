@@ -854,6 +854,138 @@ namespace confighttp {
   }
 
   /**
+   * @brief Serve a specific application's cover image by UUID.
+   *        Looks for files named @c uuid with a supported image extension in the covers directory.
+   * @api_examples{/api/apps/@c uuid/cover| GET| null}
+   */
+  void getAppCover(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string uuid;
+    if (request->path_match.size() > 1) {
+      uuid = request->path_match[1];
+    }
+    if (uuid.empty()) {
+      bad_request(response, request, "Missing application uuid");
+      return;
+    }
+
+    const fs::path cover_dir = platf::appdata() / "covers";
+    const std::vector<std::string> extensions = {".png", ".jpg", ".jpeg"};
+    fs::path cover_path;
+    for (const auto &ext : extensions) {
+      fs::path candidate = cover_dir / (uuid + ext);
+      if (fs::exists(candidate)) {
+        cover_path = std::move(candidate);
+        break;
+      }
+    }
+
+    if (cover_path.empty()) {
+      // Fallback to image-path from apps config if present
+      try {
+        std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+        nlohmann::json file_tree = nlohmann::json::parse(content);
+        if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+          for (const auto &app : file_tree["apps"]) {
+            if (!app.contains("uuid") || !app["uuid"].is_string()) {
+              continue;
+            }
+            if (app["uuid"].get<std::string>() != uuid) {
+              continue;
+            }
+            if (app.contains("image-path") && app["image-path"].is_string()) {
+              std::string raw_path = app["image-path"].get<std::string>();
+              boost::algorithm::trim(raw_path);
+              if (!raw_path.empty() && raw_path.front() == '"' && raw_path.back() == '"') {
+                raw_path = raw_path.substr(1, raw_path.size() - 2);
+              }
+              constexpr std::string_view file_prefix = "file://";
+              if (raw_path.rfind(file_prefix, 0) == 0) {
+                raw_path.erase(0, file_prefix.size());
+                if (!raw_path.empty() && raw_path.front() == '/') {
+                  raw_path.erase(0, 1);
+                }
+              }
+#ifdef _WIN32
+              const char *appdata = std::getenv("APPDATA");
+              if (appdata) {
+                const std::string key = "%APPDATA%";
+                auto pos = raw_path.find(key);
+                if (pos != std::string::npos) {
+                  raw_path.replace(pos, key.size(), appdata);
+                }
+              }
+              const char *userprofile = std::getenv("USERPROFILE");
+              if (userprofile) {
+                const std::string key = "%USERPROFILE%";
+                auto pos = raw_path.find(key);
+                if (pos != std::string::npos) {
+                  raw_path.replace(pos, key.size(), userprofile);
+                }
+              }
+#endif
+              fs::path candidate = raw_path;
+              if (candidate.is_relative()) {
+                if (app.contains("working-dir") && app["working-dir"].is_string()) {
+                  fs::path working_dir = app["working-dir"].get<std::string>();
+                  candidate = working_dir / candidate;
+                } else {
+                  candidate = cover_dir / candidate;
+                }
+              }
+              if (!candidate.has_extension()) {
+                auto with_png = candidate;
+                with_png += ".png";
+                if (fs::exists(with_png)) {
+                  cover_path = std::move(with_png);
+                  break;
+                }
+              }
+              if (fs::exists(candidate)) {
+                cover_path = std::move(candidate);
+                break;
+              }
+            }
+            break;
+          }
+        }
+      } catch (...) {
+      }
+    }
+
+    if (cover_path.empty()) {
+      not_found(response, request);
+      return;
+    }
+
+    auto ext = cover_path.extension().string();
+    if (!ext.empty() && ext.front() == '.') {
+      ext.erase(0, 1);
+    }
+    boost::algorithm::to_lower(ext);
+
+    auto mimeType = mime_types.find(ext);
+    if (mimeType == mime_types.end()) {
+      bad_request(response, request);
+      return;
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", mimeType->second);
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    std::ifstream in(cover_path.string(), std::ios::binary);
+    if (!in) {
+      not_found(response, request);
+      return;
+    }
+    response->write(success_ok, in, headers);
+  }
+
+  /**
    * @brief Save an application. To save a new application the index must be `-1`. To update an existing application, you must provide the current index of the application.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
@@ -1951,7 +2083,11 @@ namespace confighttp {
       auto type = input.value("type", "offer");
       nlohmann::json output;
       if (!webrtc_stream::set_remote_offer(session_id, sdp, type)) {
-        output["error"] = "Session not found";
+        if (!webrtc_stream::get_session(session_id)) {
+          output["error"] = "Session not found";
+        } else {
+          output["error"] = "Failed to process offer";
+        }
         send_response(response, output);
         return;
       }
@@ -2837,6 +2973,7 @@ namespace confighttp {
     server.resource["^/api/health/crashdump$"]["GET"] = getCrashDumpStatus;
     server.resource["^/api/health/crashdump/dismiss$"]["POST"] = postCrashDumpDismiss;
 #endif
+    server.resource["^/api/apps/([A-Fa-f0-9-]+)/cover$"]["GET"] = getAppCover;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;

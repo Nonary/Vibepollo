@@ -123,6 +123,9 @@ export class WebRtcClient {
         type: offer.type,
         sdp: offer.sdp ?? '',
       });
+      if (!answer?.sdp) {
+        throw new Error('WebRTC answer not received');
+      }
       await this.pc.setRemoteDescription(answer);
     } catch (error) {
       callbacks.onError?.(error as Error);

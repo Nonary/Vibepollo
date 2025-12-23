@@ -6,11 +6,17 @@ export interface StreamConfig {
   fps: number;
   encoding: EncodingType;
   bitrateKbps?: number;
+  hdr?: boolean;
+  audioChannels?: number;
+  audioCodec?: 'opus' | 'aac';
+  profile?: string;
 }
 
 export interface WebRtcSessionInfo {
   sessionId: string;
   iceServers: RTCIceServer[];
+  certFingerprint?: string;
+  certPem?: string;
 }
 
 export interface WebRtcOffer {
@@ -21,6 +27,13 @@ export interface WebRtcOffer {
 export interface WebRtcAnswer {
   type: RTCSdpType;
   sdp: string;
+}
+
+export interface WebRtcIceCandidate {
+  sdpMid: string;
+  sdpMLineIndex: number;
+  candidate: string;
+  index?: number;
 }
 
 export interface WebRtcStatsSnapshot {
