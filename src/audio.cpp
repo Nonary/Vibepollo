@@ -16,6 +16,7 @@
 #include "platform/common.h"
 #include "thread_safe.h"
 #include "utility.h"
+#include "webrtc_stream.h"
 
 namespace audio {
   using namespace std::literals;
@@ -123,6 +124,9 @@ namespace audio {
       }
 
       packet.fake_resize(bytes);
+      if (webrtc_stream::has_active_sessions()) {
+        webrtc_stream::submit_audio_packet(packet);
+      }
       packets->raise(channel_data, std::move(packet));
     }
   }

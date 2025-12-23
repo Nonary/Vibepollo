@@ -45,6 +45,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "webrtc_stream.h"
 
 #include <nlohmann/json.hpp>
 #if defined(_WIN32)
@@ -215,6 +216,36 @@ namespace confighttp {
     headers.emplace("Content-Type", "application/json; charset=utf-8");
     add_cors_headers(headers);
     response->write(success_ok, output_tree.dump(), headers);
+  }
+
+  nlohmann::json webrtc_session_to_json(const webrtc_stream::SessionState &state) {
+    nlohmann::json output;
+    output["id"] = state.id;
+    output["audio"] = state.audio;
+    output["video"] = state.video;
+    output["encoded"] = state.encoded;
+    output["audio_packets"] = state.audio_packets;
+    output["video_packets"] = state.video_packets;
+    output["audio_dropped"] = state.audio_dropped;
+    output["video_dropped"] = state.video_dropped;
+    output["has_remote_offer"] = state.has_remote_offer;
+    output["ice_candidates"] = state.ice_candidates;
+    output["last_audio_bytes"] = state.last_audio_bytes;
+    output["last_video_bytes"] = state.last_video_bytes;
+    output["last_video_idr"] = state.last_video_idr;
+    output["last_video_frame_index"] = state.last_video_frame_index;
+
+    auto now = std::chrono::steady_clock::now();
+    auto age_or_null = [&now](const std::optional<std::chrono::steady_clock::time_point> &tp) -> nlohmann::json {
+      if (!tp) {
+        return nullptr;
+      }
+      return std::chrono::duration_cast<std::chrono::milliseconds>(now - *tp).count();
+    };
+
+    output["last_audio_age_ms"] = age_or_null(state.last_audio_time);
+    output["last_video_age_ms"] = age_or_null(state.last_video_time);
+    return output;
   }
 
   /**
@@ -1743,6 +1774,172 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void listWebRTCSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &session : webrtc_stream::list_sessions()) {
+      output["sessions"].push_back(webrtc_session_to_json(session));
+    }
+    send_response(response, output);
+  }
+
+  void createWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    webrtc_stream::SessionOptions options;
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    auto body = ss.str();
+    if (!body.empty()) {
+      if (!check_content_type(response, request, "application/json")) {
+        return;
+      }
+      try {
+        nlohmann::json input = nlohmann::json::parse(body);
+        if (input.contains("audio")) {
+          options.audio = input.at("audio").get<bool>();
+        }
+        if (input.contains("video")) {
+          options.video = input.at("video").get<bool>();
+        }
+        if (input.contains("encoded")) {
+          options.encoded = input.at("encoded").get<bool>();
+        }
+      } catch (const std::exception &e) {
+        bad_request(response, request, e.what());
+        return;
+      }
+    }
+
+    auto session = webrtc_stream::create_session(options);
+    nlohmann::json output;
+    output["status"] = true;
+    output["session"] = webrtc_session_to_json(session);
+    output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
+    output["cert_pem"] = webrtc_stream::get_server_cert_pem();
+    send_response(response, output);
+  }
+
+  void getWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    auto session = webrtc_stream::get_session(session_id);
+    if (!session) {
+      bad_request(response, request, "Session not found");
+      return;
+    }
+
+    nlohmann::json output;
+    output["session"] = webrtc_session_to_json(*session);
+    send_response(response, output);
+  }
+
+  void deleteWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    nlohmann::json output;
+    if (webrtc_stream::close_session(session_id)) {
+      output["status"] = true;
+    } else {
+      output["error"] = "Session not found";
+    }
+    send_response(response, output);
+  }
+
+  void postWebRTCOffer(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input = nlohmann::json::parse(ss.str());
+      auto sdp = input.at("sdp").get<std::string>();
+      auto type = input.value("type", "offer");
+      nlohmann::json output;
+      if (webrtc_stream::set_remote_offer(session_id, sdp, type)) {
+        output["status"] = true;
+      } else {
+        output["error"] = "Session not found";
+      }
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void postWebRTCIce(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input = nlohmann::json::parse(ss.str());
+      auto mid = input.value("sdpMid", "");
+      auto mline_index = input.value("sdpMLineIndex", -1);
+      auto candidate = input.at("candidate").get<std::string>();
+      nlohmann::json output;
+      if (webrtc_stream::add_ice_candidate(session_id, std::move(mid), mline_index, std::move(candidate))) {
+        output["status"] = true;
+      } else {
+        output["error"] = "Session not found";
+      }
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void getWebRTCCert(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
+    output["cert_pem"] = webrtc_stream::get_server_cert_pem();
+    send_response(response, output);
+  }
+
   /**
    * @brief Upload a cover image.
    * @param response The HTTP response object.
@@ -2416,6 +2613,13 @@ namespace confighttp {
     server.resource["^/api/clients/disconnect$"]["POST"] = disconnectClient;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
+    server.resource["^/api/webrtc/sessions$"]["GET"] = listWebRTCSessions;
+    server.resource["^/api/webrtc/sessions$"]["POST"] = createWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["GET"] = getWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["DELETE"] = deleteWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$"]["POST"] = postWebRTCOffer;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$"]["POST"] = postWebRTCIce;
+    server.resource["^/api/webrtc/cert$"]["GET"] = getWebRTCCert;
     // Keep legacy cover upload endpoint present in upstream master
     server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
     server.resource["^/api/apps/purge_autosync$"]["POST"] = purgeAutoSyncedApps;
