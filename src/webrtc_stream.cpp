@@ -70,6 +70,8 @@ namespace webrtc_stream {
       ring_buffer_t<EncodedAudioFrame> audio_frames {kMaxAudioFrames};
       std::string remote_offer_sdp;
       std::string remote_offer_type;
+      std::string local_answer_sdp;
+      std::string local_answer_type;
 
       struct IceCandidate {
         std::string mid;
@@ -77,6 +79,15 @@ namespace webrtc_stream {
         std::string candidate;
       };
       std::vector<IceCandidate> candidates;
+
+      struct LocalCandidate {
+        std::string mid;
+        int mline_index = -1;
+        std::string candidate;
+        std::size_t index = 0;
+      };
+      std::vector<LocalCandidate> local_candidates;
+      std::size_t local_candidate_counter = 0;
     };
 
     std::mutex session_mutex;
@@ -156,6 +167,15 @@ namespace webrtc_stream {
     session.state.audio = options.audio;
     session.state.video = options.video;
     session.state.encoded = options.encoded;
+    session.state.width = options.width;
+    session.state.height = options.height;
+    session.state.fps = options.fps;
+    session.state.bitrate_kbps = options.bitrate_kbps;
+    session.state.codec = options.codec;
+    session.state.hdr = options.hdr;
+    session.state.audio_channels = options.audio_channels;
+    session.state.audio_codec = options.audio_codec;
+    session.state.profile = options.profile;
 
     std::lock_guard lg {session_mutex};
     sessions.emplace(session.state.id, std::move(session));
@@ -279,6 +299,71 @@ namespace webrtc_stream {
     it->second.candidates.emplace_back(std::move(entry));
     it->second.state.ice_candidates = it->second.candidates.size();
     return true;
+  }
+
+  bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type) {
+    std::lock_guard lg {session_mutex};
+    auto it = sessions.find(std::string {id});
+    if (it == sessions.end()) {
+      return false;
+    }
+
+    it->second.local_answer_sdp = sdp;
+    it->second.local_answer_type = type;
+    it->second.state.has_local_answer = true;
+    return true;
+  }
+
+  bool add_local_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate) {
+    std::lock_guard lg {session_mutex};
+    auto it = sessions.find(std::string {id});
+    if (it == sessions.end()) {
+      return false;
+    }
+
+    Session::LocalCandidate entry;
+    entry.mid = std::move(mid);
+    entry.mline_index = mline_index;
+    entry.candidate = std::move(candidate);
+    entry.index = ++it->second.local_candidate_counter;
+    it->second.local_candidates.emplace_back(std::move(entry));
+    return true;
+  }
+
+  bool get_local_answer(std::string_view id, std::string &sdp_out, std::string &type_out) {
+    std::lock_guard lg {session_mutex};
+    auto it = sessions.find(std::string {id});
+    if (it == sessions.end()) {
+      return false;
+    }
+    if (!it->second.state.has_local_answer) {
+      return false;
+    }
+    sdp_out = it->second.local_answer_sdp;
+    type_out = it->second.local_answer_type;
+    return true;
+  }
+
+  std::vector<IceCandidateInfo> get_local_candidates(std::string_view id, std::size_t since) {
+    std::lock_guard lg {session_mutex};
+    auto it = sessions.find(std::string {id});
+    if (it == sessions.end()) {
+      return {};
+    }
+
+    std::vector<IceCandidateInfo> results;
+    for (const auto &candidate : it->second.local_candidates) {
+      if (candidate.index <= since) {
+        continue;
+      }
+      IceCandidateInfo info;
+      info.mid = candidate.mid;
+      info.mline_index = candidate.mline_index;
+      info.candidate = candidate.candidate;
+      info.index = candidate.index;
+      results.emplace_back(std::move(info));
+    }
+    return results;
   }
 
   std::string get_server_cert_fingerprint() {
