@@ -499,6 +499,7 @@ namespace webrtc_stream {
       if (!buffer || length <= 0 || binary) {
         return;
       }
+      BOOST_LOG(debug) << "WebRTC: data channel message received (" << length << " bytes)";
       handle_input_message(std::string_view {buffer, static_cast<std::size_t>(length)});
     }
 
@@ -512,6 +513,7 @@ namespace webrtc_stream {
       }
 
       const char *label = lwrtc_data_channel_label(channel);
+      BOOST_LOG(debug) << "WebRTC: data channel opened label=" << (label ? label : "(null)");
       if (!label || std::string_view {label} != "input") {
         lwrtc_data_channel_release(channel);
         return;
@@ -642,6 +644,7 @@ namespace webrtc_stream {
         return true;
       }
 
+      BOOST_LOG(debug) << "WebRTC: initializing peer connection factory";
       webrtc_factory = lwrtc_factory_create();
       if (!webrtc_factory) {
         BOOST_LOG(error) << "WebRTC: failed to allocate peer connection factory";
@@ -654,6 +657,7 @@ namespace webrtc_stream {
         return false;
       }
 
+      BOOST_LOG(debug) << "WebRTC: peer connection factory ready";
       return true;
     }
 
@@ -669,6 +673,7 @@ namespace webrtc_stream {
       const SessionState &state,
       SessionIceContext *ice_context
     ) {
+      BOOST_LOG(debug) << "WebRTC: create_peer_connection enter";
       if (!ensure_webrtc_factory()) {
         return nullptr;
       }
@@ -677,12 +682,14 @@ namespace webrtc_stream {
       config.offer_to_receive_audio = state.audio ? 1 : 0;
       config.offer_to_receive_video = state.video ? 1 : 0;
 
+      BOOST_LOG(debug) << "WebRTC: create_peer_connection constraints";
       auto *constraints = create_constraints();
       if (!constraints) {
         BOOST_LOG(error) << "WebRTC: failed to create media constraints";
         return nullptr;
       }
 
+      BOOST_LOG(debug) << "WebRTC: create_peer_connection lwrtc_factory_create_peer";
       auto *peer = lwrtc_factory_create_peer(
         webrtc_factory,
         &config,
@@ -691,6 +698,11 @@ namespace webrtc_stream {
         ice_context
       );
       lwrtc_constraints_release(constraints);
+      if (!peer) {
+        BOOST_LOG(error) << "WebRTC: create_peer_connection failed to create peer";
+        return nullptr;
+      }
+      BOOST_LOG(debug) << "WebRTC: create_peer_connection exit";
       return peer;
     }
 
@@ -1267,6 +1279,7 @@ namespace webrtc_stream {
         return;
       }
       webrtc_media_shutdown.store(false, std::memory_order_release);
+      BOOST_LOG(debug) << "WebRTC: starting media thread";
       webrtc_media_thread = std::thread(&media_thread_main);
     }
 
@@ -1274,6 +1287,7 @@ namespace webrtc_stream {
       if (!webrtc_media_running.load(std::memory_order_acquire)) {
         return;
       }
+      BOOST_LOG(debug) << "WebRTC: stopping media thread";
       webrtc_media_shutdown.store(true, std::memory_order_release);
       webrtc_media_cv.notify_all();
       if (webrtc_media_thread.joinable()) {
@@ -1287,6 +1301,7 @@ namespace webrtc_stream {
         return false;
       }
 
+      BOOST_LOG(debug) << "WebRTC: attach_media_tracks enter id=" << session.state.id;
       const std::string stream_id = "sunshine-" + session.state.id;
 
       if (session.state.audio && !session.audio_source) {
@@ -1332,6 +1347,7 @@ namespace webrtc_stream {
       }
 
       ensure_media_thread();
+      BOOST_LOG(debug) << "WebRTC: attach_media_tracks exit id=" << session.state.id;
       return true;
     }
 #endif
@@ -1404,6 +1420,7 @@ namespace webrtc_stream {
   }
 
   SessionState create_session(const SessionOptions &options) {
+    BOOST_LOG(debug) << "WebRTC: create_session enter";
     Session session;
     session.state.id = uuid_util::uuid_t::generate().string();
     session.state.audio = options.audio;
@@ -1423,11 +1440,13 @@ namespace webrtc_stream {
     std::lock_guard lg {session_mutex};
     sessions.emplace(snapshot.id, std::move(session));
     active_sessions.fetch_add(1, std::memory_order_relaxed);
+    BOOST_LOG(debug) << "WebRTC: create_session exit id=" << snapshot.id;
     return snapshot;
   }
 
   bool close_session(std::string_view id) {
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    BOOST_LOG(debug) << "WebRTC: close_session enter id=" << id;
     lwrtc_peer_t *peer = nullptr;
     std::shared_ptr<SessionIceContext> ice_context;
     lwrtc_audio_track_t *audio_track = nullptr;
@@ -1489,6 +1508,7 @@ namespace webrtc_stream {
       reset_input_context();
     }
 #endif
+    BOOST_LOG(debug) << "WebRTC: close_session exit id=" << id;
     return true;
   }
 
@@ -1622,6 +1642,7 @@ namespace webrtc_stream {
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type) {
     std::string session_id {id};
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    BOOST_LOG(debug) << "WebRTC: set_remote_offer enter id=" << session_id;
     lwrtc_peer_t *peer = nullptr;
 #endif
     {
@@ -1642,8 +1663,10 @@ namespace webrtc_stream {
           ice_context->id = session_id;
           it->second.ice_context = std::move(ice_context);
         }
+        BOOST_LOG(debug) << "WebRTC: creating peer id=" << session_id;
         auto new_peer = create_peer_connection(it->second.state, it->second.ice_context.get());
         if (!new_peer) {
+          BOOST_LOG(error) << "WebRTC: failed to create peer id=" << session_id;
           return false;
         }
         it->second.peer = new_peer;
@@ -1653,12 +1676,15 @@ namespace webrtc_stream {
         data_context->id = session_id;
         it->second.data_channel_context = std::move(data_context);
       }
+      BOOST_LOG(debug) << "WebRTC: registering data channel id=" << session_id;
       lwrtc_peer_register_data_channel(
         it->second.peer,
         &on_data_channel,
         it->second.data_channel_context.get()
       );
+      BOOST_LOG(debug) << "WebRTC: attaching media tracks id=" << session_id;
       if (!attach_media_tracks(it->second)) {
+        BOOST_LOG(error) << "WebRTC: failed to attach media tracks id=" << session_id;
         return false;
       }
       peer = it->second.peer;
@@ -1679,6 +1705,7 @@ namespace webrtc_stream {
       &on_set_remote_failure,
       ctx
     );
+    BOOST_LOG(debug) << "WebRTC: set_remote_offer exit id=" << session_id;
     return true;
 #else
     BOOST_LOG(error) << "WebRTC: support is disabled at build time";

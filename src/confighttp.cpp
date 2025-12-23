@@ -1953,6 +1953,8 @@ namespace confighttp {
       return;
     }
 
+    BOOST_LOG(debug) << "WebRTC: create session request received";
+
     webrtc_stream::SessionOptions options;
     std::stringstream ss;
     ss << request->content.rdbuf();
@@ -2031,7 +2033,9 @@ namespace confighttp {
       }
     }
 
+    BOOST_LOG(debug) << "WebRTC: creating session";
     auto session = webrtc_stream::create_session(options);
+    BOOST_LOG(debug) << "WebRTC: session created id=" << session.id;
     nlohmann::json output;
     output["status"] = true;
     output["session"] = webrtc_session_to_json(session);
