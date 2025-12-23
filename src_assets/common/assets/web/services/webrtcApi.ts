@@ -1,0 +1,232 @@
+import { http } from '@/http';
+import {
+  StreamConfig,
+  WebRtcIceCandidate,
+  WebRtcAnswer,
+  WebRtcOffer,
+  WebRtcSessionInfo,
+} from '@/types/webrtc';
+
+export interface WebRtcApi {
+  createSession(config: StreamConfig): Promise<WebRtcSessionInfo>;
+  sendOffer(sessionId: string, offer: WebRtcOffer): Promise<WebRtcAnswer | null>;
+  sendIceCandidate(sessionId: string, candidate: RTCIceCandidateInit): Promise<void>;
+  subscribeRemoteCandidates(
+    sessionId: string,
+    onCandidate: (candidate: RTCIceCandidateInit) => void,
+  ): () => void;
+  endSession(sessionId: string): Promise<void>;
+}
+
+interface WebRtcSessionResponse {
+  status?: boolean;
+  session?: {
+    id: string;
+  };
+  cert_fingerprint?: string;
+  cert_pem?: string;
+  ice_servers?: RTCIceServer[];
+}
+
+interface WebRtcOfferResponse {
+  status?: boolean;
+  answer_ready?: boolean;
+  sdp?: string;
+  type?: RTCSdpType;
+  error?: string;
+}
+
+interface WebRtcIceResponse {
+  status?: boolean;
+  candidates?: WebRtcIceCandidate[];
+  next_since?: number;
+  error?: string;
+}
+
+export class WebRtcHttpApi implements WebRtcApi {
+  async createSession(config: StreamConfig): Promise<WebRtcSessionInfo> {
+    const payload = {
+      audio: true,
+      video: true,
+      encoded: true,
+      width: config.width,
+      height: config.height,
+      fps: config.fps,
+      bitrate_kbps: config.bitrateKbps,
+      codec: config.encoding,
+      hdr: config.hdr,
+      audio_channels: config.audioChannels,
+      audio_codec: config.audioCodec,
+      profile: config.profile,
+    };
+    const r = await http.post<WebRtcSessionResponse>('/api/webrtc/sessions', payload, {
+      validateStatus: () => true,
+    });
+    if (r.status !== 200 || !r.data?.session?.id) {
+      const detail = r.data ? JSON.stringify(r.data) : 'no response body';
+      throw new Error(`Failed to create WebRTC session (HTTP ${r.status}): ${detail}`);
+    }
+    return {
+      sessionId: r.data.session.id,
+      iceServers: r.data.ice_servers ?? [],
+      certFingerprint: r.data.cert_fingerprint,
+      certPem: r.data.cert_pem,
+    };
+  }
+
+  async sendOffer(sessionId: string, offer: WebRtcOffer): Promise<WebRtcAnswer | null> {
+    const r = await http.post<WebRtcOfferResponse>(
+      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/offer`,
+      offer,
+      { validateStatus: () => true },
+    );
+    if (r.status !== 200) {
+      const detail = r.data ? JSON.stringify(r.data) : 'no response body';
+      throw new Error(`Failed to post WebRTC offer (HTTP ${r.status}): ${detail}`);
+    }
+    if (r.data?.answer_ready && r.data.sdp) {
+      return { type: r.data.type ?? 'answer', sdp: r.data.sdp };
+    }
+    return this.waitForAnswer(sessionId);
+  }
+
+  async sendIceCandidate(sessionId: string, candidate: RTCIceCandidateInit): Promise<void> {
+    if (!candidate.candidate) return;
+    await http.post(
+      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
+      {
+        sdpMid: candidate.sdpMid,
+        sdpMLineIndex: candidate.sdpMLineIndex,
+        candidate: candidate.candidate,
+      },
+      { validateStatus: () => true },
+    );
+  }
+
+  subscribeRemoteCandidates(
+    sessionId: string,
+    onCandidate: (candidate: RTCIceCandidateInit) => void,
+  ): () => void {
+    let stopped = false;
+    let lastIndex = 0;
+    let pollTimer: number | undefined;
+    let eventSource: EventSource | null = null;
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const r = await http.get<WebRtcIceResponse>(
+          `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
+          { params: { since: lastIndex }, validateStatus: () => true },
+        );
+        if (r.status === 200 && Array.isArray(r.data?.candidates)) {
+          for (const candidate of r.data.candidates) {
+            onCandidate({
+              sdpMid: candidate.sdpMid,
+              sdpMLineIndex: candidate.sdpMLineIndex,
+              candidate: candidate.candidate,
+            });
+            if (typeof candidate.index === 'number') {
+              lastIndex = Math.max(lastIndex, candidate.index);
+            }
+          }
+          if (typeof r.data.next_since === 'number') {
+            lastIndex = Math.max(lastIndex, r.data.next_since);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!stopped) {
+        pollTimer = window.setTimeout(poll, 1000);
+      }
+    };
+
+    const startPolling = () => {
+      if (pollTimer || stopped) return;
+      poll();
+    };
+
+    try {
+      eventSource = new EventSource(
+        `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice/stream?since=${lastIndex}`,
+      );
+      eventSource.addEventListener('candidate', (event) => {
+        if (stopped) return;
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as WebRtcIceCandidate;
+          onCandidate({
+            sdpMid: payload.sdpMid,
+            sdpMLineIndex: payload.sdpMLineIndex,
+            candidate: payload.candidate,
+          });
+          const id = (event as MessageEvent).lastEventId;
+          if (id) {
+            const parsed = Number.parseInt(id, 10);
+            if (!Number.isNaN(parsed)) {
+              lastIndex = Math.max(lastIndex, parsed);
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      });
+      eventSource.addEventListener('keepalive', () => {
+        /* no-op */
+      });
+      eventSource.onerror = () => {
+        if (stopped) return;
+        eventSource?.close();
+        eventSource = null;
+        startPolling();
+      };
+    } catch {
+      startPolling();
+    }
+
+    return () => {
+      stopped = true;
+      stopPolling();
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+  }
+
+  async endSession(sessionId: string): Promise<void> {
+    await http.delete(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}`, {
+      validateStatus: () => true,
+    });
+  }
+
+  private async waitForAnswer(sessionId: string): Promise<WebRtcAnswer | null> {
+    const start = Date.now();
+    const timeoutMs = 30000;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const r = await http.get<WebRtcOfferResponse>(
+          `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/answer`,
+          { validateStatus: () => true },
+        );
+        if (r.status === 200 && r.data?.sdp) {
+          return { type: r.data.type ?? 'answer', sdp: r.data.sdp };
+        }
+        if (r.status === 400 && r.data?.error && r.data.error !== 'Answer not ready') {
+          throw new Error(`Failed to fetch WebRTC answer: ${r.data.error}`);
+        }
+      } catch {
+        /* ignore */
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    }
+    return null;
+  }
+}
