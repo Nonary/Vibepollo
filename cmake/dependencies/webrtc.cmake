@@ -32,10 +32,18 @@ if(WIN32)
         if(DEFINED ENV{VSINSTALLDIR} AND EXISTS "$ENV{VSINSTALLDIR}")
             set(WEBRTC_VS_PATH "$ENV{VSINSTALLDIR}" CACHE PATH "Visual Studio install path for the build script." FORCE)
         else()
-            find_program(VSWHERE_EXECUTABLE vswhere
-                PATHS
-                    "$ENV{ProgramFiles(x86)}/Microsoft Visual Studio/Installer"
-                    "$ENV{ProgramFiles}/Microsoft Visual Studio/Installer")
+            set(VSWHERE_PATHS "")
+            if(DEFINED ENV{ProgramFiles})
+                list(APPEND VSWHERE_PATHS "$ENV{ProgramFiles}/Microsoft Visual Studio/Installer")
+            endif()
+            if(DEFINED ENV{ProgramW6432})
+                list(APPEND VSWHERE_PATHS "$ENV{ProgramW6432}/Microsoft Visual Studio/Installer")
+            endif()
+            list(APPEND VSWHERE_PATHS
+                "C:/Program Files (x86)/Microsoft Visual Studio/Installer"
+                "C:/Program Files/Microsoft Visual Studio/Installer")
+
+            find_program(VSWHERE_EXECUTABLE vswhere PATHS ${VSWHERE_PATHS})
             if(VSWHERE_EXECUTABLE)
                 execute_process(
                     COMMAND "${VSWHERE_EXECUTABLE}" -latest -products * -property installationPath
