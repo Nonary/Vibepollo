@@ -20,6 +20,16 @@ namespace webrtc_stream {
     bool audio = true;
     bool video = true;
     bool encoded = true;
+
+    std::optional<int> width;
+    std::optional<int> height;
+    std::optional<int> fps;
+    std::optional<int> bitrate_kbps;
+    std::optional<std::string> codec;
+    std::optional<bool> hdr;
+    std::optional<int> audio_channels;
+    std::optional<std::string> audio_codec;
+    std::optional<std::string> profile;
   };
 
   struct SessionState {
@@ -33,7 +43,18 @@ namespace webrtc_stream {
     std::uint64_t audio_dropped = 0;
     std::uint64_t video_dropped = 0;
     bool has_remote_offer = false;
+    bool has_local_answer = false;
     std::size_t ice_candidates = 0;
+
+    std::optional<int> width;
+    std::optional<int> height;
+    std::optional<int> fps;
+    std::optional<int> bitrate_kbps;
+    std::optional<std::string> codec;
+    std::optional<bool> hdr;
+    std::optional<int> audio_channels;
+    std::optional<std::string> audio_codec;
+    std::optional<std::string> profile;
 
     std::optional<std::chrono::steady_clock::time_point> last_audio_time;
     std::optional<std::chrono::steady_clock::time_point> last_video_time;
@@ -56,6 +77,18 @@ namespace webrtc_stream {
 
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type);
   bool add_ice_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
+  bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type);
+  bool get_local_answer(std::string_view id, std::string &sdp_out, std::string &type_out);
+  bool add_local_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
+
+  struct IceCandidateInfo {
+    std::string mid;
+    int mline_index = -1;
+    std::string candidate;
+    std::size_t index = 0;
+  };
+
+  std::vector<IceCandidateInfo> get_local_candidates(std::string_view id, std::size_t since);
 
   std::string get_server_cert_fingerprint();
   std::string get_server_cert_pem();
