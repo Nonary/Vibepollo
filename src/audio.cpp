@@ -115,6 +115,10 @@ namespace audio {
     while (auto sample = samples->pop()) {
       buffer_t packet {1400};
 
+      if (webrtc_stream::has_active_sessions()) {
+        webrtc_stream::submit_audio_frame(*sample, stream.sampleRate, stream.channelCount, frame_size);
+      }
+
       int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), packet.size());
       if (bytes < 0) {
         BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);

@@ -272,6 +272,7 @@ $gnArgs = @(
   'rtc_include_tests=false',
   'rtc_build_examples=false',
   'libwebrtc_desktop_capture=true',
+  'libwebrtc_intel_media_sdk=true',
   'is_clang=true',
   'clang_use_chrome_plugins=false',
   'use_custom_libcxx=true',

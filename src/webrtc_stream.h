@@ -6,6 +6,7 @@
 
 // standard includes
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,6 +75,8 @@ namespace webrtc_stream {
 
   void submit_video_packet(video::packet_raw_t &packet);
   void submit_audio_packet(const audio::buffer_t &packet);
+  void submit_video_frame(const std::shared_ptr<platf::img_t> &frame);
+  void submit_audio_frame(const std::vector<float> &samples, int sample_rate, int channels, int frames);
 
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type);
   bool add_ice_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
