@@ -578,6 +578,9 @@
     "logout": "Logout",
     "api_tokens": "API Tokens"
   },
+  "webrtc": {
+    "nav": "WebRTC Client"
+  },
   "clients": {
     "nav": "Clients",
     "title": "Client Management",
