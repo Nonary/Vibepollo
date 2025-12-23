@@ -38,6 +38,7 @@ extern "C" {
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
+#include "webrtc_stream.h"
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
@@ -1426,6 +1427,9 @@ namespace stream {
       frame_network_latency_logger.first_point_now();
 
       auto session = (session_t *) packet->channel_data;
+      if (!session) {
+        continue;
+      }
       auto lowseq = session->video.lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
@@ -1748,6 +1752,9 @@ namespace stream {
 
       TUPLE_2D_REF(channel_data, packet_data, *packet);
       auto session = (session_t *) channel_data;
+      if (!session) {
+        continue;
+      }
 
       auto sequenceNumber = session->audio.sequenceNumber;
       auto timestamp = session->audio.timestamp;
@@ -2056,6 +2063,7 @@ namespace stream {
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
+        webrtc_stream::set_rtsp_sessions_active(false);
         config::set_runtime_output_name_override(std::nullopt);
 #ifdef _WIN32
         display_helper_integration::clear_pending_apply();
@@ -2138,6 +2146,7 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+        webrtc_stream::set_rtsp_sessions_active(true);
 #ifdef _WIN32
         // Apply RTSS frame limit if enabled (Windows-only)
         std::optional<int> lossless_rtss_limit;

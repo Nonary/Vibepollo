@@ -25,6 +25,7 @@ interface WebRtcSessionResponse {
   };
   cert_fingerprint?: string;
   cert_pem?: string;
+  ice_servers?: RTCIceServer[];
 }
 
 interface WebRtcOfferResponse {
@@ -67,7 +68,7 @@ export class WebRtcHttpApi implements WebRtcApi {
     }
     return {
       sessionId: r.data.session.id,
-      iceServers: [],
+      iceServers: r.data.ice_servers ?? [],
       certFingerprint: r.data.cert_fingerprint,
       certPem: r.data.cert_pem,
     };

@@ -193,6 +193,7 @@ namespace webrtc_stream {
     std::mutex session_mutex;
     std::unordered_map<std::string, Session> sessions;
     std::atomic_uint active_sessions {0};
+    std::atomic_bool rtsp_sessions_active {false};
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
     void on_ice_candidate(
@@ -1279,6 +1280,10 @@ namespace webrtc_stream {
 #ifdef SUNSHINE_ENABLE_WEBRTC
     webrtc_media_cv.notify_all();
 #endif
+  }
+
+  void set_rtsp_sessions_active(bool active) {
+    rtsp_sessions_active.store(active, std::memory_order_relaxed);
   }
 
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type) {

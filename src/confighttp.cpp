@@ -219,6 +219,24 @@ namespace confighttp {
     response->write(success_ok, output_tree.dump(), headers);
   }
 
+  nlohmann::json load_webrtc_ice_servers() {
+    auto env = std::getenv("SUNSHINE_WEBRTC_ICE_SERVERS");
+    if (!env || !*env) {
+      return nlohmann::json::array();
+    }
+
+    try {
+      auto parsed = nlohmann::json::parse(env);
+      if (parsed.is_array()) {
+        return parsed;
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "WebRTC: invalid SUNSHINE_WEBRTC_ICE_SERVERS: "sv << e.what();
+    }
+
+    return nlohmann::json::array();
+  }
+
   nlohmann::json webrtc_session_to_json(const webrtc_stream::SessionState &state) {
     nlohmann::json output;
     output["id"] = state.id;
@@ -2019,6 +2037,7 @@ namespace confighttp {
     output["session"] = webrtc_session_to_json(session);
     output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
     output["cert_pem"] = webrtc_stream::get_server_cert_pem();
+    output["ice_servers"] = load_webrtc_ice_servers();
     send_response(response, output);
   }
 
