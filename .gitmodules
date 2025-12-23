@@ -68,7 +68,7 @@
 	branch = master
 [submodule "third-party/libwebrtc"]
 	path = third-party/libwebrtc
-	url = https://github.com/webrtc-sdk/libwebrtc
+	url = https://github.com/Nonary/libwebrtc
 	branch = feat/upgrade-to-m137
 [submodule "third-party/depot_tools"]
 	path = third-party/depot_tools
