@@ -1,6 +1,6 @@
 import { InputMessage } from '@/types/webrtc';
 
-function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent) {
+function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | PointerEvent) {
   return {
     alt: event.altKey,
     ctrl: event.ctrlKey,
@@ -9,10 +9,47 @@ function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent) {
   };
 }
 
-function normalizePoint(event: MouseEvent | WheelEvent, element: HTMLElement) {
+function resolveInputRect(
+  element: HTMLElement,
+  video?: HTMLVideoElement | null,
+): { rect: DOMRect; contentRect: DOMRect } {
   const rect = element.getBoundingClientRect();
-  const x = rect.width ? (event.clientX - rect.left) / rect.width : 0;
-  const y = rect.height ? (event.clientY - rect.top) / rect.height : 0;
+  if (!video || !video.videoWidth || !video.videoHeight || rect.width <= 0 || rect.height <= 0) {
+    return { rect, contentRect: rect };
+  }
+
+  const elementAspect = rect.width / rect.height;
+  const videoAspect = video.videoWidth / video.videoHeight;
+  let contentWidth = rect.width;
+  let contentHeight = rect.height;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  if (videoAspect > elementAspect) {
+    contentHeight = rect.width / videoAspect;
+    offsetY = (rect.height - contentHeight) / 2;
+  } else if (videoAspect < elementAspect) {
+    contentWidth = rect.height * videoAspect;
+    offsetX = (rect.width - contentWidth) / 2;
+  }
+
+  const contentRect = new DOMRect(
+    rect.left + offsetX,
+    rect.top + offsetY,
+    contentWidth,
+    contentHeight,
+  );
+  return { rect, contentRect };
+}
+
+function normalizePoint(
+  event: MouseEvent | WheelEvent | PointerEvent,
+  element: HTMLElement,
+  video?: HTMLVideoElement | null,
+) {
+  const { contentRect } = resolveInputRect(element, video);
+  const x = contentRect.width ? (event.clientX - contentRect.left) / contentRect.width : 0;
+  const y = contentRect.height ? (event.clientY - contentRect.top) / contentRect.height : 0;
   return {
     x: Math.min(1, Math.max(0, x)),
     y: Math.min(1, Math.max(0, y)),
@@ -22,9 +59,12 @@ function normalizePoint(event: MouseEvent | WheelEvent, element: HTMLElement) {
 export function attachInputCapture(
   element: HTMLElement,
   send: (payload: string) => void,
+  video?: HTMLVideoElement | null,
 ): () => void {
   let queuedMove: InputMessage | null = null;
   let rafId = 0;
+  const pressedKeys = new Map<string, { key: string; code: string }>();
+  const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
 
   const flushMove = () => {
     rafId = 0;
@@ -33,8 +73,25 @@ export function attachInputCapture(
     queuedMove = null;
   };
 
-  const onMouseMove = (event: MouseEvent) => {
-    const { x, y } = normalizePoint(event, element);
+  const releaseAllKeys = () => {
+    if (!pressedKeys.size) return;
+    const ts = performance.now();
+    for (const entry of pressedKeys.values()) {
+      const payload: InputMessage = {
+        type: 'key_up',
+        key: entry.key,
+        code: entry.code,
+        repeat: false,
+        modifiers: { alt: false, ctrl: false, shift: false, meta: false },
+        ts,
+      };
+      send(JSON.stringify(payload));
+    }
+    pressedKeys.clear();
+  };
+
+  const queueMove = (event: MouseEvent | PointerEvent) => {
+    const { x, y } = normalizePoint(event, element, video);
     queuedMove = {
       type: 'mouse_move',
       x,
@@ -46,24 +103,10 @@ export function attachInputCapture(
     if (!rafId) rafId = requestAnimationFrame(flushMove);
   };
 
-  const onMouseDown = (event: MouseEvent) => {
-    const { x, y } = normalizePoint(event, element);
+  const sendButton = (event: MouseEvent | PointerEvent, type: 'mouse_down' | 'mouse_up') => {
+    const { x, y } = normalizePoint(event, element, video);
     const payload: InputMessage = {
-      type: 'mouse_down',
-      button: event.button,
-      x,
-      y,
-      modifiers: modifiersFromEvent(event),
-      ts: performance.now(),
-    };
-    element.focus();
-    send(JSON.stringify(payload));
-  };
-
-  const onMouseUp = (event: MouseEvent) => {
-    const { x, y } = normalizePoint(event, element);
-    const payload: InputMessage = {
-      type: 'mouse_up',
+      type,
       button: event.button,
       x,
       y,
@@ -74,7 +117,8 @@ export function attachInputCapture(
   };
 
   const onWheel = (event: WheelEvent) => {
-    const { x, y } = normalizePoint(event, element);
+    event.preventDefault();
+    const { x, y } = normalizePoint(event, element, video);
     const payload: InputMessage = {
       type: 'wheel',
       dx: event.deltaX,
@@ -89,6 +133,7 @@ export function attachInputCapture(
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.repeat) return;
+    pressedKeys.set(event.code, { key: event.key, code: event.code });
     const payload: InputMessage = {
       type: 'key_down',
       key: event.key,
@@ -101,6 +146,7 @@ export function attachInputCapture(
   };
 
   const onKeyUp = (event: KeyboardEvent) => {
+    pressedKeys.delete(event.code);
     const payload: InputMessage = {
       type: 'key_up',
       key: event.key,
@@ -112,20 +158,88 @@ export function attachInputCapture(
     send(JSON.stringify(payload));
   };
 
-  element.addEventListener('mousemove', onMouseMove);
-  element.addEventListener('mousedown', onMouseDown);
-  element.addEventListener('mouseup', onMouseUp);
-  element.addEventListener('wheel', onWheel);
+  const onMouseMove = (event: MouseEvent) => queueMove(event);
+  const onMouseDown = (event: MouseEvent) => {
+    element.focus();
+    sendButton(event, 'mouse_down');
+  };
+  const onMouseUp = (event: MouseEvent) => sendButton(event, 'mouse_up');
+  const onPointerMove = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
+    queueMove(event);
+  };
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
+    element.focus();
+    try {
+      element.setPointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+    sendButton(event, 'mouse_down');
+  };
+  const onPointerUp = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
+    sendButton(event, 'mouse_up');
+    try {
+      element.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+  const onPointerCancel = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return;
+    try {
+      element.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+  const onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+  };
+  const onBlur = () => releaseAllKeys();
+  const onVisibilityChange = () => {
+    if (document.hidden) releaseAllKeys();
+  };
+
+  if (supportsPointer) {
+    element.addEventListener('pointermove', onPointerMove);
+    element.addEventListener('pointerdown', onPointerDown);
+    element.addEventListener('pointerup', onPointerUp);
+    element.addEventListener('pointercancel', onPointerCancel);
+  } else {
+    element.addEventListener('mousemove', onMouseMove);
+    element.addEventListener('mousedown', onMouseDown);
+    element.addEventListener('mouseup', onMouseUp);
+  }
+  element.addEventListener('wheel', onWheel, { passive: false });
   element.addEventListener('keydown', onKeyDown);
   element.addEventListener('keyup', onKeyUp);
+  element.addEventListener('contextmenu', onContextMenu);
+  element.addEventListener('blur', onBlur);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
   return () => {
     if (rafId) cancelAnimationFrame(rafId);
-    element.removeEventListener('mousemove', onMouseMove);
-    element.removeEventListener('mousedown', onMouseDown);
-    element.removeEventListener('mouseup', onMouseUp);
+    if (supportsPointer) {
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerdown', onPointerDown);
+      element.removeEventListener('pointerup', onPointerUp);
+      element.removeEventListener('pointercancel', onPointerCancel);
+    } else {
+      element.removeEventListener('mousemove', onMouseMove);
+      element.removeEventListener('mousedown', onMouseDown);
+      element.removeEventListener('mouseup', onMouseUp);
+    }
     element.removeEventListener('wheel', onWheel);
     element.removeEventListener('keydown', onKeyDown);
     element.removeEventListener('keyup', onKeyUp);
+    element.removeEventListener('contextmenu', onContextMenu);
+    element.removeEventListener('blur', onBlur);
+    window.removeEventListener('blur', onBlur);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    releaseAllKeys();
   };
 }

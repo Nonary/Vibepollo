@@ -166,11 +166,49 @@ namespace webrtc_stream {
     std::shared_ptr<safe::mail_raw_t> input_mail;
     std::shared_ptr<input::input_t> input_context;
 
+    std::shared_ptr<safe::mail_raw_t> current_capture_mail();
+
     std::shared_ptr<input::input_t> current_input_context() {
+      auto capture_mail = current_capture_mail();
       std::lock_guard lg {input_mutex};
+      if (capture_mail && input_mail != capture_mail) {
+        if (input_context) {
+          input::reset(input_context);
+        }
+        input_context.reset();
+        input_mail.reset();
+      }
       if (!input_context) {
-        input_mail = std::make_shared<safe::mail_raw_t>();
+        input_mail = capture_mail ? capture_mail : std::make_shared<safe::mail_raw_t>();
         input_context = input::alloc(input_mail);
+
+        // Set up a default touch port for WebRTC input when capture mail isn't available.
+        if (!capture_mail) {
+          auto touch_port_event = input_mail->event<input::touch_port_t>(mail::touch_port);
+#ifdef _WIN32
+          int screen_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+          int screen_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+#else
+          // For non-Windows platforms, use a default resolution
+          // This will be updated when actual capture dimensions are known
+          int screen_width = 1920;
+          int screen_height = 1080;
+#endif
+          if (screen_width <= 0) screen_width = 1920;
+          if (screen_height <= 0) screen_height = 1080;
+
+          input::touch_port_t port {};
+          port.offset_x = 0;
+          port.offset_y = 0;
+          port.width = screen_width;
+          port.height = screen_height;
+          port.env_width = screen_width;
+          port.env_height = screen_height;
+          port.client_offsetX = 0.0f;
+          port.client_offsetY = 0.0f;
+          port.scalar_inv = 1.0f;
+          touch_port_event->raise(port);
+        }
       }
       return input_context;
     }
@@ -510,6 +548,11 @@ namespace webrtc_stream {
     std::atomic_uint32_t webrtc_launch_session_id {0};
     WebRtcCaptureState webrtc_capture;
 
+    std::shared_ptr<safe::mail_raw_t> current_capture_mail() {
+      std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
+      return webrtc_capture.mail;
+    }
+
     int codec_to_video_format(const std::optional<std::string> &codec) {
       if (!codec) {
         return 0;
@@ -705,7 +748,7 @@ namespace webrtc_stream {
         return std::nullopt;
       }
       if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
-        return std::nullopt;
+        return std::string {"RTSP session already active"};
       }
 
       const int current_app_id = proc::proc.running();
