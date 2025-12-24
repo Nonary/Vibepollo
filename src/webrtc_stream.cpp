@@ -12,11 +12,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -83,6 +85,7 @@ namespace webrtc_stream {
     constexpr int kDefaultFps = 60;
     constexpr int kDefaultAudioChannels = 2;
     constexpr int kDefaultAudioPacketMs = 5;
+    constexpr std::size_t kEncodedPrefixLogLimit = 5;
 
     struct EncodedVideoFrame {
       std::shared_ptr<std::vector<std::uint8_t>> data;
@@ -108,6 +111,29 @@ namespace webrtc_stream {
       int channels = 0;
       int frames = 0;
     };
+
+    bool starts_with_annexb(const std::vector<std::uint8_t> &data) {
+      if (data.size() < 3) {
+        return false;
+      }
+      if (data[0] == 0 && data[1] == 0 && data[2] == 1) {
+        return true;
+      }
+      return data.size() >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1;
+    }
+
+    std::string hex_prefix(const std::vector<std::uint8_t> &data, std::size_t max_bytes = 8) {
+      std::ostringstream oss;
+      const std::size_t count = std::min(data.size(), max_bytes);
+      for (std::size_t i = 0; i < count; ++i) {
+        if (i) {
+          oss << ' ';
+        }
+        oss << std::hex << std::setw(2) << std::setfill('0')
+            << static_cast<int>(data[i]);
+      }
+      return oss.str();
+    }
 
     struct WebRtcCaptureState {
       std::mutex mutex;
@@ -512,6 +538,7 @@ namespace webrtc_stream {
       std::shared_ptr<SessionIceContext> ice_context;
       lwrtc_audio_source_t *audio_source = nullptr;
       lwrtc_video_source_t *video_source = nullptr;
+      lwrtc_encoded_video_source_t *encoded_video_source = nullptr;
       lwrtc_audio_track_t *audio_track = nullptr;
       lwrtc_video_track_t *video_track = nullptr;
       lwrtc_data_channel_t *input_channel = nullptr;
@@ -539,6 +566,8 @@ namespace webrtc_stream {
 
       std::shared_ptr<platf::img_t> last_video_frame;
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
+      bool needs_keyframe = false;
+      std::size_t encoded_prefix_logs = 0;
     };
 
     std::mutex session_mutex;
@@ -551,6 +580,23 @@ namespace webrtc_stream {
     std::shared_ptr<safe::mail_raw_t> current_capture_mail() {
       std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
       return webrtc_capture.mail;
+    }
+
+    void request_keyframe(std::string_view reason) {
+      auto mail = current_capture_mail();
+      if (!mail) {
+        BOOST_LOG(debug) << "WebRTC: keyframe request skipped (" << reason << ") - no capture mail";
+        return;
+      }
+
+      auto idr_events = mail->event<bool>(mail::idr);
+      if (!idr_events) {
+        BOOST_LOG(debug) << "WebRTC: keyframe request skipped (" << reason << ") - no idr event";
+        return;
+      }
+
+      idr_events->raise(true);
+      BOOST_LOG(debug) << "WebRTC: keyframe requested (" << reason << ')';
     }
 
     int codec_to_video_format(const std::optional<std::string> &codec) {
@@ -1051,12 +1097,20 @@ namespace webrtc_stream {
         return true;
       }
 
-      BOOST_LOG(debug) << "WebRTC: initializing peer connection factory";
+      BOOST_LOG(debug) << "WebRTC: initializing peer connection factory with passthrough encoder";
       webrtc_factory = lwrtc_factory_create();
       if (!webrtc_factory) {
         BOOST_LOG(error) << "WebRTC: failed to allocate peer connection factory";
         return false;
       }
+
+      // Enable passthrough mode to use pre-encoded H.264/HEVC frames
+      // This must be called BEFORE lwrtc_factory_initialize()
+      if (!lwrtc_factory_enable_passthrough(webrtc_factory, LWRTC_VIDEO_CODEC_H264)) {
+        BOOST_LOG(warning) << "WebRTC: failed to enable passthrough mode";
+        // Continue anyway - will fall back to raw frame mode
+      }
+
       if (!lwrtc_factory_initialize(webrtc_factory)) {
         BOOST_LOG(error) << "WebRTC: failed to create peer connection factory";
         lwrtc_factory_release(webrtc_factory);
@@ -1774,14 +1828,12 @@ namespace webrtc_stream {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        struct VideoWork {
-          lwrtc_video_source_t *source = nullptr;
-          std::shared_ptr<platf::img_t> image;
+        // Encoded video work - for passthrough mode (pre-encoded frames)
+        struct EncodedVideoWork {
+          lwrtc_encoded_video_source_t *source = nullptr;
+          std::shared_ptr<std::vector<std::uint8_t>> data;
+          bool is_keyframe = false;
           std::optional<std::chrono::steady_clock::time_point> timestamp;
-#ifdef _WIN32
-          std::unique_ptr<D3D11Nv12Converter> *converter = nullptr;
-          video::config_t video_config {};
-#endif
         };
         struct AudioWork {
           lwrtc_audio_source_t *source = nullptr;
@@ -1791,7 +1843,7 @@ namespace webrtc_stream {
           int frames = 0;
         };
 
-        std::vector<VideoWork> video_work;
+        std::vector<EncodedVideoWork> video_work;
         std::vector<AudioWork> audio_work;
 
         {
@@ -1800,42 +1852,48 @@ namespace webrtc_stream {
             if (!session.peer) {
               continue;
             }
-            if (session.video_source) {
-              RawVideoFrame frame;
-              if (session.raw_video_frames.pop_latest(frame)) {
-                VideoWork work;
-                work.source = session.video_source;
-                work.image = std::move(frame.image);
-                work.timestamp = frame.timestamp;
-#ifdef _WIN32
-                work.converter = &session.d3d_converter;
-                work.video_config = session.video_config;
-#endif
-                session.last_video_frame = work.image;
-                session.last_video_push = now;
-                video_work.push_back(std::move(work));
-              } else if (session.last_video_frame && session.last_video_push) {
-                double minimum_fps_target = (config::video.minimum_fps_target > 0.0)
-                                            ? config::video.minimum_fps_target
-                                            : static_cast<double>(session.video_config.framerate);
-                if (minimum_fps_target <= 0.0) {
-                  minimum_fps_target = kDefaultFps;
-                }
-                const auto max_frametime = std::chrono::duration<double, std::milli>(1000.0 / minimum_fps_target);
-                const auto repeat_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(max_frametime);
-                if (now - *session.last_video_push >= repeat_interval) {
-                  VideoWork work;
-                  work.source = session.video_source;
-                  work.image = session.last_video_frame;
-                  work.timestamp = now;
-#ifdef _WIN32
-                  work.converter = &session.d3d_converter;
-                  work.video_config = session.video_config;
-#endif
-                  video_work.push_back(std::move(work));
-                  session.last_video_push = now;
+            // Use encoded video source for passthrough mode
+            if (session.encoded_video_source) {
+              EncodedVideoFrame frame;
+              std::optional<EncodedVideoFrame> latest;
+              std::optional<EncodedVideoFrame> latest_idr;
+              while (session.video_frames.pop(frame)) {
+                latest = frame;
+                if (frame.idr) {
+                  latest_idr = frame;
                 }
               }
+              if (latest) {
+                if (session.needs_keyframe) {
+                  if (!latest_idr) {
+                    continue;
+                  }
+                  frame = std::move(*latest_idr);
+                  session.needs_keyframe = false;
+                } else {
+                  frame = std::move(*latest);
+                }
+                if (frame.data && !frame.data->empty() && session.encoded_prefix_logs < kEncodedPrefixLogLimit) {
+                  const bool annexb = starts_with_annexb(*frame.data);
+                  if (annexb) {
+                    BOOST_LOG(debug) << "WebRTC: encoded frame prefix ok (AnnexB) id=" << session.state.id
+                                     << " size=" << frame.data->size() << " prefix=" << hex_prefix(*frame.data);
+                  } else {
+                    BOOST_LOG(warning) << "WebRTC: encoded frame prefix not AnnexB id=" << session.state.id
+                                       << " size=" << frame.data->size() << " prefix=" << hex_prefix(*frame.data);
+                  }
+                  session.encoded_prefix_logs++;
+                }
+                EncodedVideoWork work;
+                work.source = session.encoded_video_source;
+                work.data = std::move(frame.data);
+                work.is_keyframe = frame.idr;
+                work.timestamp = frame.timestamp;
+                session.last_video_push = now;
+                video_work.push_back(std::move(work));
+              }
+              // Note: For encoded passthrough, we don't repeat frames like raw mode
+              // The encoder produces frames at the capture rate, and we just forward them
             }
             if (session.audio_source) {
               RawAudioFrame frame;
@@ -1846,44 +1904,18 @@ namespace webrtc_stream {
           }
         }
 
+        // Push encoded video frames to WebRTC
         for (auto &work : video_work) {
-          if (!work.source || !work.image) {
+          if (!work.source || !work.data || work.data->empty()) {
             continue;
           }
-          if (work.image->width <= 0 || work.image->height <= 0) {
-            continue;
-          }
-          bool pushed = false;
-#ifdef _WIN32
-          pushed = try_push_d3d11_frame(
+          lwrtc_encoded_video_source_push(
             work.source,
-            work.image,
-            work.timestamp,
-            work.converter,
-            work.video_config
+            work.data->data(),
+            work.data->size(),
+            timestamp_to_us(work.timestamp),
+            work.is_keyframe ? 1 : 0
           );
-#endif
-#ifdef __APPLE__
-          if (!pushed) {
-            pushed = try_push_nv12_frame(work.source, work.image, work.timestamp);
-          }
-#endif
-          if (!pushed) {
-            const bool is_d3d = static_cast<bool>(
-              std::dynamic_pointer_cast<platf::dxgi::img_d3d_t>(work.image)
-            );
-            if (is_d3d || !work.image->data) {
-              continue;
-            }
-            lwrtc_video_source_push_argb(
-              work.source,
-              work.image->data,
-              work.image->row_pitch,
-              work.image->width,
-              work.image->height,
-              timestamp_to_us(work.timestamp)
-            );
-          }
         }
 
         for (auto &work : audio_work) {
@@ -1932,6 +1964,7 @@ namespace webrtc_stream {
 
       BOOST_LOG(debug) << "WebRTC: attach_media_tracks enter id=" << session.state.id;
       const std::string stream_id = "sunshine-" + session.state.id;
+      bool requested_video_keyframe = false;
 
       if (session.state.audio && !session.audio_source) {
         session.audio_source = lwrtc_audio_source_create(webrtc_factory);
@@ -1954,17 +1987,40 @@ namespace webrtc_stream {
         }
       }
 
-      if (session.state.video && !session.video_source) {
-        session.video_source = lwrtc_video_source_create(webrtc_factory);
-        if (!session.video_source) {
-          BOOST_LOG(error) << "WebRTC: failed to create video source for " << session.state.id;
+      if (session.state.video && !session.encoded_video_source) {
+        // Create encoded video source for passthrough mode
+        // TODO: Support HEVC based on session codec negotiation
+        session.encoded_video_source = lwrtc_encoded_video_source_create(
+            webrtc_factory,
+            LWRTC_VIDEO_CODEC_H264,
+            session.video_config.width,
+            session.video_config.height);
+        if (!session.encoded_video_source) {
+          BOOST_LOG(error) << "WebRTC: failed to create encoded video source for " << session.state.id;
           return false;
         }
+
+        // Set up keyframe request callback to trigger IDR from encoder
+        lwrtc_encoded_video_source_set_keyframe_callback(
+            session.encoded_video_source,
+            [](void* user) {
+              // Request IDR from the Sunshine encoder
+              auto mail = current_capture_mail();
+              if (mail) {
+                auto idr_events = mail->event<bool>(mail::idr);
+                if (idr_events) {
+                  idr_events->raise(true);
+                  BOOST_LOG(debug) << "WebRTC: keyframe requested via PLI/FIR";
+                }
+              }
+            },
+            nullptr);
       }
 
       if (session.state.video && !session.video_track) {
         const std::string track_id = "video-" + session.state.id;
-        session.video_track = lwrtc_video_track_create(webrtc_factory, session.video_source, track_id.c_str());
+        session.video_track = lwrtc_encoded_video_track_create(
+            webrtc_factory, session.encoded_video_source, track_id.c_str());
         if (!session.video_track) {
           BOOST_LOG(error) << "WebRTC: failed to create video track for " << session.state.id;
           return false;
@@ -1973,6 +2029,12 @@ namespace webrtc_stream {
           BOOST_LOG(error) << "WebRTC: failed to add video track for " << session.state.id;
           return false;
         }
+        requested_video_keyframe = true;
+      }
+
+      if (session.state.video && requested_video_keyframe) {
+        session.needs_keyframe = true;
+        request_keyframe("initial video track");
       }
 
       ensure_media_thread();
@@ -2087,6 +2149,7 @@ namespace webrtc_stream {
     lwrtc_video_track_t *video_track = nullptr;
     lwrtc_audio_source_t *audio_source = nullptr;
     lwrtc_video_source_t *video_source = nullptr;
+    lwrtc_encoded_video_source_t *encoded_video_source = nullptr;
     lwrtc_data_channel_t *input_channel = nullptr;
     std::shared_ptr<SessionDataChannelContext> data_channel_context;
 #endif
@@ -2103,6 +2166,7 @@ namespace webrtc_stream {
       video_track = it->second.video_track;
       audio_source = it->second.audio_source;
       video_source = it->second.video_source;
+      encoded_video_source = it->second.encoded_video_source;
       input_channel = it->second.input_channel;
       data_channel_context = it->second.data_channel_context;
 #endif
@@ -2139,6 +2203,9 @@ namespace webrtc_stream {
     }
     if (video_source) {
       lwrtc_video_source_release(video_source);
+    }
+    if (encoded_video_source) {
+      lwrtc_encoded_video_source_release(encoded_video_source);
     }
     if (!has_active_sessions()) {
       stop_media_thread();
@@ -2198,6 +2265,9 @@ namespace webrtc_stream {
         session.state.video_dropped++;
       }
     }
+#ifdef SUNSHINE_ENABLE_WEBRTC
+    webrtc_media_cv.notify_all();
+#endif
   }
 
   void submit_audio_packet(const audio::buffer_t &packet) {

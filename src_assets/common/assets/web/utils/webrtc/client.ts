@@ -33,9 +33,19 @@ function applyCodecPreferences(
   if (!mime) return;
   const preferred = caps.codecs.filter((codec) => codec.mimeType.toLowerCase() === mime);
   if (!preferred.length) return;
+  let filteredPreferred = preferred;
+  if (mime === 'video/h264') {
+    const packetizationMode1 = preferred.filter((codec) =>
+      /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(codec.sdpFmtpLine ?? ''),
+    );
+    if (packetizationMode1.length) {
+      // Prefer H.264 packetization-mode=1 to avoid receiver assembly mismatches.
+      filteredPreferred = packetizationMode1;
+    }
+  }
   const rest = caps.codecs.filter((codec) => codec.mimeType.toLowerCase() !== mime);
   try {
-    transceiver.setCodecPreferences([...preferred, ...rest]);
+    transceiver.setCodecPreferences([...filteredPreferred, ...rest]);
   } catch {
     /* ignore */
   }
