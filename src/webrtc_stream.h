@@ -31,6 +31,8 @@ namespace webrtc_stream {
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
     std::optional<std::string> profile;
+    std::optional<int> app_id;
+    std::optional<bool> resume;
   };
 
   struct SessionState {
@@ -69,6 +71,7 @@ namespace webrtc_stream {
   bool has_active_sessions();
 
   SessionState create_session(const SessionOptions &options);
+  std::optional<std::string> ensure_capture_started(const SessionOptions &options);
   bool close_session(std::string_view id);
   std::optional<SessionState> get_session(std::string_view id);
   std::vector<SessionState> list_sessions();

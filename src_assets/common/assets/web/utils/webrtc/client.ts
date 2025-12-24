@@ -50,6 +50,7 @@ export class WebRtcClient {
   private unsubscribeCandidates?: () => void;
   private statsTimer?: number;
   private statsState: StatsState = {};
+  private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 
   constructor(api: WebRtcApi) {
     this.api = api;
@@ -63,10 +64,11 @@ export class WebRtcClient {
     return this.inputChannel?.readyState;
   }
 
-  async connect(config: StreamConfig, callbacks: WebRtcClientCallbacks = {}): Promise<void> {
+  async connect(config: StreamConfig, callbacks: WebRtcClientCallbacks = {}): Promise<string> {
     await this.disconnect();
     const session = await this.api.createSession(config);
     this.sessionId = session.sessionId;
+    this.pendingRemoteCandidates = [];
     this.pc = new RTCPeerConnection({
       iceServers: session.iceServers,
       bundlePolicy: 'max-bundle',
@@ -109,7 +111,11 @@ export class WebRtcClient {
       session.sessionId,
       (candidate) => {
         if (!this.pc || !candidate) return;
-        void this.pc.addIceCandidate(candidate);
+        if (this.pc.remoteDescription) {
+          void this.pc.addIceCandidate(candidate).catch(() => {});
+          return;
+        }
+        this.pendingRemoteCandidates.push(candidate);
       },
     );
 
@@ -127,12 +133,14 @@ export class WebRtcClient {
         throw new Error('WebRTC answer not received');
       }
       await this.pc.setRemoteDescription(answer);
+      await this.flushPendingCandidates();
     } catch (error) {
       callbacks.onError?.(error as Error);
       throw error;
     }
 
     this.startStatsPolling(callbacks);
+    return session.sessionId;
   }
 
   async disconnect(): Promise<void> {
@@ -160,6 +168,7 @@ export class WebRtcClient {
       await this.api.endSession(this.sessionId);
     }
     this.remoteStream = new MediaStream();
+    this.pendingRemoteCandidates = [];
     this.pc = undefined;
     this.sessionId = undefined;
     this.inputChannel = undefined;
@@ -189,28 +198,93 @@ export class WebRtcClient {
     }, 1000);
   }
 
+  private async flushPendingCandidates(): Promise<void> {
+    if (!this.pc || !this.pc.remoteDescription || !this.pendingRemoteCandidates.length) return;
+    const pc = this.pc;
+    const pending = this.pendingRemoteCandidates;
+    this.pendingRemoteCandidates = [];
+    for (const candidate of pending) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   private extractStats(report: RTCStatsReport): WebRtcStatsSnapshot {
     let videoBytes: number | undefined;
     let audioBytes: number | undefined;
     let videoFps: number | undefined;
     let packetsLost: number | undefined;
     let rttMs: number | undefined;
+    let videoPackets: number | undefined;
+    let audioPackets: number | undefined;
+    let videoFramesDecoded: number | undefined;
+    let videoFramesDropped: number | undefined;
+    let videoCodecId: string | undefined;
+    let audioCodecId: string | undefined;
+    let selectedPair: any | undefined;
+    const candidates = new Map<string, any>();
 
     report.forEach((item) => {
       if (item.type === 'inbound-rtp' && item.kind === 'video') {
         videoBytes = (item as any).bytesReceived ?? videoBytes;
         videoFps = (item as any).framesPerSecond ?? videoFps;
         packetsLost = (item as any).packetsLost ?? packetsLost;
+        videoPackets = (item as any).packetsReceived ?? videoPackets;
+        videoFramesDecoded = (item as any).framesDecoded ?? videoFramesDecoded;
+        videoFramesDropped = (item as any).framesDropped ?? videoFramesDropped;
+        videoCodecId = (item as any).codecId ?? videoCodecId;
       }
       if (item.type === 'inbound-rtp' && item.kind === 'audio') {
         audioBytes = (item as any).bytesReceived ?? audioBytes;
+        audioPackets = (item as any).packetsReceived ?? audioPackets;
+        audioCodecId = (item as any).codecId ?? audioCodecId;
       }
       if (item.type === 'candidate-pair' && (item as any).state === 'succeeded') {
         rttMs = (item as any).currentRoundTripTime
           ? (item as any).currentRoundTripTime * 1000
           : rttMs;
+        if ((item as any).selected || (item as any).nominated || !selectedPair) {
+          selectedPair = item;
+        }
+      }
+      if (item.type === 'local-candidate' || item.type === 'remote-candidate') {
+        candidates.set(item.id, item);
       }
     });
+
+    let videoCodec: string | undefined;
+    let audioCodec: string | undefined;
+    if (videoCodecId) {
+      const codec = report.get(videoCodecId) as any;
+      if (codec?.mimeType) {
+        videoCodec = codec.mimeType;
+      }
+    }
+    if (audioCodecId) {
+      const codec = report.get(audioCodecId) as any;
+      if (codec?.mimeType) {
+        audioCodec = codec.mimeType;
+      }
+    }
+
+    let candidatePair: WebRtcStatsSnapshot['candidatePair'];
+    if (selectedPair) {
+      const local = candidates.get((selectedPair as any).localCandidateId);
+      const remote = candidates.get((selectedPair as any).remoteCandidateId);
+      candidatePair = {
+        state: (selectedPair as any).state,
+        protocol: (selectedPair as any).protocol,
+        localAddress: local?.address,
+        localPort: local?.port,
+        localType: local?.candidateType,
+        remoteAddress: remote?.address,
+        remotePort: remote?.port,
+        remoteType: remote?.candidateType,
+      };
+    }
 
     const now = Date.now();
     const last = this.statsState;
@@ -234,6 +308,15 @@ export class WebRtcClient {
       videoFps,
       packetsLost,
       roundTripTimeMs: rttMs,
+      videoBytesReceived: videoBytes,
+      audioBytesReceived: audioBytes,
+      videoPacketsReceived: videoPackets,
+      audioPacketsReceived: audioPackets,
+      videoFramesDecoded,
+      videoFramesDropped,
+      videoCodec,
+      audioCodec,
+      candidatePair,
     };
   }
 }

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -27,18 +28,24 @@
 #include <openssl/x509.h>
 #include <moonlight-common-c/src/Input.h>
 #include <moonlight-common-c/src/Limelight.h>
+#include <boost/algorithm/string.hpp>
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
 #include <libwebrtc_c.h>
 #endif
 
 // local includes
+#include "audio.h"
 #include "config.h"
 #include "crypto.h"
 #include "file_handler.h"
+#include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "process.h"
+#include "rtsp.h"
 #include "utility.h"
+#include "video.h"
 #include "video_colorspace.h"
 #include "uuid.h"
 #include "webrtc_stream.h"
@@ -47,6 +54,11 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include "src/platform/common.h"
+#include "src/platform/windows/frame_limiter.h"
+#include "src/platform/windows/display_helper_integration.h"
+#include "src/platform/windows/display_helper_request_helpers.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/platform/windows/display_vram.h"
 #if !defined(SUNSHINE_SHADERS_DIR)
   #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
@@ -66,6 +78,11 @@ namespace webrtc_stream {
     constexpr std::size_t kMaxVideoFrames = 2;
     constexpr std::size_t kMaxAudioFrames = 8;
     constexpr short kAbsCoordinateMax = 32767;
+    constexpr int kDefaultWidth = 1920;
+    constexpr int kDefaultHeight = 1080;
+    constexpr int kDefaultFps = 60;
+    constexpr int kDefaultAudioChannels = 2;
+    constexpr int kDefaultAudioPacketMs = 5;
 
     struct EncodedVideoFrame {
       std::shared_ptr<std::vector<std::uint8_t>> data;
@@ -90,6 +107,15 @@ namespace webrtc_stream {
       int sample_rate = 0;
       int channels = 0;
       int frames = 0;
+    };
+
+    struct WebRtcCaptureState {
+      std::mutex mutex;
+      bool active = false;
+      std::shared_ptr<safe::mail_raw_t> mail;
+      std::thread video_thread;
+      std::thread audio_thread;
+      std::optional<int> app_id;
     };
 
     template<class T>
@@ -434,6 +460,7 @@ namespace webrtc_stream {
 
     struct Session {
       SessionState state;
+      video::config_t video_config;
       ring_buffer_t<EncodedVideoFrame> video_frames {kMaxVideoFrames};
       ring_buffer_t<EncodedAudioFrame> audio_frames {kMaxAudioFrames};
       ring_buffer_t<RawVideoFrame> raw_video_frames {kMaxVideoFrames};
@@ -471,12 +498,349 @@ namespace webrtc_stream {
       };
       std::vector<LocalCandidate> local_candidates;
       std::size_t local_candidate_counter = 0;
+
+      std::shared_ptr<platf::img_t> last_video_frame;
+      std::optional<std::chrono::steady_clock::time_point> last_video_push;
     };
 
     std::mutex session_mutex;
     std::unordered_map<std::string, Session> sessions;
     std::atomic_uint active_sessions {0};
     std::atomic_bool rtsp_sessions_active {false};
+    std::atomic_uint32_t webrtc_launch_session_id {0};
+    WebRtcCaptureState webrtc_capture;
+
+    int codec_to_video_format(const std::optional<std::string> &codec) {
+      if (!codec) {
+        return 0;
+      }
+      if (*codec == "hevc") {
+        return 1;
+      }
+      if (*codec == "av1") {
+        return 2;
+      }
+      return 0;
+    }
+
+    video::config_t build_video_config(const SessionOptions &options) {
+      video::config_t config {};
+      config.width = options.width.value_or(kDefaultWidth);
+      config.height = options.height.value_or(kDefaultHeight);
+      config.framerate = options.fps.value_or(kDefaultFps);
+      int bitrate = options.bitrate_kbps.value_or(0);
+      if (bitrate <= 0) {
+        bitrate = config::video.max_bitrate > 0 ? config::video.max_bitrate : 20000;
+      }
+      if (config::video.max_bitrate > 0) {
+        bitrate = std::min(bitrate, config::video.max_bitrate);
+      }
+      config.bitrate = bitrate;
+      config.slicesPerFrame = 1;
+      config.numRefFrames = 1;
+      config.encoderCscMode = 0;
+      config.videoFormat = codec_to_video_format(options.codec);
+      config.dynamicRange = options.hdr.value_or(false) ? 1 : 0;
+      config.prefer_sdr_10bit = false;
+      config.chromaSamplingType = 0;
+      config.enableIntraRefresh = 0;
+
+      const bool prefer_10bit_sdr = config::video.prefer_10bit_sdr;
+      if (prefer_10bit_sdr && config.dynamicRange == 0) {
+        const bool hevc_main10 = config.videoFormat == 1 && video::active_hevc_mode >= 3;
+        const bool av1_main10 = config.videoFormat == 2 && video::active_av1_mode >= 3;
+        if (hevc_main10 || av1_main10) {
+          BOOST_LOG(info) << "Preferring 10-bit SDR encode for WebRTC capture";
+          config.dynamicRange = 1;
+          config.prefer_sdr_10bit = true;
+        }
+      }
+
+      return config;
+    }
+
+    audio::config_t build_audio_config(const SessionOptions &options) {
+      audio::config_t config {};
+      config.packetDuration = kDefaultAudioPacketMs;
+      config.channels = options.audio_channels.value_or(kDefaultAudioChannels);
+      config.mask = 0;
+      config.flags[audio::config_t::HIGH_QUALITY] = true;
+      config.flags[audio::config_t::HOST_AUDIO] = true;
+      config.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = false;
+      return config;
+    }
+
+    std::shared_ptr<rtsp_stream::launch_session_t> build_launch_session(
+      const SessionOptions &options,
+      int app_id,
+      int audio_channels
+    ) {
+      auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
+      launch_session->id = ++webrtc_launch_session_id;
+      launch_session->device_name = "WebRTC";
+      launch_session->unique_id = uuid_util::uuid_t::generate().string();
+      launch_session->client_uuid = launch_session->unique_id;
+      launch_session->client_name = launch_session->device_name;
+      launch_session->width = options.width.value_or(kDefaultWidth);
+      launch_session->height = options.height.value_or(kDefaultHeight);
+      launch_session->fps = options.fps.value_or(kDefaultFps);
+      launch_session->appid = app_id;
+      launch_session->host_audio = true;
+      launch_session->surround_info = audio_channels;
+      launch_session->surround_params.clear();
+      launch_session->gcmap = 0;
+      launch_session->enable_sops = false;
+      launch_session->enable_hdr = options.hdr.value_or(false);
+
+#ifdef _WIN32
+      {
+        using override_e = config::video_t::dd_t::hdr_request_override_e;
+        switch (config::video.dd.hdr_request_override) {
+          case override_e::force_on:
+            launch_session->enable_hdr = true;
+            break;
+          case override_e::force_off:
+            launch_session->enable_hdr = false;
+            break;
+          case override_e::automatic:
+            break;
+        }
+      }
+#endif
+
+      launch_session->virtual_display = false;
+      launch_session->virtual_display_failed = false;
+      launch_session->virtual_display_guid_bytes.fill(0);
+      launch_session->virtual_display_device_id.clear();
+      launch_session->virtual_display_ready_since.reset();
+      launch_session->framegen_refresh_rate.reset();
+      launch_session->lossless_scaling_target_fps.reset();
+      launch_session->lossless_scaling_rtss_limit.reset();
+      launch_session->frame_generation_provider = "lossless-scaling";
+
+      if (launch_session->appid > 0) {
+        try {
+          auto apps_snapshot = proc::proc.get_apps();
+          const std::string app_id_str = std::to_string(launch_session->appid);
+          for (const auto &app_ctx : apps_snapshot) {
+            if (app_ctx.id == app_id_str) {
+              launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
+              launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
+              launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
+              launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
+              launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
+              launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
+              rtsp_stream::launch_session_t::app_metadata_t metadata;
+              metadata.id = app_ctx.id;
+              metadata.name = app_ctx.name;
+              metadata.virtual_screen = app_ctx.virtual_screen;
+              metadata.has_command = !app_ctx.cmd.empty();
+              metadata.has_playnite = !app_ctx.playnite_id.empty();
+              metadata.playnite_fullscreen = app_ctx.playnite_fullscreen;
+              launch_session->virtual_display = app_ctx.virtual_screen;
+              if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
+                launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
+              }
+              if (!launch_session->virtual_display_layout_override && app_ctx.virtual_display_layout_override) {
+                launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
+              }
+              if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
+                launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
+              }
+              if (!launch_session->output_name_override || launch_session->output_name_override->empty()) {
+                if (!app_ctx.output.empty()) {
+                  launch_session->output_name_override = app_ctx.output;
+                }
+              }
+              launch_session->app_metadata = std::move(metadata);
+              break;
+            }
+          }
+        } catch (...) {
+        }
+      }
+
+      const auto apply_refresh_override = [&](int candidate) {
+        if (candidate <= 0) {
+          return;
+        }
+        if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
+          launch_session->framegen_refresh_rate = candidate;
+        }
+      };
+
+      if (launch_session->fps > 0) {
+        const auto saturating_double = [](int value) -> int {
+          if (value > std::numeric_limits<int>::max() / 2) {
+            return std::numeric_limits<int>::max();
+          }
+          return value * 2;
+        };
+
+        if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
+          apply_refresh_override(saturating_double(launch_session->fps));
+        }
+      }
+
+      auto key = crypto::rand(16);
+      launch_session->gcm_key.assign(key.begin(), key.end());
+      launch_session->iv.resize(16);
+      auto iv = crypto::rand(16);
+      std::copy(iv.begin(), iv.end(), launch_session->iv.begin());
+
+      std::array<std::uint8_t, 8> ping_payload {};
+      RAND_bytes(ping_payload.data(), static_cast<int>(ping_payload.size()));
+      launch_session->av_ping_payload = util::hex_vec(ping_payload);
+      RAND_bytes(
+        reinterpret_cast<unsigned char *>(&launch_session->control_connect_data),
+        sizeof(launch_session->control_connect_data)
+      );
+
+      return launch_session;
+    }
+
+    std::optional<std::string> start_webrtc_capture(const SessionOptions &options) {
+      std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
+      if (webrtc_capture.active) {
+        return std::nullopt;
+      }
+      if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
+        return std::nullopt;
+      }
+
+      const int current_app_id = proc::proc.running();
+      const int requested_app_id = options.app_id.value_or(0);
+      const bool resume_only = options.resume.value_or(false);
+
+      if (resume_only) {
+        if (current_app_id == 0) {
+          return std::string {"No running app to resume"};
+        }
+        if (requested_app_id > 0 && requested_app_id != current_app_id) {
+          return std::string {"Requested app is not running"};
+        }
+      }
+
+      if (requested_app_id <= 0 && current_app_id == 0) {
+        return std::string {"No running app to resume"};
+      }
+
+      const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
+      const int audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
+      auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
+
+      if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      }
+
+      if (requested_app_id > 0 && requested_app_id != current_app_id) {
+        auto result = proc::proc.execute(requested_app_id, launch_session);
+        if (result != 0) {
+          return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
+        }
+      }
+
+      // Ensure the latest config is applied before starting capture.
+      config::maybe_apply_deferred();
+      auto _hot_apply_gate = config::acquire_apply_read_gate();
+
+#ifdef _WIN32
+      if (config::video.dd.config_revert_on_disconnect) {
+        (void) display_helper_integration::disarm_pending_restore();
+        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+        if (!request) {
+          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+        } else if (!display_helper_integration::apply(*request)) {
+          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+        }
+      }
+#endif
+
+      if (video::probe_encoders()) {
+        return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+      }
+
+#ifdef _WIN32
+      std::optional<int> lossless_rtss_limit;
+      const bool using_lossless_provider = launch_session->lossless_scaling_framegen &&
+                                           boost::iequals(launch_session->frame_generation_provider, "lossless-scaling");
+      const bool using_smooth_motion =
+        boost::iequals(launch_session->frame_generation_provider, "nvidia-smooth-motion");
+      if (using_lossless_provider) {
+        if (launch_session->lossless_scaling_rtss_limit && *launch_session->lossless_scaling_rtss_limit > 0) {
+          lossless_rtss_limit = launch_session->lossless_scaling_rtss_limit;
+        } else if (launch_session->lossless_scaling_target_fps && *launch_session->lossless_scaling_target_fps > 0) {
+          int computed = (int) std::lround(*launch_session->lossless_scaling_target_fps * 0.5);
+          if (computed > 0) {
+            lossless_rtss_limit = computed;
+          }
+        }
+      }
+      platf::frame_limiter_streaming_start(
+        launch_session->fps,
+        launch_session->gen1_framegen_fix,
+        launch_session->gen2_framegen_fix,
+        lossless_rtss_limit,
+        using_smooth_motion
+      );
+#endif
+
+      platf::streaming_will_start();
+
+      auto mail = std::make_shared<safe::mail_raw_t>();
+      webrtc_capture.mail = mail;
+      auto video_config = build_video_config(options);
+      auto audio_config = build_audio_config(options);
+      webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
+
+      webrtc_capture.video_thread = std::thread([mail, video_config]() mutable {
+        video::capture(mail, video_config, nullptr);
+      });
+      webrtc_capture.audio_thread = std::thread([mail, audio_config]() mutable {
+        audio::capture(mail, audio_config, nullptr);
+      });
+      webrtc_capture.active = true;
+      return std::nullopt;
+    }
+
+    void stop_webrtc_capture_if_idle() {
+      std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
+      if (!webrtc_capture.active) {
+        return;
+      }
+      if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
+        return;
+      }
+
+      if (webrtc_capture.mail) {
+        auto shutdown_event = webrtc_capture.mail->event<bool>(mail::shutdown);
+        shutdown_event->raise(true);
+      }
+      if (webrtc_capture.video_thread.joinable()) {
+        webrtc_capture.video_thread.join();
+      }
+      if (webrtc_capture.audio_thread.joinable()) {
+        webrtc_capture.audio_thread.join();
+      }
+      webrtc_capture.mail.reset();
+      webrtc_capture.app_id.reset();
+      webrtc_capture.active = false;
+
+#ifdef _WIN32
+      if (config::video.dd.config_revert_on_disconnect) {
+        const bool reverted = display_helper_integration::revert();
+        if (reverted) {
+          display_helper_integration::stop_watchdog();
+        }
+      }
+      VDISPLAY::restorePhysicalHdrProfiles();
+      platf::frame_limiter_streaming_stop();
+#endif
+      platf::streaming_will_stop();
+
+      config::set_runtime_output_name_override(std::nullopt);
+      config::maybe_apply_deferred();
+    }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
     void on_ice_candidate(
@@ -766,30 +1130,38 @@ namespace webrtc_stream {
         IDXGIKeyedMutex *input_mutex,
         int width,
         int height,
-        bool hdr,
+        const video::sunshine_colorspace_t &colorspace,
         ID3D11Texture2D **out_texture,
         IDXGIKeyedMutex **out_mutex
       ) {
         if (!input_texture || width <= 0 || height <= 0 || !out_texture || !out_mutex) {
+          BOOST_LOG(debug) << "WebRTC: Convert called with invalid params";
           return false;
         }
 
-        if (!ensure_device(input_texture) ||
-            !ensure_shaders() ||
-            !ensure_output(width, height) ||
-            !ensure_constant_buffers(width, height, hdr)) {
+        const bool hdr_output = video::colorspace_is_hdr(colorspace);
+        if (!ensure_device(input_texture)) {
+          BOOST_LOG(error) << "WebRTC: ensure_device failed";
+          return false;
+        }
+        if (!ensure_shaders()) {
+          BOOST_LOG(error) << "WebRTC: ensure_shaders failed";
+          return false;
+        }
+        if (!ensure_output(width, height)) {
+          BOOST_LOG(error) << "WebRTC: ensure_output failed";
+          return false;
+        }
+        if (!ensure_constant_buffers(width, height, colorspace)) {
+          BOOST_LOG(error) << "WebRTC: ensure_constant_buffers failed";
           return false;
         }
 
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> input_srv;
-        if (FAILED(device_->CreateShaderResourceView(input_texture, nullptr, &input_srv))) {
-          BOOST_LOG(error) << "WebRTC: failed to create input SRV for NV12 conversion";
-          return false;
-        }
-
+        // Acquire input mutex BEFORE creating SRV to ensure texture content is stable
         if (input_mutex) {
           const HRESULT hr = input_mutex->AcquireSync(0, 3000);
           if (hr != S_OK && hr != WAIT_ABANDONED) {
+            BOOST_LOG(warning) << "WebRTC: failed to acquire input mutex: 0x" << std::hex << hr;
             return false;
           }
         }
@@ -799,12 +1171,53 @@ namespace webrtc_stream {
           }
         });
 
-        const HRESULT out_lock = output_mutex_->AcquireSync(0, 0);
-        if (out_lock != S_OK && out_lock != WAIT_ABANDONED) {
+        // Create SRV for the input texture (after acquiring mutex)
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> input_srv;
+        D3D11_TEXTURE2D_DESC input_desc {};
+        input_texture->GetDesc(&input_desc);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc {};
+        srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srv_desc.Texture2D.MipLevels = 1;
+        srv_desc.Texture2D.MostDetailedMip = 0;
+        // Map typeless formats to their typed equivalents for SRV
+        switch (input_desc.Format) {
+          case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            srv_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            break;
+          case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+          case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+            srv_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            break;
+          case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            break;
+          default:
+            srv_desc.Format = input_desc.Format;
+            break;
+        }
+
+        HRESULT srv_hr = device_->CreateShaderResourceView(input_texture, &srv_desc, &input_srv);
+        if (FAILED(srv_hr)) {
+          BOOST_LOG(error) << "WebRTC: failed to create input SRV for NV12 conversion, hr=0x" << std::hex << srv_hr
+                           << ", format=" << input_desc.Format;
           return false;
         }
 
+        const HRESULT out_lock = output_mutex_->AcquireSync(0, 100);
+        if (out_lock != S_OK && out_lock != WAIT_ABANDONED) {
+          BOOST_LOG(warning) << "WebRTC: failed to acquire output mutex: 0x" << std::hex << out_lock;
+          return false;
+        }
+
+        // Set up pipeline state
+        context_->IASetInputLayout(nullptr);
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        ID3D11BlendState *blend = blend_disable_.Get();
+        context_->OMSetBlendState(blend, nullptr, 0xFFFFFFFFu);
 
         ID3D11SamplerState *sampler = sampler_.Get();
         context_->PSSetSamplers(0, 1, &sampler);
@@ -823,7 +1236,7 @@ namespace webrtc_stream {
         context_->OMSetRenderTargets(1, &rtv_y, nullptr);
         context_->RSSetViewports(1, &viewport_y_);
         context_->VSSetShader(vs_y_.Get(), nullptr, 0);
-        context_->PSSetShader(select_ps_y(input_texture), nullptr, 0);
+        context_->PSSetShader(select_ps_y(input_texture, hdr_output), nullptr, 0);
         context_->Draw(3, 0);
 
         // UV plane
@@ -833,17 +1246,71 @@ namespace webrtc_stream {
         context_->OMSetRenderTargets(1, &rtv_uv, nullptr);
         context_->RSSetViewports(1, &viewport_uv_);
         context_->VSSetShader(vs_uv_.Get(), nullptr, 0);
-        context_->PSSetShader(select_ps_uv(input_texture), nullptr, 0);
+        context_->PSSetShader(select_ps_uv(input_texture, hdr_output), nullptr, 0);
         context_->Draw(3, 0);
 
+        // Unbind resources
         ID3D11ShaderResourceView *empty_srv = nullptr;
         context_->PSSetShaderResources(0, 1, &empty_srv);
+        ID3D11RenderTargetView *empty_rtv = nullptr;
+        context_->OMSetRenderTargets(1, &empty_rtv, nullptr);
+
+        // Flush to ensure commands are submitted before releasing mutex
+        context_->Flush();
 
         output_mutex_->ReleaseSync(0);
 
         *out_texture = output_texture_.Get();
         *out_mutex = output_mutex_.Get();
         return true;
+      }
+
+      bool ReadbackNv12(
+        ID3D11Texture2D *texture,
+        IDXGIKeyedMutex *texture_mutex,
+        int width,
+        int height,
+        const std::function<bool(const uint8_t *y, int stride_y, const uint8_t *uv, int stride_uv)> &push_cb
+      ) {
+        if (!texture || !push_cb || width <= 0 || height <= 0) {
+          BOOST_LOG(debug) << "WebRTC: ReadbackNv12 invalid params";
+          return false;
+        }
+        if (!ensure_staging(width, height)) {
+          BOOST_LOG(error) << "WebRTC: ReadbackNv12 ensure_staging failed";
+          return false;
+        }
+
+        // Acquire mutex to ensure GPU rendering has completed before copy
+        if (texture_mutex) {
+          const HRESULT hr = texture_mutex->AcquireSync(0, 1000);
+          if (hr != S_OK && hr != WAIT_ABANDONED) {
+            BOOST_LOG(warning) << "WebRTC: ReadbackNv12 failed to acquire mutex: 0x" << std::hex << hr;
+            return false;
+          }
+        }
+        auto release_mutex_guard = util::fail_guard([&]() {
+          if (texture_mutex) {
+            texture_mutex->ReleaseSync(0);
+          }
+        });
+
+        context_->CopyResource(staging_texture_.Get(), texture);
+
+        D3D11_MAPPED_SUBRESOURCE mapped {};
+        const HRESULT hr = context_->Map(staging_texture_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+        if (FAILED(hr)) {
+          BOOST_LOG(error) << "WebRTC: ReadbackNv12 Map failed hr=0x" << std::hex << hr;
+          return false;
+        }
+        auto unmap_guard = util::fail_guard([&]() {
+          context_->Unmap(staging_texture_.Get(), 0);
+        });
+
+        const auto *y_plane = static_cast<const uint8_t *>(mapped.pData);
+        const auto *uv_plane = y_plane + (mapped.RowPitch * height);
+
+        return push_cb(y_plane, static_cast<int>(mapped.RowPitch), uv_plane, static_cast<int>(mapped.RowPitch));
       }
 
     private:
@@ -865,7 +1332,10 @@ namespace webrtc_stream {
         ps_uv_.Reset();
         ps_y_linear_.Reset();
         ps_uv_linear_.Reset();
+        ps_y_pq_.Reset();
+        ps_uv_pq_.Reset();
         sampler_.Reset();
+        blend_disable_.Reset();
         color_matrix_cb_.Reset();
         rotation_cb_.Reset();
         subsample_cb_.Reset();
@@ -873,11 +1343,12 @@ namespace webrtc_stream {
         rtv_y_.Reset();
         rtv_uv_.Reset();
         output_mutex_.Reset();
+        colorspace_valid_ = false;
         return true;
       }
 
       bool ensure_shaders() {
-        if (vs_y_ && ps_y_ && ps_y_linear_ && vs_uv_ && ps_uv_ && ps_uv_linear_) {
+        if (vs_y_ && ps_y_ && ps_y_linear_ && ps_y_pq_ && vs_uv_ && ps_uv_ && ps_uv_linear_ && ps_uv_pq_) {
           return true;
         }
 
@@ -915,6 +1386,8 @@ namespace webrtc_stream {
         const std::string ps_uv_path = std::string {SUNSHINE_SHADERS_DIR} + "/convert_yuv420_packed_uv_type0_ps.hlsl";
         const std::string ps_y_linear_path = std::string {SUNSHINE_SHADERS_DIR} + "/convert_yuv420_planar_y_ps_linear.hlsl";
         const std::string ps_uv_linear_path = std::string {SUNSHINE_SHADERS_DIR} + "/convert_yuv420_packed_uv_type0_ps_linear.hlsl";
+        const std::string ps_y_pq_path = std::string {SUNSHINE_SHADERS_DIR} + "/convert_yuv420_planar_y_ps_perceptual_quantizer.hlsl";
+        const std::string ps_uv_pq_path = std::string {SUNSHINE_SHADERS_DIR} + "/convert_yuv420_packed_uv_type0_ps_perceptual_quantizer.hlsl";
 
         auto vs_y_blob = compile_shader(vs_y_path, "main_vs", "vs_5_0");
         auto vs_uv_blob = compile_shader(vs_uv_path, "main_vs", "vs_5_0");
@@ -922,8 +1395,10 @@ namespace webrtc_stream {
         auto ps_uv_blob = compile_shader(ps_uv_path, "main_ps", "ps_5_0");
         auto ps_y_linear_blob = compile_shader(ps_y_linear_path, "main_ps", "ps_5_0");
         auto ps_uv_linear_blob = compile_shader(ps_uv_linear_path, "main_ps", "ps_5_0");
+        auto ps_y_pq_blob = compile_shader(ps_y_pq_path, "main_ps", "ps_5_0");
+        auto ps_uv_pq_blob = compile_shader(ps_uv_pq_path, "main_ps", "ps_5_0");
         if (!vs_y_blob || !vs_uv_blob || !ps_y_blob || !ps_uv_blob ||
-            !ps_y_linear_blob || !ps_uv_linear_blob) {
+            !ps_y_linear_blob || !ps_uv_linear_blob || !ps_y_pq_blob || !ps_uv_pq_blob) {
           return false;
         }
 
@@ -943,6 +1418,12 @@ namespace webrtc_stream {
           return false;
         }
         if (FAILED(device_->CreatePixelShader(ps_uv_linear_blob->GetBufferPointer(), ps_uv_linear_blob->GetBufferSize(), nullptr, &ps_uv_linear_))) {
+          return false;
+        }
+        if (FAILED(device_->CreatePixelShader(ps_y_pq_blob->GetBufferPointer(), ps_y_pq_blob->GetBufferSize(), nullptr, &ps_y_pq_))) {
+          return false;
+        }
+        if (FAILED(device_->CreatePixelShader(ps_uv_pq_blob->GetBufferPointer(), ps_uv_pq_blob->GetBufferSize(), nullptr, &ps_uv_pq_))) {
           return false;
         }
 
@@ -1002,7 +1483,34 @@ namespace webrtc_stream {
         return true;
       }
 
-      bool ensure_constant_buffers(int width, int height, bool hdr) {
+      bool ensure_staging(int width, int height) {
+        if (staging_texture_ && staging_width_ == width && staging_height_ == height) {
+          return true;
+        }
+
+        staging_texture_.Reset();
+        staging_width_ = width;
+        staging_height_ = height;
+
+        D3D11_TEXTURE2D_DESC desc {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_NV12;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        if (FAILED(device_->CreateTexture2D(&desc, nullptr, &staging_texture_))) {
+          BOOST_LOG(error) << "WebRTC: failed to create staging NV12 texture";
+          return false;
+        }
+
+        return true;
+      }
+
+      bool ensure_constant_buffers(int width, int height, const video::sunshine_colorspace_t &colorspace) {
         if (!sampler_) {
           D3D11_SAMPLER_DESC sampler_desc {};
           sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1013,6 +1521,15 @@ namespace webrtc_stream {
           sampler_desc.MinLOD = 0;
           sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
           if (FAILED(device_->CreateSamplerState(&sampler_desc, &sampler_))) {
+            return false;
+          }
+        }
+
+        if (!blend_disable_) {
+          D3D11_BLEND_DESC blend_desc {};
+          blend_desc.RenderTarget[0].BlendEnable = FALSE;
+          blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+          if (FAILED(device_->CreateBlendState(&blend_desc, &blend_disable_))) {
             return false;
           }
         }
@@ -1030,10 +1547,12 @@ namespace webrtc_stream {
           }
         }
 
-        const bool hdr_changed = hdr_ != hdr;
-        if (!color_matrix_cb_ || hdr_changed) {
-          const video::colorspace_e space = hdr ? video::colorspace_e::bt2020 : video::colorspace_e::rec709;
-          const video::color_t *colors = video::color_vectors_from_colorspace(space, false);
+        const bool colorspace_changed = !colorspace_valid_ ||
+                                        colorspace_.colorspace != colorspace.colorspace ||
+                                        colorspace_.full_range != colorspace.full_range ||
+                                        colorspace_.bit_depth != colorspace.bit_depth;
+        if (!color_matrix_cb_ || colorspace_changed) {
+          const video::color_t *colors = video::color_vectors_from_colorspace(colorspace);
           if (!colors) {
             return false;
           }
@@ -1050,7 +1569,8 @@ namespace webrtc_stream {
           } else {
             context_->UpdateSubresource(color_matrix_cb_.Get(), 0, nullptr, colors, 0, 0);
           }
-          hdr_ = hdr;
+          colorspace_ = colorspace;
+          colorspace_valid_ = true;
         }
 
         if (!subsample_cb_ || subsample_width_ != width || subsample_height_ != height) {
@@ -1075,20 +1595,30 @@ namespace webrtc_stream {
         return true;
       }
 
-      ID3D11PixelShader *select_ps_y(ID3D11Texture2D *input_texture) const {
+      ID3D11PixelShader *select_ps_y(ID3D11Texture2D *input_texture, bool hdr_output) const {
         D3D11_TEXTURE2D_DESC desc {};
         input_texture->GetDesc(&desc);
-        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ps_y_linear_) {
-          return ps_y_linear_.Get();
+        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+          if (hdr_output && ps_y_pq_) {
+            return ps_y_pq_.Get();
+          }
+          if (ps_y_linear_) {
+            return ps_y_linear_.Get();
+          }
         }
         return ps_y_.Get();
       }
 
-      ID3D11PixelShader *select_ps_uv(ID3D11Texture2D *input_texture) const {
+      ID3D11PixelShader *select_ps_uv(ID3D11Texture2D *input_texture, bool hdr_output) const {
         D3D11_TEXTURE2D_DESC desc {};
         input_texture->GetDesc(&desc);
-        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ps_uv_linear_) {
-          return ps_uv_linear_.Get();
+        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+          if (hdr_output && ps_uv_pq_) {
+            return ps_uv_pq_.Get();
+          }
+          if (ps_uv_linear_) {
+            return ps_uv_linear_.Get();
+          }
         }
         return ps_uv_.Get();
       }
@@ -1101,7 +1631,10 @@ namespace webrtc_stream {
       Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_uv_;
       Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_y_linear_;
       Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_uv_linear_;
+      Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_y_pq_;
+      Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_uv_pq_;
       Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
+      Microsoft::WRL::ComPtr<ID3D11BlendState> blend_disable_;
       Microsoft::WRL::ComPtr<ID3D11Buffer> color_matrix_cb_;
       Microsoft::WRL::ComPtr<ID3D11Buffer> rotation_cb_;
       Microsoft::WRL::ComPtr<ID3D11Buffer> subsample_cb_;
@@ -1109,13 +1642,17 @@ namespace webrtc_stream {
       Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv_y_;
       Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv_uv_;
       Microsoft::WRL::ComPtr<IDXGIKeyedMutex> output_mutex_;
+      Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_texture_;
       D3D11_VIEWPORT viewport_y_ {};
       D3D11_VIEWPORT viewport_uv_ {};
       int width_ = 0;
       int height_ = 0;
       int subsample_width_ = 0;
       int subsample_height_ = 0;
-      bool hdr_ = false;
+      int staging_width_ = 0;
+      int staging_height_ = 0;
+      bool colorspace_valid_ = false;
+      video::sunshine_colorspace_t colorspace_ {};
     };
 
     bool try_push_d3d11_frame(
@@ -1123,12 +1660,15 @@ namespace webrtc_stream {
       const std::shared_ptr<platf::img_t> &image,
       const std::optional<std::chrono::steady_clock::time_point> &timestamp,
       std::unique_ptr<D3D11Nv12Converter> *converter,
-      bool hdr
+      const video::config_t &video_config
     ) {
       auto d3d_img = std::dynamic_pointer_cast<platf::dxgi::img_d3d_t>(image);
       if (!d3d_img || !d3d_img->capture_texture) {
+        BOOST_LOG(debug) << "WebRTC: try_push_d3d11_frame - no d3d image or capture_texture";
         return false;
       }
+
+      // NV12 conversion path - libwebrtc encoder expects NV12 for direct D3D11
       if (!converter) {
         return false;
       }
@@ -1138,25 +1678,41 @@ namespace webrtc_stream {
 
       ID3D11Texture2D *out_texture = nullptr;
       IDXGIKeyedMutex *out_mutex = nullptr;
+      const bool hdr_display = d3d_img->format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+      auto colorspace = video::colorspace_from_client_config(video_config, hdr_display);
+      if (video::colorspace_is_hdr(colorspace)) {
+        colorspace.colorspace = video::colorspace_e::rec709;
+        colorspace.bit_depth = 8;
+      }
       if (!(*converter)->Convert(
             d3d_img->capture_texture.get(),
             d3d_img->capture_mutex.get(),
             d3d_img->width,
             d3d_img->height,
-            hdr,
+            colorspace,
             &out_texture,
             &out_mutex)) {
         return false;
       }
 
-      return lwrtc_video_source_push_d3d11(
-        source,
+      return (*converter)->ReadbackNv12(
         out_texture,
         out_mutex,
         d3d_img->width,
         d3d_img->height,
-        timestamp_to_us(timestamp)
-      ) != 0;
+        [&](const uint8_t *y, int stride_y, const uint8_t *uv, int stride_uv) {
+          return lwrtc_video_source_push_nv12(
+            source,
+            y,
+            stride_y,
+            uv,
+            stride_uv,
+            d3d_img->width,
+            d3d_img->height,
+            timestamp_to_us(timestamp)
+          ) != 0;
+        }
+      );
     }
 #endif
 
@@ -1174,13 +1730,14 @@ namespace webrtc_stream {
           break;
         }
 
+        const auto now = std::chrono::steady_clock::now();
         struct VideoWork {
           lwrtc_video_source_t *source = nullptr;
           std::shared_ptr<platf::img_t> image;
           std::optional<std::chrono::steady_clock::time_point> timestamp;
 #ifdef _WIN32
           std::unique_ptr<D3D11Nv12Converter> *converter = nullptr;
-          bool hdr = false;
+          video::config_t video_config {};
 #endif
         };
         struct AudioWork {
@@ -1209,9 +1766,32 @@ namespace webrtc_stream {
                 work.timestamp = frame.timestamp;
 #ifdef _WIN32
                 work.converter = &session.d3d_converter;
-                work.hdr = session.state.hdr.value_or(false);
+                work.video_config = session.video_config;
 #endif
+                session.last_video_frame = work.image;
+                session.last_video_push = now;
                 video_work.push_back(std::move(work));
+              } else if (session.last_video_frame && session.last_video_push) {
+                double minimum_fps_target = (config::video.minimum_fps_target > 0.0)
+                                            ? config::video.minimum_fps_target
+                                            : static_cast<double>(session.video_config.framerate);
+                if (minimum_fps_target <= 0.0) {
+                  minimum_fps_target = kDefaultFps;
+                }
+                const auto max_frametime = std::chrono::duration<double, std::milli>(1000.0 / minimum_fps_target);
+                const auto repeat_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(max_frametime);
+                if (now - *session.last_video_push >= repeat_interval) {
+                  VideoWork work;
+                  work.source = session.video_source;
+                  work.image = session.last_video_frame;
+                  work.timestamp = now;
+#ifdef _WIN32
+                  work.converter = &session.d3d_converter;
+                  work.video_config = session.video_config;
+#endif
+                  video_work.push_back(std::move(work));
+                  session.last_video_push = now;
+                }
               }
             }
             if (session.audio_source) {
@@ -1224,7 +1804,7 @@ namespace webrtc_stream {
         }
 
         for (auto &work : video_work) {
-          if (!work.source || !work.image || !work.image->data) {
+          if (!work.source || !work.image) {
             continue;
           }
           if (work.image->width <= 0 || work.image->height <= 0) {
@@ -1237,7 +1817,7 @@ namespace webrtc_stream {
             work.image,
             work.timestamp,
             work.converter,
-            work.hdr
+            work.video_config
           );
 #endif
 #ifdef __APPLE__
@@ -1246,6 +1826,12 @@ namespace webrtc_stream {
           }
 #endif
           if (!pushed) {
+            const bool is_d3d = static_cast<bool>(
+              std::dynamic_pointer_cast<platf::dxgi::img_d3d_t>(work.image)
+            );
+            if (is_d3d || !work.image->data) {
+              continue;
+            }
             lwrtc_video_source_push_argb(
               work.source,
               work.image->data,
@@ -1419,6 +2005,10 @@ namespace webrtc_stream {
     return active_sessions.load(std::memory_order_relaxed) > 0;
   }
 
+  std::optional<std::string> ensure_capture_started(const SessionOptions &options) {
+    return start_webrtc_capture(options);
+  }
+
   SessionState create_session(const SessionOptions &options) {
     BOOST_LOG(debug) << "WebRTC: create_session enter";
     Session session;
@@ -1435,6 +2025,7 @@ namespace webrtc_stream {
     session.state.audio_channels = options.audio_channels;
     session.state.audio_codec = options.audio_codec;
     session.state.profile = options.profile;
+    session.video_config = build_video_config(options);
 
     SessionState snapshot = session.state;
     std::lock_guard lg {session_mutex};
@@ -1473,7 +2064,10 @@ namespace webrtc_stream {
       data_channel_context = it->second.data_channel_context;
 #endif
       sessions.erase(it);
-      active_sessions.fetch_sub(1, std::memory_order_relaxed);
+      const auto remaining = active_sessions.fetch_sub(1, std::memory_order_relaxed) - 1;
+      if (remaining == 0) {
+        stop_webrtc_capture_if_idle();
+      }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
     if (peer) {

@@ -855,6 +855,20 @@ namespace confighttp {
         }
       }
 
+      // Add computed app ids for UI clients (best-effort, do not persist).
+      if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+        try {
+          const auto apps_snapshot = proc::proc.get_apps();
+          const auto count = std::min(file_tree["apps"].size(), apps_snapshot.size());
+          for (size_t idx = 0; idx < count; ++idx) {
+            auto &app = file_tree["apps"][idx];
+            app["id"] = apps_snapshot[idx].id;
+            app["index"] = static_cast<int>(idx);
+          }
+        } catch (...) {
+        }
+      }
+
       // If any normalization occurred, persist back to disk
       if (mutated) {
         try {
@@ -2001,6 +2015,12 @@ namespace confighttp {
         if (input.contains("profile")) {
           options.profile = input.at("profile").get<std::string>();
         }
+        if (input.contains("app_id")) {
+          options.app_id = input.at("app_id").get<int>();
+        }
+        if (input.contains("resume")) {
+          options.resume = input.at("resume").get<bool>();
+        }
 
         if (options.codec) {
           auto lower = *options.codec;
@@ -2034,6 +2054,10 @@ namespace confighttp {
     }
 
     BOOST_LOG(debug) << "WebRTC: creating session";
+    if (auto error = webrtc_stream::ensure_capture_started(options)) {
+      bad_request(response, request, error->c_str());
+      return;
+    }
     auto session = webrtc_stream::create_session(options);
     BOOST_LOG(debug) << "WebRTC: session created id=" << session.id;
     nlohmann::json output;

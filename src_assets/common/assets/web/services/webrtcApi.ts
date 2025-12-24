@@ -5,10 +5,12 @@ import {
   WebRtcAnswer,
   WebRtcOffer,
   WebRtcSessionInfo,
+  WebRtcSessionState,
 } from '@/types/webrtc';
 
 export interface WebRtcApi {
   createSession(config: StreamConfig): Promise<WebRtcSessionInfo>;
+  getSessionState(sessionId: string): Promise<WebRtcSessionFetchResult>;
   sendOffer(sessionId: string, offer: WebRtcOffer): Promise<WebRtcAnswer | null>;
   sendIceCandidate(sessionId: string, candidate: RTCIceCandidateInit): Promise<void>;
   subscribeRemoteCandidates(
@@ -16,6 +18,12 @@ export interface WebRtcApi {
     onCandidate: (candidate: RTCIceCandidateInit) => void,
   ): () => void;
   endSession(sessionId: string): Promise<void>;
+}
+
+export interface WebRtcSessionFetchResult {
+  status: number;
+  session: WebRtcSessionState | null;
+  error?: string;
 }
 
 interface WebRtcSessionResponse {
@@ -33,6 +41,11 @@ interface WebRtcOfferResponse {
   answer_ready?: boolean;
   sdp?: string;
   type?: RTCSdpType;
+  error?: string;
+}
+
+interface WebRtcSessionStateResponse {
+  session?: WebRtcSessionState;
   error?: string;
 }
 
@@ -58,6 +71,8 @@ export class WebRtcHttpApi implements WebRtcApi {
       audio_channels: config.audioChannels,
       audio_codec: config.audioCodec,
       profile: config.profile,
+      app_id: config.appId,
+      resume: config.resume,
     };
     const r = await http.post<WebRtcSessionResponse>('/api/webrtc/sessions', payload, {
       validateStatus: () => true,
@@ -72,6 +87,18 @@ export class WebRtcHttpApi implements WebRtcApi {
       certFingerprint: r.data.cert_fingerprint,
       certPem: r.data.cert_pem,
     };
+  }
+
+  async getSessionState(sessionId: string): Promise<WebRtcSessionFetchResult> {
+    const r = await http.get<WebRtcSessionStateResponse>(
+      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}`,
+      { validateStatus: () => true },
+    );
+    if (r.status !== 200) {
+      const error = r.data?.error ? String(r.data.error) : undefined;
+      return { status: r.status, session: null, error };
+    }
+    return { status: r.status, session: r.data?.session ?? null, error: r.data?.error };
   }
 
   async sendOffer(sessionId: string, offer: WebRtcOffer): Promise<WebRtcAnswer | null> {

@@ -10,6 +10,8 @@ export interface StreamConfig {
   audioChannels?: number;
   audioCodec?: 'opus' | 'aac';
   profile?: string;
+  appId?: number;
+  resume?: boolean;
 }
 
 export interface WebRtcSessionInfo {
@@ -17,6 +19,35 @@ export interface WebRtcSessionInfo {
   iceServers: RTCIceServer[];
   certFingerprint?: string;
   certPem?: string;
+}
+
+export interface WebRtcSessionState {
+  id: string;
+  audio?: boolean;
+  video?: boolean;
+  encoded?: boolean;
+  audio_packets?: number;
+  video_packets?: number;
+  audio_dropped?: number;
+  video_dropped?: number;
+  has_remote_offer?: boolean;
+  has_local_answer?: boolean;
+  ice_candidates?: number;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  bitrate_kbps?: number | null;
+  codec?: string | null;
+  hdr?: boolean | null;
+  audio_channels?: number | null;
+  audio_codec?: string | null;
+  profile?: string | null;
+  last_audio_bytes?: number;
+  last_video_bytes?: number;
+  last_video_idr?: boolean;
+  last_video_frame_index?: number;
+  last_audio_age_ms?: number | null;
+  last_video_age_ms?: number | null;
 }
 
 export interface WebRtcOffer {
@@ -42,6 +73,24 @@ export interface WebRtcStatsSnapshot {
   audioBitrateKbps?: number;
   packetsLost?: number;
   roundTripTimeMs?: number;
+  videoBytesReceived?: number;
+  audioBytesReceived?: number;
+  videoPacketsReceived?: number;
+  audioPacketsReceived?: number;
+  videoFramesDecoded?: number;
+  videoFramesDropped?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  candidatePair?: {
+    state?: string;
+    protocol?: string;
+    localAddress?: string;
+    localPort?: number;
+    localType?: string;
+    remoteAddress?: string;
+    remotePort?: number;
+    remoteType?: string;
+  };
 }
 
 export interface InputModifiers {
