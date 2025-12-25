@@ -43,6 +43,10 @@
             <template #checked>Input capture on</template>
             <template #unchecked>Input capture off</template>
           </n-switch>
+          <n-switch v-model:value="showOverlay">
+            <template #checked>Diagnostics overlay on</template>
+            <template #unchecked>Diagnostics overlay off</template>
+          </n-switch>
           <n-switch v-model:value="resumeOnConnect" :disabled="!canResumeSelection">
             <template #checked>Resume running app</template>
             <template #unchecked>Resume running app</template>
@@ -132,6 +136,9 @@
               <i class="fas fa-satellite-dish text-xl"></i>
               <span>Connect to start the mock WebRTC stream.</span>
             </div>
+            <div v-if="showOverlay" class="webrtc-overlay">
+              <div v-for="(line, idx) in overlayLines" :key="idx">{{ line }}</div>
+            </div>
           </div>
         </n-card>
 
@@ -162,6 +169,50 @@
 
         <n-card title="Debug" size="small">
           <div class="space-y-2 text-xs">
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Input move delay</span>
+              <span>
+                last {{ formatMs(inputMetrics.lastMoveDelayMs) }}
+                / avg {{ formatMs(inputMetrics.avgMoveDelayMs) }}
+                / max {{ formatMs(inputMetrics.maxMoveDelayMs) }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Input event lag</span>
+              <span>
+                last {{ formatMs(inputMetrics.lastMoveEventLagMs) }}
+                / avg {{ formatMs(inputMetrics.avgMoveEventLagMs) }}
+                / max {{ formatMs(inputMetrics.maxMoveEventLagMs) }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Input move rate</span>
+              <span>
+                cap {{ formatRate(inputMetrics.moveRateHz) }}
+                / send {{ formatRate(inputMetrics.moveSendRateHz) }}
+                / {{ formatPercent(inputMetrics.moveCoalesceRatio) }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Input buffered</span>
+              <span>{{ formatBytes(inputBufferedAmount ?? undefined) }}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Video frame interval</span>
+              <span>
+                last {{ formatMs(videoFrameMetrics.lastIntervalMs) }}
+                / avg {{ formatMs(videoFrameMetrics.avgIntervalMs) }}
+                / max {{ formatMs(videoFrameMetrics.maxIntervalMs) }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="opacity-70">Video frame delay</span>
+              <span>
+                last {{ formatMs(videoFrameMetrics.lastDelayMs) }}
+                / avg {{ formatMs(videoFrameMetrics.avgDelayMs) }}
+                / max {{ formatMs(videoFrameMetrics.maxDelayMs) }}
+              </span>
+            </div>
             <div class="flex items-center justify-between">
               <span class="opacity-70">Session id</span>
               <span class="font-mono text-[11px] break-all">{{ displayValue(sessionId) }}</span>
@@ -324,7 +375,7 @@ import {
 } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
-import { attachInputCapture } from '@/utils/webrtc/input';
+import { attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
 import { StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
@@ -416,6 +467,7 @@ const iceState = ref<RTCIceConnectionState | null>(null);
 const inputChannelState = ref<RTCDataChannelState | null>(null);
 const stats = ref<WebRtcStatsSnapshot>({});
 const inputEnabled = ref(true);
+const showOverlay = ref(true);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
@@ -493,14 +545,44 @@ const candidatePairLabel = computed(() => {
   const state = pair.state ?? '--';
   return `${local} -> ${remote} (${proto}, ${types}, ${state})`;
 });
+const inputMetrics = ref<InputCaptureMetrics>({});
+const inputBufferedAmount = ref<number | null>(null);
+const videoFrameMetrics = ref<{
+  lastIntervalMs?: number;
+  avgIntervalMs?: number;
+  maxIntervalMs?: number;
+  lastDelayMs?: number;
+  avgDelayMs?: number;
+  maxDelayMs?: number;
+}>({});
+const overlayLines = computed(() => {
+  const fps = stats.value.videoFps ? stats.value.videoFps.toFixed(0) : '--';
+  const dropped = stats.value.videoFramesDropped ?? '--';
+  return [
+    `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
+    `RTT ${formatMs(stats.value.roundTripTimeMs)} | FPS ${fps} | Drop ${dropped}`,
+    `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
+    `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
+    `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
+    `Video interval ${formatMs(videoFrameMetrics.value.lastIntervalMs)} | delay ${formatMs(videoFrameMetrics.value.lastDelayMs)} | size ${videoSizeLabel.value}`,
+  ];
+});
 let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
+let detachVideoFrames: (() => void) | null = null;
 let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
 let audioStream: MediaStream | null = null;
 let audioAutoplayRequested = false;
 const onFullscreenChange = () => {
   isFullscreen.value = document.fullscreenElement === inputTarget.value;
+};
+const onOverlayHotkey = (event: KeyboardEvent) => {
+  if (!event.ctrlKey || !event.altKey || !event.shiftKey) return;
+  if (event.code !== 'KeyS') return;
+  event.preventDefault();
+  event.stopPropagation();
+  showOverlay.value = !showOverlay.value;
 };
 
 function formatKbps(value?: number): string {
@@ -519,6 +601,21 @@ function formatBytes(value?: number): string {
 function formatSeconds(value?: number): string {
   if (value == null) return '--';
   return value.toFixed(2);
+}
+
+function formatMs(value?: number): string {
+  if (value == null) return '--';
+  return `${value.toFixed(1)} ms`;
+}
+
+function formatRate(value?: number): string {
+  if (value == null) return '--';
+  return `${value.toFixed(0)} / s`;
+}
+
+function formatPercent(value?: number): string {
+  if (value == null) return '--';
+  return `${(value * 100).toFixed(0)}%`;
 }
 
 function displayValue(value: unknown): string {
@@ -633,6 +730,44 @@ function attachVideoDebug(el: HTMLVideoElement): () => void {
   };
 }
 
+function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
+  if (typeof el.requestVideoFrameCallback !== 'function') {
+    return () => {};
+  }
+  let handle = 0;
+  let lastFrameAt: number | null = null;
+  let intervalSum = 0;
+  let intervalSamples = 0;
+  let delaySum = 0;
+  let delaySamples = 0;
+  const onFrame = (now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) => {
+    if (lastFrameAt != null) {
+      const interval = Math.max(0, now - lastFrameAt);
+      intervalSum += interval;
+      intervalSamples += 1;
+      videoFrameMetrics.value.lastIntervalMs = interval;
+      videoFrameMetrics.value.avgIntervalMs = intervalSum / intervalSamples;
+      videoFrameMetrics.value.maxIntervalMs = Math.max(videoFrameMetrics.value.maxIntervalMs ?? 0, interval);
+    }
+    lastFrameAt = now;
+    if (typeof metadata.expectedDisplayTime === 'number') {
+      const delay = Math.max(0, now - metadata.expectedDisplayTime);
+      delaySum += delay;
+      delaySamples += 1;
+      videoFrameMetrics.value.lastDelayMs = delay;
+      videoFrameMetrics.value.avgDelayMs = delaySum / delaySamples;
+      videoFrameMetrics.value.maxDelayMs = Math.max(videoFrameMetrics.value.maxDelayMs ?? 0, delay);
+    }
+    handle = el.requestVideoFrameCallback(onFrame);
+  };
+  handle = el.requestVideoFrameCallback(onFrame);
+  return () => {
+    if (handle) {
+      el.cancelVideoFrameCallback(handle);
+    }
+  };
+}
+
 function statusTagType(state?: string | null) {
   if (!state) return 'default';
   if (state === 'connected' || state === 'completed' || state === 'open') return 'success';
@@ -709,6 +844,9 @@ async function disconnect() {
   iceState.value = null;
   inputChannelState.value = null;
   stats.value = {};
+  inputMetrics.value = {};
+  inputBufferedAmount.value = null;
+  videoFrameMetrics.value = {};
   detachInputCapture();
   if (videoEl.value) videoEl.value.srcObject = null;
   if (audioEl.value) audioEl.value.srcObject = null;
@@ -752,9 +890,19 @@ watch(
   ([enabled, connected]) => {
     detachInputCapture();
     if (!enabled || !connected || !inputTarget.value) return;
-    detachInput = attachInputCapture(inputTarget.value, (payload) => {
-      client.sendInput(payload);
-    });
+    detachInput = attachInputCapture(
+      inputTarget.value,
+      (payload) => {
+        client.sendInput(payload);
+        inputBufferedAmount.value = client.inputChannelBufferedAmount ?? null;
+      },
+      {
+        video: videoEl.value,
+        onMetrics: (metrics) => {
+          inputMetrics.value = metrics;
+        },
+      },
+    );
   },
 );
 
@@ -763,12 +911,18 @@ watch(videoEl, (el) => {
     detachVideoEvents();
     detachVideoEvents = null;
   }
+  if (detachVideoFrames) {
+    detachVideoFrames();
+    detachVideoFrames = null;
+  }
   if (!el) return;
   detachVideoEvents = attachVideoDebug(el);
+  detachVideoFrames = attachVideoFrameMetrics(el);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
+  window.removeEventListener('keydown', onOverlayHotkey, true);
   if (detachVideoEvents) {
     detachVideoEvents();
     detachVideoEvents = null;
@@ -779,6 +933,7 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
+  window.addEventListener('keydown', onOverlayHotkey, true);
   try {
     await appsStore.loadApps(true);
   } catch {
@@ -790,5 +945,24 @@ onMounted(async () => {
 <style scoped>
 .webrtc-fullscreen {
   cursor: none;
+}
+
+.webrtc-overlay {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+  pointer-events: none;
+  background: rgba(2, 6, 23, 0.65);
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  max-width: min(92vw, 520px);
+  white-space: pre-wrap;
 }
 </style>

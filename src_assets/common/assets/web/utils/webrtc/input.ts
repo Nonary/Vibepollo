@@ -1,5 +1,22 @@
 import { InputMessage } from '@/types/webrtc';
 
+export interface InputCaptureMetrics {
+  lastMoveDelayMs?: number;
+  avgMoveDelayMs?: number;
+  maxMoveDelayMs?: number;
+  lastMoveEventLagMs?: number;
+  avgMoveEventLagMs?: number;
+  maxMoveEventLagMs?: number;
+  moveRateHz?: number;
+  moveSendRateHz?: number;
+  moveCoalesceRatio?: number;
+}
+
+interface InputCaptureOptions {
+  video?: HTMLVideoElement | null;
+  onMetrics?: (metrics: InputCaptureMetrics) => void;
+}
+
 function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | PointerEvent) {
   return {
     alt: event.altKey,
@@ -70,18 +87,56 @@ function normalizePoint(
 export function attachInputCapture(
   element: HTMLElement,
   send: (payload: string) => void,
-  video?: HTMLVideoElement | null,
+  options: InputCaptureOptions = {},
 ): () => void {
+  const video = options.video ?? null;
+  const onMetrics = options.onMetrics;
   let queuedMove: InputMessage | null = null;
+  let queuedMoveAt = 0;
   let rafId = 0;
   const pressedKeys = new Map<string, { key: string; code: string }>();
   const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
+  const metrics: InputCaptureMetrics = {};
+  let moveDelaySum = 0;
+  let moveDelaySamples = 0;
+  let moveEventLagSum = 0;
+  let moveEventLagSamples = 0;
+  let moveRateWindowStart = performance.now();
+  let moveRateCount = 0;
+  let moveSendRateCount = 0;
+  let lastMetricsEmitAt = 0;
+
+  const emitMetrics = () => {
+    if (!onMetrics) return;
+    const now = performance.now();
+    if (now - lastMetricsEmitAt < 100) return;
+    lastMetricsEmitAt = now;
+    onMetrics({ ...metrics });
+  };
 
   const flushMove = () => {
     rafId = 0;
     if (!queuedMove) return;
+    const now = performance.now();
+    const delayMs = Math.max(0, now - queuedMoveAt);
+    moveDelaySum += delayMs;
+    moveDelaySamples += 1;
+    metrics.lastMoveDelayMs = delayMs;
+    metrics.avgMoveDelayMs = moveDelaySum / moveDelaySamples;
+    metrics.maxMoveDelayMs = Math.max(metrics.maxMoveDelayMs ?? 0, delayMs);
+    moveSendRateCount += 1;
+    const rateWindowMs = now - moveRateWindowStart;
+    if (rateWindowMs >= 1000) {
+      metrics.moveRateHz = Math.round((moveRateCount / rateWindowMs) * 1000);
+      metrics.moveSendRateHz = Math.round((moveSendRateCount / rateWindowMs) * 1000);
+      metrics.moveCoalesceRatio = moveRateCount ? moveSendRateCount / moveRateCount : undefined;
+      moveRateWindowStart = now;
+      moveRateCount = 0;
+      moveSendRateCount = 0;
+    }
     send(JSON.stringify(queuedMove));
     queuedMove = null;
+    emitMetrics();
   };
 
   const releaseAllKeys = () => {
@@ -103,6 +158,14 @@ export function attachInputCapture(
 
   const queueMove = (event: MouseEvent | PointerEvent) => {
     const { x, y } = normalizePoint(event, element, video);
+    const now = performance.now();
+    const eventLagMs = Math.max(0, now - event.timeStamp);
+    moveEventLagSum += eventLagMs;
+    moveEventLagSamples += 1;
+    metrics.lastMoveEventLagMs = eventLagMs;
+    metrics.avgMoveEventLagMs = moveEventLagSum / moveEventLagSamples;
+    metrics.maxMoveEventLagMs = Math.max(metrics.maxMoveEventLagMs ?? 0, eventLagMs);
+    queuedMoveAt = performance.now();
     queuedMove = {
       type: 'mouse_move',
       x,
@@ -111,6 +174,7 @@ export function attachInputCapture(
       modifiers: modifiersFromEvent(event),
       ts: performance.now(),
     };
+    moveRateCount += 1;
     if (!rafId) rafId = requestAnimationFrame(flushMove);
   };
 

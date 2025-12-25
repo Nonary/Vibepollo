@@ -74,6 +74,10 @@ export class WebRtcClient {
     return this.inputChannel?.readyState;
   }
 
+  get inputChannelBufferedAmount(): number | undefined {
+    return this.inputChannel?.bufferedAmount;
+  }
+
   async connect(config: StreamConfig, callbacks: WebRtcClientCallbacks = {}): Promise<string> {
     await this.disconnect();
     const session = await this.api.createSession(config);
