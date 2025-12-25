@@ -120,7 +120,7 @@
             class="relative w-full overflow-hidden rounded-xl bg-slate-950"
             :class="isFullscreen ? 'h-full webrtc-fullscreen' : 'aspect-video'"
             tabindex="0"
-            @dblclick="toggleFullscreen"
+            @dblclick="onFullscreenDblClick"
           >
             <video
               ref="videoEl"
@@ -876,6 +876,11 @@ async function toggleFullscreen() {
   } catch {
     /* ignore */
   }
+}
+
+async function onFullscreenDblClick() {
+  if (document.fullscreenElement) return;
+  await toggleFullscreen();
 }
 
 function detachInputCapture() {
