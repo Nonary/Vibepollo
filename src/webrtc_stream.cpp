@@ -86,6 +86,7 @@ namespace webrtc_stream {
     constexpr int kDefaultAudioChannels = 2;
     constexpr int kDefaultAudioPacketMs = 5;
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
+    constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {500};
 
     struct EncodedVideoFrame {
       std::shared_ptr<std::vector<std::uint8_t>> data;
@@ -567,6 +568,7 @@ namespace webrtc_stream {
       std::shared_ptr<platf::img_t> last_video_frame;
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
       bool needs_keyframe = false;
+      std::optional<std::chrono::steady_clock::time_point> last_keyframe_request;
       std::size_t encoded_prefix_logs = 0;
     };
 
@@ -972,19 +974,21 @@ namespace webrtc_stream {
         return;
       }
 
-      std::lock_guard lg {session_mutex};
-      auto it = sessions.find(ctx->id);
-      if (it == sessions.end()) {
-        lwrtc_data_channel_release(channel);
-        return;
-      }
+      {
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(ctx->id);
+        if (it == sessions.end()) {
+          lwrtc_data_channel_release(channel);
+          return;
+        }
 
-      if (it->second.input_channel) {
-        lwrtc_data_channel_unregister_observer(it->second.input_channel);
-        lwrtc_data_channel_release(it->second.input_channel);
+        if (it->second.input_channel) {
+          lwrtc_data_channel_unregister_observer(it->second.input_channel);
+          lwrtc_data_channel_release(it->second.input_channel);
+        }
+        it->second.input_channel = channel;
+        lwrtc_data_channel_register_observer(channel, nullptr, &on_data_channel_message, nullptr);
       }
-      it->second.input_channel = channel;
-      lwrtc_data_channel_register_observer(channel, nullptr, &on_data_channel_message, nullptr);
     }
 
     void on_set_local_success(void *user) {
@@ -1834,6 +1838,8 @@ namespace webrtc_stream {
           std::shared_ptr<std::vector<std::uint8_t>> data;
           bool is_keyframe = false;
           std::optional<std::chrono::steady_clock::time_point> timestamp;
+          std::string session_id;
+          bool clear_keyframe_on_success = false;
         };
         struct AudioWork {
           lwrtc_audio_source_t *source = nullptr;
@@ -1864,12 +1870,18 @@ namespace webrtc_stream {
                 }
               }
               if (latest) {
+                bool clear_keyframe_on_success = false;
                 if (session.needs_keyframe) {
                   if (!latest_idr) {
+                    if (!session.last_keyframe_request ||
+                        now - *session.last_keyframe_request >= kKeyframeRequestInterval) {
+                      session.last_keyframe_request = now;
+                      request_keyframe("waiting for video keyframe");
+                    }
                     continue;
                   }
                   frame = std::move(*latest_idr);
-                  session.needs_keyframe = false;
+                  clear_keyframe_on_success = true;
                 } else {
                   frame = std::move(*latest);
                 }
@@ -1889,6 +1901,8 @@ namespace webrtc_stream {
                 work.data = std::move(frame.data);
                 work.is_keyframe = frame.idr;
                 work.timestamp = frame.timestamp;
+                work.session_id = session.state.id;
+                work.clear_keyframe_on_success = clear_keyframe_on_success;
                 session.last_video_push = now;
                 video_work.push_back(std::move(work));
               }
@@ -1909,13 +1923,20 @@ namespace webrtc_stream {
           if (!work.source || !work.data || work.data->empty()) {
             continue;
           }
-          lwrtc_encoded_video_source_push(
+          const int pushed = lwrtc_encoded_video_source_push(
             work.source,
             work.data->data(),
             work.data->size(),
             timestamp_to_us(work.timestamp),
             work.is_keyframe ? 1 : 0
           );
+          if (pushed && work.clear_keyframe_on_success && !work.session_id.empty()) {
+            std::lock_guard lg {session_mutex};
+            auto it = sessions.find(work.session_id);
+            if (it != sessions.end()) {
+              it->second.needs_keyframe = false;
+            }
+          }
         }
 
         for (auto &work : audio_work) {
@@ -2034,6 +2055,7 @@ namespace webrtc_stream {
 
       if (session.state.video && requested_video_keyframe) {
         session.needs_keyframe = true;
+        session.last_keyframe_request = std::chrono::steady_clock::now();
         request_keyframe("initial video track");
       }
 
