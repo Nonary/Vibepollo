@@ -998,6 +998,10 @@ onMounted(async () => {
   cursor: none;
 }
 
+.webrtc-fullscreen * {
+  cursor: none;
+}
+
 .webrtc-overlay {
   position: absolute;
   top: 0.5rem;
