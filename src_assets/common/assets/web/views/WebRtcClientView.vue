@@ -574,8 +574,13 @@ let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
 let audioStream: MediaStream | null = null;
 let audioAutoplayRequested = false;
+const ESC_HOLD_MS = 2000;
+let escHoldTimer: number | null = null;
 const onFullscreenChange = () => {
   isFullscreen.value = document.fullscreenElement === inputTarget.value;
+  if (!isFullscreen.value) {
+    cancelEscHold();
+  }
 };
 const onOverlayHotkey = (event: KeyboardEvent) => {
   if (!event.ctrlKey || !event.altKey || !event.shiftKey) return;
@@ -584,6 +589,42 @@ const onOverlayHotkey = (event: KeyboardEvent) => {
   event.stopPropagation();
   showOverlay.value = !showOverlay.value;
 };
+
+const onFullscreenEscapeDown = (event: KeyboardEvent) => {
+  if (event.code !== 'Escape') return;
+  if (!isFullscreen.value) return;
+  if (escHoldTimer) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  escHoldTimer = window.setTimeout(async () => {
+    escHoldTimer = null;
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, ESC_HOLD_MS);
+};
+
+const onFullscreenEscapeUp = (event: KeyboardEvent) => {
+  if (event.code !== 'Escape') return;
+  if (!isFullscreen.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelEscHold();
+};
+
+function cancelEscHold() {
+  if (!escHoldTimer) return;
+  window.clearTimeout(escHoldTimer);
+  escHoldTimer = null;
+}
 
 function formatKbps(value?: number): string {
   return value ? `${value.toFixed(0)} kbps` : '--';
@@ -928,6 +969,9 @@ watch(videoEl, (el) => {
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onOverlayHotkey, true);
+  window.removeEventListener('keydown', onFullscreenEscapeDown, true);
+  window.removeEventListener('keyup', onFullscreenEscapeUp, true);
+  cancelEscHold();
   if (detachVideoEvents) {
     detachVideoEvents();
     detachVideoEvents = null;
@@ -939,6 +983,8 @@ onBeforeUnmount(() => {
 onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onOverlayHotkey, true);
+  window.addEventListener('keydown', onFullscreenEscapeDown, true);
+  window.addEventListener('keyup', onFullscreenEscapeUp, true);
   try {
     await appsStore.loadApps(true);
   } catch {
