@@ -114,7 +114,7 @@
           <div
             ref="inputTarget"
             class="relative w-full overflow-hidden rounded-xl bg-slate-950"
-            :class="isFullscreen ? 'h-full' : 'aspect-video'"
+            :class="isFullscreen ? 'h-full webrtc-fullscreen' : 'aspect-video'"
             tabindex="0"
             @dblclick="toggleFullscreen"
           >
@@ -415,7 +415,7 @@ const connectionState = ref<RTCPeerConnectionState | null>(null);
 const iceState = ref<RTCIceConnectionState | null>(null);
 const inputChannelState = ref<RTCDataChannelState | null>(null);
 const stats = ref<WebRtcStatsSnapshot>({});
-const inputEnabled = ref(false);
+const inputEnabled = ref(true);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const isFullscreen = ref(false);
@@ -752,3 +752,9 @@ onMounted(async () => {
   }
 });
 </script>
+
+<style scoped>
+.webrtc-fullscreen {
+  cursor: none;
+}
+</style>
