@@ -268,6 +268,7 @@ $gnArgs = @(
   "is_debug=$($isDebug.ToString().ToLower())",
   'is_component_build=false',
   'rtc_use_h264=true',
+  'rtc_use_h265=true',
   'ffmpeg_branding=\"Chrome\"',
   'rtc_include_tests=false',
   'rtc_build_examples=false',
@@ -335,6 +336,13 @@ if (Test-Path $dllA) {
 if (Test-Path $dllLib) {
   Write-Step "Copying MSVC import library"
   Copy-Item -Force $dllLib (Join-Path $OutDir "lib\libwebrtc.dll.lib")
+}
+
+# Also copy DLL to the CMake binary directory if it exists (for running without install)
+$cmakeBinaryDir = Join-Path $RootDir "build"
+if (Test-Path $cmakeBinaryDir) {
+  Write-Step "Copying runtime DLL to CMake build directory"
+  Copy-Item -Force $dll (Join-Path $cmakeBinaryDir "libwebrtc.dll")
 }
 
 Write-Step "Done. Set WEBRTC_ROOT to $OutDir"

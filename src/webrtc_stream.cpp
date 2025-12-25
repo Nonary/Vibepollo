@@ -836,14 +836,12 @@ namespace webrtc_stream {
       auto _hot_apply_gate = config::acquire_apply_read_gate();
 
 #ifdef _WIN32
-      if (config::video.dd.config_revert_on_disconnect) {
-        (void) display_helper_integration::disarm_pending_restore();
-        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-        if (!request) {
-          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        } else if (!display_helper_integration::apply(*request)) {
-          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-        }
+      (void) display_helper_integration::disarm_pending_restore();
+      auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+      if (!request) {
+        BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+      } else if (!display_helper_integration::apply(*request)) {
+        BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
 
@@ -1095,13 +1093,35 @@ namespace webrtc_stream {
     std::atomic<bool> webrtc_media_running {false};
     std::atomic<bool> webrtc_media_shutdown {false};
 
-    bool ensure_webrtc_factory() {
+    std::optional<lwrtc_video_codec_t> session_codec_to_lwrtc(const SessionState &state) {
+      if (!state.codec) {
+        return std::nullopt;
+      }
+      if (boost::iequals(*state.codec, "hevc")) {
+        return LWRTC_VIDEO_CODEC_H265;
+      }
+      if (boost::iequals(*state.codec, "h264")) {
+        return LWRTC_VIDEO_CODEC_H264;
+      }
+      return std::nullopt;
+    }
+
+    lwrtc_video_codec_t session_codec_to_encoded(const SessionState &state) {
+      if (state.codec && boost::iequals(*state.codec, "hevc")) {
+        return LWRTC_VIDEO_CODEC_H265;
+      }
+      return LWRTC_VIDEO_CODEC_H264;
+    }
+
+    bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
       std::lock_guard lg {webrtc_mutex};
       if (webrtc_factory) {
         return true;
       }
 
-      BOOST_LOG(debug) << "WebRTC: initializing peer connection factory with passthrough encoder";
+      const auto passthrough_codec = preferred_codec.value_or(LWRTC_VIDEO_CODEC_H264);
+      BOOST_LOG(debug) << "WebRTC: initializing peer connection factory with passthrough encoder (codec="
+                       << (passthrough_codec == LWRTC_VIDEO_CODEC_H265 ? "H265" : "H264") << ")";
       webrtc_factory = lwrtc_factory_create();
       if (!webrtc_factory) {
         BOOST_LOG(error) << "WebRTC: failed to allocate peer connection factory";
@@ -1110,7 +1130,7 @@ namespace webrtc_stream {
 
       // Enable passthrough mode to use pre-encoded H.264/HEVC frames
       // This must be called BEFORE lwrtc_factory_initialize()
-      if (!lwrtc_factory_enable_passthrough(webrtc_factory, LWRTC_VIDEO_CODEC_H264)) {
+      if (!lwrtc_factory_enable_passthrough(webrtc_factory, passthrough_codec)) {
         BOOST_LOG(warning) << "WebRTC: failed to enable passthrough mode";
         // Continue anyway - will fall back to raw frame mode
       }
@@ -1139,7 +1159,7 @@ namespace webrtc_stream {
       SessionIceContext *ice_context
     ) {
       BOOST_LOG(debug) << "WebRTC: create_peer_connection enter";
-      if (!ensure_webrtc_factory()) {
+      if (!ensure_webrtc_factory(session_codec_to_lwrtc(state))) {
         return nullptr;
       }
 
@@ -1978,8 +1998,17 @@ namespace webrtc_stream {
       webrtc_media_running.store(false, std::memory_order_release);
     }
 
+    void reset_webrtc_factory() {
+      std::lock_guard lg {webrtc_mutex};
+      if (webrtc_factory) {
+        BOOST_LOG(debug) << "WebRTC: releasing peer connection factory";
+        lwrtc_factory_release(webrtc_factory);
+        webrtc_factory = nullptr;
+      }
+    }
+
     bool attach_media_tracks(Session &session) {
-      if (!session.peer || !ensure_webrtc_factory()) {
+      if (!session.peer || !ensure_webrtc_factory(session_codec_to_lwrtc(session.state))) {
         return false;
       }
 
@@ -2011,9 +2040,10 @@ namespace webrtc_stream {
       if (session.state.video && !session.encoded_video_source) {
         // Create encoded video source for passthrough mode
         // TODO: Support HEVC based on session codec negotiation
+        const auto codec = session_codec_to_encoded(session.state);
         session.encoded_video_source = lwrtc_encoded_video_source_create(
             webrtc_factory,
-            LWRTC_VIDEO_CODEC_H264,
+            codec,
             session.video_config.width,
             session.video_config.height);
         if (!session.encoded_video_source) {
@@ -2232,6 +2262,8 @@ namespace webrtc_stream {
     if (!has_active_sessions()) {
       stop_media_thread();
       reset_input_context();
+      // Reset factory to ensure clean state for next connection
+      reset_webrtc_factory();
     }
 #endif
     BOOST_LOG(debug) << "WebRTC: close_session exit id=" << id;

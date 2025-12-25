@@ -579,7 +579,27 @@
     "api_tokens": "API Tokens"
   },
   "webrtc": {
-    "nav": "WebRTC Client"
+    "nav": "Stream",
+    "title": "Cloud Gaming",
+    "subtitle": "Stream your desktop or games directly in the browser",
+    "session_settings": "Session Settings",
+    "resolution": "Resolution",
+    "framerate": "Framerate",
+    "encoding": "Encoding",
+    "bitrate": "Bitrate (kbps)",
+    "select_game": "Select a Game",
+    "no_selection": "No game selected — will resume current session",
+    "connect": "Start Streaming",
+    "disconnect": "End Session",
+    "connecting": "Connecting...",
+    "live_stats": "Live Statistics",
+    "debug_panel": "Debug Information",
+    "fullscreen": "Fullscreen",
+    "connection_quality": "Connection Quality",
+    "excellent": "Excellent",
+    "good": "Good",
+    "fair": "Fair",
+    "poor": "Poor"
   },
   "clients": {
     "nav": "Clients",

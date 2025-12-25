@@ -1,360 +1,315 @@
 <template>
-  <div class="space-y-4">
-    <div class="flex flex-col gap-2">
-      <h2 class="text-2xl font-semibold tracking-tight">WebRTC Client</h2>
-      <p class="text-sm opacity-80">
-        WebRTC client using Sunshine's WebRTC session API.
-      </p>
+  <div class="webrtc-gaming-container min-h-[calc(100vh-4rem)]">
+    <!-- Hero Header -->
+    <div class="gaming-header px-6 py-8 mb-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="flex items-center gap-4 mb-2">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg shadow-primary/30">
+            <i class="fas fa-gamepad text-2xl text-onPrimary"></i>
+          </div>
+          <div>
+            <h1 class="text-3xl font-bold tracking-tight text-onDark">
+              {{ $t('webrtc.title') }}
+            </h1>
+            <p class="text-sm text-onDark/60">{{ $t('webrtc.subtitle') }}</p>
+          </div>
+        </div>
+        <!-- Connection Status Bar -->
+        <div class="flex items-center gap-4 mt-4">
+          <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
+               :class="connectionStatusClass">
+            <span class="w-2 h-2 rounded-full animate-pulse" :class="connectionDotClass"></span>
+            <span>{{ connectionStatusLabel }}</span>
+          </div>
+          <div v-if="isConnected" class="flex items-center gap-3 text-xs text-onDark/50">
+            <span><i class="fas fa-signal mr-1"></i>{{ formatKbps(stats.videoBitrateKbps) }}</span>
+            <span><i class="fas fa-clock mr-1"></i>{{ stats.roundTripTimeMs ? `${stats.roundTripTimeMs.toFixed(0)}ms` : '--' }}</span>
+            <span><i class="fas fa-film mr-1"></i>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-      <n-card title="Session Settings" size="small">
-        <n-form :label-width="90" size="small">
-          <n-form-item label="Resolution">
-            <div class="flex items-center gap-2">
-              <n-input-number v-model:value="config.width" :min="320" :max="7680" />
-              <span class="text-xs opacity-70">x</span>
-              <n-input-number v-model:value="config.height" :min="180" :max="4320" />
+    <div class="max-w-7xl mx-auto px-6">
+      <!-- Main Content Grid -->
+      <div class="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+        
+        <!-- Left Sidebar - Settings & Games -->
+        <div class="space-y-5">
+          <!-- Quick Settings Card -->
+          <div class="gaming-card p-5">
+            <div class="flex items-center gap-2 mb-4">
+              <i class="fas fa-sliders text-primary"></i>
+              <h3 class="font-semibold text-onDark">{{ $t('webrtc.session_settings') }}</h3>
             </div>
-          </n-form-item>
-          <n-form-item label="Framerate">
-            <n-input-number v-model:value="config.fps" :min="1" :max="240" />
-          </n-form-item>
-          <n-form-item label="Encoding">
-            <n-select v-model:value="config.encoding" :options="encodingOptions" />
-          </n-form-item>
-          <n-form-item label="Bitrate">
-            <n-input-number
-              v-model:value="config.bitrateKbps"
-              :min="500"
-              :max="200000"
-              placeholder="kbps"
-            />
-          </n-form-item>
-        </n-form>
-        <div class="flex flex-col gap-2 mt-3">
-          <div class="flex gap-2">
-            <n-button type="primary" :loading="isConnecting" @click="connect">
-              {{ isConnected ? 'Reconnect' : 'Connect' }}
-            </n-button>
-            <n-button :disabled="!isConnected" @click="disconnect">Disconnect</n-button>
-          </div>
-          <n-switch v-model:value="inputEnabled" :disabled="!isConnected">
-            <template #checked>Input capture on</template>
-            <template #unchecked>Input capture off</template>
-          </n-switch>
-          <n-switch v-model:value="showOverlay">
-            <template #checked>Diagnostics overlay on</template>
-            <template #unchecked>Diagnostics overlay off</template>
-          </n-switch>
-          <n-switch v-model:value="resumeOnConnect" :disabled="!canResumeSelection">
-            <template #checked>Resume running app</template>
-            <template #unchecked>Resume running app</template>
-          </n-switch>
-        </div>
-        <div class="mt-4 space-y-2 text-xs">
-          <div class="flex items-center gap-2">
-            <span class="opacity-70">Connection</span>
-            <n-tag size="small" :type="statusTagType(connectionState)">
-              {{ connectionState || 'idle' }}
-            </n-tag>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="opacity-70">ICE</span>
-            <n-tag size="small" :type="statusTagType(iceState)">
-              {{ iceState || 'idle' }}
-            </n-tag>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="opacity-70">Input channel</span>
-            <n-tag size="small" :type="statusTagType(inputChannelState)">
-              {{ inputChannelState || 'closed' }}
-            </n-tag>
-          </div>
-        </div>
-      </n-card>
-
-      <div class="space-y-4">
-        <n-card title="Applications" size="small">
-          <div v-if="appsList.length" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <button
-              v-for="app in appsList"
-              :key="appKey(app)"
-              class="group text-left rounded-lg border bg-white/60 dark:bg-white/5 px-3 py-2 transition"
-              :class="appCardClass(app)"
-              @click="selectApp(app)"
-            >
-              <div class="flex items-center gap-3">
-                <img
-                  :src="coverUrl(app) || undefined"
-                  :alt="app.name || 'Application'"
-                  class="h-14 w-10 rounded-md object-cover shadow-sm"
-                  loading="lazy"
-                />
-                <div class="min-w-0">
-                  <div class="text-sm font-semibold truncate">
-                    {{ app.name || '(untitled)' }}
-                  </div>
-                  <div class="text-xs opacity-70">{{ appSubtitle(app) }}</div>
+            
+            <div class="space-y-4">
+              <!-- Resolution -->
+              <div>
+                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.resolution') }}</label>
+                <div class="flex items-center gap-2">
+                  <n-input-number v-model:value="config.width" :min="320" :max="7680" size="small" class="flex-1" />
+                  <span class="text-onDark/30">×</span>
+                  <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" class="flex-1" />
+                </div>
+                <div class="flex gap-1.5 mt-2">
+                  <button @click="setResolution(1920, 1080)" class="preset-btn" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
+                  <button @click="setResolution(2560, 1440)" class="preset-btn" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
+                  <button @click="setResolution(3840, 2160)" class="preset-btn" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
                 </div>
               </div>
-            </button>
-          </div>
-          <div v-else class="text-sm opacity-70">No applications configured.</div>
-          <div class="mt-3 flex items-center justify-between text-xs opacity-70">
-            <span>{{ selectedAppLabel }}</span>
-            <n-button size="tiny" tertiary @click="clearSelection" :disabled="!selectedAppId">
-              Clear selection
-            </n-button>
-          </div>
-        </n-card>
 
-        <n-card title="Stream" size="small">
-          <template #header-extra>
-            <n-button size="small" tertiary @click="toggleFullscreen">
-              {{ isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen' }}
-            </n-button>
-          </template>
-          <div
-            ref="inputTarget"
-            class="relative w-full overflow-hidden rounded-xl bg-slate-950"
-            :class="isFullscreen ? 'h-full webrtc-fullscreen' : 'aspect-video'"
-            tabindex="0"
-            @dblclick="onFullscreenDblClick"
-          >
-            <video
-              ref="videoEl"
-              class="h-full w-full object-contain"
-              autoplay
-              playsinline
-            ></video>
-            <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
-            <div
-              v-if="!isConnected"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80"
-            >
-              <i class="fas fa-satellite-dish text-xl"></i>
-              <span>Connect to start the mock WebRTC stream.</span>
-            </div>
-            <div v-if="showOverlay" class="webrtc-overlay">
-              <div v-for="(line, idx) in overlayLines" :key="idx">{{ line }}</div>
-            </div>
-          </div>
-        </n-card>
+              <!-- Framerate -->
+              <div>
+                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.framerate') }}</label>
+                <div class="flex gap-1.5">
+                  <button @click="config.fps = 30" class="preset-btn flex-1" :class="{ active: config.fps === 30 }">30</button>
+                  <button @click="config.fps = 60" class="preset-btn flex-1" :class="{ active: config.fps === 60 }">60</button>
+                  <button @click="config.fps = 120" class="preset-btn flex-1" :class="{ active: config.fps === 120 }">120</button>
+                  <button @click="config.fps = 144" class="preset-btn flex-1" :class="{ active: config.fps === 144 }">144</button>
+                </div>
+              </div>
 
-        <n-card title="Live Stats" size="small">
-          <div class="grid gap-3 text-sm md:grid-cols-2">
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video bitrate</span>
-              <span>{{ formatKbps(stats.videoBitrateKbps) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Audio bitrate</span>
-              <span>{{ formatKbps(stats.audioBitrateKbps) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video FPS</span>
-              <span>{{ stats.videoFps ? stats.videoFps.toFixed(0) : '--' }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Packets lost</span>
-              <span>{{ stats.packetsLost ?? '--' }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Round-trip time</span>
-              <span>{{ stats.roundTripTimeMs ? `${stats.roundTripTimeMs.toFixed(0)} ms` : '--' }}</span>
-            </div>
-          </div>
-        </n-card>
+              <!-- Encoding -->
+              <div>
+                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.encoding') }}</label>
+                <div class="flex gap-1.5">
+                  <button v-for="opt in encodingOptions" :key="opt.value" 
+                          @click="config.encoding = opt.value" 
+                          class="preset-btn flex-1" 
+                          :class="{ active: config.encoding === opt.value }">
+                    {{ opt.label }}
+                  </button>
+                </div>
+              </div>
 
-        <n-card title="Debug" size="small">
-          <div class="space-y-2 text-xs">
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Input move delay</span>
-              <span>
-                last {{ formatMs(inputMetrics.lastMoveDelayMs) }}
-                / avg {{ formatMs(inputMetrics.avgMoveDelayMs) }}
-                / max {{ formatMs(inputMetrics.maxMoveDelayMs) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Input event lag</span>
-              <span>
-                last {{ formatMs(inputMetrics.lastMoveEventLagMs) }}
-                / avg {{ formatMs(inputMetrics.avgMoveEventLagMs) }}
-                / max {{ formatMs(inputMetrics.maxMoveEventLagMs) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Input move rate</span>
-              <span>
-                cap {{ formatRate(inputMetrics.moveRateHz) }}
-                / send {{ formatRate(inputMetrics.moveSendRateHz) }}
-                / {{ formatPercent(inputMetrics.moveCoalesceRatio) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Input buffered</span>
-              <span>{{ formatBytes(inputBufferedAmount ?? undefined) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video frame interval</span>
-              <span>
-                last {{ formatMs(videoFrameMetrics.lastIntervalMs) }}
-                / avg {{ formatMs(videoFrameMetrics.avgIntervalMs) }}
-                / max {{ formatMs(videoFrameMetrics.maxIntervalMs) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video frame delay</span>
-              <span>
-                last {{ formatMs(videoFrameMetrics.lastDelayMs) }}
-                / avg {{ formatMs(videoFrameMetrics.avgDelayMs) }}
-                / max {{ formatMs(videoFrameMetrics.maxDelayMs) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Session id</span>
-              <span class="font-mono text-[11px] break-all">{{ displayValue(sessionId) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server status</span>
-              <span>{{ displayValue(serverSessionStatus) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server updated</span>
-              <span>{{ displayValue(serverSessionUpdatedAt) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server packets</span>
-              <span>
-                V {{ displayValue(serverSession?.video_packets) }}
-                / A {{ displayValue(serverSession?.audio_packets) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server age ms</span>
-              <span>
-                V {{ displayValue(serverSession?.last_video_age_ms) }}
-                / A {{ displayValue(serverSession?.last_audio_age_ms) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server offer/answer</span>
-              <span>
-                R {{ displayValue(serverSession?.has_remote_offer) }}
-                / L {{ displayValue(serverSession?.has_local_answer) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server ICE</span>
-              <span>{{ displayValue(serverSession?.ice_candidates) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server video cfg</span>
-              <span>{{ serverVideoConfigLabel }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Server audio cfg</span>
-              <span>{{ serverAudioConfigLabel }}</span>
-            </div>
-            <div class="flex items-center justify-between" v-if="serverSessionError">
-              <span class="opacity-70">Server error</span>
-              <span>{{ serverSessionError }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Inbound bytes</span>
-              <span>
-                V {{ formatBytes(stats.videoBytesReceived) }}
-                / A {{ formatBytes(stats.audioBytesReceived) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Inbound packets</span>
-              <span>
-                V {{ displayValue(stats.videoPacketsReceived) }}
-                / A {{ displayValue(stats.audioPacketsReceived) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video frames</span>
-              <span>
-                decoded {{ displayValue(stats.videoFramesDecoded) }}
-                / dropped {{ displayValue(stats.videoFramesDropped) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Codec</span>
-              <span>
-                V {{ displayValue(stats.videoCodec) }}
-                / A {{ displayValue(stats.audioCodec) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Candidate pair</span>
-              <span class="text-[11px] break-all">{{ candidatePairLabel }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Remote stream</span>
-              <span>{{ displayValue(remoteStreamInfo?.id) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Tracks</span>
-              <span>
-                V {{ displayValue(remoteStreamInfo?.videoTracks) }}
-                / A {{ displayValue(remoteStreamInfo?.audioTracks) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Track state</span>
-              <span>
-                V {{ displayValue(trackDebug?.video?.readyState) }}/{{ displayValue(trackDebug?.video?.muted) }}
-                / A {{ displayValue(trackDebug?.audio?.readyState) }}/{{ displayValue(trackDebug?.audio?.muted) }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Last track</span>
-              <span>{{ displayValue(lastTrackKind) }} @ {{ displayValue(lastTrackAt) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video readyState</span>
-              <span>{{ displayValue(videoDebug?.readyState) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Video size</span>
-              <span>{{ videoSizeLabel }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Current time</span>
-              <span>{{ formatSeconds(videoDebug?.currentTime) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Paused</span>
-              <span>{{ displayValue(videoDebug?.paused) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Ended</span>
-              <span>{{ displayValue(videoDebug?.ended) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Muted</span>
-              <span>{{ displayValue(videoDebug?.muted) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="opacity-70">Volume</span>
-              <span>{{ displayValue(videoDebug?.volume) }}</span>
-            </div>
-          </div>
-          <div class="mt-3 space-y-1 text-xs">
-            <div class="opacity-70">Video events</div>
-            <div v-if="videoEvents.length" class="space-y-1">
-              <div v-for="(event, idx) in videoEvents" :key="idx">
-                {{ event }}
+              <!-- Bitrate -->
+              <div>
+                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.bitrate') }}</label>
+                <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="w-full" />
+                <div class="flex gap-1.5 mt-2">
+                  <button @click="config.bitrateKbps = 10000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
+                  <button @click="config.bitrateKbps = 30000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
+                  <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
+                </div>
               </div>
             </div>
-            <div v-else class="opacity-60">No events yet.</div>
+
+            <!-- Connect Button -->
+            <div class="mt-6 space-y-3">
+              <button @click="isConnected ? disconnect() : connect()" 
+                      class="w-full py-3 px-4 rounded-xl font-semibold text-sm transition-all duration-200"
+                      :class="isConnected 
+                        ? 'bg-danger/20 text-danger hover:bg-danger/30 border border-danger/30' 
+                        : 'bg-gradient-to-r from-primary to-secondary text-onPrimary hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5'"
+                      :disabled="isConnecting">
+                <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-spinner fa-spin' : 'fas fa-play'" class="mr-2"></i>
+                {{ isConnecting ? $t('webrtc.connecting') : isConnected ? $t('webrtc.disconnect') : $t('webrtc.connect') }}
+              </button>
+              
+              <div class="flex items-center justify-between text-xs">
+                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
+                  <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
+                  <span>Input capture</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
+                  <n-switch v-model:value="showOverlay" size="small" />
+                  <span>Overlay</span>
+                </label>
+              </div>
+            </div>
           </div>
-        </n-card>
+
+          <!-- Game Selection Card -->
+          <div class="gaming-card p-5">
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-gamepad text-primary"></i>
+                <h3 class="font-semibold text-onDark">{{ $t('webrtc.select_game') }}</h3>
+              </div>
+              <button v-if="selectedAppId" @click="clearSelection" 
+                      class="text-xs text-onDark/40 hover:text-onDark/70 transition">
+                <i class="fas fa-times mr-1"></i>Clear
+              </button>
+            </div>
+
+            <div class="text-xs text-onDark/40 mb-3 px-1">
+              <i class="fas fa-info-circle mr-1"></i>
+              {{ selectedAppId ? selectedAppLabel : $t('webrtc.no_selection') }}
+            </div>
+
+            <div v-if="appsList.length" class="grid gap-2 max-h-[320px] overflow-y-auto pr-1 custom-scrollbar">
+              <button v-for="app in appsList" :key="appKey(app)"
+                      @click="selectApp(app)"
+                      class="game-card group"
+                      :class="{ 'selected': appNumericId(app) === selectedAppId }">
+                <div class="relative w-12 h-16 rounded-lg overflow-hidden flex-shrink-0 bg-surface/30">
+                  <img :src="coverUrl(app) || undefined" :alt="app.name || 'Application'"
+                       class="w-full h-full object-cover transition-transform group-hover:scale-110" loading="lazy" />
+                  <div class="absolute inset-0 bg-gradient-to-t from-dark/60 to-transparent"></div>
+                </div>
+                <div class="min-w-0 flex-1 text-left">
+                  <div class="font-medium text-sm truncate text-onDark">{{ app.name || '(untitled)' }}</div>
+                  <div class="text-xs text-onDark/40 truncate">{{ appSubtitle(app) }}</div>
+                </div>
+                <i v-if="appNumericId(app) === selectedAppId" class="fas fa-check-circle text-primary"></i>
+              </button>
+            </div>
+            <div v-else class="text-sm text-onDark/40 text-center py-8">
+              <i class="fas fa-folder-open text-2xl mb-2 block opacity-50"></i>
+              No applications configured
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Side - Stream View -->
+        <div class="space-y-5">
+          <!-- Stream Card -->
+          <div class="gaming-card overflow-hidden">
+            <div class="flex items-center justify-between p-4 border-b border-surface/30">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-display text-primary"></i>
+                <h3 class="font-semibold text-onDark">Stream</h3>
+                <span v-if="isConnected" class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-success/20 text-success uppercase tracking-wide">Live</span>
+              </div>
+              <button @click="toggleFullscreen" 
+                      class="p-2 rounded-lg hover:bg-surface/50 text-onDark/60 hover:text-onDark transition">
+                <i :class="isFullscreen ? 'fas fa-compress' : 'fas fa-expand'"></i>
+              </button>
+            </div>
+            
+            <div ref="inputTarget"
+                 class="relative w-full bg-dark"
+                 :class="isFullscreen ? 'h-full webrtc-fullscreen' : 'aspect-video'"
+                 tabindex="0"
+                 @dblclick="onFullscreenDblClick">
+              <video ref="videoEl" class="h-full w-full object-contain" autoplay playsinline></video>
+              <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
+              
+              <!-- Idle State Overlay -->
+              <div v-if="!isConnected" class="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-surface to-dark">
+                <div class="relative">
+                  <div class="absolute inset-0 animate-ping">
+                    <i class="fas fa-satellite-dish text-4xl text-primary/30"></i>
+                  </div>
+                  <i class="fas fa-satellite-dish text-4xl text-primary/80 relative"></i>
+                </div>
+                <p class="mt-4 text-onDark/50 text-sm">Ready to stream</p>
+                <p class="text-onDark/30 text-xs">Select a game and click Start Streaming</p>
+              </div>
+
+              <!-- Live Stats Overlay -->
+              <div v-if="showOverlay && isConnected" class="webrtc-overlay">
+                <div v-for="(line, idx) in overlayLines" :key="idx">{{ line }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="stat-card">
+              <div class="stat-icon bg-info/20 text-info">
+                <i class="fas fa-video"></i>
+              </div>
+              <div>
+                <div class="stat-label">Video Bitrate</div>
+                <div class="stat-value">{{ formatKbps(stats.videoBitrateKbps) }}</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon bg-secondary/20 text-secondary">
+                <i class="fas fa-film"></i>
+              </div>
+              <div>
+                <div class="stat-label">Frame Rate</div>
+                <div class="stat-value">{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon bg-success/20 text-success">
+                <i class="fas fa-clock"></i>
+              </div>
+              <div>
+                <div class="stat-label">Latency</div>
+                <div class="stat-value">{{ stats.roundTripTimeMs ? `${stats.roundTripTimeMs.toFixed(0)} ms` : '--' }}</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon bg-warning/20 text-warning">
+                <i class="fas fa-triangle-exclamation"></i>
+              </div>
+              <div>
+                <div class="stat-label">Dropped</div>
+                <div class="stat-value">{{ stats.videoFramesDropped ?? '--' }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Debug Panel (Collapsible) -->
+          <details class="gaming-card">
+            <summary class="p-4 cursor-pointer flex items-center justify-between hover:bg-surface/30 transition">
+              <div class="flex items-center gap-2">
+                <i class="fas fa-bug text-primary"></i>
+                <h3 class="font-semibold text-onDark">{{ $t('webrtc.debug_panel') }}</h3>
+              </div>
+              <i class="fas fa-chevron-down text-onDark/40 transition-transform"></i>
+            </summary>
+            <div class="p-4 pt-0 border-t border-surface/30 space-y-2 text-xs">
+              <div class="grid gap-2 md:grid-cols-2">
+                <div class="debug-row">
+                  <span>Connection</span>
+                  <n-tag size="tiny" :type="statusTagType(connectionState)">{{ connectionState || 'idle' }}</n-tag>
+                </div>
+                <div class="debug-row">
+                  <span>ICE</span>
+                  <n-tag size="tiny" :type="statusTagType(iceState)">{{ iceState || 'idle' }}</n-tag>
+                </div>
+                <div class="debug-row">
+                  <span>Input Channel</span>
+                  <n-tag size="tiny" :type="statusTagType(inputChannelState)">{{ inputChannelState || 'closed' }}</n-tag>
+                </div>
+                <div class="debug-row">
+                  <span>Session ID</span>
+                  <span class="font-mono text-[10px] truncate max-w-[150px]">{{ displayValue(sessionId) }}</span>
+                </div>
+              </div>
+              <div class="grid gap-2 md:grid-cols-2 mt-3 pt-3 border-t border-surface/30">
+                <div class="debug-row">
+                  <span>Input move delay</span>
+                  <span>{{ formatMs(inputMetrics.lastMoveDelayMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Video interval</span>
+                  <span>{{ formatMs(videoFrameMetrics.lastIntervalMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Server packets</span>
+                  <span>V {{ displayValue(serverSession?.video_packets) }} / A {{ displayValue(serverSession?.audio_packets) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Inbound bytes</span>
+                  <span>V {{ formatBytes(stats.videoBytesReceived) }} / A {{ formatBytes(stats.audioBytesReceived) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Video size</span>
+                  <span>{{ videoSizeLabel }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Codec</span>
+                  <span>V {{ displayValue(stats.videoCodec) }} / A {{ displayValue(stats.audioCodec) }}</span>
+                </div>
+              </div>
+              <!-- Video Events -->
+              <div class="mt-3 pt-3 border-t border-surface/30">
+                <div class="text-onDark/50 mb-2">Video Events</div>
+                <div v-if="videoEvents.length" class="space-y-1 font-mono text-[10px]">
+                  <div v-for="(event, idx) in videoEvents" :key="idx" class="text-onDark/40">{{ event }}</div>
+                </div>
+                <div v-else class="text-onDark/30">No events yet</div>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
   </div>
@@ -363,14 +318,9 @@
 <script setup lang="ts">
 import { ref, reactive, onBeforeUnmount, onMounted, watch, computed } from 'vue';
 import {
-  NCard,
-  NButton,
-  NSelect,
-  NInputNumber,
   NTag,
   NSwitch,
-  NForm,
-  NFormItem,
+  NInputNumber,
   useMessage,
 } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
@@ -382,6 +332,31 @@ import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
 
 const message = useMessage();
+
+// Helper function for resolution presets
+function setResolution(width: number, height: number) {
+  config.width = width;
+  config.height = height;
+}
+
+// Connection status computed properties for the gaming UI
+const connectionStatusClass = computed(() => {
+  if (isConnected.value) return 'bg-success/20 text-success';
+  if (isConnecting.value) return 'bg-warning/20 text-warning';
+  return 'bg-surface text-onDark/50';
+});
+
+const connectionDotClass = computed(() => {
+  if (isConnected.value) return 'bg-success';
+  if (isConnecting.value) return 'bg-warning';
+  return 'bg-onDark/30';
+});
+
+const connectionStatusLabel = computed(() => {
+  if (isConnected.value) return 'Connected';
+  if (isConnecting.value) return 'Connecting...';
+  return 'Ready';
+});
 
 const encodingOptions = [
   { label: 'H.264', value: 'h264' },
@@ -994,6 +969,124 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* Gaming Theme Container - matches Sunshine palette */
+.webrtc-gaming-container {
+  background: rgb(var(--color-dark));
+  color: rgb(var(--color-on-dark));
+}
+
+.gaming-header {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, transparent 100%);
+  border-bottom: 1px solid rgb(var(--color-surface) / 0.3);
+}
+
+/* Gaming Card Style */
+.gaming-card {
+  background: rgb(var(--color-surface) / 0.6);
+  border: 1px solid rgb(var(--color-primary) / 0.1);
+  border-radius: 1rem;
+  backdrop-filter: blur(10px);
+}
+
+/* Preset Buttons */
+.preset-btn {
+  @apply px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200;
+  background: rgb(var(--color-surface));
+  border: 1px solid rgb(var(--color-primary) / 0.15);
+  color: rgb(var(--color-on-dark) / 0.6);
+}
+
+.preset-btn:hover {
+  background: rgb(var(--color-primary) / 0.15);
+  border-color: rgb(var(--color-primary) / 0.4);
+  color: rgb(var(--color-on-dark) / 0.9);
+}
+
+.preset-btn.active {
+  background: linear-gradient(135deg, rgb(var(--color-primary)) 0%, rgb(var(--color-secondary)) 100%);
+  border-color: rgb(var(--color-primary));
+  color: rgb(var(--color-on-primary));
+  box-shadow: 0 4px 15px rgb(var(--color-primary) / 0.3);
+}
+
+/* Game Card */
+.game-card {
+  @apply flex items-center gap-3 p-2 rounded-xl transition-all duration-200;
+  background: rgb(var(--color-surface) / 0.4);
+  border: 1px solid rgb(var(--color-primary) / 0.08);
+}
+
+.game-card:hover {
+  background: rgb(var(--color-primary) / 0.1);
+  border-color: rgb(var(--color-primary) / 0.3);
+  transform: translateX(4px);
+}
+
+.game-card.selected {
+  background: linear-gradient(135deg, rgb(var(--color-primary) / 0.2) 0%, rgb(var(--color-secondary) / 0.15) 100%);
+  border-color: rgb(var(--color-primary));
+}
+
+/* Stats Cards */
+.stat-card {
+  @apply flex items-center gap-3 p-4 rounded-xl;
+  background: rgb(var(--color-surface) / 0.6);
+  border: 1px solid rgb(var(--color-primary) / 0.1);
+}
+
+.stat-icon {
+  @apply w-10 h-10 rounded-lg flex items-center justify-center text-lg;
+}
+
+.stat-label {
+  @apply text-xs uppercase tracking-wide;
+  color: rgb(var(--color-on-dark) / 0.4);
+}
+
+.stat-value {
+  @apply text-lg font-semibold;
+  color: rgb(var(--color-on-dark));
+}
+
+/* Debug Row */
+.debug-row {
+  @apply flex items-center justify-between py-1;
+  color: rgb(var(--color-on-dark) / 0.5);
+}
+
+.debug-row span:last-child {
+  color: rgb(var(--color-on-dark) / 0.8);
+}
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgb(var(--color-surface) / 0.3);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-primary) / 0.3);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-primary) / 0.5);
+}
+
+/* Details/Summary Arrow */
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details[open] summary .fa-chevron-down {
+  transform: rotate(180deg);
+}
+
+/* Fullscreen Mode */
 .webrtc-fullscreen {
   cursor: none;
 }
@@ -1002,22 +1095,35 @@ onMounted(async () => {
   cursor: none;
 }
 
+/* Overlay */
 .webrtc-overlay {
   position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
+  top: 0.75rem;
+  left: 0.75rem;
   z-index: 10;
   pointer-events: none;
-  background: rgba(2, 6, 23, 0.65);
-  color: #e2e8f0;
+  background: rgb(var(--color-dark) / 0.85);
+  color: rgb(var(--color-on-dark));
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
   font-size: 11px;
-  line-height: 1.35;
-  padding: 0.45rem 0.6rem;
+  line-height: 1.4;
+  padding: 0.5rem 0.75rem;
   border-radius: 0.5rem;
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  border: 1px solid rgb(var(--color-primary) / 0.2);
   max-width: min(92vw, 520px);
   white-space: pre-wrap;
+  backdrop-filter: blur(8px);
+}
+
+/* Override Naive UI inputs for dark theme */
+:deep(.n-input-number) {
+  --n-color: rgb(var(--color-surface)) !important;
+  --n-border: 1px solid rgb(var(--color-primary) / 0.2) !important;
+  --n-text-color: rgb(var(--color-on-dark)) !important;
+}
+
+:deep(.n-switch) {
+  --n-rail-color: rgb(var(--color-surface)) !important;
 }
 </style>
