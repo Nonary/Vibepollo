@@ -93,6 +93,15 @@
                   <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
                 </div>
               </div>
+
+              <!-- Host Audio -->
+              <div>
+                <div class="flex items-center justify-between">
+                  <label class="text-xs text-onDark/50 uppercase tracking-wide">{{ $t('webrtc.mute_host_audio') }}</label>
+                  <n-switch v-model:value="config.muteHostAudio" size="small" />
+                </div>
+                <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.mute_host_audio_desc') }}</div>
+              </div>
             </div>
 
             <!-- Connect Button -->
@@ -105,6 +114,15 @@
                       :disabled="isConnecting">
                 <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-spinner fa-spin' : 'fas fa-play'" class="mr-2"></i>
                 {{ isConnecting ? $t('webrtc.connecting') : isConnected ? $t('webrtc.disconnect') : $t('webrtc.connect') }}
+              </button>
+
+              <button v-if="isConnected"
+                      @click="terminateSession"
+                      class="w-full py-2 px-4 rounded-xl text-xs font-semibold transition-all duration-200 border border-warning/40 text-warning hover:bg-warning/15"
+                      :disabled="isConnecting || terminatePending"
+                      :title="$t('webrtc.terminate_desc')">
+                <i :class="terminatePending ? 'fas fa-spinner fa-spin' : 'fas fa-ban'" class="mr-2"></i>
+                {{ $t('webrtc.terminate') }}
               </button>
               
               <div class="flex items-center justify-between text-xs">
@@ -327,6 +345,7 @@ import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
 import { attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
 import { StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
+import { http } from '@/http';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
@@ -370,6 +389,7 @@ const config = reactive<StreamConfig>({
   fps: 60,
   encoding: 'h264',
   bitrateKbps: 20000,
+  muteHostAudio: true,
 });
 
 const appsStore = useAppsStore();
@@ -378,6 +398,7 @@ const appsList = computed(() => (apps.value || []).slice());
 const selectedAppId = ref<number | null>(null);
 const resumeOnConnect = ref(true);
 const canResumeSelection = computed(() => !selectedAppId.value);
+const terminatePending = ref(false);
 
 function appKey(app: App): string {
   return `${app.uuid || ''}-${app.name || 'app'}`;
@@ -563,6 +584,10 @@ const onOverlayHotkey = (event: KeyboardEvent) => {
   event.preventDefault();
   event.stopPropagation();
   showOverlay.value = !showOverlay.value;
+};
+
+const onPageHide = () => {
+  void client.disconnect({ keepalive: true });
 };
 
 const onFullscreenEscapeDown = (event: KeyboardEvent) => {
@@ -881,6 +906,20 @@ async function disconnect() {
   videoStateTick.value += 1;
 }
 
+async function terminateSession() {
+  if (terminatePending.value) return;
+  terminatePending.value = true;
+  try {
+    await http.post('/api/apps/close', {}, { validateStatus: () => true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to terminate session.';
+    message.error(msg);
+  } finally {
+    await disconnect();
+    terminatePending.value = false;
+  }
+}
+
 async function toggleFullscreen() {
   try {
     if (document.fullscreenElement) {
@@ -946,6 +985,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onOverlayHotkey, true);
   window.removeEventListener('keydown', onFullscreenEscapeDown, true);
   window.removeEventListener('keyup', onFullscreenEscapeUp, true);
+  window.removeEventListener('pagehide', onPageHide);
   cancelEscHold();
   if (detachVideoEvents) {
     detachVideoEvents();
@@ -960,6 +1000,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onOverlayHotkey, true);
   window.addEventListener('keydown', onFullscreenEscapeDown, true);
   window.addEventListener('keyup', onFullscreenEscapeUp, true);
+  window.addEventListener('pagehide', onPageHide);
   try {
     await appsStore.loadApps(true);
   } catch {

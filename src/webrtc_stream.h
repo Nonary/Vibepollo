@@ -21,6 +21,7 @@ namespace webrtc_stream {
     bool audio = true;
     bool video = true;
     bool encoded = true;
+    bool host_audio = false;
 
     std::optional<int> width;
     std::optional<int> height;

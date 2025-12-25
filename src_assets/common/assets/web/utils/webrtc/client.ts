@@ -10,6 +10,10 @@ export interface WebRtcClientCallbacks {
   onError?: (error: Error) => void;
 }
 
+export interface WebRtcDisconnectOptions {
+  keepalive?: boolean;
+}
+
 interface StatsState {
   lastVideoBytes?: number;
   lastAudioBytes?: number;
@@ -61,6 +65,8 @@ export class WebRtcClient {
   private statsTimer?: number;
   private statsState: StatsState = {};
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private autoDisconnectTimer?: number;
+  private disconnecting = false;
 
   constructor(api: WebRtcApi) {
     this.api = api;
@@ -80,6 +86,8 @@ export class WebRtcClient {
 
   async connect(config: StreamConfig, callbacks: WebRtcClientCallbacks = {}): Promise<string> {
     await this.disconnect();
+    this.clearAutoDisconnectTimer();
+    this.disconnecting = false;
     const session = await this.api.createSession(config);
     this.sessionId = session.sessionId;
     this.pendingRemoteCandidates = [];
@@ -108,7 +116,15 @@ export class WebRtcClient {
 
     this.pc.onconnectionstatechange = () => {
       if (!this.pc) return;
-      callbacks.onConnectionState?.(this.pc.connectionState);
+      const state = this.pc.connectionState;
+      callbacks.onConnectionState?.(state);
+      if (state === 'connected') {
+        this.clearAutoDisconnectTimer();
+      } else if (state === 'failed' || state === 'closed') {
+        this.scheduleAutoDisconnect(0);
+      } else if (state === 'disconnected') {
+        this.scheduleAutoDisconnect(5000);
+      }
     };
 
     this.pc.oniceconnectionstatechange = () => {
@@ -150,6 +166,7 @@ export class WebRtcClient {
       await this.flushPendingCandidates();
     } catch (error) {
       callbacks.onError?.(error as Error);
+      await this.disconnect();
       throw error;
     }
 
@@ -157,7 +174,10 @@ export class WebRtcClient {
     return session.sessionId;
   }
 
-  async disconnect(): Promise<void> {
+  async disconnect(options: WebRtcDisconnectOptions = {}): Promise<void> {
+    if (this.disconnecting) return;
+    this.disconnecting = true;
+    this.clearAutoDisconnectTimer();
     if (this.statsTimer) {
       window.clearInterval(this.statsTimer);
       this.statsTimer = undefined;
@@ -179,7 +199,11 @@ export class WebRtcClient {
       }
     }
     if (this.sessionId) {
-      await this.api.endSession(this.sessionId);
+      try {
+        await this.api.endSession(this.sessionId, { keepalive: options.keepalive });
+      } catch {
+        /* ignore */
+      }
     }
     this.remoteStream = new MediaStream();
     this.pendingRemoteCandidates = [];
@@ -187,6 +211,7 @@ export class WebRtcClient {
     this.sessionId = undefined;
     this.inputChannel = undefined;
     this.statsState = {};
+    this.disconnecting = false;
   }
 
   sendInput(payload: string): void {
@@ -224,6 +249,26 @@ export class WebRtcClient {
         /* ignore */
       }
     }
+  }
+
+  private clearAutoDisconnectTimer(): void {
+    if (this.autoDisconnectTimer) {
+      window.clearTimeout(this.autoDisconnectTimer);
+      this.autoDisconnectTimer = undefined;
+    }
+  }
+
+  private scheduleAutoDisconnect(delayMs: number): void {
+    if (this.disconnecting || !this.sessionId) return;
+    this.clearAutoDisconnectTimer();
+    if (delayMs <= 0) {
+      void this.disconnect();
+      return;
+    }
+    this.autoDisconnectTimer = window.setTimeout(() => {
+      this.autoDisconnectTimer = undefined;
+      void this.disconnect();
+    }, delayMs);
   }
 
   private extractStats(report: RTCStatsReport): WebRtcStatsSnapshot {

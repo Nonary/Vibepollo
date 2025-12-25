@@ -575,6 +575,9 @@ namespace webrtc_stream {
     std::mutex session_mutex;
     std::unordered_map<std::string, Session> sessions;
     std::atomic_uint active_sessions {0};
+#ifdef SUNSHINE_ENABLE_WEBRTC
+    std::atomic_uint active_peers {0};
+#endif
     std::atomic_bool rtsp_sessions_active {false};
     std::atomic_uint32_t webrtc_launch_session_id {0};
     WebRtcCaptureState webrtc_capture;
@@ -656,7 +659,7 @@ namespace webrtc_stream {
       config.channels = options.audio_channels.value_or(kDefaultAudioChannels);
       config.mask = 0;
       config.flags[audio::config_t::HIGH_QUALITY] = true;
-      config.flags[audio::config_t::HOST_AUDIO] = true;
+      config.flags[audio::config_t::HOST_AUDIO] = options.host_audio;
       config.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = false;
       return config;
     }
@@ -676,7 +679,7 @@ namespace webrtc_stream {
       launch_session->height = options.height.value_or(kDefaultHeight);
       launch_session->fps = options.fps.value_or(kDefaultFps);
       launch_session->appid = app_id;
-      launch_session->host_audio = true;
+      launch_session->host_audio = options.host_audio;
       launch_session->surround_info = audio_channels;
       launch_session->surround_params.clear();
       launch_session->gcmap = 0;
@@ -1087,6 +1090,7 @@ namespace webrtc_stream {
 
     std::mutex webrtc_mutex;
     lwrtc_factory_t *webrtc_factory = nullptr;
+    std::optional<lwrtc_video_codec_t> webrtc_factory_codec;
     std::mutex webrtc_media_mutex;
     std::condition_variable webrtc_media_cv;
     std::thread webrtc_media_thread;
@@ -1116,7 +1120,19 @@ namespace webrtc_stream {
     bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
       std::lock_guard lg {webrtc_mutex};
       if (webrtc_factory) {
-        return true;
+        if (preferred_codec && webrtc_factory_codec && *preferred_codec != *webrtc_factory_codec) {
+          if (active_peers.load(std::memory_order_acquire) == 0) {
+            BOOST_LOG(info) << "WebRTC: resetting factory to switch codec";
+            lwrtc_factory_release(webrtc_factory);
+            webrtc_factory = nullptr;
+            webrtc_factory_codec.reset();
+          } else {
+            BOOST_LOG(warning) << "WebRTC: codec switch requested while peers are active";
+          }
+        }
+        if (webrtc_factory) {
+          return true;
+        }
       }
 
       const auto passthrough_codec = preferred_codec.value_or(LWRTC_VIDEO_CODEC_H264);
@@ -1142,6 +1158,7 @@ namespace webrtc_stream {
         return false;
       }
 
+      webrtc_factory_codec = passthrough_codec;
       BOOST_LOG(debug) << "WebRTC: peer connection factory ready";
       return true;
     }
@@ -2004,6 +2021,7 @@ namespace webrtc_stream {
         BOOST_LOG(debug) << "WebRTC: releasing peer connection factory";
         lwrtc_factory_release(webrtc_factory);
         webrtc_factory = nullptr;
+        webrtc_factory_codec.reset();
       }
     }
 
@@ -2238,6 +2256,7 @@ namespace webrtc_stream {
       }
       lwrtc_peer_close(peer);
       lwrtc_peer_release(peer);
+      active_peers.fetch_sub(1, std::memory_order_relaxed);
     }
     if (input_channel) {
       lwrtc_data_channel_unregister_observer(input_channel);
@@ -2418,6 +2437,7 @@ namespace webrtc_stream {
       it->second.state.has_remote_offer = true;
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
+      bool created_peer = false;
       if (!it->second.peer) {
         if (!it->second.ice_context) {
           auto ice_context = std::make_shared<SessionIceContext>();
@@ -2431,6 +2451,8 @@ namespace webrtc_stream {
           return false;
         }
         it->second.peer = new_peer;
+        created_peer = true;
+        active_peers.fetch_add(1, std::memory_order_relaxed);
       }
       if (!it->second.data_channel_context) {
         auto data_context = std::make_shared<SessionDataChannelContext>();
@@ -2446,6 +2468,12 @@ namespace webrtc_stream {
       BOOST_LOG(debug) << "WebRTC: attaching media tracks id=" << session_id;
       if (!attach_media_tracks(it->second)) {
         BOOST_LOG(error) << "WebRTC: failed to attach media tracks id=" << session_id;
+        if (created_peer && it->second.peer) {
+          lwrtc_peer_close(it->second.peer);
+          lwrtc_peer_release(it->second.peer);
+          it->second.peer = nullptr;
+          active_peers.fetch_sub(1, std::memory_order_relaxed);
+        }
         return false;
       }
       peer = it->second.peer;

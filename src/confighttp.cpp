@@ -1982,6 +1982,9 @@ namespace confighttp {
         if (input.contains("audio")) {
           options.audio = input.at("audio").get<bool>();
         }
+        if (input.contains("host_audio")) {
+          options.host_audio = input.at("host_audio").get<bool>();
+        }
         if (input.contains("video")) {
           options.video = input.at("video").get<bool>();
         }

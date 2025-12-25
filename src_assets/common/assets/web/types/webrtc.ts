@@ -9,6 +9,7 @@ export interface StreamConfig {
   hdr?: boolean;
   audioChannels?: number;
   audioCodec?: 'opus' | 'aac';
+  muteHostAudio?: boolean;
   profile?: string;
   appId?: number;
   resume?: boolean;

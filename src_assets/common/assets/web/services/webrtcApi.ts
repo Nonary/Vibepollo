@@ -17,7 +17,7 @@ export interface WebRtcApi {
     sessionId: string,
     onCandidate: (candidate: RTCIceCandidateInit) => void,
   ): () => void;
-  endSession(sessionId: string): Promise<void>;
+  endSession(sessionId: string, options?: WebRtcSessionEndOptions): Promise<void>;
 }
 
 export interface WebRtcSessionFetchResult {
@@ -56,10 +56,16 @@ interface WebRtcIceResponse {
   error?: string;
 }
 
+export interface WebRtcSessionEndOptions {
+  keepalive?: boolean;
+}
+
 export class WebRtcHttpApi implements WebRtcApi {
   async createSession(config: StreamConfig): Promise<WebRtcSessionInfo> {
+    const muteHostAudio = config.muteHostAudio ?? true;
     const payload = {
       audio: true,
+      host_audio: !muteHostAudio,
       video: true,
       encoded: true,
       width: config.width,
@@ -228,7 +234,22 @@ export class WebRtcHttpApi implements WebRtcApi {
     };
   }
 
-  async endSession(sessionId: string): Promise<void> {
+  async endSession(sessionId: string, options?: WebRtcSessionEndOptions): Promise<void> {
+    if (options?.keepalive && typeof fetch === 'function') {
+      try {
+        await fetch(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE',
+          keepalive: true,
+          credentials: 'include',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+        });
+        return;
+      } catch {
+        /* ignore */
+      }
+    }
     await http.delete(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}`, {
       validateStatus: () => true,
     });
