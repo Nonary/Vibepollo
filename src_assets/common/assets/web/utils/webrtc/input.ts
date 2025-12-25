@@ -9,6 +9,17 @@ function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | Poi
   };
 }
 
+function shouldPreventDefaultKey(event: KeyboardEvent): boolean {
+  if (event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar') return true;
+  if (event.code === 'Tab' || event.key === 'Tab') return true;
+  if (event.code === 'MetaLeft' || event.code === 'MetaRight') return true;
+  if (event.code === 'OSLeft' || event.code === 'OSRight') return true;
+  if (event.key === 'Meta' || event.key === 'OS') return true;
+  if (event.key === 'Alt' || event.key === 'AltGraph' || event.key === 'Control') return true;
+  if (event.metaKey || event.altKey || event.ctrlKey) return true;
+  return false;
+}
+
 function resolveInputRect(
   element: HTMLElement,
   video?: HTMLVideoElement | null,
@@ -132,6 +143,10 @@ export function attachInputCapture(
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    if (shouldPreventDefaultKey(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     if (event.repeat) return;
     pressedKeys.set(event.code, { key: event.key, code: event.code });
     const payload: InputMessage = {
@@ -146,6 +161,10 @@ export function attachInputCapture(
   };
 
   const onKeyUp = (event: KeyboardEvent) => {
+    if (shouldPreventDefaultKey(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     pressedKeys.delete(event.code);
     const payload: InputMessage = {
       type: 'key_up',

@@ -106,10 +106,17 @@
         </n-card>
 
         <n-card title="Stream" size="small">
+          <template #header-extra>
+            <n-button size="small" tertiary @click="toggleFullscreen">
+              {{ isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen' }}
+            </n-button>
+          </template>
           <div
             ref="inputTarget"
-            class="relative aspect-video w-full overflow-hidden rounded-xl bg-slate-950"
+            class="relative w-full overflow-hidden rounded-xl bg-slate-950"
+            :class="isFullscreen ? 'h-full' : 'aspect-video'"
             tabindex="0"
+            @dblclick="toggleFullscreen"
           >
             <video
               ref="videoEl"
@@ -411,6 +418,7 @@ const stats = ref<WebRtcStatsSnapshot>({});
 const inputEnabled = ref(false);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
+const isFullscreen = ref(false);
 const sessionId = ref<string | null>(null);
 const serverSession = ref<WebRtcSessionState | null>(null);
 const serverSessionUpdatedAt = ref<string | null>(null);
@@ -488,6 +496,9 @@ let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
 let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
+const onFullscreenChange = () => {
+  isFullscreen.value = document.fullscreenElement === inputTarget.value;
+};
 
 function formatKbps(value?: number): string {
   return value ? `${value.toFixed(0)} kbps` : '--';
@@ -682,6 +693,19 @@ async function disconnect() {
   videoStateTick.value += 1;
 }
 
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+    if (!inputTarget.value) return;
+    await inputTarget.value.requestFullscreen();
+  } catch {
+    /* ignore */
+  }
+}
+
 function detachInputCapture() {
   if (detachInput) {
     detachInput();
@@ -710,6 +734,7 @@ watch(videoEl, (el) => {
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
   if (detachVideoEvents) {
     detachVideoEvents();
     detachVideoEvents = null;
@@ -719,6 +744,7 @@ onBeforeUnmount(() => {
 });
 
 onMounted(async () => {
+  document.addEventListener('fullscreenchange', onFullscreenChange);
   try {
     await appsStore.loadApps(true);
   } catch {
