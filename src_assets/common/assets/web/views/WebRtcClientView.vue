@@ -123,8 +123,8 @@
               class="h-full w-full object-contain"
               autoplay
               playsinline
-              muted
             ></video>
+            <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
             <div
               v-if="!isConnected"
               class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80"
@@ -418,6 +418,7 @@ const stats = ref<WebRtcStatsSnapshot>({});
 const inputEnabled = ref(true);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
+const audioEl = ref<HTMLAudioElement | null>(null);
 const isFullscreen = ref(false);
 const sessionId = ref<string | null>(null);
 const serverSession = ref<WebRtcSessionState | null>(null);
@@ -496,6 +497,8 @@ let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
 let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
+let audioStream: MediaStream | null = null;
+let audioAutoplayRequested = false;
 const onFullscreenChange = () => {
   isFullscreen.value = document.fullscreenElement === inputTarget.value;
 };
@@ -549,6 +552,26 @@ function updateRemoteStreamInfo(stream: MediaStream): void {
   lastTrackAt.value = new Date().toLocaleTimeString();
   lastTrackSnapshot = { video: info.videoTracks, audio: info.audioTracks };
   remoteStreamInfo.value = info;
+}
+
+function updateAudioElement(stream: MediaStream): void {
+  const audioTrack = stream.getAudioTracks()[0];
+  if (!audioEl.value || !audioTrack) return;
+  if (!audioStream) {
+    audioStream = new MediaStream();
+  }
+  audioStream.getAudioTracks().forEach((track) => audioStream?.removeTrack(track));
+  audioStream.addTrack(audioTrack);
+  audioEl.value.srcObject = audioStream;
+  audioEl.value.muted = false;
+  if (audioAutoplayRequested) {
+    const playPromise = audioEl.value.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {
+        /* ignore */
+      });
+    }
+  }
 }
 
 function stopServerSessionPolling(): void {
@@ -620,6 +643,11 @@ function statusTagType(state?: string | null) {
 
 async function connect() {
   isConnecting.value = true;
+  audioAutoplayRequested = true;
+  if (audioEl.value) {
+    audioEl.value.muted = false;
+    audioEl.value.volume = 1;
+  }
   stopServerSessionPolling();
   sessionId.value = null;
   serverSession.value = null;
@@ -635,7 +663,10 @@ async function connect() {
       onRemoteStream: (stream) => {
         if (videoEl.value) {
           videoEl.value.srcObject = stream;
+          videoEl.value.muted = false;
+          videoEl.value.volume = 1;
           updateRemoteStreamInfo(stream);
+          updateAudioElement(stream);
           const playPromise = videoEl.value.play();
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((error) => {
@@ -680,6 +711,9 @@ async function disconnect() {
   stats.value = {};
   detachInputCapture();
   if (videoEl.value) videoEl.value.srcObject = null;
+  if (audioEl.value) audioEl.value.srcObject = null;
+  audioStream = null;
+  audioAutoplayRequested = false;
   sessionId.value = null;
   serverSession.value = null;
   serverSessionUpdatedAt.value = null;
