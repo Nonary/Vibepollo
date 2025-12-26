@@ -26,6 +26,16 @@ const ENCODING_MIME: Record<string, string[]> = {
   av1: ['video/av1'],
 };
 
+function resolveEncodingPreference(encoding: string): string {
+  if (typeof RTCRtpSender === 'undefined') return encoding;
+  const mimes = ENCODING_MIME[encoding.toLowerCase()];
+  if (!mimes) return encoding;
+  const caps = RTCRtpSender.getCapabilities('video');
+  if (!caps?.codecs) return encoding;
+  const supported = caps.codecs.some((codec) => mimes.includes(codec.mimeType.toLowerCase()));
+  return supported ? encoding : 'h264';
+}
+
 function applyCodecPreferences(
   transceiver: RTCRtpTransceiver | null,
   encoding: string,
@@ -88,7 +98,10 @@ export class WebRtcClient {
     await this.disconnect();
     this.clearAutoDisconnectTimer();
     this.disconnecting = false;
-    const session = await this.api.createSession(config);
+    const resolvedEncoding = resolveEncodingPreference(config.encoding);
+    const sessionConfig =
+      resolvedEncoding === config.encoding ? config : { ...config, encoding: resolvedEncoding };
+    const session = await this.api.createSession(sessionConfig);
     this.sessionId = session.sessionId;
     this.pendingRemoteCandidates = [];
     this.pc = new RTCPeerConnection({
@@ -99,7 +112,7 @@ export class WebRtcClient {
 
     const videoTransceiver = this.pc.addTransceiver('video', { direction: 'recvonly' });
     this.pc.addTransceiver('audio', { direction: 'recvonly' });
-    applyCodecPreferences(videoTransceiver, config.encoding);
+    applyCodecPreferences(videoTransceiver, sessionConfig.encoding);
 
     this.inputChannel = this.pc.createDataChannel('input', {
       ordered: false,

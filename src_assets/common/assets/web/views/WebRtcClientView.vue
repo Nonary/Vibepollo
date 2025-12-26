@@ -74,11 +74,14 @@
               <div>
                 <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.encoding') }}</label>
                 <div class="flex gap-1.5">
-                  <button v-for="opt in encodingOptions" :key="opt.value" 
-                          @click="config.encoding = opt.value" 
-                          class="preset-btn flex-1" 
-                          :class="{ active: config.encoding === opt.value }">
-                    {{ opt.label }}
+                  <button v-for="opt in encodingOptions" :key="opt.value"
+                          @click="opt.supported && (config.encoding = opt.value)"
+                          class="preset-btn flex-1"
+                          :class="{ active: config.encoding === opt.value && opt.supported, disabled: !opt.supported }"
+                          :disabled="!opt.supported"
+                          :title="opt.supported ? undefined : opt.hint">
+                    <span>{{ opt.label }}</span>
+                    <span v-if="!opt.supported" class="block text-[9px] leading-tight text-onDark/40">Unsupported</span>
                   </button>
                 </div>
               </div>
@@ -372,7 +375,7 @@ import {
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
 import { attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
-import { StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
+import { EncodingType, StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
 import { http } from '@/http';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
@@ -405,11 +408,49 @@ const connectionStatusLabel = computed(() => {
   return 'Ready';
 });
 
-const encodingOptions = [
+type EncodingOption = { label: string; value: EncodingType };
+
+const baseEncodingOptions: EncodingOption[] = [
   { label: 'H.264', value: 'h264' },
   { label: 'HEVC', value: 'hevc' },
   { label: 'AV1', value: 'av1' },
 ];
+
+const encodingMimes: Record<EncodingType, string[]> = {
+  h264: ['video/h264'],
+  hevc: ['video/h265', 'video/hevc'],
+  av1: ['video/av1'],
+};
+
+function detectEncodingSupport(): Record<EncodingType, boolean> {
+  const support: Record<EncodingType, boolean> = {
+    h264: true,
+    hevc: true,
+    av1: true,
+  };
+  if (typeof RTCRtpSender === 'undefined') {
+    return support;
+  }
+  const caps = RTCRtpSender.getCapabilities('video');
+  if (!caps?.codecs) {
+    return support;
+  }
+  const mimeTypes = caps.codecs.map((codec) => codec.mimeType.toLowerCase());
+  (Object.keys(encodingMimes) as EncodingType[]).forEach((encoding) => {
+    support[encoding] = encodingMimes[encoding].some((mime) => mimeTypes.includes(mime));
+  });
+  return support;
+}
+
+const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport());
+
+const encodingOptions = computed(() =>
+  baseEncodingOptions.map((opt) => {
+    const supported = encodingSupport.value[opt.value];
+    const hint = supported ? '' : `${opt.label} unsupported by this browser`;
+    return { ...opt, supported, hint };
+  }),
+);
 
 const pacingOptions = [
   { label: 'Latency', value: 'latency' },
@@ -443,6 +484,27 @@ const config = reactive<StreamConfig>({
   videoPacingSlackMs: pacingPresets.balanced.slackMs,
   videoMaxFrameAgeMs: pacingPresets.balanced.maxFrameAgeMs,
 });
+
+function resolveFallbackEncoding(): EncodingType {
+  const support = encodingSupport.value;
+  const fallback = (Object.keys(support) as EncodingType[]).find((key) => support[key]);
+  return fallback ?? 'h264';
+}
+
+function ensureEncodingSupported(): void {
+  const current = config.encoding as EncodingType;
+  if (!encodingSupport.value[current]) {
+    config.encoding = resolveFallbackEncoding();
+  }
+}
+
+watch(
+  () => config.encoding,
+  () => {
+    ensureEncodingSupported();
+  },
+  { immediate: true },
+);
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
@@ -1058,6 +1120,8 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  encodingSupport.value = detectEncodingSupport();
+  ensureEncodingSupported();
 });
 </script>
 
@@ -1108,6 +1172,22 @@ onMounted(async () => {
   border-color: rgb(var(--color-primary));
   color: rgb(var(--color-on-primary));
   box-shadow: 0 4px 15px rgb(var(--color-primary) / 0.3);
+}
+
+.preset-btn.disabled,
+.preset-btn:disabled {
+  background: rgb(var(--color-surface) / 0.6);
+  border-color: rgb(var(--color-primary) / 0.08);
+  color: rgb(var(--color-on-dark) / 0.35);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.preset-btn.disabled:hover,
+.preset-btn:disabled:hover {
+  background: rgb(var(--color-surface) / 0.6);
+  border-color: rgb(var(--color-primary) / 0.08);
+  color: rgb(var(--color-on-dark) / 0.35);
 }
 
 /* Game Card */

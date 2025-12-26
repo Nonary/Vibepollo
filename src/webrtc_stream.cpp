@@ -707,7 +707,12 @@ namespace webrtc_stream {
       return value;
     }
 
-    std::optional<Av1FmtpParams> parse_av1_fmtp_params(std::string_view sdp) {
+    struct Av1OfferInfo {
+      bool offered = false;
+      std::optional<Av1FmtpParams> fmtp;
+    };
+
+    Av1OfferInfo parse_av1_offer(std::string_view sdp) {
       std::unordered_map<int, Av1FmtpParams> fmtp_params;
       std::vector<int> av1_payloads;
 
@@ -724,13 +729,13 @@ namespace webrtc_stream {
 
         if (line.rfind("a=rtpmap:", 0) == 0) {
           auto rest = line.substr(9);
-          auto space = rest.find(' ');
+          auto space = rest.find_first_of(" \t");
           if (space != std::string_view::npos) {
             auto pt_str = trim_ascii(rest.substr(0, space));
             auto codec = trim_ascii(rest.substr(space + 1));
             auto slash = codec.find('/');
             auto codec_name = slash == std::string_view::npos ? codec : codec.substr(0, slash);
-            if (boost::iequals(codec_name, "AV1")) {
+            if (boost::istarts_with(codec_name, "AV1")) {
               int pt = -1;
               auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
               if (result.ec == std::errc() && pt >= 0) {
@@ -740,7 +745,7 @@ namespace webrtc_stream {
           }
         } else if (line.rfind("a=fmtp:", 0) == 0) {
           auto rest = line.substr(7);
-          auto space = rest.find(' ');
+          auto space = rest.find_first_of(" \t");
           if (space != std::string_view::npos) {
             auto pt_str = trim_ascii(rest.substr(0, space));
             auto params_str = rest.substr(space + 1);
@@ -786,16 +791,17 @@ namespace webrtc_stream {
         line_start = line_end + 1;
       }
 
+      Av1OfferInfo info;
       if (av1_payloads.empty()) {
-        return std::nullopt;
+        return info;
       }
-
+      info.offered = true;
       const int pt = av1_payloads.front();
       auto it = fmtp_params.find(pt);
       if (it != fmtp_params.end()) {
-        return it->second;
+        info.fmtp = it->second;
       }
-      return Av1FmtpParams {};
+      return info;
     }
 
     const char *lwrtc_codec_name(lwrtc_video_codec_t codec) {
@@ -2815,15 +2821,18 @@ namespace webrtc_stream {
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
       if (it->second.state.codec && boost::iequals(*it->second.state.codec, "av1")) {
-        auto params = parse_av1_fmtp_params(sdp);
+        const auto av1_offer = parse_av1_offer(sdp);
         {
           std::lock_guard lg {webrtc_mutex};
-          webrtc_desired_av1_params = params;
+          webrtc_desired_av1_params = av1_offer.fmtp;
         }
-        if (params) {
-          BOOST_LOG(debug) << "WebRTC: parsed AV1 fmtp params profile=" << params->profile
-                           << " level-idx=" << params->level_idx
-                           << " tier=" << params->tier;
+        if (!av1_offer.offered) {
+          BOOST_LOG(error) << "WebRTC: AV1 requested but offer does not include AV1";
+          return false;
+        } else if (av1_offer.fmtp) {
+          BOOST_LOG(debug) << "WebRTC: parsed AV1 fmtp params profile=" << av1_offer.fmtp->profile
+                           << " level-idx=" << av1_offer.fmtp->level_idx
+                           << " tier=" << av1_offer.fmtp->tier;
         } else {
           BOOST_LOG(warning) << "WebRTC: no AV1 fmtp params found in offer";
         }
