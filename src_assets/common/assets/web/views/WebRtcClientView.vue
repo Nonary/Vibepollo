@@ -374,7 +374,7 @@ import {
 } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
-import { attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
+import { applyGamepadFeedback, attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
 import { EncodingType, StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
 import { http } from '@/http';
 import { useAppsStore } from '@/stores/apps';
@@ -975,6 +975,9 @@ async function connect() {
       },
       onInputChannelState: (state) => {
         inputChannelState.value = state;
+      },
+      onInputMessage: (message) => {
+        applyGamepadFeedback(message);
       },
       onStats: (snapshot) => {
         stats.value = snapshot;

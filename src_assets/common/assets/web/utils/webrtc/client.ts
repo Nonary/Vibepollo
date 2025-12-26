@@ -1,5 +1,5 @@
 import { WebRtcApi } from '@/services/webrtcApi';
-import { StreamConfig, WebRtcStatsSnapshot } from '@/types/webrtc';
+import { GamepadFeedbackMessage, StreamConfig, WebRtcStatsSnapshot } from '@/types/webrtc';
 
 export interface WebRtcClientCallbacks {
   onRemoteStream?: (stream: MediaStream) => void;
@@ -7,6 +7,7 @@ export interface WebRtcClientCallbacks {
   onIceState?: (state: RTCIceConnectionState) => void;
   onInputChannelState?: (state: RTCDataChannelState) => void;
   onStats?: (stats: WebRtcStatsSnapshot) => void;
+  onInputMessage?: (message: GamepadFeedbackMessage) => void;
   onError?: (error: Error) => void;
 }
 
@@ -77,6 +78,8 @@ export class WebRtcClient {
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private autoDisconnectTimer?: number;
   private disconnecting = false;
+  private pendingInput: string[] = [];
+  private maxPendingInput = 256;
 
   constructor(api: WebRtcApi) {
     this.api = api;
@@ -118,9 +121,23 @@ export class WebRtcClient {
       ordered: false,
       maxRetransmits: 0,
     });
-    this.inputChannel.onopen = () => callbacks.onInputChannelState?.('open');
+    this.inputChannel.onopen = () => {
+      callbacks.onInputChannelState?.('open');
+      this.flushPendingInput();
+    };
     this.inputChannel.onclose = () => callbacks.onInputChannelState?.('closed');
     this.inputChannel.onerror = () => callbacks.onInputChannelState?.('closing');
+    this.inputChannel.onmessage = (event) => {
+      if (!callbacks.onInputMessage) return;
+      if (typeof event.data !== 'string') return;
+      try {
+        const message = JSON.parse(event.data) as GamepadFeedbackMessage;
+        if (message?.type !== 'gamepad_feedback') return;
+        callbacks.onInputMessage(message);
+      } catch {
+        /* ignore */
+      }
+    };
 
     this.pc.ontrack = (event) => {
       this.remoteStream.addTrack(event.track);
@@ -223,16 +240,44 @@ export class WebRtcClient {
     this.pc = undefined;
     this.sessionId = undefined;
     this.inputChannel = undefined;
+    this.pendingInput = [];
     this.statsState = {};
     this.disconnecting = false;
   }
 
-  sendInput(payload: string): void {
-    if (!this.inputChannel || this.inputChannel.readyState !== 'open') return;
+  sendInput(payload: string): boolean {
+    if (!this.inputChannel || this.inputChannel.readyState !== 'open') {
+      this.queueInput(payload);
+      return false;
+    }
     try {
       this.inputChannel.send(payload);
+      return true;
     } catch {
-      /* ignore */
+      this.queueInput(payload);
+      return false;
+    }
+  }
+
+  private queueInput(payload: string): void {
+    if (this.pendingInput.length >= this.maxPendingInput) {
+      this.pendingInput.shift();
+    }
+    this.pendingInput.push(payload);
+  }
+
+  private flushPendingInput(): void {
+    if (!this.inputChannel || this.inputChannel.readyState !== 'open') return;
+    if (!this.pendingInput.length) return;
+    const pending = this.pendingInput;
+    this.pendingInput = [];
+    for (const payload of pending) {
+      try {
+        this.inputChannel.send(payload);
+      } catch {
+        this.queueInput(payload);
+        break;
+      }
     }
   }
 

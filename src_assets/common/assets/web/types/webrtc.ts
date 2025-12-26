@@ -100,6 +100,18 @@ export interface WebRtcStatsSnapshot {
   };
 }
 
+export interface GamepadFeedbackMessage {
+  type: 'gamepad_feedback';
+  event: 'rumble' | 'rumble_triggers' | 'motion_event_state';
+  id: number;
+  lowfreq?: number;
+  highfreq?: number;
+  left?: number;
+  right?: number;
+  motionType?: number;
+  reportRate?: number;
+}
+
 export interface InputModifiers {
   alt: boolean;
   ctrl: boolean;
@@ -139,5 +151,44 @@ export type InputMessage =
       code: string;
       repeat: boolean;
       modifiers: InputModifiers;
+      ts: number;
+    }
+  | {
+      type: 'gamepad_connect';
+      id: number;
+      gamepadType: number;
+      capabilities: number;
+      supportedButtons: number;
+      ts: number;
+    }
+  | {
+      type: 'gamepad_disconnect';
+      id: number;
+      activeMask: number;
+      ts: number;
+    }
+  | {
+      type: 'gamepad_state';
+      id: number;
+      activeMask: number;
+      buttons: number;
+      gamepadType?: number;
+      capabilities?: number;
+      supportedButtons?: number;
+      lt: number;
+      rt: number;
+      lsX: number;
+      lsY: number;
+      rsX: number;
+      rsY: number;
+      ts: number;
+    }
+  | {
+      type: 'gamepad_motion';
+      id: number;
+      motionType: number;
+      x: number;
+      y: number;
+      z: number;
       ts: number;
     };

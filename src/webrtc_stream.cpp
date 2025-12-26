@@ -6,6 +6,7 @@
 // standard includes
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cctype>
 #include <charconv>
 #include <condition_variable>
@@ -194,6 +195,9 @@ namespace webrtc_stream {
       std::shared_ptr<safe::mail_raw_t> mail;
       std::thread video_thread;
       std::thread audio_thread;
+      std::thread feedback_thread;
+      safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> feedback_queue;
+      std::atomic_bool feedback_shutdown {false};
       std::optional<int> app_id;
     };
 
@@ -244,6 +248,8 @@ namespace webrtc_stream {
     std::mutex input_mutex;
     std::shared_ptr<safe::mail_raw_t> input_mail;
     std::shared_ptr<input::input_t> input_context;
+    std::mutex gamepad_mutex;
+    std::bitset<16> webrtc_gamepads;
 
     std::shared_ptr<safe::mail_raw_t> current_capture_mail();
 
@@ -256,6 +262,10 @@ namespace webrtc_stream {
         }
         input_context.reset();
         input_mail.reset();
+        {
+          std::lock_guard lg {gamepad_mutex};
+          webrtc_gamepads.reset();
+        }
       }
       if (!input_context) {
         input_mail = capture_mail ? capture_mail : std::make_shared<safe::mail_raw_t>();
@@ -299,6 +309,10 @@ namespace webrtc_stream {
       }
       input_context.reset();
       input_mail.reset();
+      {
+        std::lock_guard gamepad_lock {gamepad_mutex};
+        webrtc_gamepads.reset();
+      }
     }
 
     uint8_t modifiers_from_json(const nlohmann::json &input) {
@@ -481,6 +495,128 @@ namespace webrtc_stream {
       return data;
     }
 
+    void write_netfloat(netfloat &out, float value) {
+      auto le_value = util::endian::little(value);
+      std::memcpy(out, &le_value, sizeof(le_value));
+    }
+
+    std::vector<uint8_t> make_gamepad_arrival_packet(
+      int controller_number,
+      uint8_t controller_type,
+      uint16_t capabilities,
+      uint32_t supported_buttons
+    ) {
+      SS_CONTROLLER_ARRIVAL_PACKET packet {};
+      packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet) - sizeof(packet.header.size));
+      packet.header.magic = util::endian::little<std::uint32_t>(SS_CONTROLLER_ARRIVAL_MAGIC);
+      packet.controllerNumber = static_cast<uint8_t>(controller_number);
+      packet.type = controller_type;
+      packet.capabilities = util::endian::little(static_cast<uint16_t>(capabilities));
+      packet.supportedButtonFlags = util::endian::little(static_cast<uint32_t>(supported_buttons));
+
+      std::vector<uint8_t> data(sizeof(packet));
+      std::memcpy(data.data(), &packet, sizeof(packet));
+      return data;
+    }
+
+    std::vector<uint8_t> make_gamepad_state_packet(
+      int controller_number,
+      uint16_t active_mask,
+      uint32_t buttons,
+      uint8_t left_trigger,
+      uint8_t right_trigger,
+      int16_t ls_x,
+      int16_t ls_y,
+      int16_t rs_x,
+      int16_t rs_y
+    ) {
+      NV_MULTI_CONTROLLER_PACKET packet {};
+      packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet) - sizeof(packet.header.size));
+      packet.header.magic = util::endian::little<std::uint32_t>(MULTI_CONTROLLER_MAGIC_GEN5);
+      packet.headerB = MC_HEADER_B;
+      packet.controllerNumber = static_cast<int16_t>(controller_number);
+      packet.activeGamepadMask = static_cast<int16_t>(active_mask);
+      packet.midB = MC_MID_B;
+      packet.buttonFlags = static_cast<int16_t>(buttons & 0xFFFF);
+      packet.leftTrigger = left_trigger;
+      packet.rightTrigger = right_trigger;
+      packet.leftStickX = ls_x;
+      packet.leftStickY = ls_y;
+      packet.rightStickX = rs_x;
+      packet.rightStickY = rs_y;
+      packet.tailA = MC_TAIL_A;
+      packet.buttonFlags2 = static_cast<int16_t>((buttons >> 16) & 0xFFFF);
+      packet.tailB = MC_TAIL_B;
+
+      std::vector<uint8_t> data(sizeof(packet));
+      std::memcpy(data.data(), &packet, sizeof(packet));
+      return data;
+    }
+
+    std::vector<uint8_t> make_gamepad_motion_packet(
+      int controller_number,
+      uint8_t motion_type,
+      float x,
+      float y,
+      float z
+    ) {
+      SS_CONTROLLER_MOTION_PACKET packet {};
+      packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet) - sizeof(packet.header.size));
+      packet.header.magic = util::endian::little<std::uint32_t>(SS_CONTROLLER_MOTION_MAGIC);
+      packet.controllerNumber = static_cast<uint8_t>(controller_number);
+      packet.motionType = motion_type;
+      write_netfloat(packet.x, x);
+      write_netfloat(packet.y, y);
+      write_netfloat(packet.z, z);
+
+      std::vector<uint8_t> data(sizeof(packet));
+      std::memcpy(data.data(), &packet, sizeof(packet));
+      return data;
+    }
+
+    uint8_t parse_gamepad_type(const nlohmann::json &message) {
+      if (!message.contains("gamepadType")) {
+        return LI_CTYPE_UNKNOWN;
+      }
+      const auto &value = message["gamepadType"];
+      if (value.is_number_integer()) {
+        return static_cast<uint8_t>(value.get<int>());
+      }
+      if (value.is_string()) {
+        const auto type_str = value.get<std::string>();
+        if (type_str == "xbox") {
+          return LI_CTYPE_XBOX;
+        }
+        if (type_str == "playstation" || type_str == "ps") {
+          return LI_CTYPE_PS;
+        }
+        if (type_str == "nintendo" || type_str == "switch") {
+          return LI_CTYPE_NINTENDO;
+        }
+      }
+      return LI_CTYPE_UNKNOWN;
+    }
+
+    uint8_t parse_motion_type(const nlohmann::json &message) {
+      if (!message.contains("motionType")) {
+        return 0;
+      }
+      const auto &value = message["motionType"];
+      if (value.is_number_integer()) {
+        return static_cast<uint8_t>(value.get<int>());
+      }
+      if (value.is_string()) {
+        const auto type_str = value.get<std::string>();
+        if (type_str == "gyro") {
+          return LI_MOTION_TYPE_GYRO;
+        }
+        if (type_str == "accel") {
+          return LI_MOTION_TYPE_ACCEL;
+        }
+      }
+      return 0;
+    }
+
     void handle_input_message(std::string_view payload) {
       if (payload.empty()) {
         return;
@@ -541,6 +677,114 @@ namespace webrtc_stream {
           mods = modifiers_from_json(message["modifiers"]);
         }
         input::passthrough(input_ctx, make_keyboard_packet(*key_code, type == "key_up", mods));
+        return;
+      }
+      if (type == "gamepad_connect") {
+        const int controller = message.value("id", -1);
+        if (controller < 0 || controller >= 16) {
+          return;
+        }
+        bool should_send = false;
+        {
+          std::lock_guard lg {gamepad_mutex};
+          if (!webrtc_gamepads.test(controller)) {
+            webrtc_gamepads.set(controller);
+            should_send = true;
+          }
+        }
+        if (!should_send) {
+          return;
+        }
+        const uint8_t controller_type = parse_gamepad_type(message);
+        const auto capabilities = static_cast<uint16_t>(message.value("capabilities", 0));
+        const auto supported_buttons = static_cast<uint32_t>(message.value("supportedButtons", 0));
+        input::passthrough(input_ctx, make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons));
+        return;
+      }
+      if (type == "gamepad_state") {
+        const int controller = message.value("id", -1);
+        if (controller < 0 || controller >= 16) {
+          return;
+        }
+        bool should_send_arrival = false;
+        {
+          std::lock_guard lg {gamepad_mutex};
+          if (!webrtc_gamepads.test(controller)) {
+            webrtc_gamepads.set(controller);
+            should_send_arrival = true;
+          }
+        }
+        if (should_send_arrival) {
+          const uint8_t controller_type = parse_gamepad_type(message);
+          const auto capabilities = static_cast<uint16_t>(message.value("capabilities", 0));
+          const auto supported_buttons = static_cast<uint32_t>(message.value("supportedButtons", 0));
+          input::passthrough(
+            input_ctx,
+            make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons)
+          );
+        }
+        const auto active_mask = static_cast<uint16_t>(message.value("activeMask", 0));
+        const auto buttons = static_cast<uint32_t>(message.value("buttons", 0));
+        const auto clamp_u8 = [](int value) -> uint8_t {
+          return static_cast<uint8_t>(std::clamp(value, 0, 255));
+        };
+        const auto clamp_i16 = [](int value) -> int16_t {
+          return static_cast<int16_t>(std::clamp(value, -32768, 32767));
+        };
+        const int lt = static_cast<int>(std::lround(message.value("lt", 0.0)));
+        const int rt = static_cast<int>(std::lround(message.value("rt", 0.0)));
+        const int ls_x = static_cast<int>(std::lround(message.value("lsX", 0.0)));
+        const int ls_y = static_cast<int>(std::lround(message.value("lsY", 0.0)));
+        const int rs_x = static_cast<int>(std::lround(message.value("rsX", 0.0)));
+        const int rs_y = static_cast<int>(std::lround(message.value("rsY", 0.0)));
+        input::passthrough(
+          input_ctx,
+          make_gamepad_state_packet(
+            controller,
+            active_mask,
+            buttons,
+            clamp_u8(lt),
+            clamp_u8(rt),
+            clamp_i16(ls_x),
+            clamp_i16(ls_y),
+            clamp_i16(rs_x),
+            clamp_i16(rs_y)
+          )
+        );
+        return;
+      }
+      if (type == "gamepad_disconnect") {
+        const int controller = message.value("id", -1);
+        if (controller < 0 || controller >= 16) {
+          return;
+        }
+        {
+          std::lock_guard lg {gamepad_mutex};
+          webrtc_gamepads.reset(controller);
+        }
+        const auto active_mask = static_cast<uint16_t>(message.value("activeMask", 0));
+        input::passthrough(
+          input_ctx,
+          make_gamepad_state_packet(controller, active_mask, 0, 0, 0, 0, 0, 0, 0)
+        );
+        return;
+      }
+      if (type == "gamepad_motion") {
+        const int controller = message.value("id", -1);
+        if (controller < 0 || controller >= 16) {
+          return;
+        }
+        const uint8_t motion_type = parse_motion_type(message);
+        if (motion_type != LI_MOTION_TYPE_GYRO && motion_type != LI_MOTION_TYPE_ACCEL) {
+          return;
+        }
+        const float x = static_cast<float>(message.value("x", 0.0));
+        const float y = static_cast<float>(message.value("y", 0.0));
+        const float z = static_cast<float>(message.value("z", 0.0));
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+          return;
+        }
+        input::passthrough(input_ctx, make_gamepad_motion_packet(controller, motion_type, x, y, z));
         return;
       }
     }
@@ -644,6 +888,65 @@ namespace webrtc_stream {
     std::shared_ptr<safe::mail_raw_t> current_capture_mail() {
       std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
       return webrtc_capture.mail;
+    }
+
+    std::optional<std::string> build_gamepad_feedback_payload(const platf::gamepad_feedback_msg_t &msg) {
+      nlohmann::json payload;
+      payload["type"] = "gamepad_feedback";
+      payload["id"] = msg.id;
+      switch (msg.type) {
+        case platf::gamepad_feedback_e::rumble:
+          payload["event"] = "rumble";
+          payload["lowfreq"] = msg.data.rumble.lowfreq;
+          payload["highfreq"] = msg.data.rumble.highfreq;
+          break;
+        case platf::gamepad_feedback_e::rumble_triggers:
+          payload["event"] = "rumble_triggers";
+          payload["left"] = msg.data.rumble_triggers.left_trigger;
+          payload["right"] = msg.data.rumble_triggers.right_trigger;
+          break;
+        case platf::gamepad_feedback_e::set_motion_event_state:
+          payload["event"] = "motion_event_state";
+          payload["motionType"] = msg.data.motion_event_state.motion_type;
+          payload["reportRate"] = msg.data.motion_event_state.report_rate;
+          break;
+        default:
+          return std::nullopt;
+      }
+      return payload.dump();
+    }
+
+    void send_gamepad_feedback_payload(const std::string &payload) {
+      std::lock_guard lg {session_mutex};
+      for (auto &[_, session] : sessions) {
+        if (!session.input_channel) {
+          continue;
+        }
+        if (lwrtc_data_channel_state(session.input_channel) != LWRTC_DATA_CHANNEL_OPEN) {
+          continue;
+        }
+        lwrtc_data_channel_send(
+          session.input_channel,
+          reinterpret_cast<const uint8_t *>(payload.data()),
+          payload.size(),
+          0
+        );
+      }
+    }
+
+    void feedback_thread_main(safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> queue) {
+      using namespace std::chrono_literals;
+      while (!webrtc_capture.feedback_shutdown.load(std::memory_order_acquire)) {
+        auto next = queue->pop(50ms);
+        if (!next) {
+          continue;
+        }
+        auto payload = build_gamepad_feedback_payload(*next);
+        if (!payload) {
+          continue;
+        }
+        send_gamepad_feedback_payload(*payload);
+      }
     }
 
     void request_keyframe(std::string_view reason) {
@@ -1128,6 +1431,11 @@ namespace webrtc_stream {
       auto video_config = build_video_config(options);
       auto audio_config = build_audio_config(options);
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
+      webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
+      webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
+      webrtc_capture.feedback_thread = std::thread([queue = webrtc_capture.feedback_queue]() {
+        feedback_thread_main(queue);
+      });
 
       webrtc_capture.video_thread = std::thread([mail, video_config]() mutable {
         video::capture(mail, video_config, nullptr);
@@ -1152,12 +1460,20 @@ namespace webrtc_stream {
         auto shutdown_event = webrtc_capture.mail->event<bool>(mail::shutdown);
         shutdown_event->raise(true);
       }
+      webrtc_capture.feedback_shutdown.store(true, std::memory_order_release);
+      if (webrtc_capture.feedback_queue) {
+        webrtc_capture.feedback_queue->stop();
+      }
+      if (webrtc_capture.feedback_thread.joinable()) {
+        webrtc_capture.feedback_thread.join();
+      }
       if (webrtc_capture.video_thread.joinable()) {
         webrtc_capture.video_thread.join();
       }
       if (webrtc_capture.audio_thread.joinable()) {
         webrtc_capture.audio_thread.join();
       }
+      webrtc_capture.feedback_queue.reset();
       webrtc_capture.mail.reset();
       webrtc_capture.app_id.reset();
       webrtc_capture.active = false;
