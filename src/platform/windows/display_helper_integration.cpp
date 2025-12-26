@@ -38,6 +38,7 @@
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
+  #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
@@ -190,6 +191,87 @@ namespace {
       }
     }
     return false;
+  }
+
+  double refresh_rate_value(const display_device::FloatingPoint &value) {
+    return std::visit(
+      [](const auto &v) -> double {
+        using V = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<V, display_device::Rational>) {
+          return v.m_denominator > 0
+                   ? static_cast<double>(v.m_numerator) / v.m_denominator
+                   : static_cast<double>(v.m_numerator);
+        } else {
+          return static_cast<double>(v);
+        }
+      },
+      value
+    );
+  }
+
+  bool device_info_ready(const display_device::EnumeratedDevice::Info &info) {
+    if (info.m_resolution.m_width == 0 || info.m_resolution.m_height == 0) {
+      return false;
+    }
+    const double hz = refresh_rate_value(info.m_refresh_rate);
+    return hz > 0.0;
+  }
+
+  bool device_is_ready(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Full);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (!device_id_equals_ci(device.m_device_id, device_id)) {
+        continue;
+      }
+      if (!device.m_info) {
+        return false;
+      }
+      return device_info_ready(*device.m_info);
+    }
+
+    return false;
+  }
+
+  bool wait_for_device_ready(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (device_is_ready(device_id)) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+  }
+
+  std::optional<std::string> resolve_display_device_id(const display_helper_integration::DisplayApplyRequest &request) {
+    if (request.session_overrides.device_id_override && !request.session_overrides.device_id_override->empty()) {
+      return request.session_overrides.device_id_override;
+    }
+    if (request.configuration && !request.configuration->m_device_id.empty()) {
+      return request.configuration->m_device_id;
+    }
+    if (request.session && !request.session->virtual_display_device_id.empty()) {
+      return request.session->virtual_display_device_id;
+    }
+    if (request.session && request.session->virtual_display) {
+      if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+        return resolved;
+      }
+    }
+    return std::nullopt;
   }
 
   std::string build_snapshot_exclude_payload() {
@@ -1017,6 +1099,20 @@ namespace display_helper_integration {
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok && request.session) {
+          bool display_ready = true;
+          if (auto device_id = resolve_display_device_id(request)) {
+            display_ready = wait_for_device_ready(*device_id, kTopologyWaitTimeout);
+            if (!display_ready) {
+              BOOST_LOG(warning) << "Display helper: device_id " << *device_id
+                                 << " did not report a valid mode after APPLY.";
+            }
+          } else if (request.session->virtual_display) {
+            display_ready = wait_for_virtual_display_activation(kTopologyWaitTimeout);
+            if (!display_ready) {
+              BOOST_LOG(warning) << "Display helper: virtual display did not report ready after APPLY.";
+            }
+          }
+
           set_active_session(
             *request.session,
             request.session_overrides.device_id_override,
