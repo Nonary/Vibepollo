@@ -85,7 +85,7 @@ namespace webrtc_stream {
     constexpr int kDefaultHeight = 1080;
     constexpr int kDefaultFps = 60;
     constexpr int kDefaultAudioChannels = 2;
-    constexpr int kDefaultAudioPacketMs = 5;
+    constexpr int kDefaultAudioPacketMs = 10;
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {500};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
@@ -118,7 +118,7 @@ namespace webrtc_stream {
     };
 
     struct RawAudioFrame {
-      std::shared_ptr<std::vector<float>> samples;
+      std::shared_ptr<std::vector<int16_t>> samples;
       int sample_rate = 0;
       int channels = 0;
       int frames = 0;
@@ -858,6 +858,7 @@ namespace webrtc_stream {
       config.packetDuration = kDefaultAudioPacketMs;
       config.channels = options.audio_channels.value_or(kDefaultAudioChannels);
       config.mask = 0;
+      config.bypass_opus = true;
       config.flags[audio::config_t::HIGH_QUALITY] = true;
       config.flags[audio::config_t::HOST_AUDIO] = options.host_audio;
       config.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = false;
@@ -2202,7 +2203,7 @@ namespace webrtc_stream {
         };
         struct AudioWork {
           lwrtc_audio_source_t *source = nullptr;
-          std::shared_ptr<std::vector<float>> samples;
+          std::shared_ptr<std::vector<int16_t>> samples;
           int sample_rate = 0;
           int channels = 0;
           int frames = 0;
@@ -2358,7 +2359,7 @@ namespace webrtc_stream {
           lwrtc_audio_source_push(
             work.source,
             work.samples->data(),
-            static_cast<int>(sizeof(float) * 8),
+            static_cast<int>(sizeof(int16_t) * 8),
             work.sample_rate,
             work.channels,
             work.frames
@@ -2691,6 +2692,34 @@ namespace webrtc_stream {
     return results;
   }
 
+  void shutdown_all_sessions() {
+    std::vector<std::string> ids;
+    {
+      std::lock_guard lg {session_mutex};
+      ids.reserve(sessions.size());
+      for (const auto &entry : sessions) {
+        ids.push_back(entry.first);
+      }
+    }
+
+    for (const auto &id : ids) {
+      close_session(id);
+    }
+
+#ifdef SUNSHINE_ENABLE_WEBRTC
+    {
+      std::lock_guard lg {session_mutex};
+      if (!sessions.empty()) {
+        return;
+      }
+    }
+    stop_media_thread();
+    reset_input_context();
+    reset_webrtc_factory();
+#endif
+    stop_webrtc_capture_if_idle();
+  }
+
   void submit_video_packet(video::packet_raw_t &packet) {
     if (!has_active_sessions()) {
       return;
@@ -2779,21 +2808,58 @@ namespace webrtc_stream {
       return;
     }
 
-    auto shared_samples = std::make_shared<std::vector<float>>(samples);
+    const auto now = std::chrono::steady_clock::now();
+    auto shared_samples = std::make_shared<std::vector<int16_t>>();
+    shared_samples->resize(samples.size());
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+      float value = samples[i];
+      if (!std::isfinite(value)) {
+        value = 0.0f;
+      }
+      value = std::clamp(value, -1.0f, 1.0f);
+      shared_samples->at(i) = static_cast<int16_t>(std::lround(value * 32767.0f));
+    }
+    const auto byte_count = shared_samples->size() * sizeof(int16_t);
+#ifdef SUNSHINE_ENABLE_WEBRTC
+    std::vector<lwrtc_audio_source_t *> direct_sources;
+#endif
     std::lock_guard lg {session_mutex};
     for (auto &[_, session] : sessions) {
       if (!session.state.audio) {
         continue;
       }
 
-      RawAudioFrame raw;
-      raw.samples = shared_samples;
-      raw.sample_rate = sample_rate;
-      raw.channels = channels;
-      raw.frames = frames;
-      session.raw_audio_frames.push(std::move(raw));
+#ifdef SUNSHINE_ENABLE_WEBRTC
+      if (session.audio_source) {
+        direct_sources.push_back(session.audio_source);
+      } else
+#endif
+      {
+        RawAudioFrame raw;
+        raw.samples = shared_samples;
+        raw.sample_rate = sample_rate;
+        raw.channels = channels;
+        raw.frames = frames;
+        bool dropped = session.raw_audio_frames.push(std::move(raw));
+        if (dropped) {
+          session.state.audio_dropped++;
+        }
+      }
+      session.state.audio_packets++;
+      session.state.last_audio_time = now;
+      session.state.last_audio_bytes = byte_count;
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    for (auto *source : direct_sources) {
+      lwrtc_audio_source_push(
+        source,
+        shared_samples->data(),
+        static_cast<int>(sizeof(int16_t) * 8),
+        sample_rate,
+        channels,
+        frames
+      );
+    }
     webrtc_media_cv.notify_all();
 #endif
   }
