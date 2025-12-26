@@ -20,10 +20,10 @@ interface StatsState {
   lastTimestampMs?: number;
 }
 
-const ENCODING_MIME: Record<string, string> = {
-  h264: 'video/h264',
-  hevc: 'video/h265',
-  av1: 'video/av1',
+const ENCODING_MIME: Record<string, string[]> = {
+  h264: ['video/h264'],
+  hevc: ['video/h265', 'video/hevc'],
+  av1: ['video/av1'],
 };
 
 function applyCodecPreferences(
@@ -33,12 +33,12 @@ function applyCodecPreferences(
   if (!transceiver || typeof RTCRtpSender === 'undefined') return;
   const caps = RTCRtpSender.getCapabilities('video');
   if (!caps?.codecs) return;
-  const mime = ENCODING_MIME[encoding.toLowerCase()];
-  if (!mime) return;
-  const preferred = caps.codecs.filter((codec) => codec.mimeType.toLowerCase() === mime);
+  const mimes = ENCODING_MIME[encoding.toLowerCase()];
+  if (!mimes) return;
+  const preferred = caps.codecs.filter((codec) => mimes.includes(codec.mimeType.toLowerCase()));
   if (!preferred.length) return;
   let filteredPreferred = preferred;
-  if (mime === 'video/h264') {
+  if (mimes.includes('video/h264')) {
     const packetizationMode1 = preferred.filter((codec) =>
       /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(codec.sdpFmtpLine ?? ''),
     );
@@ -47,7 +47,7 @@ function applyCodecPreferences(
       filteredPreferred = packetizationMode1;
     }
   }
-  const rest = caps.codecs.filter((codec) => codec.mimeType.toLowerCase() !== mime);
+  const rest = caps.codecs.filter((codec) => !mimes.includes(codec.mimeType.toLowerCase()));
   try {
     transceiver.setCodecPreferences([...filteredPreferred, ...rest]);
   } catch {

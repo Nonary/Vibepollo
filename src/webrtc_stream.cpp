@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <condition_variable>
 #include <cmath>
 #include <cstdio>
@@ -617,6 +618,141 @@ namespace webrtc_stream {
       return 0;
     }
 
+    struct Av1FmtpParams {
+      std::string profile {"0"};
+      std::string level_idx {"5"};
+      std::string tier {"0"};
+    };
+
+    bool av1_params_equal(
+      const std::optional<Av1FmtpParams> &left,
+      const std::optional<Av1FmtpParams> &right
+    ) {
+      if (left.has_value() != right.has_value()) {
+        return false;
+      }
+      if (!left) {
+        return true;
+      }
+      return left->profile == right->profile &&
+             left->level_idx == right->level_idx &&
+             left->tier == right->tier;
+    }
+
+    std::string_view trim_ascii(std::string_view value) {
+      while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+        value.remove_prefix(1);
+      }
+      while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+        value.remove_suffix(1);
+      }
+      return value;
+    }
+
+    std::optional<Av1FmtpParams> parse_av1_fmtp_params(std::string_view sdp) {
+      std::unordered_map<int, Av1FmtpParams> fmtp_params;
+      std::vector<int> av1_payloads;
+
+      std::size_t line_start = 0;
+      while (line_start < sdp.size()) {
+        std::size_t line_end = sdp.find('\n', line_start);
+        if (line_end == std::string_view::npos) {
+          line_end = sdp.size();
+        }
+        auto line = sdp.substr(line_start, line_end - line_start);
+        if (!line.empty() && line.back() == '\r') {
+          line.remove_suffix(1);
+        }
+
+        if (line.rfind("a=rtpmap:", 0) == 0) {
+          auto rest = line.substr(9);
+          auto space = rest.find(' ');
+          if (space != std::string_view::npos) {
+            auto pt_str = trim_ascii(rest.substr(0, space));
+            auto codec = trim_ascii(rest.substr(space + 1));
+            auto slash = codec.find('/');
+            auto codec_name = slash == std::string_view::npos ? codec : codec.substr(0, slash);
+            if (boost::iequals(codec_name, "AV1")) {
+              int pt = -1;
+              auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
+              if (result.ec == std::errc() && pt >= 0) {
+                av1_payloads.push_back(pt);
+              }
+            }
+          }
+        } else if (line.rfind("a=fmtp:", 0) == 0) {
+          auto rest = line.substr(7);
+          auto space = rest.find(' ');
+          if (space != std::string_view::npos) {
+            auto pt_str = trim_ascii(rest.substr(0, space));
+            auto params_str = rest.substr(space + 1);
+            int pt = -1;
+            auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
+            if (result.ec == std::errc() && pt >= 0) {
+              auto &params = fmtp_params[pt];
+              std::size_t param_start = 0;
+              while (param_start < params_str.size()) {
+                std::size_t param_end = params_str.find(';', param_start);
+                if (param_end == std::string_view::npos) {
+                  param_end = params_str.size();
+                }
+                auto token = trim_ascii(params_str.substr(param_start, param_end - param_start));
+                if (!token.empty()) {
+                  auto eq = token.find('=');
+                  if (eq != std::string_view::npos) {
+                    auto key = trim_ascii(token.substr(0, eq));
+                    auto value = trim_ascii(token.substr(eq + 1));
+                    std::string key_lower {key};
+                    boost::algorithm::to_lower(key_lower);
+                    if (key_lower == "profile") {
+                      params.profile.assign(value.begin(), value.end());
+                    } else if (key_lower == "level-idx") {
+                      params.level_idx.assign(value.begin(), value.end());
+                    } else if (key_lower == "tier") {
+                      params.tier.assign(value.begin(), value.end());
+                    }
+                  }
+                }
+                if (param_end >= params_str.size()) {
+                  break;
+                }
+                param_start = param_end + 1;
+              }
+            }
+          }
+        }
+
+        if (line_end >= sdp.size()) {
+          break;
+        }
+        line_start = line_end + 1;
+      }
+
+      if (av1_payloads.empty()) {
+        return std::nullopt;
+      }
+
+      const int pt = av1_payloads.front();
+      auto it = fmtp_params.find(pt);
+      if (it != fmtp_params.end()) {
+        return it->second;
+      }
+      return Av1FmtpParams {};
+    }
+
+    const char *lwrtc_codec_name(lwrtc_video_codec_t codec) {
+      switch (codec) {
+        case LWRTC_VIDEO_CODEC_H264:
+          return "H264";
+        case LWRTC_VIDEO_CODEC_H265:
+          return "H265";
+        case LWRTC_VIDEO_CODEC_AV1:
+          return "AV1";
+        default:
+          return "Unknown";
+      }
+    }
+
     video::config_t build_video_config(const SessionOptions &options) {
       video::config_t config {};
       config.width = options.width.value_or(kDefaultWidth);
@@ -1091,6 +1227,8 @@ namespace webrtc_stream {
     std::mutex webrtc_mutex;
     lwrtc_factory_t *webrtc_factory = nullptr;
     std::optional<lwrtc_video_codec_t> webrtc_factory_codec;
+    std::optional<Av1FmtpParams> webrtc_factory_av1_params;
+    std::optional<Av1FmtpParams> webrtc_desired_av1_params;
     std::mutex webrtc_media_mutex;
     std::condition_variable webrtc_media_cv;
     std::thread webrtc_media_thread;
@@ -1104,6 +1242,9 @@ namespace webrtc_stream {
       if (boost::iequals(*state.codec, "hevc")) {
         return LWRTC_VIDEO_CODEC_H265;
       }
+      if (boost::iequals(*state.codec, "av1")) {
+        return LWRTC_VIDEO_CODEC_AV1;
+      }
       if (boost::iequals(*state.codec, "h264")) {
         return LWRTC_VIDEO_CODEC_H264;
       }
@@ -1111,14 +1252,20 @@ namespace webrtc_stream {
     }
 
     lwrtc_video_codec_t session_codec_to_encoded(const SessionState &state) {
-      if (state.codec && boost::iequals(*state.codec, "hevc")) {
-        return LWRTC_VIDEO_CODEC_H265;
+      if (state.codec) {
+        if (boost::iequals(*state.codec, "hevc")) {
+          return LWRTC_VIDEO_CODEC_H265;
+        }
+        if (boost::iequals(*state.codec, "av1")) {
+          return LWRTC_VIDEO_CODEC_AV1;
+        }
       }
       return LWRTC_VIDEO_CODEC_H264;
     }
 
     bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
       std::lock_guard lg {webrtc_mutex};
+      const auto desired_av1_params = webrtc_desired_av1_params;
       if (webrtc_factory) {
         if (preferred_codec && webrtc_factory_codec && *preferred_codec != *webrtc_factory_codec) {
           if (active_peers.load(std::memory_order_acquire) == 0) {
@@ -1126,8 +1273,24 @@ namespace webrtc_stream {
             lwrtc_factory_release(webrtc_factory);
             webrtc_factory = nullptr;
             webrtc_factory_codec.reset();
+            webrtc_factory_av1_params.reset();
           } else {
             BOOST_LOG(warning) << "WebRTC: codec switch requested while peers are active";
+          }
+        }
+        if (webrtc_factory && preferred_codec &&
+            *preferred_codec == LWRTC_VIDEO_CODEC_AV1 &&
+            webrtc_factory_codec &&
+            *webrtc_factory_codec == LWRTC_VIDEO_CODEC_AV1 &&
+            !av1_params_equal(desired_av1_params, webrtc_factory_av1_params)) {
+          if (active_peers.load(std::memory_order_acquire) == 0) {
+            BOOST_LOG(info) << "WebRTC: resetting factory to update AV1 parameters";
+            lwrtc_factory_release(webrtc_factory);
+            webrtc_factory = nullptr;
+            webrtc_factory_codec.reset();
+            webrtc_factory_av1_params.reset();
+          } else {
+            BOOST_LOG(warning) << "WebRTC: AV1 parameter update requested while peers are active";
           }
         }
         if (webrtc_factory) {
@@ -1137,7 +1300,7 @@ namespace webrtc_stream {
 
       const auto passthrough_codec = preferred_codec.value_or(LWRTC_VIDEO_CODEC_H264);
       BOOST_LOG(debug) << "WebRTC: initializing peer connection factory with passthrough encoder (codec="
-                       << (passthrough_codec == LWRTC_VIDEO_CODEC_H265 ? "H265" : "H264") << ")";
+                       << lwrtc_codec_name(passthrough_codec) << ")";
       webrtc_factory = lwrtc_factory_create();
       if (!webrtc_factory) {
         BOOST_LOG(error) << "WebRTC: failed to allocate peer connection factory";
@@ -1151,6 +1314,20 @@ namespace webrtc_stream {
         // Continue anyway - will fall back to raw frame mode
       }
 
+      if (passthrough_codec == LWRTC_VIDEO_CODEC_AV1 && desired_av1_params) {
+        if (!lwrtc_factory_set_passthrough_av1_params(
+              webrtc_factory,
+              desired_av1_params->profile.c_str(),
+              desired_av1_params->level_idx.c_str(),
+              desired_av1_params->tier.c_str())) {
+          BOOST_LOG(warning) << "WebRTC: failed to set AV1 fmtp parameters";
+        } else {
+          BOOST_LOG(debug) << "WebRTC: using AV1 fmtp parameters profile=" << desired_av1_params->profile
+                           << " level-idx=" << desired_av1_params->level_idx
+                           << " tier=" << desired_av1_params->tier;
+        }
+      }
+
       if (!lwrtc_factory_initialize(webrtc_factory)) {
         BOOST_LOG(error) << "WebRTC: failed to create peer connection factory";
         lwrtc_factory_release(webrtc_factory);
@@ -1159,6 +1336,8 @@ namespace webrtc_stream {
       }
 
       webrtc_factory_codec = passthrough_codec;
+      webrtc_factory_av1_params =
+        (passthrough_codec == LWRTC_VIDEO_CODEC_AV1) ? desired_av1_params : std::nullopt;
       BOOST_LOG(debug) << "WebRTC: peer connection factory ready";
       return true;
     }
@@ -2022,6 +2201,7 @@ namespace webrtc_stream {
         lwrtc_factory_release(webrtc_factory);
         webrtc_factory = nullptr;
         webrtc_factory_codec.reset();
+        webrtc_factory_av1_params.reset();
       }
     }
 
@@ -2056,8 +2236,7 @@ namespace webrtc_stream {
       }
 
       if (session.state.video && !session.encoded_video_source) {
-        // Create encoded video source for passthrough mode
-        // TODO: Support HEVC based on session codec negotiation
+        // Create encoded video source for passthrough mode based on session codec
         const auto codec = session_codec_to_encoded(session.state);
         session.encoded_video_source = lwrtc_encoded_video_source_create(
             webrtc_factory,
@@ -2437,6 +2616,21 @@ namespace webrtc_stream {
       it->second.state.has_remote_offer = true;
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
+      if (it->second.state.codec && boost::iequals(*it->second.state.codec, "av1")) {
+        auto params = parse_av1_fmtp_params(sdp);
+        {
+          std::lock_guard lg {webrtc_mutex};
+          webrtc_desired_av1_params = params;
+        }
+        if (params) {
+          BOOST_LOG(debug) << "WebRTC: parsed AV1 fmtp params profile=" << params->profile
+                           << " level-idx=" << params->level_idx
+                           << " tier=" << params->tier;
+        } else {
+          BOOST_LOG(warning) << "WebRTC: no AV1 fmtp params found in offer";
+        }
+      }
+
       bool created_peer = false;
       if (!it->second.peer) {
         if (!it->second.ice_context) {
