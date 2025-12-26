@@ -1,5 +1,5 @@
 <template>
-  <div class="webrtc-gaming-container min-h-[calc(100vh-4rem)]">
+  <div class="webrtc-gaming-container">
     <!-- Hero Header -->
     <div class="gaming-header px-6 py-8 mb-6">
       <div class="max-w-7xl mx-auto">
@@ -91,6 +91,34 @@
                   <button @click="config.bitrateKbps = 10000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
                   <button @click="config.bitrateKbps = 30000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
                   <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
+                </div>
+              </div>
+
+              <!-- Frame Pacing -->
+              <div>
+                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.frame_pacing') }}</label>
+                <div class="flex gap-1.5">
+                  <button v-for="opt in pacingOptions" :key="opt.value"
+                          @click="applyPacingPreset(opt.value)"
+                          class="preset-btn flex-1"
+                          :class="{ active: config.videoPacingMode === opt.value }">
+                    {{ opt.label }}
+                  </button>
+                </div>
+                <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.frame_pacing_desc') }}</div>
+                <div class="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
+                      {{ $t('webrtc.frame_pacing_slack') }}
+                    </label>
+                    <n-input-number v-model:value="config.videoPacingSlackMs" :min="0" :max="10" size="small" />
+                  </div>
+                  <div>
+                    <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
+                      {{ $t('webrtc.frame_pacing_max_delay') }}
+                    </label>
+                    <n-input-number v-model:value="config.videoMaxFrameAgeMs" :min="5" :max="250" size="small" />
+                  </div>
                 </div>
               </div>
 
@@ -383,6 +411,27 @@ const encodingOptions = [
   { label: 'AV1', value: 'av1' },
 ];
 
+const pacingOptions = [
+  { label: 'Latency', value: 'latency' },
+  { label: 'Balanced', value: 'balanced' },
+  { label: 'Smooth', value: 'smoothness' },
+];
+
+type PacingMode = (typeof pacingOptions)[number]['value'];
+
+const pacingPresets: Record<PacingMode, { slackMs: number; maxFrameAgeMs: number }> = {
+  latency: { slackMs: 0, maxFrameAgeMs: 33 },
+  balanced: { slackMs: 2, maxFrameAgeMs: 50 },
+  smoothness: { slackMs: 3, maxFrameAgeMs: 100 },
+};
+
+function applyPacingPreset(mode: PacingMode) {
+  const preset = pacingPresets[mode];
+  config.videoPacingMode = mode;
+  config.videoPacingSlackMs = preset.slackMs;
+  config.videoMaxFrameAgeMs = preset.maxFrameAgeMs;
+}
+
 const config = reactive<StreamConfig>({
   width: 1920,
   height: 1080,
@@ -390,6 +439,9 @@ const config = reactive<StreamConfig>({
   encoding: 'h264',
   bitrateKbps: 20000,
   muteHostAudio: true,
+  videoPacingMode: 'balanced',
+  videoPacingSlackMs: pacingPresets.balanced.slackMs,
+  videoMaxFrameAgeMs: pacingPresets.balanced.maxFrameAgeMs,
 });
 
 const appsStore = useAppsStore();
@@ -463,7 +515,7 @@ const iceState = ref<RTCIceConnectionState | null>(null);
 const inputChannelState = ref<RTCDataChannelState | null>(null);
 const stats = ref<WebRtcStatsSnapshot>({});
 const inputEnabled = ref(true);
-const showOverlay = ref(true);
+const showOverlay = ref(false);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
@@ -1014,6 +1066,14 @@ onMounted(async () => {
 .webrtc-gaming-container {
   background: rgb(var(--color-dark));
   color: rgb(var(--color-on-dark));
+  min-height: calc(100vh - 4rem);
+  overscroll-behavior: none;
+}
+
+@supports (height: 100svh) {
+  .webrtc-gaming-container {
+    min-height: calc(100svh - 4rem);
+  }
 }
 
 .gaming-header {

@@ -13,6 +13,9 @@ export interface StreamConfig {
   profile?: string;
   appId?: number;
   resume?: boolean;
+  videoPacingMode?: 'latency' | 'balanced' | 'smoothness';
+  videoPacingSlackMs?: number;
+  videoMaxFrameAgeMs?: number;
 }
 
 export interface WebRtcSessionInfo {
@@ -43,6 +46,9 @@ export interface WebRtcSessionState {
   audio_channels?: number | null;
   audio_codec?: string | null;
   profile?: string | null;
+  video_pacing_mode?: string | null;
+  video_pacing_slack_ms?: number | null;
+  video_max_frame_age_ms?: number | null;
   last_audio_bytes?: number;
   last_video_bytes?: number;
   last_video_idr?: boolean;

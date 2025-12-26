@@ -79,6 +79,9 @@ export class WebRtcHttpApi implements WebRtcApi {
       profile: config.profile,
       app_id: config.appId,
       resume: config.resume,
+      video_pacing_mode: config.videoPacingMode,
+      video_pacing_slack_ms: config.videoPacingSlackMs,
+      video_max_frame_age_ms: config.videoMaxFrameAgeMs,
     };
     const r = await http.post<WebRtcSessionResponse>('/api/webrtc/sessions', payload, {
       validateStatus: () => true,
