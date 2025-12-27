@@ -34,6 +34,8 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/display_helper_session_deferral.h"
+  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -63,38 +65,11 @@ namespace {
     return h;
   }
 
-  struct PendingSessionSnapshot {
-    int width = 0;
-    int height = 0;
-    int fps = 0;
-    bool enable_hdr = false;
-    bool enable_sops = false;
-    bool virtual_display = false;
-    std::string virtual_display_device_id;
-    std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
-    std::optional<int> framegen_refresh_rate;
-    bool gen1_framegen_fix = false;
-    bool gen2_framegen_fix = false;
-  };
-
-  struct PendingApplyState {
-    display_helper_integration::DisplayApplyRequest request;
-    PendingSessionSnapshot session_snapshot;
-    uint32_t session_id {0};
-    bool has_session {false};
-    int attempts {0};
-    std::optional<std::chrono::steady_clock::time_point> ready_since;
-    std::chrono::steady_clock::time_point next_attempt {};
-  };
-
-  std::mutex &pending_apply_mutex() {
-    static std::mutex m;
-    return m;
-  }
-
-  std::optional<PendingApplyState> &pending_apply_state() {
-    static std::optional<PendingApplyState> state;
-    return state;
+  display_helper_integration::SessionDeferralManager &session_deferrals() {
+    static display_helper_integration::SessionDeferralManager manager([]() {
+      return std::chrono::steady_clock::now();
+    });
+    return manager;
   }
 
   bool user_session_ready() {
@@ -113,25 +88,8 @@ namespace {
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
-  constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
-  constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
-  constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
-  constexpr int kMaxDeferredApplyAttempts = 6;
-
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
-
-  std::chrono::milliseconds deferred_apply_retry_delay(int attempts) {
-    if (attempts <= 0) {
-      return kDeferredApplyRetryBase;
-    }
-    const int shift = std::min(attempts - 1, 5);
-    auto delay = kDeferredApplyRetryBase * (1 << shift);
-    if (delay > kDeferredApplyRetryMax) {
-      delay = kDeferredApplyRetryMax;
-    }
-    return delay;
-  }
 
   struct InProcessDisplayContext {
     std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
@@ -533,6 +491,30 @@ namespace {
     }
   }
 
+  bool helper_process_exists() {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    bool found = false;
+
+    if (Process32FirstW(snapshot, &entry)) {
+      do {
+        if (_wcsicmp(entry.szExeFile, L"sunshine_display_helper.exe") == 0 &&
+            entry.th32ProcessID != GetCurrentProcessId()) {
+          found = true;
+          break;
+        }
+      } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+  }
+
   struct session_dd_fields_t {
     int width = -1;
     int height = -1;
@@ -610,7 +592,12 @@ namespace {
     }
 
     if (!helper_running) {
-      return false;
+      if (platf::display_helper_client::send_ping()) {
+        helper_running = true;
+      } else {
+        platf::display_helper_client::reset_connection();
+        return false;
+      }
     }
 
     const bool restore_expected = g_restore_expected.load(std::memory_order_relaxed);
@@ -669,20 +656,9 @@ namespace {
       return true;
     }
 
-    // Fail-safe: if we recently initiated a helper restore, and DISARM couldn't be delivered quickly,
-    // terminate the helper so restore activity stops immediately (prevents virtual display crash loops).
-    const auto last_revert_us = g_last_revert_us.load(std::memory_order_relaxed);
-    const bool revert_recent = (now_us - last_revert_us) < (30LL * 1000LL * 1000LL);
-    if (revert_recent) {
-      BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
-                         << kDisarmRestoreBudget.count() << "ms; terminating helper to stop restore activity.";
-      {
-        std::lock_guard<std::mutex> lg(helper_mutex());
-        helper_proc().terminate();
-      }
-      platf::display_helper_client::reset_connection();
-      g_restore_expected.store(false, std::memory_order_relaxed);
-    }
+    // Keep helper alive; we'll retry DISARM on the next apply/reconnect attempt.
+    BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
+                       << kDisarmRestoreBudget.count() << "ms; leaving helper running.";
 
     return false;
   }
@@ -746,6 +722,25 @@ namespace {
       }
     }
     if (shutting_down) {
+      return false;
+    }
+
+    if (!force_restart) {
+      bool ping_ok = false;
+      for (int i = 0; i < 2 && !ping_ok; ++i) {
+        ping_ok = platf::display_helper_client::send_ping();
+        if (!ping_ok) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+      }
+      if (ping_ok) {
+        return true;
+      }
+      platf::display_helper_client::reset_connection();
+    }
+
+    if (!force_restart && helper_process_exists()) {
+      BOOST_LOG(warning) << "Display helper: existing helper detected but IPC is unavailable; leaving it running.";
       return false;
     }
 
@@ -964,56 +959,31 @@ namespace {
       j["sunshine_always_restore_from_golden"] = true;
     }
 
+    j["sunshine_snapshot_exclude_devices"] = config::video.dd.snapshot_exclude_devices;
+
     return j.dump();
+  }
+
+  display_helper_integration::DisplayHelperWatchdog &watchdog_instance() {
+    static display_helper_integration::DisplayHelperWatchdog watchdog({
+      .feature_enabled = []() { return dd_feature_enabled(); },
+      .ensure_helper_started = []() { return ensure_helper_started(); },
+      .send_ping = []() { return platf::display_helper_client::send_ping(); },
+      .reset_connection = []() { platf::display_helper_client::reset_connection(); },
+      .session_count = []() { return rtsp_stream::session_count(); },
+      .running_processes = []() { return proc::proc.running(); },
+    });
+    return watchdog;
   }
 
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
-    constexpr auto kActiveInterval = 5s;
-    constexpr auto kSuspendedInterval = 20s;
-    bool helper_ready = false;
+    auto &watchdog = watchdog_instance();
 
     while (!st.stop_requested()) {
-      if (!dd_feature_enabled()) {
-        if (helper_ready) {
-          platf::display_helper_client::reset_connection();
-          helper_ready = false;
-        }
-        for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-          std::this_thread::sleep_for(100ms);
-        }
-        continue;
-      }
-
-      if (!helper_ready) {
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
-          for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-            std::this_thread::sleep_for(100ms);
-          }
-          continue;
-        }
-        (void) platf::display_helper_client::send_ping();
-      }
-
-      const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
-      const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
+      const auto interval = watchdog.tick();
       for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
         std::this_thread::sleep_for(100ms);
-      }
-      if (st.stop_requested()) {
-        break;
-      }
-
-      if (!platf::display_helper_client::send_ping()) {
-        // Avoid logging ping failures to reduce log spam; proceed to reconnect
-        platf::display_helper_client::reset_connection();
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
-          continue;
-        }
-        // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
-        helper_ready = platf::display_helper_client::send_ping();
       }
     }
   }
@@ -1031,27 +1001,7 @@ namespace display_helper_integration {
         platf::is_running_as_system() &&
         !user_session_ready()) {
       if (request.session) {
-        std::lock_guard<std::mutex> lock(pending_apply_mutex());
-        pending_apply_state().emplace();
-        auto &pending = *pending_apply_state();
-        pending.request = request;
-        pending.has_session = true;
-        pending.session_id = request.session->id;
-        pending.session_snapshot.width = request.session->width;
-        pending.session_snapshot.height = request.session->height;
-        pending.session_snapshot.fps = request.session->fps;
-        pending.session_snapshot.enable_hdr = request.session->enable_hdr;
-        pending.session_snapshot.enable_sops = request.session->enable_sops;
-        pending.session_snapshot.virtual_display = request.session->virtual_display;
-        pending.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
-        pending.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
-        pending.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
-        pending.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
-        pending.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
-        pending.attempts = 0;
-        pending.ready_since.reset();
-        pending.next_attempt = std::chrono::steady_clock::time_point {};
-        pending.request.session = nullptr;
+        session_deferrals().set_pending(request);
         BOOST_LOG(info) << "Display helper: deferring APPLY until user session is ready.";
       } else {
         BOOST_LOG(warning) << "Display helper: no user session available; skipping APPLY.";
@@ -1080,15 +1030,16 @@ namespace display_helper_integration {
     const bool system_profile_only = platf::is_running_as_system() && !user_session_ready();
 
     if (!system_profile_only) {
-      // Stream-start policy: if a helper is already running, hard-restart it immediately
-      // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
-      const bool hard_restart = (request.session != nullptr);
-      bool helper_ready = ensure_helper_started(hard_restart, true);
+      // Stream-start policy: reuse existing helper and disarm any pending restore before APPLY.
+      bool helper_ready = ensure_helper_started(false, true);
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(hard_restart, true);
+        helper_ready = ensure_helper_started(false, true);
       }
 
       if (helper_ready) {
+        if (request.session) {
+          (void) disarm_helper_restore_if_running();
+        }
         auto payload = build_helper_apply_payload(request);
         if (!payload) {
           BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
@@ -1219,48 +1170,34 @@ namespace display_helper_integration {
   }
 
   bool apply_pending_if_ready() {
-    {
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        return false;
-      }
-    }
-
-    if (!user_session_ready()) {
+    const auto result = session_deferrals().take_ready(user_session_ready());
+    if (result.status == SessionDeferralManager::TakeStatus::NoPending ||
+        result.status == SessionDeferralManager::TakeStatus::SessionNotReady ||
+        result.status == SessionDeferralManager::TakeStatus::DelayPending) {
       return false;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    PendingApplyState pending;
-    {
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        return false;
-      }
-      auto &state = *pending_apply_state();
-      if (!state.ready_since) {
-        state.ready_since = now;
-        state.next_attempt = now + kDeferredApplyInitialDelay;
-        BOOST_LOG(info) << "Display helper: user session detected; delaying deferred APPLY for "
-                        << kDeferredApplyInitialDelay.count() << "ms.";
-        return false;
-      }
-      if (now < state.next_attempt) {
-        return false;
-      }
-      if (state.attempts >= kMaxDeferredApplyAttempts) {
-        BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up on session "
-                           << state.session_id << ".";
-        pending_apply_state().reset();
-        return false;
-      }
-      pending = state;
-      pending_apply_state().reset();
+    if (result.status == SessionDeferralManager::TakeStatus::DelayStarted) {
+      BOOST_LOG(info) << "Display helper: user session detected; delaying deferred APPLY for "
+                      << SessionDeferralManager::initial_delay().count() << "ms.";
+      return false;
     }
+
+    if (result.status == SessionDeferralManager::TakeStatus::DroppedMaxAttempts) {
+      BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up.";
+      return false;
+    }
+
+    if (!result.pending) {
+      return false;
+    }
+
+    auto pending = std::move(*result.pending);
 
     std::optional<rtsp_stream::launch_session_t> session;
     if (pending.has_session) {
       rtsp_stream::launch_session_t snapshot {};
+      snapshot.id = pending.session_id;
       snapshot.width = pending.session_snapshot.width;
       snapshot.height = pending.session_snapshot.height;
       snapshot.fps = pending.session_snapshot.fps;
@@ -1281,26 +1218,23 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
     const bool ok = apply(pending.request);
     if (!ok) {
-      pending.attempts += 1;
       pending.request.session = nullptr;
-      const auto delay = deferred_apply_retry_delay(pending.attempts);
-      pending.next_attempt = std::chrono::steady_clock::now() + delay;
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        pending_apply_state() = pending;
+      auto reschedule = session_deferrals().reschedule(std::move(pending));
+      if (reschedule.requeued) {
         BOOST_LOG(warning) << "Display helper: deferred APPLY failed; retrying in "
-                           << delay.count() << "ms (attempt " << pending.attempts
-                           << "/" << kMaxDeferredApplyAttempts << ").";
-      } else {
+                           << reschedule.delay.count() << "ms (attempt " << reschedule.attempts
+                           << "/" << SessionDeferralManager::max_attempts() << ").";
+      } else if (reschedule.dropped_for_newer) {
         BOOST_LOG(info) << "Display helper: deferred APPLY failed but a newer pending configuration is queued; dropping retry.";
+      } else if (reschedule.dropped_max_attempts) {
+        BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up.";
       }
     }
     return ok;
   }
 
   void clear_pending_apply() {
-    std::lock_guard<std::mutex> lock(pending_apply_mutex());
-    pending_apply_state().reset();
+    session_deferrals().clear();
   }
 
   namespace {
@@ -1577,6 +1511,7 @@ namespace display_helper_integration {
     if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
       return;  // already running
     }
+    watchdog_instance().reset();
     g_watchdog_thread = std::jthread(watchdog_proc);
   }
 
@@ -1588,6 +1523,7 @@ namespace display_helper_integration {
       g_watchdog_thread.request_stop();
       g_watchdog_thread.join();
     }
+    watchdog_instance().reset();
     if (config::video.dd.config_revert_on_disconnect) {
       platf::display_helper_client::reset_connection();
     }
