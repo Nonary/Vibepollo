@@ -105,7 +105,7 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
   std::unordered_map<std::string, std::time_t> last_played;  // empty => never played
   std::unordered_set<std::string> selected_ids;  // not selected
   bool changed = false;
-  purge_uninstalled_and_ttl(root, uninstalled, 1 /*days*/, now, last_played, true /*recent*/, true /*require repl*/, selected_ids, changed);
+  purge_uninstalled_and_ttl(root, uninstalled, 1 /*days*/, now, last_played, true /*recent*/, true /*require repl*/, true /*remove uninstalled*/, false /*sync all*/, selected_ids, changed);
   EXPECT_TRUE(changed);
   EXPECT_EQ(root["apps"].size(), 0);
 }
