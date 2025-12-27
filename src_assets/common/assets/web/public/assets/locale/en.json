@@ -539,6 +539,17 @@
     "wan_encryption_mode_1": "Enabled for supported clients (default)",
     "wan_encryption_mode_2": "Required for all clients",
     "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients.",
+    "dd_hdr_request_override": "HDR request override",
+    "dd_snapshot_exclude_devices": "Exclude devices from snapshots",
+    "frame_limiter_disable_vsync": "Disable VSYNC during streams",
+    "frame_limiter_enable": "Enable frame limiter",
+    "frame_limiter_provider": "Frame limiter provider",
+    "lossless_scaling_path": "Lossless Scaling executable",
+    "rtss_frame_limit_type": "RTSS frame limit type",
+    "rtss_install_path": "RTSS install path",
+    "vibeshine_file_state": "Vibeshine state file",
+    "virtual_display_layout": "Virtual display layout",
+    "virtual_display_mode": "Virtual display mode",
     "dd_step_4": "Step 4"
   },
   "index": {
