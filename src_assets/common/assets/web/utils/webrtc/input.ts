@@ -19,6 +19,24 @@ interface InputCaptureOptions {
 }
 
 const WHEEL_STEP_PIXELS = 120;
+const SYSTEM_KEY_CODES = [
+  'AltLeft',
+  'AltRight',
+  'ControlLeft',
+  'ControlRight',
+  'MetaLeft',
+  'MetaRight',
+  'OSLeft',
+  'OSRight',
+];
+
+function getKeyboardLockApi(): { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void } | null {
+  if (typeof navigator === 'undefined') return null;
+  const anyNavigator = navigator as Navigator & {
+    keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void };
+  };
+  return anyNavigator.keyboard ?? null;
+}
 
 function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | PointerEvent) {
   return {
@@ -412,6 +430,8 @@ export function attachInputCapture(
   let moveSendRateCount = 0;
   let lastMetricsEmitAt = 0;
   const sendPayload = (payload: InputMessage) => send(JSON.stringify(payload)) !== false;
+  const keyboardLockApi = getKeyboardLockApi();
+  let keyboardLocked = false;
 
   const emitMetrics = () => {
     if (!onMetrics) return;
@@ -461,6 +481,28 @@ export function attachInputCapture(
       sendPayload(payload);
     }
     pressedKeys.clear();
+  };
+
+  const requestKeyboardLock = () => {
+    if (!keyboardLockApi?.lock || keyboardLocked) return;
+    keyboardLockApi.lock(SYSTEM_KEY_CODES).then(
+      () => {
+        keyboardLocked = true;
+      },
+      () => {
+        /* ignore */
+      },
+    );
+  };
+
+  const releaseKeyboardLock = () => {
+    if (!keyboardLocked) return;
+    try {
+      keyboardLockApi?.unlock?.();
+    } catch {
+      /* ignore */
+    }
+    keyboardLocked = false;
   };
 
   const queueMove = (event: MouseEvent | PointerEvent) => {
@@ -516,6 +558,7 @@ export function attachInputCapture(
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    requestKeyboardLock();
     if (shouldPreventDefaultKey(event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -553,6 +596,7 @@ export function attachInputCapture(
   const onMouseMove = (event: MouseEvent) => queueMove(event);
   const onMouseDown = (event: MouseEvent) => {
     element.focus();
+    requestKeyboardLock();
     sendButton(event, 'mouse_down');
   };
   const onMouseUp = (event: MouseEvent) => sendButton(event, 'mouse_up');
@@ -563,6 +607,7 @@ export function attachInputCapture(
   const onPointerDown = (event: PointerEvent) => {
     if (event.pointerType === 'touch') return;
     element.focus();
+    requestKeyboardLock();
     try {
       element.setPointerCapture(event.pointerId);
     } catch {
@@ -590,9 +635,15 @@ export function attachInputCapture(
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
   };
-  const onBlur = () => releaseAllKeys();
+  const onBlur = () => {
+    releaseAllKeys();
+    releaseKeyboardLock();
+  };
   const onVisibilityChange = () => {
-    if (document.hidden) releaseAllKeys();
+    if (document.hidden) {
+      releaseAllKeys();
+      releaseKeyboardLock();
+    }
   };
 
   const gamepadStates = new Map<number, GamepadSnapshot>();
@@ -853,6 +904,7 @@ export function attachInputCapture(
     element.removeEventListener('blur', onBlur);
     window.removeEventListener('blur', onBlur);
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    releaseKeyboardLock();
     if (supportsGamepad) {
       window.removeEventListener('gamepadconnected', onGamepadConnected);
       window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
