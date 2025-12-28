@@ -2202,7 +2202,7 @@ namespace confighttp {
 
       std::string answer_sdp;
       std::string answer_type;
-      if (webrtc_stream::get_local_answer(session_id, answer_sdp, answer_type)) {
+      if (webrtc_stream::wait_for_local_answer(session_id, answer_sdp, answer_type, std::chrono::seconds {3})) {
         output["status"] = true;
         output["answer_ready"] = true;
         output["sdp"] = answer_sdp;
@@ -2261,11 +2261,47 @@ namespace confighttp {
     ss << request->content.rdbuf();
     try {
       nlohmann::json input = nlohmann::json::parse(ss.str());
-      auto mid = input.value("sdpMid", "");
-      auto mline_index = input.value("sdpMLineIndex", -1);
-      auto candidate = input.at("candidate").get<std::string>();
       nlohmann::json output;
-      if (webrtc_stream::add_ice_candidate(session_id, std::move(mid), mline_index, std::move(candidate))) {
+      constexpr std::size_t kMaxCandidatesPerRequest = 256;
+      std::vector<nlohmann::json> candidates;
+      if (input.is_array()) {
+        candidates.reserve(std::min<std::size_t>(input.size(), kMaxCandidatesPerRequest));
+        for (const auto &entry : input) {
+          if (candidates.size() >= kMaxCandidatesPerRequest) {
+            break;
+          }
+          candidates.push_back(entry);
+        }
+      } else if (input.contains("candidates") && input["candidates"].is_array()) {
+        const auto &arr = input["candidates"];
+        candidates.reserve(std::min<std::size_t>(arr.size(), kMaxCandidatesPerRequest));
+        for (const auto &entry : arr) {
+          if (candidates.size() >= kMaxCandidatesPerRequest) {
+            break;
+          }
+          candidates.push_back(entry);
+        }
+      } else {
+        candidates.push_back(input);
+      }
+
+      bool ok = true;
+      for (const auto &entry : candidates) {
+        if (!entry.is_object()) {
+          continue;
+        }
+        auto mid = entry.value("sdpMid", "");
+        auto mline_index = entry.value("sdpMLineIndex", -1);
+        auto candidate = entry.value("candidate", "");
+        if (candidate.empty()) {
+          continue;
+        }
+        if (!webrtc_stream::add_ice_candidate(session_id, std::move(mid), mline_index, std::move(candidate))) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
         output["status"] = true;
       } else {
         output["error"] = "Session not found";

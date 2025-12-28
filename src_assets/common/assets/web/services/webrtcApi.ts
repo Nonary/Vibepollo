@@ -12,6 +12,7 @@ export interface WebRtcApi {
   createSession(config: StreamConfig): Promise<WebRtcSessionInfo>;
   getSessionState(sessionId: string): Promise<WebRtcSessionFetchResult>;
   sendOffer(sessionId: string, offer: WebRtcOffer): Promise<WebRtcAnswer | null>;
+  sendIceCandidates(sessionId: string, candidates: RTCIceCandidateInit[]): Promise<void>;
   sendIceCandidate(sessionId: string, candidate: RTCIceCandidateInit): Promise<void>;
   subscribeRemoteCandidates(
     sessionId: string,
@@ -127,14 +128,22 @@ export class WebRtcHttpApi implements WebRtcApi {
   }
 
   async sendIceCandidate(sessionId: string, candidate: RTCIceCandidateInit): Promise<void> {
-    if (!candidate.candidate) return;
-    await http.post(
-      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
-      {
+    await this.sendIceCandidates(sessionId, [candidate]);
+  }
+
+  async sendIceCandidates(sessionId: string, candidates: RTCIceCandidateInit[]): Promise<void> {
+    const payload = candidates
+      .filter((candidate) => Boolean(candidate.candidate))
+      .slice(0, 256)
+      .map((candidate) => ({
         sdpMid: candidate.sdpMid,
         sdpMLineIndex: candidate.sdpMLineIndex,
         candidate: candidate.candidate,
-      },
+      }));
+    if (!payload.length) return;
+    await http.post(
+      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
+      { candidates: payload },
       { validateStatus: () => true },
     );
   }

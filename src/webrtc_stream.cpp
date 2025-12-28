@@ -101,6 +101,27 @@ namespace webrtc_stream {
     constexpr auto kVideoMaxFrameAgeSmooth = std::chrono::milliseconds {100};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {250};
+    constexpr auto kWebrtcIdleGracePeriod = std::chrono::seconds {3};
+
+    void release_shared_encoded_payload(void* user) noexcept {
+      delete static_cast<std::shared_ptr<std::vector<std::uint8_t>>*>(user);
+    }
+
+    struct WebRtcCaptureConfigKey {
+      int app_id = 0;
+      int width = 0;
+      int height = 0;
+      int framerate = 0;
+      int bitrate = 0;
+      int video_format = 0;
+      int dynamic_range = 0;
+      int chroma_sampling_type = 0;
+      bool prefer_sdr_10bit = false;
+      int audio_channels = 0;
+      bool host_audio = false;
+
+      bool operator==(const WebRtcCaptureConfigKey &) const = default;
+    };
 
 #ifdef _WIN32
     void prepare_virtual_display_for_webrtc_session(
@@ -379,6 +400,7 @@ namespace webrtc_stream {
     struct WebRtcCaptureState {
       std::mutex mutex;
       bool active = false;
+      std::atomic_bool idle_shutdown_pending {false};
       std::shared_ptr<safe::mail_raw_t> mail;
       std::thread video_thread;
       std::thread audio_thread;
@@ -386,6 +408,7 @@ namespace webrtc_stream {
       safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> feedback_queue;
       std::atomic_bool feedback_shutdown {false};
       std::optional<int> app_id;
+      std::optional<WebRtcCaptureConfigKey> config_key;
     };
 
     template<class T>
@@ -395,10 +418,25 @@ namespace webrtc_stream {
           _max_items {max_items} {
       }
 
-      bool push(T item) {
+      bool push(T item, bool keep_keyframes = false) {
         bool dropped = false;
         if (_queue.size() >= _max_items) {
-          _queue.pop_front();
+          if (keep_keyframes) {
+            if constexpr (requires(const T &value) { value.idr; }) {
+              auto it = std::find_if(_queue.begin(), _queue.end(), [](const T &frame) {
+                return !frame.idr;
+              });
+              if (it != _queue.end()) {
+                _queue.erase(it);
+              } else {
+                _queue.pop_front();
+              }
+            } else {
+              _queue.pop_front();
+            }
+          } else {
+            _queue.pop_front();
+          }
           dropped = true;
         }
         _queue.emplace_back(std::move(item));
@@ -431,6 +469,46 @@ namespace webrtc_stream {
       std::size_t _max_items;
       std::deque<T> _queue;
     };
+
+    class AudioSamplePool {
+    public:
+      std::shared_ptr<std::vector<int16_t>> acquire(std::size_t samples) {
+        std::vector<int16_t> *buffer = nullptr;
+        {
+          std::lock_guard lg {mutex_};
+          if (!pool_.empty()) {
+            buffer = pool_.back();
+            pool_.pop_back();
+          }
+        }
+        if (!buffer) {
+          buffer = new std::vector<int16_t>();
+        }
+        buffer->resize(samples);
+        return std::shared_ptr<std::vector<int16_t>>(buffer, [this](std::vector<int16_t> *ptr) {
+          if (!ptr) {
+            return;
+          }
+          ptr->clear();
+          std::lock_guard lg {mutex_};
+          if (pool_.size() >= max_pool_size_) {
+            delete ptr;
+            return;
+          }
+          pool_.push_back(ptr);
+        });
+      }
+
+    private:
+      std::mutex mutex_;
+      std::vector<std::vector<int16_t> *> pool_;
+      std::size_t max_pool_size_ = 64;
+    };
+
+    AudioSamplePool &audio_sample_pool() {
+      static auto *pool = new AudioSamplePool();
+      return *pool;
+    }
 
     std::mutex input_mutex;
     std::shared_ptr<safe::mail_raw_t> input_mail;
@@ -985,6 +1063,8 @@ namespace webrtc_stream {
     struct SessionDataChannelContext {
       std::string id;
       std::atomic<bool> active {true};
+      std::atomic<bool> mouse_move_seq_initialized {false};
+      std::atomic<std::uint16_t> last_mouse_move_seq {0};
     };
 
     struct SessionPeerContext {
@@ -1064,6 +1144,8 @@ namespace webrtc_stream {
 
     std::mutex session_mutex;
     std::unordered_map<std::string, Session> sessions;
+    std::condition_variable local_answer_cv;
+    std::atomic<std::uint64_t> webrtc_idle_shutdown_token {0};
     std::atomic_uint active_sessions {0};
 #ifdef SUNSHINE_ENABLE_WEBRTC
     std::atomic_uint active_peers {0};
@@ -1527,12 +1609,76 @@ namespace webrtc_stream {
       return launch_session;
     }
 
+    WebRtcCaptureConfigKey build_capture_config_key(
+      int app_id,
+      const video::config_t &video_config,
+      const SessionOptions &options
+    ) {
+      WebRtcCaptureConfigKey key;
+      key.app_id = app_id;
+      key.width = video_config.width;
+      key.height = video_config.height;
+      key.framerate = video_config.framerate;
+      key.bitrate = video_config.bitrate;
+      key.video_format = video_config.videoFormat;
+      key.dynamic_range = video_config.dynamicRange;
+      key.chroma_sampling_type = video_config.chromaSamplingType;
+      key.prefer_sdr_10bit = video_config.prefer_sdr_10bit;
+      key.audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
+      key.host_audio = options.host_audio;
+      return key;
+    }
+
+    void stop_webrtc_capture_locked() {
+      if (webrtc_capture.mail) {
+        auto shutdown_event = webrtc_capture.mail->event<bool>(mail::shutdown);
+        shutdown_event->raise(true);
+      }
+      webrtc_capture.feedback_shutdown.store(true, std::memory_order_release);
+      if (webrtc_capture.feedback_queue) {
+        webrtc_capture.feedback_queue->stop();
+      }
+      if (webrtc_capture.feedback_thread.joinable()) {
+        webrtc_capture.feedback_thread.join();
+      }
+      if (webrtc_capture.video_thread.joinable()) {
+        webrtc_capture.video_thread.join();
+      }
+      if (webrtc_capture.audio_thread.joinable()) {
+        webrtc_capture.audio_thread.join();
+      }
+      webrtc_capture.feedback_queue.reset();
+      webrtc_capture.mail.reset();
+      webrtc_capture.app_id.reset();
+      webrtc_capture.config_key.reset();
+      webrtc_capture.idle_shutdown_pending.store(false, std::memory_order_release);
+      webrtc_capture.active = false;
+
+#ifdef _WIN32
+      if (config::video.dd.config_revert_on_disconnect) {
+        const bool reverted = display_helper_integration::revert();
+        if (reverted) {
+          display_helper_integration::stop_watchdog();
+        }
+      }
+      VDISPLAY::restorePhysicalHdrProfiles();
+      platf::frame_limiter_streaming_stop();
+#endif
+      platf::streaming_will_stop();
+
+      config::set_runtime_output_name_override(std::nullopt);
+      config::maybe_apply_deferred();
+    }
+
     std::optional<std::string> start_webrtc_capture(const SessionOptions &options) {
+      webrtc_idle_shutdown_token.fetch_add(1, std::memory_order_acq_rel);
       std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
-      if (webrtc_capture.active) {
+      const bool was_idle_shutdown_pending =
+        webrtc_capture.idle_shutdown_pending.exchange(false, std::memory_order_acq_rel);
+      if (webrtc_capture.active && !was_idle_shutdown_pending) {
         return std::nullopt;
       }
-      if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
+      if (!webrtc_capture.active && rtsp_sessions_active.load(std::memory_order_relaxed)) {
         return std::string {"RTSP session already active"};
       }
 
@@ -1555,6 +1701,18 @@ namespace webrtc_stream {
 
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
       const int audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
+      auto video_config = build_video_config(options);
+      auto audio_config = build_audio_config(options);
+      const auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
+
+      if (webrtc_capture.active && webrtc_capture.config_key && *webrtc_capture.config_key == desired_key) {
+        return std::nullopt;
+      }
+
+      if (webrtc_capture.active) {
+        stop_webrtc_capture_locked();
+      }
+
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
 
       if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
@@ -1633,9 +1791,8 @@ namespace webrtc_stream {
 
       auto mail = std::make_shared<safe::mail_raw_t>();
       webrtc_capture.mail = mail;
-      auto video_config = build_video_config(options);
-      auto audio_config = build_audio_config(options);
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
+      webrtc_capture.config_key = desired_key;
       webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
       webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       webrtc_capture.feedback_thread = std::thread([queue = webrtc_capture.feedback_queue]() {
@@ -1660,43 +1817,7 @@ namespace webrtc_stream {
       if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
         return;
       }
-
-      if (webrtc_capture.mail) {
-        auto shutdown_event = webrtc_capture.mail->event<bool>(mail::shutdown);
-        shutdown_event->raise(true);
-      }
-      webrtc_capture.feedback_shutdown.store(true, std::memory_order_release);
-      if (webrtc_capture.feedback_queue) {
-        webrtc_capture.feedback_queue->stop();
-      }
-      if (webrtc_capture.feedback_thread.joinable()) {
-        webrtc_capture.feedback_thread.join();
-      }
-      if (webrtc_capture.video_thread.joinable()) {
-        webrtc_capture.video_thread.join();
-      }
-      if (webrtc_capture.audio_thread.joinable()) {
-        webrtc_capture.audio_thread.join();
-      }
-      webrtc_capture.feedback_queue.reset();
-      webrtc_capture.mail.reset();
-      webrtc_capture.app_id.reset();
-      webrtc_capture.active = false;
-
-#ifdef _WIN32
-      if (config::video.dd.config_revert_on_disconnect) {
-        const bool reverted = display_helper_integration::revert();
-        if (reverted) {
-          display_helper_integration::stop_watchdog();
-        }
-      }
-      VDISPLAY::restorePhysicalHdrProfiles();
-      platf::frame_limiter_streaming_stop();
-#endif
-      platf::streaming_will_stop();
-
-      config::set_runtime_output_name_override(std::nullopt);
-      config::maybe_apply_deferred();
+      stop_webrtc_capture_locked();
     }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
@@ -1716,11 +1837,68 @@ namespace webrtc_stream {
       add_local_candidate(ctx->id, std::string {mid}, mline_index, std::string {candidate});
     }
 
-    void on_data_channel_message(void *user, const char *buffer, int length, int binary) {
-      if (!buffer || length <= 0 || binary) {
+    constexpr std::uint8_t kInputBinaryMouseMove = 1;
+    constexpr std::size_t kInputBinaryMouseMoveSize = 1 + 2 + 2 + 2;
+
+    bool seq_newer_u16(std::uint16_t seq, std::uint16_t last) {
+      return static_cast<std::int16_t>(seq - last) > 0;
+    }
+
+    double unit_from_u16(std::uint16_t value) {
+      return static_cast<double>(value) / 65535.0;
+    }
+
+    void handle_input_message_binary(SessionDataChannelContext *ctx, const std::uint8_t *buffer, std::size_t length) {
+      if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
         return;
       }
-      BOOST_LOG(debug) << "WebRTC: data channel message received (" << length << " bytes)";
+      if (!buffer || length < 1) {
+        return;
+      }
+
+      auto input_ctx = current_input_context();
+      if (!input_ctx) {
+        return;
+      }
+
+      const auto type = buffer[0];
+      if (type != kInputBinaryMouseMove || length < kInputBinaryMouseMoveSize) {
+        return;
+      }
+
+      const std::uint16_t seq = static_cast<std::uint16_t>(buffer[1]) |
+                                (static_cast<std::uint16_t>(buffer[2]) << 8);
+      const std::uint16_t x_u16 = static_cast<std::uint16_t>(buffer[3]) |
+                                  (static_cast<std::uint16_t>(buffer[4]) << 8);
+      const std::uint16_t y_u16 = static_cast<std::uint16_t>(buffer[5]) |
+                                  (static_cast<std::uint16_t>(buffer[6]) << 8);
+
+      const bool initialized = ctx->mouse_move_seq_initialized.load(std::memory_order_acquire);
+      if (initialized) {
+        const std::uint16_t last = ctx->last_mouse_move_seq.load(std::memory_order_acquire);
+        if (!seq_newer_u16(seq, last)) {
+          return;
+        }
+      } else {
+        ctx->mouse_move_seq_initialized.store(true, std::memory_order_release);
+      }
+      ctx->last_mouse_move_seq.store(seq, std::memory_order_release);
+
+      input::passthrough(input_ctx, make_abs_mouse_move_packet(unit_from_u16(x_u16), unit_from_u16(y_u16)));
+    }
+
+    void on_data_channel_message(void *user, const char *buffer, int length, int binary) {
+      if (!buffer || length <= 0) {
+        return;
+      }
+      if (binary) {
+        handle_input_message_binary(
+          static_cast<SessionDataChannelContext *>(user),
+          reinterpret_cast<const std::uint8_t *>(buffer),
+          static_cast<std::size_t>(length)
+        );
+        return;
+      }
       handle_input_message(std::string_view {buffer, static_cast<std::size_t>(length)});
     }
 
@@ -1753,7 +1931,11 @@ namespace webrtc_stream {
           lwrtc_data_channel_release(it->second.input_channel);
         }
         it->second.input_channel = channel;
-        lwrtc_data_channel_register_observer(channel, nullptr, &on_data_channel_message, nullptr);
+        if (it->second.data_channel_context) {
+          it->second.data_channel_context->mouse_move_seq_initialized.store(false, std::memory_order_release);
+          it->second.data_channel_context->last_mouse_move_seq.store(0, std::memory_order_release);
+        }
+        lwrtc_data_channel_register_observer(channel, nullptr, &on_data_channel_message, ctx);
       }
     }
 
@@ -1863,6 +2045,7 @@ namespace webrtc_stream {
     std::thread webrtc_media_thread;
     std::atomic<bool> webrtc_media_running {false};
     std::atomic<bool> webrtc_media_shutdown {false};
+    std::atomic<bool> webrtc_media_has_work {false};
 
     std::optional<lwrtc_video_codec_t> session_codec_to_lwrtc(const SessionState &state) {
       if (!state.codec) {
@@ -2703,7 +2886,11 @@ namespace webrtc_stream {
       while (!webrtc_media_shutdown.load(std::memory_order_acquire)) {
         {
           std::unique_lock<std::mutex> lock(webrtc_media_mutex);
-          webrtc_media_cv.wait_for(lock, 10ms);
+          webrtc_media_cv.wait(lock, []() {
+            return webrtc_media_shutdown.load(std::memory_order_acquire) ||
+                   webrtc_media_has_work.load(std::memory_order_acquire);
+          });
+          webrtc_media_has_work.store(false, std::memory_order_release);
         }
         if (webrtc_media_shutdown.load(std::memory_order_acquire)) {
           break;
@@ -2921,12 +3108,15 @@ namespace webrtc_stream {
           if (work.pace && work.target_send > send_now + work.pacing_slack) {
             sleep_for_with_audio(work.target_send - send_now - work.pacing_slack);
           }
-          const int pushed = lwrtc_encoded_video_source_push(
+          auto* payload_ref = new std::shared_ptr<std::vector<std::uint8_t>>(work.data);
+          const int pushed = lwrtc_encoded_video_source_push_shared(
             work.source,
             work.data->data(),
             work.data->size(),
             timestamp_to_us(work.timestamp),
-            work.is_keyframe ? 1 : 0
+            work.is_keyframe ? 1 : 0,
+            release_shared_encoded_payload,
+            payload_ref
           );
           if (pushed && work.clear_keyframe_on_success && !work.session_id.empty()) {
             std::lock_guard lg {session_mutex};
@@ -2955,7 +3145,7 @@ namespace webrtc_stream {
       }
       BOOST_LOG(debug) << "WebRTC: stopping media thread";
       webrtc_media_shutdown.store(true, std::memory_order_release);
-      webrtc_media_cv.notify_all();
+      webrtc_media_cv.notify_one();
       if (webrtc_media_thread.joinable()) {
         webrtc_media_thread.join();
       }
@@ -2971,6 +3161,28 @@ namespace webrtc_stream {
         webrtc_factory_codec.reset();
         webrtc_factory_av1_params.reset();
       }
+    }
+
+    void schedule_webrtc_idle_shutdown() {
+      webrtc_capture.idle_shutdown_pending.store(true, std::memory_order_release);
+      const auto token = webrtc_idle_shutdown_token.fetch_add(1, std::memory_order_acq_rel) + 1;
+      task_pool.pushDelayed(
+        [token]() {
+          if (webrtc_idle_shutdown_token.load(std::memory_order_acquire) != token) {
+            return;
+          }
+          if (has_active_sessions()) {
+            return;
+          }
+          if (active_peers.load(std::memory_order_acquire) != 0) {
+            return;
+          }
+
+          stop_webrtc_capture_if_idle();
+          reset_webrtc_factory();
+        },
+        kWebrtcIdleGracePeriod
+      );
     }
 
     bool attach_media_tracks(Session &session) {
@@ -3178,6 +3390,7 @@ namespace webrtc_stream {
     lwrtc_data_channel_t *input_channel = nullptr;
     std::shared_ptr<SessionDataChannelContext> data_channel_context;
 #endif
+    bool removed = false;
     {
       std::lock_guard lg {session_mutex};
       auto it = sessions.find(std::string {id});
@@ -3196,10 +3409,11 @@ namespace webrtc_stream {
       data_channel_context = it->second.data_channel_context;
 #endif
       sessions.erase(it);
-      const auto remaining = active_sessions.fetch_sub(1, std::memory_order_relaxed) - 1;
-      if (remaining == 0) {
-        stop_webrtc_capture_if_idle();
-      }
+      removed = true;
+      active_sessions.fetch_sub(1, std::memory_order_relaxed);
+    }
+    if (removed) {
+      local_answer_cv.notify_all();
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
     if (peer) {
@@ -3236,8 +3450,7 @@ namespace webrtc_stream {
     if (!has_active_sessions()) {
       stop_media_thread();
       reset_input_context();
-      // Reset factory to ensure clean state for next connection
-      reset_webrtc_factory();
+      schedule_webrtc_idle_shutdown();
     }
 #endif
     BOOST_LOG(debug) << "WebRTC: close_session exit id=" << id;
@@ -3284,6 +3497,7 @@ namespace webrtc_stream {
         return;
       }
     }
+    webrtc_idle_shutdown_token.fetch_add(1, std::memory_order_acq_rel);
     stop_media_thread();
     reset_input_context();
     reset_webrtc_factory();
@@ -3311,7 +3525,7 @@ namespace webrtc_stream {
       frame.after_ref_frame_invalidation = packet.after_ref_frame_invalidation;
       frame.timestamp = packet.frame_timestamp;
 
-      bool dropped = session.video_frames.push(std::move(frame));
+      bool dropped = session.video_frames.push(std::move(frame), session.needs_keyframe);
       session.state.video_packets++;
       session.state.last_video_time = std::chrono::steady_clock::now();
       session.state.last_video_bytes = payload->size();
@@ -3322,7 +3536,8 @@ namespace webrtc_stream {
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
-    webrtc_media_cv.notify_all();
+    webrtc_media_has_work.store(true, std::memory_order_release);
+    webrtc_media_cv.notify_one();
 #endif
   }
 
@@ -3370,7 +3585,8 @@ namespace webrtc_stream {
       session.raw_video_frames.push(std::move(raw));
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
-    webrtc_media_cv.notify_all();
+    webrtc_media_has_work.store(true, std::memory_order_release);
+    webrtc_media_cv.notify_one();
 #endif
   }
 
@@ -3380,19 +3596,19 @@ namespace webrtc_stream {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    auto shared_samples = std::make_shared<std::vector<int16_t>>();
-    shared_samples->resize(samples.size());
+    auto shared_samples = audio_sample_pool().acquire(samples.size());
     for (std::size_t i = 0; i < samples.size(); ++i) {
       float value = samples[i];
       if (!std::isfinite(value)) {
         value = 0.0f;
       }
       value = std::clamp(value, -1.0f, 1.0f);
-      shared_samples->at(i) = static_cast<int16_t>(std::lround(value * 32767.0f));
+      (*shared_samples)[i] = static_cast<int16_t>(std::lround(value * 32767.0f));
     }
     const auto byte_count = shared_samples->size() * sizeof(int16_t);
 #ifdef SUNSHINE_ENABLE_WEBRTC
     std::vector<lwrtc_audio_source_t *> direct_sources;
+    bool queued_raw_audio = false;
 #endif
     std::lock_guard lg {session_mutex};
     for (auto &[_, session] : sessions) {
@@ -3415,6 +3631,9 @@ namespace webrtc_stream {
         if (dropped) {
           session.state.audio_dropped++;
         }
+#ifdef SUNSHINE_ENABLE_WEBRTC
+        queued_raw_audio = true;
+#endif
       }
       session.state.audio_packets++;
       session.state.last_audio_time = now;
@@ -3431,7 +3650,10 @@ namespace webrtc_stream {
         frames
       );
     }
-    webrtc_media_cv.notify_all();
+    if (queued_raw_audio) {
+      webrtc_media_has_work.store(true, std::memory_order_release);
+      webrtc_media_cv.notify_one();
+    }
 #endif
   }
 
@@ -3579,15 +3801,18 @@ namespace webrtc_stream {
   }
 
   bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type) {
-    std::lock_guard lg {session_mutex};
-    auto it = sessions.find(std::string {id});
-    if (it == sessions.end()) {
-      return false;
-    }
+    {
+      std::lock_guard lg {session_mutex};
+      auto it = sessions.find(std::string {id});
+      if (it == sessions.end()) {
+        return false;
+      }
 
-    it->second.local_answer_sdp = sdp;
-    it->second.local_answer_type = type;
-    it->second.state.has_local_answer = true;
+      it->second.local_answer_sdp = sdp;
+      it->second.local_answer_type = type;
+      it->second.state.has_local_answer = true;
+    }
+    local_answer_cv.notify_all();
     return true;
   }
 
@@ -3619,6 +3844,34 @@ namespace webrtc_stream {
     sdp_out = it->second.local_answer_sdp;
     type_out = it->second.local_answer_type;
     return true;
+  }
+
+  bool wait_for_local_answer(
+    std::string_view id,
+    std::string &sdp_out,
+    std::string &type_out,
+    std::chrono::milliseconds timeout
+  ) {
+    const std::string session_id {id};
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::unique_lock lock {session_mutex};
+    while (true) {
+      auto it = sessions.find(session_id);
+      if (it == sessions.end()) {
+        return false;
+      }
+      if (it->second.state.has_local_answer) {
+        sdp_out = it->second.local_answer_sdp;
+        type_out = it->second.local_answer_type;
+        return true;
+      }
+      if (timeout <= std::chrono::milliseconds::zero()) {
+        return false;
+      }
+      if (local_answer_cv.wait_until(lock, deadline) == std::cv_status::timeout) {
+        return false;
+      }
+    }
   }
 
   std::vector<IceCandidateInfo> get_local_candidates(std::string_view id, std::size_t since) {

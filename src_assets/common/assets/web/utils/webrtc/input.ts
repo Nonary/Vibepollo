@@ -404,7 +404,7 @@ export function applyGamepadFeedback(message: GamepadFeedbackMessage | unknown):
 
 export function attachInputCapture(
   element: HTMLElement,
-  send: (payload: string) => boolean | void,
+  send: (payload: string | ArrayBuffer) => boolean | void,
   options: InputCaptureOptions = {},
 ): () => void {
   const video = options.video ?? null;
@@ -413,6 +413,7 @@ export function attachInputCapture(
   let queuedMove: InputMessage | null = null;
   let queuedMoveAt = 0;
   let rafId = 0;
+  let mouseMoveSeq = 0;
   const pressedKeys = new Map<string, { key: string; code: string }>();
   const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
   const supportsGamepad =
@@ -429,7 +430,23 @@ export function attachInputCapture(
   let moveRateCount = 0;
   let moveSendRateCount = 0;
   let lastMetricsEmitAt = 0;
-  const sendPayload = (payload: InputMessage) => send(JSON.stringify(payload)) !== false;
+  const toU16Unit = (value: number) => Math.round(Math.min(1, Math.max(0, value)) * 65535);
+  const encodeMouseMove = (payload: InputMessage & { type: 'mouse_move' }) => {
+    const out = new ArrayBuffer(7);
+    const view = new DataView(out);
+    view.setUint8(0, 1);
+    view.setUint16(1, mouseMoveSeq, true);
+    view.setUint16(3, toU16Unit(payload.x), true);
+    view.setUint16(5, toU16Unit(payload.y), true);
+    mouseMoveSeq = (mouseMoveSeq + 1) & 0xffff;
+    return out;
+  };
+  const sendPayload = (payload: InputMessage) => {
+    if (payload.type === 'mouse_move') {
+      return send(encodeMouseMove(payload)) !== false;
+    }
+    return send(JSON.stringify(payload)) !== false;
+  };
   const keyboardLockApi = getKeyboardLockApi();
   let keyboardLocked = false;
 

@@ -31,6 +31,8 @@ const ENCODING_MIME: Record<string, string[]> = {
   av1: ['video/av1'],
 };
 const AUDIO_JITTER_BUFFER_TARGET_MS = 20;
+const ICE_CANDIDATE_BATCH_WINDOW_MS = 75;
+const ICE_CANDIDATE_BATCH_LIMIT = 256;
 
 function resolveEncodingPreference(encoding: string): string {
   if (typeof RTCRtpSender === 'undefined') return encoding;
@@ -223,9 +225,11 @@ export class WebRtcClient {
   private statsTimer?: number;
   private statsState: StatsState = {};
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private pendingLocalCandidates: RTCIceCandidateInit[] = [];
+  private pendingLocalCandidatesTimer?: number;
   private autoDisconnectTimer?: number;
   private disconnecting = false;
-  private pendingInput: string[] = [];
+  private pendingInput: (string | ArrayBuffer)[] = [];
   private maxPendingInput = 256;
 
   constructor(api: WebRtcApi) {
@@ -316,7 +320,7 @@ export class WebRtcClient {
 
     this.pc.onicecandidate = (event) => {
       if (!event.candidate || !this.sessionId) return;
-      void this.api.sendIceCandidate(this.sessionId, event.candidate.toJSON());
+      this.queueLocalCandidate(event.candidate.toJSON());
     };
 
     this.unsubscribeCandidates = this.api.subscribeRemoteCandidates(
@@ -360,6 +364,27 @@ export class WebRtcClient {
     return session.sessionId;
   }
 
+  private queueLocalCandidate(candidate: RTCIceCandidateInit): void {
+    if (!candidate?.candidate || !this.sessionId) return;
+    this.pendingLocalCandidates.push(candidate);
+    if (this.pendingLocalCandidates.length >= ICE_CANDIDATE_BATCH_LIMIT) {
+      this.flushLocalCandidates();
+      return;
+    }
+    if (this.pendingLocalCandidatesTimer) return;
+    this.pendingLocalCandidatesTimer = window.setTimeout(() => {
+      this.pendingLocalCandidatesTimer = undefined;
+      this.flushLocalCandidates();
+    }, ICE_CANDIDATE_BATCH_WINDOW_MS);
+  }
+
+  private flushLocalCandidates(): void {
+    if (!this.sessionId || !this.pendingLocalCandidates.length) return;
+    const candidates = this.pendingLocalCandidates;
+    this.pendingLocalCandidates = [];
+    void this.api.sendIceCandidates(this.sessionId, candidates).catch(() => {});
+  }
+
   async disconnect(options: WebRtcDisconnectOptions = {}): Promise<void> {
     if (this.disconnecting) return;
     this.disconnecting = true;
@@ -391,8 +416,13 @@ export class WebRtcClient {
         /* ignore */
       }
     }
+    if (this.pendingLocalCandidatesTimer) {
+      window.clearTimeout(this.pendingLocalCandidatesTimer);
+      this.pendingLocalCandidatesTimer = undefined;
+    }
     this.remoteStream = new MediaStream();
     this.pendingRemoteCandidates = [];
+    this.pendingLocalCandidates = [];
     this.pc = undefined;
     this.sessionId = undefined;
     this.inputChannel = undefined;
@@ -401,7 +431,7 @@ export class WebRtcClient {
     this.disconnecting = false;
   }
 
-  sendInput(payload: string): boolean {
+  sendInput(payload: string | ArrayBuffer): boolean {
     if (!this.inputChannel || this.inputChannel.readyState !== 'open') {
       this.queueInput(payload);
       return false;
@@ -415,7 +445,7 @@ export class WebRtcClient {
     }
   }
 
-  private queueInput(payload: string): void {
+  private queueInput(payload: string | ArrayBuffer): void {
     if (this.pendingInput.length >= this.maxPendingInput) {
       this.pendingInput.shift();
     }
