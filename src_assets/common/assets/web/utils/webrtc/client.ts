@@ -26,6 +26,7 @@ const ENCODING_MIME: Record<string, string[]> = {
   hevc: ['video/h265', 'video/hevc'],
   av1: ['video/av1'],
 };
+const AUDIO_JITTER_BUFFER_TARGET_MS = 20;
 
 function resolveEncodingPreference(encoding: string): string {
   if (typeof RTCRtpSender === 'undefined') return encoding;
@@ -141,6 +142,36 @@ function applyInitialBitrateHints(sdp: string, bitrateKbps?: number): string {
   return sdp.endsWith('\n') && !joined.endsWith('\r\n') ? `${joined}\r\n` : joined;
 }
 
+function applyAudioReceiverHints(receiver?: RTCRtpReceiver): void {
+  if (!receiver) return;
+  const receiverAny = receiver as any;
+  try {
+    if (typeof receiverAny.jitterBufferTarget === 'number') {
+      receiverAny.jitterBufferTarget = AUDIO_JITTER_BUFFER_TARGET_MS;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if ('playoutDelayHint' in receiverAny) {
+      receiverAny.playoutDelayHint = AUDIO_JITTER_BUFFER_TARGET_MS / 1000;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof receiverAny.getParameters === 'function' && typeof receiverAny.setParameters === 'function') {
+      const parameters = receiverAny.getParameters();
+      if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
+        parameters.jitterBufferTarget = AUDIO_JITTER_BUFFER_TARGET_MS;
+        receiverAny.setParameters(parameters);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export class WebRtcClient {
   private api: WebRtcApi;
   private pc?: RTCPeerConnection;
@@ -216,6 +247,9 @@ export class WebRtcClient {
 
     this.pc.ontrack = (event) => {
       this.remoteStream.addTrack(event.track);
+      if (event.track.kind === 'audio') {
+        applyAudioReceiverHints(event.receiver);
+      }
       callbacks.onRemoteStream?.(this.remoteStream);
     };
 
