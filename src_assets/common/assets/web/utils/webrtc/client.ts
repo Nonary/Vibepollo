@@ -450,8 +450,16 @@ export class WebRtcClient {
     let rttMs: number | undefined;
     let videoPackets: number | undefined;
     let audioPackets: number | undefined;
+    let videoFramesReceived: number | undefined;
     let videoFramesDecoded: number | undefined;
     let videoFramesDropped: number | undefined;
+    let videoTotalDecodeTime: number | undefined;
+    let videoJitterMs: number | undefined;
+    let audioJitterMs: number | undefined;
+    let videoJitterBufferDelay: number | undefined;
+    let videoJitterBufferEmittedCount: number | undefined;
+    let audioJitterBufferDelay: number | undefined;
+    let audioJitterBufferEmittedCount: number | undefined;
     let videoCodecId: string | undefined;
     let audioCodecId: string | undefined;
     let selectedPair: any | undefined;
@@ -463,13 +471,27 @@ export class WebRtcClient {
         videoFps = (item as any).framesPerSecond ?? videoFps;
         packetsLost = (item as any).packetsLost ?? packetsLost;
         videoPackets = (item as any).packetsReceived ?? videoPackets;
+        videoFramesReceived = (item as any).framesReceived ?? videoFramesReceived;
         videoFramesDecoded = (item as any).framesDecoded ?? videoFramesDecoded;
         videoFramesDropped = (item as any).framesDropped ?? videoFramesDropped;
+        videoTotalDecodeTime = (item as any).totalDecodeTime ?? videoTotalDecodeTime;
+        if (typeof (item as any).jitter === 'number') {
+          videoJitterMs = (item as any).jitter * 1000;
+        }
+        videoJitterBufferDelay = (item as any).jitterBufferDelay ?? videoJitterBufferDelay;
+        videoJitterBufferEmittedCount =
+          (item as any).jitterBufferEmittedCount ?? videoJitterBufferEmittedCount;
         videoCodecId = (item as any).codecId ?? videoCodecId;
       }
       if (item.type === 'inbound-rtp' && item.kind === 'audio') {
         audioBytes = (item as any).bytesReceived ?? audioBytes;
         audioPackets = (item as any).packetsReceived ?? audioPackets;
+        if (typeof (item as any).jitter === 'number') {
+          audioJitterMs = (item as any).jitter * 1000;
+        }
+        audioJitterBufferDelay = (item as any).jitterBufferDelay ?? audioJitterBufferDelay;
+        audioJitterBufferEmittedCount =
+          (item as any).jitterBufferEmittedCount ?? audioJitterBufferEmittedCount;
         audioCodecId = (item as any).codecId ?? audioCodecId;
       }
       if (item.type === 'candidate-pair' && (item as any).state === 'succeeded') {
@@ -525,6 +547,17 @@ export class WebRtcClient {
     };
     const videoBitrate = calcRate(videoBytes, last.lastVideoBytes);
     const audioBitrate = calcRate(audioBytes, last.lastAudioBytes);
+    const calcJitterBufferMs = (delay?: number, emitted?: number) => {
+      if (delay == null || emitted == null || emitted <= 0) return undefined;
+      return (delay / emitted) * 1000;
+    };
+    const calcDecodeMs = (totalDecodeTime?: number, framesDecoded?: number) => {
+      if (totalDecodeTime == null || !framesDecoded) return undefined;
+      return (totalDecodeTime / framesDecoded) * 1000;
+    };
+    const videoJitterBufferMs = calcJitterBufferMs(videoJitterBufferDelay, videoJitterBufferEmittedCount);
+    const audioJitterBufferMs = calcJitterBufferMs(audioJitterBufferDelay, audioJitterBufferEmittedCount);
+    const videoDecodeMs = calcDecodeMs(videoTotalDecodeTime, videoFramesDecoded);
 
     this.statsState = {
       lastTimestampMs: now,
@@ -542,8 +575,14 @@ export class WebRtcClient {
       audioBytesReceived: audioBytes,
       videoPacketsReceived: videoPackets,
       audioPacketsReceived: audioPackets,
+      videoFramesReceived,
       videoFramesDecoded,
       videoFramesDropped,
+      videoDecodeMs,
+      videoJitterMs,
+      audioJitterMs,
+      videoJitterBufferMs,
+      audioJitterBufferMs,
       videoCodec,
       audioCodec,
       candidatePair,

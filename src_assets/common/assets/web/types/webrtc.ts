@@ -84,8 +84,14 @@ export interface WebRtcStatsSnapshot {
   audioBytesReceived?: number;
   videoPacketsReceived?: number;
   audioPacketsReceived?: number;
+  videoFramesReceived?: number;
   videoFramesDecoded?: number;
   videoFramesDropped?: number;
+  videoDecodeMs?: number;
+  videoJitterMs?: number;
+  audioJitterMs?: number;
+  videoJitterBufferMs?: number;
+  audioJitterBufferMs?: number;
   videoCodec?: string;
   audioCodec?: string;
   candidatePair?: {

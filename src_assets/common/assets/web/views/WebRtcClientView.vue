@@ -23,7 +23,7 @@
           </div>
           <div v-if="isConnected" class="flex items-center gap-3 text-xs text-onDark/50">
             <span><i class="fas fa-signal mr-1"></i>{{ formatKbps(stats.videoBitrateKbps) }}</span>
-            <span><i class="fas fa-clock mr-1"></i>{{ stats.roundTripTimeMs ? `${stats.roundTripTimeMs.toFixed(0)}ms` : '--' }}</span>
+            <span><i class="fas fa-clock mr-1"></i>{{ formatMs(smoothedLatencyMs) }}</span>
             <span><i class="fas fa-film mr-1"></i>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
           </div>
         </div>
@@ -283,8 +283,8 @@
                 <i class="fas fa-clock"></i>
               </div>
               <div>
-                <div class="stat-label">Latency</div>
-                <div class="stat-value">{{ stats.roundTripTimeMs ? `${stats.roundTripTimeMs.toFixed(0)} ms` : '--' }}</div>
+                <div class="stat-label">Est. Latency</div>
+                <div class="stat-value">{{ formatMs(smoothedLatencyMs) }}</div>
               </div>
             </div>
             <div class="stat-card">
@@ -350,6 +350,44 @@
                 <div class="debug-row">
                   <span>Codec</span>
                   <span>V {{ displayValue(stats.videoCodec) }} / A {{ displayValue(stats.audioCodec) }}</span>
+                </div>
+              </div>
+              <div class="grid gap-2 md:grid-cols-2 mt-3 pt-3 border-t border-surface/30">
+                <div class="debug-row">
+                  <span>Latency est</span>
+                  <span>{{ formatMs(smoothedLatencyMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Latency avg 30s</span>
+                  <span>{{ formatMs(averageLatency30sMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>RTT / one-way</span>
+                  <span>{{ formatMs(stats.roundTripTimeMs) }} / {{ formatMs(oneWayRttMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Decoder</span>
+                  <span>{{ formatMs(stats.videoDecodeMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Jitter / buffer</span>
+                  <span>{{ formatMs(stats.videoJitterMs) }} / {{ formatMs(videoJitterBufferMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Audio latency</span>
+                  <span>{{ formatMs(audioLatencyMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Audio jitter / buffer</span>
+                  <span>{{ formatMs(stats.audioJitterMs) }} / {{ formatMs(stats.audioJitterBufferMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Render delay</span>
+                  <span>{{ formatMs(videoFrameMetrics.lastDelayMs) }}</span>
+                </div>
+                <div class="debug-row">
+                  <span>Frames dropped</span>
+                  <span>{{ displayValue(stats.videoFramesDropped) }} / {{ displayValue(stats.videoFramesReceived) }}</span>
                 </div>
               </div>
               <!-- Video Events -->
@@ -683,16 +721,72 @@ const videoFrameMetrics = ref<{
   avgDelayMs?: number;
   maxDelayMs?: number;
 }>({});
+const LATENCY_SAMPLE_WINDOW_MS = 30000;
+const LATENCY_SMOOTH_TAU_MS = 2000;
+const latencySamples = ref<{ ts: number; value: number }[]>([]);
+const smoothedLatencyMs = ref<number | undefined>(undefined);
+let lastLatencySampleAt: number | null = null;
+const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs ?? stats.value.audioJitterBufferMs);
+const oneWayRttMs = computed(() =>
+  stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined,
+);
+const estimatedLatencyMs = computed(() => {
+  const parts = [
+    oneWayRttMs.value,
+    videoJitterBufferMs.value,
+    stats.value.videoDecodeMs,
+    videoFrameMetrics.value.lastDelayMs,
+  ].filter((value) => typeof value === 'number') as number[];
+  if (!parts.length) return undefined;
+  return parts.reduce((total, value) => total + value, 0);
+});
+const averageLatency30sMs = computed(() => {
+  const samples = latencySamples.value;
+  if (!samples.length) return undefined;
+  const total = samples.reduce((sum, sample) => sum + sample.value, 0);
+  return total / samples.length;
+});
+const audioLatencyMs = computed(() => {
+  const parts = [
+    oneWayRttMs.value,
+    stats.value.audioJitterBufferMs,
+  ].filter((value) => typeof value === 'number') as number[];
+  if (!parts.length) return undefined;
+  return parts.reduce((total, value) => total + value, 0);
+});
+watch(
+  () => estimatedLatencyMs.value,
+  (value) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) return;
+    const now = Date.now();
+    const lastAt = lastLatencySampleAt ?? now;
+    const deltaMs = Math.max(0, now - lastAt);
+    const alpha = 1 - Math.exp(-deltaMs / LATENCY_SMOOTH_TAU_MS);
+    if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
+      smoothedLatencyMs.value = value;
+    } else {
+      smoothedLatencyMs.value = smoothedLatencyMs.value + alpha * (value - smoothedLatencyMs.value);
+    }
+    lastLatencySampleAt = now;
+    latencySamples.value.push({ ts: now, value });
+    const cutoff = now - LATENCY_SAMPLE_WINDOW_MS;
+    while (latencySamples.value.length && latencySamples.value[0].ts < cutoff) {
+      latencySamples.value.shift();
+    }
+  },
+);
 const overlayLines = computed(() => {
   const fps = stats.value.videoFps ? stats.value.videoFps.toFixed(0) : '--';
   const dropped = stats.value.videoFramesDropped ?? '--';
   return [
     `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
-    `RTT ${formatMs(stats.value.roundTripTimeMs)} | FPS ${fps} | Drop ${dropped}`,
+    `Lat est ${formatMs(smoothedLatencyMs.value)} | Avg30 ${formatMs(averageLatency30sMs.value)} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
+    `Decode ${formatMs(stats.value.videoDecodeMs)} | FPS ${fps} | Drop ${dropped}`,
     `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
+    `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | buf ${formatMs(stats.value.audioJitterBufferMs)}`,
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
     `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
-    `Video interval ${formatMs(videoFrameMetrics.value.lastIntervalMs)} | delay ${formatMs(videoFrameMetrics.value.lastDelayMs)} | size ${videoSizeLabel.value}`,
+    `Render ${formatMs(videoFrameMetrics.value.lastDelayMs)} | frame ${formatMs(videoFrameMetrics.value.lastIntervalMs)} | size ${videoSizeLabel.value}`,
   ];
 });
 let detachInput: (() => void) | null = null;
