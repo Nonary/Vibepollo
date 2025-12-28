@@ -591,8 +591,9 @@
   },
   "webrtc": {
     "nav": "Stream",
-    "title": "Cloud Gaming",
-    "subtitle": "Stream your desktop or games directly in the browser",
+    "title": "WebRTC Streaming",
+    "subtitle": "Experimental browser streaming with higher latency and lower quality than native streaming.",
+    "experimental_notice": "Experimental: expect higher latency and lower quality than native streaming.",
     "session_settings": "Session Settings",
     "resolution": "Resolution",
     "framerate": "Framerate",

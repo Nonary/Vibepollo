@@ -19,6 +19,10 @@ interface StatsState {
   lastVideoBytes?: number;
   lastAudioBytes?: number;
   lastTimestampMs?: number;
+  lastVideoJitterBufferDelay?: number;
+  lastVideoJitterBufferEmittedCount?: number;
+  lastAudioJitterBufferDelay?: number;
+  lastAudioJitterBufferEmittedCount?: number;
 }
 
 const ENCODING_MIME: Record<string, string[]> = {
@@ -586,22 +590,47 @@ export class WebRtcClient {
     };
     const videoBitrate = calcRate(videoBytes, last.lastVideoBytes);
     const audioBitrate = calcRate(audioBytes, last.lastAudioBytes);
-    const calcJitterBufferMs = (delay?: number, emitted?: number) => {
+    const calcJitterBufferMs = (
+      delay?: number,
+      emitted?: number,
+      lastDelay?: number,
+      lastEmitted?: number,
+    ) => {
       if (delay == null || emitted == null || emitted <= 0) return undefined;
-      return (delay / emitted) * 1000;
+      if (lastDelay == null || lastEmitted == null || emitted <= lastEmitted || delay < lastDelay) {
+        return (delay / emitted) * 1000;
+      }
+      const deltaDelay = delay - lastDelay;
+      const deltaEmitted = emitted - lastEmitted;
+      if (deltaEmitted <= 0 || deltaDelay < 0) return undefined;
+      return (deltaDelay / deltaEmitted) * 1000;
     };
     const calcDecodeMs = (totalDecodeTime?: number, framesDecoded?: number) => {
       if (totalDecodeTime == null || !framesDecoded) return undefined;
       return (totalDecodeTime / framesDecoded) * 1000;
     };
-    const videoJitterBufferMs = calcJitterBufferMs(videoJitterBufferDelay, videoJitterBufferEmittedCount);
-    const audioJitterBufferMs = calcJitterBufferMs(audioJitterBufferDelay, audioJitterBufferEmittedCount);
+    const videoJitterBufferMs = calcJitterBufferMs(
+      videoJitterBufferDelay,
+      videoJitterBufferEmittedCount,
+      last.lastVideoJitterBufferDelay,
+      last.lastVideoJitterBufferEmittedCount,
+    );
+    const audioJitterBufferMs = calcJitterBufferMs(
+      audioJitterBufferDelay,
+      audioJitterBufferEmittedCount,
+      last.lastAudioJitterBufferDelay,
+      last.lastAudioJitterBufferEmittedCount,
+    );
     const videoDecodeMs = calcDecodeMs(videoTotalDecodeTime, videoFramesDecoded);
 
     this.statsState = {
       lastTimestampMs: now,
       lastVideoBytes: videoBytes,
       lastAudioBytes: audioBytes,
+      lastVideoJitterBufferDelay: videoJitterBufferDelay,
+      lastVideoJitterBufferEmittedCount: videoJitterBufferEmittedCount,
+      lastAudioJitterBufferDelay: audioJitterBufferDelay,
+      lastAudioJitterBufferEmittedCount: audioJitterBufferEmittedCount,
     };
 
     return {

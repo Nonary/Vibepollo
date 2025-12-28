@@ -26,117 +26,123 @@
             <span><i class="fas fa-clock mr-1"></i>{{ formatMs(smoothedLatencyMs) }}</span>
             <span><i class="fas fa-film mr-1"></i>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
           </div>
+          <div class="ml-auto">
+            <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
+              <template #trigger>
+                <button class="settings-menu-btn">
+                  <i class="fas fa-sliders"></i>
+                  <span>{{ $t('webrtc.session_settings') }}</span>
+                </button>
+              </template>
+              <div class="settings-menu-panel">
+                <div class="flex items-center gap-2 mb-4">
+                  <i class="fas fa-sliders text-primary"></i>
+                  <h3 class="font-semibold text-onDark">{{ $t('webrtc.session_settings') }}</h3>
+                </div>
+                <div class="space-y-4">
+                  <div>
+                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.resolution') }}</label>
+                    <div class="flex items-center gap-2">
+                      <n-input-number v-model:value="config.width" :min="320" :max="7680" size="small" class="flex-1" />
+                      <span class="text-onDark/30">x</span>
+                      <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" class="flex-1" />
+                    </div>
+                    <div class="flex gap-1.5 mt-2">
+                      <button @click="setResolution(1920, 1080)" class="preset-btn" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
+                      <button @click="setResolution(2560, 1440)" class="preset-btn" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
+                      <button @click="setResolution(3840, 2160)" class="preset-btn" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.framerate') }}</label>
+                    <div class="flex gap-1.5">
+                      <button @click="config.fps = 30" class="preset-btn flex-1" :class="{ active: config.fps === 30 }">30</button>
+                      <button @click="config.fps = 60" class="preset-btn flex-1" :class="{ active: config.fps === 60 }">60</button>
+                      <button @click="config.fps = 120" class="preset-btn flex-1" :class="{ active: config.fps === 120 }">120</button>
+                      <button @click="config.fps = 144" class="preset-btn flex-1" :class="{ active: config.fps === 144 }">144</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.encoding') }}</label>
+                    <div class="flex gap-1.5">
+                      <button v-for="opt in encodingOptions" :key="opt.value"
+                              @click="opt.supported && (config.encoding = opt.value)"
+                              class="preset-btn flex-1"
+                              :class="{ active: config.encoding === opt.value && opt.supported, disabled: !opt.supported }"
+                              :disabled="!opt.supported"
+                              :title="opt.supported ? undefined : opt.hint">
+                        <span>{{ opt.label }}</span>
+                        <span v-if="!opt.supported" class="block text-[9px] leading-tight text-onDark/40">Unsupported</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.bitrate') }}</label>
+                    <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="w-full" />
+                    <div class="flex gap-1.5 mt-2">
+                      <button @click="config.bitrateKbps = 10000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
+                      <button @click="config.bitrateKbps = 30000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
+                      <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.frame_pacing') }}</label>
+                    <div class="flex gap-1.5">
+                      <button v-for="opt in pacingOptions" :key="opt.value"
+                              @click="applyPacingPreset(opt.value)"
+                              class="preset-btn flex-1"
+                              :class="{ active: config.videoPacingMode === opt.value }">
+                        {{ opt.label }}
+                      </button>
+                    </div>
+                    <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.frame_pacing_desc') }}</div>
+                    <div class="grid grid-cols-2 gap-2 mt-2">
+                      <div>
+                        <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
+                          {{ $t('webrtc.frame_pacing_slack') }}
+                        </label>
+                        <n-input-number v-model:value="config.videoPacingSlackMs" :min="0" :max="10" size="small" />
+                      </div>
+                      <div>
+                        <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
+                          {{ $t('webrtc.frame_pacing_max_delay') }}
+                        </label>
+                        <n-input-number v-model:value="config.videoMaxFrameAgeMs" :min="5" :max="250" size="small" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="flex items-center justify-between">
+                      <label class="text-xs text-onDark/50 uppercase tracking-wide">{{ $t('webrtc.mute_host_audio') }}</label>
+                      <n-switch v-model:value="config.muteHostAudio" size="small" />
+                    </div>
+                    <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.mute_host_audio_desc') }}</div>
+                  </div>
+                </div>
+              </div>
+            </n-popover>
+          </div>
+        </div>
+        <div class="mt-3 inline-flex items-center gap-2 text-xs text-warning/80 bg-warning/10 px-3 py-1.5 rounded-full border border-warning/30">
+          <i class="fas fa-flask"></i>
+          <span>{{ $t('webrtc.experimental_notice') }}</span>
         </div>
       </div>
     </div>
 
     <div class="max-w-7xl mx-auto px-6">
       <!-- Main Content Grid -->
-      <div class="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+      <div class="grid gap-6 lg:grid-cols-[440px_minmax(0,1fr)]">
         
-        <!-- Left Sidebar - Settings & Games -->
+        <!-- Left Sidebar - Controls & Games -->
         <div class="space-y-5">
-          <!-- Quick Settings Card -->
           <div class="gaming-card p-5">
-            <div class="flex items-center gap-2 mb-4">
-              <i class="fas fa-sliders text-primary"></i>
-              <h3 class="font-semibold text-onDark">{{ $t('webrtc.session_settings') }}</h3>
-            </div>
-            
-            <div class="space-y-4">
-              <!-- Resolution -->
-              <div>
-                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.resolution') }}</label>
-                <div class="flex items-center gap-2">
-                  <n-input-number v-model:value="config.width" :min="320" :max="7680" size="small" class="flex-1" />
-                  <span class="text-onDark/30">×</span>
-                  <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" class="flex-1" />
-                </div>
-                <div class="flex gap-1.5 mt-2">
-                  <button @click="setResolution(1920, 1080)" class="preset-btn" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
-                  <button @click="setResolution(2560, 1440)" class="preset-btn" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
-                  <button @click="setResolution(3840, 2160)" class="preset-btn" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
-                </div>
-              </div>
-
-              <!-- Framerate -->
-              <div>
-                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.framerate') }}</label>
-                <div class="flex gap-1.5">
-                  <button @click="config.fps = 30" class="preset-btn flex-1" :class="{ active: config.fps === 30 }">30</button>
-                  <button @click="config.fps = 60" class="preset-btn flex-1" :class="{ active: config.fps === 60 }">60</button>
-                  <button @click="config.fps = 120" class="preset-btn flex-1" :class="{ active: config.fps === 120 }">120</button>
-                  <button @click="config.fps = 144" class="preset-btn flex-1" :class="{ active: config.fps === 144 }">144</button>
-                </div>
-              </div>
-
-              <!-- Encoding -->
-              <div>
-                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.encoding') }}</label>
-                <div class="flex gap-1.5">
-                  <button v-for="opt in encodingOptions" :key="opt.value"
-                          @click="opt.supported && (config.encoding = opt.value)"
-                          class="preset-btn flex-1"
-                          :class="{ active: config.encoding === opt.value && opt.supported, disabled: !opt.supported }"
-                          :disabled="!opt.supported"
-                          :title="opt.supported ? undefined : opt.hint">
-                    <span>{{ opt.label }}</span>
-                    <span v-if="!opt.supported" class="block text-[9px] leading-tight text-onDark/40">Unsupported</span>
-                  </button>
-                </div>
-              </div>
-
-              <!-- Bitrate -->
-              <div>
-                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.bitrate') }}</label>
-                <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="w-full" />
-                <div class="flex gap-1.5 mt-2">
-                  <button @click="config.bitrateKbps = 10000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
-                  <button @click="config.bitrateKbps = 30000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
-                  <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
-                </div>
-              </div>
-
-              <!-- Frame Pacing -->
-              <div>
-                <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.frame_pacing') }}</label>
-                <div class="flex gap-1.5">
-                  <button v-for="opt in pacingOptions" :key="opt.value"
-                          @click="applyPacingPreset(opt.value)"
-                          class="preset-btn flex-1"
-                          :class="{ active: config.videoPacingMode === opt.value }">
-                    {{ opt.label }}
-                  </button>
-                </div>
-                <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.frame_pacing_desc') }}</div>
-                <div class="grid grid-cols-2 gap-2 mt-2">
-                  <div>
-                    <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
-                      {{ $t('webrtc.frame_pacing_slack') }}
-                    </label>
-                    <n-input-number v-model:value="config.videoPacingSlackMs" :min="0" :max="10" size="small" />
-                  </div>
-                  <div>
-                    <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
-                      {{ $t('webrtc.frame_pacing_max_delay') }}
-                    </label>
-                    <n-input-number v-model:value="config.videoMaxFrameAgeMs" :min="5" :max="250" size="small" />
-                  </div>
-                </div>
-              </div>
-
-              <!-- Host Audio -->
-              <div>
-                <div class="flex items-center justify-between">
-                  <label class="text-xs text-onDark/50 uppercase tracking-wide">{{ $t('webrtc.mute_host_audio') }}</label>
-                  <n-switch v-model:value="config.muteHostAudio" size="small" />
-                </div>
-                <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.mute_host_audio_desc') }}</div>
-              </div>
-            </div>
-
-            <!-- Connect Button -->
-            <div class="mt-6 space-y-3">
+            <div class="space-y-3">
               <button @click="isConnected ? disconnect() : connect()" 
                       class="w-full py-3 px-4 rounded-xl font-semibold text-sm transition-all duration-200"
                       :class="isConnected 
@@ -174,7 +180,7 @@
           </div>
 
           <!-- Game Selection Card -->
-          <div class="gaming-card p-5">
+          <div class="gaming-card p-5 webrtc-library-card">
             <div class="flex items-center justify-between mb-4">
               <div class="flex items-center gap-2">
                 <i class="fas fa-gamepad text-primary"></i>
@@ -191,18 +197,19 @@
               {{ selectedAppId ? selectedAppLabel : $t('webrtc.no_selection') }}
             </div>
 
-            <div v-if="appsList.length" class="grid gap-2 max-h-[320px] overflow-y-auto pr-1 custom-scrollbar">
+            <div v-if="appsList.length" class="grid gap-3 game-library-grid overflow-y-auto pr-1 custom-scrollbar">
               <button v-for="app in appsList" :key="appKey(app)"
                       @click="selectApp(app)"
+                      @dblclick="onAppDoubleClick(app)"
                       class="game-card group"
                       :class="{ 'selected': appNumericId(app) === selectedAppId }">
-                <div class="relative w-12 h-16 rounded-lg overflow-hidden flex-shrink-0 bg-surface/30">
+                <div class="relative w-16 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-surface/30">
                   <img :src="coverUrl(app) || undefined" :alt="app.name || 'Application'"
                        class="w-full h-full object-cover transition-transform group-hover:scale-110" loading="lazy" />
                   <div class="absolute inset-0 bg-gradient-to-t from-dark/60 to-transparent"></div>
                 </div>
                 <div class="min-w-0 flex-1 text-left">
-                  <div class="font-medium text-sm truncate text-onDark">{{ app.name || '(untitled)' }}</div>
+                  <div class="font-semibold text-base truncate text-onDark">{{ app.name || '(untitled)' }}</div>
                   <div class="text-xs text-onDark/40 truncate">{{ appSubtitle(app) }}</div>
                 </div>
                 <i v-if="appNumericId(app) === selectedAppId" class="fas fa-check-circle text-primary"></i>
@@ -248,7 +255,12 @@
                   <i class="fas fa-satellite-dish text-4xl text-primary/80 relative"></i>
                 </div>
                 <p class="mt-4 text-onDark/50 text-sm">Ready to stream</p>
-                <p class="text-onDark/30 text-xs">Select a game and click Start Streaming</p>
+                <p class="text-onDark/30 text-xs">Double-click a game or press Start Streaming</p>
+              </div>
+
+              <div v-if="showStartingOverlay" class="absolute inset-0 flex flex-col items-center justify-center bg-dark/70 backdrop-blur-sm">
+                <div class="w-14 h-14 rounded-full border-4 border-primary/30 border-t-primary animate-spin"></div>
+                <p class="mt-4 text-onDark/80 text-sm">Session starting soon</p>
               </div>
 
               <!-- Live Stats Overlay -->
@@ -600,6 +612,12 @@ function selectApp(app: App) {
   resumeOnConnect.value = false;
 }
 
+async function onAppDoubleClick(app: App) {
+  if (isConnected.value || isConnecting.value) return;
+  selectApp(app);
+  await connect();
+}
+
 function clearSelection() {
   selectedAppId.value = null;
   resumeOnConnect.value = true;
@@ -626,6 +644,10 @@ const connectLabelKey = computed(() => {
   if (isConnected.value) return 'webrtc.disconnect';
   if (resumeAvailable.value) return 'webrtc.resume';
   return 'webrtc.connect';
+});
+const showStartingOverlay = computed(() => {
+  if (isConnected.value) return false;
+  return isConnecting.value || connectionState.value === 'connecting';
 });
 const connectionState = ref<RTCPeerConnectionState | null>(null);
 const iceState = ref<RTCIceConnectionState | null>(null);
@@ -1182,13 +1204,15 @@ async function connect() {
     console.error(error);
   } finally {
     isConnecting.value = false;
+    if (!isConnected.value) {
+      startSessionStatusPolling();
+    }
   }
 }
 
 async function disconnect() {
   await client.disconnect();
   stopServerSessionPolling();
-  startSessionStatusPolling();
   isConnected.value = false;
   connectionState.value = null;
   iceState.value = null;
@@ -1213,6 +1237,7 @@ async function disconnect() {
   lastTrackSnapshot = null;
   videoEvents.value = [];
   videoStateTick.value += 1;
+  startSessionStatusPolling();
 }
 
 async function terminateSession() {
@@ -1361,6 +1386,35 @@ watch(
   border: 1px solid rgb(var(--color-primary) / 0.1);
   border-radius: 1rem;
   backdrop-filter: blur(10px);
+}
+
+.settings-menu-btn {
+  @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all;
+  background: rgb(var(--color-surface) / 0.8);
+  border: 1px solid rgb(var(--color-primary) / 0.2);
+  color: rgb(var(--color-on-dark) / 0.8);
+}
+
+.settings-menu-btn:hover {
+  background: rgb(var(--color-primary) / 0.15);
+  border-color: rgb(var(--color-primary) / 0.45);
+  color: rgb(var(--color-on-dark));
+}
+
+.settings-menu-panel {
+  width: min(420px, 80vw);
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  padding: 1.25rem;
+  background: rgb(var(--color-surface) / 0.9);
+  border: 1px solid rgb(var(--color-primary) / 0.2);
+  border-radius: 1rem;
+  box-shadow: 0 16px 30px rgb(var(--color-dark) / 0.5);
+}
+
+.webrtc-library-card .game-library-grid {
+  max-height: min(60vh, 560px);
+  min-height: 320px;
 }
 
 /* Preset Buttons */
