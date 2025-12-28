@@ -258,6 +258,7 @@ namespace {
     display_helper::v2::CancellationSource cancellation;
     std::deque<display_helper::v2::Message> messages;
     std::optional<display_helper::v2::ApplyStatus> apply_result;
+    std::optional<bool> verification_result;
     std::optional<int> exit_code;
 
     display_helper::v2::SystemPorts system_ports {workarounds, task_manager, heartbeat, clock, cancellation};
@@ -284,6 +285,9 @@ namespace {
     StateMachineHarness() {
       state_machine.set_apply_result_callback([this](display_helper::v2::ApplyStatus status) {
         apply_result = status;
+      });
+      state_machine.set_verification_result_callback([this](bool success) {
+        verification_result = success;
       });
       state_machine.set_exit_callback([this](int code) {
         exit_code = code;
@@ -351,6 +355,8 @@ TEST(DisplayHelperV2StateMachine, ApplyTransitionsAndVerifies) {
   harness.drain_messages();
 
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.verification_result.has_value());
+  EXPECT_TRUE(harness.verification_result.value());
   EXPECT_TRUE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.workarounds.refresh_calls, 1);
   EXPECT_EQ(harness.workarounds.blank_calls, 1);

@@ -1887,6 +1887,16 @@ namespace nvhttp {
         }
       }
 
+      const auto verification_status =
+        display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
+      if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
+        BOOST_LOG(error) << "Display helper validation failed; refusing to start capture.";
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Display helper validation failed; refusing to start capture.");
+        tree.put("root.gamesession", 0);
+        return;
+      }
+
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
       if (!launch_session->virtual_display) {
         const auto active_output = config::get_active_output_name();
@@ -2044,23 +2054,9 @@ namespace nvhttp {
 
 #ifdef _WIN32
       if (should_reapply_display) {
-        HANDLE user_token = platf::retrieve_users_token(false);
-        const bool helper_session_available = (user_token != nullptr);
-        if (user_token) {
-          CloseHandle(user_token);
-        }
-
-        (void) display_helper_integration::disarm_pending_restore();
-        auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-        if (!request) {
-          BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        } else if (!display_helper_integration::apply(*request)) {
-          if (helper_session_available) {
-            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-          }
-        }
+        (void) display_helper_integration::apply_pending_if_ready();
       } else {
-        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+        BOOST_LOG(debug) << "Display helper: skipping resume apply; only deferrals are allowed.";
       }
 
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
@@ -2073,15 +2069,7 @@ namespace nvhttp {
         );
       }
 #else
-      if (should_reapply_display) {
-        display_helper_integration::DisplayApplyBuilder noop_builder;
-        noop_builder.set_session(*launch_session);
-        if (!display_helper_integration::apply(noop_builder.build())) {
-          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-        }
-      } else {
-        BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
-      }
+      BOOST_LOG(debug) << "Display helper: skipping resume apply; only deferrals are allowed.";
 #endif
 
       // Probe encoders again before streaming to ensure our chosen

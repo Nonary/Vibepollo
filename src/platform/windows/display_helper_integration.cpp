@@ -530,6 +530,7 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
+  static std::atomic<bool> g_last_apply_used_helper {false};
 
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
@@ -992,6 +993,7 @@ namespace {
 
 namespace display_helper_integration {
   bool apply(const DisplayApplyRequest &request) {
+    g_last_apply_used_helper.store(false, std::memory_order_relaxed);
     if (request.action == DisplayApplyAction::Skip) {
       BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
       return false;
@@ -1049,6 +1051,7 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        g_last_apply_used_helper.store(ok, std::memory_order_relaxed);
         if (ok && request.session) {
           bool display_ready = true;
           if (auto device_id = resolve_display_device_id(request)) {
@@ -1112,6 +1115,21 @@ namespace display_helper_integration {
       platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
     }
     return true;
+  }
+
+  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout) {
+    if (!g_last_apply_used_helper.exchange(false, std::memory_order_acq_rel)) {
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    const int timeout_ms = static_cast<int>(std::max<long long>(timeout.count(), 0LL));
+    const auto result = platf::display_helper_client::wait_for_verification_result(timeout_ms);
+    if (!result.has_value()) {
+      BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    return *result ? ApplyVerificationStatus::Verified : ApplyVerificationStatus::Failed;
   }
 
   bool revert() {

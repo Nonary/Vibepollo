@@ -49,6 +49,7 @@ namespace {
     ApplyResult = 6,
     Disarm = 7,
     SnapshotCurrent = 8,
+    VerificationResult = 9,
     Ping = 0xFE,
     Stop = 0xFF,
   };
@@ -458,6 +459,15 @@ int main(int argc, char *argv[]) {
     std::vector<uint8_t> payload;
     payload.push_back(status == display_helper::v2::ApplyStatus::Ok ? 1u : 0u);
     send_framed_content(*pipe, MsgType::ApplyResult, payload);
+  });
+  state_machine.set_verification_result_callback([&](bool success) {
+    auto *pipe = active_pipe.load(std::memory_order_acquire);
+    if (!pipe) {
+      return;
+    }
+    std::vector<uint8_t> payload;
+    payload.push_back(success ? 1u : 0u);
+    send_framed_content(*pipe, MsgType::VerificationResult, payload);
   });
 
   display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));

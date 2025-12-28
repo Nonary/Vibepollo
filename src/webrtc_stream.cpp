@@ -49,6 +49,7 @@
 #include "process.h"
 #include "rtsp.h"
 #include "utility.h"
+#include "httpcommon.h"
 #include "video.h"
 #include "video_colorspace.h"
 #include "uuid.h"
@@ -59,6 +60,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include "src/platform/common.h"
+#include "src/platform/windows/misc.h"
 #include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/display_helper_integration.h"
 #include "src/platform/windows/display_helper_request_helpers.h"
@@ -99,6 +101,191 @@ namespace webrtc_stream {
     constexpr auto kVideoMaxFrameAgeSmooth = std::chrono::milliseconds {100};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {250};
+
+#ifdef _WIN32
+    void prepare_virtual_display_for_webrtc_session(
+      const std::shared_ptr<rtsp_stream::launch_session_t> &session
+    ) {
+      if (!session) {
+        return;
+      }
+
+      std::optional<std::string> app_output_override;
+      if (session->output_name_override && !session->output_name_override->empty()) {
+        app_output_override = boost::algorithm::trim_copy(*session->output_name_override);
+      }
+
+      if (app_output_override &&
+          boost::iequals(*app_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+        session->virtual_display = true;
+        app_output_override.reset();
+        session->output_name_override.reset();
+      }
+
+      bool config_requests_virtual =
+        config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+      if (session->virtual_display_mode_override) {
+        config_requests_virtual =
+          *session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
+      }
+      const bool metadata_requests_virtual = session->app_metadata && session->app_metadata->virtual_screen;
+      bool request_virtual_display =
+        session->virtual_display || config_requests_virtual || metadata_requests_virtual;
+      const bool has_app_output_override = app_output_override.has_value();
+      if (has_app_output_override) {
+        request_virtual_display = false;
+      }
+
+      if (!request_virtual_display) {
+        return;
+      }
+
+      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        proc::initVDisplayDriver();
+        if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+          BOOST_LOG(warning)
+            << "SudaVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus)
+            << "). Continuing with best-effort virtual display creation.";
+        }
+      }
+
+      if (!config::video.adapter_name.empty()) {
+        (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+      } else {
+        (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
+      }
+
+      if (auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+        session->virtual_display = true;
+        session->virtual_display_failed = false;
+        session->virtual_display_device_id = *existing_device;
+        session->virtual_display_ready_since = std::chrono::steady_clock::now();
+        config::set_runtime_output_name_override(session->virtual_display_device_id);
+        return;
+      }
+
+      auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
+        if (value.empty()) {
+          return std::nullopt;
+        }
+        try {
+          return uuid_util::uuid_t::parse(value);
+        } catch (...) {
+          return std::nullopt;
+        }
+      };
+
+      const auto effective_virtual_display_mode =
+        session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool shared_mode =
+        (effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+
+      uuid_util::uuid_t session_uuid;
+      if (shared_mode) {
+        if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
+          session_uuid = *parsed;
+        } else {
+          session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+          http::shared_virtual_display_guid = session_uuid.string();
+        }
+      } else if (auto parsed = parse_uuid(session->unique_id)) {
+        session_uuid = *parsed;
+      } else {
+        session_uuid = uuid_util::uuid_t::generate();
+      }
+
+      session->unique_id = session_uuid.string();
+      session->client_uuid = session->unique_id;
+
+      GUID virtual_display_guid {};
+      std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
+      session->virtual_display_guid_bytes.fill(0);
+      std::copy_n(
+        std::cbegin(session_uuid.b8),
+        sizeof(session_uuid.b8),
+        session->virtual_display_guid_bytes.begin()
+      );
+
+      const auto desired_layout =
+        session->virtual_display_layout_override.value_or(config::video.virtual_display_layout);
+      const bool wants_extended_layout =
+        desired_layout != config::video_t::virtual_display_layout_e::exclusive;
+      if (wants_extended_layout) {
+        if (auto topology_snapshot = display_helper_integration::capture_current_topology()) {
+          session->virtual_display_topology_snapshot = *topology_snapshot;
+        } else {
+          session->virtual_display_topology_snapshot.reset();
+        }
+      } else {
+        session->virtual_display_topology_snapshot.reset();
+      }
+
+      uint32_t vd_width = session->width > 0 ? static_cast<uint32_t>(session->width) : 1920u;
+      uint32_t vd_height = session->height > 0 ? static_cast<uint32_t>(session->height) : 1080u;
+      uint32_t base_vd_fps = session->fps > 0 ? static_cast<uint32_t>(session->fps) : 0u;
+      uint32_t base_vd_fps_millihz = base_vd_fps;
+      if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {
+        base_vd_fps_millihz *= 1000u;
+      }
+      uint32_t vd_fps = 0;
+      if (session->framegen_refresh_rate && *session->framegen_refresh_rate > 0) {
+        vd_fps = static_cast<uint32_t>(*session->framegen_refresh_rate);
+      } else if (base_vd_fps > 0) {
+        vd_fps = base_vd_fps;
+      } else {
+        vd_fps = 60000u;
+      }
+      if (vd_fps < 1000u) {
+        vd_fps *= 1000u;
+      }
+      const bool framegen_refresh_active =
+        session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
+
+      std::string client_label = session->client_name;
+      if (client_label.empty()) {
+        client_label = session->device_name;
+      }
+      if (client_label.empty()) {
+        client_label = "WebRTC";
+      }
+
+      VDISPLAY::setWatchdogFeedingEnabled(true);
+      auto display_info = VDISPLAY::createVirtualDisplay(
+        session->unique_id.c_str(),
+        client_label.c_str(),
+        session->hdr_profile ? session->hdr_profile->c_str() : nullptr,
+        vd_width,
+        vd_height,
+        vd_fps,
+        virtual_display_guid,
+        base_vd_fps_millihz,
+        framegen_refresh_active
+      );
+
+      if (display_info) {
+        session->virtual_display = true;
+        session->virtual_display_failed = false;
+        if (display_info->device_id && !display_info->device_id->empty()) {
+          session->virtual_display_device_id = *display_info->device_id;
+        } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+          session->virtual_display_device_id = *resolved_device;
+        } else {
+          session->virtual_display_device_id.clear();
+        }
+        session->virtual_display_ready_since = display_info->ready_since;
+        if (!session->virtual_display_device_id.empty()) {
+          config::set_runtime_output_name_override(session->virtual_display_device_id);
+        }
+        return;
+      }
+
+      session->virtual_display = false;
+      session->virtual_display_failed = true;
+      session->virtual_display_guid_bytes.fill(0);
+      session->virtual_display_device_id.clear();
+      session->virtual_display_ready_since.reset();
+    }
+#endif
 
     struct EncodedVideoFrame {
       std::shared_ptr<std::vector<std::uint8_t>> data;
@@ -1371,7 +1558,13 @@ namespace webrtc_stream {
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
 
       if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+#ifdef _WIN32
+        if (!boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+          config::set_runtime_output_name_override(*launch_session->output_name_override);
+        }
+#else
         config::set_runtime_output_name_override(*launch_session->output_name_override);
+#endif
       }
 
       if (requested_app_id > 0 && requested_app_id != current_app_id) {
@@ -1386,12 +1579,24 @@ namespace webrtc_stream {
       auto _hot_apply_gate = config::acquire_apply_read_gate();
 
 #ifdef _WIN32
+      prepare_virtual_display_for_webrtc_session(launch_session);
+      if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      }
       (void) display_helper_integration::disarm_pending_restore();
       auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
       if (!request) {
         BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
       } else if (!display_helper_integration::apply(*request)) {
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+      }
+#endif
+
+#ifdef _WIN32
+      const auto verification_status =
+        display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
+      if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
+        return std::string {"Display helper validation failed; refusing to start capture."};
       }
 #endif
 
@@ -2526,7 +2731,50 @@ namespace webrtc_stream {
         };
 
         std::vector<EncodedVideoWork> video_work;
-        std::vector<AudioWork> audio_work;
+        const auto audio_drain_slice = std::chrono::duration_cast<std::chrono::nanoseconds>(2ms);
+
+        auto drain_audio = [&]() {
+          std::vector<AudioWork> audio_work;
+          {
+            std::lock_guard lg {session_mutex};
+            for (auto &[_, session] : sessions) {
+              if (session.audio_source) {
+                RawAudioFrame frame;
+                while (session.raw_audio_frames.pop(frame)) {
+                  audio_work.push_back(
+                    {session.audio_source, std::move(frame.samples), frame.sample_rate, frame.channels, frame.frames}
+                  );
+                }
+              }
+            }
+          }
+          for (auto &work : audio_work) {
+            if (!work.source || !work.samples || work.samples->empty()) {
+              continue;
+            }
+            lwrtc_audio_source_push(
+              work.source,
+              work.samples->data(),
+              static_cast<int>(sizeof(int16_t) * 8),
+              work.sample_rate,
+              work.channels,
+              work.frames
+            );
+          }
+        };
+
+        auto sleep_for_with_audio = [&](const std::chrono::nanoseconds &duration) {
+          if (duration <= 0ns) {
+            return;
+          }
+          auto remaining = duration;
+          while (remaining > 0ns && !webrtc_media_shutdown.load(std::memory_order_acquire)) {
+            const auto slice = remaining > audio_drain_slice ? audio_drain_slice : remaining;
+            sleep_for(slice);
+            remaining -= slice;
+            drain_audio();
+          }
+        };
 
         {
           std::lock_guard lg {session_mutex};
@@ -2549,8 +2797,11 @@ namespace webrtc_stream {
                 if (waiting_for_keyframe) {
                   queued_keyframe = true;
                 }
-                if (pacing.drop_old_frames && frame.timestamp && now - *frame.timestamp > max_frame_age &&
-                    !session.video_frames.empty()) {
+                // Clamp out-of-range capture timestamps to avoid runaway pacing delays.
+                const bool has_timestamp = frame.timestamp.has_value();
+                const bool frame_too_old = has_timestamp && now - *frame.timestamp > max_frame_age;
+                const bool frame_in_future = has_timestamp && *frame.timestamp > now + max_frame_age;
+                if (pacing.drop_old_frames && frame_too_old && !session.video_frames.empty()) {
                   session.state.video_dropped++;
                   return;
                 }
@@ -2566,7 +2817,14 @@ namespace webrtc_stream {
                   session.encoded_prefix_logs++;
                 }
                 std::chrono::steady_clock::time_point target_send = now;
-                if (pacing.pace && frame.timestamp) {
+                bool pace_frame = pacing.pace;
+                if (frame_in_future) {
+                  session.video_pacing_state.anchor_capture.reset();
+                  session.video_pacing_state.anchor_send.reset();
+                  target_send = now;
+                  pace_frame = false;
+                }
+                if (pace_frame && frame.timestamp) {
                   const auto capture_time = *frame.timestamp;
                   if (!session.video_pacing_state.anchor_capture ||
                       !session.video_pacing_state.anchor_send ||
@@ -2581,6 +2839,18 @@ namespace webrtc_stream {
                     session.video_pacing_state.anchor_send = now;
                     target_send = now;
                   }
+                  if (target_send > now + max_frame_age) {
+                    session.video_pacing_state.anchor_capture = capture_time;
+                    session.video_pacing_state.anchor_send = now;
+                    target_send = now;
+                    pace_frame = false;
+                  }
+                }
+                if (frame_too_old) {
+                  session.video_pacing_state.anchor_capture.reset();
+                  session.video_pacing_state.anchor_send.reset();
+                  target_send = now;
+                  pace_frame = false;
                 } else if (session.last_video_push) {
                   target_send = *session.last_video_push + frame_interval;
                 }
@@ -2589,9 +2859,12 @@ namespace webrtc_stream {
                 work.data = std::move(frame.data);
                 work.is_keyframe = frame.idr;
                 work.timestamp = frame.timestamp.value_or(target_send);
+                if (frame_too_old || frame_in_future) {
+                  work.timestamp = target_send;
+                }
                 work.target_send = target_send;
                 work.pacing_slack = pacing.slack;
-                work.pace = pacing.pace;
+                work.pace = pace_frame;
                 work.session_id = session.state.id;
                 work.clear_keyframe_on_success = waiting_for_keyframe && frame.idr;
                 session.last_video_push = target_send;
@@ -2626,14 +2899,10 @@ namespace webrtc_stream {
               // Note: For encoded passthrough, we don't repeat frames like raw mode
               // The encoder produces frames at the capture rate, and we just forward them
             }
-            if (session.audio_source) {
-              RawAudioFrame frame;
-              while (session.raw_audio_frames.pop(frame)) {
-                audio_work.push_back({session.audio_source, std::move(frame.samples), frame.sample_rate, frame.channels, frame.frames});
-              }
-            }
           }
         }
+
+        drain_audio();
 
         // Push encoded video frames to WebRTC
         if (!video_work.empty()) {
@@ -2650,7 +2919,7 @@ namespace webrtc_stream {
           }
           const auto send_now = std::chrono::steady_clock::now();
           if (work.pace && work.target_send > send_now + work.pacing_slack) {
-            sleep_for(work.target_send - send_now - work.pacing_slack);
+            sleep_for_with_audio(work.target_send - send_now - work.pacing_slack);
           }
           const int pushed = lwrtc_encoded_video_source_push(
             work.source,
@@ -2666,20 +2935,6 @@ namespace webrtc_stream {
               it->second.needs_keyframe = false;
             }
           }
-        }
-
-        for (auto &work : audio_work) {
-          if (!work.source || !work.samples || work.samples->empty()) {
-            continue;
-          }
-          lwrtc_audio_source_push(
-            work.source,
-            work.samples->data(),
-            static_cast<int>(sizeof(int16_t) * 8),
-            work.sample_rate,
-            work.channels,
-            work.frames
-          );
         }
       }
     }

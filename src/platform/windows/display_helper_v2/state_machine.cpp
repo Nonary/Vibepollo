@@ -21,6 +21,10 @@ namespace display_helper::v2 {
     apply_result_callback_ = std::move(callback);
   }
 
+  void StateMachine::set_verification_result_callback(std::function<void(bool)> callback) {
+    verification_result_callback_ = std::move(callback);
+  }
+
   void StateMachine::set_exit_callback(std::function<void(int)> callback) {
     exit_callback_ = std::move(callback);
   }
@@ -205,6 +209,10 @@ namespace display_helper::v2 {
   void StateMachine::handle_verification_completed(const VerificationCompleted &completed) {
     if (is_stale(completed.generation)) {
       return;
+    }
+
+    if (verification_result_callback_) {
+      verification_result_callback_(completed.success);
     }
 
     if (completed.success) {

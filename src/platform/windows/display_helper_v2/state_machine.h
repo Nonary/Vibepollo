@@ -240,6 +240,7 @@ namespace display_helper::v2 {
 
     void set_state_observer(StateObserver observer);
     void set_apply_result_callback(std::function<void(ApplyStatus)> callback);
+    void set_verification_result_callback(std::function<void(bool)> callback);
     void set_exit_callback(std::function<void(int)> callback);
     void set_snapshot_blacklist(std::set<std::string> blacklist);
 
@@ -282,6 +283,7 @@ namespace display_helper::v2 {
 
     StateObserver observer_;
     std::function<void(ApplyStatus)> apply_result_callback_;
+    std::function<void(bool)> verification_result_callback_;
     std::function<void(int)> exit_callback_;
   };
 }  // namespace display_helper::v2
