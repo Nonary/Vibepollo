@@ -144,7 +144,7 @@
                         : 'bg-gradient-to-r from-primary to-secondary text-onPrimary hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5'"
                       :disabled="isConnecting">
                 <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-spinner fa-spin' : 'fas fa-play'" class="mr-2"></i>
-                {{ isConnecting ? $t('webrtc.connecting') : isConnected ? $t('webrtc.disconnect') : $t('webrtc.connect') }}
+                {{ $t(connectLabelKey) }}
               </button>
 
               <button v-if="isConnected"
@@ -164,6 +164,10 @@
                 <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
                   <n-switch v-model:value="showOverlay" size="small" />
                   <span>Overlay</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
+                  <n-switch v-model:value="autoFullscreen" size="small" />
+                  <span>Auto fullscreen</span>
                 </label>
               </div>
             </div>
@@ -513,6 +517,8 @@ const selectedAppId = ref<number | null>(null);
 const resumeOnConnect = ref(true);
 const canResumeSelection = computed(() => !selectedAppId.value);
 const terminatePending = ref(false);
+const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(null);
+let sessionStatusTimer: number | null = null;
 
 function appKey(app: App): string {
   return `${app.uuid || ''}-${app.name || 'app'}`;
@@ -567,11 +573,22 @@ const selectedAppLabel = computed(() => {
   return selected?.name ? `Selected: ${selected.name}` : `Selected app id: ${selectedAppId.value}`;
 });
 
+const resumeAvailable = computed(() => {
+  if (selectedAppId.value) return false;
+  return sessionStatus.value?.paused ?? false;
+});
+
 const api = new WebRtcHttpApi();
 const client = new WebRtcClient(api);
 
 const isConnecting = ref(false);
 const isConnected = ref(false);
+const connectLabelKey = computed(() => {
+  if (isConnecting.value) return 'webrtc.connecting';
+  if (isConnected.value) return 'webrtc.disconnect';
+  if (resumeAvailable.value) return 'webrtc.resume';
+  return 'webrtc.connect';
+});
 const connectionState = ref<RTCPeerConnectionState | null>(null);
 const iceState = ref<RTCIceConnectionState | null>(null);
 const inputChannelState = ref<RTCDataChannelState | null>(null);
@@ -582,6 +599,7 @@ const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
 const isFullscreen = ref(false);
+const autoFullscreen = ref(true);
 const sessionId = ref<string | null>(null);
 const serverSession = ref<WebRtcSessionState | null>(null);
 const serverSessionUpdatedAt = ref<string | null>(null);
@@ -684,10 +702,82 @@ let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
 let audioStream: MediaStream | null = null;
 let audioAutoplayRequested = false;
+function stopSessionStatusPolling(): void {
+  if (sessionStatusTimer) {
+    window.clearInterval(sessionStatusTimer);
+    sessionStatusTimer = null;
+  }
+}
+
+async function fetchSessionStatus(): Promise<void> {
+  if (isConnected.value) return;
+  try {
+    const result = await http.get('/api/session/status', { validateStatus: () => true });
+    if (result.status === 200 && result.data?.status) {
+      sessionStatus.value = {
+        activeSessions: Number(result.data.activeSessions ?? 0),
+        appRunning: Boolean(result.data.appRunning),
+        paused: Boolean(result.data.paused),
+      };
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+  sessionStatus.value = null;
+}
+
+function startSessionStatusPolling(): void {
+  stopSessionStatusPolling();
+  if (isConnected.value) return;
+  void fetchSessionStatus();
+  sessionStatusTimer = window.setInterval(fetchSessionStatus, 5000);
+}
 const ESC_HOLD_MS = 2000;
 let escHoldTimer: number | null = null;
+function getFullscreenElement(): Element | null {
+  return document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+}
+
+async function requestFullscreen(target: HTMLElement): Promise<void> {
+  const anyTarget = target as any;
+  if (typeof target.requestFullscreen === 'function') {
+    await target.requestFullscreen();
+    return;
+  }
+  if (typeof anyTarget.webkitRequestFullscreen === 'function') {
+    const result = anyTarget.webkitRequestFullscreen();
+    if (result && typeof result.then === 'function') {
+      await result;
+    }
+    return;
+  }
+  if (videoEl.value && typeof (videoEl.value as any).webkitEnterFullscreen === 'function') {
+    (videoEl.value as any).webkitEnterFullscreen();
+  }
+}
+
+async function exitFullscreen(): Promise<void> {
+  const anyDoc = document as any;
+  if (typeof document.exitFullscreen === 'function') {
+    await document.exitFullscreen();
+    return;
+  }
+  if (typeof anyDoc.webkitExitFullscreen === 'function') {
+    const result = anyDoc.webkitExitFullscreen();
+    if (result && typeof result.then === 'function') {
+      await result;
+    }
+  }
+}
+
+function isFullscreenActive(): boolean {
+  const fullscreenEl = getFullscreenElement();
+  return fullscreenEl === inputTarget.value || fullscreenEl === videoEl.value;
+}
+
 const onFullscreenChange = () => {
-  isFullscreen.value = document.fullscreenElement === inputTarget.value;
+  isFullscreen.value = isFullscreenActive();
   if (!isFullscreen.value) {
     cancelEscHold();
   }
@@ -716,9 +806,9 @@ const onFullscreenEscapeDown = (event: KeyboardEvent) => {
   event.stopPropagation();
   escHoldTimer = window.setTimeout(async () => {
     escHoldTimer = null;
-    if (document.fullscreenElement) {
+    if (getFullscreenElement()) {
       try {
-        await document.exitFullscreen();
+        await exitFullscreen();
       } catch {
         /* ignore */
       }
@@ -934,6 +1024,13 @@ function statusTagType(state?: string | null) {
 async function connect() {
   isConnecting.value = true;
   audioAutoplayRequested = true;
+  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
+    try {
+      await requestFullscreen(inputTarget.value);
+    } catch {
+      /* ignore */
+    }
+  }
   if (audioEl.value) {
     audioEl.value.muted = false;
     audioEl.value.volume = 1;
@@ -997,6 +1094,7 @@ async function connect() {
 async function disconnect() {
   await client.disconnect();
   stopServerSessionPolling();
+  startSessionStatusPolling();
   isConnected.value = false;
   connectionState.value = null;
   iceState.value = null;
@@ -1039,19 +1137,19 @@ async function terminateSession() {
 
 async function toggleFullscreen() {
   try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
+    if (isFullscreenActive()) {
+      await exitFullscreen();
       return;
     }
     if (!inputTarget.value) return;
-    await inputTarget.value.requestFullscreen();
+    await requestFullscreen(inputTarget.value);
   } catch {
     /* ignore */
   }
 }
 
 async function onFullscreenDblClick() {
-  if (document.fullscreenElement) return;
+  if (isFullscreenActive()) return;
   await toggleFullscreen();
 }
 
@@ -1099,6 +1197,7 @@ watch(videoEl, (el) => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
+  document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   window.removeEventListener('keydown', onOverlayHotkey, true);
   window.removeEventListener('keydown', onFullscreenEscapeDown, true);
   window.removeEventListener('keyup', onFullscreenEscapeUp, true);
@@ -1108,12 +1207,14 @@ onBeforeUnmount(() => {
     detachVideoEvents();
     detachVideoEvents = null;
   }
+  stopSessionStatusPolling();
   stopServerSessionPolling();
   void disconnect();
 });
 
 onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   window.addEventListener('keydown', onOverlayHotkey, true);
   window.addEventListener('keydown', onFullscreenEscapeDown, true);
   window.addEventListener('keyup', onFullscreenEscapeUp, true);
@@ -1125,7 +1226,19 @@ onMounted(async () => {
   }
   encodingSupport.value = detectEncodingSupport();
   ensureEncodingSupported();
+  startSessionStatusPolling();
 });
+
+watch(
+  () => isConnected.value,
+  (connected) => {
+    if (connected) {
+      stopSessionStatusPolling();
+      return;
+    }
+    startSessionStatusPolling();
+  },
+);
 </script>
 
 <style scoped>
