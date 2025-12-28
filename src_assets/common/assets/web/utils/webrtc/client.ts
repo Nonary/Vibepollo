@@ -66,6 +66,81 @@ function applyCodecPreferences(
   }
 }
 
+function applyInitialBitrateHints(sdp: string, bitrateKbps?: number): string {
+  if (!sdp || !bitrateKbps || bitrateKbps <= 0) return sdp;
+  const normalizedBitrateKbps = Math.max(1, Math.round(bitrateKbps));
+  const bitrateBps = normalizedBitrateKbps * 1000;
+  const lines = sdp.split(/\r\n/);
+  const output: string[] = [];
+  let inVideo = false;
+  let pendingBandwidth = false;
+
+  const pushBandwidth = () => {
+    output.push(`b=AS:${normalizedBitrateKbps}`);
+    output.push(`b=TIAS:${bitrateBps}`);
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('m=')) {
+      if (inVideo && pendingBandwidth) {
+        pushBandwidth();
+      }
+      inVideo = line.startsWith('m=video');
+      pendingBandwidth = inVideo;
+      output.push(line);
+      continue;
+    }
+
+    if (inVideo) {
+      if (line.startsWith('c=') && pendingBandwidth) {
+        output.push(line);
+        pushBandwidth();
+        pendingBandwidth = false;
+        continue;
+      }
+      if (line.startsWith('b=AS:') || line.startsWith('b=TIAS:')) {
+        continue;
+      }
+      if (line.startsWith('a=fmtp:')) {
+        const match = line.match(/^a=fmtp:(\d+)\s*(.*)$/);
+        if (!match) {
+          output.push(line);
+          continue;
+        }
+        const payloadType = match[1];
+        const params = match[2] ?? '';
+        if (/(?:^|;)\s*apt=\d+/i.test(params)) {
+          output.push(line);
+          continue;
+        }
+        const trimmed = params.trim();
+        let updatedParams = trimmed;
+        if (!trimmed) {
+          updatedParams = `x-google-start-bitrate=${normalizedBitrateKbps}`;
+        } else if (/x-google-start-bitrate=\d+/i.test(trimmed)) {
+          updatedParams = trimmed.replace(
+            /x-google-start-bitrate=\d+/i,
+            `x-google-start-bitrate=${normalizedBitrateKbps}`,
+          );
+        } else {
+          updatedParams = `${trimmed};x-google-start-bitrate=${normalizedBitrateKbps}`;
+        }
+        output.push(`a=fmtp:${payloadType} ${updatedParams}`);
+        continue;
+      }
+    }
+
+    output.push(line);
+  }
+
+  if (inVideo && pendingBandwidth) {
+    pushBandwidth();
+  }
+
+  const joined = output.join('\r\n');
+  return sdp.endsWith('\n') && !joined.endsWith('\r\n') ? `${joined}\r\n` : joined;
+}
+
 export class WebRtcClient {
   private api: WebRtcApi;
   private pc?: RTCPeerConnection;
@@ -184,10 +259,14 @@ export class WebRtcClient {
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
       });
-      await this.pc.setLocalDescription(offer);
-      const answer = await this.api.sendOffer(session.sessionId, {
+      const mungedOffer: RTCSessionDescriptionInit = {
         type: offer.type,
-        sdp: offer.sdp ?? '',
+        sdp: applyInitialBitrateHints(offer.sdp ?? '', sessionConfig.bitrateKbps),
+      };
+      await this.pc.setLocalDescription(mungedOffer);
+      const answer = await this.api.sendOffer(session.sessionId, {
+        type: mungedOffer.type,
+        sdp: mungedOffer.sdp ?? '',
       });
       if (!answer?.sdp) {
         throw new Error('WebRTC answer not received');
