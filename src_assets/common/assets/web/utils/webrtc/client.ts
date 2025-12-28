@@ -172,6 +172,43 @@ function applyAudioReceiverHints(receiver?: RTCRtpReceiver): void {
   }
 }
 
+function resolveJitterTargetMs(value?: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.max(0, value);
+}
+
+function applyVideoReceiverHints(receiver?: RTCRtpReceiver, targetMs?: number): void {
+  if (!receiver) return;
+  const target = resolveJitterTargetMs(targetMs);
+  if (target == null) return;
+  const receiverAny = receiver as any;
+  try {
+    if ('playoutDelayHint' in receiverAny) {
+      receiverAny.playoutDelayHint = target / 1000;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof receiverAny.jitterBufferTarget === 'number') {
+      receiverAny.jitterBufferTarget = target;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof receiverAny.getParameters === 'function' && typeof receiverAny.setParameters === 'function') {
+      const parameters = receiverAny.getParameters();
+      if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
+        parameters.jitterBufferTarget = target;
+        receiverAny.setParameters(parameters);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export class WebRtcClient {
   private api: WebRtcApi;
   private pc?: RTCPeerConnection;
@@ -249,6 +286,8 @@ export class WebRtcClient {
       this.remoteStream.addTrack(event.track);
       if (event.track.kind === 'audio') {
         applyAudioReceiverHints(event.receiver);
+      } else if (event.track.kind === 'video') {
+        applyVideoReceiverHints(event.receiver, sessionConfig.videoMaxFrameAgeMs);
       }
       callbacks.onRemoteStream?.(this.remoteStream);
     };
