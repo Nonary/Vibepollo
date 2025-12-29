@@ -92,6 +92,8 @@ export interface WebRtcStatsSnapshot {
   audioJitterMs?: number;
   videoJitterBufferMs?: number;
   audioJitterBufferMs?: number;
+  videoPlayoutDelayMs?: number;
+  audioPlayoutDelayMs?: number;
   videoCodec?: string;
   audioCodec?: string;
   candidatePair?: {

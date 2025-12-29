@@ -11,11 +11,17 @@ export interface WebRtcClientCallbacks {
   onError?: (error: Error) => void;
 }
 
+export interface WebRtcClientConnectOptions {
+  inputPriority?: RTCPriorityType;
+}
+
 export interface WebRtcDisconnectOptions {
   keepalive?: boolean;
 }
 
 interface StatsState {
+  lastVideoInboundId?: string;
+  lastAudioInboundId?: string;
   lastVideoBytes?: number;
   lastAudioBytes?: number;
   lastTimestampMs?: number;
@@ -248,7 +254,11 @@ export class WebRtcClient {
     return this.inputChannel?.bufferedAmount;
   }
 
-  async connect(config: StreamConfig, callbacks: WebRtcClientCallbacks = {}): Promise<string> {
+  async connect(
+    config: StreamConfig,
+    callbacks: WebRtcClientCallbacks = {},
+    options: WebRtcClientConnectOptions = {},
+  ): Promise<string> {
     await this.disconnect();
     this.clearAutoDisconnectTimer();
     this.disconnecting = false;
@@ -268,9 +278,11 @@ export class WebRtcClient {
     this.pc.addTransceiver('audio', { direction: 'recvonly' });
     applyCodecPreferences(videoTransceiver, sessionConfig.encoding);
 
+    const inputPriority = options.inputPriority ?? 'high';
     this.inputChannel = this.pc.createDataChannel('input', {
       ordered: false,
       maxRetransmits: 0,
+      priority: inputPriority,
     });
     this.inputChannel.onopen = () => {
       callbacks.onInputChannelState?.('open');
@@ -516,56 +528,18 @@ export class WebRtcClient {
   }
 
   private extractStats(report: RTCStatsReport): WebRtcStatsSnapshot {
-    let videoBytes: number | undefined;
-    let audioBytes: number | undefined;
-    let videoFps: number | undefined;
-    let packetsLost: number | undefined;
+    const inboundVideo: any[] = [];
+    const inboundAudio: any[] = [];
     let rttMs: number | undefined;
-    let videoPackets: number | undefined;
-    let audioPackets: number | undefined;
-    let videoFramesReceived: number | undefined;
-    let videoFramesDecoded: number | undefined;
-    let videoFramesDropped: number | undefined;
-    let videoTotalDecodeTime: number | undefined;
-    let videoJitterMs: number | undefined;
-    let audioJitterMs: number | undefined;
-    let videoJitterBufferDelay: number | undefined;
-    let videoJitterBufferEmittedCount: number | undefined;
-    let audioJitterBufferDelay: number | undefined;
-    let audioJitterBufferEmittedCount: number | undefined;
-    let videoCodecId: string | undefined;
-    let audioCodecId: string | undefined;
     let selectedPair: any | undefined;
     const candidates = new Map<string, any>();
 
     report.forEach((item) => {
       if (item.type === 'inbound-rtp' && item.kind === 'video') {
-        videoBytes = (item as any).bytesReceived ?? videoBytes;
-        videoFps = (item as any).framesPerSecond ?? videoFps;
-        packetsLost = (item as any).packetsLost ?? packetsLost;
-        videoPackets = (item as any).packetsReceived ?? videoPackets;
-        videoFramesReceived = (item as any).framesReceived ?? videoFramesReceived;
-        videoFramesDecoded = (item as any).framesDecoded ?? videoFramesDecoded;
-        videoFramesDropped = (item as any).framesDropped ?? videoFramesDropped;
-        videoTotalDecodeTime = (item as any).totalDecodeTime ?? videoTotalDecodeTime;
-        if (typeof (item as any).jitter === 'number') {
-          videoJitterMs = (item as any).jitter * 1000;
-        }
-        videoJitterBufferDelay = (item as any).jitterBufferDelay ?? videoJitterBufferDelay;
-        videoJitterBufferEmittedCount =
-          (item as any).jitterBufferEmittedCount ?? videoJitterBufferEmittedCount;
-        videoCodecId = (item as any).codecId ?? videoCodecId;
+        inboundVideo.push(item as any);
       }
       if (item.type === 'inbound-rtp' && item.kind === 'audio') {
-        audioBytes = (item as any).bytesReceived ?? audioBytes;
-        audioPackets = (item as any).packetsReceived ?? audioPackets;
-        if (typeof (item as any).jitter === 'number') {
-          audioJitterMs = (item as any).jitter * 1000;
-        }
-        audioJitterBufferDelay = (item as any).jitterBufferDelay ?? audioJitterBufferDelay;
-        audioJitterBufferEmittedCount =
-          (item as any).jitterBufferEmittedCount ?? audioJitterBufferEmittedCount;
-        audioCodecId = (item as any).codecId ?? audioCodecId;
+        inboundAudio.push(item as any);
       }
       if (item.type === 'candidate-pair' && (item as any).state === 'succeeded') {
         rttMs = (item as any).currentRoundTripTime
@@ -579,6 +553,66 @@ export class WebRtcClient {
         candidates.set(item.id, item);
       }
     });
+
+    const pickInbound = (items: any[]): any | undefined => {
+      if (!items.length) return undefined;
+      const asNumber = (value: unknown): number => (typeof value === 'number' ? value : 0);
+      const sorted = [...items].sort((left, right) => {
+        const leftFramesDecoded = asNumber(left.framesDecoded);
+        const rightFramesDecoded = asNumber(right.framesDecoded);
+        const leftFramesReceived = asNumber(left.framesReceived);
+        const rightFramesReceived = asNumber(right.framesReceived);
+        const leftHasFrames = leftFramesDecoded > 0 || leftFramesReceived > 0;
+        const rightHasFrames = rightFramesDecoded > 0 || rightFramesReceived > 0;
+        if (leftHasFrames !== rightHasFrames) {
+          return leftHasFrames ? -1 : 1;
+        }
+        if (leftFramesDecoded !== rightFramesDecoded) {
+          return rightFramesDecoded - leftFramesDecoded;
+        }
+        if (leftFramesReceived !== rightFramesReceived) {
+          return rightFramesReceived - leftFramesReceived;
+        }
+        const leftBytes = asNumber(left.bytesReceived);
+        const rightBytes = asNumber(right.bytesReceived);
+        if (leftBytes !== rightBytes) {
+          return rightBytes - leftBytes;
+        }
+        const leftPackets = asNumber(left.packetsReceived);
+        const rightPackets = asNumber(right.packetsReceived);
+        return rightPackets - leftPackets;
+      });
+      return sorted[0];
+    };
+
+    const videoInbound = pickInbound(inboundVideo);
+    const audioInbound = pickInbound(inboundAudio);
+
+    const videoInboundId: string | undefined = videoInbound?.id;
+    const audioInboundId: string | undefined = audioInbound?.id;
+
+    const videoBytes: number | undefined = videoInbound?.bytesReceived;
+    const audioBytes: number | undefined = audioInbound?.bytesReceived;
+    const videoFps: number | undefined = videoInbound?.framesPerSecond;
+    const packetsLost: number | undefined =
+      (typeof videoInbound?.packetsLost === 'number' ? videoInbound.packetsLost : undefined) ??
+      (typeof audioInbound?.packetsLost === 'number' ? audioInbound.packetsLost : undefined);
+    const videoPackets: number | undefined = videoInbound?.packetsReceived;
+    const audioPackets: number | undefined = audioInbound?.packetsReceived;
+    const videoFramesReceived: number | undefined = videoInbound?.framesReceived;
+    const videoFramesDecoded: number | undefined = videoInbound?.framesDecoded;
+    const videoFramesDropped: number | undefined = videoInbound?.framesDropped;
+    const videoTotalDecodeTime: number | undefined = videoInbound?.totalDecodeTime;
+    const videoJitterMs: number | undefined =
+      typeof videoInbound?.jitter === 'number' ? videoInbound.jitter * 1000 : undefined;
+    const audioJitterMs: number | undefined =
+      typeof audioInbound?.jitter === 'number' ? audioInbound.jitter * 1000 : undefined;
+    const videoJitterBufferDelay: number | undefined = videoInbound?.jitterBufferDelay;
+    const videoJitterBufferEmittedCount: number | undefined = videoInbound?.jitterBufferEmittedCount;
+    const audioJitterBufferDelay: number | undefined = audioInbound?.jitterBufferDelay;
+    const audioJitterBufferEmittedCount: number | undefined = audioInbound?.jitterBufferEmittedCount;
+    const videoCodecId: string | undefined = videoInbound?.codecId;
+    const audioCodecId: string | undefined = audioInbound?.codecId;
 
     let videoCodec: string | undefined;
     let audioCodec: string | undefined;
@@ -614,12 +648,14 @@ export class WebRtcClient {
     const now = Date.now();
     const last = this.statsState;
     const deltaMs = last.lastTimestampMs ? Math.max(1, now - last.lastTimestampMs) : 0;
+    const sameVideoInbound = videoInboundId && last.lastVideoInboundId === videoInboundId;
+    const sameAudioInbound = audioInboundId && last.lastAudioInboundId === audioInboundId;
     const calcRate = (bytes?: number, lastBytes?: number) => {
       if (bytes == null || lastBytes == null || !deltaMs) return undefined;
       return Math.round(((bytes - lastBytes) * 8) / deltaMs);
     };
-    const videoBitrate = calcRate(videoBytes, last.lastVideoBytes);
-    const audioBitrate = calcRate(audioBytes, last.lastAudioBytes);
+    const videoBitrate = calcRate(videoBytes, sameVideoInbound ? last.lastVideoBytes : undefined);
+    const audioBitrate = calcRate(audioBytes, sameAudioInbound ? last.lastAudioBytes : undefined);
     const calcJitterBufferMs = (
       delay?: number,
       emitted?: number,
@@ -627,13 +663,18 @@ export class WebRtcClient {
       lastEmitted?: number,
     ) => {
       if (delay == null || emitted == null || emitted <= 0) return undefined;
-      if (lastDelay == null || lastEmitted == null || emitted <= lastEmitted || delay < lastDelay) {
-        return (delay / emitted) * 1000;
-      }
+      if (lastDelay == null || lastEmitted == null) return undefined;
       const deltaDelay = delay - lastDelay;
       const deltaEmitted = emitted - lastEmitted;
       if (deltaEmitted <= 0 || deltaDelay < 0) return undefined;
       return (deltaDelay / deltaEmitted) * 1000;
+    };
+    const calcPlayoutDelayMs = (inbound?: any) => {
+      const estimated = inbound?.estimatedPlayoutTimestamp;
+      const timestamp = inbound?.timestamp;
+      if (typeof estimated !== 'number' || !Number.isFinite(estimated)) return undefined;
+      if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined;
+      return Math.max(0, estimated - timestamp);
     };
     const calcDecodeMs = (totalDecodeTime?: number, framesDecoded?: number) => {
       if (totalDecodeTime == null || !framesDecoded) return undefined;
@@ -642,19 +683,23 @@ export class WebRtcClient {
     const videoJitterBufferMs = calcJitterBufferMs(
       videoJitterBufferDelay,
       videoJitterBufferEmittedCount,
-      last.lastVideoJitterBufferDelay,
-      last.lastVideoJitterBufferEmittedCount,
+      sameVideoInbound ? last.lastVideoJitterBufferDelay : undefined,
+      sameVideoInbound ? last.lastVideoJitterBufferEmittedCount : undefined,
     );
     const audioJitterBufferMs = calcJitterBufferMs(
       audioJitterBufferDelay,
       audioJitterBufferEmittedCount,
-      last.lastAudioJitterBufferDelay,
-      last.lastAudioJitterBufferEmittedCount,
+      sameAudioInbound ? last.lastAudioJitterBufferDelay : undefined,
+      sameAudioInbound ? last.lastAudioJitterBufferEmittedCount : undefined,
     );
     const videoDecodeMs = calcDecodeMs(videoTotalDecodeTime, videoFramesDecoded);
+    const videoPlayoutDelayMs = calcPlayoutDelayMs(videoInbound);
+    const audioPlayoutDelayMs = calcPlayoutDelayMs(audioInbound);
 
     this.statsState = {
       lastTimestampMs: now,
+      lastVideoInboundId: videoInboundId,
+      lastAudioInboundId: audioInboundId,
       lastVideoBytes: videoBytes,
       lastAudioBytes: audioBytes,
       lastVideoJitterBufferDelay: videoJitterBufferDelay,
@@ -681,6 +726,8 @@ export class WebRtcClient {
       audioJitterMs,
       videoJitterBufferMs,
       audioJitterBufferMs,
+      videoPlayoutDelayMs,
+      audioPlayoutDelayMs,
       videoCodec,
       audioCodec,
       candidatePair,

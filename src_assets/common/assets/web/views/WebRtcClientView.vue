@@ -383,7 +383,7 @@
                 </div>
                 <div class="debug-row">
                   <span>Jitter / buffer</span>
-                  <span>{{ formatMs(stats.videoJitterMs) }} / {{ formatMs(videoJitterBufferMs) }}</span>
+                  <span>{{ formatMs(stats.videoJitterMs) }} / {{ formatMs(stats.videoPlayoutDelayMs ?? videoJitterBufferMs) }}</span>
                 </div>
                 <div class="debug-row">
                   <span>Audio latency</span>
@@ -391,7 +391,7 @@
                 </div>
                 <div class="debug-row">
                   <span>Audio jitter / buffer</span>
-                  <span>{{ formatMs(stats.audioJitterMs) }} / {{ formatMs(stats.audioJitterBufferMs) }}</span>
+                  <span>{{ formatMs(stats.audioJitterMs) }} / {{ formatMs(stats.audioPlayoutDelayMs ?? stats.audioJitterBufferMs) }}</span>
                 </div>
                 <div class="debug-row">
                   <span>Render delay</span>
@@ -748,16 +748,16 @@ const LATENCY_SMOOTH_TAU_MS = 2000;
 const latencySamples = ref<{ ts: number; value: number }[]>([]);
 const smoothedLatencyMs = ref<number | undefined>(undefined);
 let lastLatencySampleAt: number | null = null;
-const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs ?? stats.value.audioJitterBufferMs);
+const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs);
 const oneWayRttMs = computed(() =>
   stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined,
 );
+const videoPlayoutDelayMs = computed(() => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs);
 const estimatedLatencyMs = computed(() => {
   const parts = [
     oneWayRttMs.value,
-    videoJitterBufferMs.value,
+    videoPlayoutDelayMs.value,
     stats.value.videoDecodeMs,
-    videoFrameMetrics.value.lastDelayMs,
   ].filter((value) => typeof value === 'number') as number[];
   if (!parts.length) return undefined;
   return parts.reduce((total, value) => total + value, 0);
@@ -771,7 +771,7 @@ const averageLatency30sMs = computed(() => {
 const audioLatencyMs = computed(() => {
   const parts = [
     oneWayRttMs.value,
-    stats.value.audioJitterBufferMs,
+    stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs,
   ].filter((value) => typeof value === 'number') as number[];
   if (!parts.length) return undefined;
   return parts.reduce((total, value) => total + value, 0);
@@ -805,7 +805,7 @@ const overlayLines = computed(() => {
     `Lat est ${formatMs(smoothedLatencyMs.value)} | Avg30 ${formatMs(averageLatency30sMs.value)} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
     `Decode ${formatMs(stats.value.videoDecodeMs)} | FPS ${fps} | Drop ${dropped}`,
     `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
-    `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | buf ${formatMs(stats.value.audioJitterBufferMs)}`,
+    `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | playout ${formatMs(stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs)}`,
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
     `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
     `Render ${formatMs(videoFrameMetrics.value.lastDelayMs)} | frame ${formatMs(videoFrameMetrics.value.lastIntervalMs)} | size ${videoSizeLabel.value}`,
@@ -890,6 +890,16 @@ async function exitFullscreen(): Promise<void> {
 function isFullscreenActive(): boolean {
   const fullscreenEl = getFullscreenElement();
   return fullscreenEl === inputTarget.value || fullscreenEl === videoEl.value;
+}
+
+function isTabActive(): boolean {
+  try {
+    const visible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+    const focus = typeof document !== 'undefined' && document.hasFocus ? document.hasFocus() : true;
+    return visible && focus;
+  } catch {
+    return true;
+  }
 }
 
 const onFullscreenChange = () => {
@@ -1195,6 +1205,8 @@ async function connect() {
       onStats: (snapshot) => {
         stats.value = snapshot;
       },
+    }, {
+      inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low',
     });
     sessionId.value = id;
     startServerSessionPolling();
