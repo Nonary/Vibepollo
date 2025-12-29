@@ -684,7 +684,6 @@ namespace config {
 
   video_t video {
     true,  // limit_framerate
-    true,  // double_refreshrate
 
     28,  // qp
 
@@ -1447,10 +1446,9 @@ namespace config {
       modified_config_settings.erase(old_name);
     };
 
-    remap_option("dd_wa_virtual_double_refresh", "double_refreshrate");
+    remap_option("double_refreshrate", "dd_wa_virtual_double_refresh");
 
     bool_f(vars, "limit_framerate", video.limit_framerate);
-    bool_f(vars, "double_refreshrate", video.double_refreshrate);
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
@@ -1574,6 +1572,7 @@ namespace config {
       }
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
+    bool_f(vars, "dd_wa_virtual_double_refresh", video.dd.wa.virtual_double_refresh);
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -2103,7 +2102,7 @@ namespace config {
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
-      const auto prev_double_refreshrate = video.double_refreshrate;
+      const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       for (const auto &[name, value] : command_line_overrides) {

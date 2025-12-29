@@ -38,7 +38,6 @@ namespace config {
     };
 
     bool limit_framerate;
-    bool double_refreshrate;
 
     // ffmpeg params
     int qp;  // higher == more compression and less quality
@@ -112,6 +111,7 @@ namespace config {
       struct dd_t {
         struct workarounds_t {
         bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
+        bool virtual_double_refresh;  ///< Request double refresh on virtual displays to avoid unexpected FPS drops.
       };
 
       enum class config_option_e {

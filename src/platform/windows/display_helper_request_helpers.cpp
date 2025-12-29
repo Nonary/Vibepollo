@@ -228,7 +228,7 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    const bool double_virtual_refresh = session_requests_virtual && effective_video_config_.double_refreshrate;
+    const bool double_virtual_refresh = session_requests_virtual && effective_video_config_.dd.wa.virtual_double_refresh;
     // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
     const bool needs_double_minimum = double_virtual_refresh || framegen_active;
     const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;

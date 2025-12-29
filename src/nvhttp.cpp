@@ -198,6 +198,22 @@ namespace nvhttp {
       );
     }
 
+    bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
+      if (timeout <= std::chrono::steady_clock::duration::zero()) {
+        return has_any_active_display();
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (has_any_active_display()) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+
+      return has_any_active_display();
+    }
+
     std::atomic<bool> virtual_display_cleanup_pending {false};
 
     void cleanup_virtual_display_state() {
@@ -823,7 +839,7 @@ namespace nvhttp {
         apply_refresh_override(saturating_double(launch_session->fps));
       }
 
-      if (config::video.double_refreshrate) {
+      if (config::video.dd.wa.virtual_double_refresh) {
         apply_refresh_override(saturating_double(launch_session->fps));
       }
     }
