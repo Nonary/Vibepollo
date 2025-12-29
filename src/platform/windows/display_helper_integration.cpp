@@ -927,10 +927,6 @@ namespace {
       return std::nullopt;
     }
 
-    if (request.attach_hdr_toggle_flag) {
-      j["wa_hdr_toggle"] = true;
-    }
-
     if (request.virtual_display_arrangement) {
       j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
     }

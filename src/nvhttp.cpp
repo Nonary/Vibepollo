@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <format>
 #include <limits>
 #include <memory>
@@ -842,6 +843,14 @@ namespace nvhttp {
     uint32_t prepend_iv = util::endian::big<uint32_t>(util::from_view(get_arg(args, "rikeyid")));
     auto prepend_iv_p = (uint8_t *) &prepend_iv;
     std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session->iv));
+
+#ifdef _WIN32
+    {
+      std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e> gate_promise;
+      gate_promise.set_value(rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed);
+      launch_session->display_helper_gate = gate_promise.get_future().share();
+    }
+#endif
     return launch_session;
   }
 
@@ -1880,21 +1889,36 @@ namespace nvhttp {
       }
 
       if (request) {
-        if (!display_helper_integration::apply(*request)) {
+        const bool applied = display_helper_integration::apply(*request);
+        if (!applied) {
           if (helper_session_available) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         }
-      }
+        if (applied) {
+          auto gate_promise = std::make_shared<std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e>>();
+          launch_session->display_helper_gate = gate_promise->get_future().share();
+          BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session start).";
 
-      const auto verification_status =
-        display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
-      if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
-        BOOST_LOG(error) << "Display helper validation failed; refusing to start capture.";
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Display helper validation failed; refusing to start capture.");
-        tree.put("root.gamesession", 0);
-        return;
+          std::thread([gate_promise]() {
+            constexpr auto kVerificationTimeout = std::chrono::seconds(20);
+            const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
+            rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
+              rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+
+            if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
+              gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed;
+            } else if (status == display_helper_integration::ApplyVerificationStatus::Failed) {
+              gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed;
+            }
+
+            try {
+              gate_promise->set_value(gate_status);
+            } catch (...) {
+              // best-effort: ignore double-satisfaction
+            }
+          }).detach();
+        }
       }
 
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).

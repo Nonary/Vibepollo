@@ -758,7 +758,7 @@ namespace config {
       false,  // activate_virtual_display
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
-      {false, false, true}  // wa
+      {false, true}  // wa
     },  // display_device
 
     0,  // max_bitrate
@@ -1479,14 +1479,14 @@ namespace config {
       }
     }
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
-    // HDR workaround flag (async; fixed 1s delay). Prefer new boolean; support legacy delay>0.
-    bool_f(vars, "dd_wa_hdr_toggle", video.dd.wa.hdr_toggle);
+    // Legacy HDR workaround options (no longer supported). Consume keys to avoid unknown-option warnings.
     {
-      int legacy_delay_ms = 0;
-      int_between_f(vars, "dd_wa_hdr_toggle_delay", legacy_delay_ms, {0, 3000});
-      if (!video.dd.wa.hdr_toggle) {
-        // If not explicitly set by new flag, treat legacy value > 0 as enabled
-        video.dd.wa.hdr_toggle = (legacy_delay_ms > 0);
+      bool unused_hdr_toggle = false;
+      bool_f(vars, "dd_wa_hdr_toggle", unused_hdr_toggle);
+      int unused_hdr_toggle_delay_ms = 0;
+      int_between_f(vars, "dd_wa_hdr_toggle_delay", unused_hdr_toggle_delay_ms, {0, 3000});
+      if (unused_hdr_toggle || unused_hdr_toggle_delay_ms > 0) {
+        BOOST_LOG(warning) << "config: HDR toggle workaround options are no longer supported and will be ignored.";
       }
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
@@ -1999,7 +1999,6 @@ namespace config {
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
-      const auto prev_dd_hdr_toggle = video.dd.wa.hdr_toggle;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
 
@@ -2045,11 +2044,10 @@ namespace config {
                                       (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                       (prev_dd_revert_delay != video.dd.config_revert_delay) ||
                                       (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
-                                      (prev_dd_hdr_toggle != video.dd.wa.hdr_toggle) ||
-                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
-                                      (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
+                                       (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                       (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
+                                       (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
+                                       (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {
