@@ -37,6 +37,7 @@ extern "C" {
 #include "process.h"
 #include "sync.h"
 #include "video.h"
+#include "webrtc_stream.h"
 
 #ifdef _WIN32
   #include <dxgi1_2.h>
@@ -1830,6 +1831,9 @@ namespace video {
 
       packet->replacements = &session.replacements;
       packet->channel_data = channel_data;
+      if (webrtc_stream::has_active_sessions()) {
+        webrtc_stream::submit_video_packet(*packet);
+      }
       packets->raise(std::move(packet));
     }
 
@@ -1851,6 +1855,9 @@ namespace video {
     packet->channel_data = channel_data;
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
     packet->frame_timestamp = frame_timestamp;
+    if (webrtc_stream::has_active_sessions()) {
+      webrtc_stream::submit_video_packet(*packet);
+    }
     packets->raise(std::move(packet));
 
     return 0;
@@ -2378,6 +2385,9 @@ namespace video {
             continue;
           }
 
+          if (webrtc_stream::has_active_sessions()) {
+            webrtc_stream::submit_video_frame(img);
+          }
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             break;

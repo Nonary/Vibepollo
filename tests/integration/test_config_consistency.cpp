@@ -6,6 +6,8 @@
 
 // standard includes
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <map>
@@ -31,12 +33,14 @@ protected:
       {"Network", "network"},
       {"Config Files", "files"},
       {"Advanced", "advanced"},
+      {"Frame Limiter (Windows)", "rtss"},
       {"NVIDIA NVENC Encoder", "nv"},
       {"Intel QuickSync Encoder", "qsv"},
       {"AMD AMF Encoder", "amd"},
       {"VideoToolbox Encoder", "vt"},
       {"VA-API Encoder", "vaapi"},
-      {"Software Encoder", "sw"}
+      {"Software Encoder", "sw"},
+      {"Playnite Integration", "playnite"}
     };
   }
 
@@ -83,6 +87,193 @@ protected:
     }
 
     return pos - 1;
+  }
+
+  static size_t findMatchingDelimiter(const std::string &content, const size_t start, const char open, const char close) {
+    if (start == std::string::npos || start >= content.size() || content[start] != open) {
+      return std::string::npos;
+    }
+
+    size_t pos = start + 1;
+    int depth = 1;
+    bool in_string = false;
+    char quote = '\0';
+    bool escape = false;
+
+    while (pos < content.length() && depth > 0) {
+      const char c = content[pos];
+      if (in_string) {
+        if (escape) {
+          escape = false;
+        } else if (c == '\\') {
+          escape = true;
+        } else if (c == quote) {
+          in_string = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (c == '"' || c == '\'') {
+        in_string = true;
+        quote = c;
+        pos++;
+        continue;
+      }
+
+      if (c == open) {
+        depth++;
+      } else if (c == close) {
+        depth--;
+      }
+      pos++;
+    }
+
+    if (depth != 0) {
+      return std::string::npos;
+    }
+
+    return pos - 1;
+  }
+
+  static std::vector<std::string> extractTsOptionKeys(const std::string &optionsSection) {
+    std::vector<std::string> keys;
+    int depth = 0;
+    bool in_string = false;
+    char quote = '\0';
+    bool escape = false;
+
+    for (size_t i = 0; i < optionsSection.size();) {
+      const char c = optionsSection[i];
+      if (in_string) {
+        if (escape) {
+          escape = false;
+        } else if (c == '\\') {
+          escape = true;
+        } else if (c == quote) {
+          in_string = false;
+        }
+        ++i;
+        continue;
+      }
+
+      if (c == '"' || c == '\'') {
+        in_string = true;
+        quote = c;
+        ++i;
+        continue;
+      }
+
+      if (c == '{' || c == '[') {
+        ++depth;
+        ++i;
+        continue;
+      }
+
+      if (c == '}' || c == ']') {
+        depth = std::max(0, depth - 1);
+        ++i;
+        continue;
+      }
+
+      if (depth == 0 && (std::isalpha(static_cast<unsigned char>(c)) || c == '_')) {
+        const size_t start = i;
+        ++i;
+        while (i < optionsSection.size()) {
+          const char ch = optionsSection[i];
+          if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '_')) {
+            break;
+          }
+          ++i;
+        }
+        const size_t end = i;
+        size_t j = i;
+        while (j < optionsSection.size() && std::isspace(static_cast<unsigned char>(optionsSection[j]))) {
+          ++j;
+        }
+        if (j < optionsSection.size() && optionsSection[j] == ':') {
+          keys.push_back(optionsSection.substr(start, end - start));
+          i = j + 1;
+          continue;
+        }
+      }
+
+      ++i;
+    }
+
+    return keys;
+  }
+
+  static std::string extractDefaultGroupsArray(const std::string &content) {
+    const std::string needle = "const defaultGroups";
+    const size_t start = content.find(needle);
+    if (start == std::string::npos) {
+      return {};
+    }
+
+    const size_t arrayStart = content.find('[', start);
+    if (arrayStart == std::string::npos) {
+      return {};
+    }
+
+    const size_t arrayEnd = findMatchingDelimiter(content, arrayStart, '[', ']');
+    if (arrayEnd == std::string::npos || arrayEnd <= arrayStart + 1) {
+      return {};
+    }
+
+    return content.substr(arrayStart + 1, arrayEnd - arrayStart - 1);
+  }
+
+  template<typename Container>
+  static void extractConfigTsOptionsInto(const std::string &content, Container &container) {
+    const std::string groups = extractDefaultGroupsArray(content);
+    if (groups.empty()) {
+      return;
+    }
+
+    const std::regex idPattern(R"DELIM(id\s*:\s*['"]([^'"]+)['"])DELIM");
+    size_t pos = 0;
+
+    while (pos < groups.length()) {
+      const size_t objStart = groups.find('{', pos);
+      if (objStart == std::string::npos) {
+        break;
+      }
+
+      const size_t objEnd = findMatchingDelimiter(groups, objStart, '{', '}');
+      if (objEnd == std::string::npos) {
+        break;
+      }
+
+      const std::string obj = groups.substr(objStart, objEnd - objStart + 1);
+      std::string tabId;
+      if (std::smatch idMatch; std::regex_search(obj, idMatch, idPattern)) {
+        tabId = idMatch[1].str();
+      }
+
+      const size_t optionsStart = obj.find("options");
+      if (!tabId.empty() && optionsStart != std::string::npos) {
+        const size_t optStart = obj.find('{', optionsStart);
+        if (optStart != std::string::npos) {
+          const size_t optEnd = findMatchingDelimiter(obj, optStart, '{', '}');
+          if (optEnd != std::string::npos && optEnd > optStart) {
+            const std::string optionsSection = obj.substr(optStart + 1, optEnd - optStart - 1);
+            const auto keys = extractTsOptionKeys(optionsSection);
+
+            if constexpr (std::is_same_v<Container, std::map<std::string, std::string, std::less<>>>) {
+              for (const auto &key : keys) {
+                container[key] = tabId;
+              }
+            } else if constexpr (std::is_same_v<Container, std::map<std::string, std::vector<std::string>, std::less<>>>) {
+              auto &list = container[tabId];
+              list.insert(list.end(), keys.begin(), keys.end());
+            }
+          }
+        }
+      }
+
+      pos = objEnd + 1;
+    }
   }
 
   // Helper function to extract tab ID from a tab object
@@ -196,14 +387,22 @@ protected:
   // Extract config options from config.html
   static std::map<std::string, std::string, std::less<>> extractConfigHtmlOptions() {
     std::map<std::string, std::string, std::less<>> options;
-    const std::string content = file_handler::read_file("src_assets/common/assets/web/config.html");
-
-    const std::string tabsContent = extractTabsContent(content);
-    if (tabsContent.empty()) {
+    const std::string htmlPath = "src_assets/common/assets/web/config.html";
+    if (std::filesystem::exists(htmlPath)) {
+      const std::string content = file_handler::read_file(htmlPath.c_str());
+      const std::string tabsContent = extractTabsContent(content);
+      if (tabsContent.empty()) {
+        return options;
+      }
+      processTabObjects(tabsContent, options);
       return options;
     }
 
-    processTabObjects(tabsContent, options);
+    const std::string tsPath = "src_assets/common/assets/web/stores/config.ts";
+    if (std::filesystem::exists(tsPath)) {
+      const std::string content = file_handler::read_file(tsPath.c_str());
+      extractConfigTsOptionsInto(content, options);
+    }
     return options;
   }
 
@@ -215,14 +414,22 @@ protected:
   // Extract config options from config.html with order preserved
   static std::map<std::string, std::vector<std::string>, std::less<>> extractConfigHtmlOptionsWithOrder() {
     std::map<std::string, std::vector<std::string>, std::less<>> optionsByTab;
-    const std::string content = file_handler::read_file("src_assets/common/assets/web/config.html");
-
-    const std::string tabsContent = extractTabsContent(content);
-    if (tabsContent.empty()) {
+    const std::string htmlPath = "src_assets/common/assets/web/config.html";
+    if (std::filesystem::exists(htmlPath)) {
+      const std::string content = file_handler::read_file(htmlPath.c_str());
+      const std::string tabsContent = extractTabsContent(content);
+      if (tabsContent.empty()) {
+        return optionsByTab;
+      }
+      processTabObjects(tabsContent, optionsByTab);
       return optionsByTab;
     }
 
-    processTabObjects(tabsContent, optionsByTab);
+    const std::string tsPath = "src_assets/common/assets/web/stores/config.ts";
+    if (std::filesystem::exists(tsPath)) {
+      const std::string content = file_handler::read_file(tsPath.c_str());
+      extractConfigTsOptionsInto(content, optionsByTab);
+    }
     return optionsByTab;
   }
 
@@ -444,7 +651,8 @@ TEST_F(ConfigConsistencyTest, AllConfigOptionsExistInAllFiles) {
 
   // Options that are internal/special and shouldn't be in UI/docs
   const std::set<std::string, std::less<>> internalOptions = {
-    "flags"  // Internal config flags, not user-configurable
+    "flags",  // Internal config flags, not user-configurable
+    "rtss_disable_vsync_ullm"  // Legacy alias for frame_limiter_disable_vsync
   };
 
   std::vector<std::string> missingFromFiles;

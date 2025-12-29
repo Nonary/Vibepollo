@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -854,6 +855,18 @@ namespace nvhttp {
 
     launch_session->input_only = input_only;
 
+    launch_session->iv.resize(16);
+    uint32_t prepend_iv = util::endian::big<uint32_t>(util::from_view(get_arg(args, "rikeyid")));
+    auto prepend_iv_p = (uint8_t *) &prepend_iv;
+    std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session->iv));
+
+#ifdef _WIN32
+    {
+      std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e> gate_promise;
+      gate_promise.set_value(rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed);
+      launch_session->display_helper_gate = gate_promise.get_future().share();
+    }
+#endif
     return launch_session;
   }
 
@@ -2108,8 +2121,34 @@ namespace nvhttp {
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-        } else if (!display_helper_integration::apply(*request)) {
-          BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+        } else {
+          const bool applied = display_helper_integration::apply(*request);
+          if (!applied) {
+            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+          } else {
+            auto gate_promise = std::make_shared<std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e>>();
+            launch_session->display_helper_gate = gate_promise->get_future().share();
+            BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session start).";
+
+            std::thread([gate_promise]() {
+              constexpr auto kVerificationTimeout = std::chrono::seconds(20);
+              const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
+              rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
+                rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+
+              if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
+                gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed;
+              } else if (status == display_helper_integration::ApplyVerificationStatus::Failed) {
+                gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed;
+              }
+
+              try {
+                gate_promise->set_value(gate_status);
+              } catch (...) {
+                // best-effort: ignore double-satisfaction
+              }
+            }).detach();
+          }
         }
       }
 #else
@@ -2330,25 +2369,9 @@ namespace nvhttp {
 
 #ifdef _WIN32
         if (should_reapply_display) {
-          HANDLE user_token = platf::retrieve_users_token(false);
-          const bool helper_session_available = (user_token != nullptr);
-          if (user_token) {
-            CloseHandle(user_token);
-          }
-
-          if (!helper_session_available) {
-            BOOST_LOG(warning) << "Display helper: unable to apply display preferences because there isn't a user signed in currently.";
-          } else {
-            (void) display_helper_integration::disarm_pending_restore();
-            auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-            if (!request) {
-              BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-            } else if (!display_helper_integration::apply(*request)) {
-              BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-            }
-          }
+          (void) display_helper_integration::apply_pending_if_ready();
         } else {
-          BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
+          BOOST_LOG(debug) << "Display helper: skipping resume apply; only deferrals are allowed.";
         }
 
         // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
@@ -2361,23 +2384,28 @@ namespace nvhttp {
           );
         }
 #else
-        if (should_reapply_display) {
-          display_helper_integration::DisplayApplyBuilder noop_builder;
-          noop_builder.set_session(*launch_session);
-          if (!display_helper_integration::apply(noop_builder.build())) {
-            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-          }
-        } else {
-          BOOST_LOG(debug) << "Display helper: skipping resume re-apply because revert-on-disconnect is disabled.";
-        }
+        BOOST_LOG(debug) << "Display helper: skipping resume apply; only deferrals are allowed.";
 #endif
 
         // Probe encoders again before streaming to ensure our chosen
         // encoder matches the active GPU (which could have changed
         // due to hotplugging, driver crash, primary monitor change,
         // or any number of other factors).
+        bool encoder_probe_failed = video::probe_encoders();
+
+#ifdef _WIN32
+        if (encoder_probe_failed && !has_any_active_display()) {
+          BOOST_LOG(info) << "Resume encoder probe failed with no active display; waiting for activation before retry.";
+          constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+          if (wait_for_display_activation(kDisplayActivationTimeout)) {
+            BOOST_LOG(info) << "Display became active; retrying resume encoder probe.";
+            encoder_probe_failed = video::probe_encoders();
+          }
+        }
+#endif
+
         // Skip encoder probing failure for input-only mode
-        if (video::probe_encoders() && !launch_session->input_only) {
+        if (encoder_probe_failed && !launch_session->input_only) {
           tree.put("root.resume", 0);
           tree.put("root.<xmlattr>.status_code", 503);
           tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");

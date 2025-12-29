@@ -28,6 +28,9 @@
                   <RouterLink to="/clients" :class="linkClass('/clients')">
                     <i class="fas fa-users-cog" /><span>{{ $t('clients.nav') }}</span>
                   </RouterLink>
+                  <RouterLink to="/webrtc" :class="linkClass('/webrtc')">
+                    <i class="fas fa-satellite-dish" /><span>{{ $t('webrtc.nav') }}</span>
+                  </RouterLink>
                   <RouterLink to="/settings" :class="linkClass('/settings')">
                     <i class="fas fa-sliders" /><span>{{ $t('navbar.configuration') }}</span>
                   </RouterLink>
@@ -181,6 +184,7 @@ watch(
       '/logs': 'navbar.troubleshoot',
       '/troubleshooting': 'navbar.troubleshoot',
       '/clients': 'clients.nav',
+      '/webrtc': 'webrtc.nav',
     };
     const v = map[p] || 'Sunshine';
     pageTitle.value = v;
@@ -236,6 +240,7 @@ const mobileMenuOptions = computed(() => {
       icon: icon('fas fa-table-cells-large'),
     },
     { label: t('clients.nav'), key: '/clients', icon: icon('fas fa-users-cog') },
+    { label: t('webrtc.nav'), key: '/webrtc', icon: icon('fas fa-satellite-dish') },
     { label: t('navbar.configuration'), key: '/settings', icon: icon('fas fa-sliders') },
     { label: t('navbar.troubleshoot'), key: '/troubleshooting', icon: icon('fas fa-bug') },
     { type: 'divider' as const },

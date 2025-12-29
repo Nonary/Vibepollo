@@ -101,10 +101,11 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
   app["playnite-added-at"] = "2000-01-01T00:00:00Z";
   root["apps"].push_back(app);
   std::unordered_set<std::string> uninstalled;  // not uninstalled
+  std::unordered_set<std::string> selected_ids;
   auto now = std::time(nullptr);
   std::unordered_map<std::string, std::time_t> last_played;  // empty => never played
   bool changed = false;
-  purge_uninstalled_and_ttl(root, uninstalled, 1 /*days*/, now, last_played, changed);
+  purge_uninstalled_and_ttl(root, uninstalled, 1 /*days*/, now, last_played, true /*recent*/, true /*require repl*/, true /*remove uninstalled*/, false /*sync all*/, selected_ids, changed);
   EXPECT_TRUE(changed);
   EXPECT_EQ(root["apps"].size(), 0);
 }

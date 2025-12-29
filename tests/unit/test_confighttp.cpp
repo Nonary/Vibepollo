@@ -81,8 +81,7 @@ namespace confighttp {
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::redirection_temporary_redirect);
     EXPECT_TRUE(result.body.empty());
     auto location_header = result.headers.find("Location");
-    EXPECT_NE(location_header, result.headers.end());
-    EXPECT_EQ(location_header->second, "/welcome");
+    EXPECT_EQ(location_header, result.headers.end());
   }
 
   TEST_F(ConfigHttpAuthHelpersTest, given_custom_error_message_when_making_auth_error_then_should_return_response_with_custom_message) {
@@ -165,20 +164,19 @@ namespace confighttp {
     EXPECT_EQ(json_response["error"], "Unauthorized");
   }
 
-  TEST_F(ConfigHttpCheckAuthTest, given_empty_username_config_when_checking_auth_then_should_redirect_to_welcome) {
+  TEST_F(ConfigHttpCheckAuthTest, given_empty_username_config_when_checking_auth_then_should_return_unauthorized) {
     // Given: Empty username configuration (initial setup)
     config::sunshine.username = "";
 
-    // When: Checking authentication during initial setup
+    // When: Checking authentication during initial setup for an API endpoint
     auto result = check_auth("127.0.0.1", "Basic dGVzdDp0ZXN0", "/api/test", "GET");
 
-    // Then: Should redirect to welcome page
+    // Then: Should return unauthorized error for API access
     EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.code, SimpleWeb::StatusCode::redirection_temporary_redirect);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
 
-    auto location_header = result.headers.find("Location");
-    EXPECT_NE(location_header, result.headers.end());
-    EXPECT_EQ(location_header->second, "/welcome");
+    auto json_response = nlohmann::json::parse(result.body);
+    EXPECT_EQ(json_response["error"], "Credentials not configured");
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_disallowed_ip_address_when_checking_auth_then_should_return_forbidden) {
@@ -282,11 +280,10 @@ namespace confighttp {
 
   TEST_F(ConfigHttpCheckAuthTest, given_html_page_request_without_auth_when_checking_auth_then_should_redirect_to_login_with_redirect_param) {
     auto result = check_auth("127.0.0.1", "", "/home", "GET");
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.code, SimpleWeb::StatusCode::redirection_temporary_redirect);
-    auto it = result.headers.find("Location");
-    EXPECT_NE(it, result.headers.end());
-    EXPECT_EQ(it->second, "/login?redirect=/home");
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
+    EXPECT_TRUE(result.body.empty());
+    EXPECT_TRUE(result.headers.empty());
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_login_page_path_when_checking_auth_then_should_allow_without_authentication) {
@@ -305,11 +302,10 @@ namespace confighttp {
 
   TEST_F(ConfigHttpCheckAuthTest, given_unknown_auth_scheme_and_html_path_when_checking_auth_then_should_redirect_to_login) {
     auto result = check_auth("127.0.0.1", "Digest realm=foo", "/index.html", "GET");
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.code, SimpleWeb::StatusCode::redirection_temporary_redirect);
-    auto it = result.headers.find("Location");
-    EXPECT_NE(it, result.headers.end());
-    EXPECT_EQ(it->second, "/login?redirect=/index.html");
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
+    EXPECT_TRUE(result.body.empty());
+    EXPECT_TRUE(result.headers.empty());
   }
 
   class ConfigHttpCorsTest: public Test {

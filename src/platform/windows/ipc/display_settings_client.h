@@ -7,11 +7,15 @@
 #ifdef _WIN32
 
   #include <cstdint>
+  #include <optional>
   #include <string>
 
 namespace platf::display_helper_client {
   // Send APPLY with JSON payload (SingleDisplayConfiguration)
   bool send_apply_json(const std::string &json);
+
+  // Wait for helper verification result after APPLY. Returns nullopt on timeout/unavailable.
+  std::optional<bool> wait_for_verification_result(int timeout_ms);
 
   // Send REVERT (no payload)
   bool send_revert();

@@ -1035,14 +1035,8 @@ function clearSnapshotHotkey(): void {
                     class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
                   >
                     <Checkbox
-                      id="dd_wa_hdr_toggle"
-                      v-model="config.dd_wa_hdr_toggle"
-                      locale-prefix="config"
-                      default="false"
-                    />
-                    <Checkbox
-                      id="double_refreshrate"
-                      v-model="config.double_refreshrate"
+                      id="dd_wa_virtual_double_refresh"
+                      v-model="config.dd_wa_virtual_double_refresh"
                       locale-prefix="config"
                       :default="true"
                       :disabled="!usingVirtualDisplay"

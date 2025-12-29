@@ -116,10 +116,11 @@ TEST(PlayniteSync_Purge, RemovesUninstalledOrExpiredOnly) {
     root["apps"].push_back(a);
   }
   std::unordered_set<std::string> uninstalled_lower {to_lower_copy(std::string("B"))};
+  std::unordered_set<std::string> selected_ids {"A", "B"};
   auto now = std::time(nullptr);
   std::unordered_map<std::string, std::time_t> last_played;
   bool changed = false;
-  purge_uninstalled_and_ttl(root, uninstalled_lower, 0, now, last_played, changed);
+  purge_uninstalled_and_ttl(root, uninstalled_lower, 0, now, last_played, true /*recent*/, true /*require repl*/, true /*remove uninstalled*/, true /*sync all*/, selected_ids, changed);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
@@ -132,11 +133,24 @@ TEST(PlayniteSync_Purge, RemovesUninstalledOrExpiredOnly) {
   x["playnite-managed"] = "auto";
   root2["apps"].push_back(x);
   std::unordered_set<std::string> none;
+  std::unordered_set<std::string> selected {"Y"};
   changed = false;
-  purge_uninstalled_and_ttl(root2, none, 0, now, last_played, changed);
+  purge_uninstalled_and_ttl(root2, none, 0, now, last_played, true /*recent*/, true /*require repl*/, false /*remove uninstalled*/, false /*sync all*/, selected, changed);
+  EXPECT_TRUE(changed);
+  EXPECT_EQ(root2["apps"].size(), 0u);  // removed because replacement exists and require_repl=true
+
+  // With require_repl=false, should not remove non-selected
+  nlohmann::json root3;
+  root3["apps"] = nlohmann::json::array();
+  nlohmann::json x2;
+  x2["playnite-id"] = "X";
+  x2["playnite-managed"] = "auto";
+  root3["apps"].push_back(x2);
+  changed = false;
+  purge_uninstalled_and_ttl(root3, none, 0, now, last_played, true /*recent*/, false /*require repl*/, false /*remove uninstalled*/, false /*sync all*/, selected, changed);
   EXPECT_FALSE(changed);
-  ASSERT_EQ(root2["apps"].size(), 1u);
-  EXPECT_EQ(root2["apps"][0]["playnite-id"], "X");
+  ASSERT_EQ(root3["apps"].size(), 1u);
+  EXPECT_EQ(root3["apps"][0]["playnite-id"], "X");
 }
 
 TEST(PlayniteSync_AddMissing, AddsMissingSelectedWithMetadataAndTimestamps) {

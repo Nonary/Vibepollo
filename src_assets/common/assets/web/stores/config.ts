@@ -118,8 +118,10 @@ const defaultGroups = [
       dd_refresh_rate_option: 'auto',
       dd_manual_refresh_rate: '',
       dd_hdr_option: 'auto',
+      dd_hdr_request_override: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_always_restore_from_golden: false,
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
@@ -129,11 +131,10 @@ const defaultGroups = [
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      dd_wa_hdr_toggle: false,
+      dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
       keep_sink_default: 'enabled',
       auto_capture_sink: 'enabled',
-      double_refreshrate: true,
       fallback_mode: '1920x1080x60',
       max_bitrate: 0,
       minimum_fps_target: 20,
@@ -164,6 +165,7 @@ const defaultGroups = [
       pkey: '',
       cert: '',
       file_state: '',
+      vibeshine_file_state: '',
     },
   },
   {
@@ -481,18 +483,6 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
-    // Migrate legacy HDR workaround delay -> boolean toggle (enabled if delay>0)
-    if (data) {
-      const hasNew = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle');
-      const hasLegacy = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle_delay');
-      if (!hasNew && hasLegacy) {
-        const v = Number((data as Record<string, unknown>)['dd_wa_hdr_toggle_delay']);
-        if (Number.isFinite(v) && v > 0) {
-          (data as Record<string, unknown>)['dd_wa_hdr_toggle'] = true;
-        }
-      }
-    }
-
     // Keep frame limiter legacy and new flags in sync so toggles work across versions.
     if (data) {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_enable')) {
@@ -528,9 +518,8 @@ export const useConfigStore = defineStore('config', () => {
     const otherBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
-      'dd_wa_hdr_toggle',
+      'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
-      'double_refreshrate',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {

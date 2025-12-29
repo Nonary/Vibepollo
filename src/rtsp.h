@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <list>
 #include <memory>
 #include <optional>
@@ -101,6 +102,13 @@ namespace rtsp_stream {
 
 #ifdef _WIN32
     GUID display_guid {};
+    enum class display_helper_gate_status_e : uint8_t {
+      proceed,        // Verified/ready (or no-op)
+      proceed_gaveup, // Unknown/unavailable/timeout
+      abort_failed    // Verified failure
+    };
+
+    std::shared_future<display_helper_gate_status_e> display_helper_gate;
 #endif
   };
 
