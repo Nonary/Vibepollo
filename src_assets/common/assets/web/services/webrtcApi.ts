@@ -121,6 +121,9 @@ export class WebRtcHttpApi implements WebRtcApi {
       const detail = r.data ? JSON.stringify(r.data) : 'no response body';
       throw new Error(`Failed to post WebRTC offer (HTTP ${r.status}): ${detail}`);
     }
+    if (r.data?.error && r.data.error !== 'Answer not ready') {
+      throw new Error(`Failed to post WebRTC offer: ${r.data.error}`);
+    }
     if (r.data?.answer_ready && r.data.sdp) {
       return { type: r.data.type ?? 'answer', sdp: r.data.sdp };
     }
@@ -276,6 +279,9 @@ export class WebRtcHttpApi implements WebRtcApi {
           `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/answer`,
           { validateStatus: () => true },
         );
+        if (r.status === 200 && r.data?.error && r.data.error !== 'Answer not ready') {
+          throw new Error(`Failed to fetch WebRTC answer: ${r.data.error}`);
+        }
         if (r.status === 200 && r.data?.sdp) {
           return { type: r.data.type ?? 'answer', sdp: r.data.sdp };
         }

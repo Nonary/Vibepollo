@@ -482,10 +482,9 @@ function detectEncodingSupport(): Record<EncodingType, boolean> {
     hevc: true,
     av1: true,
   };
-  if (typeof RTCRtpSender === 'undefined') {
-    return support;
-  }
-  const caps = RTCRtpSender.getCapabilities('video');
+  const caps =
+    (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null) ??
+    (typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null);
   if (!caps?.codecs) {
     return support;
   }
@@ -639,6 +638,20 @@ const client = new WebRtcClient(api);
 
 const isConnecting = ref(false);
 const isConnected = ref(false);
+function setWebRtcActive(active: boolean): void {
+  try {
+    (window as any).__sunshine_webrtc_active = active;
+  } catch {
+    /* ignore */
+  }
+}
+watch(
+  () => [isConnecting.value, isConnected.value] as const,
+  ([connecting, connected]) => {
+    setWebRtcActive(connecting || connected);
+  },
+  { immediate: true },
+);
 const connectLabelKey = computed(() => {
   if (isConnecting.value) return 'webrtc.connecting';
   if (isConnected.value) return 'webrtc.disconnect';
@@ -1205,6 +1218,11 @@ async function connect() {
       onStats: (snapshot) => {
         stats.value = snapshot;
       },
+      onNegotiatedEncoding: (encoding) => {
+        if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
+          config.encoding = encoding;
+        }
+      },
     }, {
       inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low',
     });
@@ -1327,6 +1345,7 @@ watch(videoEl, (el) => {
 });
 
 onBeforeUnmount(() => {
+  setWebRtcActive(false);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   window.removeEventListener('keydown', onOverlayHotkey, true);

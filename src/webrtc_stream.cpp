@@ -1376,6 +1376,75 @@ namespace webrtc_stream {
       return info;
     }
 
+    struct HevcOfferInfo {
+      bool offered = false;
+      std::optional<std::string> fmtp;
+    };
+
+    HevcOfferInfo parse_hevc_offer(std::string_view sdp) {
+      std::unordered_map<int, std::string> fmtp_params;
+      std::vector<int> h265_payloads;
+
+      std::size_t line_start = 0;
+      bool in_video = false;
+      while (line_start < sdp.size()) {
+        std::size_t line_end = sdp.find('\n', line_start);
+        if (line_end == std::string_view::npos) {
+          line_end = sdp.size();
+        }
+        auto line = sdp.substr(line_start, line_end - line_start);
+        if (!line.empty() && line.back() == '\r') {
+          line.remove_suffix(1);
+        }
+
+        if (line.rfind("m=", 0) == 0) {
+          in_video = line.rfind("m=video", 0) == 0;
+        } else if (in_video && line.rfind("a=rtpmap:", 0) == 0) {
+          auto rest = line.substr(9);
+          auto space = rest.find_first_of(" \t");
+          if (space != std::string_view::npos) {
+            auto pt_str = trim_ascii(rest.substr(0, space));
+            auto codec = trim_ascii(rest.substr(space + 1));
+            auto slash = codec.find('/');
+            auto codec_name = slash == std::string_view::npos ? codec : codec.substr(0, slash);
+            if (boost::istarts_with(codec_name, "H265") || boost::istarts_with(codec_name, "HEVC")) {
+              int pt = -1;
+              auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
+              if (result.ec == std::errc() && pt >= 0) {
+                h265_payloads.push_back(pt);
+              }
+            }
+          }
+        } else if (in_video && line.rfind("a=fmtp:", 0) == 0) {
+          auto rest = line.substr(7);
+          auto space = rest.find_first_of(" \t");
+          if (space != std::string_view::npos) {
+            auto pt_str = trim_ascii(rest.substr(0, space));
+            auto params_str = trim_ascii(rest.substr(space + 1));
+            int pt = -1;
+            auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
+            if (result.ec == std::errc() && pt >= 0) {
+              fmtp_params[pt] = std::string {params_str};
+            }
+          }
+        }
+
+        line_start = line_end + 1;
+      }
+
+      HevcOfferInfo info;
+      if (h265_payloads.empty()) {
+        return info;
+      }
+      info.offered = true;
+      const int pt = h265_payloads.front();
+      auto it = fmtp_params.find(pt);
+      if (it != fmtp_params.end()) {
+        info.fmtp = it->second;
+      }
+      return info;
+    }
+
     const char *lwrtc_codec_name(lwrtc_video_codec_t codec) {
       switch (codec) {
         case LWRTC_VIDEO_CODEC_H264:
@@ -2040,6 +2109,8 @@ namespace webrtc_stream {
     std::optional<lwrtc_video_codec_t> webrtc_factory_codec;
     std::optional<Av1FmtpParams> webrtc_factory_av1_params;
     std::optional<Av1FmtpParams> webrtc_desired_av1_params;
+    std::optional<std::string> webrtc_factory_hevc_fmtp;
+    std::optional<std::string> webrtc_desired_hevc_fmtp;
     std::mutex webrtc_media_mutex;
     std::condition_variable webrtc_media_cv;
     std::thread webrtc_media_thread;
@@ -2078,6 +2149,7 @@ namespace webrtc_stream {
     bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
       std::lock_guard lg {webrtc_mutex};
       const auto desired_av1_params = webrtc_desired_av1_params;
+      const auto desired_hevc_fmtp = webrtc_desired_hevc_fmtp;
       if (webrtc_factory) {
         if (preferred_codec && webrtc_factory_codec && *preferred_codec != *webrtc_factory_codec) {
           if (active_peers.load(std::memory_order_acquire) == 0) {
@@ -2086,6 +2158,7 @@ namespace webrtc_stream {
             webrtc_factory = nullptr;
             webrtc_factory_codec.reset();
             webrtc_factory_av1_params.reset();
+            webrtc_factory_hevc_fmtp.reset();
           } else {
             BOOST_LOG(warning) << "WebRTC: codec switch requested while peers are active";
           }
@@ -2101,8 +2174,25 @@ namespace webrtc_stream {
             webrtc_factory = nullptr;
             webrtc_factory_codec.reset();
             webrtc_factory_av1_params.reset();
+            webrtc_factory_hevc_fmtp.reset();
           } else {
             BOOST_LOG(warning) << "WebRTC: AV1 parameter update requested while peers are active";
+          }
+        }
+        if (webrtc_factory && preferred_codec &&
+            *preferred_codec == LWRTC_VIDEO_CODEC_H265 &&
+            webrtc_factory_codec &&
+            *webrtc_factory_codec == LWRTC_VIDEO_CODEC_H265 &&
+            desired_hevc_fmtp != webrtc_factory_hevc_fmtp) {
+          if (active_peers.load(std::memory_order_acquire) == 0) {
+            BOOST_LOG(info) << "WebRTC: resetting factory to update HEVC parameters";
+            lwrtc_factory_release(webrtc_factory);
+            webrtc_factory = nullptr;
+            webrtc_factory_codec.reset();
+            webrtc_factory_av1_params.reset();
+            webrtc_factory_hevc_fmtp.reset();
+          } else {
+            BOOST_LOG(warning) << "WebRTC: HEVC parameter update requested while peers are active";
           }
         }
         if (webrtc_factory) {
@@ -2139,6 +2229,13 @@ namespace webrtc_stream {
                            << " tier=" << desired_av1_params->tier;
         }
       }
+      if (passthrough_codec == LWRTC_VIDEO_CODEC_H265 && desired_hevc_fmtp) {
+        if (!lwrtc_factory_set_passthrough_hevc_fmtp(webrtc_factory, desired_hevc_fmtp->c_str())) {
+          BOOST_LOG(warning) << "WebRTC: failed to set HEVC fmtp parameters";
+        } else {
+          BOOST_LOG(debug) << "WebRTC: using HEVC fmtp parameters " << *desired_hevc_fmtp;
+        }
+      }
 
       if (!lwrtc_factory_initialize(webrtc_factory)) {
         BOOST_LOG(error) << "WebRTC: failed to create peer connection factory";
@@ -2150,6 +2247,8 @@ namespace webrtc_stream {
       webrtc_factory_codec = passthrough_codec;
       webrtc_factory_av1_params =
         (passthrough_codec == LWRTC_VIDEO_CODEC_AV1) ? desired_av1_params : std::nullopt;
+      webrtc_factory_hevc_fmtp =
+        (passthrough_codec == LWRTC_VIDEO_CODEC_H265) ? desired_hevc_fmtp : std::nullopt;
       BOOST_LOG(debug) << "WebRTC: peer connection factory ready";
       return true;
     }
@@ -3160,6 +3259,7 @@ namespace webrtc_stream {
         webrtc_factory = nullptr;
         webrtc_factory_codec.reset();
         webrtc_factory_av1_params.reset();
+        webrtc_factory_hevc_fmtp.reset();
       }
     }
 
@@ -3694,6 +3794,21 @@ namespace webrtc_stream {
                            << " tier=" << av1_offer.fmtp->tier;
         } else {
           BOOST_LOG(warning) << "WebRTC: no AV1 fmtp params found in offer";
+        }
+      }
+      if (it->second.state.codec && boost::iequals(*it->second.state.codec, "hevc")) {
+        const auto hevc_offer = parse_hevc_offer(sdp);
+        {
+          std::lock_guard lg {webrtc_mutex};
+          webrtc_desired_hevc_fmtp = hevc_offer.fmtp;
+        }
+        if (!hevc_offer.offered) {
+          BOOST_LOG(error) << "WebRTC: HEVC requested but offer does not include H265";
+          return false;
+        } else if (hevc_offer.fmtp) {
+          BOOST_LOG(debug) << "WebRTC: parsed HEVC fmtp params " << *hevc_offer.fmtp;
+        } else {
+          BOOST_LOG(warning) << "WebRTC: no HEVC fmtp params found in offer";
         }
       }
 

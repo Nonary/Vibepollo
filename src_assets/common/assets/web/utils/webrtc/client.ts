@@ -8,6 +8,7 @@ export interface WebRtcClientCallbacks {
   onInputChannelState?: (state: RTCDataChannelState) => void;
   onStats?: (stats: WebRtcStatsSnapshot) => void;
   onInputMessage?: (message: GamepadFeedbackMessage) => void;
+  onNegotiatedEncoding?: (encoding: string) => void;
   onError?: (error: Error) => void;
 }
 
@@ -40,22 +41,74 @@ const AUDIO_JITTER_BUFFER_TARGET_MS = 20;
 const ICE_CANDIDATE_BATCH_WINDOW_MS = 75;
 const ICE_CANDIDATE_BATCH_LIMIT = 256;
 
+function getVideoCodecCapabilities(): RTCRtpCapabilities | null {
+  try {
+    const receiverCaps =
+      typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null;
+    if (receiverCaps?.codecs?.length) return receiverCaps;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const senderCaps =
+      typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null;
+    if (senderCaps?.codecs?.length) return senderCaps;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function resolveEncodingPreference(encoding: string): string {
-  if (typeof RTCRtpSender === 'undefined') return encoding;
   const mimes = ENCODING_MIME[encoding.toLowerCase()];
   if (!mimes) return encoding;
-  const caps = RTCRtpSender.getCapabilities('video');
+  const caps = getVideoCodecCapabilities();
   if (!caps?.codecs) return encoding;
   const supported = caps.codecs.some((codec) => mimes.includes(codec.mimeType.toLowerCase()));
   return supported ? encoding : 'h264';
+}
+
+function getOfferedVideoCodecNames(sdp: string): Set<string> {
+  const codecs = new Set<string>();
+  if (!sdp) return codecs;
+  const lines = sdp.split(/\r\n/);
+  let inVideo = false;
+
+  for (const line of lines) {
+    if (line.startsWith('m=')) {
+      inVideo = line.startsWith('m=video');
+      continue;
+    }
+    if (!inVideo || !line.startsWith('a=rtpmap:')) continue;
+    const rest = line.slice('a=rtpmap:'.length);
+    const space = rest.indexOf(' ');
+    if (space < 0) continue;
+    const codecPart = rest.slice(space + 1).trim();
+    if (!codecPart) continue;
+    const slash = codecPart.indexOf('/');
+    const codecName = (slash >= 0 ? codecPart.slice(0, slash) : codecPart).trim();
+    if (codecName) codecs.add(codecName.toLowerCase());
+  }
+
+  return codecs;
+}
+
+function offerSupportsEncoding(sdp: string, encoding: string): boolean {
+  const offered = getOfferedVideoCodecNames(sdp);
+  if (!offered.size) return false;
+  const normalized = encoding.toLowerCase();
+  if (normalized === 'hevc') return offered.has('h265') || offered.has('hevc');
+  if (normalized === 'av1') return offered.has('av1') || offered.has('av1x');
+  if (normalized === 'h264') return offered.has('h264');
+  return true;
 }
 
 function applyCodecPreferences(
   transceiver: RTCRtpTransceiver | null,
   encoding: string,
 ): void {
-  if (!transceiver || typeof RTCRtpSender === 'undefined') return;
-  const caps = RTCRtpSender.getCapabilities('video');
+  if (!transceiver) return;
+  const caps = getVideoCodecCapabilities();
   if (!caps?.codecs) return;
   const mimes = ENCODING_MIME[encoding.toLowerCase()];
   if (!mimes) return;
@@ -259,19 +312,57 @@ export class WebRtcClient {
     callbacks: WebRtcClientCallbacks = {},
     options: WebRtcClientConnectOptions = {},
   ): Promise<string> {
+    const resolvedEncoding = resolveEncodingPreference(config.encoding);
+    const primaryConfig =
+      resolvedEncoding === config.encoding ? config : { ...config, encoding: resolvedEncoding };
+
+    if (primaryConfig.encoding !== config.encoding) {
+      const id = await this.connectAttempt(primaryConfig, callbacks, options);
+      callbacks.onNegotiatedEncoding?.(primaryConfig.encoding);
+      return id;
+    }
+
+    try {
+      return await this.connectAttempt(primaryConfig, callbacks, options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const requested = primaryConfig.encoding.toLowerCase();
+      const shouldFallback =
+        requested !== 'h264' &&
+        message.startsWith('Browser did not offer requested video codec');
+      if (!shouldFallback) {
+        const finalError =
+          error instanceof Error ? error : new Error('Failed to establish WebRTC session.');
+        callbacks.onError?.(finalError);
+        throw finalError;
+      }
+    }
+
+    const id = await this.connectAttempt({ ...primaryConfig, encoding: 'h264' }, callbacks, options);
+    callbacks.onNegotiatedEncoding?.('h264');
+    return id;
+  }
+
+  private async connectAttempt(
+    config: StreamConfig,
+    callbacks: WebRtcClientCallbacks = {},
+    options: WebRtcClientConnectOptions = {},
+  ): Promise<string> {
     await this.disconnect();
     this.clearAutoDisconnectTimer();
     this.disconnecting = false;
-    const resolvedEncoding = resolveEncodingPreference(config.encoding);
-    const sessionConfig =
-      resolvedEncoding === config.encoding ? config : { ...config, encoding: resolvedEncoding };
+    const sessionConfig = config;
     const session = await this.api.createSession(sessionConfig);
     this.sessionId = session.sessionId;
     this.pendingRemoteCandidates = [];
+    const requestedEncoding = sessionConfig.encoding.toLowerCase();
+    const bundlePolicy: RTCBundlePolicy = requestedEncoding === 'hevc' ? 'balanced' : 'max-bundle';
+    const rtcpMuxPolicy: RTCRtcpMuxPolicy =
+      requestedEncoding === 'hevc' ? 'negotiate' : 'require';
     this.pc = new RTCPeerConnection({
       iceServers: session.iceServers,
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require',
+      bundlePolicy,
+      rtcpMuxPolicy,
     });
 
     const videoTransceiver = this.pc.addTransceiver('video', { direction: 'recvonly' });
@@ -356,6 +447,13 @@ export class WebRtcClient {
         type: offer.type,
         sdp: applyInitialBitrateHints(offer.sdp ?? '', sessionConfig.bitrateKbps),
       };
+      if (!offerSupportsEncoding(mungedOffer.sdp ?? '', sessionConfig.encoding)) {
+        const offered =
+          Array.from(getOfferedVideoCodecNames(mungedOffer.sdp ?? '')).join(', ') || 'none';
+        throw new Error(
+          `Browser did not offer requested video codec '${sessionConfig.encoding}' (offered: ${offered})`,
+        );
+      }
       await this.pc.setLocalDescription(mungedOffer);
       const answer = await this.api.sendOffer(session.sessionId, {
         type: mungedOffer.type,
@@ -364,10 +462,25 @@ export class WebRtcClient {
       if (!answer?.sdp) {
         throw new Error('WebRTC answer not received');
       }
-      await this.pc.setRemoteDescription(answer);
+      try {
+        await this.pc.setRemoteDescription(answer);
+      } catch (error) {
+        const offered =
+          Array.from(getOfferedVideoCodecNames(mungedOffer.sdp ?? '')).join(', ') || 'none';
+        console.error('Failed to apply WebRTC answer SDP', {
+          encoding: sessionConfig.encoding,
+          offered,
+          offerSdp: mungedOffer.sdp,
+          answerSdp: answer.sdp,
+          error,
+        });
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Failed to apply WebRTC answer SDP (${sessionConfig.encoding}; offered: ${offered}): ${message}`,
+        );
+      }
       await this.flushPendingCandidates();
     } catch (error) {
-      callbacks.onError?.(error as Error);
       await this.disconnect();
       throw error;
     }
@@ -670,11 +783,49 @@ export class WebRtcClient {
       return (deltaDelay / deltaEmitted) * 1000;
     };
     const calcPlayoutDelayMs = (inbound?: any) => {
-      const estimated = inbound?.estimatedPlayoutTimestamp;
-      const timestamp = inbound?.timestamp;
-      if (typeof estimated !== 'number' || !Number.isFinite(estimated)) return undefined;
-      if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined;
-      return Math.max(0, estimated - timestamp);
+      const estimatedRaw = inbound?.estimatedPlayoutTimestamp;
+      const timestampRaw = inbound?.timestamp;
+      if (typeof estimatedRaw !== 'number' || !Number.isFinite(estimatedRaw)) return undefined;
+      if (typeof timestampRaw !== 'number' || !Number.isFinite(timestampRaw)) return undefined;
+
+      const epochNowMs = Date.now();
+      const maxSkewMs = 60 * 60 * 1000;
+      const toEpochMs = (value: number): number | undefined => {
+        const candidates: number[] = [];
+        candidates.push(value);
+        candidates.push(value * 1000);
+        candidates.push(value / 1000);
+        candidates.push(value / 1e6);
+        try {
+          if (typeof performance !== 'undefined' && typeof performance.timeOrigin === 'number') {
+            const origin = performance.timeOrigin;
+            candidates.push(origin + value);
+            candidates.push(origin + value * 1000);
+            candidates.push(origin + value / 1000);
+            candidates.push(origin + value / 1e6);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        let best: { value: number; diff: number } | null = null;
+        for (const candidate of candidates) {
+          if (!Number.isFinite(candidate)) continue;
+          const diff = Math.abs(candidate - epochNowMs);
+          if (!best || diff < best.diff) {
+            best = { value: candidate, diff };
+          }
+        }
+        if (!best || best.diff > maxSkewMs) return undefined;
+        return best.value;
+      };
+
+      const estimatedEpochMs = toEpochMs(estimatedRaw);
+      const timestampEpochMs = toEpochMs(timestampRaw);
+      if (estimatedEpochMs == null || timestampEpochMs == null) return undefined;
+      const delayMs = estimatedEpochMs - timestampEpochMs;
+      if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 5000) return undefined;
+      return delayMs;
     };
     const calcDecodeMs = (totalDecodeTime?: number, framesDecoded?: number) => {
       if (totalDecodeTime == null || !framesDecoded) return undefined;
