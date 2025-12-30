@@ -2155,8 +2155,7 @@ namespace webrtc_stream {
       return LWRTC_VIDEO_CODEC_H264;
     }
 
-    bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
-      std::lock_guard lg {webrtc_mutex};
+    bool ensure_webrtc_factory_locked(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
       const auto desired_av1_params = webrtc_desired_av1_params;
       const auto desired_hevc_fmtp = webrtc_desired_hevc_fmtp;
       if (webrtc_factory) {
@@ -2260,6 +2259,11 @@ namespace webrtc_stream {
         (passthrough_codec == LWRTC_VIDEO_CODEC_H265) ? desired_hevc_fmtp : std::nullopt;
       BOOST_LOG(debug) << "WebRTC: peer connection factory ready";
       return true;
+    }
+
+    bool ensure_webrtc_factory(std::optional<lwrtc_video_codec_t> preferred_codec = std::nullopt) {
+      std::lock_guard lg {webrtc_mutex};
+      return ensure_webrtc_factory_locked(preferred_codec);
     }
 
     lwrtc_constraints_t *create_constraints() {
@@ -3298,7 +3302,8 @@ namespace webrtc_stream {
     }
 
     bool attach_media_tracks(Session &session) {
-      if (!session.peer || !ensure_webrtc_factory(session_codec_to_lwrtc(session.state))) {
+      std::lock_guard webrtc_lock {webrtc_mutex};
+      if (!session.peer || !ensure_webrtc_factory_locked(session_codec_to_lwrtc(session.state))) {
         return false;
       }
 
