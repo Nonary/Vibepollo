@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "src/logging.h"
+
 namespace display_helper::v2 {
   StateMachine::StateMachine(
     ApplyPipeline &apply,
@@ -157,6 +159,7 @@ namespace display_helper::v2 {
   }
 
   void StateMachine::handle_stop_command(const StopCommand &) {
+    BOOST_LOG(info) << "Display helper: received STOP command, exiting gracefully.";
     if (exit_callback_) {
       exit_callback_(0);
     }
@@ -246,6 +249,7 @@ namespace display_helper::v2 {
     }
 
     if (completed.success) {
+      BOOST_LOG(info) << "Display helper: recovery validation succeeded, display settings restored. Exiting gracefully.";
       recovery_armed_ = false;
       system_.disarm_heartbeat();
       system_.delete_restore_task();
@@ -255,6 +259,7 @@ namespace display_helper::v2 {
       return;
     }
 
+    BOOST_LOG(warning) << "Display helper: recovery validation failed, entering event loop for retry.";
     transition(State::EventLoop, ApplyAction::Revert);
   }
 
