@@ -101,6 +101,7 @@ namespace webrtc_stream {
     constexpr auto kVideoMaxFrameAgeSmooth = std::chrono::milliseconds {100};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {250};
+    constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {100};
     constexpr auto kWebrtcIdleGracePeriod = std::chrono::minutes {5};
 
     void release_shared_encoded_payload(void* user) noexcept {
@@ -331,6 +332,7 @@ namespace webrtc_stream {
       int sample_rate = 0;
       int channels = 0;
       int frames = 0;
+      std::chrono::steady_clock::time_point timestamp;
     };
 
     enum class video_pacing_mode_e {
@@ -3027,12 +3029,14 @@ namespace webrtc_stream {
           int sample_rate = 0;
           int channels = 0;
           int frames = 0;
+          std::chrono::steady_clock::time_point timestamp;
         };
 
         std::vector<EncodedVideoWork> video_work;
         const auto audio_drain_slice = std::chrono::duration_cast<std::chrono::nanoseconds>(2ms);
 
         auto drain_audio = [&]() {
+          const auto drain_now = std::chrono::steady_clock::now();
           std::vector<AudioWork> audio_work;
           {
             std::lock_guard lg {session_mutex};
@@ -3040,8 +3044,13 @@ namespace webrtc_stream {
               if (session.audio_source) {
                 RawAudioFrame frame;
                 while (session.raw_audio_frames.pop(frame)) {
+                  // Drop frames that are too old to prevent burst playback
+                  if (drain_now - frame.timestamp > kAudioMaxFrameAge) {
+                    session.state.audio_dropped++;
+                    continue;
+                  }
                   audio_work.push_back(
-                    {session.audio_source, std::move(frame.samples), frame.sample_rate, frame.channels, frame.frames}
+                    {session.audio_source, std::move(frame.samples), frame.sample_rate, frame.channels, frame.frames, frame.timestamp}
                   );
                 }
               }
@@ -3120,6 +3129,7 @@ namespace webrtc_stream {
                 if (frame_in_future) {
                   session.video_pacing_state.anchor_capture.reset();
                   session.video_pacing_state.anchor_send.reset();
+                  session.last_video_push.reset();
                   target_send = now;
                   pace_frame = false;
                 }
@@ -3148,6 +3158,7 @@ namespace webrtc_stream {
                 if (frame_too_old) {
                   session.video_pacing_state.anchor_capture.reset();
                   session.video_pacing_state.anchor_send.reset();
+                  session.last_video_push.reset();
                   target_send = now;
                   pace_frame = false;
                 } else if (pace_frame && session.last_video_push) {
@@ -3155,6 +3166,14 @@ namespace webrtc_stream {
                   // the previous send target. This avoids drift where late frames permanently
                   // bias the schedule and grow the receiver jitter buffer.
                   target_send = std::max(target_send, *session.last_video_push + frame_interval);
+                  // Check if drift prevention pushed us too far ahead - reset pacing to recover
+                  if (target_send > now + max_frame_age) {
+                    session.video_pacing_state.anchor_capture.reset();
+                    session.video_pacing_state.anchor_send.reset();
+                    session.last_video_push.reset();
+                    target_send = now;
+                    pace_frame = false;
+                  }
                 }
                 EncodedVideoWork work;
                 work.source = session.encoded_video_source;
@@ -3238,6 +3257,10 @@ namespace webrtc_stream {
             auto it = sessions.find(work.session_id);
             if (it != sessions.end()) {
               it->second.needs_keyframe = false;
+              // Reset pacing state on keyframe delivery to recover from any accumulated drift
+              it->second.video_pacing_state.anchor_capture.reset();
+              it->second.video_pacing_state.anchor_send.reset();
+              it->second.last_video_push.reset();
             }
           }
         }
@@ -3723,36 +3746,40 @@ namespace webrtc_stream {
     std::vector<std::shared_ptr<lwrtc_audio_source_t>> direct_sources;
     bool queued_raw_audio = false;
 #endif
-    std::lock_guard lg {session_mutex};
-    for (auto &[_, session] : sessions) {
-      if (!session.state.audio) {
-        continue;
-      }
+    {
+      std::lock_guard lg {session_mutex};
+      for (auto &[_, session] : sessions) {
+        if (!session.state.audio) {
+          continue;
+        }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
-      if (session.audio_source) {
-        direct_sources.push_back(session.audio_source);
-      } else
+        if (session.audio_source) {
+          direct_sources.push_back(session.audio_source);
+        } else
 #endif
-      {
-        RawAudioFrame raw;
-        raw.samples = shared_samples;
-        raw.sample_rate = sample_rate;
-        raw.channels = channels;
-        raw.frames = frames;
-        bool dropped = session.raw_audio_frames.push(std::move(raw));
-        if (dropped) {
-          session.state.audio_dropped++;
-        }
+        {
+          RawAudioFrame raw;
+          raw.samples = shared_samples;
+          raw.sample_rate = sample_rate;
+          raw.channels = channels;
+          raw.frames = frames;
+          raw.timestamp = now;
+          bool dropped = session.raw_audio_frames.push(std::move(raw));
+          if (dropped) {
+            session.state.audio_dropped++;
+          }
 #ifdef SUNSHINE_ENABLE_WEBRTC
-        queued_raw_audio = true;
+          queued_raw_audio = true;
 #endif
+        }
+        session.state.audio_packets++;
+        session.state.last_audio_time = now;
+        session.state.last_audio_bytes = byte_count;
       }
-      session.state.audio_packets++;
-      session.state.last_audio_time = now;
-      session.state.last_audio_bytes = byte_count;
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    // Push audio outside the lock to avoid blocking other session operations
     for (const auto &source : direct_sources) {
       lwrtc_audio_source_push(
         source.get(),
