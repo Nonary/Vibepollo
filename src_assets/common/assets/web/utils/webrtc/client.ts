@@ -30,6 +30,8 @@ interface StatsState {
   lastVideoJitterBufferEmittedCount?: number;
   lastAudioJitterBufferDelay?: number;
   lastAudioJitterBufferEmittedCount?: number;
+  lastVideoTotalDecodeTime?: number;
+  lastVideoFramesDecoded?: number;
 }
 
 const ENCODING_MIME: Record<string, string[]> = {
@@ -38,6 +40,7 @@ const ENCODING_MIME: Record<string, string[]> = {
   av1: ['video/av1'],
 };
 const AUDIO_JITTER_BUFFER_TARGET_MS = 20;
+const RECEIVER_HINT_REFRESH_MS = 250;
 const ICE_CANDIDATE_BATCH_WINDOW_MS = 75;
 const ICE_CANDIDATE_BATCH_LIMIT = 256;
 
@@ -103,10 +106,7 @@ function offerSupportsEncoding(sdp: string, encoding: string): boolean {
   return true;
 }
 
-function applyCodecPreferences(
-  transceiver: RTCRtpTransceiver | null,
-  encoding: string,
-): void {
+function applyCodecPreferences(transceiver: RTCRtpTransceiver | null, encoding: string): void {
   if (!transceiver) return;
   const caps = getVideoCodecCapabilities();
   if (!caps?.codecs) return;
@@ -225,7 +225,10 @@ function applyAudioReceiverHints(receiver?: RTCRtpReceiver): void {
     /* ignore */
   }
   try {
-    if (typeof receiverAny.getParameters === 'function' && typeof receiverAny.setParameters === 'function') {
+    if (
+      typeof receiverAny.getParameters === 'function' &&
+      typeof receiverAny.setParameters === 'function'
+    ) {
       const parameters = receiverAny.getParameters();
       if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
         parameters.jitterBufferTarget = AUDIO_JITTER_BUFFER_TARGET_MS;
@@ -262,7 +265,10 @@ function applyVideoReceiverHints(receiver?: RTCRtpReceiver, targetMs?: number): 
     /* ignore */
   }
   try {
-    if (typeof receiverAny.getParameters === 'function' && typeof receiverAny.setParameters === 'function') {
+    if (
+      typeof receiverAny.getParameters === 'function' &&
+      typeof receiverAny.setParameters === 'function'
+    ) {
       const parameters = receiverAny.getParameters();
       if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
         parameters.jitterBufferTarget = target;
@@ -290,6 +296,8 @@ export class WebRtcClient {
   private disconnecting = false;
   private pendingInput: (string | ArrayBuffer)[] = [];
   private maxPendingInput = 256;
+  private receiverHintTimer?: number;
+  private videoJitterTargetMs?: number;
 
   constructor(api: WebRtcApi) {
     this.api = api;
@@ -328,8 +336,7 @@ export class WebRtcClient {
       const message = error instanceof Error ? error.message : String(error);
       const requested = primaryConfig.encoding.toLowerCase();
       const shouldFallback =
-        requested !== 'h264' &&
-        message.startsWith('Browser did not offer requested video codec');
+        requested !== 'h264' && message.startsWith('Browser did not offer requested video codec');
       if (!shouldFallback) {
         const finalError =
           error instanceof Error ? error : new Error('Failed to establish WebRTC session.');
@@ -338,7 +345,11 @@ export class WebRtcClient {
       }
     }
 
-    const id = await this.connectAttempt({ ...primaryConfig, encoding: 'h264' }, callbacks, options);
+    const id = await this.connectAttempt(
+      { ...primaryConfig, encoding: 'h264' },
+      callbacks,
+      options,
+    );
     callbacks.onNegotiatedEncoding?.('h264');
     return id;
   }
@@ -355,10 +366,10 @@ export class WebRtcClient {
     const session = await this.api.createSession(sessionConfig);
     this.sessionId = session.sessionId;
     this.pendingRemoteCandidates = [];
+    this.videoJitterTargetMs = sessionConfig.videoMaxFrameAgeMs;
     const requestedEncoding = sessionConfig.encoding.toLowerCase();
     const bundlePolicy: RTCBundlePolicy = requestedEncoding === 'hevc' ? 'balanced' : 'max-bundle';
-    const rtcpMuxPolicy: RTCRtcpMuxPolicy =
-      requestedEncoding === 'hevc' ? 'negotiate' : 'require';
+    const rtcpMuxPolicy: RTCRtcpMuxPolicy = requestedEncoding === 'hevc' ? 'negotiate' : 'require';
     this.pc = new RTCPeerConnection({
       iceServers: session.iceServers,
       bundlePolicy,
@@ -409,9 +420,12 @@ export class WebRtcClient {
       callbacks.onConnectionState?.(state);
       if (state === 'connected') {
         this.clearAutoDisconnectTimer();
+        this.startReceiverHintRefresh();
       } else if (state === 'failed' || state === 'closed') {
+        this.stopReceiverHintRefresh();
         this.scheduleAutoDisconnect(0);
       } else if (state === 'disconnected') {
+        this.stopReceiverHintRefresh();
         this.scheduleAutoDisconnect(5000);
       }
     };
@@ -514,6 +528,7 @@ export class WebRtcClient {
     if (this.disconnecting) return;
     this.disconnecting = true;
     this.clearAutoDisconnectTimer();
+    this.stopReceiverHintRefresh();
     if (this.statsTimer) {
       window.clearInterval(this.statsTimer);
       this.statsTimer = undefined;
@@ -553,7 +568,28 @@ export class WebRtcClient {
     this.inputChannel = undefined;
     this.pendingInput = [];
     this.statsState = {};
+    this.videoJitterTargetMs = undefined;
     this.disconnecting = false;
+  }
+
+  private startReceiverHintRefresh(): void {
+    if (this.receiverHintTimer) return;
+    this.receiverHintTimer = window.setInterval(() => {
+      if (!this.pc) return;
+      for (const receiver of this.pc.getReceivers()) {
+        if (receiver.track?.kind === 'audio') {
+          applyAudioReceiverHints(receiver);
+        } else if (receiver.track?.kind === 'video') {
+          applyVideoReceiverHints(receiver, this.videoJitterTargetMs);
+        }
+      }
+    }, RECEIVER_HINT_REFRESH_MS);
+  }
+
+  private stopReceiverHintRefresh(): void {
+    if (!this.receiverHintTimer) return;
+    window.clearInterval(this.receiverHintTimer);
+    this.receiverHintTimer = undefined;
   }
 
   sendInput(payload: string | ArrayBuffer): boolean {
@@ -721,9 +757,11 @@ export class WebRtcClient {
     const audioJitterMs: number | undefined =
       typeof audioInbound?.jitter === 'number' ? audioInbound.jitter * 1000 : undefined;
     const videoJitterBufferDelay: number | undefined = videoInbound?.jitterBufferDelay;
-    const videoJitterBufferEmittedCount: number | undefined = videoInbound?.jitterBufferEmittedCount;
+    const videoJitterBufferEmittedCount: number | undefined =
+      videoInbound?.jitterBufferEmittedCount;
     const audioJitterBufferDelay: number | undefined = audioInbound?.jitterBufferDelay;
-    const audioJitterBufferEmittedCount: number | undefined = audioInbound?.jitterBufferEmittedCount;
+    const audioJitterBufferEmittedCount: number | undefined =
+      audioInbound?.jitterBufferEmittedCount;
     const videoCodecId: string | undefined = videoInbound?.codecId;
     const audioCodecId: string | undefined = audioInbound?.codecId;
 
@@ -782,53 +820,32 @@ export class WebRtcClient {
       if (deltaEmitted <= 0 || deltaDelay < 0) return undefined;
       return (deltaDelay / deltaEmitted) * 1000;
     };
-    const calcPlayoutDelayMs = (inbound?: any) => {
-      const estimatedRaw = inbound?.estimatedPlayoutTimestamp;
-      const timestampRaw = inbound?.timestamp;
-      if (typeof estimatedRaw !== 'number' || !Number.isFinite(estimatedRaw)) return undefined;
-      if (typeof timestampRaw !== 'number' || !Number.isFinite(timestampRaw)) return undefined;
-
-      const epochNowMs = Date.now();
-      const maxSkewMs = 60 * 60 * 1000;
-      const toEpochMs = (value: number): number | undefined => {
-        const candidates: number[] = [];
-        candidates.push(value);
-        candidates.push(value * 1000);
-        candidates.push(value / 1000);
-        candidates.push(value / 1e6);
-        try {
-          if (typeof performance !== 'undefined' && typeof performance.timeOrigin === 'number') {
-            const origin = performance.timeOrigin;
-            candidates.push(origin + value);
-            candidates.push(origin + value * 1000);
-            candidates.push(origin + value / 1000);
-            candidates.push(origin + value / 1e6);
-          }
-        } catch {
-          /* ignore */
-        }
-
-        let best: { value: number; diff: number } | null = null;
-        for (const candidate of candidates) {
-          if (!Number.isFinite(candidate)) continue;
-          const diff = Math.abs(candidate - epochNowMs);
-          if (!best || diff < best.diff) {
-            best = { value: candidate, diff };
-          }
-        }
-        if (!best || best.diff > maxSkewMs) return undefined;
-        return best.value;
-      };
-
-      const estimatedEpochMs = toEpochMs(estimatedRaw);
-      const timestampEpochMs = toEpochMs(timestampRaw);
-      if (estimatedEpochMs == null || timestampEpochMs == null) return undefined;
-      const delayMs = estimatedEpochMs - timestampEpochMs;
-      if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 5000) return undefined;
-      return delayMs;
+    // Note: calcPlayoutDelayMs attempts to compute delay from estimatedPlayoutTimestamp
+    // but this is unreliable due to timestamp format ambiguity. We prefer jitterBufferMs
+    // which is well-defined. Keeping this function for potential future use if browsers
+    // standardize the format.
+    const calcPlayoutDelayMs = (inbound?: any): number | undefined => {
+      // estimatedPlayoutTimestamp represents WHEN content will play (wall-clock time),
+      // not the delay. The computation is complex and browser-dependent.
+      // Return undefined to fall back to delta-based jitterBufferMs.
+      return undefined;
     };
-    const calcDecodeMs = (totalDecodeTime?: number, framesDecoded?: number) => {
-      if (totalDecodeTime == null || !framesDecoded) return undefined;
+    const calcDecodeMs = (
+      totalDecodeTime?: number,
+      framesDecoded?: number,
+      lastTotalDecodeTime?: number,
+      lastFramesDecoded?: number,
+    ) => {
+      if (totalDecodeTime == null || framesDecoded == null || framesDecoded <= 0) return undefined;
+      // Use delta-based calculation if we have previous values
+      if (lastTotalDecodeTime != null && lastFramesDecoded != null) {
+        const deltaTime = totalDecodeTime - lastTotalDecodeTime;
+        const deltaFrames = framesDecoded - lastFramesDecoded;
+        if (deltaFrames > 0 && deltaTime >= 0) {
+          return (deltaTime / deltaFrames) * 1000;
+        }
+      }
+      // Fall back to lifetime average for first sample
       return (totalDecodeTime / framesDecoded) * 1000;
     };
     const videoJitterBufferMs = calcJitterBufferMs(
@@ -843,7 +860,12 @@ export class WebRtcClient {
       sameAudioInbound ? last.lastAudioJitterBufferDelay : undefined,
       sameAudioInbound ? last.lastAudioJitterBufferEmittedCount : undefined,
     );
-    const videoDecodeMs = calcDecodeMs(videoTotalDecodeTime, videoFramesDecoded);
+    const videoDecodeMs = calcDecodeMs(
+      videoTotalDecodeTime,
+      videoFramesDecoded,
+      sameVideoInbound ? last.lastVideoTotalDecodeTime : undefined,
+      sameVideoInbound ? last.lastVideoFramesDecoded : undefined,
+    );
     const videoPlayoutDelayMs = calcPlayoutDelayMs(videoInbound);
     const audioPlayoutDelayMs = calcPlayoutDelayMs(audioInbound);
 
@@ -857,6 +879,8 @@ export class WebRtcClient {
       lastVideoJitterBufferEmittedCount: videoJitterBufferEmittedCount,
       lastAudioJitterBufferDelay: audioJitterBufferDelay,
       lastAudioJitterBufferEmittedCount: audioJitterBufferEmittedCount,
+      lastVideoTotalDecodeTime: videoTotalDecodeTime,
+      lastVideoFramesDecoded: videoFramesDecoded,
     };
 
     return {

@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NButton, NSwitch, NAlert, NTag, NSelect, NInputNumber, NRadioGroup, NRadio } from 'naive-ui';
+import {
+  NButton,
+  NSwitch,
+  NAlert,
+  NTag,
+  NSelect,
+  NInputNumber,
+  NRadioGroup,
+  NRadio,
+} from 'naive-ui';
 import type {
   FrameGenHealth,
   FrameGenRequirementStatus,
@@ -197,10 +206,15 @@ const displayTargets = computed(() => props.health?.display.targets || []);
         <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
           Frame Generation Kind
         </label>
-        <n-select v-model:value="modeModel" :options="frameGenOptions" size="small" :clearable="false" />
+        <n-select
+          v-model:value="modeModel"
+          :options="frameGenOptions"
+          size="small"
+          :clearable="false"
+        />
         <p class="text-[12px] opacity-70 leading-relaxed">
-          None keeps Sunshine out of the loop, Game Provided trusts in-game frame generation, Lossless
-          Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch.
+          None keeps Sunshine out of the loop, Game Provided trusts in-game frame generation,
+          Lossless Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch.
         </p>
       </div>
 
@@ -212,8 +226,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           <div class="space-y-1">
             <div class="font-medium text-sm">Lossless Scaling Frame Generation</div>
             <p class="text-[12px] opacity-70 leading-relaxed">
-              Use Sunshine&rsquo;s tuned profile or your Lossless Scaling defaults, then fine-tune the
-              runtime targets.
+              Use Sunshine&rsquo;s tuned profile or your Lossless Scaling defaults, then fine-tune
+              the runtime targets.
             </p>
           </div>
           <n-button
@@ -241,8 +255,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             </n-radio>
           </n-radio-group>
           <p class="text-[12px] opacity-60 leading-relaxed">
-            Recommended mirrors Sunshine&rsquo;s latency-focused template. Custom runs the profile you
-            maintain inside Lossless Scaling.
+            Recommended mirrors Sunshine&rsquo;s latency-focused template. Custom runs the profile
+            you maintain inside Lossless Scaling.
           </p>
         </div>
 
@@ -283,8 +297,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 size="small"
               />
               <p class="text-[12px] opacity-60 leading-relaxed">
-                Only set this when you need to override the client&rsquo;s requested FPS for Lossless
-                Scaling.
+                Only set this when you need to override the client&rsquo;s requested FPS for
+                Lossless Scaling.
               </p>
             </div>
             <div class="space-y-1">
@@ -302,8 +316,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 @update:value="props.onLosslessRtssLimitChange"
               />
               <p class="text-[12px] opacity-60 leading-relaxed">
-                Sunshine defaults to half of the client request when left blank. Requires RTSS installed
-                and running.
+                Sunshine defaults to half of the client request when left blank. Requires RTSS
+                installed and running.
               </p>
             </div>
           </div>
@@ -334,8 +348,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           <div class="space-y-1">
             <div class="font-medium text-sm">1st Gen Capture Fix</div>
             <p class="text-[12px] opacity-70 leading-relaxed">
-              Use for DLSS 3, FSR 3, NVIDIA Smooth Motion, and Lossless Scaling frame generation. Not
-              required for pure upscaling.
+              Use for DLSS 3, FSR 3, NVIDIA Smooth Motion, and Lossless Scaling frame generation.
+              Not required for pure upscaling.
             </p>
           </div>
           <n-switch v-model:value="gen1Model" size="large" :disabled="!hasFrameGenSelection" />
@@ -346,8 +360,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           <div class="space-y-1">
             <div class="font-medium text-sm">2nd Gen Capture Fix</div>
             <p class="text-[12px] opacity-70 leading-relaxed">
-              Only for DLSS 4 titles using 2nd generation frame generation. Forces the NVIDIA Control
-              Panel frame limiter.
+              Only for DLSS 4 titles using 2nd generation frame generation. Forces the NVIDIA
+              Control Panel frame limiter.
             </p>
           </div>
           <n-switch v-model:value="gen2Model" size="large" :disabled="!hasFrameGenSelection" />
@@ -358,10 +372,15 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           {{ healthError }}
         </n-alert>
         <n-alert v-else-if="!hasHealthData && !healthLoading" size="small" type="info">
-          Run the health check to verify capture method, RTSS, and display refresh requirements before
-          streaming with frame generation.
+          Run the health check to verify capture method, RTSS, and display refresh requirements
+          before streaming with frame generation.
         </n-alert>
-        <n-alert v-else-if="healthLoading && !hasHealthData" type="info" size="small" :bordered="false">
+        <n-alert
+          v-else-if="healthLoading && !hasHealthData"
+          type="info"
+          size="small"
+          :bordered="false"
+        >
           Checking requirements...
         </n-alert>
       </div>

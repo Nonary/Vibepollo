@@ -139,9 +139,7 @@ const losslessCandidates = computed(() => {
     .map((item: unknown) => (typeof item === 'string' ? normalizeWindowsPath(item) : ''))
     .filter((item) => !!item);
 });
-const losslessCheckedIsDirectory = computed(
-  () => !!losslessStatus.value?.checked_is_directory,
-);
+const losslessCheckedIsDirectory = computed(() => !!losslessStatus.value?.checked_is_directory);
 const losslessDetected = computed(() => {
   if (!losslessStatus.value) return false;
   if (losslessError.value) return false;
@@ -154,9 +152,7 @@ const losslessDetected = computed(() => {
   if (losslessCandidates.value.length > 0) return true;
   return false;
 });
-const showLosslessAdvanced = computed(
-  () => !losslessDetected.value || losslessForceAdvanced.value,
-);
+const showLosslessAdvanced = computed(() => !losslessDetected.value || losslessForceAdvanced.value);
 const losslessStatusClass = computed(() => {
   if (losslessLoading.value) {
     return 'bg-primary/10 text-primary';
@@ -221,9 +217,7 @@ const losslessStatusHint = computed(() => {
     return '';
   }
   if (losslessDetected.value) {
-
-      return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
-
+    return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
   }
   return 'Sunshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
 });
@@ -390,7 +384,9 @@ const prefer10BitSdr = computed<boolean>({
   get() {
     const raw = (config.value as any)?.prefer_10bit_sdr;
     if (raw === true || raw === false) return raw;
-    const normalized = String(raw ?? '').toLowerCase().trim();
+    const normalized = String(raw ?? '')
+      .toLowerCase()
+      .trim();
     if (['1', 'true', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
     if (['0', 'false', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
     return true; // default is enabled
@@ -428,9 +424,14 @@ const prefer10BitSdr = computed<boolean>({
         <n-checkbox id="prefer_10bit_sdr" v-model:checked="prefer10BitSdr">
           {{ $t('config.prefer_10bit_sdr') }}
         </n-checkbox>
-        <n-text depth="3" class="text-[11px] block">{{ $t('config.prefer_10bit_sdr_desc') }}</n-text>
+        <n-text depth="3" class="text-[11px] block">{{
+          $t('config.prefer_10bit_sdr_desc')
+        }}</n-text>
       </div>
-      <fieldset v-if="platform === 'windows'" class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25">
+      <fieldset
+        v-if="platform === 'windows'"
+        class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
+      >
         <legend class="px-2 text-sm font-medium">Lossless Scaling</legend>
         <div :class="['rounded-lg px-4 py-3 text-[12px]', losslessStatusClass]">
           <div class="flex items-center justify-between gap-3">
@@ -498,7 +499,9 @@ const prefer10BitSdr = computed<boolean>({
             :placeholder="LOSSLESS_DEFAULT_PATH"
             clearable
           />
-          <div class="text-[11px] opacity-60">Default installation: {{ LOSSLESS_DEFAULT_PATH }}</div>
+          <div class="text-[11px] opacity-60">
+            Default installation: {{ LOSSLESS_DEFAULT_PATH }}
+          </div>
         </div>
       </fieldset>
     </div>
@@ -527,8 +530,8 @@ const prefer10BitSdr = computed<boolean>({
     >
       <div class="space-y-4">
         <n-alert type="info" size="small" v-if="!losslessCandidates.length">
-          Sunshine searched common Steam and program directories but could not locate LosslessScaling.exe.
-          Install Lossless Scaling from Steam or set the full path manually.
+          Sunshine searched common Steam and program directories but could not locate
+          LosslessScaling.exe. Install Lossless Scaling from Steam or set the full path manually.
         </n-alert>
         <div v-else class="space-y-2">
           <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -552,7 +555,12 @@ const prefer10BitSdr = computed<boolean>({
           The current configuration points at a folder. Choose LosslessScaling.exe directly.
         </n-alert>
         <div class="flex items-center justify-between pt-2">
-          <n-button size="small" tertiary @click="rescanLosslessCandidates" :loading="losslessLoading">
+          <n-button
+            size="small"
+            tertiary
+            @click="rescanLosslessCandidates"
+            :loading="losslessLoading"
+          >
             Rescan
           </n-button>
           <div class="flex items-center gap-2">

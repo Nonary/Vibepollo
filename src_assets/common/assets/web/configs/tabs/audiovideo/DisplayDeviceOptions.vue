@@ -264,7 +264,8 @@ const excludedSnapshotDevices = computed<string[]>({
       ? Array.from(new Set(next.map((v) => String(v ?? '').trim()).filter(Boolean)))
       : [];
     const available = availableExcludeDeviceIds.value;
-    const wouldExcludeAll = available.length > 0 && available.every((id) => normalized.includes(id));
+    const wouldExcludeAll =
+      available.length > 0 && available.every((id) => normalized.includes(id));
     if (wouldExcludeAll) {
       excludeAllWarning.value = true;
       return;
@@ -470,7 +471,9 @@ function clearSnapshotHotkey(): void {
             >
               <p class="text-[11px] text-amber-900 dark:text-amber-100">
                 <span class="flex items-start gap-2">
-                  <i class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <i
+                    class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                  />
                   <span class="block">{{ $t('config.dd_config_ensure_active_warning') }}</span>
                 </span>
               </p>
@@ -715,8 +718,13 @@ function clearSnapshotHotkey(): void {
                   >
                     <p class="text-[11px] text-blue-900 dark:text-blue-100 space-y-1.5">
                       <span class="flex items-start gap-2">
-                        <i class="fas fa-info-circle text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-                        <span class="block">Overrides below are disabled while manual resolution or refresh rate is enforced. The manual settings always take priority.</span>
+                        <i
+                          class="fas fa-info-circle text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5"
+                        />
+                        <span class="block"
+                          >Overrides below are disabled while manual resolution or refresh rate is
+                          enforced. The manual settings always take priority.</span
+                        >
                       </span>
                     </p>
                   </div>
@@ -937,11 +945,17 @@ function clearSnapshotHotkey(): void {
                     v-if="config.dd_resolution_option === 'manual'"
                     class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
                   >
-                    <div class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                    <div
+                      class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+                    >
                       <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
                         <span class="flex items-start gap-2">
-                          <i class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                          <span class="block">{{ $t('config.dd_resolution_option_manual_desc') }}</span>
+                          <i
+                            class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                          />
+                          <span class="block">{{
+                            $t('config.dd_resolution_option_manual_desc')
+                          }}</span>
                         </span>
                       </p>
                     </div>
@@ -983,11 +997,17 @@ function clearSnapshotHotkey(): void {
                     v-if="config.dd_refresh_rate_option === 'manual'"
                     class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
                   >
-                    <div class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                    <div
+                      class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+                    >
                       <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
                         <span class="flex items-start gap-2">
-                          <i class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                          <span class="block">{{ $t('config.dd_refresh_rate_option_manual_desc') }}</span>
+                          <i
+                            class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                          />
+                          <span class="block">{{
+                            $t('config.dd_refresh_rate_option_manual_desc')
+                          }}</span>
                         </span>
                       </p>
                     </div>

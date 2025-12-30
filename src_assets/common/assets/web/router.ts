@@ -87,7 +87,6 @@ router.onError((error) => {
       return;
     }
     storage?.removeItem(CHUNK_RELOAD_FLAG);
-  } catch {
-  }
+  } catch {}
   window.location.replace(window.location.origin);
 });

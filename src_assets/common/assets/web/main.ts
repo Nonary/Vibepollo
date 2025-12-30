@@ -22,8 +22,7 @@ const chunkReloadFlag = 'sunshine:chunk-reload';
 if (typeof window !== 'undefined') {
   try {
     window.sessionStorage.removeItem(chunkReloadFlag);
-  } catch {
-  }
+  } catch {}
 }
 
 // Core application instance & stores

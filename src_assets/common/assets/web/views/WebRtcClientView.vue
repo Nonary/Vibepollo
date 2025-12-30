@@ -1,441 +1,716 @@
 <template>
-  <div class="webrtc-gaming-container">
-    <!-- Hero Header -->
-    <div class="gaming-header px-6 py-8 mb-6">
-      <div class="max-w-7xl mx-auto">
-        <div class="flex items-center gap-4 mb-2">
-          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg shadow-primary/30">
-            <i class="fas fa-gamepad text-2xl text-onPrimary"></i>
+  <div class="streaming-app">
+    <!-- Cinematic Header -->
+    <header class="streaming-header">
+      <div class="header-content">
+        <div class="brand-section">
+          <div class="brand-icon">
+            <i class="fas fa-play"></i>
           </div>
-          <div>
-            <h1 class="text-3xl font-bold tracking-tight text-onDark">
-              {{ $t('webrtc.title') }}
-            </h1>
-            <p class="text-sm text-onDark/60">{{ $t('webrtc.subtitle') }}</p>
+          <div class="brand-text">
+            <div class="brand-title-row">
+              <h1 class="brand-title">{{ $t('webrtc.title') }}</h1>
+              <span class="alpha-badge">
+                <i class="fas fa-flask"></i>
+                ALPHA
+              </span>
+            </div>
+            <p class="brand-subtitle">{{ $t('webrtc.subtitle') }}</p>
           </div>
         </div>
-        <!-- Connection Status Bar -->
-        <div class="flex items-center gap-4 mt-4">
-          <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
-               :class="connectionStatusClass">
-            <span class="w-2 h-2 rounded-full animate-pulse" :class="connectionDotClass"></span>
-            <span>{{ connectionStatusLabel }}</span>
+
+        <!-- Live Status Indicator -->
+        <div class="status-bar">
+          <div class="connection-pill" :class="connectionPillClass">
+            <span class="status-dot"></span>
+            <span class="status-text">{{ connectionStatusLabel }}</span>
           </div>
-          <div v-if="isConnected" class="flex items-center gap-3 text-xs text-onDark/50">
-            <span><i class="fas fa-signal mr-1"></i>{{ formatKbps(stats.videoBitrateKbps) }}</span>
-            <span><i class="fas fa-clock mr-1"></i>{{ formatMs(smoothedLatencyMs) }}</span>
-            <span><i class="fas fa-film mr-1"></i>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
+
+          <div v-if="isConnected" class="live-metrics">
+            <div class="metric">
+              <i class="fas fa-gauge-high"></i>
+              <span>{{ formatKbps(stats.videoBitrateKbps) }}</span>
+            </div>
+            <div class="metric">
+              <i class="fas fa-bolt"></i>
+              <span>{{ formatMs(smoothedLatencyMs) }}</span>
+            </div>
+            <div class="metric">
+              <i class="fas fa-film"></i>
+              <span>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
+            </div>
           </div>
-          <div class="ml-auto">
-            <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
-              <template #trigger>
-                <button class="settings-menu-btn">
-                  <i class="fas fa-sliders"></i>
-                  <span>{{ $t('webrtc.session_settings') }}</span>
-                </button>
-              </template>
-              <div class="settings-menu-panel">
-                <div class="flex items-center gap-2 mb-4">
-                  <i class="fas fa-sliders text-primary"></i>
-                  <h3 class="font-semibold text-onDark">{{ $t('webrtc.session_settings') }}</h3>
+
+          <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
+            <template #trigger>
+              <button class="settings-trigger">
+                <i class="fas fa-cog"></i>
+                <span>{{ $t('webrtc.session_settings') }}</span>
+                <i class="fas fa-chevron-down chevron"></i>
+              </button>
+            </template>
+            <div class="settings-panel">
+              <div class="settings-header">
+                <i class="fas fa-sliders-h"></i>
+                <span>{{ $t('webrtc.session_settings') }}</span>
+              </div>
+              <div class="settings-body">
+                <div class="setting-group">
+                  <label class="setting-label">{{ $t('webrtc.resolution') }}</label>
+                  <div class="resolution-inputs">
+                    <n-input-number
+                      v-model:value="config.width"
+                      :min="320"
+                      :max="7680"
+                      size="small"
+                    />
+                    <span class="resolution-x">×</span>
+                    <n-input-number
+                      v-model:value="config.height"
+                      :min="180"
+                      :max="4320"
+                      size="small"
+                    />
+                  </div>
+                  <div class="preset-row">
+                    <button
+                      @click="setResolution(1920, 1080)"
+                      class="preset-chip"
+                      :class="{ active: config.width === 1920 && config.height === 1080 }"
+                    >
+                      1080p
+                    </button>
+                    <button
+                      @click="setResolution(2560, 1440)"
+                      class="preset-chip"
+                      :class="{ active: config.width === 2560 && config.height === 1440 }"
+                    >
+                      1440p
+                    </button>
+                    <button
+                      @click="setResolution(3840, 2160)"
+                      class="preset-chip"
+                      :class="{ active: config.width === 3840 && config.height === 2160 }"
+                    >
+                      4K
+                    </button>
+                  </div>
                 </div>
-                <div class="space-y-4">
-                  <div>
-                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.resolution') }}</label>
-                    <div class="flex items-center gap-2">
-                      <n-input-number v-model:value="config.width" :min="320" :max="7680" size="small" class="flex-1" />
-                      <span class="text-onDark/30">x</span>
-                      <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" class="flex-1" />
+
+                <div class="setting-group">
+                  <label class="setting-label">{{ $t('webrtc.framerate') }}</label>
+                  <div class="preset-row">
+                    <button
+                      @click="config.fps = 30"
+                      class="preset-chip"
+                      :class="{ active: config.fps === 30 }"
+                    >
+                      30
+                    </button>
+                    <button
+                      @click="config.fps = 60"
+                      class="preset-chip"
+                      :class="{ active: config.fps === 60 }"
+                    >
+                      60
+                    </button>
+                    <button
+                      @click="config.fps = 120"
+                      class="preset-chip"
+                      :class="{ active: config.fps === 120 }"
+                    >
+                      120
+                    </button>
+                    <button
+                      @click="config.fps = 144"
+                      class="preset-chip"
+                      :class="{ active: config.fps === 144 }"
+                    >
+                      144
+                    </button>
+                  </div>
+                </div>
+
+                <div class="setting-group">
+                  <label class="setting-label">{{ $t('webrtc.encoding') }}</label>
+                  <div class="preset-row">
+                    <button
+                      v-for="opt in encodingOptions"
+                      :key="opt.value"
+                      @click="opt.supported && (config.encoding = opt.value)"
+                      class="preset-chip"
+                      :class="{
+                        active: config.encoding === opt.value && opt.supported,
+                        disabled: !opt.supported,
+                      }"
+                      :disabled="!opt.supported"
+                      :title="opt.supported ? undefined : opt.hint"
+                    >
+                      {{ opt.label }}
+                      <span v-if="!opt.supported" class="unsupported-tag">N/A</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="setting-group">
+                  <label class="setting-label">{{ $t('webrtc.bitrate') }}</label>
+                  <n-input-number
+                    v-model:value="config.bitrateKbps"
+                    :min="500"
+                    :max="200000"
+                    size="small"
+                    class="w-full"
+                  />
+                  <div class="preset-row">
+                    <button
+                      @click="config.bitrateKbps = 10000"
+                      class="preset-chip"
+                      :class="{ active: config.bitrateKbps === 10000 }"
+                    >
+                      10 Mbps
+                    </button>
+                    <button
+                      @click="config.bitrateKbps = 30000"
+                      class="preset-chip"
+                      :class="{ active: config.bitrateKbps === 30000 }"
+                    >
+                      30 Mbps
+                    </button>
+                    <button
+                      @click="config.bitrateKbps = 60000"
+                      class="preset-chip"
+                      :class="{ active: config.bitrateKbps === 60000 }"
+                    >
+                      60 Mbps
+                    </button>
+                  </div>
+                </div>
+
+                <div class="setting-group">
+                  <label class="setting-label">{{ $t('webrtc.frame_pacing') }}</label>
+                  <div class="preset-row">
+                    <button
+                      v-for="opt in pacingOptions"
+                      :key="opt.value"
+                      @click="applyPacingPreset(opt.value)"
+                      class="preset-chip"
+                      :class="{ active: config.videoPacingMode === opt.value }"
+                    >
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                  <p class="setting-hint">{{ $t('webrtc.frame_pacing_desc') }}</p>
+                  <div class="sub-settings">
+                    <div class="sub-setting">
+                      <label>{{ $t('webrtc.frame_pacing_slack') }}</label>
+                      <n-input-number
+                        v-model:value="config.videoPacingSlackMs"
+                        :min="0"
+                        :max="10"
+                        size="small"
+                      />
                     </div>
-                    <div class="flex gap-1.5 mt-2">
-                      <button @click="setResolution(1920, 1080)" class="preset-btn" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
-                      <button @click="setResolution(2560, 1440)" class="preset-btn" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
-                      <button @click="setResolution(3840, 2160)" class="preset-btn" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
+                    <div class="sub-setting">
+                      <label>{{ $t('webrtc.frame_pacing_max_delay') }}</label>
+                      <n-input-number
+                        v-model:value="config.videoMaxFrameAgeMs"
+                        :min="5"
+                        :max="250"
+                        size="small"
+                      />
                     </div>
                   </div>
+                </div>
 
-                  <div>
-                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.framerate') }}</label>
-                    <div class="flex gap-1.5">
-                      <button @click="config.fps = 30" class="preset-btn flex-1" :class="{ active: config.fps === 30 }">30</button>
-                      <button @click="config.fps = 60" class="preset-btn flex-1" :class="{ active: config.fps === 60 }">60</button>
-                      <button @click="config.fps = 120" class="preset-btn flex-1" :class="{ active: config.fps === 120 }">120</button>
-                      <button @click="config.fps = 144" class="preset-btn flex-1" :class="{ active: config.fps === 144 }">144</button>
+                <div class="setting-group toggle-group">
+                  <div class="toggle-row">
+                    <div class="toggle-info">
+                      <label class="setting-label">{{ $t('webrtc.mute_host_audio') }}</label>
+                      <p class="setting-hint">{{ $t('webrtc.mute_host_audio_desc') }}</p>
                     </div>
-                  </div>
-
-                  <div>
-                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.encoding') }}</label>
-                    <div class="flex gap-1.5">
-                      <button v-for="opt in encodingOptions" :key="opt.value"
-                              @click="opt.supported && (config.encoding = opt.value)"
-                              class="preset-btn flex-1"
-                              :class="{ active: config.encoding === opt.value && opt.supported, disabled: !opt.supported }"
-                              :disabled="!opt.supported"
-                              :title="opt.supported ? undefined : opt.hint">
-                        <span>{{ opt.label }}</span>
-                        <span v-if="!opt.supported" class="block text-[9px] leading-tight text-onDark/40">Unsupported</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.bitrate') }}</label>
-                    <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="w-full" />
-                    <div class="flex gap-1.5 mt-2">
-                      <button @click="config.bitrateKbps = 10000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
-                      <button @click="config.bitrateKbps = 30000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
-                      <button @click="config.bitrateKbps = 60000" class="preset-btn flex-1" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label class="text-xs text-onDark/50 uppercase tracking-wide mb-1.5 block">{{ $t('webrtc.frame_pacing') }}</label>
-                    <div class="flex gap-1.5">
-                      <button v-for="opt in pacingOptions" :key="opt.value"
-                              @click="applyPacingPreset(opt.value)"
-                              class="preset-btn flex-1"
-                              :class="{ active: config.videoPacingMode === opt.value }">
-                        {{ opt.label }}
-                      </button>
-                    </div>
-                    <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.frame_pacing_desc') }}</div>
-                    <div class="grid grid-cols-2 gap-2 mt-2">
-                      <div>
-                        <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
-                          {{ $t('webrtc.frame_pacing_slack') }}
-                        </label>
-                        <n-input-number v-model:value="config.videoPacingSlackMs" :min="0" :max="10" size="small" />
-                      </div>
-                      <div>
-                        <label class="text-[10px] text-onDark/50 uppercase tracking-wide mb-1 block">
-                          {{ $t('webrtc.frame_pacing_max_delay') }}
-                        </label>
-                        <n-input-number v-model:value="config.videoMaxFrameAgeMs" :min="5" :max="250" size="small" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div class="flex items-center justify-between">
-                      <label class="text-xs text-onDark/50 uppercase tracking-wide">{{ $t('webrtc.mute_host_audio') }}</label>
-                      <n-switch v-model:value="config.muteHostAudio" size="small" />
-                    </div>
-                    <div class="text-[11px] text-onDark/40 mt-1">{{ $t('webrtc.mute_host_audio_desc') }}</div>
+                    <n-switch v-model:value="config.muteHostAudio" />
                   </div>
                 </div>
               </div>
-            </n-popover>
-          </div>
+            </div>
+          </n-popover>
         </div>
-        <div class="mt-3 inline-flex items-center gap-2 text-xs text-warning/80 bg-warning/10 px-3 py-1.5 rounded-full border border-warning/30">
-          <i class="fas fa-flask"></i>
+      </div>
+
+      <!-- Alpha Notice Banner -->
+      <div class="alpha-banner">
+        <div class="alpha-banner-content">
+          <i class="fas fa-info-circle"></i>
           <span>{{ $t('webrtc.experimental_notice') }}</span>
         </div>
       </div>
-    </div>
+    </header>
 
-    <div class="max-w-7xl mx-auto px-6">
-      <!-- Main Content Grid -->
-      <div class="grid gap-6 lg:grid-cols-[440px_minmax(0,1fr)]">
-        
-        <!-- Left Sidebar - Controls & Games -->
-        <div class="space-y-5">
-          <div class="gaming-card p-5">
-            <div class="space-y-3">
-              <button @click="isConnected ? disconnect() : connect()" 
-                      class="w-full py-3 px-4 rounded-xl font-semibold text-sm transition-all duration-200"
-                      :class="isConnected 
-                        ? 'bg-danger/20 text-danger hover:bg-danger/30 border border-danger/30' 
-                        : 'bg-gradient-to-r from-primary to-secondary text-onPrimary hover:shadow-lg hover:shadow-primary/30 hover:-translate-y-0.5'"
-                      :disabled="isConnecting">
-                <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-spinner fa-spin' : 'fas fa-play'" class="mr-2"></i>
-                {{ $t(connectLabelKey) }}
-              </button>
-
-              <button v-if="isConnected"
-                      @click="terminateSession"
-                      class="w-full py-2 px-4 rounded-xl text-xs font-semibold transition-all duration-200 border border-warning/40 text-warning hover:bg-warning/15"
-                      :disabled="isConnecting || terminatePending"
-                      :title="$t('webrtc.terminate_desc')">
-                <i :class="terminatePending ? 'fas fa-spinner fa-spin' : 'fas fa-ban'" class="mr-2"></i>
-                {{ $t('webrtc.terminate') }}
-              </button>
-              
-              <div class="flex items-center justify-between text-xs">
-                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
-                  <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
-                  <span>Input capture</span>
-                </label>
-                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
-                  <n-switch v-model:value="showOverlay" size="small" />
-                  <span>Overlay</span>
-                </label>
-                <label class="flex items-center gap-2 cursor-pointer text-onDark/60 hover:text-onDark/80">
-                  <n-switch v-model:value="autoFullscreen" size="small" />
-                  <span>Auto fullscreen</span>
-                </label>
+    <main class="streaming-main">
+      <div class="main-grid">
+        <!-- Control Panel -->
+        <aside class="control-panel">
+          <!-- Primary Actions -->
+          <div class="panel-card action-card">
+            <button
+              @click="isConnected ? disconnect() : connect()"
+              class="primary-action"
+              :class="{ connected: isConnected, connecting: isConnecting }"
+              :disabled="isConnecting"
+            >
+              <div class="action-icon">
+                <i
+                  :class="
+                    isConnected
+                      ? 'fas fa-stop'
+                      : isConnecting
+                        ? 'fas fa-circle-notch fa-spin'
+                        : 'fas fa-play'
+                  "
+                ></i>
               </div>
+              <span class="action-text">{{ $t(connectLabelKey) }}</span>
+            </button>
+
+            <button
+              v-if="isConnected"
+              @click="terminateSession"
+              class="secondary-action danger"
+              :disabled="isConnecting || terminatePending"
+              :title="$t('webrtc.terminate_desc')"
+            >
+              <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-power-off'"></i>
+              <span>{{ $t('webrtc.terminate') }}</span>
+            </button>
+
+            <div class="quick-toggles">
+              <label class="toggle-item">
+                <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
+                <span>Input</span>
+              </label>
+              <label class="toggle-item">
+                <n-switch v-model:value="showOverlay" size="small" />
+                <span>Stats</span>
+              </label>
+              <label class="toggle-item">
+                <n-switch v-model:value="autoFullscreen" size="small" />
+                <span>Fullscreen</span>
+              </label>
             </div>
           </div>
 
-          <!-- Game Selection Card -->
-          <div class="gaming-card p-5 webrtc-library-card">
-            <div class="flex items-center justify-between mb-4">
-              <div class="flex items-center gap-2">
-                <i class="fas fa-gamepad text-primary"></i>
-                <h3 class="font-semibold text-onDark">{{ $t('webrtc.select_game') }}</h3>
+          <!-- Game Library -->
+          <div class="panel-card library-card">
+            <div class="card-header">
+              <div class="header-title">
+                <i class="fas fa-gamepad"></i>
+                <span>{{ $t('webrtc.select_game') }}</span>
               </div>
-              <button v-if="selectedAppId" @click="clearSelection" 
-                      class="text-xs text-onDark/40 hover:text-onDark/70 transition">
-                <i class="fas fa-times mr-1"></i>Clear
+              <button v-if="selectedAppId" @click="clearSelection" class="clear-btn">
+                <i class="fas fa-times"></i>
               </button>
             </div>
 
-            <div class="text-xs text-onDark/40 mb-3 px-1">
-              <i class="fas fa-info-circle mr-1"></i>
-              {{ selectedAppId ? selectedAppLabel : $t('webrtc.no_selection') }}
+            <div class="selection-info">
+              <i class="fas fa-circle-info"></i>
+              <span>{{ selectedAppId ? selectedAppLabel : $t('webrtc.no_selection') }}</span>
             </div>
 
-            <div v-if="appsList.length" class="grid gap-3 game-library-grid overflow-y-auto pr-1 custom-scrollbar">
-              <button v-for="app in appsList" :key="appKey(app)"
-                      @click="selectApp(app)"
-                      @dblclick="onAppDoubleClick(app)"
-                      class="game-card group"
-                      :class="{ 'selected': appNumericId(app) === selectedAppId }">
-                <div class="relative w-16 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-surface/30">
-                  <img :src="coverUrl(app) || undefined" :alt="app.name || 'Application'"
-                       class="w-full h-full object-cover transition-transform group-hover:scale-110" loading="lazy" />
-                  <div class="absolute inset-0 bg-gradient-to-t from-dark/60 to-transparent"></div>
+            <div v-if="appsList.length" class="game-grid">
+              <button
+                v-for="app in appsList"
+                :key="appKey(app)"
+                @click="selectApp(app)"
+                @dblclick="onAppDoubleClick(app)"
+                class="game-tile"
+                :class="{ selected: appNumericId(app) === selectedAppId }"
+              >
+                <div class="game-cover">
+                  <img
+                    :src="coverUrl(app) || undefined"
+                    :alt="app.name || 'Application'"
+                    loading="lazy"
+                  />
+                  <div class="cover-overlay"></div>
+                  <div v-if="appNumericId(app) === selectedAppId" class="selected-indicator">
+                    <i class="fas fa-check"></i>
+                  </div>
                 </div>
-                <div class="min-w-0 flex-1 text-left">
-                  <div class="font-semibold text-base truncate text-onDark">{{ app.name || '(untitled)' }}</div>
-                  <div class="text-xs text-onDark/40 truncate">{{ appSubtitle(app) }}</div>
+                <div class="game-info">
+                  <span class="game-title">{{ app.name || '(untitled)' }}</span>
+                  <span class="game-source">{{ appSubtitle(app) }}</span>
                 </div>
-                <i v-if="appNumericId(app) === selectedAppId" class="fas fa-check-circle text-primary"></i>
               </button>
             </div>
-            <div v-else class="text-sm text-onDark/40 text-center py-8">
-              <i class="fas fa-folder-open text-2xl mb-2 block opacity-50"></i>
-              No applications configured
+            <div v-else class="empty-library">
+              <i class="fas fa-gamepad"></i>
+              <p>No applications configured</p>
+              <span>Add games in the Applications tab</span>
             </div>
           </div>
-        </div>
+        </aside>
 
-        <!-- Right Side - Stream View -->
-        <div class="space-y-5">
-          <!-- Stream Card -->
-          <div class="gaming-card overflow-hidden">
-            <div class="flex items-center justify-between p-4 border-b border-surface/30">
-              <div class="flex items-center gap-2">
-                <i class="fas fa-display text-primary"></i>
-                <h3 class="font-semibold text-onDark">Stream</h3>
-                <span v-if="isConnected" class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-success/20 text-success uppercase tracking-wide">Live</span>
+        <!-- Stream Viewport -->
+        <section class="stream-section">
+          <div class="stream-container">
+            <div class="stream-header">
+              <div class="stream-title">
+                <i class="fas fa-tv"></i>
+                <span>Stream</span>
+                <span v-if="isConnected" class="live-badge">
+                  <span class="live-dot"></span>
+                  LIVE
+                </span>
               </div>
-              <button @click="toggleFullscreen" 
-                      class="p-2 rounded-lg hover:bg-surface/50 text-onDark/60 hover:text-onDark transition">
+              <button
+                @click="toggleFullscreen"
+                class="fullscreen-btn"
+                :title="isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'"
+              >
                 <i :class="isFullscreen ? 'fas fa-compress' : 'fas fa-expand'"></i>
               </button>
             </div>
-            
-            <div ref="inputTarget"
-                 class="relative w-full bg-dark"
-                 :class="isFullscreen ? 'h-full webrtc-fullscreen' : 'aspect-video'"
-                 tabindex="0"
-                 @dblclick="onFullscreenDblClick">
-              <video ref="videoEl" class="h-full w-full object-contain" autoplay playsinline></video>
+
+            <div
+              ref="inputTarget"
+              class="stream-viewport"
+              :class="{ 'fullscreen-mode': isFullscreen }"
+              tabindex="0"
+              @dblclick="onFullscreenDblClick"
+            >
+              <video ref="videoEl" class="stream-video" autoplay playsinline></video>
               <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
-              
-              <!-- Idle State Overlay -->
-              <div v-if="!isConnected" class="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-surface to-dark">
-                <div class="relative">
-                  <div class="absolute inset-0 animate-ping">
-                    <i class="fas fa-satellite-dish text-4xl text-primary/30"></i>
+
+              <!-- Idle State -->
+              <div v-if="!isConnected && !isConnecting" class="idle-overlay">
+                <div class="idle-content">
+                  <div class="idle-icon">
+                    <i class="fas fa-play-circle"></i>
                   </div>
-                  <i class="fas fa-satellite-dish text-4xl text-primary/80 relative"></i>
+                  <h3>Ready to Stream</h3>
+                  <p>Select a game and click Start Streaming, or double-click a game to begin</p>
                 </div>
-                <p class="mt-4 text-onDark/50 text-sm">Ready to stream</p>
-                <p class="text-onDark/30 text-xs">Double-click a game or press Start Streaming</p>
               </div>
 
-              <div v-if="showStartingOverlay" class="absolute inset-0 flex flex-col items-center justify-center bg-dark/70 backdrop-blur-sm">
-                <div class="w-14 h-14 rounded-full border-4 border-primary/30 border-t-primary animate-spin"></div>
-                <p class="mt-4 text-onDark/80 text-sm">Session starting soon</p>
+              <!-- Connecting State -->
+              <div v-if="showStartingOverlay" class="connecting-overlay">
+                <div class="connecting-content">
+                  <div class="spinner"></div>
+                  <span>Starting session...</span>
+                </div>
               </div>
 
-              <!-- Live Stats Overlay -->
-              <div v-if="showOverlay && isConnected" class="webrtc-overlay">
-                <div v-for="(line, idx) in overlayLines" :key="idx">{{ line }}</div>
+              <!-- Stats Overlay -->
+              <div v-if="showOverlay && isConnected" class="stats-overlay">
+                <div v-for="(line, idx) in overlayLines" :key="idx" class="stat-line">
+                  {{ line }}
+                </div>
               </div>
+
+              <!-- Notification Overlay (for fullscreen) -->
+              <Transition name="notification-slide">
+                <div v-if="activeNotification" class="notification-overlay">
+                  <div class="notification-toast" :class="activeNotification.type">
+                    <div class="notification-icon">
+                      <i :class="notificationIcon"></i>
+                    </div>
+                    <div class="notification-content">
+                      <span class="notification-title">{{ activeNotification.title }}</span>
+                      <span v-if="activeNotification.message" class="notification-message">{{
+                        activeNotification.message
+                      }}</span>
+                    </div>
+                    <button class="notification-close" @click="dismissNotification">
+                      <i class="fas fa-times"></i>
+                    </button>
+                  </div>
+                </div>
+              </Transition>
             </div>
           </div>
 
-          <!-- Stats Grid -->
-          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <div class="stat-card">
-              <div class="stat-icon bg-info/20 text-info">
+          <!-- Performance Metrics -->
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-icon blue">
                 <i class="fas fa-video"></i>
               </div>
-              <div>
-                <div class="stat-label">Video Bitrate</div>
-                <div class="stat-value">{{ formatKbps(stats.videoBitrateKbps) }}</div>
+              <div class="metric-data">
+                <span class="metric-label">Bitrate</span>
+                <span class="metric-value">{{ formatKbps(stats.videoBitrateKbps) }}</span>
               </div>
             </div>
-            <div class="stat-card">
-              <div class="stat-icon bg-secondary/20 text-secondary">
+            <div class="metric-card">
+              <div class="metric-icon purple">
                 <i class="fas fa-film"></i>
               </div>
-              <div>
-                <div class="stat-label">Frame Rate</div>
-                <div class="stat-value">{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</div>
+              <div class="metric-data">
+                <span class="metric-label">Frame Rate</span>
+                <span class="metric-value">{{
+                  stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--'
+                }}</span>
               </div>
             </div>
-            <div class="stat-card">
-              <div class="stat-icon bg-success/20 text-success">
-                <i class="fas fa-clock"></i>
+            <div class="metric-card">
+              <div class="metric-icon green">
+                <i class="fas fa-bolt"></i>
               </div>
-              <div>
-                <div class="stat-label">Est. Latency</div>
-                <div class="stat-value">{{ formatMs(smoothedLatencyMs) }}</div>
+              <div class="metric-data">
+                <span class="metric-label">Latency</span>
+                <span class="metric-value">{{ formatMs(smoothedLatencyMs) }}</span>
               </div>
             </div>
-            <div class="stat-card">
-              <div class="stat-icon bg-warning/20 text-warning">
-                <i class="fas fa-triangle-exclamation"></i>
+            <div class="metric-card">
+              <div class="metric-icon amber">
+                <i class="fas fa-chart-line"></i>
               </div>
-              <div>
-                <div class="stat-label">Dropped</div>
-                <div class="stat-value">{{ stats.videoFramesDropped ?? '--' }}</div>
+              <div class="metric-data">
+                <span class="metric-label">Dropped</span>
+                <span class="metric-value">{{ stats.videoFramesDropped ?? '--' }}</span>
               </div>
             </div>
           </div>
 
-          <!-- Debug Panel (Collapsible) -->
-          <details class="gaming-card">
-            <summary class="p-4 cursor-pointer flex items-center justify-between hover:bg-surface/30 transition">
-              <div class="flex items-center gap-2">
-                <i class="fas fa-bug text-primary"></i>
-                <h3 class="font-semibold text-onDark">{{ $t('webrtc.debug_panel') }}</h3>
+          <!-- Debug Panel -->
+          <details class="debug-panel">
+            <summary class="debug-summary">
+              <div class="debug-title">
+                <i class="fas fa-terminal"></i>
+                <span>{{ $t('webrtc.debug_panel') }}</span>
               </div>
-              <i class="fas fa-chevron-down text-onDark/40 transition-transform"></i>
+              <i class="fas fa-chevron-down chevron"></i>
             </summary>
-            <div class="p-4 pt-0 border-t border-surface/30 space-y-2 text-xs">
-              <div class="grid gap-2 md:grid-cols-2">
-                <div class="debug-row">
-                  <span>Connection</span>
-                  <n-tag size="tiny" :type="statusTagType(connectionState)">{{ connectionState || 'idle' }}</n-tag>
+            <div class="debug-content">
+              <div class="debug-grid">
+                <div class="debug-item">
+                  <span class="debug-label">Connection</span>
+                  <n-tag size="tiny" :type="statusTagType(connectionState)">{{
+                    connectionState || 'idle'
+                  }}</n-tag>
                 </div>
-                <div class="debug-row">
-                  <span>ICE</span>
-                  <n-tag size="tiny" :type="statusTagType(iceState)">{{ iceState || 'idle' }}</n-tag>
+                <div class="debug-item">
+                  <span class="debug-label">ICE</span>
+                  <n-tag size="tiny" :type="statusTagType(iceState)">{{
+                    iceState || 'idle'
+                  }}</n-tag>
                 </div>
-                <div class="debug-row">
-                  <span>Input Channel</span>
-                  <n-tag size="tiny" :type="statusTagType(inputChannelState)">{{ inputChannelState || 'closed' }}</n-tag>
+                <div class="debug-item">
+                  <span class="debug-label">Input Channel</span>
+                  <n-tag size="tiny" :type="statusTagType(inputChannelState)">{{
+                    inputChannelState || 'closed'
+                  }}</n-tag>
                 </div>
-                <div class="debug-row">
-                  <span>Session ID</span>
-                  <span class="font-mono text-[10px] truncate max-w-[150px]">{{ displayValue(sessionId) }}</span>
-                </div>
-              </div>
-              <div class="grid gap-2 md:grid-cols-2 mt-3 pt-3 border-t border-surface/30">
-                <div class="debug-row">
-                  <span>Input move delay</span>
-                  <span>{{ formatMs(inputMetrics.lastMoveDelayMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Video interval</span>
-                  <span>{{ formatMs(videoFrameMetrics.lastIntervalMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Server packets</span>
-                  <span>V {{ displayValue(serverSession?.video_packets) }} / A {{ displayValue(serverSession?.audio_packets) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Inbound bytes</span>
-                  <span>V {{ formatBytes(stats.videoBytesReceived) }} / A {{ formatBytes(stats.audioBytesReceived) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Video size</span>
-                  <span>{{ videoSizeLabel }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Codec</span>
-                  <span>V {{ displayValue(stats.videoCodec) }} / A {{ displayValue(stats.audioCodec) }}</span>
+                <div class="debug-item">
+                  <span class="debug-label">Session ID</span>
+                  <span class="debug-value mono">{{ displayValue(sessionId) }}</span>
                 </div>
               </div>
-              <div class="grid gap-2 md:grid-cols-2 mt-3 pt-3 border-t border-surface/30">
-                <div class="debug-row">
-                  <span>Latency est</span>
-                  <span>{{ formatMs(smoothedLatencyMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Latency avg 30s</span>
-                  <span>{{ formatMs(averageLatency30sMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>RTT / one-way</span>
-                  <span>{{ formatMs(stats.roundTripTimeMs) }} / {{ formatMs(oneWayRttMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Decoder</span>
-                  <span>{{ formatMs(stats.videoDecodeMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Jitter / buffer</span>
-                  <span>{{ formatMs(stats.videoJitterMs) }} / {{ formatMs(stats.videoPlayoutDelayMs ?? videoJitterBufferMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Audio latency</span>
-                  <span>{{ formatMs(audioLatencyMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Audio jitter / buffer</span>
-                  <span>{{ formatMs(stats.audioJitterMs) }} / {{ formatMs(stats.audioPlayoutDelayMs ?? stats.audioJitterBufferMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Render delay</span>
-                  <span>{{ formatMs(videoFrameMetrics.lastDelayMs) }}</span>
-                </div>
-                <div class="debug-row">
-                  <span>Frames dropped</span>
-                  <span>{{ displayValue(stats.videoFramesDropped) }} / {{ displayValue(stats.videoFramesReceived) }}</span>
+
+              <div class="debug-section">
+                <div class="debug-grid">
+                  <div class="debug-item">
+                    <span class="debug-label">Input move delay</span>
+                    <span class="debug-value">{{ formatMs(inputMetrics.lastMoveDelayMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Video interval</span>
+                    <span class="debug-value">{{
+                      formatMs(videoFrameMetrics.lastIntervalMs)
+                    }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Server packets</span>
+                    <span class="debug-value"
+                      >V {{ displayValue(serverSession?.video_packets) }} / A
+                      {{ displayValue(serverSession?.audio_packets) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Inbound bytes</span>
+                    <span class="debug-value"
+                      >V {{ formatBytes(stats.videoBytesReceived) }} / A
+                      {{ formatBytes(stats.audioBytesReceived) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Video size</span>
+                    <span class="debug-value">{{ videoSizeLabel }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Codec</span>
+                    <span class="debug-value"
+                      >V {{ displayValue(stats.videoCodec) }} / A
+                      {{ displayValue(stats.audioCodec) }}</span
+                    >
+                  </div>
                 </div>
               </div>
-              <!-- Video Events -->
-              <div class="mt-3 pt-3 border-t border-surface/30">
-                <div class="text-onDark/50 mb-2">Video Events</div>
-                <div v-if="videoEvents.length" class="space-y-1 font-mono text-[10px]">
-                  <div v-for="(event, idx) in videoEvents" :key="idx" class="text-onDark/40">{{ event }}</div>
+
+              <div class="debug-section">
+                <div class="debug-grid">
+                  <div class="debug-item">
+                    <span class="debug-label">Latency est</span>
+                    <span class="debug-value">{{ formatMs(smoothedLatencyMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Latency avg 30s</span>
+                    <span class="debug-value">{{ formatMs(averageLatency30sMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">RTT / one-way</span>
+                    <span class="debug-value"
+                      >{{ formatMs(stats.roundTripTimeMs) }} / {{ formatMs(oneWayRttMs) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Decoder</span>
+                    <span class="debug-value">{{ formatMs(stats.videoDecodeMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Jitter / buffer</span>
+                    <span class="debug-value"
+                      >{{ formatMs(stats.videoJitterMs) }} /
+                      {{ formatMs(stats.videoPlayoutDelayMs ?? videoJitterBufferMs) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Audio latency</span>
+                    <span class="debug-value">{{ formatMs(audioLatencyMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Audio jitter / buffer</span>
+                    <span class="debug-value"
+                      >{{ formatMs(stats.audioJitterMs) }} /
+                      {{ formatMs(stats.audioPlayoutDelayMs ?? stats.audioJitterBufferMs) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Render delay</span>
+                    <span class="debug-value">{{ formatMs(videoFrameMetrics.lastDelayMs) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Frames dropped</span>
+                    <span class="debug-value"
+                      >{{ displayValue(stats.videoFramesDropped) }} /
+                      {{ displayValue(stats.videoFramesReceived) }}</span
+                    >
+                  </div>
                 </div>
-                <div v-else class="text-onDark/30">No events yet</div>
+              </div>
+
+              <div class="debug-section">
+                <div class="debug-section-title">Video Events</div>
+                <div v-if="videoEvents.length" class="video-events">
+                  <div v-for="(event, idx) in videoEvents" :key="idx" class="event-line">
+                    {{ event }}
+                  </div>
+                </div>
+                <div v-else class="no-events">No events yet</div>
               </div>
             </div>
           </details>
-        </div>
+        </section>
       </div>
-    </div>
+    </main>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onBeforeUnmount, onMounted, watch, computed } from 'vue';
-import {
-  NTag,
-  NSwitch,
-  NInputNumber,
-  useMessage,
-} from 'naive-ui';
+import { NTag, NSwitch, NInputNumber, NPopover, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
-import { applyGamepadFeedback, attachInputCapture, type InputCaptureMetrics } from '@/utils/webrtc/input';
-import { EncodingType, StreamConfig, WebRtcSessionState, WebRtcStatsSnapshot } from '@/types/webrtc';
+import {
+  applyGamepadFeedback,
+  attachInputCapture,
+  type InputCaptureMetrics,
+} from '@/utils/webrtc/input';
+import {
+  EncodingType,
+  InputMessage,
+  StreamConfig,
+  WebRtcSessionState,
+  WebRtcStatsSnapshot,
+} from '@/types/webrtc';
 import { http } from '@/http';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
 
 const message = useMessage();
+
+// ============================================
+// NOTIFICATION SYSTEM (for fullscreen support)
+// ============================================
+type NotificationType = 'error' | 'warning' | 'success' | 'info';
+
+interface Notification {
+  id: number;
+  type: NotificationType;
+  title: string;
+  message?: string;
+}
+
+const activeNotification = ref<Notification | null>(null);
+let notificationId = 0;
+let notificationTimeout: number | null = null;
+
+const notificationIcon = computed(() => {
+  if (!activeNotification.value) return 'fas fa-info-circle';
+  switch (activeNotification.value.type) {
+    case 'error':
+      return 'fas fa-circle-exclamation';
+    case 'warning':
+      return 'fas fa-triangle-exclamation';
+    case 'success':
+      return 'fas fa-circle-check';
+    default:
+      return 'fas fa-circle-info';
+  }
+});
+
+function showNotification(type: NotificationType, title: string, msg?: string, duration = 5000) {
+  if (notificationTimeout) {
+    clearTimeout(notificationTimeout);
+    notificationTimeout = null;
+  }
+  notificationId++;
+  activeNotification.value = {
+    id: notificationId,
+    type,
+    title,
+    message: msg,
+  };
+  if (duration > 0) {
+    notificationTimeout = window.setTimeout(() => {
+      dismissNotification();
+    }, duration);
+  }
+}
+
+function dismissNotification() {
+  activeNotification.value = null;
+  if (notificationTimeout) {
+    clearTimeout(notificationTimeout);
+    notificationTimeout = null;
+  }
+}
+
+function notifyError(title: string, msg?: string) {
+  showNotification('error', title, msg, 8000);
+}
+
+function notifyWarning(title: string, msg?: string) {
+  showNotification('warning', title, msg, 6000);
+}
+
+function notifySuccess(title: string, msg?: string) {
+  showNotification('success', title, msg, 4000);
+}
+
+function notifyInfo(title: string, msg?: string) {
+  showNotification('info', title, msg, 5000);
+}
 
 // Helper function for resolution presets
 function setResolution(width: number, height: number) {
@@ -444,6 +719,12 @@ function setResolution(width: number, height: number) {
 }
 
 // Connection status computed properties for the gaming UI
+const connectionPillClass = computed(() => {
+  if (isConnected.value) return 'connected';
+  if (isConnecting.value) return 'connecting';
+  return 'idle';
+});
+
 const connectionStatusClass = computed(() => {
   if (isConnected.value) return 'bg-success/20 text-success';
   if (isConnecting.value) return 'bg-warning/20 text-warning';
@@ -566,7 +847,9 @@ const selectedAppId = ref<number | null>(null);
 const resumeOnConnect = ref(true);
 const canResumeSelection = computed(() => !selectedAppId.value);
 const terminatePending = ref(false);
-const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(null);
+const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(
+  null,
+);
 let sessionStatusTimer: number | null = null;
 
 function appKey(app: App): string {
@@ -748,6 +1031,15 @@ const candidatePairLabel = computed(() => {
 });
 const inputMetrics = ref<InputCaptureMetrics>({});
 const inputBufferedAmount = ref<number | null>(null);
+const INPUT_BUFFER_DROP_THRESHOLD_BYTES = 1024;
+const shouldDropInput = (payload: InputMessage) => {
+  const buffered = client.inputChannelBufferedAmount ?? 0;
+  inputBufferedAmount.value = buffered;
+  if (buffered <= INPUT_BUFFER_DROP_THRESHOLD_BYTES) return false;
+  if (payload.type === 'mouse_move') return true;
+  if (payload.type === 'gamepad_state' || payload.type === 'gamepad_motion') return true;
+  return false;
+};
 const videoFrameMetrics = ref<{
   lastIntervalMs?: number;
   avgIntervalMs?: number;
@@ -765,13 +1057,13 @@ const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs);
 const oneWayRttMs = computed(() =>
   stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined,
 );
-const videoPlayoutDelayMs = computed(() => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs);
+const videoPlayoutDelayMs = computed(
+  () => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs,
+);
 const estimatedLatencyMs = computed(() => {
-  const parts = [
-    oneWayRttMs.value,
-    videoPlayoutDelayMs.value,
-    stats.value.videoDecodeMs,
-  ].filter((value) => typeof value === 'number') as number[];
+  const parts = [oneWayRttMs.value, videoPlayoutDelayMs.value, stats.value.videoDecodeMs].filter(
+    (value) => typeof value === 'number',
+  ) as number[];
   if (!parts.length) return undefined;
   return parts.reduce((total, value) => total + value, 0);
 });
@@ -813,10 +1105,13 @@ watch(
 const overlayLines = computed(() => {
   const fps = stats.value.videoFps ? stats.value.videoFps.toFixed(0) : '--';
   const dropped = stats.value.videoFramesDropped ?? '--';
+  const rttHalf = formatMs(oneWayRttMs.value);
+  const jbuf = formatMs(videoPlayoutDelayMs.value);
+  const dec = formatMs(stats.value.videoDecodeMs);
   return [
     `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
-    `Lat est ${formatMs(smoothedLatencyMs.value)} | Avg30 ${formatMs(averageLatency30sMs.value)} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
-    `Decode ${formatMs(stats.value.videoDecodeMs)} | FPS ${fps} | Drop ${dropped}`,
+    `Lat ${formatMs(smoothedLatencyMs.value)} (net ${rttHalf} + buf ${jbuf} + dec ${dec}) | Avg30 ${formatMs(averageLatency30sMs.value)}`,
+    `Decode ${dec} | FPS ${fps} | Drop ${dropped} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
     `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
     `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | playout ${formatMs(stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs)}`,
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
@@ -1131,7 +1426,10 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
       intervalSamples += 1;
       videoFrameMetrics.value.lastIntervalMs = interval;
       videoFrameMetrics.value.avgIntervalMs = intervalSum / intervalSamples;
-      videoFrameMetrics.value.maxIntervalMs = Math.max(videoFrameMetrics.value.maxIntervalMs ?? 0, interval);
+      videoFrameMetrics.value.maxIntervalMs = Math.max(
+        videoFrameMetrics.value.maxIntervalMs ?? 0,
+        interval,
+      );
     }
     lastFrameAt = now;
     if (typeof metadata.expectedDisplayTime === 'number') {
@@ -1181,56 +1479,60 @@ async function connect() {
   serverSessionError.value = null;
   serverSessionStatus.value = null;
   try {
-    const id = await client.connect({
-      ...config,
-      appId: selectedAppId.value ?? undefined,
-      resume: selectedAppId.value ? false : resumeOnConnect.value,
-    }, {
-      onRemoteStream: (stream) => {
-        if (videoEl.value) {
-          videoEl.value.srcObject = stream;
-          videoEl.value.muted = false;
-          videoEl.value.volume = 1;
-          updateRemoteStreamInfo(stream);
-          updateAudioElement(stream);
-          const playPromise = videoEl.value.play();
-          if (playPromise && typeof playPromise.catch === 'function') {
-            playPromise.catch((error) => {
-              const name = error && typeof error === 'object' ? (error as any).name : '';
-              pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
-            });
+    const id = await client.connect(
+      {
+        ...config,
+        appId: selectedAppId.value ?? undefined,
+        resume: selectedAppId.value ? false : resumeOnConnect.value,
+      },
+      {
+        onRemoteStream: (stream) => {
+          if (videoEl.value) {
+            videoEl.value.srcObject = stream;
+            videoEl.value.muted = false;
+            videoEl.value.volume = 1;
+            updateRemoteStreamInfo(stream);
+            updateAudioElement(stream);
+            const playPromise = videoEl.value.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+              playPromise.catch((error) => {
+                const name = error && typeof error === 'object' ? (error as any).name : '';
+                pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
+              });
+            }
           }
-        }
+        },
+        onConnectionState: (state) => {
+          connectionState.value = state;
+          isConnected.value = state === 'connected';
+        },
+        onIceState: (state) => {
+          iceState.value = state;
+        },
+        onInputChannelState: (state) => {
+          inputChannelState.value = state;
+        },
+        onInputMessage: (message) => {
+          applyGamepadFeedback(message);
+        },
+        onStats: (snapshot) => {
+          stats.value = snapshot;
+        },
+        onNegotiatedEncoding: (encoding) => {
+          if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
+            config.encoding = encoding;
+          }
+        },
       },
-      onConnectionState: (state) => {
-        connectionState.value = state;
-        isConnected.value = state === 'connected';
+      {
+        inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low',
       },
-      onIceState: (state) => {
-        iceState.value = state;
-      },
-      onInputChannelState: (state) => {
-        inputChannelState.value = state;
-      },
-      onInputMessage: (message) => {
-        applyGamepadFeedback(message);
-      },
-      onStats: (snapshot) => {
-        stats.value = snapshot;
-      },
-      onNegotiatedEncoding: (encoding) => {
-        if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
-          config.encoding = encoding;
-        }
-      },
-    }, {
-      inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low',
-    });
+    );
     sessionId.value = id;
     startServerSessionPolling();
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Failed to establish WebRTC session.';
-    message.error(msg);
+    notifyError('Connection Failed', msg);
     console.error(error);
   } finally {
     isConnecting.value = false;
@@ -1277,7 +1579,7 @@ async function terminateSession() {
     await http.post('/api/apps/close', {}, { validateStatus: () => true });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Failed to terminate session.';
-    message.error(msg);
+    notifyError('Termination Failed', msg);
   } finally {
     await disconnect();
     terminatePending.value = false;
@@ -1325,6 +1627,7 @@ watch(
         onMetrics: (metrics) => {
           inputMetrics.value = metrics;
         },
+        shouldDrop: shouldDropInput,
       },
     );
   },
@@ -1392,214 +1695,1358 @@ watch(
 </script>
 
 <style scoped>
-/* Gaming Theme Container - matches Sunshine palette */
-.webrtc-gaming-container {
-  background: rgb(var(--color-dark));
-  color: rgb(var(--color-on-dark));
-  min-height: calc(100vh - 4rem);
-  overscroll-behavior: none;
+/* ============================================
+   STREAMING APP - Professional UI Design
+   ============================================ */
+
+/* Base Container - Light Mode (default) */
+.streaming-app {
+  --accent: rgb(var(--color-primary));
+  --accent-glow: rgb(var(--color-primary) / 0.3);
+  --surface-elevated: rgb(var(--color-surface));
+  --border-subtle: rgb(var(--color-dark) / 0.1);
+  --border-hover: rgb(var(--color-dark) / 0.2);
+  --text-primary: rgb(var(--color-on-light));
+  --text-secondary: rgb(var(--color-on-light) / 0.7);
+  --text-muted: rgb(var(--color-on-light) / 0.5);
+
+  background: linear-gradient(180deg, rgb(var(--color-light)) 0%, rgb(var(--color-surface)) 100%);
+  min-height: 100vh;
+  color: var(--text-primary);
 }
 
-@supports (height: 100svh) {
-  .webrtc-gaming-container {
-    min-height: calc(100svh - 4rem);
+/* Base Container - Dark Mode */
+.dark .streaming-app {
+  --surface-elevated: rgb(var(--color-surface) / 0.7);
+  --border-subtle: rgb(255 255 255 / 0.06);
+  --border-hover: rgb(255 255 255 / 0.12);
+  --text-primary: rgb(var(--color-on-dark));
+  --text-secondary: rgb(var(--color-on-dark) / 0.6);
+  --text-muted: rgb(var(--color-on-dark) / 0.4);
+
+  background: linear-gradient(180deg, rgb(var(--color-dark)) 0%, rgb(18 18 24) 100%);
+}
+
+/* ============================================
+   HEADER
+   ============================================ */
+.streaming-header {
+  background: linear-gradient(180deg, rgb(var(--color-surface) / 0.6) 0%, transparent 100%);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 1.5rem 2rem 0;
+}
+
+.dark .streaming-header {
+  background: linear-gradient(180deg, rgb(0 0 0 / 0.4) 0%, transparent 100%);
+}
+
+.header-content {
+  max-width: 1600px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.brand-section {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.brand-icon {
+  width: 3rem;
+  height: 3rem;
+  background: rgb(var(--color-primary));
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  color: rgb(var(--color-on-primary));
+  box-shadow: 0 4px 20px rgb(var(--color-primary) / 0.3);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.brand-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.brand-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.alpha-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-warning) / 0.15) 0%,
+    rgb(var(--color-warning) / 0.08) 100%
+  );
+  border: 1px solid rgb(var(--color-warning) / 0.3);
+  border-radius: 0.375rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgb(var(--color-warning));
+  text-transform: uppercase;
+}
+
+.brand-subtitle {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin: 0;
+  max-width: 400px;
+}
+
+/* Status Bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.connection-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.connection-pill.connected {
+  background: rgb(var(--color-success) / 0.12);
+  border-color: rgb(var(--color-success) / 0.3);
+  color: rgb(var(--color-success));
+}
+
+.connection-pill.connecting {
+  background: rgb(var(--color-warning) / 0.12);
+  border-color: rgb(var(--color-warning) / 0.3);
+  color: rgb(var(--color-warning));
+}
+
+.connection-pill.idle {
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.connection-pill.connected .status-dot {
+  animation: pulse-success 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
   }
 }
 
-.gaming-header {
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, transparent 100%);
-  border-bottom: 1px solid rgb(var(--color-surface) / 0.3);
+@keyframes pulse-success {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    box-shadow: 0 0 8px 2px currentColor;
+  }
 }
 
-/* Gaming Card Style */
-.gaming-card {
-  background: rgb(var(--color-surface) / 0.6);
-  border: 1px solid rgb(var(--color-primary) / 0.1);
-  border-radius: 1rem;
-  backdrop-filter: blur(10px);
+.live-metrics {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
 }
 
-.settings-menu-btn {
-  @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all;
-  background: rgb(var(--color-surface) / 0.8);
+.metric {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.metric i {
+  font-size: 0.625rem;
+  opacity: 0.7;
+}
+
+/* Settings Trigger */
+.settings-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgb(var(--color-surface) / 0.7);
   border: 1px solid rgb(var(--color-primary) / 0.2);
-  color: rgb(var(--color-on-dark) / 0.8);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: rgb(var(--color-on-dark) / 0.7);
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.settings-menu-btn:hover {
+.settings-trigger:hover {
   background: rgb(var(--color-primary) / 0.15);
-  border-color: rgb(var(--color-primary) / 0.45);
+  border-color: rgb(var(--color-primary) / 0.4);
   color: rgb(var(--color-on-dark));
 }
 
-.settings-menu-panel {
-  width: min(420px, 80vw);
-  max-height: min(70vh, 640px);
+.settings-trigger .chevron {
+  font-size: 0.625rem;
+  opacity: 0.5;
+  transition: transform 0.2s ease;
+}
+
+/* Settings Panel */
+.settings-panel {
+  width: min(440px, 90vw);
+  max-height: 75vh;
   overflow-y: auto;
-  padding: 1.25rem;
-  background: rgb(var(--color-surface) / 0.9);
-  border: 1px solid rgb(var(--color-primary) / 0.2);
-  border-radius: 1rem;
-  box-shadow: 0 16px 30px rgb(var(--color-dark) / 0.5);
-}
-
-.webrtc-library-card .game-library-grid {
-  max-height: min(60vh, 560px);
-  min-height: 320px;
-}
-
-/* Preset Buttons */
-.preset-btn {
-  @apply px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200;
   background: rgb(var(--color-surface));
   border: 1px solid rgb(var(--color-primary) / 0.15);
+  border-radius: 1rem;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.5);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgb(var(--color-primary) / 0.1);
+  font-weight: 600;
+  color: rgb(var(--color-on-dark));
+}
+
+.settings-header i {
+  color: rgb(var(--color-primary));
+}
+
+.settings-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.setting-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.setting-hint {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.resolution-inputs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.resolution-x {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.preset-row {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.preset-chip {
+  flex: 1;
+  min-width: 60px;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.preset-chip:hover:not(:disabled) {
+  background: rgb(var(--color-primary) / 0.1);
+  border-color: rgb(var(--color-primary) / 0.3);
+  color: var(--text-primary);
+}
+
+.preset-chip.active {
+  background: rgb(var(--color-primary));
+  border-color: rgb(var(--color-primary));
+  color: rgb(var(--color-on-primary));
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgb(var(--color-primary) / 0.35);
+}
+
+.preset-chip.disabled,
+.preset-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.unsupported-tag {
+  font-size: 0.5625rem;
+  opacity: 0.6;
+  text-transform: uppercase;
+}
+
+.sub-settings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.sub-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.sub-setting label {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.toggle-group {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* Alpha Banner */
+.alpha-banner {
+  margin-top: 1rem;
+  padding: 0.625rem 0;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--color-warning) / 0.08) 0%,
+    transparent 50%,
+    rgb(var(--color-warning) / 0.08) 100%
+  );
+  border-top: 1px solid rgb(var(--color-warning) / 0.15);
+}
+
+.alpha-banner-content {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: rgb(var(--color-warning) / 0.9);
+}
+
+/* ============================================
+   MAIN CONTENT
+   ============================================ */
+.streaming-main {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 1.5rem 2rem 3rem;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  gap: 1.5rem;
+}
+
+@media (max-width: 1024px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================
+   CONTROL PANEL
+   ============================================ */
+.control-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+/* Action Card */
+.action-card {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 1rem;
+  background: rgb(var(--color-primary));
+  border: none;
+  border-radius: 0.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: rgb(var(--color-on-primary));
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.primary-action:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgb(var(--color-primary) / 0.35);
+  filter: brightness(1.1);
+}
+
+.primary-action:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.primary-action.connected {
+  background: rgb(var(--color-danger) / 0.15);
+  border: 1px solid rgb(var(--color-danger) / 0.4);
+  color: rgb(var(--color-danger));
+}
+
+.primary-action.connected:hover:not(:disabled) {
+  background: rgb(var(--color-danger) / 0.25);
+  box-shadow: 0 4px 20px rgb(var(--color-danger) / 0.25);
+}
+
+.primary-action.connecting {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.primary-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.action-icon {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(var(--color-on-primary) / 0.2);
+  border-radius: 50%;
+  font-size: 0.875rem;
+}
+
+.primary-action.connected .action-icon {
+  background: rgb(var(--color-danger) / 0.25);
+}
+
+.secondary-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem;
+  background: transparent;
+  border: 1px solid rgb(var(--color-warning) / 0.4);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgb(var(--color-warning));
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.secondary-action:hover:not(:disabled) {
+  background: rgb(var(--color-warning) / 0.1);
+  border-color: rgb(var(--color-warning) / 0.5);
+}
+
+.secondary-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-toggles {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: rgb(var(--color-on-dark) / 0.6);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.toggle-item:hover {
+  color: rgb(var(--color-on-dark));
+}
+
+/* Library Card */
+.library-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgb(var(--color-primary) / 0.1);
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: rgb(var(--color-on-dark));
+}
+
+.header-title i {
+  color: rgb(var(--color-primary));
+}
+
+.clear-btn {
+  padding: 0.375rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.375rem;
+  color: rgb(var(--color-on-dark) / 0.4);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clear-btn:hover {
+  background: rgb(var(--color-primary) / 0.1);
+  color: rgb(var(--color-on-dark));
+}
+
+.selection-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: rgb(var(--color-info) / 0.08);
+  font-size: 0.75rem;
   color: rgb(var(--color-on-dark) / 0.6);
 }
 
-.preset-btn:hover {
-  background: rgb(var(--color-primary) / 0.15);
-  border-color: rgb(var(--color-primary) / 0.4);
-  color: rgb(var(--color-on-dark) / 0.9);
+.selection-info i {
+  color: rgb(var(--color-info) / 0.8);
 }
 
-.preset-btn.active {
-  background: linear-gradient(135deg, rgb(var(--color-primary)) 0%, rgb(var(--color-secondary)) 100%);
+.game-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 400px;
+}
+
+.game-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.game-tile:hover {
+  background: rgb(var(--color-primary) / 0.08);
+  border-color: rgb(var(--color-primary) / 0.2);
+}
+
+.game-tile.selected {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-primary) / 0.18) 0%,
+    rgb(var(--color-secondary) / 0.12) 100%
+  );
   border-color: rgb(var(--color-primary));
+  box-shadow: 0 0 20px rgb(var(--color-primary) / 0.15);
+}
+
+.game-cover {
+  position: relative;
+  width: 3.5rem;
+  height: 4.5rem;
+  flex-shrink: 0;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: rgb(var(--color-surface));
+}
+
+.game-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.game-tile:hover .game-cover img {
+  transform: scale(1.1);
+}
+
+.cover-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 50%, rgb(0 0 0 / 0.6) 100%);
+}
+
+.selected-indicator {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(var(--color-primary) / 0.9);
   color: rgb(var(--color-on-primary));
-  box-shadow: 0 4px 15px rgb(var(--color-primary) / 0.3);
+  font-size: 1rem;
 }
 
-.preset-btn.disabled,
-.preset-btn:disabled {
-  background: rgb(var(--color-surface) / 0.6);
-  border-color: rgb(var(--color-primary) / 0.08);
-  color: rgb(var(--color-on-dark) / 0.35);
-  cursor: not-allowed;
-  box-shadow: none;
+.game-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
 }
 
-.preset-btn.disabled:hover,
-.preset-btn:disabled:hover {
-  background: rgb(var(--color-surface) / 0.6);
-  border-color: rgb(var(--color-primary) / 0.08);
-  color: rgb(var(--color-on-dark) / 0.35);
+.game-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Game Card */
-.game-card {
-  @apply flex items-center gap-3 p-2 rounded-xl transition-all duration-200;
-  background: rgb(var(--color-surface) / 0.4);
-  border: 1px solid rgb(var(--color-primary) / 0.08);
+.game-source {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.game-card:hover {
-  background: rgb(var(--color-primary) / 0.1);
-  border-color: rgb(var(--color-primary) / 0.3);
-  transform: translateX(4px);
+.empty-library {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
 }
 
-.game-card.selected {
-  background: linear-gradient(135deg, rgb(var(--color-primary) / 0.2) 0%, rgb(var(--color-secondary) / 0.15) 100%);
-  border-color: rgb(var(--color-primary));
+.empty-library i {
+  font-size: 2.5rem;
+  opacity: 0.3;
+  margin-bottom: 1rem;
 }
 
-/* Stats Cards */
-.stat-card {
-  @apply flex items-center gap-3 p-4 rounded-xl;
-  background: rgb(var(--color-surface) / 0.6);
-  border: 1px solid rgb(var(--color-primary) / 0.1);
+.empty-library p {
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 0 0 0.25rem;
 }
 
-.stat-icon {
-  @apply w-10 h-10 rounded-lg flex items-center justify-center text-lg;
+.empty-library span {
+  font-size: 0.75rem;
 }
 
-.stat-label {
-  @apply text-xs uppercase tracking-wide;
-  color: rgb(var(--color-on-dark) / 0.4);
+/* ============================================
+   STREAM SECTION
+   ============================================ */
+.stream-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
-.stat-value {
-  @apply text-lg font-semibold;
-  color: rgb(var(--color-on-dark));
+.stream-container {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 1rem;
+  overflow: hidden;
 }
 
-/* Debug Row */
-.debug-row {
-  @apply flex items-center justify-between py-1;
-  color: rgb(var(--color-on-dark) / 0.5);
+.stream-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.debug-row span:last-child {
-  color: rgb(var(--color-on-dark) / 0.8);
+.stream-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-/* Custom Scrollbar */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
+.stream-title i {
+  color: rgb(var(--color-primary));
 }
 
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: rgb(var(--color-surface) / 0.3);
-  border-radius: 3px;
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  background: rgb(var(--color-danger));
+  border-radius: 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: white;
 }
 
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgb(var(--color-primary) / 0.3);
-  border-radius: 3px;
+.live-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  background: white;
+  border-radius: 50%;
+  animation: blink 1s ease-in-out infinite;
 }
 
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--color-primary) / 0.5);
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
-/* Details/Summary Arrow */
-details summary::-webkit-details-marker {
-  display: none;
+.fullscreen-btn {
+  padding: 0.5rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.5rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-details[open] summary .fa-chevron-down {
-  transform: rotate(180deg);
+.fullscreen-btn:hover {
+  background: var(--border-hover);
+  color: var(--text-primary);
 }
 
-/* Fullscreen Mode */
-.webrtc-fullscreen {
+/* Stream Viewport */
+.stream-viewport {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: rgb(0 0 0);
+  outline: none;
+}
+
+.stream-viewport.fullscreen-mode {
+  position: fixed;
+  inset: 0;
+  aspect-ratio: unset;
+  z-index: 9999;
   cursor: none;
 }
 
-.webrtc-fullscreen * {
+.stream-viewport.fullscreen-mode * {
   cursor: none;
 }
 
-/* Overlay */
-.webrtc-overlay {
+.stream-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Idle Overlay */
+.idle-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgb(var(--color-surface)) 0%, rgb(var(--color-dark)) 100%);
+}
+
+.idle-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 2rem;
+}
+
+.idle-icon {
+  font-size: 4rem;
+  color: rgb(var(--color-primary));
+  opacity: 0.6;
+  margin-bottom: 1.5rem;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.idle-content h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem;
+}
+
+.idle-content p {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin: 0;
+  max-width: 280px;
+}
+
+/* Connecting Overlay */
+.connecting-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.connecting-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.spinner {
+  width: 3.5rem;
+  height: 3.5rem;
+  border: 3px solid var(--border-subtle);
+  border-top-color: rgb(var(--color-primary));
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.connecting-content span {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* Stats Overlay */
+.stats-overlay {
   position: absolute;
   top: 0.75rem;
   left: 0.75rem;
   z-index: 10;
-  pointer-events: none;
-  background: rgb(var(--color-dark) / 0.85);
-  color: rgb(var(--color-on-dark));
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
-    'Courier New', monospace;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 0.5rem 0.75rem;
+  max-width: min(500px, calc(100% - 1.5rem));
+  padding: 0.75rem 1rem;
+  background: rgb(0 0 0 / 0.8);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.5rem;
-  border: 1px solid rgb(var(--color-primary) / 0.2);
-  max-width: min(92vw, 520px);
-  white-space: pre-wrap;
   backdrop-filter: blur(8px);
+  pointer-events: none;
 }
 
-/* Override Naive UI inputs for dark theme */
+.stat-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: rgb(255 255 255 / 0.85);
+  white-space: pre-wrap;
+}
+
+/* ============================================
+   NOTIFICATION OVERLAY
+   ============================================ */
+.notification-overlay {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 100;
+  max-width: min(400px, calc(100% - 2rem));
+}
+
+.notification-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  padding: 1rem 1.25rem;
+  background: rgb(30 30 35 / 0.95);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.4);
+}
+
+.notification-toast.error {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-danger) / 0.15) 0%,
+    rgb(30 30 35 / 0.95) 100%
+  );
+  border-color: rgb(var(--color-danger) / 0.4);
+}
+
+.notification-toast.warning {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-warning) / 0.15) 0%,
+    rgb(30 30 35 / 0.95) 100%
+  );
+  border-color: rgb(var(--color-warning) / 0.4);
+}
+
+.notification-toast.success {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-success) / 0.15) 0%,
+    rgb(30 30 35 / 0.95) 100%
+  );
+  border-color: rgb(var(--color-success) / 0.4);
+}
+
+.notification-toast.info {
+  background: linear-gradient(135deg, rgb(var(--color-info) / 0.15) 0%, rgb(30 30 35 / 0.95) 100%);
+  border-color: rgb(var(--color-info) / 0.4);
+}
+
+.notification-icon {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 1rem;
+}
+
+.notification-toast.error .notification-icon {
+  background: rgb(var(--color-danger) / 0.2);
+  color: rgb(var(--color-danger));
+}
+
+.notification-toast.warning .notification-icon {
+  background: rgb(var(--color-warning) / 0.2);
+  color: rgb(var(--color-warning));
+}
+
+.notification-toast.success .notification-icon {
+  background: rgb(var(--color-success) / 0.2);
+  color: rgb(var(--color-success));
+}
+
+.notification-toast.info .notification-icon {
+  background: rgb(var(--color-info) / 0.2);
+  color: rgb(var(--color-info));
+}
+
+.notification-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.notification-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: white;
+}
+
+.notification-message {
+  font-size: 0.8125rem;
+  color: rgb(255 255 255 / 0.7);
+  line-height: 1.4;
+}
+
+.notification-close {
+  flex-shrink: 0;
+  padding: 0.375rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.375rem;
+  color: rgb(255 255 255 / 0.4);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.notification-close:hover {
+  background: rgb(255 255 255 / 0.1);
+  color: rgb(255 255 255 / 0.8);
+}
+
+/* Notification Animation */
+.notification-slide-enter-active,
+.notification-slide-leave-active {
+  transition: all 0.3s ease;
+}
+
+.notification-slide-enter-from {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+.notification-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* ============================================
+   METRICS GRID
+   ============================================ */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.metric-card {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+}
+
+.metric-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.625rem;
+  font-size: 1rem;
+}
+
+.metric-icon.blue {
+  background: rgb(var(--color-info) / 0.15);
+  color: rgb(var(--color-info));
+}
+
+.metric-icon.purple {
+  background: rgb(var(--color-secondary) / 0.15);
+  color: rgb(var(--color-secondary));
+}
+
+.metric-icon.green {
+  background: rgb(var(--color-success) / 0.15);
+  color: rgb(var(--color-success));
+}
+
+.metric-icon.amber {
+  background: rgb(var(--color-warning) / 0.15);
+  color: rgb(var(--color-warning));
+}
+
+.metric-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.metric-label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ============================================
+   DEBUG PANEL
+   ============================================ */
+.debug-panel {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.debug-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.25rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  list-style: none;
+}
+
+.debug-summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-summary:hover {
+  background: var(--border-subtle);
+}
+
+.debug-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.debug-title i {
+  color: rgb(var(--color-primary));
+}
+
+.debug-summary .chevron {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.debug-panel[open] .debug-summary .chevron {
+  transform: rotate(180deg);
+}
+
+.debug-content {
+  padding: 0 1.25rem 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem 1rem;
+  padding-top: 1rem;
+}
+
+.debug-section {
+  padding-top: 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.debug-section-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.debug-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.debug-label {
+  color: var(--text-muted);
+}
+
+.debug-value {
+  color: var(--text-secondary);
+}
+
+.debug-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.625rem;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.video-events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.event-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+.no-events {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ============================================
+   NAIVE UI OVERRIDES
+   ============================================ */
 :deep(.n-input-number) {
   --n-color: rgb(var(--color-surface)) !important;
-  --n-border: 1px solid rgb(var(--color-primary) / 0.2) !important;
-  --n-text-color: rgb(var(--color-on-dark)) !important;
+  --n-border: 1px solid var(--border-subtle) !important;
+  --n-text-color: var(--text-primary) !important;
+  --n-color-focus: rgb(var(--color-surface)) !important;
+  --n-border-focus: 1px solid rgb(var(--color-primary)) !important;
 }
 
 :deep(.n-switch) {
-  --n-rail-color: rgb(var(--color-surface)) !important;
+  --n-rail-color: var(--border-subtle) !important;
+  --n-rail-color-active: rgb(var(--color-primary)) !important;
+}
+
+/* ============================================
+   SCROLLBAR
+   ============================================ */
+.game-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.game-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.game-grid::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
+  border-radius: 3px;
+}
+
+.game-grid::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.2);
+}
+
+.settings-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-panel::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
+  border-radius: 3px;
 }
 </style>
