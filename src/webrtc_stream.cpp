@@ -101,7 +101,7 @@ namespace webrtc_stream {
     constexpr auto kVideoMaxFrameAgeSmooth = std::chrono::milliseconds {100};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {250};
-    constexpr auto kWebrtcIdleGracePeriod = std::chrono::seconds {3};
+    constexpr auto kWebrtcIdleGracePeriod = std::chrono::minutes {5};
 
     void release_shared_encoded_payload(void* user) noexcept {
       delete static_cast<std::shared_ptr<std::vector<std::uint8_t>>*>(user);
