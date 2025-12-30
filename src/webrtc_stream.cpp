@@ -3137,8 +3137,11 @@ namespace webrtc_stream {
                   session.video_pacing_state.anchor_send.reset();
                   target_send = now;
                   pace_frame = false;
-                } else if (session.last_video_push) {
-                  target_send = *session.last_video_push + frame_interval;
+                } else if (pace_frame && session.last_video_push) {
+                  // Ensure that we never schedule a send earlier than one frame interval after
+                  // the previous send target. This avoids drift where late frames permanently
+                  // bias the schedule and grow the receiver jitter buffer.
+                  target_send = std::max(target_send, *session.last_video_push + frame_interval);
                 }
                 EncodedVideoWork work;
                 work.source = session.encoded_video_source;
