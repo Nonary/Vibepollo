@@ -223,6 +223,12 @@ namespace display_helper::v2 {
       system_.arm_heartbeat();
       system_.refresh_shell();
       system_.blank_hdr_states(std::chrono::milliseconds(1000));
+
+      // For virtual displays, enter monitoring state to handle device crashes
+      if (current_request_.virtual_layout.has_value()) {
+        transition(State::VirtualDisplayMonitoring, ApplyAction::Apply, ApplyStatus::Ok);
+        return;
+      }
     }
 
     transition(State::Waiting, ApplyAction::Apply, completed.success ? std::make_optional(ApplyStatus::Ok) : std::nullopt);
@@ -267,6 +273,28 @@ namespace display_helper::v2 {
     if (is_stale(event.generation)) {
       return;
     }
+
+    // Virtual display monitoring: re-apply configuration when device crashes/recovers
+    if (state_ == State::VirtualDisplayMonitoring) {
+      BOOST_LOG(info) << "Display helper: display event while monitoring virtual display, re-applying configuration.";
+      apply_attempt_ = 1;
+      apply_result_sent_ = false;
+      transition(State::InProgress, ApplyAction::Apply);
+      apply_.dispatch_apply(current_request_, std::chrono::milliseconds(0), false);
+      return;
+    }
+
+    // During active apply with virtual display, restart the apply operation
+    if ((state_ == State::InProgress || state_ == State::Verification) &&
+        current_request_.virtual_layout.has_value()) {
+      BOOST_LOG(info) << "Display helper: display event during virtual display apply, restarting apply.";
+      apply_attempt_ = 1;
+      transition(State::InProgress, ApplyAction::Apply);
+      apply_.dispatch_apply(current_request_, std::chrono::milliseconds(0), false);
+      return;
+    }
+
+    // Standard recovery from EventLoop state
     if (state_ != State::EventLoop) {
       return;
     }

@@ -420,6 +420,111 @@ TEST(DisplayHelperV2StateMachine, VirtualDisplayResetTriggersDispatch) {
   EXPECT_TRUE(harness.dispatcher.apply_reset_virtual_display);
 }
 
+// Test: Display event during APPLY with virtual display triggers re-apply.
+// When a virtual display device crashes/reappears during an active apply operation,
+// the state machine should restart the apply.
+TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTriggersReapply) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";  // Virtual display requested
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+
+  // Simulate display device removal/arrival (virtual display crash and recovery)
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  // State machine should restart the apply for virtual displays
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+}
+
+// Test: Successful apply with virtual display enters VirtualDisplayMonitoring state.
+// This state monitors for device crashes and triggers re-apply when needed.
+TEST(DisplayHelperV2StateMachine, VirtualDisplayEntersMonitoringStateAfterSuccessfulApply) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";  // Virtual display requested
+
+  // Complete a successful apply cycle
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  // After successful verification with virtual display, we're in VirtualDisplayMonitoring
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
+}
+
+// Test: Display event in VirtualDisplayMonitoring state triggers re-apply.
+// When a virtual display device crashes/reappears during an active streaming session,
+// the state machine should re-apply the streaming configuration.
+TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateTriggersReapply) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";  // Virtual display requested
+
+  // Complete a successful apply cycle to enter VirtualDisplayMonitoring
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+
+  // Simulate display device removal/arrival (virtual display crash and recovery)
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  // State machine should re-apply the virtual display configuration
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+}
+
+// Test: Non-virtual display still goes to Waiting state after successful apply.
+TEST(DisplayHelperV2StateMachine, NonVirtualDisplayGoesToWaitingState) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  // No virtual_layout - regular display
+
+  // Complete a successful apply cycle
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  // Non-virtual displays go to Waiting state (not VirtualDisplayMonitoring)
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
+}
+
 TEST(DisplayHelperV2StateMachine, RevertRunsRecoveryAndValidation) {
   StateMachineHarness harness;
 

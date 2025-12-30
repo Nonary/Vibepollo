@@ -61,6 +61,7 @@ namespace display_helper::v2 {
     Recovery,
     RecoveryValidation,
     EventLoop,
+    VirtualDisplayMonitoring,  // Monitors virtual display for crashes during active session
   };
 
   enum class DisplayEvent {
