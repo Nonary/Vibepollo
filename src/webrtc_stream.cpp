@@ -1464,9 +1464,14 @@ namespace webrtc_stream {
 
     video::config_t build_video_config(const SessionOptions &options) {
       video::config_t config {};
-      config.width = options.width.value_or(kDefaultWidth);
-      config.height = options.height.value_or(kDefaultHeight);
+      // Use default dimensions if the provided values are invalid (<= 0)
+      const int req_width = options.width.value_or(0);
+      const int req_height = options.height.value_or(0);
+      config.width = (req_width > 0) ? req_width : kDefaultWidth;
+      config.height = (req_height > 0) ? req_height : kDefaultHeight;
       config.framerate = options.fps.value_or(kDefaultFps);
+      config.encodingFramerate = config.framerate > 1000 ? config.framerate : config.framerate * 1000;
+      config.input_only = !options.video;
       int bitrate = options.bitrate_kbps.value_or(0);
       if (bitrate <= 0) {
         bitrate = config::video.max_bitrate > 0 ? config::video.max_bitrate : 20000;
@@ -1564,9 +1569,18 @@ namespace webrtc_stream {
       launch_session->unique_id = uuid_util::uuid_t::generate().string();
       launch_session->client_uuid = launch_session->unique_id;
       launch_session->client_name = launch_session->device_name;
-      launch_session->width = options.width.value_or(kDefaultWidth);
-      launch_session->height = options.height.value_or(kDefaultHeight);
-      launch_session->fps = options.fps.value_or(kDefaultFps);
+      // Use default dimensions if the provided values are invalid (<= 0)
+      const int req_width = options.width.value_or(0);
+      const int req_height = options.height.value_or(0);
+      launch_session->width = (req_width > 0) ? req_width : kDefaultWidth;
+      launch_session->height = (req_height > 0) ? req_height : kDefaultHeight;
+      launch_session->scale_factor = 100;  // Default to 100% to avoid zeroed dimensions.
+      int raw_fps = options.fps.value_or(kDefaultFps);
+      // Convert fps to milli-Hz format (e.g., 60 -> 60000) for consistency with nvhttp
+      if (raw_fps > 0 && raw_fps < 1000) {
+        raw_fps *= 1000;
+      }
+      launch_session->fps = raw_fps;
       launch_session->appid = app_id;
       launch_session->host_audio = options.host_audio;
       launch_session->surround_info = audio_channels;

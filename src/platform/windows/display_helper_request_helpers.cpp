@@ -102,8 +102,20 @@ namespace display_helper_integration::helpers {
       bool resolution_disabled,
       bool refresh_rate_disabled
     ) {
+      const auto to_refresh_rate = [](int fps) -> display_device::Rational {
+        const unsigned int value = static_cast<unsigned int>(std::max(fps, 0));
+        if (value >= 1000u) {
+          return display_device::Rational {value, 1000u};
+        }
+        return display_device::Rational {value, 1u};
+      };
+      // Check if the current resolution is valid (non-zero dimensions)
+      const bool has_valid_resolution = config.m_resolution &&
+                                        config.m_resolution->m_width > 0 &&
+                                        config.m_resolution->m_height > 0;
       // Only apply resolution override if resolution changes are not disabled by user
-      if (!resolution_disabled && !config.m_resolution && effective_width > 0 && effective_height > 0) {
+      // and either no resolution is set or the current resolution is invalid (0x0)
+      if (!resolution_disabled && !has_valid_resolution && effective_width > 0 && effective_height > 0) {
         config.m_resolution = display_device::Resolution {
           static_cast<unsigned int>(effective_width),
           static_cast<unsigned int>(effective_height)
@@ -111,7 +123,7 @@ namespace display_helper_integration::helpers {
       }
       // Only apply refresh rate override if refresh rate changes are not disabled by user
       if (!refresh_rate_disabled && !config.m_refresh_rate && display_fps > 0) {
-        config.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
+        config.m_refresh_rate = to_refresh_rate(display_fps);
       }
     }
 
