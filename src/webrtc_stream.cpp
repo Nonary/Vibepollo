@@ -3088,7 +3088,7 @@ namespace webrtc_stream {
               const int fps = std::max(1, session.video_config.framerate);
               const auto frame_interval = std::chrono::nanoseconds(1s) / fps;
               const auto &pacing = session.video_pacing;
-              const auto max_frame_age = std::min(frame_interval * 2, pacing.max_frame_age);
+              const auto max_frame_age = std::max(frame_interval * 2, pacing.max_frame_age);
               auto handle_frame = [&](EncodedVideoFrame &&frame) {
                 if (waiting_for_keyframe && !frame.idr) {
                   return;
