@@ -2350,7 +2350,7 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
-          if (webrtc_stream::has_active_sessions()) {
+          if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
             webrtc_stream::submit_video_frame(img);
           }
           if (session->convert(*img)) {

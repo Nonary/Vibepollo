@@ -88,6 +88,7 @@ namespace webrtc_stream {
   void submit_video_frame(const std::shared_ptr<platf::img_t> &frame);
   void submit_audio_frame(const std::vector<float> &samples, int sample_rate, int channels, int frames);
   void set_rtsp_sessions_active(bool active);
+  void set_rtsp_capture_config(const video::config_t &video_config, const audio::config_t &audio_config);
 
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type);
   bool add_ice_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);

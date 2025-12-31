@@ -15,6 +15,7 @@
 // local includes
 #include "audio.h"
 #include "crypto.h"
+#include "thread_safe.h"
 #include "video.h"
 
 namespace stream {
@@ -60,4 +61,6 @@ namespace stream {
     void join(session_t &session);
     state_e state(session_t &session);
   }  // namespace session
+
+  void request_idr_for_all_sessions();
 }  // namespace stream
