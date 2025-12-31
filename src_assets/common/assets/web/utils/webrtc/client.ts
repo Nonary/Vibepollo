@@ -39,7 +39,7 @@ const ENCODING_MIME: Record<string, string[]> = {
   hevc: ['video/h265', 'video/hevc'],
   av1: ['video/av1'],
 };
-const AUDIO_JITTER_BUFFER_TARGET_MS = 20;
+const AUDIO_JITTER_BUFFER_TARGET_MS = 35;
 const RECEIVER_HINT_REFRESH_MS = 250;
 const ICE_CANDIDATE_BATCH_WINDOW_MS = 75;
 const ICE_CANDIDATE_BATCH_LIMIT = 256;
@@ -218,13 +218,6 @@ function applyAudioReceiverHints(receiver?: RTCRtpReceiver): void {
     /* ignore */
   }
   try {
-    if ('playoutDelayHint' in receiverAny) {
-      receiverAny.playoutDelayHint = AUDIO_JITTER_BUFFER_TARGET_MS / 1000;
-    }
-  } catch {
-    /* ignore */
-  }
-  try {
     if (
       typeof receiverAny.getParameters === 'function' &&
       typeof receiverAny.setParameters === 'function'
@@ -243,6 +236,18 @@ function applyAudioReceiverHints(receiver?: RTCRtpReceiver): void {
 function resolveJitterTargetMs(value?: number): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return Math.max(0, value);
+}
+
+function resolveVideoJitterTargetMs(config: StreamConfig): number | undefined {
+  const targetMs = resolveJitterTargetMs(config.videoMaxFrameAgeMs);
+  if (targetMs != null) return targetMs;
+  if (typeof config.videoMaxFrameAgeFrames !== 'number') return undefined;
+  if (!Number.isFinite(config.videoMaxFrameAgeFrames) || config.videoMaxFrameAgeFrames <= 0) {
+    return undefined;
+  }
+  const fps =
+    typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
+  return Math.round((1000 / fps) * config.videoMaxFrameAgeFrames);
 }
 
 function applyVideoReceiverHints(receiver?: RTCRtpReceiver, targetMs?: number): void {
@@ -366,7 +371,7 @@ export class WebRtcClient {
     const session = await this.api.createSession(sessionConfig);
     this.sessionId = session.sessionId;
     this.pendingRemoteCandidates = [];
-    this.videoJitterTargetMs = sessionConfig.videoMaxFrameAgeMs;
+    this.videoJitterTargetMs = resolveVideoJitterTargetMs(sessionConfig);
     const requestedEncoding = sessionConfig.encoding.toLowerCase();
     const bundlePolicy: RTCBundlePolicy = requestedEncoding === 'hevc' ? 'balanced' : 'max-bundle';
     const rtcpMuxPolicy: RTCRtcpMuxPolicy = requestedEncoding === 'hevc' ? 'negotiate' : 'require';
@@ -409,7 +414,8 @@ export class WebRtcClient {
       if (event.track.kind === 'audio') {
         applyAudioReceiverHints(event.receiver);
       } else if (event.track.kind === 'video') {
-        applyVideoReceiverHints(event.receiver, sessionConfig.videoMaxFrameAgeMs);
+        event.track.contentHint = 'motion';
+        applyVideoReceiverHints(event.receiver, this.videoJitterTargetMs);
       }
       callbacks.onRemoteStream?.(this.remoteStream);
     };

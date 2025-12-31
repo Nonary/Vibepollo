@@ -213,11 +213,14 @@
                     <div class="sub-setting">
                       <label>{{ $t('webrtc.frame_pacing_max_delay') }}</label>
                       <n-input-number
-                        v-model:value="config.videoMaxFrameAgeMs"
-                        :min="5"
-                        :max="250"
+                        v-model:value="maxFrameAgeFrames"
+                        :min="1"
+                        :max="10"
                         size="small"
                       />
+                      <p class="setting-hint">
+                        ~{{ formatMs(maxFrameAgeMsFromFrames(config.fps, maxFrameAgeFrames)) }}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -378,7 +381,14 @@
               tabindex="0"
               @dblclick="onFullscreenDblClick"
             >
-              <video ref="videoEl" class="stream-video" autoplay playsinline></video>
+              <video
+                ref="videoEl"
+                class="stream-video"
+                autoplay
+                playsinline
+                :controls="false"
+                disablePictureInPicture
+              ></video>
               <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
 
               <!-- Idle State -->
@@ -794,17 +804,22 @@ const pacingOptions = [
 
 type PacingMode = (typeof pacingOptions)[number]['value'];
 
-const pacingPresets: Record<PacingMode, { slackMs: number; maxFrameAgeMs: number }> = {
-  latency: { slackMs: 0, maxFrameAgeMs: 33 },
-  balanced: { slackMs: 2, maxFrameAgeMs: 50 },
-  smoothness: { slackMs: 3, maxFrameAgeMs: 100 },
+const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
+  latency: { slackMs: 0, maxAgeFrames: 1 },
+  balanced: { slackMs: 2, maxAgeFrames: 2 },
+  smoothness: { slackMs: 3, maxAgeFrames: 3 },
 };
+
+function maxFrameAgeMsFromFrames(fps: number, frames: number): number {
+  const safeFps = fps > 0 ? fps : 60;
+  return Math.round((1000 / safeFps) * frames);
+}
 
 function applyPacingPreset(mode: PacingMode) {
   const preset = pacingPresets[mode];
   config.videoPacingMode = mode;
   config.videoPacingSlackMs = preset.slackMs;
-  config.videoMaxFrameAgeMs = preset.maxFrameAgeMs;
+  config.videoMaxFrameAgeFrames = preset.maxAgeFrames;
 }
 
 const config = reactive<StreamConfig>({
@@ -816,8 +831,64 @@ const config = reactive<StreamConfig>({
   muteHostAudio: true,
   videoPacingMode: 'balanced',
   videoPacingSlackMs: pacingPresets.balanced.slackMs,
-  videoMaxFrameAgeMs: pacingPresets.balanced.maxFrameAgeMs,
+  videoMaxFrameAgeFrames: pacingPresets.balanced.maxAgeFrames,
 });
+
+const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
+
+function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
+  const normalized = { ...profileConfig };
+  if (normalized.videoMaxFrameAgeFrames == null && typeof normalized.videoMaxFrameAgeMs === 'number') {
+    const fps = normalized.fps ?? 60;
+    normalized.videoMaxFrameAgeFrames = Math.max(
+      1,
+      Math.round((normalized.videoMaxFrameAgeMs / 1000) * fps),
+    );
+  }
+  return normalized;
+}
+
+function loadCachedConfig(): void {
+  try {
+    const raw = window.localStorage.getItem(CLIENT_CONFIG_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+    Object.assign(config, normalizeProfileConfig(parsed as StreamConfig));
+  } catch {
+    /* ignore */
+  }
+}
+
+function persistCachedConfig(): void {
+  try {
+    const snapshot = normalizeProfileConfig({ ...config });
+    window.localStorage.setItem(CLIENT_CONFIG_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    /* ignore */
+  }
+}
+
+const maxFrameAgeFrames = computed({
+  get() {
+    return config.videoMaxFrameAgeFrames ?? pacingPresets[config.videoPacingMode].maxAgeFrames;
+  },
+  set(value: number | null) {
+    if (value == null || !Number.isFinite(value)) {
+      config.videoMaxFrameAgeFrames = pacingPresets[config.videoPacingMode].maxAgeFrames;
+      return;
+    }
+    config.videoMaxFrameAgeFrames = Math.max(1, Math.round(value));
+  },
+});
+
+watch(
+  () => ({ ...config }),
+  () => {
+    persistCachedConfig();
+  },
+  { deep: true },
+);
 
 function resolveFallbackEncoding(): EncodingType {
   const support = encodingSupport.value;
@@ -1702,6 +1773,7 @@ onBeforeUnmount(() => {
 });
 
 onMounted(async () => {
+  loadCachedConfig();
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);

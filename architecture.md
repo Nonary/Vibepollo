@@ -482,7 +482,7 @@ webrtc_media_cv.notify_one();
 
 Important details:
 
-- The per-session ring buffer is intentionally tiny (`kMaxVideoFrames = 4`) to bound latency.
+- The per-session ring buffer is intentionally tiny (`kMaxVideoFrames = 2`) to bound latency.
 - If full, it drops the oldest frame and increments `video_dropped`.
 - The payload is expected to be AnnexB start-code framed (logged/validated in the media thread).
 
@@ -526,8 +526,16 @@ Key mechanics:
 - **Keyframe gating**: if `session.needs_keyframe` is true, non-IDR frames are skipped until an IDR arrives; Sunshine periodically requests an IDR via `mail::idr`.
 - **Pacing modes**: configured per session (`video_pacing_mode`, slack, max frame age).
   - `latency`: no pacing, prefer latest frame, drop old.
-  - `balanced`: paced, drop old.
-  - `smoothness`: paced, do not drop old.
+  - `balanced`: paced, drop old, prefer latest only while behind or during recovery.
+  - `smoothness`: paced, drop only when over the age cap, prefer latest only during recovery.
+
+**Current Pacing Mode Values**
+
+| Mode | Queue depth | Max frame age | Drop old frames | Prefer latest |
+| --- | --- | --- | --- | --- |
+| Latency | 2 | 1 frame (derived from FPS) | Yes | Always |
+| Balanced | 2 | 2 frames (derived from FPS) | Yes | Only when behind or recovering |
+| Smoothness | 2 | 3 frames (derived from FPS) | Yes, only when over cap | Only when recovering |
 
 The actual push call:
 
