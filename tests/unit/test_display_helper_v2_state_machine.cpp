@@ -147,12 +147,13 @@ namespace {
     }
 
     std::string device_id() override {
-      return "virtual";
+      return current_device_id;
     }
 
     bool available = true;
     bool disabled = false;
     bool enabled = false;
+    std::string current_device_id {"virtual"};
   };
 
   class FakeDisplaySettings final : public display_helper::v2::IDisplaySettings {
@@ -279,7 +280,8 @@ namespace {
       apply_pipeline,
       recovery_pipeline,
       snapshot_ledger,
-      system_ports
+      system_ports,
+      virtual_display
     };
 
     StateMachineHarness() {
@@ -425,8 +427,12 @@ TEST(DisplayHelperV2StateMachine, VirtualDisplayResetTriggersDispatch) {
 // the state machine should restart the apply.
 TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTriggersReapply) {
   StateMachineHarness harness;
+  harness.virtual_display.current_device_id = "virtual_new";
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.topology = display_device::ActiveTopology {{request.configuration->m_device_id}};
+  request.monitor_positions.emplace_back(request.configuration->m_device_id, display_device::Point {0, 0});
   request.virtual_layout = "extended";  // Virtual display requested
 
   harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
@@ -442,6 +448,14 @@ TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTrigg
   // State machine should restart the apply for virtual displays
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration.has_value());
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_new");
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology.has_value());
+  ASSERT_FALSE(harness.dispatcher.apply_request.topology->empty());
+  ASSERT_FALSE(harness.dispatcher.apply_request.topology->front().empty());
+  EXPECT_EQ(harness.dispatcher.apply_request.topology->front().front(), "virtual_new");
+  ASSERT_FALSE(harness.dispatcher.apply_request.monitor_positions.empty());
+  EXPECT_EQ(harness.dispatcher.apply_request.monitor_positions.front().first, "virtual_new");
 }
 
 // Test: Successful apply with virtual display enters VirtualDisplayMonitoring state.
@@ -475,6 +489,9 @@ TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateTriggersReapply) 
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.topology = display_device::ActiveTopology {{request.configuration->m_device_id}};
+  request.monitor_positions.emplace_back(request.configuration->m_device_id, display_device::Point {0, 0});
   request.virtual_layout = "extended";  // Virtual display requested
 
   // Complete a successful apply cycle to enter VirtualDisplayMonitoring
@@ -492,6 +509,7 @@ TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateTriggersReapply) 
 
   const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
 
+  harness.virtual_display.current_device_id = "virtual_new";
   // Simulate display device removal/arrival (virtual display crash and recovery)
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DeviceArrival,
@@ -500,6 +518,14 @@ TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateTriggersReapply) 
   // State machine should re-apply the virtual display configuration
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration.has_value());
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_new");
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology.has_value());
+  ASSERT_FALSE(harness.dispatcher.apply_request.topology->empty());
+  ASSERT_FALSE(harness.dispatcher.apply_request.topology->front().empty());
+  EXPECT_EQ(harness.dispatcher.apply_request.topology->front().front(), "virtual_new");
+  ASSERT_FALSE(harness.dispatcher.apply_request.monitor_positions.empty());
+  EXPECT_EQ(harness.dispatcher.apply_request.monitor_positions.front().first, "virtual_new");
 }
 
 // Test: Non-virtual display still goes to Waiting state after successful apply.

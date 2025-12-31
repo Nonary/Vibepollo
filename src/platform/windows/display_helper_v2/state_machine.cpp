@@ -1,5 +1,6 @@
 #include "src/platform/windows/display_helper_v2/state_machine.h"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <utility>
 
 #include "src/logging.h"
@@ -9,11 +10,58 @@ namespace display_helper::v2 {
     ApplyPipeline &apply,
     RecoveryPipeline &recovery,
     SnapshotLedger &snapshots,
-    SystemPorts &system)
+    SystemPorts &system,
+    IVirtualDisplayDriver &virtual_display)
     : apply_(apply),
       recovery_(recovery),
       snapshots_(snapshots),
-      system_(system) {}
+      system_(system),
+      virtual_display_(virtual_display) {}
+
+  void StateMachine::retarget_virtual_display_device_id_if_needed() {
+    if (!current_request_.virtual_layout.has_value()) {
+      return;
+    }
+    if (!current_request_.configuration) {
+      return;
+    }
+
+    const std::string resolved = virtual_display_.device_id();
+    if (resolved.empty()) {
+      return;
+    }
+
+    auto &cfg = *current_request_.configuration;
+    const std::string previous = cfg.m_device_id;
+    if (!previous.empty() && boost::iequals(previous, resolved)) {
+      return;
+    }
+
+    BOOST_LOG(info) << "Display helper: retargeting virtual display device_id from '"
+                    << (previous.empty() ? std::string("(empty)") : previous)
+                    << "' to '" << resolved << "' for monitoring re-apply.";
+
+    cfg.m_device_id = resolved;
+
+    if (current_request_.topology) {
+      for (auto &group : *current_request_.topology) {
+        for (auto &device_id : group) {
+          if (previous.empty()) {
+            continue;
+          }
+          if (boost::iequals(device_id, previous)) {
+            device_id = resolved;
+          }
+        }
+      }
+    }
+
+    for (auto &entry : current_request_.monitor_positions) {
+      if (!previous.empty() && boost::iequals(entry.first, previous)) {
+        entry.first = resolved;
+      }
+    }
+  }
 
   void StateMachine::set_state_observer(StateObserver observer) {
     observer_ = std::move(observer);
@@ -277,6 +325,7 @@ namespace display_helper::v2 {
     // Virtual display monitoring: re-apply configuration when device crashes/recovers
     if (state_ == State::VirtualDisplayMonitoring) {
       BOOST_LOG(info) << "Display helper: display event while monitoring virtual display, re-applying configuration.";
+      retarget_virtual_display_device_id_if_needed();
       apply_attempt_ = 1;
       apply_result_sent_ = false;
       transition(State::InProgress, ApplyAction::Apply);
@@ -288,6 +337,7 @@ namespace display_helper::v2 {
     if ((state_ == State::InProgress || state_ == State::Verification) &&
         current_request_.virtual_layout.has_value()) {
       BOOST_LOG(info) << "Display helper: display event during virtual display apply, restarting apply.";
+      retarget_virtual_display_device_id_if_needed();
       apply_attempt_ = 1;
       transition(State::InProgress, ApplyAction::Apply);
       apply_.dispatch_apply(current_request_, std::chrono::milliseconds(0), false);

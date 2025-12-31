@@ -445,7 +445,8 @@ int main(int argc, char *argv[]) {
     apply_pipeline,
     recovery_pipeline,
     snapshot_ledger,
-    system_ports);
+    system_ports,
+    virtual_display);
 
   state_machine.set_snapshot_blacklist(std::move(initial_blacklist));
 

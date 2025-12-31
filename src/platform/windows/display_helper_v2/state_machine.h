@@ -236,7 +236,8 @@ namespace display_helper::v2 {
       ApplyPipeline &apply,
       RecoveryPipeline &recovery,
       SnapshotLedger &snapshots,
-      SystemPorts &system);
+      SystemPorts &system,
+      IVirtualDisplayDriver &virtual_display);
 
     void set_state_observer(StateObserver observer);
     void set_apply_result_callback(std::function<void(ApplyStatus)> callback);
@@ -249,6 +250,8 @@ namespace display_helper::v2 {
     bool recovery_armed() const;
 
   private:
+    void retarget_virtual_display_device_id_if_needed();
+
     void handle_apply_command(const ApplyCommand &command);
     void handle_revert_command(const RevertCommand &command);
     void handle_disarm_command(const DisarmCommand &command);
@@ -271,6 +274,7 @@ namespace display_helper::v2 {
     RecoveryPipeline &recovery_;
     SnapshotLedger &snapshots_;
     SystemPorts &system_;
+    IVirtualDisplayDriver &virtual_display_;
 
     State state_ = State::Waiting;
     bool recovery_armed_ = false;
