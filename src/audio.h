@@ -51,6 +51,7 @@ namespace audio {
     int packetDuration;
     int channels;
     int mask;
+    bool bypass_opus = false;
 
     stream_params_t customStreamParams;
 

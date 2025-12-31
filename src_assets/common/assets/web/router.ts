@@ -8,6 +8,7 @@ const ApplicationsView = () => import('@/views/ApplicationsView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
 const ClientManagementView = () => import('@/views/ClientManagementView.vue');
+const WebRtcClientView = () => import('@/views/WebRtcClientView.vue');
 
 const routes = [
   { path: '/', component: DashboardView },
@@ -16,6 +17,7 @@ const routes = [
   { path: '/logs', component: DashboardView },
   { path: '/troubleshooting', component: TroubleshootingView },
   { path: '/clients', component: ClientManagementView },
+  { path: '/webrtc', component: WebRtcClientView, meta: { container: 'full' } },
 ];
 
 const CHUNK_RELOAD_FLAG = 'sunshine:chunk-reload';
@@ -85,7 +87,6 @@ router.onError((error) => {
       return;
     }
     storage?.removeItem(CHUNK_RELOAD_FLAG);
-  } catch {
-  }
+  } catch {}
   window.location.replace(window.location.origin);
 });

@@ -38,6 +38,7 @@ extern "C" {
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
+#include "webrtc_stream.h"
 #include "update.h"
 #include "utility.h"
 #ifdef _WIN32
@@ -364,6 +365,10 @@ namespace stream {
 
     std::shared_ptr<input::input_t> input;
 
+#ifdef _WIN32
+    std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
+#endif
+
     std::thread audioThread;
     std::thread videoThread;
 
@@ -497,6 +502,20 @@ namespace stream {
   void end_broadcast(broadcast_ctx_t &ctx);
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
+
+  void request_idr_for_all_sessions() {
+    auto ref = broadcast.ref();
+    if (!ref) {
+      return;
+    }
+    auto lg = ref->control_server._sessions.lock();
+    for (auto *session : *ref->control_server._sessions) {
+      if (!session || !session->video.idr_events) {
+        continue;
+      }
+      session->video.idr_events->raise(true);
+    }
+  }
 
 #ifdef _WIN32
   struct deferred_stream_start_t {
@@ -1426,6 +1445,9 @@ namespace stream {
       frame_network_latency_logger.first_point_now();
 
       auto session = (session_t *) packet->channel_data;
+      if (!session) {
+        continue;
+      }
       auto lowseq = session->video.lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
@@ -1748,6 +1770,9 @@ namespace stream {
 
       TUPLE_2D_REF(channel_data, packet_data, *packet);
       auto session = (session_t *) channel_data;
+      if (!session) {
+        continue;
+      }
 
       auto sequenceNumber = session->audio.sequenceNumber;
       auto timestamp = session->audio.timestamp;
@@ -1977,14 +2002,38 @@ namespace stream {
     while_starting_do_nothing(session->state);
 
     auto ref = broadcast.ref();
-    auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
-    if (error < 0) {
+    const auto ping_error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
+    if (ping_error < 0) {
       return;
     }
 
     // Enable local prioritization and QoS tagging on video traffic if requested by the client
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+
+#ifdef _WIN32
+    if (session->display_helper_gate.valid()) {
+      BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
+      rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
+      try {
+        session->display_helper_gate.wait();
+        gate_status = session->display_helper_gate.get();
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Display helper: gate wait failed (" << e.what() << "); proceeding with capture.";
+        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+      } catch (...) {
+        BOOST_LOG(warning) << "Display helper: gate wait failed (unknown); proceeding with capture.";
+        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+      }
+
+      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed) {
+        BOOST_LOG(error) << "Display helper validation failed; starting capture anyway.";
+      }
+      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup) {
+        BOOST_LOG(warning) << "Display helper verification result unavailable; starting capture anyway.";
+      }
+    }
+#endif
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
@@ -2056,6 +2105,7 @@ namespace stream {
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
+        webrtc_stream::set_rtsp_sessions_active(false);
         config::set_runtime_output_name_override(std::nullopt);
 #ifdef _WIN32
         display_helper_integration::clear_pending_apply();
@@ -2138,6 +2188,10 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+        if (!webrtc_stream::has_active_sessions()) {
+          webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
+        }
+        webrtc_stream::set_rtsp_sessions_active(true);
 #ifdef _WIN32
         // Apply RTSS frame limit if enabled (Windows-only)
         std::optional<int> lossless_rtss_limit;
@@ -2214,6 +2268,7 @@ namespace stream {
       if (session->virtual_display.active) {
         VDISPLAY::setWatchdogFeedingEnabled(true);
       }
+      session->display_helper_gate = launch_session.display_helper_gate;
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;

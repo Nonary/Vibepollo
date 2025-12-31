@@ -49,6 +49,7 @@ namespace {
     ApplyResult = 6,
     Disarm = 7,
     SnapshotCurrent = 8,
+    VerificationResult = 9,
     Ping = 0xFE,
     Stop = 0xFF,
   };
@@ -363,14 +364,19 @@ int main(int argc, char *argv[]) {
     hide_console_window();
   }
 
-  HANDLE singleton = nullptr;
-  if (!ensure_single_instance(singleton)) {
-    return 3;
-  }
-
+  // Initialize logging early so we can log singleton conflicts and other early exits
   const auto log_dir = compute_log_dir();
   const auto log_file = log_dir / L"sunshine_display_helper.log";
   auto log_guard = logging::init(2, log_file);
+
+  BOOST_LOG(info) << "Display helper v2 starting up...";
+
+  HANDLE singleton = nullptr;
+  if (!ensure_single_instance(singleton)) {
+    BOOST_LOG(warning) << "Display helper: another instance is already running (singleton conflict). Exiting with code 3.";
+    logging::log_flush();
+    return 3;
+  }
 
   const auto golden_path = log_dir / L"display_golden_restore.json";
   const auto current_path = log_dir / L"display_session_current.json";
@@ -439,7 +445,8 @@ int main(int argc, char *argv[]) {
     apply_pipeline,
     recovery_pipeline,
     snapshot_ledger,
-    system_ports);
+    system_ports,
+    virtual_display);
 
   state_machine.set_snapshot_blacklist(std::move(initial_blacklist));
 
@@ -458,6 +465,15 @@ int main(int argc, char *argv[]) {
     std::vector<uint8_t> payload;
     payload.push_back(status == display_helper::v2::ApplyStatus::Ok ? 1u : 0u);
     send_framed_content(*pipe, MsgType::ApplyResult, payload);
+  });
+  state_machine.set_verification_result_callback([&](bool success) {
+    auto *pipe = active_pipe.load(std::memory_order_acquire);
+    if (!pipe) {
+      return;
+    }
+    std::vector<uint8_t> payload;
+    payload.push_back(success ? 1u : 0u);
+    send_framed_content(*pipe, MsgType::VerificationResult, payload);
   });
 
   display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
@@ -496,10 +512,12 @@ int main(int argc, char *argv[]) {
   };
 
   if (restore_mode) {
+    BOOST_LOG(info) << "Display helper v2 running in restore mode.";
     queue.push(display_helper::v2::RevertCommand {cancellation.current_generation()});
     while (running.load(std::memory_order_acquire)) {
       process_queue();
     }
+    BOOST_LOG(info) << "Display helper v2 restore mode completed with exit code " << exit_code << ".";
     logging::log_flush();
     return exit_code;
   }
@@ -621,6 +639,7 @@ int main(int argc, char *argv[]) {
     async_pipe.stop();
   }
 
+  BOOST_LOG(info) << "Display helper v2 shutting down with exit code " << exit_code << ".";
   logging::log_flush();
   return exit_code;
 }

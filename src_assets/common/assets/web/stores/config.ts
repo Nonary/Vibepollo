@@ -124,8 +124,6 @@ const defaultGroups = [
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      dd_wa_hdr_toggle: false,
-      dd_wa_hdr_toggle_delay: 0,
       dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
@@ -457,18 +455,6 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
-    // Migrate legacy HDR workaround delay -> boolean toggle (enabled if delay>0)
-    if (data) {
-      const hasNew = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle');
-      const hasLegacy = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle_delay');
-      if (!hasNew && hasLegacy) {
-        const v = Number((data as Record<string, unknown>)['dd_wa_hdr_toggle_delay']);
-        if (Number.isFinite(v) && v > 0) {
-          (data as Record<string, unknown>)['dd_wa_hdr_toggle'] = true;
-        }
-      }
-    }
-
     // Keep frame limiter legacy and new flags in sync so toggles work across versions.
     if (data) {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_enable')) {
@@ -481,10 +467,9 @@ export const useConfigStore = defineStore('config', () => {
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
       if (legacyVsync) {
         if (!hasNewVsync) {
-          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (data as Record<
-            string,
-            unknown
-          >)['rtss_disable_vsync_ullm'];
+          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (
+            data as Record<string, unknown>
+          )['rtss_disable_vsync_ullm'];
         }
         delete (data as Record<string, unknown>)['rtss_disable_vsync_ullm'];
       }
@@ -504,7 +489,6 @@ export const useConfigStore = defineStore('config', () => {
     const otherBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
-      'dd_wa_hdr_toggle',
       'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
     ];
@@ -572,9 +556,7 @@ export const useConfigStore = defineStore('config', () => {
     };
     const normalizeStringArray = (v: any): string[] => {
       if (Array.isArray(v)) {
-        return v
-          .map((item) => String(item ?? '').trim())
-          .filter((item) => item.length > 0);
+        return v.map((item) => String(item ?? '').trim()).filter((item) => item.length > 0);
       }
       if (typeof v === 'string') {
         // Try JSON first

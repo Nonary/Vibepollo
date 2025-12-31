@@ -1762,10 +1762,14 @@ namespace VDISPLAY {
       return *cached;
     }
 
-    constexpr auto RECOVERY_MONITOR_WINDOW = std::chrono::seconds(10);
     constexpr auto RECOVERY_STABLE_REQUIREMENT = std::chrono::seconds(2);
     constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(200);
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
+    constexpr auto RECOVERY_MISSING_GRACE = std::chrono::seconds(1);
+    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
+    constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
     std::mutex g_virtual_display_recovery_abort_mutex;
@@ -1859,12 +1863,13 @@ namespace VDISPLAY {
       missing,
       present_inactive,
       present_active,
+      unknown,
     };
 
     MonitorTargetPresence monitor_target_presence(const RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
-        return MonitorTargetPresence::missing;
+        return MonitorTargetPresence::unknown;
       }
 
       bool matched_inactive = false;
@@ -1945,9 +1950,11 @@ namespace VDISPLAY {
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
       unsigned int attempts = 0;
-      bool observed_present = false;
       bool observed_active = false;
-      auto stable_since = std::chrono::steady_clock::now();
+      std::optional<std::chrono::steady_clock::time_point> active_since;
+      std::optional<std::chrono::steady_clock::time_point> inactive_since;
+      std::optional<std::chrono::steady_clock::time_point> missing_since;
+      auto recovery_cooldown_until = std::chrono::steady_clock::now();
 
       while (true) {
         if (monitor_should_abort(state)) {
@@ -1957,47 +1964,100 @@ namespace VDISPLAY {
 
         const auto now = std::chrono::steady_clock::now();
         const auto presence = monitor_target_presence(state);
-        if (presence == MonitorTargetPresence::present_active) {
-          observed_active = true;
-        }
 
-        const bool treat_as_present = (presence != MonitorTargetPresence::missing) &&
-                                      (!observed_active || presence == MonitorTargetPresence::present_active);
-        if (treat_as_present) {
-          if (!observed_present) {
-            observed_present = true;
-            stable_since = now;
-          } else if (now - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
-            attempts = 0;
-          }
-
+        if (presence == MonitorTargetPresence::unknown) {
           std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
           continue;
         }
 
-        observed_present = false;
-        stable_since = now;
+        if (presence == MonitorTargetPresence::present_active) {
+          observed_active = true;
+          missing_since.reset();
+          inactive_since.reset();
+          if (!active_since) {
+            active_since = now;
+          } else if (now - *active_since >= RECOVERY_STABLE_REQUIREMENT) {
+            attempts = 0;
+          }
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        active_since.reset();
+
+        // Defer recovery attempts for a short grace window after a successful recovery. This allows
+        // the display stack and helper APPLY to stabilize without immediately retriggering recovery.
+        if (now < recovery_cooldown_until) {
+          if (presence == MonitorTargetPresence::missing) {
+            missing_since.reset();
+          } else {
+            inactive_since.reset();
+          }
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        std::optional<std::chrono::steady_clock::time_point> *issue_since = nullptr;
+        std::chrono::steady_clock::duration required_grace {};
+        const char *issue_label = "unknown";
+        if (presence == MonitorTargetPresence::missing) {
+          inactive_since.reset();
+          issue_since = &missing_since;
+          required_grace = RECOVERY_MISSING_GRACE;
+          issue_label = "missing";
+        } else {
+          missing_since.reset();
+          issue_since = &inactive_since;
+          required_grace = observed_active ? RECOVERY_INACTIVE_GRACE : RECOVERY_NO_ACTIVE_GRACE;
+          issue_label = "inactive";
+        }
+
+        if (!issue_since->has_value()) {
+          *issue_since = now;
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        const auto issue_for = now - **issue_since;
+        if (issue_for < required_grace) {
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
         if (attempts >= state.params.max_attempts) {
+          const auto backoff_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(RECOVERY_MAX_ATTEMPTS_BACKOFF).count();
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
-                             << state.describe_target() << "; backing off.";
+                             << state.describe_target() << "; backing off for " << backoff_ms << "ms.";
           attempts = 0;
-          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+          recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_MAX_ATTEMPTS_BACKOFF;
+          inactive_since.reset();
+          missing_since.reset();
+          std::this_thread::sleep_for(RECOVERY_MAX_ATTEMPTS_BACKOFF);
           continue;
         }
 
         attempts += 1;
+        const auto issue_ms = std::chrono::duration_cast<std::chrono::milliseconds>(issue_for).count();
         BOOST_LOG(warning) << "Virtual display recovery monitor detected disappearance for "
                            << state.describe_target() << " (attempt "
-                           << attempts << '/' << state.params.max_attempts << ").";
+                           << attempts << '/' << state.params.max_attempts
+                           << ", " << issue_label << "_for=" << issue_ms << "ms).";
 
         if (monitor_should_abort(state)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
         const bool recovered = attempt_virtual_display_recovery(state);
-        if (!recovered) {
-          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
-          continue;
+        inactive_since.reset();
+        missing_since.reset();
+        active_since.reset();
+
+        if (recovered) {
+          observed_active = false;
+          recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_POST_SUCCESS_GRACE;
+        } else {
+          recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_RETRY_DELAY;
         }
 
         std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);

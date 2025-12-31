@@ -38,7 +38,6 @@ const currentDriverStatus = computed(
     t('config.sudovda_status_unknown'),
 );
 
-
 const lastAutomationOption = ref('verify_only');
 watch(
   () => config.value?.dd_configuration_option,
@@ -301,7 +300,9 @@ function selectVirtualDisplayLayout(v: unknown) {
                 <div class="mt-3">
                   <div
                     class="px-4 py-3 rounded-md"
-                    :class="[vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success']"
+                    :class="[
+                      vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success',
+                    ]"
                   >
                     <i class="fa-solid fa-circle-info mr-2"></i>
                     {{ t('config.virtual_display_status_label') }} {{ currentDriverStatus }}
@@ -350,19 +351,26 @@ function selectVirtualDisplayLayout(v: unknown) {
                     <n-radio :value="option.value" />
                     <span class="text-sm font-semibold">{{ option.label }}</span>
                   </div>
-                  <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+                  <span class="text-[11px] opacity-70 leading-snug ml-6">{{
+                    option.description
+                  }}</span>
                 </div>
               </n-radio-group>
 
               <!-- Warning for extended modes without primary -->
               <transition name="fade">
                 <div
-                  v-if="virtualDisplayLayout === 'extended' || virtualDisplayLayout === 'extended_isolated'"
+                  v-if="
+                    virtualDisplayLayout === 'extended' ||
+                    virtualDisplayLayout === 'extended_isolated'
+                  "
                   class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
                 >
                   <p class="text-[11px] text-amber-900 dark:text-amber-100">
                     <span class="flex items-start gap-2">
-                      <i class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                      <i
+                        class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                      />
                       <span class="block">{{ $t('config.dd_config_ensure_active_warning') }}</span>
                     </span>
                   </p>
@@ -378,7 +386,9 @@ function selectVirtualDisplayLayout(v: unknown) {
               >
                 <p class="text-[11px] text-blue-900 dark:text-blue-100">
                   <span class="flex items-start gap-2">
-                    <i class="fas fa-lightbulb text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                    <i
+                      class="fas fa-lightbulb text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5"
+                    />
                     <span class="block">{{ $t('config.virtual_display_hdr_tip') }}</span>
                   </span>
                 </p>

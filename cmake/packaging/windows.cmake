@@ -4,6 +4,10 @@ install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 
+if(WEBRTC_RUNTIME_DLL)
+    install(FILES "${WEBRTC_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
+endif()
+
 # ViGEmBus installer is no longer bundled or managed by the installer
 
 # Adding tools
@@ -85,6 +89,11 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/plugins/"
 file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
         DESTINATION "${CMAKE_BINARY_DIR}/assets"
         PATTERN "shaders" EXCLUDE)
+
+if(WEBRTC_RUNTIME_DLL)
+    file(COPY "${WEBRTC_RUNTIME_DLL}"
+            DESTINATION "${CMAKE_BINARY_DIR}")
+endif()
 # use junction for shaders directory
 cmake_path(CONVERT "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/shaders"
         TO_NATIVE_PATH_LIST shaders_in_build_src_native)

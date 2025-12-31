@@ -111,6 +111,40 @@ dependencies=(
 pacman -S "${dependencies[@]}"
 ```
 
+##### WebRTC (optional, Windows only)
+Sunshine can link against the libwebrtc C++ wrapper when `SUNSHINE_ENABLE_WEBRTC=ON`. The wrapper source is vendored as
+the `third-party/libwebrtc` submodule, but you must build WebRTC separately and provide a staging directory that
+contains `include/` and `lib/` (e.g., `libwebrtc.dll` and its import library). We use the `third-party/depot_tools`
+submodule for `gclient`/`gn`.
+
+Build steps (summary from libwebrtc):
+
+1. Create a checkout directory and add a `.gclient` that points to
+   `https://github.com/webrtc-sdk/webrtc.git@m137_release` with `target_os = ['win']`.
+2. Run `gclient sync`.
+3. In `src`, add the libwebrtc sources (you can copy or link `third-party/libwebrtc` into `src/libwebrtc`).
+4. Apply the audio patch:
+   `git apply libwebrtc/patchs/custom_audio_source_m137.patch`
+5. Update `src/BUILD.gn` to include `//libwebrtc` in `group("default")`.
+6. Generate and build (adjust `GYP_MSVS_OVERRIDE_PATH` if Visual Studio is installed elsewhere; our local install is
+   under `D:\Software\Visual Studio`):
+   ```bash
+   set PATH=D:\sources\sunshine\third-party\depot_tools;%PATH%
+   set DEPOT_TOOLS_WIN_TOOLCHAIN=0
+   set GYP_MSVS_VERSION=2022
+   set GYP_GENERATORS=ninja,msvs-ninja
+   set GYP_MSVS_OVERRIDE_PATH=D:\Software\Visual Studio
+   set vs2022_install=D:\Software\Visual Studio
+   set WINDOWSSDKDIR=D:\Software\WinSDK
+   cd src
+   gn gen out-debug/Windows-x64 --args="target_os=\"win\" target_cpu=\"x64\" is_component_build=false is_clang=true is_debug=true rtc_use_h264=true ffmpeg_branding=\"Chrome\" rtc_include_tests=false rtc_build_examples=false libwebrtc_desktop_capture=true" --ide=vs2022
+   ninja -C out-debug/Windows-x64 libwebrtc
+   ```
+7. Stage the artifacts into a directory with `include/` and `lib/` subfolders inside your Sunshine build tree (for
+   example, `build/libwebrtc`). Copy `libwebrtc.dll` and `libwebrtc.dll.lib` into `lib/`.
+8. Configure Sunshine with `-DSUNSHINE_ENABLE_WEBRTC=ON` (the default `WEBRTC_ROOT` points at `build/libwebrtc`). If
+   CMake still fails to find libwebrtc, pass `WEBRTC_INCLUDE_DIR` and `WEBRTC_LIBRARY` explicitly.
+
 ### Clone
 Ensure [git](https://git-scm.com) is installed on your system, then clone the repository using the following command:
 

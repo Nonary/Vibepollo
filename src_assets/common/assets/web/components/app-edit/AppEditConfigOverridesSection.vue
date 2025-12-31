@@ -226,7 +226,9 @@ const props = withDefaults(
 
 const descriptionText = computed(() => {
   if (props.description) return props.description;
-  const scope = String(props.scopeLabel || 'application').toLowerCase().trim();
+  const scope = String(props.scopeLabel || 'application')
+    .toLowerCase()
+    .trim();
   if (scope === 'client') {
     return 'Override global settings for this client. Client overrides take precedence over app overrides and global config.';
   }
@@ -404,7 +406,9 @@ const overrideKeys = computed<string[]>(() => {
   return Object.keys(o).filter((k) => typeof k === 'string' && k.length > 0);
 });
 
-const visibleOverrideKeys = computed<string[]>(() => overrideKeys.value.filter((k) => !isHiddenOverrideKey(k)));
+const visibleOverrideKeys = computed<string[]>(() =>
+  overrideKeys.value.filter((k) => !isHiddenOverrideKey(k)),
+);
 
 const SYN_KEYS = {
   configureDisplayResolution: 'configure_display_resolution',
@@ -459,7 +463,9 @@ function isForcedResolutionActive(): boolean {
   const opt = getOverrideString(DD_KEYS.resolutionOption);
   if (opt === 'manual') return true;
   const o = overrides.value as any;
-  return !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualResolution] !== undefined;
+  return (
+    !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualResolution] !== undefined
+  );
 }
 
 function isForcedRefreshRateActive(): boolean {
@@ -467,7 +473,9 @@ function isForcedRefreshRateActive(): boolean {
   const opt = getOverrideString(DD_KEYS.refreshRateOption);
   if (opt === 'manual') return true;
   const o = overrides.value as any;
-  return !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualRefreshRate] !== undefined;
+  return (
+    !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualRefreshRate] !== undefined
+  );
 }
 
 function isForcedHdrActive(): boolean {
@@ -477,7 +485,9 @@ function isForcedHdrActive(): boolean {
 }
 
 const forcedResolution = computed<string>(() => getOverrideString(DD_KEYS.manualResolution) ?? '');
-const forcedRefreshRate = computed<string>(() => getOverrideString(DD_KEYS.manualRefreshRate) ?? '');
+const forcedRefreshRate = computed<string>(
+  () => getOverrideString(DD_KEYS.manualRefreshRate) ?? '',
+);
 
 const forcedHdrOptions = [
   { label: 'On', value: 'on' },
@@ -867,8 +877,7 @@ function editorKind(key: string): 'boolean' | 'select' | 'number' | 'string' | '
 
 function boolChecked(key: string): boolean {
   const pair =
-    boolPairFromValue(getGlobalValue(key)) ??
-    boolPairFromValue((overrides.value as any)?.[key]);
+    boolPairFromValue(getGlobalValue(key)) ?? boolPairFromValue((overrides.value as any)?.[key]);
   const cur = (overrides.value as any)?.[key];
   if (!pair) return !!cur;
   if (cur === pair.truthy) return true;

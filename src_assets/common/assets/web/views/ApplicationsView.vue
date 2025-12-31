@@ -110,11 +110,9 @@
                   <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
                     >manual</span
                   >
-                  <span
-                    v-else-if="app['playnite-source']"
-                    class="text-[10px] opacity-70"
-                    >{{ String(app['playnite-source']).split('+').join(' + ') }}</span
-                  >
+                  <span v-else-if="app['playnite-source']" class="text-[10px] opacity-70">{{
+                    String(app['playnite-source']).split('+').join(' + ')
+                  }}</span>
                   <span v-else class="text-[10px] opacity-70">managed</span>
                 </template>
                 <template v-else>

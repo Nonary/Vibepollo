@@ -36,6 +36,7 @@ extern "C" {
 #include "platform/common.h"
 #include "sync.h"
 #include "video.h"
+#include "webrtc_stream.h"
 
 #ifdef _WIN32
   #include <dxgi1_2.h>
@@ -1825,6 +1826,9 @@ namespace video {
 
       packet->replacements = &session.replacements;
       packet->channel_data = channel_data;
+      if (webrtc_stream::has_active_sessions()) {
+        webrtc_stream::submit_video_packet(*packet);
+      }
       packets->raise(std::move(packet));
     }
 
@@ -1846,6 +1850,9 @@ namespace video {
     packet->channel_data = channel_data;
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
     packet->frame_timestamp = frame_timestamp;
+    if (webrtc_stream::has_active_sessions()) {
+      webrtc_stream::submit_video_packet(*packet);
+    }
     packets->raise(std::move(packet));
 
     return 0;
@@ -2343,6 +2350,9 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
+          if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
+            webrtc_stream::submit_video_frame(img);
+          }
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             return;
@@ -3066,11 +3076,13 @@ namespace video {
 
   int probe_encoders() {
     const auto cache_key = build_probe_cache_key();
+    const bool hevc_mode_auto = config::video.hevc_mode == 0;
+    const bool av1_mode_auto = config::video.av1_mode == 0;
     const bool wants_hdr = (config::video.hevc_mode == 3) || (config::video.av1_mode == 3);
-    const bool wants_hevc = config::video.hevc_mode >= 2;
-    const bool wants_hevc_hdr = config::video.hevc_mode == 3;
-    const bool wants_av1 = config::video.av1_mode >= 2;
-    const bool wants_av1_hdr = config::video.av1_mode == 3;
+    const bool wants_hevc = config::video.hevc_mode >= 2 || hevc_mode_auto;
+    const bool wants_hevc_hdr = config::video.hevc_mode == 3 || hevc_mode_auto;
+    const bool wants_av1 = config::video.av1_mode >= 2 || av1_mode_auto;
+    const bool wants_av1_hdr = config::video.av1_mode == 3 || av1_mode_auto;
 
     if (probe_cache_matches(cache_key, wants_hdr, wants_hevc, wants_hevc_hdr, wants_av1, wants_av1_hdr)) {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";

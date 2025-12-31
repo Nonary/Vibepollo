@@ -179,7 +179,6 @@ namespace display_helper_integration::helpers {
       return false;
     }
     builder.set_session(session_);
-    builder.set_hdr_toggle_flag(effective_video_config_.dd.wa.hdr_toggle);
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
