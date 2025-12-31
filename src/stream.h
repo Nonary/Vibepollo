@@ -15,6 +15,7 @@
 // local includes
 #include "audio.h"
 #include "crypto.h"
+#include "thread_safe.h"
 #include "video.h"
 
 namespace stream {
@@ -65,4 +66,6 @@ namespace stream {
     state_e state(session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
   }  // namespace session
+
+  void request_idr_for_all_sessions();
 }  // namespace stream

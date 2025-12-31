@@ -517,6 +517,20 @@ namespace stream {
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
+  void request_idr_for_all_sessions() {
+    auto ref = broadcast.ref();
+    if (!ref) {
+      return;
+    }
+    auto lg = ref->control_server._sessions.lock();
+    for (auto *session : *ref->control_server._sessions) {
+      if (!session || !session->video.idr_events) {
+        continue;
+      }
+      session->video.idr_events->raise(true);
+    }
+  }
+
 #ifdef _WIN32
   struct deferred_stream_start_t {
     int fps = 0;
@@ -2322,6 +2336,9 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+        if (!webrtc_stream::has_active_sessions()) {
+          webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
+        }
         webrtc_stream::set_rtsp_sessions_active(true);
 #ifdef _WIN32
         if (!session.config.monitor.input_only) {

@@ -85,9 +85,7 @@
               >
                 <div class="min-w-0 space-y-1">
                   <p class="text-sm m-0 font-medium">
-                    {{
-                      $t('config.crash_dump_title') || 'Recent crash detected'
-                    }}
+                    {{ $t('config.crash_dump_title') || 'Recent crash detected' }}
                   </p>
                   <p class="text-xs opacity-80 m-0">
                     {{
@@ -115,9 +113,7 @@
                   </n-button>
                   <n-button type="primary" strong size="small" @click="exportCrashBundle">
                     <i class="fas fa-file-zipper" />
-                    <span>{{
-                      $t('config.crash_dump_export') || 'Export Crash Bundle'
-                    }}</span>
+                    <span>{{ $t('config.crash_dump_export') || 'Export Crash Bundle' }}</span>
                   </n-button>
                   <n-button tertiary size="small" @click="dismissCrashBundle">
                     <i class="fas fa-xmark" />
@@ -565,13 +561,13 @@ async function dismissCrashBundle() {
     captured_at: crashDump.value.captured_at,
   };
   if (!payload.filename || !payload.captured_at) {
-    message.error(
-      $t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.',
-    );
+    message.error($t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.');
     return;
   }
   try {
-    const r = await http.post('/api/health/crashdump/dismiss', payload, { validateStatus: () => true });
+    const r = await http.post('/api/health/crashdump/dismiss', payload, {
+      validateStatus: () => true,
+    });
     if (r.status === 200 && r.data?.status === true) {
       crashDump.value = {
         ...crashDump.value,
@@ -585,7 +581,10 @@ async function dismissCrashBundle() {
       const errMessage = typeof errData === 'string' ? errData : '';
       if (errMessage) {
         const lower = errMessage.toLowerCase();
-        if (lower.includes('metadata mismatch') || lower.includes('no recent sunshine crash dumps')) {
+        if (
+          lower.includes('metadata mismatch') ||
+          lower.includes('no recent sunshine crash dumps')
+        ) {
           await refreshCrashDumpStatus();
         }
       }
@@ -597,9 +596,7 @@ async function dismissCrashBundle() {
     }
   } catch {
     await refreshCrashDumpStatus();
-    message.error(
-      $t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.',
-    );
+    message.error($t('config.crash_dump_dismiss_error') || 'Failed to dismiss crash notification.');
   }
 }
 

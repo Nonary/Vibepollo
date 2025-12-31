@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "src/logging.h"
+
 using namespace std::chrono_literals;
 
 namespace display_helper_integration {
@@ -15,8 +17,11 @@ namespace display_helper_integration {
                             : active_interval();
 
     if (hooks_.feature_enabled && !hooks_.feature_enabled()) {
-      if (helper_ready_ && hooks_.reset_connection) {
-        hooks_.reset_connection();
+      if (helper_ready_) {
+        BOOST_LOG(info) << "Display helper watchdog: feature disabled, releasing helper connection.";
+        if (hooks_.reset_connection) {
+          hooks_.reset_connection();
+        }
       }
       helper_ready_ = false;
       return interval;
@@ -35,12 +40,19 @@ namespace display_helper_integration {
     }
 
     if (hooks_.send_ping && !hooks_.send_ping()) {
+      BOOST_LOG(warning) << "Display helper watchdog: ping failed, helper may have crashed or become unresponsive.";
       if (hooks_.reset_connection) {
         hooks_.reset_connection();
       }
       if (hooks_.ensure_helper_started && hooks_.ensure_helper_started()) {
         helper_ready_ = hooks_.send_ping ? hooks_.send_ping() : true;
+        if (helper_ready_) {
+          BOOST_LOG(info) << "Display helper watchdog: successfully restarted helper after ping failure.";
+        } else {
+          BOOST_LOG(warning) << "Display helper watchdog: helper restarted but ping still failing.";
+        }
       } else {
+        BOOST_LOG(error) << "Display helper watchdog: failed to restart helper after ping failure.";
         helper_ready_ = false;
       }
     }

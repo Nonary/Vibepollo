@@ -122,7 +122,9 @@ function initAuthHandling(): void {
       const skipAuthRetry =
         originalRequest?.__skipAuthRefresh === true ||
         (originalRequest?.headers && originalRequest.headers['X-Skip-Auth-Refresh']);
-      const isAuthRequest = /\/api\/auth\/(login|refresh)\b/.test(String(originalRequest?.url || ''));
+      const isAuthRequest = /\/api\/auth\/(login|refresh)\b/.test(
+        String(originalRequest?.url || ''),
+      );
       const userLoggedOut = (auth as any).logoutInitiated === true;
 
       if (status === 401 && !skipAuthRetry && !isAuthRequest && !userLoggedOut) {

@@ -1,21 +1,27 @@
 <template>
   <n-modal :show="open" :mask-closable="true" @update:show="(v) => emit('update:modelValue', v)">
-    <n-card :bordered="false" :content-style="{
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: 0,
-      overflow: 'hidden',
-    }" class="overflow-hidden" style="
+    <n-card
+      :bordered="false"
+      :content-style="{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        overflow: 'hidden',
+      }"
+      class="overflow-hidden"
+      style="
         max-width: 56rem;
         width: 100%;
         height: min(85dvh, calc(100dvh - 2rem));
         max-height: calc(100dvh - 2rem);
-      ">
+      "
+    >
       <template #header>
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-3">
             <div
-              class="h-14 w-14 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 text-primary flex items-center justify-center shadow-inner">
+              class="h-14 w-14 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 text-primary flex items-center justify-center shadow-inner"
+            >
               <i class="fas fa-window-restore text-xl" />
             </div>
             <div class="flex flex-col">
@@ -25,33 +31,57 @@
             </div>
           </div>
           <div class="shrink-0">
-            <span v-if="isPlayniteManaged"
-              class="inline-flex items-center px-2 py-0.5 rounded bg-primary/15 text-primary text-[11px] font-semibold">
+            <span
+              v-if="isPlayniteManaged"
+              class="inline-flex items-center px-2 py-0.5 rounded bg-primary/15 text-primary text-[11px] font-semibold"
+            >
               Playnite
             </span>
-            <span v-else
-              class="inline-flex items-center px-2 py-0.5 rounded bg-dark/10 dark:bg-light/10 text-[11px] font-semibold">
+            <span
+              v-else
+              class="inline-flex items-center px-2 py-0.5 rounded bg-dark/10 dark:bg-light/10 text-[11px] font-semibold"
+            >
               Custom
             </span>
           </div>
         </div>
       </template>
 
-      <div ref="bodyRef" class="relative flex-1 min-h-0 overflow-auto pr-1"
-        style="padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem)">
+      <div
+        ref="bodyRef"
+        class="relative flex-1 min-h-0 overflow-auto pr-1"
+        style="padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem)"
+      >
         <!-- Scroll affordance shadows: appear when more content is available -->
         <div v-if="showTopShadow" class="scroll-shadow-top" aria-hidden="true"></div>
         <div v-if="showBottomShadow" class="scroll-shadow-bottom" aria-hidden="true"></div>
 
-        <form class="space-y-6 text-sm" @submit.prevent="save" @keydown.ctrl.enter.stop.prevent="save">
-          <AppEditBasicsSection v-model:form="form" v-model:cmd-text="cmdText"
-            v-model:name-select-value="nameSelectValue" v-model:selected-playnite-id="selectedPlayniteId"
-            :is-playnite="isPlayniteManaged" :show-playnite-picker="showPlaynitePicker"
-            :playnite-installed="playniteInstalled" :name-select-options="nameSelectOptions"
-            :games-loading="gamesLoading" :fallback-option="fallbackOption" :playnite-options="playniteOptions"
-            :lock-playnite="lockPlaynite" @name-focus="onNameFocus" @name-search="onNameSearch"
-            @name-picked="onNamePicked" @load-playnite-games="loadPlayniteGames" @pick-playnite="onPickPlaynite"
-            @unlock-playnite="unlockPlaynite" @open-cover-finder="openCoverFinder" />
+        <form
+          class="space-y-6 text-sm"
+          @submit.prevent="save"
+          @keydown.ctrl.enter.stop.prevent="save"
+        >
+          <AppEditBasicsSection
+            v-model:form="form"
+            v-model:cmd-text="cmdText"
+            v-model:name-select-value="nameSelectValue"
+            v-model:selected-playnite-id="selectedPlayniteId"
+            :is-playnite="isPlayniteManaged"
+            :show-playnite-picker="showPlaynitePicker"
+            :playnite-installed="playniteInstalled"
+            :name-select-options="nameSelectOptions"
+            :games-loading="gamesLoading"
+            :fallback-option="fallbackOption"
+            :playnite-options="playniteOptions"
+            :lock-playnite="lockPlaynite"
+            @name-focus="onNameFocus"
+            @name-search="onNameSearch"
+            @name-picked="onNamePicked"
+            @load-playnite-games="loadPlayniteGames"
+            @pick-playnite="onPickPlaynite"
+            @unlock-playnite="unlockPlaynite"
+            @open-cover-finder="openCoverFinder"
+          />
 
           <div class="grid grid-cols-2 gap-3">
             <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
@@ -60,8 +90,11 @@
             <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.autoDetach" size="small">
               Auto Detach
             </n-checkbox>
-            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small">Wait All</n-checkbox>
-            <n-checkbox v-if="isWindows && !isPlayniteManaged" v-model:checked="form.elevated" size="small">Elevated
+            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small">
+              Wait All
+            </n-checkbox>
+            <n-checkbox v-if="isWindows && !isPlayniteManaged" v-model:checked="form.elevated" size="small">
+              Elevated
             </n-checkbox>
             <n-checkbox v-model:checked="form.terminateOnPause" size="small">
               Terminate On Pause
@@ -72,8 +105,12 @@
             <n-checkbox v-model:checked="form.useAppIdentity" size="small">
               Use App Identity
             </n-checkbox>
-            <n-checkbox v-if="form.useAppIdentity" v-model:checked="form.perClientAppIdentity" size="small"
-              class="md:col-span-2">
+            <n-checkbox
+              v-if="form.useAppIdentity"
+              v-model:checked="form.perClientAppIdentity"
+              size="small"
+              class="md:col-span-2"
+            >
               Per-client App Identity
             </n-checkbox>
             <n-checkbox
@@ -106,10 +143,14 @@
             <div class="space-y-2">
               <n-radio-group v-model:value="displaySelection" class="grid gap-3 sm:grid-cols-2">
                 <n-radio value="virtual" class="app-radio-card cursor-pointer">
-                  <span class="app-radio-card-title">{{ t('config.app_display_override_virtual') }}</span>
+                  <span class="app-radio-card-title">{{
+                    t('config.app_display_override_virtual')
+                  }}</span>
                 </n-radio>
                 <n-radio value="physical" class="app-radio-card cursor-pointer">
-                  <span class="app-radio-card-title">{{ t('config.app_display_override_physical') }}</span>
+                  <span class="app-radio-card-title">{{
+                    t('config.app_display_override_physical')
+                  }}</span>
                 </n-radio>
               </n-radio-group>
             </div>
@@ -119,7 +160,12 @@
                 <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
                   {{ t('config.app_display_physical_label') }}
                 </span>
-                <n-button size="tiny" tertiary :loading="displayDevicesLoading" @click="loadDisplayDevices">
+                <n-button
+                  size="tiny"
+                  tertiary
+                  :loading="displayDevicesLoading"
+                  @click="loadDisplayDevices"
+                >
                   {{ t('_common.refresh') }}
                 </n-button>
               </div>
@@ -134,7 +180,7 @@
                 @focus="onDisplaySelectFocus"
               >
                 <template #option="{ option }">
-                    <div class="leading-tight">
+                  <div class="leading-tight">
                     <div class="">{{ option?.displayName || option?.label }}</div>
                     <div class="text-[12px] opacity-60 font-mono">
                       {{ option?.id || option?.value }}
@@ -169,7 +215,9 @@
                 </template>
               </n-select>
               <div class="text-[11px] opacity-70">
-                <span v-if="displayDevicesError" class="text-red-500">{{ displayDevicesError }}</span>
+                <span v-if="displayDevicesError" class="text-red-500">{{
+                  displayDevicesError
+                }}</span>
                 <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
               </div>
             </div>
@@ -189,10 +237,7 @@
                 </n-button>
               </div>
               <p class="text-[11px] opacity-70">{{ t('config.dd_config_hint') }}</p>
-              <n-radio-group
-                v-model:value="form.ddConfigurationOption"
-                class="grid gap-2"
-              >
+              <n-radio-group v-model:value="form.ddConfigurationOption" class="grid gap-2">
                 <n-radio
                   v-for="opt in appDdConfigurationOptions"
                   :key="opt.value"
@@ -206,86 +251,135 @@
               v-if="displaySelection === 'virtual'"
               class="space-y-5 rounded-xl bg-light/40 dark:bg-dark/40 p-3 md:p-4"
             >
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  {{ t('config.app_virtual_display_mode_label') }}
-                </span>
-                <n-button v-if="form.virtualDisplayMode !== null" size="tiny" tertiary
-                  @click="form.virtualDisplayMode = null">
-                  {{ t('config.app_virtual_display_mode_reset') }}
-                </n-button>
-              </div>
-              <p class="text-[11px] opacity-70">{{ t('config.app_virtual_display_mode_hint') }}</p>
-            </div>
-            <n-radio-group :value="resolvedVirtualDisplayMode"
-              @update:value="(v) => form.virtualDisplayMode = v === globalVirtualDisplayMode ? null : v"
-              class="grid gap-3 sm:grid-cols-3">
-              <n-radio v-for="option in appVirtualDisplayModeOptions" :key="option.value" :value="option.value"
-                class="app-radio-card cursor-pointer">
-                <span class="app-radio-card-title">{{ option.label }}</span>
-              </n-radio>
-            </n-radio-group>
+ 
+              <div class="space-y-2">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                    {{ t('config.app_virtual_display_mode_label') }}
+                  </span>
+                  <n-button
+                    v-if="form.virtualDisplayMode !== null"
+                    size="tiny"
+                    tertiary
+                    @click="form.virtualDisplayMode = null"
+                  >
+                    {{ t('config.app_virtual_display_mode_reset') }}
+                  </n-button>
 
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                  {{ t('config.virtual_display_layout_label') }}
-                </span>
-                <n-button v-if="form.virtualDisplayLayout !== null" size="tiny" tertiary
-                  @click="form.virtualDisplayLayout = null">
-                  {{ t('config.app_virtual_display_layout_reset') }}
-                </n-button>
-              </div>
-              <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
-            </div>
-            <n-radio-group :value="resolvedVirtualDisplayLayout"
-              @update:value="(v) => form.virtualDisplayLayout = v === globalVirtualDisplayLayout ? null : v"
-              class="space-y-4">
-              <div v-for="option in appVirtualDisplayLayoutOptions" :key="option.value"
-                class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
-                @click="selectVirtualDisplayLayout(option.value)"
-                @keydown.enter.prevent="selectVirtualDisplayLayout(option.value)"
-                @keydown.space.prevent="selectVirtualDisplayLayout(option.value)" tabindex="0">
-                <div class="flex items-center gap-3">
-                  <n-radio :value="option.value" />
-                  <span class="text-sm font-semibold">{{ option.label }}</span>
                 </div>
-                <span class="text-[11px] opacity-70 leading-snug ml-6">{{ option.description }}</span>
+                <p class="text-[11px] opacity-70">
+                  {{ t('config.app_virtual_display_mode_hint') }}
+                </p>
               </div>
-            </n-radio-group>
+              <n-radio-group
+                :value="resolvedVirtualDisplayMode"
+                @update:value="
+                  (v) => (form.virtualDisplayMode = v === globalVirtualDisplayMode ? null : v)
+                "
+                class="grid gap-3 sm:grid-cols-3"
+              >
+                <n-radio
+                  v-for="option in appVirtualDisplayModeOptions"
+                  :key="option.value"
+                  :value="option.value"
+                  class="app-radio-card cursor-pointer"
+                >
+                  <span class="app-radio-card-title">{{ option.label }}</span>
+                </n-radio>
+              </n-radio-group>
+
+              <div class="space-y-2">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                    {{ t('config.virtual_display_layout_label') }}
+                  </span>
+                  <n-button
+                    v-if="form.virtualDisplayLayout !== null"
+                    size="tiny"
+                    tertiary
+                    @click="form.virtualDisplayLayout = null"
+                  >
+                    {{ t('config.app_virtual_display_layout_reset') }}
+                  </n-button>
+                </div>
+                <p class="text-[11px] opacity-70">{{ t('config.virtual_display_layout_hint') }}</p>
+              </div>
+              <n-radio-group
+                :value="resolvedVirtualDisplayLayout"
+                @update:value="
+                  (v) => (form.virtualDisplayLayout = v === globalVirtualDisplayLayout ? null : v)
+                "
+                class="space-y-4"
+              >
+                <div
+                  v-for="option in appVirtualDisplayLayoutOptions"
+                  :key="option.value"
+                  class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                  @click="selectVirtualDisplayLayout(option.value)"
+                  @keydown.enter.prevent="selectVirtualDisplayLayout(option.value)"
+                  @keydown.space.prevent="selectVirtualDisplayLayout(option.value)"
+                  tabindex="0"
+                >
+                  <div class="flex items-center gap-3">
+                    <n-radio :value="option.value" />
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                  </div>
+                  <span class="text-[11px] opacity-70 leading-snug ml-6">{{
+                    option.description
+                  }}</span>
+                </div>
+              </n-radio-group>
+            </div>
           </div>
-        </div>
 
-        <AppEditConfigOverridesSection v-model:overrides="form.configOverrides" />
+          <AppEditConfigOverridesSection v-model:overrides="form.configOverrides" />
 
-        <AppEditFrameGenSection v-if="isWindows" v-model:mode="frameGenerationSelection"
-          v-model:gen1="form.gen1FramegenFix" v-model:gen2="form.gen2FramegenFix"
-          v-model:lossless-profile="form.losslessScalingProfile"
-          v-model:lossless-target-fps="form.losslessScalingTargetFps"
+          <AppEditFrameGenSection
+            v-if="isWindows"
+            v-model:mode="frameGenerationSelection"
+            v-model:gen1="form.gen1FramegenFix"
+            v-model:gen2="form.gen2FramegenFix"
+            v-model:lossless-profile="form.losslessScalingProfile"
+            v-model:lossless-target-fps="form.losslessScalingTargetFps"
             v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
-            v-model:lossless-flow-scale="losslessFlowScaleModel" :health="frameGenHealth"
-            :health-loading="frameGenHealthLoading" :health-error="frameGenHealthError"
-            :lossless-active="losslessFrameGenEnabled" :nvidia-active="nvidiaFrameGenEnabled"
-            :using-virtual-display="usingVirtualDisplay" :has-active-lossless-overrides="hasActiveLosslessOverrides"
+            v-model:lossless-flow-scale="losslessFlowScaleModel"
+            :health="frameGenHealth"
+            :health-loading="frameGenHealthLoading"
+            :health-error="frameGenHealthError"
+            :lossless-active="losslessFrameGenEnabled"
+            :nvidia-active="nvidiaFrameGenEnabled"
+            :using-virtual-display="usingVirtualDisplay"
+            :has-active-lossless-overrides="hasActiveLosslessOverrides"
             :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
-            :reset-active-lossless-profile="resetActiveLosslessProfile" @refresh-health="handleFrameGenHealthRequest"
-            @enable-virtual-screen="handleEnableVirtualScreen" />
+            :reset-active-lossless-profile="resetActiveLosslessProfile"
+            @refresh-health="handleFrameGenHealthRequest"
+            @enable-virtual-screen="handleEnableVirtualScreen"
+          />
 
-          <AppEditLosslessScalingSection v-if="isWindows" v-model:form="form"
+          <AppEditLosslessScalingSection
+            v-if="isWindows"
+            v-model:form="form"
             v-model:lossless-performance-mode="losslessPerformanceModeModel"
             v-model:lossless-resolution-scale="losslessResolutionScaleModel"
             v-model:lossless-scaling-mode="losslessScalingModeModel"
-            v-model:lossless-sharpening="losslessSharpeningModel" v-model:lossless-anime-size="losslessAnimeSizeModel"
-            v-model:lossless-anime-vrs="losslessAnimeVrsModel" :is-playnite-managed="isPlayniteManaged"
-            :show-lossless-resolution="showLosslessResolution" :show-lossless-sharpening="showLosslessSharpening"
+            v-model:lossless-sharpening="losslessSharpeningModel"
+            v-model:lossless-anime-size="losslessAnimeSizeModel"
+            v-model:lossless-anime-vrs="losslessAnimeVrsModel"
+            :is-playnite-managed="isPlayniteManaged"
+            :show-lossless-resolution="showLosslessResolution"
+            :show-lossless-sharpening="showLosslessSharpening"
             :show-lossless-anime-options="showLosslessAnimeOptions"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
             :lossless-executable-detected="losslessExecutableDetected"
             :lossless-executable-check-complete="losslessExecutableCheckComplete"
-            :reset-active-lossless-profile="resetActiveLosslessProfile" />
+            :reset-active-lossless-profile="resetActiveLosslessProfile"
+          />
 
-          <AppEditPrepCommandsSection v-model:form="form" :is-windows="isWindows" @add-prep="addPrep" />
+          <AppEditPrepCommandsSection
+            v-model:form="form"
+            :is-windows="isWindows"
+            @add-prep="addPrep"
+          />
           <section class="space-y-3">
             <div class="flex items-center justify-between">
               <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
@@ -300,8 +394,11 @@
             </n-checkbox>
             <div v-if="form.stateCmd.length === 0" class="text-[12px] opacity-60">None</div>
             <div v-else class="space-y-2">
-              <div v-for="(s, i) in form.stateCmd" :key="`state-${i}`"
-                class="rounded-md border border-dark/10 dark:border-light/10 p-2">
+              <div
+                v-for="(s, i) in form.stateCmd"
+                :key="`state-${i}`"
+                class="rounded-md border border-dark/10 dark:border-light/10 p-2"
+              >
                 <div class="flex items-center justify-between gap-2 mb-2">
                   <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
                   <div class="flex items-center gap-2">
@@ -316,13 +413,23 @@
                 <div class="grid grid-cols-1 gap-2">
                   <div>
                     <label class="text-[11px] opacity-60">Do Command</label>
-                    <n-input v-model:value="s.do" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }"
-                      class="font-mono" placeholder="Command to run when stream starts" />
+                    <n-input
+                      v-model:value="s.do"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      class="font-mono"
+                      placeholder="Command to run when stream starts"
+                    />
                   </div>
                   <div>
                     <label class="text-[11px] opacity-60">Undo Command</label>
-                    <n-input v-model:value="s.undo" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }"
-                      class="font-mono" placeholder="Command to run when stream stops" />
+                    <n-input
+                      v-model:value="s.undo"
+                      type="textarea"
+                      :autosize="{ minRows: 1, maxRows: 3 }"
+                      class="font-mono"
+                      placeholder="Command to run when stream stops"
+                    />
                   </div>
                 </div>
               </div>
@@ -338,9 +445,15 @@
 
       <template #footer>
         <div
-          class="flex items-center justify-end w-full gap-2 border-t border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur px-2 py-2">
+          class="flex items-center justify-end w-full gap-2 border-t border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur px-2 py-2"
+        >
           <n-button type="default" strong @click="close">{{ $t('_common.cancel') }}</n-button>
-          <n-button v-if="form.index !== -1" type="error" :disabled="saving" @click="showDeleteConfirm = true">
+          <n-button
+            v-if="form.index !== -1"
+            type="error"
+            :disabled="saving"
+            @click="showDeleteConfirm = true"
+          >
             <i class="fas fa-trash" /> {{ $t('apps.delete') }}
           </n-button>
           <n-button type="primary" :loading="saving" :disabled="saving" @click="save">
@@ -349,11 +462,21 @@
         </div>
       </template>
 
-      <AppEditCoverModal v-model:visible="showCoverModal" :cover-searching="coverSearching" :cover-busy="coverBusy"
-        :cover-candidates="coverCandidates" @pick="useCover" />
+      <AppEditCoverModal
+        v-model:visible="showCoverModal"
+        :cover-searching="coverSearching"
+        :cover-busy="coverBusy"
+        :cover-candidates="coverCandidates"
+        @pick="useCover"
+      />
 
-      <AppEditDeleteConfirmModal v-model:visible="showDeleteConfirm" :is-playnite-auto="isPlayniteAuto"
-        :name="form.name || ''" @cancel="showDeleteConfirm = false" @confirm="del" />
+      <AppEditDeleteConfirmModal
+        v-model:visible="showDeleteConfirm"
+        :is-playnite-auto="isPlayniteAuto"
+        :name="form.name || ''"
+        @cancel="showDeleteConfirm = false"
+        @confirm="del"
+      />
     </n-card>
   </n-modal>
 </template>
@@ -547,10 +670,10 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const cmdStr = Array.isArray(src.cmd) ? src.cmd.join(' ') : (src.cmd ?? '');
   const prep = Array.isArray(src['prep-cmd'])
     ? src['prep-cmd'].map((p) => ({
-      do: String(p?.do ?? ''),
-      undo: String(p?.undo ?? ''),
-      elevated: !!p?.elevated,
-    }))
+        do: String(p?.do ?? ''),
+        undo: String(p?.undo ?? ''),
+        elevated: !!p?.elevated,
+      }))
     : [];
   const state = Array.isArray(src['state-cmd'])
     ? src['state-cmd'].map((p) => ({
@@ -596,9 +719,10 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const rawOutput = String(src.output ?? '');
   const rawVirtualScreen = src['virtual-screen'];
   const virtualScreen =
-    typeof rawVirtualScreen === 'boolean' ? rawVirtualScreen : rawOutput === VIRTUAL_DISPLAY_SELECTION;
-  const sanitizedOutput =
-    virtualScreen && rawOutput === VIRTUAL_DISPLAY_SELECTION ? '' : rawOutput;
+    typeof rawVirtualScreen === 'boolean'
+      ? rawVirtualScreen
+      : rawOutput === VIRTUAL_DISPLAY_SELECTION;
+  const sanitizedOutput = virtualScreen && rawOutput === VIRTUAL_DISPLAY_SELECTION ? '' : rawOutput;
   const serverVirtualDisplayMode = parseAppVirtualDisplayMode(
     (src as any)?.['virtual-display-mode'],
   );
@@ -697,8 +821,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
       ? {
           'config-overrides': Object.fromEntries(
             Object.entries(f.configOverrides).filter(
-              ([k, v]) =>
-                typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
+              ([k, v]) => typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
             ),
           ),
         }
@@ -766,8 +889,10 @@ function toServerPayload(f: AppForm): Record<string, any> {
   const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
   const losslessRuntimeActive = !!f.losslessScalingEnabled || mode === 'lossless-scaling';
   payload['lossless-scaling-framegen'] = losslessRuntimeActive;
-  payload['lossless-scaling-target-fps'] = mode === 'lossless-scaling' ? payloadLosslessTarget : null;
-  payload['lossless-scaling-rtss-limit'] = mode === 'lossless-scaling' ? payloadLosslessLimit : null;
+  payload['lossless-scaling-target-fps'] =
+    mode === 'lossless-scaling' ? payloadLosslessTarget : null;
+  payload['lossless-scaling-rtss-limit'] =
+    mode === 'lossless-scaling' ? payloadLosslessLimit : null;
   payload['lossless-scaling-profile'] =
     f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
   const buildLosslessProfilePayload = (profile: LosslessProfileOverrides) => {
@@ -957,7 +1082,10 @@ watch(
         form.value.frameGenerationMode = 'lossless-scaling';
       }
     } else if (normalized === 'game-provided') {
-      if (form.value.frameGenerationMode === 'lossless-scaling' || form.value.frameGenerationMode === 'nvidia-smooth-motion') {
+      if (
+        form.value.frameGenerationMode === 'lossless-scaling' ||
+        form.value.frameGenerationMode === 'nvidia-smooth-motion'
+      ) {
         form.value.frameGenerationMode = 'game-provided';
       }
     }
@@ -1211,7 +1339,7 @@ async function onNameFocus() {
   }
   // Kick off loading (don’t block the UI), then refresh list
   loadPlayniteGames()
-    .catch(() => { })
+    .catch(() => {})
     .finally(() => {
       onNameSearch(nameSearchQuery.value);
     });
@@ -1382,11 +1510,11 @@ const globalVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() => {
   const layout = (configStore.config as any)?.virtual_display_layout;
   return parseAppVirtualDisplayLayout(layout) ?? 'exclusive';
 });
-const resolvedVirtualDisplayMode = computed<AppVirtualDisplayMode>(() =>
-  form.value.virtualDisplayMode ?? globalVirtualDisplayMode.value,
+const resolvedVirtualDisplayMode = computed<AppVirtualDisplayMode>(
+  () => form.value.virtualDisplayMode ?? globalVirtualDisplayMode.value,
 );
-const resolvedVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() =>
-  form.value.virtualDisplayLayout ?? globalVirtualDisplayLayout.value,
+const resolvedVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(
+  () => form.value.virtualDisplayLayout ?? globalVirtualDisplayLayout.value,
 );
 const APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string> = {
   disabled: 'config.virtual_display_mode_disabled',
@@ -1424,8 +1552,7 @@ const lastPhysicalOutput = ref('');
 const lastVirtualDisplayMode = ref<AppVirtualDisplayMode | null>(null);
 const displaySelection = computed<DisplaySelection>({
   get: () => {
-    const currentOutput =
-      typeof form.value.output === 'string' ? form.value.output.trim() : '';
+    const currentOutput = typeof form.value.output === 'string' ? form.value.output.trim() : '';
     const globalMode = globalVirtualDisplayMode.value;
     const appMode = form.value.virtualDisplayMode;
     if (form.value.virtualScreen || form.value.output === VIRTUAL_DISPLAY_SELECTION) {
@@ -1457,15 +1584,11 @@ const displaySelection = computed<DisplaySelection>({
       }
       form.value.virtualDisplayMode = 'disabled';
       form.value.virtualScreen = false;
-      const current =
-        typeof form.value.output === 'string' ? form.value.output.trim() : '';
+      const current = typeof form.value.output === 'string' ? form.value.output.trim() : '';
       if (!current || current === VIRTUAL_DISPLAY_SELECTION) {
         if (lastPhysicalOutput.value) {
           form.value.output = lastPhysicalOutput.value;
-        } else if (
-          globalOutputName.value &&
-          globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION
-        ) {
+        } else if (globalOutputName.value && globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION) {
           form.value.output = globalOutputName.value;
         }
       }
@@ -1503,7 +1626,11 @@ const windowsBuildNumber = computed<number | null>(() => {
 const autoCaptureUsesWgc = computed(() => {
   if (!isWindows.value) return false;
   const displayVersion = windowsDisplayVersion.value.toUpperCase();
-  if (displayVersion.includes('23H2') || displayVersion.includes('24H1') || displayVersion.includes('24H2')) {
+  if (
+    displayVersion.includes('23H2') ||
+    displayVersion.includes('24H1') ||
+    displayVersion.includes('24H2')
+  ) {
     return true;
   }
   const build = windowsBuildNumber.value;
@@ -1637,7 +1764,11 @@ const displayDeviceOptions = computed(() => {
     const label = getCachedDisplayLabel(current) ?? current;
     opts.push({ label, value: current, displayName: label, id: current, active: null });
   }
-  if (lastPhysicalOutput.value && !seen.has(lastPhysicalOutput.value) && lastPhysicalOutput.value !== current) {
+  if (
+    lastPhysicalOutput.value &&
+    !seen.has(lastPhysicalOutput.value) &&
+    lastPhysicalOutput.value !== current
+  ) {
     const id = lastPhysicalOutput.value;
     const label = getCachedDisplayLabel(id) ?? id;
     opts.push({ label, value: id, displayName: label, id, active: null });
@@ -1681,9 +1812,12 @@ watch(open, (o) => {
   if (o) {
     form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
     if (displaySelection.value === 'physical') {
-      const currentOutput =
-        typeof form.value.output === 'string' ? form.value.output.trim() : '';
-      if (!currentOutput && globalOutputName.value && globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION) {
+      const currentOutput = typeof form.value.output === 'string' ? form.value.output.trim() : '';
+      if (
+        !currentOutput &&
+        globalOutputName.value &&
+        globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION
+      ) {
         form.value.output = globalOutputName.value;
       }
     }
@@ -1696,15 +1830,15 @@ watch(open, (o) => {
     requestAnimationFrame(() => updateShadows());
     ensureNameSelectionFromForm();
     if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => { });
+      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
     } else {
       frameGenHealth.value = null;
       frameGenHealthError.value = null;
     }
     if (isWindows.value) {
-      refreshLosslessExecutableStatus().catch(() => { });
+      refreshLosslessExecutableStatus().catch(() => {});
       if (displaySelection.value === 'physical' && displayDevices.value.length === 0) {
-        loadDisplayDevices().catch(() => { });
+        loadDisplayDevices().catch(() => {});
       }
     }
   } else {
@@ -1717,7 +1851,7 @@ watch(
   () => (configStore.config as any)?.lossless_scaling_path,
   () => {
     if (!open.value || !isWindows.value) return;
-    refreshLosslessExecutableStatus().catch(() => { });
+    refreshLosslessExecutableStatus().catch(() => {});
   },
 );
 
@@ -1730,7 +1864,7 @@ watch(
       displayDevices.value.length === 0 &&
       !displayDevicesLoading.value
     ) {
-      loadDisplayDevices().catch(() => { });
+      loadDisplayDevices().catch(() => {});
     }
     if (selection === 'physical' && !form.value.ddConfigurationOption) {
       form.value.ddConfigurationOption = 'verify_only';
@@ -1798,7 +1932,7 @@ function parseRefreshHz(raw: any): number | null {
       if (valueCandidate !== null) return valueCandidate;
     }
     if (typeof raw.type === 'string' && raw.value !== undefined) {
-      const typed = (raw as { type: string; value: unknown });
+      const typed = raw as { type: string; value: unknown };
       if (typed.type === 'double') {
         return parseRefreshHz(typed.value);
       }
@@ -1817,10 +1951,10 @@ function parseRefreshHz(raw: any): number | null {
     }
     const numerator = Number(
       (raw as any)?.numerator ??
-      (raw as any)?.m_numerator ??
-      (raw as any)?.num ??
-      (raw as any)?.n ??
-      null,
+        (raw as any)?.m_numerator ??
+        (raw as any)?.num ??
+        (raw as any)?.n ??
+        null,
     );
     const denominator = Number(
       (raw as any)?.denominator ?? (raw as any)?.m_denominator ?? (raw as any)?.den ?? 1,
@@ -1958,7 +2092,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
             let target = devices.find((item) => {
               const id = normalizeDeviceId(item?.device_id);
               const displayName = normalizeDeviceId(item?.display_name);
-              return normalizedCandidates.includes(id) || normalizedCandidates.includes(displayName);
+              return (
+                normalizedCandidates.includes(id) || normalizedCandidates.includes(displayName)
+              );
             });
             if (!target) {
               target = devices.find((item) => item && item.info) || devices[0];
@@ -1976,8 +2112,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
               const refreshRaw = info?.refresh_rate ?? info?.refreshRate;
               const activeRefresh = parseRefreshHz(refreshRaw);
               const supportedRatesRaw =
-                (target as any)?.supported_refresh_rates ??
-                (target as any)?.supportedRefreshRates;
+                (target as any)?.supported_refresh_rates ?? (target as any)?.supportedRefreshRates;
               const supportedRates = parseRefreshList(supportedRatesRaw);
               const highestSupportedDxgi =
                 supportedRates.length > 0 ? supportedRates[supportedRates.length - 1] : null;
@@ -1992,7 +2127,12 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     },
                     validateStatus: () => true,
                   });
-                  if (edidRes.status >= 200 && edidRes.status < 300 && edidRes.data && edidRes.data.status !== false) {
+                  if (
+                    edidRes.status >= 200 &&
+                    edidRes.status < 300 &&
+                    edidRes.data &&
+                    edidRes.data.status !== false
+                  ) {
                     const data: any = edidRes.data;
                     if (!displayLabel && typeof data?.device_label === 'string') {
                       displayLabel = data.device_label;
@@ -2008,7 +2148,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     if (capCandidate !== null) {
                       edidCapHz = capCandidate;
                     }
-                    const targetEntries = Array.isArray((data as any)?.targets) ? (data as any).targets : [];
+                    const targetEntries = Array.isArray((data as any)?.targets)
+                      ? (data as any).targets
+                      : [];
                     for (const entry of targetEntries) {
                       const hz = parseRefreshHz((entry as any)?.hz);
                       if (hz === null) continue;
@@ -2059,9 +2201,8 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                 ? Math.max(...failingUnder144.map((entry) => entry.fps))
                 : null;
               only144Fails =
-                displayTargets.some(
-                  (entry) => entry.fps === 144 && entry.supported === false,
-                ) && highestFailUnder144 === null;
+                displayTargets.some((entry) => entry.fps === 144 && entry.supported === false) &&
+                highestFailUnder144 === null;
 
               const evaluationHz = highestSupported ?? activeRefresh;
               const hasActive = activeRefresh !== null;
@@ -2080,7 +2221,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
               } else if (evaluationHz >= 240 - tolerance) {
                 displayStatus = 'pass';
                 if (only144Fails) {
-                  const baseHz = hasActive ? activeRefresh ?? evaluationHz : evaluationHz;
+                  const baseHz = hasActive ? (activeRefresh ?? evaluationHz) : evaluationHz;
                   displayMessage = `Current refresh is ${Math.round(baseHz)} Hz. Streams up to 120 FPS are covered. Only 144 FPS streams require the Sunshine virtual screen or a higher-refresh display.`;
                   if (!hasActive && highestSupported !== null) {
                     displayMessage = `Display supports up to ${Math.round(highestSupported)} Hz. Streams up to 120 FPS are covered. Only 144 FPS streams require the Sunshine virtual screen or a higher-refresh display.`;
@@ -2185,8 +2326,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 
       if (highestFailUnder144 !== null) {
         health.suggestion = {
-          message:
-            `Use the display override above to switch to the Sunshine virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+          message: `Use the display override above to switch to the Sunshine virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
           emphasis: 'warning',
         };
       } else if (captureStatus === 'warn' || captureStatus === 'fail') {
@@ -2216,18 +2356,24 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 }
 
 function handleFrameGenHealthRequest() {
-  refreshFrameGenHealth({ reason: 'manual' }).catch(() => { });
+  refreshFrameGenHealth({ reason: 'manual' }).catch(() => {});
 }
 
 function handleEnableVirtualScreen() {
   if (!isWindows.value) return;
   displayOverrideEnabled.value = true;
   displaySelection.value = 'virtual';
-  refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => { });
+  refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
 }
 
 function warnIfHealthIssues(reason: FrameGenHealthReason) {
-  if (reason === 'auto' || reason === 'virtual-toggle' || reason === 'capture-change' || reason === 'output-change' || reason === 'open') {
+  if (
+    reason === 'auto' ||
+    reason === 'virtual-toggle' ||
+    reason === 'capture-change' ||
+    reason === 'output-change' ||
+    reason === 'open'
+  ) {
     return;
   }
   if (!message) return;
@@ -2285,12 +2431,12 @@ async function loadPlayniteGames() {
       .filter((g) => !!g.installed)
       .map((g) => ({ label: g.name || g.id, value: g.id }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  } catch (_) { }
+  } catch (_) {}
   gamesLoading.value = false;
   // Refresh suggestions (replace placeholder with actual items)
   try {
     onNameSearch(nameSearchQuery.value);
-  } catch { }
+  } catch {}
 }
 
 async function refreshPlayniteStatus() {
@@ -2300,7 +2446,7 @@ async function refreshPlayniteStatus() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       playniteInstalled.value = !!(r.data as any).installed;
     }
-  } catch (_) { }
+  } catch (_) {}
 }
 
 function onPickPlaynite(id: string) {
@@ -2407,7 +2553,7 @@ watch(
     if (selection === prev) return;
     const reason: FrameGenHealthReason =
       selection === 'virtual' || prev === 'virtual' ? 'virtual-toggle' : 'output-change';
-    refreshFrameGenHealth({ reason, silent: true }).catch(() => { });
+    refreshFrameGenHealth({ reason, silent: true }).catch(() => {});
   },
 );
 
@@ -2416,7 +2562,7 @@ watch(
   () => {
     if (!isWindows.value) return;
     if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
-    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => { });
+    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
 
@@ -2426,7 +2572,7 @@ watch(
     if (enabled === prev) return;
     if (!isWindows.value) return;
     if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
-    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => { });
+    refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
 
@@ -2435,7 +2581,7 @@ watch(
   () => {
     if (!isWindows.value) return;
     if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
-    refreshFrameGenHealth({ reason: 'output-change', silent: true }).catch(() => { });
+    refreshFrameGenHealth({ reason: 'output-change', silent: true }).catch(() => {});
   },
 );
 
@@ -2464,7 +2610,7 @@ watch(
           { duration: 8000 },
         );
       }
-      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => { });
+      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
       setTimeout(() => {
         autoEnablingGen1 = false;
       }, 100);
@@ -2505,7 +2651,7 @@ onMounted(() => {
   try {
     ro = new ResizeObserver(() => updateShadows());
     if (el) ro.observe(el);
-  } catch { }
+  } catch {}
   // Initial calc after next paint
   requestAnimationFrame(() => updateShadows());
 });
@@ -2514,7 +2660,7 @@ onBeforeUnmount(() => {
   if (el) el.removeEventListener('scroll', onBodyScroll as any);
   try {
     ro?.disconnect();
-  } catch { }
+  } catch {}
   ro = null;
 });
 
@@ -2589,7 +2735,7 @@ async function save() {
           form.value.playniteManaged = 'manual';
         }
       }
-    } catch (_) { }
+    } catch (_) {}
     const payload = toServerPayload(form.value);
     const response = await http.post('./api/apps', payload, {
       headers: { 'Content-Type': 'application/json' },
@@ -2623,7 +2769,7 @@ async function del() {
         try {
           // @ts-ignore optional chaining for older runtime
           if (!configStore.config) await (configStore.fetchConfig?.() || Promise.resolve());
-        } catch { }
+        } catch {}
         // Start from current local store state to avoid desync
         const current: Array<{ id: string; name: string }> = Array.isArray(
           (configStore.config as any)?.playnite_exclude_games,
@@ -2647,18 +2793,18 @@ async function del() {
       if (r && (r as any).data && (r as any).data.playniteFullscreenDisabled) {
         try {
           configStore.updateOption('playnite_fullscreen_entry_enabled', false);
-        } catch { }
+        } catch {}
         try {
           message?.info(
             'Playnite Fullscreen entry removed. The Playnite Desktop option was turned off in Settings -> Playnite.',
           );
-        } catch { }
+        } catch {}
       }
-    } catch { }
+    } catch {}
     // Best-effort force sync on Windows environments
     try {
       await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
-    } catch (_) { }
+    } catch (_) {}
     emit('deleted');
     close();
   } finally {
@@ -2715,17 +2861,21 @@ async function del() {
   position: sticky;
   top: 0;
   height: 16px;
-  background: linear-gradient(to bottom,
-      rgb(var(--color-light) / 0.9),
-      rgb(var(--color-light) / 0));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--color-light) / 0.9),
+    rgb(var(--color-light) / 0)
+  );
   pointer-events: none;
   z-index: 1;
 }
 
 .dark .scroll-shadow-top {
-  background: linear-gradient(to bottom,
-      rgb(var(--color-surface) / 0.9),
-      rgb(var(--color-surface) / 0));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--color-surface) / 0.9),
+    rgb(var(--color-surface) / 0)
+  );
 }
 
 .scroll-shadow-bottom {
@@ -2738,9 +2888,11 @@ async function del() {
 }
 
 .dark .scroll-shadow-bottom {
-  background: linear-gradient(to top,
-      rgb(var(--color-surface) / 0.9),
-      rgb(var(--color-surface) / 0));
+  background: linear-gradient(
+    to top,
+    rgb(var(--color-surface) / 0.9),
+    rgb(var(--color-surface) / 0)
+  );
 }
 
 .ui-input {

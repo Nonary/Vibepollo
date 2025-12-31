@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -1874,9 +1875,23 @@ namespace platf {
       QueryPerformanceFrequency(&frequency);
       return frequency.QuadPart;
     };
-    static const double frequency = get_frequency();
-    if (frequency) {
-      return std::chrono::nanoseconds((int64_t) ((performance_counter1 - performance_counter2) * frequency / std::nano::den));
+    static const int64_t frequency = get_frequency();
+    if (frequency > 0) {
+      const int64_t ticks = performance_counter1 - performance_counter2;
+      const bool negative = ticks < 0;
+      const uint64_t abs_ticks =
+        negative ? static_cast<uint64_t>(-(ticks + 1)) + 1 : static_cast<uint64_t>(ticks);
+      const auto seconds = abs_ticks / static_cast<uint64_t>(frequency);
+      const auto remainder = abs_ticks % static_cast<uint64_t>(frequency);
+      auto nanos = seconds * static_cast<uint64_t>(std::nano::den) +
+                   (remainder * static_cast<uint64_t>(std::nano::den)) / static_cast<uint64_t>(frequency);
+      constexpr uint64_t max_nanos = static_cast<uint64_t>((std::numeric_limits<int64_t>::max)());
+      if (nanos > max_nanos) {
+        nanos = max_nanos;
+      }
+      const auto signed_nanos =
+        static_cast<int64_t>(negative ? -static_cast<int64_t>(nanos) : static_cast<int64_t>(nanos));
+      return std::chrono::nanoseconds {signed_nanos};
     }
     return {};
   }

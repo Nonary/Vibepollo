@@ -16,6 +16,7 @@ interface InputCaptureOptions {
   video?: HTMLVideoElement | null;
   onMetrics?: (metrics: InputCaptureMetrics) => void;
   gamepad?: boolean;
+  shouldDrop?: (payload: InputMessage) => boolean;
 }
 
 const WHEEL_STEP_PIXELS = 120;
@@ -30,7 +31,10 @@ const SYSTEM_KEY_CODES = [
   'OSRight',
 ];
 
-function getKeyboardLockApi(): { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void } | null {
+function getKeyboardLockApi(): {
+  lock?: (keys?: string[]) => Promise<void>;
+  unlock?: () => void;
+} | null {
   if (typeof navigator === 'undefined') return null;
   const anyNavigator = navigator as Navigator & {
     keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void };
@@ -209,7 +213,13 @@ function resolveGamepadType(gamepad: Gamepad): number {
   if (id.includes('nintendo') || id.includes('switch') || id.includes('joy-con')) {
     return GAMEPAD_TYPE.nintendo;
   }
-  if (id.includes('playstation') || id.includes('dualshock') || id.includes('dualsense') || id.includes('ps4') || id.includes('ps5')) {
+  if (
+    id.includes('playstation') ||
+    id.includes('dualshock') ||
+    id.includes('dualsense') ||
+    id.includes('ps4') ||
+    id.includes('ps5')
+  ) {
     return GAMEPAD_TYPE.playstation;
   }
   if (id.includes('xbox')) {
@@ -290,7 +300,9 @@ function readGamepadState(gamepad: Gamepad, buttonMap: Map<number, number>): Gam
 
 function readMotionVector(value: unknown): GamepadVector | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const array = Array.isArray(value) ? value : (value as { length?: number; [index: number]: number });
+  const array = Array.isArray(value)
+    ? value
+    : (value as { length?: number; [index: number]: number });
   if (typeof array.length !== 'number' || array.length < 3) return undefined;
   const x = Number(array[0]);
   const y = Number(array[1]);
@@ -300,9 +312,15 @@ function readMotionVector(value: unknown): GamepadVector | undefined {
 }
 
 function readGamepadMotion(gamepad: Gamepad): { gyro?: GamepadVector; accel?: GamepadVector } {
-  const pose = (gamepad as { pose?: { angularVelocity?: unknown; linearAcceleration?: unknown } | null }).pose;
-  const motion = (gamepad as { motion?: { angularVelocity?: unknown; linearAcceleration?: unknown } }).motion;
-  const motionData = (gamepad as { motionData?: { angularVelocity?: unknown; linearAcceleration?: unknown } }).motionData;
+  const pose = (
+    gamepad as { pose?: { angularVelocity?: unknown; linearAcceleration?: unknown } | null }
+  ).pose;
+  const motion = (
+    gamepad as { motion?: { angularVelocity?: unknown; linearAcceleration?: unknown } }
+  ).motion;
+  const motionData = (
+    gamepad as { motionData?: { angularVelocity?: unknown; linearAcceleration?: unknown } }
+  ).motionData;
   const source = motion ?? motionData ?? pose ?? null;
   if (!source) return {};
   const gyro = readMotionVector(source.angularVelocity);
@@ -348,7 +366,8 @@ function setMotionRequest(id: number, motionType: number, enabled: boolean): voi
 
 function getGamepads(): (Gamepad | null)[] {
   if (typeof navigator === 'undefined') return [];
-  const fallback = (navigator as Navigator & { webkitGetGamepads?: () => (Gamepad | null)[] }).webkitGetGamepads;
+  const fallback = (navigator as Navigator & { webkitGetGamepads?: () => (Gamepad | null)[] })
+    .webkitGetGamepads;
   const pads = navigator.getGamepads?.() ?? fallback?.() ?? [];
   return Array.isArray(pads) ? pads : Array.from(pads);
 }
@@ -378,8 +397,7 @@ export function applyGamepadFeedback(message: GamepadFeedbackMessage | unknown):
     return;
   }
 
-  const gamepad =
-    activeGamepads.get(id) ?? getGamepads()[id];
+  const gamepad = activeGamepads.get(id) ?? getGamepads()[id];
   if (!gamepad) return;
   const actuator = getHapticActuator(gamepad);
   if (!actuator) return;
@@ -410,6 +428,7 @@ export function attachInputCapture(
   const video = options.video ?? null;
   const onMetrics = options.onMetrics;
   const gamepadEnabled = options.gamepad ?? true;
+  const shouldDrop = options.shouldDrop;
   let queuedMove: InputMessage | null = null;
   let queuedMoveAt = 0;
   let rafId = 0;
@@ -420,7 +439,8 @@ export function attachInputCapture(
     gamepadEnabled &&
     typeof navigator !== 'undefined' &&
     (typeof navigator.getGamepads === 'function' ||
-      typeof (navigator as Navigator & { webkitGetGamepads?: () => (Gamepad | null)[] }).webkitGetGamepads === 'function');
+      typeof (navigator as Navigator & { webkitGetGamepads?: () => (Gamepad | null)[] })
+        .webkitGetGamepads === 'function');
   const metrics: InputCaptureMetrics = {};
   let moveDelaySum = 0;
   let moveDelaySamples = 0;
@@ -442,6 +462,9 @@ export function attachInputCapture(
     return out;
   };
   const sendPayload = (payload: InputMessage) => {
+    if (shouldDrop?.(payload)) {
+      return false;
+    }
     if (payload.type === 'mouse_move') {
       return send(encodeMouseMove(payload)) !== false;
     }

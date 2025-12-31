@@ -495,10 +495,9 @@ export const useConfigStore = defineStore('config', () => {
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
       if (legacyVsync) {
         if (!hasNewVsync) {
-          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (data as Record<
-            string,
-            unknown
-          >)['rtss_disable_vsync_ullm'];
+          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (
+            data as Record<string, unknown>
+          )['rtss_disable_vsync_ullm'];
         }
         delete (data as Record<string, unknown>)['rtss_disable_vsync_ullm'];
       }
@@ -585,9 +584,7 @@ export const useConfigStore = defineStore('config', () => {
     };
     const normalizeStringArray = (v: any): string[] => {
       if (Array.isArray(v)) {
-        return v
-          .map((item) => String(item ?? '').trim())
-          .filter((item) => item.length > 0);
+        return v.map((item) => String(item ?? '').trim()).filter((item) => item.length > 0);
       }
       if (typeof v === 'string') {
         // Try JSON first

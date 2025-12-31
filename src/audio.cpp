@@ -115,7 +115,7 @@ namespace audio {
     while (auto sample = samples->pop()) {
       buffer_t packet {1400};
 
-      if (webrtc_stream::has_active_sessions()) {
+      if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
         webrtc_stream::submit_audio_frame(*sample, stream.sampleRate, stream.channelCount, frame_size);
       }
 
@@ -128,7 +128,7 @@ namespace audio {
       }
 
       packet.fake_resize(bytes);
-      if (webrtc_stream::has_active_sessions()) {
+      if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
         webrtc_stream::submit_audio_packet(packet);
       }
       packets->raise(channel_data, std::move(packet));
@@ -263,7 +263,9 @@ namespace audio {
       }
 
       if (config.bypass_opus) {
-        webrtc_stream::submit_audio_frame(sample_buffer, stream.sampleRate, stream.channelCount, frame_size);
+        if (channel_data == nullptr) {
+          webrtc_stream::submit_audio_frame(sample_buffer, stream.sampleRate, stream.channelCount, frame_size);
+        }
       } else {
         samples->raise(std::move(sample_buffer));
       }
