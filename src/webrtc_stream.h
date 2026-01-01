@@ -23,6 +23,9 @@ namespace webrtc_stream {
     bool encoded = true;
     bool host_audio = false;
 
+    std::optional<std::string> client_name;
+    std::optional<std::string> client_uuid;
+
     std::optional<int> width;
     std::optional<int> height;
     std::optional<int> fps;
@@ -45,10 +48,16 @@ namespace webrtc_stream {
     bool video = true;
     bool encoded = true;
 
+    std::optional<std::string> client_name;
+    std::optional<std::string> client_uuid;
+
     std::uint64_t audio_packets = 0;
     std::uint64_t video_packets = 0;
     std::uint64_t audio_dropped = 0;
     std::uint64_t video_dropped = 0;
+    std::size_t audio_queue_frames = 0;
+    std::size_t video_queue_frames = 0;
+    std::uint32_t video_inflight_frames = 0;
     bool has_remote_offer = false;
     bool has_local_answer = false;
     std::size_t ice_candidates = 0;

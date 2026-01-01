@@ -37,6 +37,9 @@ export interface WebRtcSessionState {
   video_packets?: number;
   audio_dropped?: number;
   video_dropped?: number;
+  audio_queue_frames?: number;
+  video_queue_frames?: number;
+  video_inflight_frames?: number;
   has_remote_offer?: boolean;
   has_local_answer?: boolean;
   ice_candidates?: number;

@@ -536,6 +536,14 @@
                     >
                   </div>
                   <div class="debug-item">
+                    <span class="debug-label">Server queues</span>
+                    <span class="debug-value"
+                      >V {{ displayValue(serverSession?.video_queue_frames) }} / A
+                      {{ displayValue(serverSession?.audio_queue_frames) }} (inflight
+                      {{ displayValue(serverSession?.video_inflight_frames) }})</span
+                    >
+                  </div>
+                  <div class="debug-item">
                     <span class="debug-label">Inbound bytes</span>
                     <span class="debug-value"
                       >V {{ formatBytes(stats.videoBytesReceived) }} / A
@@ -810,6 +818,13 @@ const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number 
   smoothness: { slackMs: 3, maxAgeFrames: 3 },
 };
 
+function clampMaxAgeFrames(value: number | null | undefined, mode?: PacingMode): number {
+  const resolvedMode = mode ?? 'balanced';
+  const preset = pacingPresets[resolvedMode].maxAgeFrames;
+  if (value == null || !Number.isFinite(value)) return preset;
+  return Math.min(preset, Math.max(1, Math.round(value)));
+}
+
 function maxFrameAgeMsFromFrames(fps: number, frames: number): number {
   const safeFps = fps > 0 ? fps : 60;
   return Math.round((1000 / safeFps) * frames);
@@ -845,6 +860,8 @@ function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
       Math.round((normalized.videoMaxFrameAgeMs / 1000) * fps),
     );
   }
+  const mode = normalized.videoPacingMode ?? 'balanced';
+  normalized.videoMaxFrameAgeFrames = clampMaxAgeFrames(normalized.videoMaxFrameAgeFrames ?? null, mode);
   return normalized;
 }
 
@@ -871,14 +888,10 @@ function persistCachedConfig(): void {
 
 const maxFrameAgeFrames = computed({
   get() {
-    return config.videoMaxFrameAgeFrames ?? pacingPresets[config.videoPacingMode].maxAgeFrames;
+    return clampMaxAgeFrames(config.videoMaxFrameAgeFrames ?? null, config.videoPacingMode);
   },
   set(value: number | null) {
-    if (value == null || !Number.isFinite(value)) {
-      config.videoMaxFrameAgeFrames = pacingPresets[config.videoPacingMode].maxAgeFrames;
-      return;
-    }
-    config.videoMaxFrameAgeFrames = Math.max(1, Math.round(value));
+    config.videoMaxFrameAgeFrames = clampMaxAgeFrames(value, config.videoPacingMode);
   },
 });
 
@@ -1286,10 +1299,11 @@ const onFullscreenChange = () => {
   if (!isFullscreen.value) {
     cancelEscHold();
   }
-  // Reset audio element to flush jitter buffer on fullscreen change.
+  // Reset media elements to flush jitter buffers on fullscreen change.
   // Browser fullscreen transitions can cause momentary playback pauses,
-  // leading to audio buffer accumulation and delayed playback.
+  // leading to buffer accumulation and delayed playback.
   resetAudioElement();
+  resetVideoElement();
 };
 
 function resetAudioElement(): void {
@@ -1315,6 +1329,27 @@ function resetAudioElement(): void {
     }
   });
 }
+
+function resetVideoElement(): void {
+  if (!videoEl.value || !videoStream) return;
+  const tracks = videoStream.getVideoTracks();
+  if (!tracks.length) return;
+  const wasPlaying = !videoEl.value.paused;
+  videoEl.value.srcObject = null;
+  queueMicrotask(() => {
+    if (!videoEl.value || !videoStream) return;
+    videoEl.value.srcObject = videoStream;
+    videoEl.value.muted = false;
+    if (wasPlaying) {
+      const playPromise = videoEl.value.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+          /* ignore autoplay restrictions */
+        });
+      }
+    }
+  });
+}
 const onOverlayHotkey = (event: KeyboardEvent) => {
   if (!event.ctrlKey || !event.altKey || !event.shiftKey) return;
   if (event.code !== 'KeyS') return;
@@ -1328,9 +1363,10 @@ const onPageHide = () => {
 };
 
 const onVisibilityChange = () => {
-  // Reset audio when tab becomes visible to flush any accumulated buffer
+  // Reset media when tab becomes visible to flush any accumulated buffer
   if (document.visibilityState === 'visible') {
     resetAudioElement();
+    resetVideoElement();
   }
 };
 
@@ -1436,6 +1472,28 @@ function updateRemoteStreamInfo(stream: MediaStream): void {
   remoteStreamInfo.value = info;
 }
 
+let videoStream: MediaStream | null = null;
+function updateVideoElement(stream: MediaStream): boolean {
+  const videoTrack = stream.getVideoTracks()[0];
+  if (!videoEl.value || !videoTrack) return false;
+  if (!videoStream) {
+    videoStream = new MediaStream();
+  }
+  const existingTrack = videoStream.getVideoTracks()[0];
+  if (existingTrack === videoTrack) {
+    if (videoEl.value.srcObject !== videoStream) {
+      videoEl.value.srcObject = videoStream;
+    }
+    return true;
+  }
+  videoStream.getVideoTracks().forEach((track) => videoStream?.removeTrack(track));
+  videoStream.addTrack(videoTrack);
+  if (videoEl.value.srcObject !== videoStream) {
+    videoEl.value.srcObject = videoStream;
+  }
+  return true;
+}
+
 function updateAudioElement(stream: MediaStream): void {
   const audioTrack = stream.getAudioTracks()[0];
   if (!audioEl.value || !audioTrack) return;
@@ -1455,6 +1513,48 @@ function updateAudioElement(stream: MediaStream): void {
     }
   }
 }
+
+const AUDIO_BUFFER_RESET_THRESHOLD_MS = 120;
+const VIDEO_BUFFER_RESET_THRESHOLD_MS = 120;
+const AV_BUFFER_RESET_SUSTAIN_MS = 3000;
+const AV_BUFFER_RESET_COOLDOWN_MS = 15000;
+let avBufferOverloadedSince: number | null = null;
+let lastAvBufferResetAt: number | null = null;
+watch(
+  () => [stats.value.audioJitterBufferMs, stats.value.videoJitterBufferMs] as const,
+  ([audioValue, videoValue]) => {
+    if (!isConnected.value || !isTabActive()) {
+      avBufferOverloadedSince = null;
+      return;
+    }
+    const audioOverloaded =
+      typeof audioValue === 'number' &&
+      Number.isFinite(audioValue) &&
+      audioValue >= AUDIO_BUFFER_RESET_THRESHOLD_MS;
+    const videoOverloaded =
+      typeof videoValue === 'number' &&
+      Number.isFinite(videoValue) &&
+      videoValue >= VIDEO_BUFFER_RESET_THRESHOLD_MS;
+    if (!audioOverloaded && !videoOverloaded) {
+      avBufferOverloadedSince = null;
+      return;
+    }
+    const now = Date.now();
+    if (avBufferOverloadedSince == null) {
+      avBufferOverloadedSince = now;
+      return;
+    }
+    if (now - avBufferOverloadedSince < AV_BUFFER_RESET_SUSTAIN_MS) return;
+    if (lastAvBufferResetAt != null && now - lastAvBufferResetAt < AV_BUFFER_RESET_COOLDOWN_MS) {
+      return;
+    }
+    lastAvBufferResetAt = now;
+    avBufferOverloadedSince = null;
+    pushVideoEvent('av-buffer-reset');
+    resetAudioElement();
+    resetVideoElement();
+  },
+);
 
 function stopServerSessionPolling(): void {
   if (serverSessionTimer) {
@@ -1594,17 +1694,19 @@ async function connect() {
       {
         onRemoteStream: (stream) => {
           if (videoEl.value) {
-            videoEl.value.srcObject = stream;
+            const hasVideo = updateVideoElement(stream);
             videoEl.value.muted = false;
             videoEl.value.volume = 1;
             updateRemoteStreamInfo(stream);
             updateAudioElement(stream);
-            const playPromise = videoEl.value.play();
-            if (playPromise && typeof playPromise.catch === 'function') {
-              playPromise.catch((error) => {
-                const name = error && typeof error === 'object' ? (error as any).name : '';
-                pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
-              });
+            if (hasVideo) {
+              const playPromise = videoEl.value.play();
+              if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch((error) => {
+                  const name = error && typeof error === 'object' ? (error as any).name : '';
+                  pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
+                });
+              }
             }
           }
         },
@@ -1662,6 +1764,7 @@ async function disconnect() {
   detachInputCapture();
   if (videoEl.value) videoEl.value.srcObject = null;
   if (audioEl.value) audioEl.value.srcObject = null;
+  videoStream = null;
   audioStream = null;
   audioAutoplayRequested = false;
   sessionId.value = null;

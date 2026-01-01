@@ -128,9 +128,6 @@ namespace audio {
       }
 
       packet.fake_resize(bytes);
-      if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
-        webrtc_stream::submit_audio_packet(packet);
-      }
       packets->raise(channel_data, std::move(packet));
     }
   }

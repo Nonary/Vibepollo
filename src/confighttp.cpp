@@ -247,6 +247,9 @@ namespace confighttp {
     output["video_packets"] = state.video_packets;
     output["audio_dropped"] = state.audio_dropped;
     output["video_dropped"] = state.video_dropped;
+    output["audio_queue_frames"] = state.audio_queue_frames;
+    output["video_queue_frames"] = state.video_queue_frames;
+    output["video_inflight_frames"] = state.video_inflight_frames;
     output["has_remote_offer"] = state.has_remote_offer;
     output["has_local_answer"] = state.has_local_answer;
     output["ice_candidates"] = state.ice_candidates;

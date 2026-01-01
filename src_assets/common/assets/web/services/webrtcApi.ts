@@ -61,9 +61,44 @@ export interface WebRtcSessionEndOptions {
   keepalive?: boolean;
 }
 
+function maxFrameAgeForMode(mode?: StreamConfig['videoPacingMode']): number {
+  switch (mode) {
+    case 'latency':
+      return 1;
+    case 'smoothness':
+      return 3;
+    case 'balanced':
+    default:
+      return 2;
+  }
+}
+
+function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
+  const fps =
+    typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
+  const maxFrames = maxFrameAgeForMode(config.videoPacingMode);
+  const maxMsForMode = Math.round((1000 / fps) * maxFrames);
+  const maxMs = Math.min(250, Math.max(5, maxMsForMode));
+  if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
+    return Math.min(maxMs, Math.round(config.videoMaxFrameAgeMs));
+  }
+  if (
+    typeof config.videoMaxFrameAgeFrames !== 'number' ||
+    !Number.isFinite(config.videoMaxFrameAgeFrames) ||
+    config.videoMaxFrameAgeFrames <= 0
+  ) {
+    return undefined;
+  }
+  const frames = Math.min(maxFrames, Math.round(config.videoMaxFrameAgeFrames));
+  const computed = Math.round((1000 / fps) * frames);
+  if (!Number.isFinite(computed)) return undefined;
+  return Math.min(maxMs, Math.max(5, computed));
+}
+
 export class WebRtcHttpApi implements WebRtcApi {
   async createSession(config: StreamConfig): Promise<WebRtcSessionInfo> {
     const muteHostAudio = config.muteHostAudio ?? true;
+    const videoMaxFrameAgeMs = resolveVideoMaxFrameAgeMs(config);
     const payload = {
       audio: true,
       host_audio: !muteHostAudio,
@@ -82,7 +117,7 @@ export class WebRtcHttpApi implements WebRtcApi {
       resume: config.resume,
       video_pacing_mode: config.videoPacingMode,
       video_pacing_slack_ms: config.videoPacingSlackMs,
-      video_max_frame_age_ms: config.videoMaxFrameAgeMs,
+      video_max_frame_age_ms: videoMaxFrameAgeMs,
     };
     const r = await http.post<WebRtcSessionResponse>('/api/webrtc/sessions', payload, {
       validateStatus: () => true,
