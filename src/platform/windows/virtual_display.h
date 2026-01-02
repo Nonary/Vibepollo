@@ -61,6 +61,7 @@ namespace VDISPLAY {
     std::optional<std::string> hdr_profile;
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
+    std::optional<std::wstring> monitor_device_path;
     unsigned int max_attempts = 3;
     std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
     std::function<bool()> should_abort;
@@ -94,6 +95,7 @@ namespace VDISPLAY {
   bool is_virtual_display_guid_tracked(const GUID &guid);
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
+  std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch);

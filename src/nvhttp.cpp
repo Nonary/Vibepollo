@@ -1764,11 +1764,11 @@ namespace nvhttp {
         launch_session->virtual_display_failed = false;
         if (display_info->device_id && !display_info->device_id->empty()) {
           launch_session->virtual_display_device_id = *display_info->device_id;
-        } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
-          launch_session->virtual_display_device_id = *resolved_device;
-        } else {
-          launch_session->virtual_display_device_id.clear();
-        }
+          } else if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(client_label)) {
+            launch_session->virtual_display_device_id = *resolved_device;
+          } else {
+            launch_session->virtual_display_device_id.clear();
+          }
         launch_session->virtual_display_ready_since = display_info->ready_since;
         if (display_info->display_name && !display_info->display_name->empty()) {
           BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
@@ -1787,11 +1787,12 @@ namespace nvhttp {
          recovery_params.client_name = client_label;
          recovery_params.hdr_profile = launch_session->hdr_profile;
          recovery_params.display_name = display_info->display_name;
-        if (display_info->device_id && !display_info->device_id->empty()) {
-          recovery_params.device_id = *display_info->device_id;
-        } else if (!launch_session->virtual_display_device_id.empty()) {
-          recovery_params.device_id = launch_session->virtual_display_device_id;
-        }
+         recovery_params.monitor_device_path = display_info->monitor_device_path;
+         if (display_info->device_id && !display_info->device_id->empty()) {
+           recovery_params.device_id = *display_info->device_id;
+         } else if (!launch_session->virtual_display_device_id.empty()) {
+           recovery_params.device_id = launch_session->virtual_display_device_id;
+         }
         recovery_params.max_attempts = 3;
 
         GUID recovery_guid = virtual_display_guid;
@@ -1897,14 +1898,14 @@ namespace nvhttp {
         }
         if (applied) {
           auto gate_promise = std::make_shared<std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e>>();
-          launch_session->display_helper_gate = gate_promise->get_future().share();
-          BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session start).";
+           launch_session->display_helper_gate = gate_promise->get_future().share();
+           BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session start).";
 
-          std::thread([gate_promise]() {
-            constexpr auto kVerificationTimeout = std::chrono::seconds(20);
-            const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
-            rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
-              rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+           std::thread([gate_promise]() {
+             constexpr auto kVerificationTimeout = std::chrono::seconds(6);
+             const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
+             rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
+               rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
 
             if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
               gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed;

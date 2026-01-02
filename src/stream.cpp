@@ -2016,8 +2016,13 @@ namespace stream {
       BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
       rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
       try {
-        session->display_helper_gate.wait();
-        gate_status = session->display_helper_gate.get();
+        constexpr auto kGateTimeout = std::chrono::seconds(7);
+        if (session->display_helper_gate.wait_for(kGateTimeout) == std::future_status::ready) {
+          gate_status = session->display_helper_gate.get();
+        } else {
+          BOOST_LOG(warning) << "Display helper: gate wait timed out; proceeding with capture.";
+          gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Display helper: gate wait failed (" << e.what() << "); proceeding with capture.";
         gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;

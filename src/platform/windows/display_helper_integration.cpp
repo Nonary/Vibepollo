@@ -225,6 +225,11 @@ namespace {
       return request.session->virtual_display_device_id;
     }
     if (request.session && request.session->virtual_display) {
+      if (!request.session->client_name.empty()) {
+        if (auto resolved = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(request.session->client_name)) {
+          return resolved;
+        }
+      }
       if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
         return resolved;
       }
