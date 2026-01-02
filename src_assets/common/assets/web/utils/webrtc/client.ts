@@ -32,6 +32,7 @@ interface StatsState {
   lastAudioJitterBufferEmittedCount?: number;
   lastVideoTotalDecodeTime?: number;
   lastVideoFramesDecoded?: number;
+  lastVideoFramesReceived?: number;
 }
 
 const ENCODING_MIME: Record<string, string[]> = {
@@ -763,7 +764,7 @@ export class WebRtcClient {
 
     const videoBytes: number | undefined = videoInbound?.bytesReceived;
     const audioBytes: number | undefined = audioInbound?.bytesReceived;
-    const videoFps: number | undefined = videoInbound?.framesPerSecond;
+    const inboundVideoFps: number | undefined = videoInbound?.framesPerSecond;
     const packetsLost: number | undefined =
       (typeof videoInbound?.packetsLost === 'number' ? videoInbound.packetsLost : undefined) ??
       (typeof audioInbound?.packetsLost === 'number' ? audioInbound.packetsLost : undefined);
@@ -826,6 +827,12 @@ export class WebRtcClient {
       if (bytes == null || lastBytes == null || !deltaMs) return undefined;
       return Math.round(((bytes - lastBytes) * 8) / deltaMs);
     };
+    const calcFps = (frames?: number, lastFrames?: number) => {
+      if (frames == null || lastFrames == null || !deltaMs) return undefined;
+      const deltaFrames = frames - lastFrames;
+      if (deltaFrames <= 0) return undefined;
+      return (deltaFrames * 1000) / deltaMs;
+    };
     const videoBitrate = calcRate(videoBytes, sameVideoInbound ? last.lastVideoBytes : undefined);
     const audioBitrate = calcRate(audioBytes, sameAudioInbound ? last.lastAudioBytes : undefined);
     const calcJitterBufferMs = (
@@ -887,6 +894,15 @@ export class WebRtcClient {
       sameVideoInbound ? last.lastVideoTotalDecodeTime : undefined,
       sameVideoInbound ? last.lastVideoFramesDecoded : undefined,
     );
+    const videoFpsFromDecoded = calcFps(
+      videoFramesDecoded,
+      sameVideoInbound ? last.lastVideoFramesDecoded : undefined,
+    );
+    const videoFpsFromReceived = calcFps(
+      videoFramesReceived,
+      sameVideoInbound ? last.lastVideoFramesReceived : undefined,
+    );
+    const videoFps = videoFpsFromDecoded ?? videoFpsFromReceived ?? inboundVideoFps;
     const videoPlayoutDelayMs = calcPlayoutDelayMs(videoInbound);
     const audioPlayoutDelayMs = calcPlayoutDelayMs(audioInbound);
 
@@ -902,6 +918,7 @@ export class WebRtcClient {
       lastAudioJitterBufferEmittedCount: audioJitterBufferEmittedCount,
       lastVideoTotalDecodeTime: videoTotalDecodeTime,
       lastVideoFramesDecoded: videoFramesDecoded,
+      lastVideoFramesReceived: videoFramesReceived,
     };
 
     return {

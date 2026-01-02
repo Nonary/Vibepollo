@@ -523,16 +523,24 @@
                     <span class="debug-value">{{ formatMs(inputMetrics.lastMoveDelayMs) }}</span>
                   </div>
                   <div class="debug-item">
-                    <span class="debug-label">Video interval</span>
-                    <span class="debug-value">{{
-                      formatMs(videoFrameMetrics.lastIntervalMs)
-                    }}</span>
+                    <span class="debug-label">Frame interval</span>
+                    <span class="debug-value">{{ formatMs(renderIntervalMs) }}</span>
                   </div>
                   <div class="debug-item">
                     <span class="debug-label">Server packets</span>
                     <span class="debug-value"
                       >V {{ displayValue(serverSession?.video_packets) }} / A
                       {{ displayValue(serverSession?.audio_packets) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Server fps</span>
+                    <span class="debug-value">V {{ formatFps(serverVideoFps) }}</span>
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Server age</span>
+                    <span class="debug-value"
+                      >V {{ formatMs(serverVideoAgeMs) }} / A {{ formatMs(serverAudioAgeMs) }}</span
                     >
                   </div>
                   <div class="debug-item">
@@ -585,7 +593,7 @@
                     <span class="debug-value">{{ formatMs(stats.videoDecodeMs) }}</span>
                   </div>
                   <div class="debug-item">
-                    <span class="debug-label">Jitter / buffer</span>
+                    <span class="debug-label">Jitter / buffer (avg)</span>
                     <span class="debug-value"
                       >{{ formatMs(stats.videoJitterMs) }} /
                       {{ formatMs(stats.videoPlayoutDelayMs ?? videoJitterBufferMs) }}</span
@@ -604,7 +612,7 @@
                   </div>
                   <div class="debug-item">
                     <span class="debug-label">Render delay</span>
-                    <span class="debug-value">{{ formatMs(videoFrameMetrics.lastDelayMs) }}</span>
+                    <span class="debug-value">{{ formatMs(renderDelayMs) }}</span>
                   </div>
                   <div class="debug-item">
                     <span class="debug-label">Frames dropped</span>
@@ -1045,6 +1053,10 @@ const serverSession = ref<WebRtcSessionState | null>(null);
 const serverSessionUpdatedAt = ref<string | null>(null);
 const serverSessionError = ref<string | null>(null);
 const serverSessionStatus = ref<number | null>(null);
+const serverVideoFps = ref<number | undefined>(undefined);
+const serverVideoAgeMs = computed(() => serverSession.value?.last_video_age_ms ?? undefined);
+const serverAudioAgeMs = computed(() => serverSession.value?.last_audio_age_ms ?? undefined);
+let lastServerSample: { ts: number; videoPackets?: number } | null = null;
 const remoteStreamInfo = ref<{ id: string; videoTracks: number; audioTracks: number } | null>(null);
 const lastTrackAt = ref<string | null>(null);
 const lastTrackKind = ref<string | null>(null);
@@ -1132,6 +1144,12 @@ const videoFrameMetrics = ref<{
   avgDelayMs?: number;
   maxDelayMs?: number;
 }>({});
+const renderDelayMs = computed(
+  () => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs,
+);
+const renderIntervalMs = computed(
+  () => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs,
+);
 const LATENCY_SAMPLE_WINDOW_MS = 30000;
 const LATENCY_SMOOTH_TAU_MS = 2000;
 const latencySamples = ref<{ ts: number; value: number }[]>([]);
@@ -1192,15 +1210,21 @@ const overlayLines = computed(() => {
   const rttHalf = formatMs(oneWayRttMs.value);
   const jbuf = formatMs(videoPlayoutDelayMs.value);
   const dec = formatMs(stats.value.videoDecodeMs);
+  const serverFps = formatFps(serverVideoFps.value);
+  const serverAgeVideo = formatMs(serverVideoAgeMs.value);
+  const serverAgeAudio = formatMs(serverAudioAgeMs.value);
+  const serverQueueVideo = displayValue(serverSession.value?.video_queue_frames);
+  const serverQueueAudio = displayValue(serverSession.value?.audio_queue_frames);
   return [
     `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
-    `Lat ${formatMs(smoothedLatencyMs.value)} (net ${rttHalf} + buf ${jbuf} + dec ${dec}) | Avg30 ${formatMs(averageLatency30sMs.value)}`,
+    `Srv ${serverFps} | age V ${serverAgeVideo} / A ${serverAgeAudio} | q V ${serverQueueVideo} / A ${serverQueueAudio}`,
+    `Lat ${formatMs(smoothedLatencyMs.value)} (net ${rttHalf} + buf(avg) ${jbuf} + dec ${dec}) | Avg30 ${formatMs(averageLatency30sMs.value)}`,
     `Decode ${dec} | FPS ${fps} | Drop ${dropped} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
     `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
     `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | playout ${formatMs(stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs)}`,
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
     `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
-    `Render ${formatMs(videoFrameMetrics.value.lastDelayMs)} | frame ${formatMs(videoFrameMetrics.value.lastIntervalMs)} | size ${videoSizeLabel.value}`,
+    `Render ${formatMs(renderDelayMs.value)} | frame ${formatMs(renderIntervalMs.value)} | size ${videoSizeLabel.value}`,
   ];
 });
 let detachInput: (() => void) | null = null;
@@ -1429,6 +1453,11 @@ function formatMs(value?: number): string {
   return `${value.toFixed(1)} ms`;
 }
 
+function formatFps(value?: number): string {
+  if (value == null || !Number.isFinite(value)) return '--';
+  return `${value.toFixed(1)} fps`;
+}
+
 function formatRate(value?: number): string {
   if (value == null) return '--';
   return `${value.toFixed(0)} / s`;
@@ -1516,6 +1545,8 @@ function updateAudioElement(stream: MediaStream): void {
 
 const AUDIO_BUFFER_RESET_THRESHOLD_MS = 120;
 const VIDEO_BUFFER_RESET_THRESHOLD_MS = 120;
+const VIDEO_RENDER_RESET_THRESHOLD_MS = 50;
+const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 50;
 const AV_BUFFER_RESET_SUSTAIN_MS = 3000;
 const AV_BUFFER_RESET_COOLDOWN_MS = 15000;
 let avBufferOverloadedSince: number | null = null;
@@ -1535,7 +1566,17 @@ watch(
       typeof videoValue === 'number' &&
       Number.isFinite(videoValue) &&
       videoValue >= VIDEO_BUFFER_RESET_THRESHOLD_MS;
-    if (!audioOverloaded && !videoOverloaded) {
+    const delayValue = renderDelayMs.value;
+    const intervalValue = renderIntervalMs.value;
+    const hasRenderSignal =
+      typeof delayValue === 'number' || typeof intervalValue === 'number';
+    const renderDelayHigh =
+      typeof delayValue === 'number' && delayValue >= VIDEO_RENDER_RESET_THRESHOLD_MS;
+    const renderIntervalHigh =
+      typeof intervalValue === 'number' && intervalValue >= VIDEO_INTERVAL_RESET_THRESHOLD_MS;
+    const allowVideoReset = !hasRenderSignal || renderDelayHigh || renderIntervalHigh;
+    const bufferOverloaded = audioOverloaded || (videoOverloaded && allowVideoReset);
+    if (!bufferOverloaded) {
       avBufferOverloadedSince = null;
       return;
     }
@@ -1563,6 +1604,33 @@ function stopServerSessionPolling(): void {
   }
 }
 
+function resetServerRates(): void {
+  serverVideoFps.value = undefined;
+  lastServerSample = null;
+}
+
+function updateServerRates(session: WebRtcSessionState): void {
+  const now = Date.now();
+  const videoPackets =
+    typeof session.video_packets === 'number' ? session.video_packets : undefined;
+  if (
+    lastServerSample &&
+    videoPackets != null &&
+    lastServerSample.videoPackets != null
+  ) {
+    const deltaPackets = videoPackets - lastServerSample.videoPackets;
+    const deltaMs = now - lastServerSample.ts;
+    if (deltaPackets >= 0 && deltaMs > 0) {
+      serverVideoFps.value = Math.max(0, (deltaPackets * 1000) / deltaMs);
+    } else {
+      serverVideoFps.value = undefined;
+    }
+  } else {
+    serverVideoFps.value = undefined;
+  }
+  lastServerSample = { ts: now, videoPackets };
+}
+
 async function fetchServerSession(): Promise<void> {
   if (!sessionId.value) return;
   try {
@@ -1572,12 +1640,15 @@ async function fetchServerSession(): Promise<void> {
       serverSession.value = result.session;
       serverSessionUpdatedAt.value = new Date().toLocaleTimeString();
       serverSessionError.value = null;
+      updateServerRates(result.session);
     } else {
       serverSessionError.value = result.error ?? `HTTP ${result.status}`;
+      resetServerRates();
     }
   } catch {
     serverSessionStatus.value = null;
     serverSessionError.value = 'fetch failed';
+    resetServerRates();
   }
 }
 
@@ -1684,6 +1755,7 @@ async function connect() {
   serverSessionUpdatedAt.value = null;
   serverSessionError.value = null;
   serverSessionStatus.value = null;
+  resetServerRates();
   try {
     const id = await client.connect(
       {
@@ -1772,6 +1844,7 @@ async function disconnect() {
   serverSessionUpdatedAt.value = null;
   serverSessionError.value = null;
   serverSessionStatus.value = null;
+  resetServerRates();
   remoteStreamInfo.value = null;
   lastTrackAt.value = null;
   lastTrackKind.value = null;

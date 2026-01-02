@@ -83,7 +83,7 @@ namespace webrtc_stream {
 
   namespace {
     constexpr std::size_t kMaxVideoFrames = 2;
-    constexpr std::size_t kMaxAudioFrames = 8;
+    constexpr std::size_t kMaxAudioFrames = 4;
     constexpr short kAbsCoordinateMax = 32767;
     constexpr int kDefaultWidth = 1920;
     constexpr int kDefaultHeight = 1080;
@@ -98,8 +98,8 @@ namespace webrtc_stream {
     constexpr auto kVideoPacingSlackMin = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackMax = std::chrono::milliseconds {10};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
-    constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {250};
-    constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {100};
+    constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {100};
+    constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {kDefaultAudioPacketMs * kMaxAudioFrames};
     constexpr std::size_t kVideoInflightFramesMin = 2;
     constexpr std::size_t kVideoInflightFramesMax = 6;
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
@@ -357,7 +357,7 @@ namespace webrtc_stream {
     int max_age_frames_for_mode(video_pacing_mode_e mode) {
       switch (mode) {
         case video_pacing_mode_e::latency:
-          return 1;
+          return 2;
         case video_pacing_mode_e::balanced:
           return 2;
         case video_pacing_mode_e::smoothness:
@@ -3558,6 +3558,17 @@ namespace webrtc_stream {
                   session.last_video_push.reset();
                   target_send = now;
                   pace_frame = false;
+                }
+                if (pacing.drop_old_frames && pace_frame && target_send < now) {
+                  const auto drift = now - target_send;
+                  if (drift > frame_interval) {
+                    session.video_pacing_state.anchor_capture = frame.timestamp.value_or(now);
+                    session.video_pacing_state.anchor_send = now;
+                    session.video_pacing_state.last_drift_reset = now;
+                    session.last_video_push.reset();
+                    target_send = now;
+                    pace_frame = false;
+                  }
                 }
                 EncodedVideoWork work;
                 work.source = session.encoded_video_source;

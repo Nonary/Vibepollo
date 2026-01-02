@@ -78,7 +78,7 @@ function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
     typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
   const maxFrames = maxFrameAgeForMode(config.videoPacingMode);
   const maxMsForMode = Math.round((1000 / fps) * maxFrames);
-  const maxMs = Math.min(250, Math.max(5, maxMsForMode));
+  const maxMs = Math.min(100, Math.max(5, maxMsForMode));
   if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
     return Math.min(maxMs, Math.round(config.videoMaxFrameAgeMs));
   }
