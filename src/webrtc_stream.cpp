@@ -92,6 +92,7 @@ namespace webrtc_stream {
     constexpr int kDefaultAudioPacketMs = 10;
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {500};
+    constexpr auto kKeyframeResyncInterval = std::chrono::seconds {2};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
     constexpr auto kVideoPacingSlackSmooth = std::chrono::milliseconds {3};
@@ -1212,6 +1213,7 @@ namespace webrtc_stream {
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
       bool needs_keyframe = false;
       std::optional<std::chrono::steady_clock::time_point> last_keyframe_request;
+      std::optional<std::chrono::steady_clock::time_point> last_keyframe_sent;
       std::size_t encoded_prefix_logs = 0;
 
       struct VideoPacingState {
@@ -3491,6 +3493,18 @@ namespace webrtc_stream {
               const bool recovery_active =
                 session.video_pacing_state.recovery_prefer_latest_until &&
                 now < *session.video_pacing_state.recovery_prefer_latest_until;
+              const bool lagging = behind || recovery_active;
+              if (lagging && !waiting_for_keyframe) {
+                const bool keyframe_stale =
+                  !session.last_keyframe_sent ||
+                  now - *session.last_keyframe_sent >= kKeyframeResyncInterval;
+                if (keyframe_stale &&
+                    (!session.last_keyframe_request ||
+                     now - *session.last_keyframe_request >= kKeyframeRequestInterval)) {
+                  session.last_keyframe_request = now;
+                  request_keyframe("pacing recovery");
+                }
+              }
               auto handle_frame = [&](EncodedVideoFrame &&frame) {
                 if (waiting_for_keyframe && !frame.idr) {
                   return;
@@ -3651,7 +3665,7 @@ namespace webrtc_stream {
           if (webrtc_media_shutdown.load(std::memory_order_acquire)) {
             break;
           }
-          const auto send_now = std::chrono::steady_clock::now();
+          auto send_now = std::chrono::steady_clock::now();
           if (work.inflight && work.max_inflight_frames > 0) {
             const auto inflight_now = work.inflight->load(std::memory_order_relaxed);
             const auto max_inflight =
@@ -3681,29 +3695,43 @@ namespace webrtc_stream {
           }
           if (work.pace && work.target_send > send_now + work.pacing_slack) {
             sleep_for_with_audio(work.target_send - send_now - work.pacing_slack);
+            send_now = std::chrono::steady_clock::now();
           }
           if (work.inflight) {
             work.inflight->fetch_add(1, std::memory_order_relaxed);
           }
           auto* payload_ref = new SharedEncodedPayloadReleaseContext {work.data, work.inflight};
+          // Avoid passing a timestamp in the past relative to our actual send time. If encoding
+          // throughput dips below the target framerate, the mapped schedule can lag slightly
+          // behind real-time (without triggering a full drift reset), which encourages WebRTC to
+          // grow its jitter buffer. Clamping prevents persistent "late frame" signaling.
+          auto push_timestamp = work.timestamp.value_or(send_now);
+          if (push_timestamp < send_now) {
+            push_timestamp = send_now;
+          }
           const int pushed = lwrtc_encoded_video_source_push_shared(
             work.source.get(),
             work.data->data(),
             work.data->size(),
-            timestamp_to_us(work.timestamp),
+            timestamp_to_us(push_timestamp),
             work.is_keyframe ? 1 : 0,
             release_shared_encoded_payload,
             payload_ref
           );
-          if (pushed && work.clear_keyframe_on_success && !work.session_id.empty()) {
+          if (pushed && !work.session_id.empty()) {
             std::lock_guard lg {session_mutex};
             auto it = sessions.find(work.session_id);
             if (it != sessions.end()) {
-              it->second.needs_keyframe = false;
-              // Reset pacing state on keyframe delivery to recover from any accumulated drift
-              it->second.video_pacing_state.anchor_capture.reset();
-              it->second.video_pacing_state.anchor_send.reset();
-              it->second.last_video_push.reset();
+              if (work.is_keyframe) {
+                it->second.last_keyframe_sent = std::chrono::steady_clock::now();
+              }
+              if (work.clear_keyframe_on_success) {
+                it->second.needs_keyframe = false;
+                // Reset pacing state on keyframe delivery to recover from any accumulated drift
+                it->second.video_pacing_state.anchor_capture.reset();
+                it->second.video_pacing_state.anchor_send.reset();
+                it->second.last_video_push.reset();
+              }
             }
           }
         }
@@ -3784,6 +3812,22 @@ namespace webrtc_stream {
         if (!session.audio_source) {
           BOOST_LOG(error) << "WebRTC: failed to create audio source for " << session.state.id;
           return false;
+        }
+
+        // Immediately drain any audio that was buffered before audio_source was created.
+        RawAudioFrame frame;
+        while (session.raw_audio_frames.pop(frame)) {
+          if (!frame.samples || frame.samples->empty()) {
+            continue;
+          }
+          lwrtc_audio_source_push(
+            session.audio_source.get(),
+            frame.samples->data(),
+            static_cast<int>(sizeof(int16_t) * 8),
+            frame.sample_rate,
+            frame.channels,
+            frame.frames
+          );
         }
       }
 
