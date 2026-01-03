@@ -1355,6 +1355,11 @@ namespace VDISPLAY {
         return true;
       }
 
+      // Fallback: SudoVDA's synthetic EDID commonly uses manufacturer "SMK" (SudoMaker).
+      if (device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SMK")) {
+        return true;
+      }
+
       return false;
     }
 
@@ -2649,6 +2654,8 @@ namespace VDISPLAY {
     const auto enumeration_timeout = std::chrono::seconds(2);
     const auto activation_grace = std::chrono::milliseconds(500);
     const auto poll_interval = std::chrono::milliseconds(50);
+    const bool has_dynamic_hints =
+      (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
     while (true) {
       const auto now = std::chrono::steady_clock::now();
@@ -2691,11 +2698,12 @@ namespace VDISPLAY {
         bool resolution_conflict = false;
 
         for (const auto &candidate : *devices) {
-          if (!is_virtual_display_device(candidate)) {
+          const bool is_virtual = is_virtual_display_device(candidate);
+          if (!has_dynamic_hints && !is_virtual) {
             continue;
           }
 
-          if (candidate.m_info && candidate.m_info->m_resolution.m_width == width &&
+          if (is_virtual && candidate.m_info && candidate.m_info->m_resolution.m_width == width &&
               candidate.m_info->m_resolution.m_height == height) {
             if (!resolution_conflict) {
               if (!unique_resolution_candidate) {
@@ -2744,9 +2752,6 @@ namespace VDISPLAY {
               matches = true;
             }
           }
-
-          const bool has_dynamic_hints =
-            (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
           if (!matches && !has_dynamic_hints) {
             matches = true;

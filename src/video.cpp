@@ -273,9 +273,17 @@ namespace video {
 #endif
 
     std::string build_probe_cache_key() {
+      const auto active_output = config::get_active_output_name();
+      auto adapter_key = adapter_cache_key_for_output(active_output);
+      if (adapter_key.empty()) {
+        // Per-session output overrides (ex: per-client virtual displays) can be transient and may not
+        // map to a DXGI output name; fall back to the configured output for stable cache behavior.
+        adapter_key = adapter_cache_key_for_output(config::video.output_name);
+      }
+
       std::ostringstream oss;
       oss << config::video.encoder << '|'
-          << adapter_cache_key_for_output(config::get_active_output_name()) << '|'
+          << adapter_key << '|'
           << config::video.adapter_name;
 #ifdef _WIN32
       oss << '|';
