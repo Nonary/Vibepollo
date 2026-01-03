@@ -598,12 +598,12 @@ namespace {
     }
 
     if (!helper_running) {
-      if (platf::display_helper_client::send_ping()) {
-        helper_running = true;
-      } else {
-        platf::display_helper_client::reset_connection();
+      // If there is no helper process at all, there is nothing to disarm and we must not
+      // block stream start trying to connect to a pipe that can't exist yet.
+      if (!helper_process_exists()) {
         return false;
       }
+      helper_running = true;
     }
 
     const bool restore_expected = g_restore_expected.load(std::memory_order_relaxed);
@@ -732,6 +732,13 @@ namespace {
     }
 
     if (!force_restart) {
+      // Don't burn seconds on IPC pings when there is no helper process to talk to.
+      // Stream start paths can call this multiple times; each ping attempt can be expensive
+      // when no server pipe exists.
+      const bool external_helper_exists = helper_process_exists();
+      if (!external_helper_exists) {
+        platf::display_helper_client::reset_connection();
+      } else {
       bool ping_ok = false;
       for (int i = 0; i < 2 && !ping_ok; ++i) {
         ping_ok = platf::display_helper_client::send_ping();
@@ -743,6 +750,7 @@ namespace {
         return true;
       }
       platf::display_helper_client::reset_connection();
+      }
     }
 
     if (!force_restart && helper_process_exists()) {
