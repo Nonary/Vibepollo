@@ -1294,6 +1294,7 @@ namespace webrtc_stream {
       return payload.dump();
     }
 
+#ifdef SUNSHINE_ENABLE_WEBRTC
     void send_gamepad_feedback_payload(const std::string &payload) {
       std::lock_guard lg {session_mutex};
       for (auto &[_, session] : sessions) {
@@ -1311,6 +1312,10 @@ namespace webrtc_stream {
         );
       }
     }
+#else
+    void send_gamepad_feedback_payload(const std::string &) {
+    }
+#endif
 
     void feedback_thread_main(safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> queue) {
       using namespace std::chrono_literals;

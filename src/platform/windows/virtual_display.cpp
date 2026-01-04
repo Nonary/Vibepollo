@@ -1341,12 +1341,15 @@ namespace VDISPLAY {
         return false;
       };
 
-      if (!device.m_monitor_device_path.empty()) {
-        // This is the most reliable signal (device instance path contains the driver stack identifiers).
-        if (contains_ci(device.m_monitor_device_path, "SUDOVDA") ||
-            contains_ci(device.m_monitor_device_path, "SUDOMAKER")) {
-          return true;
-        }
+      // Best-effort virtual device detection. libdisplaydevice doesn't currently expose the monitor
+      // device instance path, so we fall back to inspecting the fields that are available.
+      if (contains_ci(device.m_device_id, "SUDOVDA") ||
+          contains_ci(device.m_device_id, "SUDOMAKER") ||
+          contains_ci(device.m_display_name, "SUDOVDA") ||
+          contains_ci(device.m_display_name, "SUDOMAKER") ||
+          contains_ci(device.m_friendly_name, "SUDOVDA") ||
+          contains_ci(device.m_friendly_name, "SUDOMAKER")) {
+        return true;
       }
 
       // Fallback: some environments may return an adapter-like friendly name instead of the per-display name.
@@ -1972,12 +1975,6 @@ namespace VDISPLAY {
           matches = true;
           matched_by_client_name = true;
         }
-        if (!matches && state.normalized_monitor_device_path && !device.m_monitor_device_path.empty()) {
-          const auto normalized_path = normalize_display_name(device.m_monitor_device_path);
-          if (!normalized_path.empty() && normalized_path == *state.normalized_monitor_device_path) {
-            matches = true;
-          }
-        }
         if (!matches && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
           matches = equals_ci(device.m_device_id, *state.current_device_id);
         }
@@ -2006,13 +2003,9 @@ namespace VDISPLAY {
             adopted_device_id = device.m_device_id;
           }
           auto adopted_monitor_device_path = state.current_monitor_device_path;
-          if (!device.m_monitor_device_path.empty()) {
-            adopted_monitor_device_path = platf::from_utf8(device.m_monitor_device_path);
-          }
 
           if (adopted_display_name != state.current_display_name
-              || adopted_device_id != state.current_device_id
-              || adopted_monitor_device_path != state.current_monitor_device_path) {
+              || adopted_device_id != state.current_device_id) {
             const auto before = state.describe_target();
             state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
             BOOST_LOG(debug) << "Virtual display recovery monitor adopted updated identifiers via client_name '"
