@@ -1787,6 +1787,7 @@ namespace webrtc_stream {
       config.width = options.width.value_or(kDefaultWidth);
       config.height = options.height.value_or(kDefaultHeight);
       config.framerate = normalize_fps_hz(options.fps.value_or(kDefaultFps));
+      config.encodingFramerate = normalize_fps_millihz(options.fps.value_or(kDefaultFps));
       int bitrate = options.bitrate_kbps.value_or(0);
       if (bitrate <= 0) {
         bitrate = config::video.max_bitrate > 0 ? config::video.max_bitrate : 20000;
@@ -2236,7 +2237,7 @@ namespace webrtc_stream {
         }
         platf::frame_limiter_streaming_start(
           normalize_fps_hz(launch_session->fps),
-          normalize_fps_hz(launch_session->fps),
+          normalize_fps_millihz(launch_session->fps),
           launch_session->gen1_framegen_fix,
           launch_session->gen2_framegen_fix,
           lossless_rtss_limit,

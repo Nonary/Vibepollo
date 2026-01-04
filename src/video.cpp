@@ -2306,6 +2306,12 @@ namespace video {
       }
     });
 
+    if (config.encodingFramerate <= 0) {
+      const int fallback_fps = config.framerate > 0 ? config.framerate * 1000 : 60000;
+      BOOST_LOG(warning) << "Encoding framerate missing; falling back to " << fallback_fps;
+      config.encodingFramerate = fallback_fps;
+    }
+
     // set max frame time based on client-requested target framerate.
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
