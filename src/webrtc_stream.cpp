@@ -101,6 +101,9 @@ namespace webrtc_stream {
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {100};
     constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {kDefaultAudioPacketMs * kMaxAudioFrames};
+    constexpr auto kWebrtcStartupKeyframeHold = std::chrono::milliseconds {3000};
+    constexpr auto kWebrtcStartupKeyframeDeadline = std::chrono::milliseconds {8000};
+    constexpr auto kWebrtcStartupExitKeyframeFreshness = std::chrono::milliseconds {250};
     constexpr std::size_t kVideoInflightFramesMin = 2;
     constexpr std::size_t kVideoInflightFramesMax = 6;
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
@@ -1137,6 +1140,11 @@ namespace webrtc_stream {
       std::atomic<std::int64_t> last_mouse_move_at_ms {0};
     };
 
+    struct SessionKeyframeContext {
+      std::string id;
+      std::atomic<bool> active {true};
+    };
+
     struct SessionPeerContext {
       std::string session_id;
       lwrtc_peer_t *peer = nullptr;
@@ -1188,6 +1196,7 @@ namespace webrtc_stream {
       lwrtc_video_track_t *video_track = nullptr;
       lwrtc_data_channel_t *input_channel = nullptr;
       std::shared_ptr<SessionDataChannelContext> data_channel_context;
+      std::shared_ptr<SessionKeyframeContext> keyframe_context;
 #ifdef _WIN32
       std::unique_ptr<D3D11Nv12Converter> d3d_converter;
 #endif
@@ -1212,6 +1221,8 @@ namespace webrtc_stream {
       std::shared_ptr<platf::img_t> last_video_frame;
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
       bool needs_keyframe = false;
+      std::optional<std::chrono::steady_clock::time_point> startup_keyframe_until;
+      std::optional<std::chrono::steady_clock::time_point> startup_keyframe_deadline;
       std::optional<std::chrono::steady_clock::time_point> last_keyframe_request;
       std::optional<std::chrono::steady_clock::time_point> last_keyframe_sent;
       std::size_t encoded_prefix_logs = 0;
@@ -3437,7 +3448,36 @@ namespace webrtc_stream {
             }
             // Use encoded video source for passthrough mode
             if (session.encoded_video_source) {
-              const bool waiting_for_keyframe = session.needs_keyframe;
+              bool startup_keyframe_active = false;
+              if (session.startup_keyframe_until || session.startup_keyframe_deadline) {
+                const bool min_elapsed =
+                  !session.startup_keyframe_until || now >= *session.startup_keyframe_until;
+                const bool deadline_elapsed =
+                  session.startup_keyframe_deadline && now >= *session.startup_keyframe_deadline;
+                const bool keyframe_fresh =
+                  session.last_keyframe_sent &&
+                  now - *session.last_keyframe_sent <= kWebrtcStartupExitKeyframeFreshness;
+
+                if (min_elapsed && (keyframe_fresh || deadline_elapsed)) {
+                  const bool had_keyframe_sent = session.last_keyframe_sent.has_value();
+                  session.startup_keyframe_until.reset();
+                  session.startup_keyframe_deadline.reset();
+                  if (keyframe_fresh) {
+                    session.needs_keyframe = false;
+                  } else if (deadline_elapsed) {
+                    session.needs_keyframe = false;
+                    BOOST_LOG(debug) << "WebRTC: startup keyframe-only window forced end id=" << session.state.id
+                                     << " had_keyframe_sent=" << had_keyframe_sent;
+                  }
+                  BOOST_LOG(debug) << "WebRTC: startup keyframe-only window ended id=" << session.state.id
+                                   << " had_keyframe_sent=" << had_keyframe_sent
+                                   << " needs_keyframe=" << session.needs_keyframe;
+                } else {
+                  startup_keyframe_active = true;
+                }
+              }
+
+              const bool waiting_for_keyframe = session.needs_keyframe || startup_keyframe_active;
               bool queued_keyframe = false;
               const int fps = std::max(1, session.video_config.framerate);
               const auto frame_interval = std::chrono::nanoseconds(1s) / fps;
@@ -3603,7 +3643,8 @@ namespace webrtc_stream {
                 work.pacing_slack = pacing.slack;
                 work.pace = pace_frame;
                 work.session_id = session.state.id;
-                work.clear_keyframe_on_success = waiting_for_keyframe && frame.idr;
+                work.clear_keyframe_on_success =
+                  waiting_for_keyframe && frame.idr && !startup_keyframe_active;
                 work.max_inflight_frames = std::clamp<std::size_t>(
                   static_cast<std::size_t>(std::max(1, session.video_pacing.max_age_frames)) * 2,
                   kVideoInflightFramesMin,
@@ -3821,20 +3862,28 @@ namespace webrtc_stream {
           return false;
         }
 
-        // Immediately drain any audio that was buffered before audio_source was created.
-        RawAudioFrame frame;
-        while (session.raw_audio_frames.pop(frame)) {
-          if (!frame.samples || frame.samples->empty()) {
-            continue;
+        // Drop any audio buffered before the audio source existed to avoid starting the session
+        // with a multi-second backlog (which can also force the video playout delay to grow for A/V sync).
+        const auto queued_audio = session.raw_audio_frames.size();
+        if (queued_audio > 0) {
+          BOOST_LOG(debug) << "WebRTC: dropping pre-track audio backlog id=" << session.state.id
+                           << " queued=" << queued_audio;
+        }
+        RawAudioFrame latest_audio;
+        if (session.raw_audio_frames.pop_latest(latest_audio)) {
+          if (queued_audio > 1) {
+            session.state.audio_dropped += queued_audio - 1;
           }
-          lwrtc_audio_source_push(
-            session.audio_source.get(),
-            frame.samples->data(),
-            static_cast<int>(sizeof(int16_t) * 8),
-            frame.sample_rate,
-            frame.channels,
-            frame.frames
-          );
+          if (latest_audio.samples && !latest_audio.samples->empty()) {
+            lwrtc_audio_source_push(
+              session.audio_source.get(),
+              latest_audio.samples->data(),
+              static_cast<int>(sizeof(int16_t) * 8),
+              latest_audio.sample_rate,
+              latest_audio.channels,
+              latest_audio.frames
+            );
+          }
         }
       }
 
@@ -3870,10 +3919,40 @@ namespace webrtc_stream {
         // Set up keyframe request callback to trigger IDR from encoder
         lwrtc_encoded_video_source_set_keyframe_callback(
             session.encoded_video_source.get(),
-            [](void *) {
-              request_keyframe("PLI/FIR");
+            [](void *user) {
+              auto *ctx = static_cast<SessionKeyframeContext *>(user);
+              if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
+                return;
+              }
+
+              const auto now = std::chrono::steady_clock::now();
+              bool should_request = false;
+              {
+                std::lock_guard lg {session_mutex};
+                auto it = sessions.find(ctx->id);
+                if (it == sessions.end()) {
+                  return;
+                }
+
+                // When a receiver sends PLI/FIR it typically cannot decode the current delta
+                // frames. Stop sending deltas until we successfully deliver an IDR.
+                it->second.needs_keyframe = true;
+
+                // Rate-limit PLI/FIR-triggered requests. Spamming IDR frames can congest the
+                // connection and make initial playout buffering worse.
+                constexpr auto kPliRequestInterval = std::chrono::milliseconds {1000};
+                if (!it->second.last_keyframe_request ||
+                    now - *it->second.last_keyframe_request >= kPliRequestInterval) {
+                  it->second.last_keyframe_request = now;
+                  should_request = true;
+                }
+              }
+
+              if (should_request) {
+                request_keyframe("PLI/FIR");
+              }
             },
-            nullptr);
+            session.keyframe_context.get());
       }
 
       if (session.state.video && !session.video_track) {
@@ -3888,6 +3967,38 @@ namespace webrtc_stream {
           BOOST_LOG(error) << "WebRTC: failed to add video track for " << session.state.id;
           return false;
         }
+
+        // Avoid starting playback from frames that were queued before the video track existed
+        // (e.g. during ICE/SDP negotiation). Sending those frames paced in real time can create
+        // a large initial playout delay until the backlog drains.
+        const auto queued_video = session.video_frames.size();
+        if (queued_video > 0) {
+          BOOST_LOG(debug) << "WebRTC: dropping pre-track video backlog id=" << session.state.id
+                           << " queued=" << queued_video;
+          while (!session.video_frames.empty()) {
+            if (!session.video_frames.drop_oldest()) {
+              break;
+            }
+          }
+          session.state.video_dropped += queued_video;
+          session.video_pacing_state.anchor_capture.reset();
+          session.video_pacing_state.anchor_send.reset();
+          session.video_pacing_state.recovery_prefer_latest_until.reset();
+          session.video_pacing_state.last_drift_reset = std::chrono::steady_clock::now();
+          session.last_video_push.reset();
+        }
+
+        // Hold the session in "keyframe-only" mode briefly to ensure that once ICE/DTLS finishes
+        // and packets start flowing, the receiver sees an IDR quickly (avoids initial black frames
+        // until the next periodic keyframe / PLI).
+        {
+          const auto now = std::chrono::steady_clock::now();
+          session.startup_keyframe_until = now + kWebrtcStartupKeyframeHold;
+          session.startup_keyframe_deadline = now + kWebrtcStartupKeyframeDeadline;
+        }
+        BOOST_LOG(debug) << "WebRTC: startup keyframe-only window enabled id=" << session.state.id
+                         << " min_ms=" << kWebrtcStartupKeyframeHold.count()
+                         << " max_ms=" << kWebrtcStartupKeyframeDeadline.count();
         requested_video_keyframe = true;
       }
 
@@ -3989,6 +4100,10 @@ namespace webrtc_stream {
       : std::nullopt;
     Session session;
     session.state.id = uuid_util::uuid_t::generate().string();
+#ifdef SUNSHINE_ENABLE_WEBRTC
+    session.keyframe_context = std::make_shared<SessionKeyframeContext>();
+    session.keyframe_context->id = session.state.id;
+#endif
     session.state.audio = options.audio;
     session.state.video = options.video;
     session.state.encoded = options.encoded;
@@ -4034,6 +4149,7 @@ namespace webrtc_stream {
     std::shared_ptr<lwrtc_encoded_video_source_t> encoded_video_source;
     lwrtc_data_channel_t *input_channel = nullptr;
     std::shared_ptr<SessionDataChannelContext> data_channel_context;
+    std::shared_ptr<SessionKeyframeContext> keyframe_context;
 #endif
     bool removed = false;
     {
@@ -4052,6 +4168,7 @@ namespace webrtc_stream {
       encoded_video_source = std::move(it->second.encoded_video_source);
       input_channel = it->second.input_channel;
       data_channel_context = it->second.data_channel_context;
+      keyframe_context = it->second.keyframe_context;
 #endif
       sessions.erase(it);
       removed = true;
@@ -4067,6 +4184,9 @@ namespace webrtc_stream {
       }
       if (data_channel_context) {
         data_channel_context->active.store(false, std::memory_order_release);
+      }
+      if (keyframe_context) {
+        keyframe_context->active.store(false, std::memory_order_release);
       }
       lwrtc_peer_close(peer);
       lwrtc_peer_release(peer);
