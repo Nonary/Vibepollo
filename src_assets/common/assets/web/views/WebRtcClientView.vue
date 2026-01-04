@@ -1168,10 +1168,32 @@ const videoFrameMetrics = ref<{
   lastIntervalMs?: number;
   avgIntervalMs?: number;
   maxIntervalMs?: number;
+  p98IntervalMs?: number;
+  avg98IntervalMs?: number;
+  p99IntervalMs?: number;
+  avg99IntervalMs?: number;
   lastDelayMs?: number;
   avgDelayMs?: number;
   maxDelayMs?: number;
 }>({});
+const renderFps = computed(() => {
+  const intervalMs = videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const fps = 1000 / intervalMs;
+  return Number.isFinite(fps) ? fps : undefined;
+});
+const renderFps98 = computed(() => {
+  const intervalMs = videoFrameMetrics.value.avg98IntervalMs ?? videoFrameMetrics.value.p98IntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const fps = 1000 / intervalMs;
+  return Number.isFinite(fps) ? fps : undefined;
+});
+const renderFps99 = computed(() => {
+  const intervalMs = videoFrameMetrics.value.avg99IntervalMs ?? videoFrameMetrics.value.p99IntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const fps = 1000 / intervalMs;
+  return Number.isFinite(fps) ? fps : undefined;
+});
 const renderDelayMs = computed(
   () => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs,
 );
@@ -1196,7 +1218,14 @@ const videoPlayoutDelayMs = computed(
 );
 const smoothedVideoFps = ref<number | undefined>(undefined);
 let lastVideoFpsSampleAt: number | null = null;
-const displayVideoFps = computed(() => smoothedVideoFps.value ?? stats.value.videoFps);
+const displayVideoFps = computed(
+  () =>
+    renderFps99.value ??
+    renderFps98.value ??
+    renderFps.value ??
+    smoothedVideoFps.value ??
+    stats.value.videoFps,
+);
 const estimatedLatencyMs = computed(() => {
   const parts = [oneWayRttMs.value, videoPlayoutDelayMs.value, stats.value.videoDecodeMs].filter(
     (value) => typeof value === 'number',
@@ -1270,6 +1299,10 @@ watch(
 );
 const overlayLines = computed(() => {
   const fps = displayVideoFps.value ? displayVideoFps.value.toFixed(0) : '--';
+  const recvFps = stats.value.videoFps ? stats.value.videoFps.toFixed(1) : '--';
+  const rendFps = renderFps.value ? renderFps.value.toFixed(1) : '--';
+  const rendFps98 = renderFps98.value ? renderFps98.value.toFixed(1) : '--';
+  const rendFps99 = renderFps99.value ? renderFps99.value.toFixed(1) : '--';
   const dropped = stats.value.videoFramesDropped ?? '--';
   const rttHalf = formatMs(oneWayRttMs.value);
   const jbuf = formatMs(videoPlayoutDelayMs.value);
@@ -1283,7 +1316,7 @@ const overlayLines = computed(() => {
     `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
     `Srv ${serverFps} | age V ${serverAgeVideo} / A ${serverAgeAudio} | q V ${serverQueueVideo} / A ${serverQueueAudio}`,
     `Lat ${formatMs(smoothedLatencyMs.value)} (net ${rttHalf} + buf(avg) ${jbuf} + dec ${dec}) | Avg30 ${formatMs(averageLatency30sMs.value)}`,
-    `Decode ${dec} | FPS ${fps} | Drop ${dropped} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
+    `Decode ${dec} | FPS ${fps} (render ${rendFps99} p99 / ${rendFps98} p98 / ${rendFps} inst / recv ${recvFps}) | Drop ${dropped} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
     `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
     `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | playout ${formatMs(stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs)}`,
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
@@ -1298,6 +1331,101 @@ let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
 let audioStream: MediaStream | null = null;
 let audioAutoplayRequested = false;
+let audioPlayRetryTimer: number | null = null;
+let audioPlayRetryUntilMs: number | null = null;
+let lastAudioPlayAttemptAtMs = 0;
+let lastAudioPlayErrorAtMs = 0;
+let audioPlaybackUnlocked = false;
+
+function stopAudioPlayRetry(): void {
+  if (audioPlayRetryTimer != null) {
+    window.clearInterval(audioPlayRetryTimer);
+    audioPlayRetryTimer = null;
+  }
+  audioPlayRetryUntilMs = null;
+}
+
+function ensureAudioPlayback(reason: string): void {
+  if (!audioAutoplayRequested) return;
+  if (!audioEl.value) return;
+  if (!audioStream) {
+    audioStream = new MediaStream();
+  }
+  if (audioEl.value.srcObject !== audioStream) {
+    audioEl.value.srcObject = audioStream;
+  }
+  audioEl.value.volume = 1;
+
+  const hasTrack = audioStream.getAudioTracks().length > 0;
+  if (!hasTrack) {
+    // Autoplay policies are generally more permissive for muted playback. Keep the element
+    // muted until a real audio track is present.
+    audioEl.value.muted = true;
+  }
+
+  const now = Date.now();
+  if (now - lastAudioPlayAttemptAtMs < 250) return;
+  lastAudioPlayAttemptAtMs = now;
+
+  const playPromise = (() => {
+    try {
+      return audioEl.value.play();
+    } catch (error) {
+      const name = error && typeof error === 'object' ? (error as any).name : '';
+      if (now - lastAudioPlayErrorAtMs > 1500) {
+        lastAudioPlayErrorAtMs = now;
+        pushVideoEvent(`audio-play-throw${name ? `:${name}` : ''}:${reason}`);
+      }
+      return null;
+    }
+  })();
+
+  if (!playPromise || typeof (playPromise as any).then !== 'function') return;
+  playPromise
+    .then(() => {
+      if (!audioEl.value) return;
+      if (!audioEl.value.paused) {
+        audioPlaybackUnlocked = true;
+        if (hasTrack) {
+          stopAudioPlayRetry();
+        }
+      }
+    })
+    .catch((error) => {
+      const name = error && typeof error === 'object' ? (error as any).name : '';
+      if (now - lastAudioPlayErrorAtMs > 1500) {
+        lastAudioPlayErrorAtMs = now;
+        pushVideoEvent(`audio-play-error${name ? `:${name}` : ''}:${reason}`);
+      }
+    });
+}
+
+function primeAudioAutoplay(): void {
+  if (!audioEl.value) return;
+  if (!audioStream) {
+    audioStream = new MediaStream();
+  }
+  audioPlaybackUnlocked = false;
+  audioEl.value.srcObject = audioStream;
+  audioEl.value.volume = 1;
+  audioEl.value.muted = true;
+
+  stopAudioPlayRetry();
+  audioPlayRetryUntilMs = Date.now() + 8000;
+  audioPlayRetryTimer = window.setInterval(() => {
+    if (!audioAutoplayRequested) {
+      stopAudioPlayRetry();
+      return;
+    }
+    if (audioPlayRetryUntilMs != null && Date.now() > audioPlayRetryUntilMs) {
+      stopAudioPlayRetry();
+      return;
+    }
+    ensureAudioPlayback('retry');
+  }, 500);
+
+  ensureAudioPlayback('prime');
+}
 function stopSessionStatusPolling(): void {
   if (sessionStatusTimer) {
     window.clearInterval(sessionStatusTimer);
@@ -1387,11 +1515,11 @@ const onFullscreenChange = () => {
   if (!isFullscreen.value) {
     cancelEscHold();
   }
-  // Reset media elements to flush jitter buffers on fullscreen change.
-  // Browser fullscreen transitions can cause momentary playback pauses,
-  // leading to buffer accumulation and delayed playback.
-  resetAudioElement();
-  resetVideoElement();
+  // Avoid hard resets here (they can trigger long rebuffering in some browsers).
+  // Instead, force a drain window and allow a brief video playback-rate boost to catch up.
+  modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
+  triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'fullscreen');
+  ensureAudioPlayback('fullscreen');
 };
 
 function resetAudioElement(): void {
@@ -1407,14 +1535,7 @@ function resetAudioElement(): void {
     if (!audioEl.value || !audioStream) return;
     audioEl.value.srcObject = audioStream;
     audioEl.value.muted = false;
-    if (wasPlaying || audioAutoplayRequested) {
-      const playPromise = audioEl.value.play();
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(() => {
-          /* ignore autoplay restrictions */
-        });
-      }
-    }
+    if (wasPlaying || audioAutoplayRequested) ensureAudioPlayback('reset');
   });
 }
 
@@ -1451,10 +1572,22 @@ const onPageHide = () => {
 };
 
 const onVisibilityChange = () => {
-  // Reset media when tab becomes visible to flush any accumulated buffer
+  // When tab becomes visible again, drain any accumulated buffer aggressively.
   if (document.visibilityState === 'visible') {
-    resetAudioElement();
-    resetVideoElement();
+    modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
+    triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'resume');
+  }
+  ensureAudioPlayback('visibility');
+};
+
+const onAudioUserGesture = () => {
+  if (!audioAutoplayRequested) return;
+  if (audioPlayRetryUntilMs != null && Date.now() <= audioPlayRetryUntilMs) {
+    ensureAudioPlayback('gesture');
+    return;
+  }
+  if (!audioPlaybackUnlocked && isConnected.value) {
+    ensureAudioPlayback('gesture');
   }
 };
 
@@ -1589,21 +1722,25 @@ function updateVideoElement(stream: MediaStream): boolean {
 
 function updateAudioElement(stream: MediaStream): void {
   const audioTrack = stream.getAudioTracks()[0];
-  if (!audioEl.value || !audioTrack) return;
+  if (!audioEl.value) return;
   if (!audioStream) {
     audioStream = new MediaStream();
+  }
+  if (!audioTrack) {
+    if (audioAutoplayRequested) {
+      if (audioEl.value.srcObject !== audioStream) {
+        audioEl.value.srcObject = audioStream;
+      }
+      ensureAudioPlayback('no-track');
+    }
+    return;
   }
   audioStream.getAudioTracks().forEach((track) => audioStream?.removeTrack(track));
   audioStream.addTrack(audioTrack);
   audioEl.value.srcObject = audioStream;
   audioEl.value.muted = false;
   if (audioAutoplayRequested) {
-    const playPromise = audioEl.value.play();
-    if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => {
-        /* ignore */
-      });
-    }
+    ensureAudioPlayback('track');
   }
 }
 
@@ -1627,6 +1764,11 @@ const VIDEO_DRAIN_SUSTAIN_MS = 350;
 const VIDEO_DRAIN_RELEASE_SUSTAIN_MS = 800;
 const VIDEO_STARTUP_DRAIN_MS = 20000;
 const VIDEO_STARTUP_RELEASE_SUSTAIN_MS = 1000;
+const VIDEO_MODE_SWITCH_DRAIN_MS = 8000;
+const VIDEO_RISE_GUARD_MS = 6000;
+const VIDEO_PLAYBACK_RATE_MAX = 1.12;
+const VIDEO_PLAYBACK_RATE_BOOST_MAX = 1.2;
+const VIDEO_PLAYBACK_RATE_DECAY_PER_SEC = 0.12;
 let audioDrainOverloadedSince: number | null = null;
 let audioDrainReleaseSince: number | null = null;
 let audioDrainActive = false;
@@ -1640,6 +1782,9 @@ let lastVideoBufferResetAt: number | null = null;
 let lastVideoTargetMs: number | undefined = undefined;
 let videoStartupDrainUntil: number | null = null;
 let videoStartupDrainReleaseSince: number | null = null;
+let lastVideoPlayoutSample: { ts: number; value: number } | null = null;
+let lastPlaybackRateUpdateAt: number | null = null;
+let modeSwitchDrainUntil: number | null = null;
 
 function setAudioDrainActive(active: boolean): void {
   if (audioDrainActive === active) return;
@@ -1717,8 +1862,33 @@ function resetVideoDrainState(): void {
   videoDrainReleaseSince = null;
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
+  lastVideoPlayoutSample = null;
   const baseTargetMs = resolveVideoBaseTargetMs();
   setVideoDrainMode('off', baseTargetMs);
+}
+
+function triggerVideoDrainWindow(durationMs: number, reason: string): void {
+  if (!isConnected.value) return;
+  const now = Date.now();
+  const until = now + Math.max(0, durationMs);
+  videoStartupDrainUntil =
+    videoStartupDrainUntil != null ? Math.max(videoStartupDrainUntil, until) : until;
+  videoStartupDrainReleaseSince = null;
+  const baseTargetMs = resolveVideoBaseTargetMs();
+  setVideoDrainMode('startup', baseTargetMs, resolveVideoStartupTargetMs());
+  pushVideoEvent(`video-drain-${reason}`);
+}
+
+function setVideoPlaybackRate(rate: number): void {
+  const el = videoEl.value;
+  if (!el) return;
+  const clamped = Math.max(1, Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, rate));
+  if (Math.abs((el.playbackRate ?? 1) - clamped) < 0.001) return;
+  try {
+    el.playbackRate = clamped;
+  } catch {
+    /* ignore */
+  }
 }
 
 watch(
@@ -1786,6 +1956,47 @@ watch(
     const baseTargetMs = resolveVideoBaseTargetMs();
     const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
     const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+    if (lastVideoPlayoutSample) {
+      const deltaMs = now - lastVideoPlayoutSample.ts;
+      const deltaValue = videoValue - lastVideoPlayoutSample.value;
+      if (deltaMs > 0 && deltaValue > 0) {
+        const riseRate = (deltaValue * 1000) / deltaMs;
+        const riseLimit = Math.max(8, frameMs * 1.5);
+        if (riseRate > riseLimit && videoValue > baseTargetMs + frameMs) {
+          const until = now + VIDEO_RISE_GUARD_MS;
+          videoStartupDrainUntil =
+            videoStartupDrainUntil != null ? Math.max(videoStartupDrainUntil, until) : until;
+          videoStartupDrainReleaseSince = null;
+        }
+      }
+    }
+    lastVideoPlayoutSample = { ts: now, value: videoValue };
+
+    // Video-only catch-up: speed up video slightly to drain backlog quickly, but decay
+    // back to 1.0 smoothly to avoid oscillation. Audio is intentionally not synchronized.
+    if (videoEl.value) {
+      const lastAt = lastPlaybackRateUpdateAt ?? now;
+      const deltaMs = Math.max(0, now - lastAt);
+      lastPlaybackRateUpdateAt = now;
+
+      const errorMs = Math.max(0, videoValue - (baseTargetMs + frameMs));
+      const boostActive = modeSwitchDrainUntil != null && now <= modeSwitchDrainUntil;
+      if (boostActive) {
+        const boosted = 1 + Math.min(0.2, errorMs / Math.max(1, frameMs * 6));
+        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, Math.max(1, boosted)));
+      } else if (errorMs > 0) {
+        const desired = 1 + Math.min(0.12, errorMs / Math.max(1, frameMs * 10));
+        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_MAX, Math.max(1, desired)));
+      } else {
+        const current = videoEl.value.playbackRate ?? 1;
+        if (current > 1 && deltaMs > 0) {
+          const decay = (VIDEO_PLAYBACK_RATE_DECAY_PER_SEC * deltaMs) / 1000;
+          setVideoPlaybackRate(Math.max(1, current - decay));
+        } else {
+          setVideoPlaybackRate(1);
+        }
+      }
+    }
     if (videoStartupDrainUntil != null) {
       if (now > videoStartupDrainUntil) {
         videoStartupDrainUntil = null;
@@ -1979,6 +2190,29 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
   let intervalSamples = 0;
   let delaySum = 0;
   let delaySamples = 0;
+  const intervalWindow: number[] = [];
+  const RENDER_WINDOW_FRAMES = 240;
+  let nextQuantileAtSamples = 0;
+  const recomputeQuantiles = () => {
+    const n = intervalWindow.length;
+    if (n < 10) return;
+    const sorted = [...intervalWindow].sort((a, b) => a - b);
+    const p98Index = Math.max(0, Math.min(n - 1, Math.ceil(n * 0.98) - 1));
+    const p99Index = Math.max(0, Math.min(n - 1, Math.ceil(n * 0.99) - 1));
+    const keep98 = Math.max(1, Math.min(n, Math.floor(n * 0.98)));
+    const keep99 = Math.max(1, Math.min(n, Math.floor(n * 0.99)));
+    let sum98 = 0;
+    let sum99 = 0;
+    for (let i = 0; i < keep99; i += 1) {
+      const v = sorted[i];
+      sum99 += v;
+      if (i < keep98) sum98 += v;
+    }
+    videoFrameMetrics.value.p98IntervalMs = sorted[p98Index];
+    videoFrameMetrics.value.avg98IntervalMs = sum98 / keep98;
+    videoFrameMetrics.value.p99IntervalMs = sorted[p99Index];
+    videoFrameMetrics.value.avg99IntervalMs = sum99 / keep99;
+  };
   const onFrame = (now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) => {
     if (lastFrameAt != null) {
       const interval = Math.max(0, now - lastFrameAt);
@@ -1990,6 +2224,14 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
         videoFrameMetrics.value.maxIntervalMs ?? 0,
         interval,
       );
+      intervalWindow.push(interval);
+      if (intervalWindow.length > RENDER_WINDOW_FRAMES) {
+        intervalWindow.shift();
+      }
+      if (intervalSamples >= nextQuantileAtSamples) {
+        nextQuantileAtSamples = intervalSamples + 15;
+        recomputeQuantiles();
+      }
     }
     lastFrameAt = now;
     if (typeof metadata.expectedDisplayTime === 'number') {
@@ -2021,6 +2263,7 @@ function statusTagType(state?: string | null) {
 async function connect() {
   isConnecting.value = true;
   audioAutoplayRequested = true;
+  primeAudioAutoplay();
   resetAudioDrainState();
   client.setAudioLatencyTargets(AUDIO_TARGET_BUFFER_MS, AUDIO_TARGET_PLAYOUT_MS);
   if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
@@ -2030,10 +2273,7 @@ async function connect() {
       /* ignore */
     }
   }
-  if (audioEl.value) {
-    audioEl.value.muted = false;
-    audioEl.value.volume = 1;
-  }
+  ensureAudioPlayback('connect');
   stopServerSessionPolling();
   sessionId.value = null;
   serverSession.value = null;
@@ -2056,6 +2296,7 @@ async function connect() {
             videoEl.value.volume = 1;
             updateRemoteStreamInfo(stream);
             updateAudioElement(stream);
+            ensureAudioPlayback('remote-stream');
             if (hasVideo) {
               videoStartupDrainUntil = Date.now() + VIDEO_STARTUP_DRAIN_MS;
               videoStartupDrainReleaseSince = null;
@@ -2106,6 +2347,8 @@ async function connect() {
     const msg = error instanceof Error ? error.message : 'Failed to establish WebRTC session.';
     notifyError('Connection Failed', msg);
     console.error(error);
+    audioAutoplayRequested = false;
+    stopAudioPlayRetry();
   } finally {
     isConnecting.value = false;
     if (!isConnected.value) {
@@ -2127,12 +2370,22 @@ async function disconnect() {
   videoFrameMetrics.value = {};
   smoothedVideoFps.value = undefined;
   lastVideoFpsSampleAt = null;
+  lastPlaybackRateUpdateAt = null;
+  modeSwitchDrainUntil = null;
   detachInputCapture();
-  if (videoEl.value) videoEl.value.srcObject = null;
+  if (videoEl.value) {
+    try {
+      videoEl.value.playbackRate = 1;
+    } catch {
+      /* ignore */
+    }
+    videoEl.value.srcObject = null;
+  }
   if (audioEl.value) audioEl.value.srcObject = null;
   videoStream = null;
   audioStream = null;
   audioAutoplayRequested = false;
+  stopAudioPlayRetry();
   resetAudioDrainState();
   resetVideoDrainState();
   lastVideoTargetMs = undefined;
@@ -2233,6 +2486,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.removeEventListener('visibilitychange', onVisibilityChange);
+  window.removeEventListener('pointerdown', onAudioUserGesture as EventListener, true);
+  window.removeEventListener('keydown', onAudioUserGesture as EventListener, true);
   window.removeEventListener('keydown', onOverlayHotkey, true);
   window.removeEventListener('keydown', onFullscreenEscapeDown, true);
   window.removeEventListener('keyup', onFullscreenEscapeUp, true);
@@ -2252,6 +2507,8 @@ onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('pointerdown', onAudioUserGesture as EventListener, true);
+  window.addEventListener('keydown', onAudioUserGesture as EventListener, true);
   window.addEventListener('keydown', onOverlayHotkey, true);
   window.addEventListener('keydown', onFullscreenEscapeDown, true);
   window.addEventListener('keyup', onFullscreenEscapeUp, true);

@@ -43,7 +43,11 @@ const ENCODING_MIME: Record<string, string[]> = {
 const DEFAULT_AUDIO_JITTER_TARGET_MS = 20;
 const DEFAULT_AUDIO_PLAYOUT_DELAY_MS = 20;
 const RECEIVER_HINT_REFRESH_MS = 250;
-const STATS_POLL_INTERVAL_MS = 250;
+const STATS_POLL_FAST_MS = 250;
+const STATS_POLL_SLOW_MS = 1000;
+const STATS_POLL_FAST_BOOT_MS = 10000;
+const STATS_POLL_FAST_HOLD_MS = 2500;
+const STATS_POLL_FAST_JITTER_THRESHOLD_MS = 60;
 const ICE_CANDIDATE_BATCH_WINDOW_MS = 75;
 const ICE_CANDIDATE_BATCH_LIMIT = 256;
 
@@ -325,6 +329,8 @@ export class WebRtcClient {
   private inputChannel?: RTCDataChannel;
   private unsubscribeCandidates?: () => void;
   private statsTimer?: number;
+  private statsFastUntilMs?: number;
+  private statsConnectedAtMs?: number;
   private statsState: StatsState = {};
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private pendingLocalCandidates: RTCIceCandidateInit[] = [];
@@ -408,6 +414,8 @@ export class WebRtcClient {
     this.videoJitterTargetMs = resolveVideoJitterTargetMs(sessionConfig);
     this.audioJitterTargetMs = DEFAULT_AUDIO_JITTER_TARGET_MS;
     this.audioPlayoutDelayHintMs = DEFAULT_AUDIO_PLAYOUT_DELAY_MS;
+    this.statsFastUntilMs = undefined;
+    this.statsConnectedAtMs = undefined;
     const requestedEncoding = sessionConfig.encoding.toLowerCase();
     const bundlePolicy: RTCBundlePolicy = requestedEncoding === 'hevc' ? 'balanced' : 'max-bundle';
     const rtcpMuxPolicy: RTCRtcpMuxPolicy = requestedEncoding === 'hevc' ? 'negotiate' : 'require';
@@ -465,6 +473,9 @@ export class WebRtcClient {
       const state = this.pc.connectionState;
       callbacks.onConnectionState?.(state);
       if (state === 'connected') {
+        const now = Date.now();
+        this.statsConnectedAtMs = now;
+        this.statsFastUntilMs = now + STATS_POLL_FAST_BOOT_MS;
         this.clearAutoDisconnectTimer();
         this.startReceiverHintRefresh();
       } else if (state === 'failed' || state === 'closed') {
@@ -576,9 +587,11 @@ export class WebRtcClient {
     this.clearAutoDisconnectTimer();
     this.stopReceiverHintRefresh();
     if (this.statsTimer) {
-      window.clearInterval(this.statsTimer);
+      window.clearTimeout(this.statsTimer);
       this.statsTimer = undefined;
     }
+    this.statsFastUntilMs = undefined;
+    this.statsConnectedAtMs = undefined;
     this.unsubscribeCandidates?.();
     this.unsubscribeCandidates = undefined;
     if (this.inputChannel) {
@@ -615,6 +628,8 @@ export class WebRtcClient {
     this.pendingInput = [];
     this.statsState = {};
     this.videoJitterTargetMs = undefined;
+    this.statsFastUntilMs = undefined;
+    this.statsConnectedAtMs = undefined;
     this.disconnecting = false;
   }
 
@@ -702,16 +717,33 @@ export class WebRtcClient {
 
   private startStatsPolling(callbacks: WebRtcClientCallbacks): void {
     if (!this.pc) return;
-    this.statsTimer = window.setInterval(async () => {
+    if (this.statsTimer) return;
+    const poll = async () => {
       if (!this.pc) return;
+      let snapshot: WebRtcStatsSnapshot | null = null;
       try {
         const stats = await this.pc.getStats();
-        const snapshot = this.extractStats(stats);
+        snapshot = this.extractStats(stats);
         callbacks.onStats?.(snapshot);
       } catch {
         /* ignore */
       }
-    }, STATS_POLL_INTERVAL_MS);
+
+      if (!this.pc) return;
+      const now = Date.now();
+      const jitter = snapshot?.videoPlayoutDelayMs ?? snapshot?.videoJitterBufferMs;
+      if (typeof jitter === 'number' && Number.isFinite(jitter) && jitter >= STATS_POLL_FAST_JITTER_THRESHOLD_MS) {
+        this.statsFastUntilMs = Math.max(this.statsFastUntilMs ?? 0, now + STATS_POLL_FAST_HOLD_MS);
+      }
+      const shouldFast = (this.statsFastUntilMs != null && now <= this.statsFastUntilMs) ||
+        (this.statsConnectedAtMs != null && now - this.statsConnectedAtMs <= STATS_POLL_FAST_BOOT_MS);
+      const delay = shouldFast ? STATS_POLL_FAST_MS : STATS_POLL_SLOW_MS;
+      this.statsTimer = window.setTimeout(() => {
+        this.statsTimer = undefined;
+        void poll();
+      }, delay);
+    };
+    void poll();
   }
 
   private async flushPendingCandidates(): Promise<void> {
