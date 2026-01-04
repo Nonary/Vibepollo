@@ -239,31 +239,28 @@ function resolveJitterTargetMs(value?: number): number | undefined {
   return Math.max(0, value);
 }
 
-function maxFrameAgeForMode(mode?: StreamConfig['videoPacingMode']): number {
-  switch (mode) {
-    case 'latency':
-      return 1;
-    case 'smoothness':
-      return 3;
-    case 'balanced':
-    default:
-      return 2;
-  }
-}
+const VIDEO_MAX_FRAME_AGE_MIN_MS = 5;
+const VIDEO_MAX_FRAME_AGE_MAX_MS = 100;
 
 function resolveVideoJitterTargetMs(config: StreamConfig): number | undefined {
   const fps =
     typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
-  const maxFrames = maxFrameAgeForMode(config.videoPacingMode);
-  const maxTargetMs = Math.round((1000 / fps) * maxFrames);
-  const targetMs = resolveJitterTargetMs(config.videoMaxFrameAgeMs);
-  if (targetMs != null) return Math.min(targetMs, maxTargetMs);
-  if (typeof config.videoMaxFrameAgeFrames !== 'number') return undefined;
-  if (!Number.isFinite(config.videoMaxFrameAgeFrames) || config.videoMaxFrameAgeFrames <= 0) {
-    return undefined;
+  const minMs = VIDEO_MAX_FRAME_AGE_MIN_MS;
+  const maxMs = VIDEO_MAX_FRAME_AGE_MAX_MS;
+  if (
+    typeof config.videoMaxFrameAgeFrames === 'number' &&
+    Number.isFinite(config.videoMaxFrameAgeFrames) &&
+    config.videoMaxFrameAgeFrames > 0
+  ) {
+    const frames = Math.round(config.videoMaxFrameAgeFrames);
+    const computed = Math.round((1000 / fps) * frames);
+    if (Number.isFinite(computed)) {
+      return Math.min(maxMs, Math.max(minMs, computed));
+    }
   }
-  const frames = Math.min(maxFrames, Math.round(config.videoMaxFrameAgeFrames));
-  return Math.round((1000 / fps) * frames);
+  const targetMs = resolveJitterTargetMs(config.videoMaxFrameAgeMs);
+  if (targetMs != null) return Math.min(maxMs, Math.max(minMs, targetMs));
+  return undefined;
 }
 
 function applyVideoReceiverHints(receiver?: RTCRtpReceiver, targetMs?: number): void {

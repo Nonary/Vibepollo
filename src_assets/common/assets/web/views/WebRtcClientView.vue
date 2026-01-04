@@ -826,11 +826,25 @@ const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number 
   smoothness: { slackMs: 3, maxAgeFrames: 3 },
 };
 
-function clampMaxAgeFrames(value: number | null | undefined, mode?: PacingMode): number {
+const MAX_FRAME_AGE_MS = 100;
+const MAX_FRAME_AGE_FRAMES = 10;
+
+function maxAllowedFramesForFps(fps: number): number {
+  const safeFps = fps > 0 ? fps : 60;
+  const maxByMs = Math.floor((MAX_FRAME_AGE_MS * safeFps) / 1000);
+  return Math.max(1, Math.min(MAX_FRAME_AGE_FRAMES, maxByMs));
+}
+
+function clampMaxAgeFrames(
+  value: number | null | undefined,
+  fps: number,
+  mode?: PacingMode,
+): number {
   const resolvedMode = mode ?? 'balanced';
   const preset = pacingPresets[resolvedMode].maxAgeFrames;
-  if (value == null || !Number.isFinite(value)) return preset;
-  return Math.min(preset, Math.max(1, Math.round(value)));
+  const maxAllowed = maxAllowedFramesForFps(fps);
+  if (value == null || !Number.isFinite(value)) return Math.min(preset, maxAllowed);
+  return Math.min(maxAllowed, Math.max(1, Math.round(value)));
 }
 
 function maxFrameAgeMsFromFrames(fps: number, frames: number): number {
@@ -842,7 +856,8 @@ function applyPacingPreset(mode: PacingMode) {
   const preset = pacingPresets[mode];
   config.videoPacingMode = mode;
   config.videoPacingSlackMs = preset.slackMs;
-  config.videoMaxFrameAgeFrames = preset.maxAgeFrames;
+  config.videoMaxFrameAgeMs = undefined;
+  config.videoMaxFrameAgeFrames = clampMaxAgeFrames(preset.maxAgeFrames, config.fps, mode);
 }
 
 const config = reactive<StreamConfig>({
@@ -861,15 +876,22 @@ const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
 
 function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
   const normalized = { ...profileConfig };
-  if (normalized.videoMaxFrameAgeFrames == null && typeof normalized.videoMaxFrameAgeMs === 'number') {
-    const fps = normalized.fps ?? 60;
-    normalized.videoMaxFrameAgeFrames = Math.max(
-      1,
-      Math.round((normalized.videoMaxFrameAgeMs / 1000) * fps),
-    );
+  const fps = normalized.fps ?? 60;
+  if (typeof normalized.videoMaxFrameAgeMs === 'number') {
+    if (normalized.videoMaxFrameAgeFrames == null) {
+      normalized.videoMaxFrameAgeFrames = Math.max(
+        1,
+        Math.round((normalized.videoMaxFrameAgeMs / 1000) * fps),
+      );
+    }
+    delete normalized.videoMaxFrameAgeMs;
   }
   const mode = normalized.videoPacingMode ?? 'balanced';
-  normalized.videoMaxFrameAgeFrames = clampMaxAgeFrames(normalized.videoMaxFrameAgeFrames ?? null, mode);
+  normalized.videoMaxFrameAgeFrames = clampMaxAgeFrames(
+    normalized.videoMaxFrameAgeFrames ?? null,
+    fps,
+    mode,
+  );
   return normalized;
 }
 
@@ -896,10 +918,15 @@ function persistCachedConfig(): void {
 
 const maxFrameAgeFrames = computed({
   get() {
-    return clampMaxAgeFrames(config.videoMaxFrameAgeFrames ?? null, config.videoPacingMode);
+    return clampMaxAgeFrames(
+      config.videoMaxFrameAgeFrames ?? null,
+      config.fps,
+      config.videoPacingMode,
+    );
   },
   set(value: number | null) {
-    config.videoMaxFrameAgeFrames = clampMaxAgeFrames(value, config.videoPacingMode);
+    config.videoMaxFrameAgeMs = undefined;
+    config.videoMaxFrameAgeFrames = clampMaxAgeFrames(value, config.fps, config.videoPacingMode);
   },
 });
 

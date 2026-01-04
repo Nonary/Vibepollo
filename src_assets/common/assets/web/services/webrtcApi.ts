@@ -61,38 +61,29 @@ export interface WebRtcSessionEndOptions {
   keepalive?: boolean;
 }
 
-function maxFrameAgeForMode(mode?: StreamConfig['videoPacingMode']): number {
-  switch (mode) {
-    case 'latency':
-      return 1;
-    case 'smoothness':
-      return 3;
-    case 'balanced':
-    default:
-      return 2;
-  }
-}
+const VIDEO_MAX_FRAME_AGE_MIN_MS = 5;
+const VIDEO_MAX_FRAME_AGE_MAX_MS = 100;
 
 function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
   const fps =
     typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
-  const maxFrames = maxFrameAgeForMode(config.videoPacingMode);
-  const maxMsForMode = Math.round((1000 / fps) * maxFrames);
-  const maxMs = Math.min(100, Math.max(5, maxMsForMode));
-  if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
-    return Math.min(maxMs, Math.round(config.videoMaxFrameAgeMs));
-  }
+  const minMs = VIDEO_MAX_FRAME_AGE_MIN_MS;
+  const maxMs = VIDEO_MAX_FRAME_AGE_MAX_MS;
   if (
-    typeof config.videoMaxFrameAgeFrames !== 'number' ||
-    !Number.isFinite(config.videoMaxFrameAgeFrames) ||
-    config.videoMaxFrameAgeFrames <= 0
+    typeof config.videoMaxFrameAgeFrames === 'number' &&
+    Number.isFinite(config.videoMaxFrameAgeFrames) &&
+    config.videoMaxFrameAgeFrames > 0
   ) {
-    return undefined;
+    const frames = Math.round(config.videoMaxFrameAgeFrames);
+    const computed = Math.round((1000 / fps) * frames);
+    if (Number.isFinite(computed)) {
+      return Math.min(maxMs, Math.max(minMs, computed));
+    }
   }
-  const frames = Math.min(maxFrames, Math.round(config.videoMaxFrameAgeFrames));
-  const computed = Math.round((1000 / fps) * frames);
-  if (!Number.isFinite(computed)) return undefined;
-  return Math.min(maxMs, Math.max(5, computed));
+  if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
+    return Math.min(maxMs, Math.max(minMs, Math.round(config.videoMaxFrameAgeMs)));
+  }
+  return undefined;
 }
 
 export class WebRtcHttpApi implements WebRtcApi {
