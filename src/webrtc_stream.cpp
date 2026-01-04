@@ -109,6 +109,27 @@ namespace webrtc_stream {
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
     constexpr auto kWebrtcIdleGracePeriod = std::chrono::minutes {5};
 
+    int normalize_fps_hz(int fps) {
+      if (fps <= 0) {
+        return kDefaultFps;
+      }
+      if (fps >= 1000) {
+        const int hz = static_cast<int>(std::lround(static_cast<double>(fps) / 1000.0));
+        return std::max(1, hz);
+      }
+      return fps;
+    }
+
+    int normalize_fps_millihz(int fps) {
+      if (fps <= 0) {
+        return 0;
+      }
+      if (fps >= 1000) {
+        return fps;
+      }
+      return fps * 1000;
+    }
+
     struct SharedEncodedPayloadReleaseContext {
       std::shared_ptr<std::vector<std::uint8_t>> payload;
       std::shared_ptr<std::atomic_uint32_t> inflight;
@@ -1765,7 +1786,7 @@ namespace webrtc_stream {
       video::config_t config {};
       config.width = options.width.value_or(kDefaultWidth);
       config.height = options.height.value_or(kDefaultHeight);
-      config.framerate = options.fps.value_or(kDefaultFps);
+      config.framerate = normalize_fps_hz(options.fps.value_or(kDefaultFps));
       int bitrate = options.bitrate_kbps.value_or(0);
       if (bitrate <= 0) {
         bitrate = config::video.max_bitrate > 0 ? config::video.max_bitrate : 20000;
@@ -1814,10 +1835,14 @@ namespace webrtc_stream {
       config.mode = video_pacing_mode_from_string(options.video_pacing_mode);
       config.max_age_frames = max_age_frames_for_mode(config.mode);
       config.max_frame_age_override = false;
-      const int fps = options.fps.value_or(kDefaultFps);
-      const int safe_fps = fps > 0 ? fps : kDefaultFps;
-      const auto frame_interval =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)) / safe_fps;
+      const int raw_fps = options.fps.value_or(kDefaultFps);
+      const int fps_millihz = normalize_fps_millihz(raw_fps);
+      const int fps_hz = normalize_fps_hz(raw_fps);
+      const auto frame_interval = fps_millihz > 0
+        ? std::chrono::nanoseconds(
+            (1000000000LL * 1000LL + fps_millihz / 2) / fps_millihz
+          )
+        : (std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)) / fps_hz);
       config.max_frame_age = frame_interval * std::max(1, config.max_age_frames);
       switch (config.mode) {
         case video_pacing_mode_e::latency:
@@ -1883,7 +1908,14 @@ namespace webrtc_stream {
       launch_session->client_name = requested_name.empty() ? launch_session->device_name : requested_name;
       launch_session->width = options.width.value_or(kDefaultWidth);
       launch_session->height = options.height.value_or(kDefaultHeight);
-      launch_session->fps = options.fps.value_or(kDefaultFps);
+      int fps = options.fps.value_or(kDefaultFps);
+      if (fps <= 0) {
+        fps = kDefaultFps;
+      }
+      if (fps < 1000) {
+        fps *= 1000;
+      }
+      launch_session->fps = fps;
       launch_session->appid = app_id;
       launch_session->host_audio = options.host_audio;
       launch_session->surround_info = audio_channels;
@@ -1891,6 +1923,7 @@ namespace webrtc_stream {
       launch_session->gcmap = 0;
       launch_session->enable_sops = false;
       launch_session->enable_hdr = options.hdr.value_or(false);
+      launch_session->scale_factor = 100;
 
 #ifdef _WIN32
       {
@@ -2202,8 +2235,8 @@ namespace webrtc_stream {
           }
         }
         platf::frame_limiter_streaming_start(
-          launch_session->fps,
-          launch_session->fps,
+          normalize_fps_hz(launch_session->fps),
+          normalize_fps_hz(launch_session->fps),
           launch_session->gen1_framegen_fix,
           launch_session->gen2_framegen_fix,
           lossless_rtss_limit,

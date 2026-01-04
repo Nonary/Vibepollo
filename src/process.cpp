@@ -1173,6 +1173,10 @@ namespace proc {
       scale_factor = _app.scale_factor;
     }
 
+    if (scale_factor <= 0) {
+      scale_factor = 100;
+    }
+
     if (scale_factor != 100) {
       render_width *= ((float) scale_factor / 100);
       render_height *= ((float) scale_factor / 100);

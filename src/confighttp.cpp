@@ -2319,13 +2319,22 @@ namespace confighttp {
           options.encoded = input.at("encoded").get<bool>();
         }
         if (input.contains("width")) {
-          options.width = input.at("width").get<int>();
+          const int width = input.at("width").get<int>();
+          if (width > 0) {
+            options.width = width;
+          }
         }
         if (input.contains("height")) {
-          options.height = input.at("height").get<int>();
+          const int height = input.at("height").get<int>();
+          if (height > 0) {
+            options.height = height;
+          }
         }
         if (input.contains("fps")) {
-          options.fps = input.at("fps").get<int>();
+          const int fps = input.at("fps").get<int>();
+          if (fps > 0) {
+            options.fps = fps;
+          }
         }
         if (input.contains("bitrate_kbps")) {
           options.bitrate_kbps = input.at("bitrate_kbps").get<int>();
