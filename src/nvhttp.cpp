@@ -2404,17 +2404,6 @@ namespace nvhttp {
         // or any number of other factors).
         bool encoder_probe_failed = video::probe_encoders();
 
-#ifdef _WIN32
-        if (encoder_probe_failed && !has_any_active_display()) {
-          BOOST_LOG(info) << "Resume encoder probe failed with no active display; waiting for activation before retry.";
-          constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-          if (wait_for_display_activation(kDisplayActivationTimeout)) {
-            BOOST_LOG(info) << "Display became active; retrying resume encoder probe.";
-            encoder_probe_failed = video::probe_encoders();
-          }
-        }
-#endif
-
         // Probe encoders again before streaming to ensure our chosen
         // encoder matches the active GPU (which could have changed
         // due to hotplugging, driver crash, primary monitor change,

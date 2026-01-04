@@ -968,24 +968,25 @@ namespace webrtc_stream {
       if (!input_ctx) {
         return;
       }
+      const auto permission = crypto::PERM::_all_inputs;
 
       const auto type = message.value("type", "");
       if (type == "mouse_move") {
         const double x = message.value("x", 0.0);
         const double y = message.value("y", 0.0);
-        input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y));
+        input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y), permission);
         return;
       }
       if (type == "mouse_down" || type == "mouse_up") {
         if (message.contains("x") && message.contains("y")) {
           const double x = message.value("x", 0.0);
           const double y = message.value("y", 0.0);
-          input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y));
+          input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y), permission);
         }
 
         int mapped_button = map_mouse_button(message.value("button", -1));
         if (mapped_button > 0) {
-          input::passthrough(input_ctx, make_mouse_button_packet(mapped_button, type == "mouse_up"));
+          input::passthrough(input_ctx, make_mouse_button_packet(mapped_button, type == "mouse_up"), permission);
         }
         return;
       }
@@ -995,10 +996,10 @@ namespace webrtc_stream {
         const int vscroll = static_cast<int>(std::lround(-dy * 120.0));
         const int hscroll = static_cast<int>(std::lround(dx * 120.0));
         if (vscroll != 0) {
-          input::passthrough(input_ctx, make_scroll_packet(vscroll));
+          input::passthrough(input_ctx, make_scroll_packet(vscroll), permission);
         }
         if (hscroll != 0) {
-          input::passthrough(input_ctx, make_hscroll_packet(hscroll));
+          input::passthrough(input_ctx, make_hscroll_packet(hscroll), permission);
         }
         return;
       }
@@ -1013,7 +1014,7 @@ namespace webrtc_stream {
         if (message.contains("modifiers") && message["modifiers"].is_object()) {
           mods = modifiers_from_json(message["modifiers"]);
         }
-        input::passthrough(input_ctx, make_keyboard_packet(*key_code, type == "key_up", mods));
+        input::passthrough(input_ctx, make_keyboard_packet(*key_code, type == "key_up", mods), permission);
         return;
       }
       if (type == "gamepad_connect") {
@@ -1035,7 +1036,11 @@ namespace webrtc_stream {
         const uint8_t controller_type = parse_gamepad_type(message);
         const auto capabilities = static_cast<uint16_t>(message.value("capabilities", 0));
         const auto supported_buttons = static_cast<uint32_t>(message.value("supportedButtons", 0));
-        input::passthrough(input_ctx, make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons));
+        input::passthrough(
+          input_ctx,
+          make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons),
+          permission
+        );
         return;
       }
       if (type == "gamepad_state") {
@@ -1057,7 +1062,8 @@ namespace webrtc_stream {
           const auto supported_buttons = static_cast<uint32_t>(message.value("supportedButtons", 0));
           input::passthrough(
             input_ctx,
-            make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons)
+            make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons),
+            permission
           );
         }
         const auto active_mask = static_cast<uint16_t>(message.value("activeMask", 0));
@@ -1086,7 +1092,8 @@ namespace webrtc_stream {
             clamp_i16(ls_y),
             clamp_i16(rs_x),
             clamp_i16(rs_y)
-          )
+          ),
+          permission
         );
         return;
       }
@@ -1102,7 +1109,8 @@ namespace webrtc_stream {
         const auto active_mask = static_cast<uint16_t>(message.value("activeMask", 0));
         input::passthrough(
           input_ctx,
-          make_gamepad_state_packet(controller, active_mask, 0, 0, 0, 0, 0, 0, 0)
+          make_gamepad_state_packet(controller, active_mask, 0, 0, 0, 0, 0, 0, 0),
+          permission
         );
         return;
       }
@@ -1121,7 +1129,7 @@ namespace webrtc_stream {
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
           return;
         }
-        input::passthrough(input_ctx, make_gamepad_motion_packet(controller, motion_type, x, y, z));
+        input::passthrough(input_ctx, make_gamepad_motion_packet(controller, motion_type, x, y, z), permission);
         return;
       }
     }
@@ -2120,7 +2128,16 @@ namespace webrtc_stream {
       }
 
       if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
-        auto result = proc::proc.execute(requested_app_id, launch_session);
+        const auto appid_str = std::to_string(requested_app_id);
+        const auto apps = proc::proc.get_apps();
+        auto app_iter = std::find_if(apps.begin(), apps.end(), [&appid_str](const auto &app) {
+          return app.id == appid_str;
+        });
+        if (app_iter == apps.end()) {
+          return std::string {"Couldn't find app with ID ["} + appid_str + ']';
+        }
+
+        auto result = proc::proc.execute(*app_iter, launch_session);
         if (result != 0) {
           return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
         }
@@ -2180,6 +2197,7 @@ namespace webrtc_stream {
           }
         }
         platf::frame_limiter_streaming_start(
+          launch_session->fps,
           launch_session->fps,
           launch_session->gen1_framegen_fix,
           launch_session->gen2_framegen_fix,
@@ -2300,7 +2318,11 @@ namespace webrtc_stream {
       ctx->last_mouse_move_seq.store(seq, std::memory_order_release);
       ctx->last_mouse_move_at_ms.store(now_ms, std::memory_order_release);
 
-      input::passthrough(input_ctx, make_abs_mouse_move_packet(unit_from_u16(x_u16), unit_from_u16(y_u16)));
+      input::passthrough(
+        input_ctx,
+        make_abs_mouse_move_packet(unit_from_u16(x_u16), unit_from_u16(y_u16)),
+        crypto::PERM::_all_inputs
+      );
     }
 
     void on_data_channel_message(void *user, const char *buffer, int length, int binary) {
