@@ -109,9 +109,8 @@ namespace config {
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
 
-    struct dd_t {
-      struct workarounds_t {
-        bool hdr_toggle;  ///< Enable HDR high-contrast color workaround (async; fixed 1s delay).
+      struct dd_t {
+        struct workarounds_t {
         bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
       };
 

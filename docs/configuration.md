@@ -465,30 +465,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### ds5_inputtino_randomize_mac
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Randomize the MAC-Address for the generated virtual controller.
-            @hint{Only applies on linux for gamepads created as PS5-style controllers}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            ds5_inputtino_randomize_mac = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ### back_button_timeout
 
 <table>
@@ -749,6 +725,30 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### ds5_inputtino_randomize_mac
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Randomize the MAC-Address for the generated virtual controller.
+            @hint{Only applies on linux for gamepads created as PS5-style controllers}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            ds5_inputtino_randomize_mac = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ## Audio/Video
 
 ### audio_sink
@@ -851,29 +851,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### stream_audio
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Whether to stream audio or not. Disabling this can be useful for streaming headless displays as second monitors.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            stream_audio = disabled
-            @endcode</td>
-    </tr>
-</table>
-
 ### install_steam_audio_drivers
 
 <table>
@@ -895,6 +872,29 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             install_steam_audio_drivers = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### stream_audio
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether to stream audio or not. Disabling this can be useful for streaming headless displays as second monitors.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            stream_audio = disabled
             @endcode</td>
     </tr>
 </table>
@@ -1066,26 +1066,85 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### isolated_virtual_display_option
+### virtual_display_mode
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Isolates the virtual display.
-            @note{Applies to Windows only.}
+            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a Sudovda virtual display instead of relying on your physical monitor.
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}disabled@endcode</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
     </tr>
     <tr>
-        <td>enabled</td>
-        <td>Change the position of the virtual display (and other displays if there is a hole)</td>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_mode = shared
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>disabled</td>
+        <td>Use the physical display selected via <code>output_name</code>.</td>
+    </tr>
+    <tr>
+        <td>per_client</td>
+        <td>Create a dedicated virtual display per client connection.</td>
+    </tr>
+    <tr>
+        <td>shared</td>
+        <td>Reuse a single virtual display for all clients. Faster reconnects, but only one virtual layout is maintained.</td>
     </tr>
 </table>
 
+### virtual_display_layout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controls how the virtual display is positioned relative to your physical monitors whenever <code>virtual_display_mode</code> is not <code>disabled</code>.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            exclusive
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_layout = extended_primary_isolated
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>exclusive</td>
+        <td>Deactivate every other monitor so only the virtual display remains visible.</td>
+    </tr>
+    <tr>
+        <td>extended</td>
+        <td>Keep all existing monitors active and simply add the virtual display as another screen.</td>
+    </tr>
+    <tr>
+        <td>extended_primary</td>
+        <td>Extend the desktop while promoting the virtual display to be the primary monitor.</td>
+    </tr>
+    <tr>
+        <td>extended_isolated</td>
+        <td>Extend the desktop but move the virtual display far away in the coordinate space so the mouse cannot accidentally reach it.</td>
+    </tr>
+    <tr>
+        <td>extended_primary_isolated</td>
+        <td>Combine the primary + isolated behaviors: the virtual display becomes primary while remaining far away from the physical monitors.</td>
+    </tr>
+</table>
 
 ### dd_configuration_option
 
@@ -1285,83 +1344,38 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### double_refreshrate
+### dd_hdr_request_override
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops.<br>
-            Leave this on unless a specific game or monitor behaves incorrectly.<br>
-            @note{Applies to Windows virtual displays only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}true@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            double_refreshrate = false
-            @endcode</td>
-    </tr>
-</table>
-
-### dd_wa_hdr_toggle_delay
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            When using virtual display device (VDD) for streaming, it might incorrectly display HDR color. Sunshine can try to mitigate this issue, by turning HDR off and then on again.<br>
-            If the value is set to 0, the workaround is disabled (default). If the value is between 0 and 3000 milliseconds, Sunshine will turn off HDR, wait for the specified amount of time and then turn HDR on again. The recommended delay time is around 500 milliseconds in most cases.<br>
-            DO NOT use this workaround unless you actually have issues with HDR as it directly impacts stream start time!
-            @note{This option works independently of [dd_hdr_option](#dd_hdr_option)}
+            Override the HDR request coming from the client.
             @note{Applies to Windows only.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}
-            20
-            @endcode</td>
+        <td colspan="2">@code{}auto@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            dd_wa_hdr_toggle_delay = 500
-            @endcode</td>
-    </tr>
-</table>
-
-### dd_wa_dummy_plug_hdr10
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Forces Windows to run the capture output at 30&nbsp;Hz with HDR enabled so physical HDMI dummy plugs expose 10-bit colour.<br>
-            Sunshine also keeps the "Disable VSYNC" override engaged to ensure the driver profile disables VSYNC during streams.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}false@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            dd_wa_dummy_plug_hdr10 = true
+            dd_hdr_request_override = force_on
             @endcode</td>
     </tr>
     <tr>
-        <td>Notes</td>
-        <td colspan="2">
-            Only enable this when using a physical dummy plug that needs the 10-bit HDR workaround.<br>
-            The workaround applies to directly launched applications only; Desktop streams keep their normal refresh rate so everyday use remains smooth.<br>
-            See the @hyperlink{https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions}{Dummy Plugs guide} for full setup details.
-        </td>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>Respect the client-requested HDR state.</td>
+    </tr>
+    <tr>
+        <td>force_on</td>
+        <td>Always request HDR on, regardless of client settings.</td>
+    </tr>
+    <tr>
+        <td>force_off</td>
+        <td>Always request HDR off, regardless of client settings.</td>
     </tr>
 </table>
 
@@ -1388,7 +1402,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-
 ### dd_config_revert_on_disconnect
 
 <table>
@@ -1409,6 +1422,28 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             dd_config_revert_on_disconnect = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### dd_always_restore_from_golden
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Always attempt to restore the saved golden snapshot before using session snapshots.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_always_restore_from_golden = true
             @endcode</td>
     </tr>
 </table>
@@ -1507,6 +1542,28 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_activate_virtual_display
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When enabled, Sunshine activates the virtual display driver and makes it the only active display during stream startup.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_activate_virtual_display = true
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_mode_remapping
 
 <table>
@@ -1589,6 +1646,59 @@ editing the `conf` file in a text editor. Use the examples as reference.
                 }
               ]
             }@endcode
+        </td>
+    </tr>
+</table>
+
+### dd_wa_virtual_double_refresh
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When using Sunshine's virtual display driver, create and set the virtual monitor to double the target refresh rate to avoid unexplained FPS drops seen on virtual screens.<br>
+            Disable only if a specific game or virtual monitor behaves incorrectly with the doubled refresh.<br>
+            @note{Applies to Windows virtual displays only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_wa_virtual_double_refresh = false
+            @endcode</td>
+    </tr>
+</table>
+
+### dd_wa_dummy_plug_hdr10
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Forces Windows to run the capture output at 30&nbsp;Hz with HDR enabled so physical HDMI dummy plugs expose 10-bit colour.<br>
+            Sunshine also keeps the "Disable VSYNC" override engaged to ensure the driver profile disables VSYNC during streams.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_wa_dummy_plug_hdr10 = true
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Notes</td>
+        <td colspan="2">
+            Only enable this when using a physical dummy plug that needs the 10-bit HDR workaround.<br>
+            The workaround applies to directly launched applications only; Desktop streams keep their normal refresh rate so everyday use remains smooth.<br>
+            See the @hyperlink{https://github.com/Nonary/documentation/wiki/DummyPlugs#enabling-10-bit-color-on-dummy-plugs-at-high-resolutions}{Dummy Plugs guide} for full setup details.
         </td>
     </tr>
 </table>
@@ -1956,6 +2066,27 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             session_token_ttl_seconds = 3600
+            @endcode</td>
+    </tr>
+</table>
+
+### remember_me_refresh_token_ttl_seconds
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Time-to-live for remember-me refresh tokens, in seconds.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}604800@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            remember_me_refresh_token_ttl_seconds = 259200
             @endcode</td>
     </tr>
 </table>
@@ -2338,6 +2469,29 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### lossless_scaling_path
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Path to the LosslessScaling.exe executable used for frame generation or upscaling.
+            If empty, Sunshine will attempt to auto-detect common installation locations.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            lossless_scaling_path = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Lossless Scaling\\LosslessScaling.exe"
+            @endcode</td>
+    </tr>
+</table>
+
 ### encoder
 
 <table>
@@ -2384,6 +2538,145 @@ editing the `conf` file in a text editor. Use the examples as reference.
 
 These options integrate with Windows tooling to manage frame pacing and related behavior during a stream.
 They appear in the Frame Limiter section of the settings UI.
+
+### frame_limiter_enable
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable the frame limiter integration for streams.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_limiter_enable = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_limiter_provider
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Select the frame limiter provider to use during streams.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}auto@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_limiter_provider = rtss
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="4">Choices</td>
+        <td>auto</td>
+        <td>Auto-detect and prefer RTSS when available, otherwise fall back to NVIDIA Control Panel.</td>
+    </tr>
+    <tr>
+        <td>rtss</td>
+        <td>Use RivaTuner Statistics Server when installed.</td>
+    </tr>
+    <tr>
+        <td>nvidia-control-panel</td>
+        <td>Force NVIDIA Control Panel based frame limiting.</td>
+    </tr>
+    <tr>
+        <td>none</td>
+        <td>Disable all frame limiter providers.</td>
+    </tr>
+</table>
+
+### frame_limiter_fps_limit
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Optional FPS limit to apply while streaming. Set to 0 to use the stream's requested FPS.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}0@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_limiter_fps_limit = 120
+            @endcode</td>
+    </tr>
+</table>
+
+### rtss_install_path
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Full path to the RTSS install directory. If empty, Sunshine will attempt to auto-detect it.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            rtss_install_path = "C:\\Program Files (x86)\\RivaTuner Statistics Server"
+            @endcode</td>
+    </tr>
+</table>
+
+### rtss_frame_limit_type
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            RTSS sync limiter mode used when applying frame limits.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}async@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            rtss_frame_limit_type = "front edge sync"
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="4">Choices</td>
+        <td>async</td>
+        <td>Asynchronous limiter (default).</td>
+    </tr>
+    <tr>
+        <td>front edge sync</td>
+        <td>Front edge sync limiter.</td>
+    </tr>
+    <tr>
+        <td>back edge sync</td>
+        <td>Back edge sync limiter.</td>
+    </tr>
+    <tr>
+        <td>nvidia reflex</td>
+        <td>NVIDIA Reflex sync limiter (when supported).</td>
+    </tr>
+</table>
 
 ### frame_limiter_disable_vsync
 
@@ -3328,6 +3621,26 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### playnite_autosync_remove_uninstalled
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            Controls whether Sunshine removes auto-synced games when they are uninstalled in Playnite.
+            Set to <code>true</code> to drop entries immediately when Playnite reports them as uninstalled.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_autosync_remove_uninstalled = false@endcode</td>
+    </tr>
+</table>
+
 ### playnite_sync_plugins
 
 <table>
@@ -3351,26 +3664,6 @@ playnite_sync_plugins = [
   "83DD83A4-0CF7-49FB-9138-8547F6B60C18"
 ]
 @endcode</td>
-    </tr>
-</table>
-
-### playnite_autosync_remove_uninstalled
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td>
-            Controls whether Sunshine removes auto-synced games when they are uninstalled in Playnite.
-            Set to <code>true</code> to drop entries immediately when Playnite reports them as uninstalled.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td>@code{}true@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td>@code{}playnite_autosync_remove_uninstalled = false@endcode</td>
     </tr>
 </table>
 

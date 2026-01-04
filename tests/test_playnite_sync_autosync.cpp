@@ -105,7 +105,7 @@ TEST(PlayniteSync_TTL, NoDeleteWhenDisabledOrPlayedAfterAdded) {
   EXPECT_FALSE(should_ttl_delete(app, 1, now, last));
 }
 
-TEST(PlayniteSync_Purge, RemovesUninstalledOrExpiredOnly) {
+TEST(PlayniteSync_Purge, RemovesUninstalledAndOptionallyNonSelectedWhenReplacementAvailable) {
   nlohmann::json root;
   root["apps"] = nlohmann::json::array();
   // Two auto apps: A and B
@@ -118,13 +118,16 @@ TEST(PlayniteSync_Purge, RemovesUninstalledOrExpiredOnly) {
   std::unordered_set<std::string> uninstalled_lower {to_lower_copy(std::string("B"))};
   auto now = std::time(nullptr);
   std::unordered_map<std::string, std::time_t> last_played;
+  // selected set contains only A, so B is candidate for purge by uninstall and A remains
+  std::unordered_set<std::string> selected_ids {"A"};
   bool changed = false;
-  purge_uninstalled_and_ttl(root, uninstalled_lower, 0, now, last_played, changed);
+  purge_uninstalled_and_ttl(root, uninstalled_lower, 0, now, last_played, true /*recent*/, true /*require repl*/, true /*remove uninstalled*/, true /*sync all*/, selected_ids, changed);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
 
-  // Rebuild a simpler case: current_auto has X only; replacement candidate Y exists but X should stay unless uninstalled/expired
+  // Now add C as auto; selected contains only A, so C is non-selected; with require_repl=true and replacement available (selected_ids \n current_auto contains A,C -> replacement count 0?), ensure behavior by constructing a case with replacement
+  // Rebuild a simpler case: current_auto has X only; selected_ids has Y -> replacement available => X removed only when require_repl=true
   nlohmann::json root2;
   root2["apps"] = nlohmann::json::array();
   nlohmann::json x;
@@ -132,11 +135,23 @@ TEST(PlayniteSync_Purge, RemovesUninstalledOrExpiredOnly) {
   x["playnite-managed"] = "auto";
   root2["apps"].push_back(x);
   std::unordered_set<std::string> none;
+  std::unordered_set<std::string> selected {"Y"};  // Y not present currently, so 1 replacement available
   changed = false;
-  purge_uninstalled_and_ttl(root2, none, 0, now, last_played, changed);
+  purge_uninstalled_and_ttl(root2, none, 0, now, last_played, true, true, false /*remove uninstalled*/, true /*sync all*/, selected, changed);
+  EXPECT_TRUE(changed);
+  EXPECT_EQ(root2["apps"].size(), 0u);  // removed because replacement exists and require_repl=true
+
+  // With require_repl=false, should not remove non-selected
+  nlohmann::json root3;
+  root3["apps"] = nlohmann::json::array();
+  nlohmann::json x2;
+  x2["playnite-id"] = "X";
+  x2["playnite-managed"] = "auto";
+  root3["apps"].push_back(x2);
+  changed = false;
+  purge_uninstalled_and_ttl(root3, none, 0, now, last_played, true, false, false /*remove uninstalled*/, true /*sync all*/, selected, changed);
   EXPECT_FALSE(changed);
-  ASSERT_EQ(root2["apps"].size(), 1u);
-  EXPECT_EQ(root2["apps"][0]["playnite-id"], "X");
+  EXPECT_EQ(root3["apps"].size(), 1u);
 }
 
 TEST(PlayniteSync_AddMissing, AddsMissingSelectedWithMetadataAndTimestamps) {
@@ -156,4 +171,19 @@ TEST(PlayniteSync_AddMissing, AddsMissingSelectedWithMetadataAndTimestamps) {
   EXPECT_EQ(app["playnite-managed"], "auto");
   EXPECT_EQ(app["playnite-source"], "recent+category");
   EXPECT_TRUE(app.contains("playnite-added-at"));
+}
+
+TEST(PlayniteSync_CurrentAutoIds, CollectsOnlyAutoManaged) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  nlohmann::json a;
+  a["playnite-id"] = "A";
+  a["playnite-managed"] = "auto";
+  root["apps"].push_back(a);
+  nlohmann::json b;
+  b["playnite-id"] = "B";
+  root["apps"].push_back(b);
+  auto s = current_auto_ids(root);
+  EXPECT_EQ(s.size(), 1u);
+  EXPECT_TRUE(s.contains("A"));
 }

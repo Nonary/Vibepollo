@@ -34,10 +34,13 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/display_helper_session_deferral.h"
+  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
+  #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
@@ -62,38 +65,11 @@ namespace {
     return h;
   }
 
-  struct PendingSessionSnapshot {
-    int width = 0;
-    int height = 0;
-    int fps = 0;
-    bool enable_hdr = false;
-    bool enable_sops = false;
-    bool virtual_display = false;
-    std::string virtual_display_device_id;
-    std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
-    std::optional<int> framegen_refresh_rate;
-    bool gen1_framegen_fix = false;
-    bool gen2_framegen_fix = false;
-  };
-
-  struct PendingApplyState {
-    display_helper_integration::DisplayApplyRequest request;
-    PendingSessionSnapshot session_snapshot;
-    uint32_t session_id {0};
-    bool has_session {false};
-    int attempts {0};
-    std::optional<std::chrono::steady_clock::time_point> ready_since;
-    std::chrono::steady_clock::time_point next_attempt {};
-  };
-
-  std::mutex &pending_apply_mutex() {
-    static std::mutex m;
-    return m;
-  }
-
-  std::optional<PendingApplyState> &pending_apply_state() {
-    static std::optional<PendingApplyState> state;
-    return state;
+  display_helper_integration::SessionDeferralManager &session_deferrals() {
+    static display_helper_integration::SessionDeferralManager manager([]() {
+      return std::chrono::steady_clock::now();
+    });
+    return manager;
   }
 
   bool user_session_ready() {
@@ -112,25 +88,8 @@ namespace {
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
-  constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
-  constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
-  constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
-  constexpr int kMaxDeferredApplyAttempts = 6;
-
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
-
-  std::chrono::milliseconds deferred_apply_retry_delay(int attempts) {
-    if (attempts <= 0) {
-      return kDeferredApplyRetryBase;
-    }
-    const int shift = std::min(attempts - 1, 5);
-    auto delay = kDeferredApplyRetryBase * (1 << shift);
-    if (delay > kDeferredApplyRetryMax) {
-      delay = kDeferredApplyRetryMax;
-    }
-    return delay;
-  }
 
   struct InProcessDisplayContext {
     std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
@@ -190,6 +149,92 @@ namespace {
       }
     }
     return false;
+  }
+
+  double refresh_rate_value(const display_device::FloatingPoint &value) {
+    return std::visit(
+      [](const auto &v) -> double {
+        using V = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<V, display_device::Rational>) {
+          return v.m_denominator > 0
+                   ? static_cast<double>(v.m_numerator) / v.m_denominator
+                   : static_cast<double>(v.m_numerator);
+        } else {
+          return static_cast<double>(v);
+        }
+      },
+      value
+    );
+  }
+
+  bool device_info_ready(const display_device::EnumeratedDevice::Info &info) {
+    if (info.m_resolution.m_width == 0 || info.m_resolution.m_height == 0) {
+      return false;
+    }
+    const double hz = refresh_rate_value(info.m_refresh_rate);
+    return hz > 0.0;
+  }
+
+  bool device_is_ready(const std::string &device_id) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Full);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (!device_id_equals_ci(device.m_device_id, device_id)) {
+        continue;
+      }
+      if (!device.m_info) {
+        return false;
+      }
+      return device_info_ready(*device.m_info);
+    }
+
+    return false;
+  }
+
+  bool wait_for_device_ready(const std::string &device_id, std::chrono::steady_clock::duration timeout) {
+    if (device_id.empty()) {
+      return false;
+    }
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (device_is_ready(device_id)) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+  }
+
+  std::optional<std::string> resolve_display_device_id(const display_helper_integration::DisplayApplyRequest &request) {
+    if (request.session_overrides.device_id_override && !request.session_overrides.device_id_override->empty()) {
+      return request.session_overrides.device_id_override;
+    }
+    if (request.configuration && !request.configuration->m_device_id.empty()) {
+      return request.configuration->m_device_id;
+    }
+    if (request.session && !request.session->virtual_display_device_id.empty()) {
+      return request.session->virtual_display_device_id;
+    }
+    if (request.session && request.session->virtual_display) {
+      if (!request.session->client_name.empty()) {
+        if (auto resolved = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(request.session->client_name)) {
+          return resolved;
+        }
+      }
+      if (auto resolved = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+        return resolved;
+      }
+    }
+    return std::nullopt;
   }
 
   std::string build_snapshot_exclude_payload() {
@@ -451,6 +496,30 @@ namespace {
     }
   }
 
+  bool helper_process_exists() {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    bool found = false;
+
+    if (Process32FirstW(snapshot, &entry)) {
+      do {
+        if (_wcsicmp(entry.szExeFile, L"sunshine_display_helper.exe") == 0 &&
+            entry.th32ProcessID != GetCurrentProcessId()) {
+          found = true;
+          break;
+        }
+      } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+  }
+
   struct session_dd_fields_t {
     int width = -1;
     int height = -1;
@@ -466,6 +535,7 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
+  static std::atomic<bool> g_last_apply_used_helper {false};
 
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
@@ -528,7 +598,12 @@ namespace {
     }
 
     if (!helper_running) {
-      return false;
+      // If there is no helper process at all, there is nothing to disarm and we must not
+      // block stream start trying to connect to a pipe that can't exist yet.
+      if (!helper_process_exists()) {
+        return false;
+      }
+      helper_running = true;
     }
 
     const bool restore_expected = g_restore_expected.load(std::memory_order_relaxed);
@@ -587,20 +662,9 @@ namespace {
       return true;
     }
 
-    // Fail-safe: if we recently initiated a helper restore, and DISARM couldn't be delivered quickly,
-    // terminate the helper so restore activity stops immediately (prevents virtual display crash loops).
-    const auto last_revert_us = g_last_revert_us.load(std::memory_order_relaxed);
-    const bool revert_recent = (now_us - last_revert_us) < (30LL * 1000LL * 1000LL);
-    if (revert_recent) {
-      BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
-                         << kDisarmRestoreBudget.count() << "ms; terminating helper to stop restore activity.";
-      {
-        std::lock_guard<std::mutex> lg(helper_mutex());
-        helper_proc().terminate();
-      }
-      platf::display_helper_client::reset_connection();
-      g_restore_expected.store(false, std::memory_order_relaxed);
-    }
+    // Keep helper alive; we'll retry DISARM on the next apply/reconnect attempt.
+    BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
+                       << kDisarmRestoreBudget.count() << "ms; leaving helper running.";
 
     return false;
   }
@@ -664,6 +728,33 @@ namespace {
       }
     }
     if (shutting_down) {
+      return false;
+    }
+
+    if (!force_restart) {
+      // Don't burn seconds on IPC pings when there is no helper process to talk to.
+      // Stream start paths can call this multiple times; each ping attempt can be expensive
+      // when no server pipe exists.
+      const bool external_helper_exists = helper_process_exists();
+      if (!external_helper_exists) {
+        platf::display_helper_client::reset_connection();
+      } else {
+      bool ping_ok = false;
+      for (int i = 0; i < 2 && !ping_ok; ++i) {
+        ping_ok = platf::display_helper_client::send_ping();
+        if (!ping_ok) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+      }
+      if (ping_ok) {
+        return true;
+      }
+      platf::display_helper_client::reset_connection();
+      }
+    }
+
+    if (!force_restart && helper_process_exists()) {
+      BOOST_LOG(warning) << "Display helper: existing helper detected but IPC is unavailable; leaving it running.";
       return false;
     }
 
@@ -849,10 +940,6 @@ namespace {
       return std::nullopt;
     }
 
-    if (request.attach_hdr_toggle_flag) {
-      j["wa_hdr_toggle"] = true;
-    }
-
     if (request.virtual_display_arrangement) {
       j["sunshine_virtual_layout"] = virtual_layout_to_string(*request.virtual_display_arrangement);
     }
@@ -882,56 +969,31 @@ namespace {
       j["sunshine_always_restore_from_golden"] = true;
     }
 
+    j["sunshine_snapshot_exclude_devices"] = config::video.dd.snapshot_exclude_devices;
+
     return j.dump();
+  }
+
+  display_helper_integration::DisplayHelperWatchdog &watchdog_instance() {
+    static display_helper_integration::DisplayHelperWatchdog watchdog({
+      .feature_enabled = []() { return dd_feature_enabled(); },
+      .ensure_helper_started = []() { return ensure_helper_started(); },
+      .send_ping = []() { return platf::display_helper_client::send_ping(); },
+      .reset_connection = []() { platf::display_helper_client::reset_connection(); },
+      .session_count = []() { return rtsp_stream::session_count(); },
+      .running_processes = []() { return proc::proc.running(); },
+    });
+    return watchdog;
   }
 
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
-    constexpr auto kActiveInterval = 5s;
-    constexpr auto kSuspendedInterval = 20s;
-    bool helper_ready = false;
+    auto &watchdog = watchdog_instance();
 
     while (!st.stop_requested()) {
-      if (!dd_feature_enabled()) {
-        if (helper_ready) {
-          platf::display_helper_client::reset_connection();
-          helper_ready = false;
-        }
-        for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-          std::this_thread::sleep_for(100ms);
-        }
-        continue;
-      }
-
-      if (!helper_ready) {
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
-          for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-            std::this_thread::sleep_for(100ms);
-          }
-          continue;
-        }
-        (void) platf::display_helper_client::send_ping();
-      }
-
-      const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
-      const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
+      const auto interval = watchdog.tick();
       for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
         std::this_thread::sleep_for(100ms);
-      }
-      if (st.stop_requested()) {
-        break;
-      }
-
-      if (!platf::display_helper_client::send_ping()) {
-        // Avoid logging ping failures to reduce log spam; proceed to reconnect
-        platf::display_helper_client::reset_connection();
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
-          continue;
-        }
-        // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
-        helper_ready = platf::display_helper_client::send_ping();
       }
     }
   }
@@ -940,6 +1002,7 @@ namespace {
 
 namespace display_helper_integration {
   bool apply(const DisplayApplyRequest &request) {
+    g_last_apply_used_helper.store(false, std::memory_order_relaxed);
     if (request.action == DisplayApplyAction::Skip) {
       BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
       return false;
@@ -949,27 +1012,7 @@ namespace display_helper_integration {
         platf::is_running_as_system() &&
         !user_session_ready()) {
       if (request.session) {
-        std::lock_guard<std::mutex> lock(pending_apply_mutex());
-        pending_apply_state().emplace();
-        auto &pending = *pending_apply_state();
-        pending.request = request;
-        pending.has_session = true;
-        pending.session_id = request.session->id;
-        pending.session_snapshot.width = request.session->width;
-        pending.session_snapshot.height = request.session->height;
-        pending.session_snapshot.fps = request.session->fps;
-        pending.session_snapshot.enable_hdr = request.session->enable_hdr;
-        pending.session_snapshot.enable_sops = request.session->enable_sops;
-        pending.session_snapshot.virtual_display = request.session->virtual_display;
-        pending.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
-        pending.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
-        pending.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
-        pending.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
-        pending.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
-        pending.attempts = 0;
-        pending.ready_since.reset();
-        pending.next_attempt = std::chrono::steady_clock::time_point {};
-        pending.request.session = nullptr;
+        session_deferrals().set_pending(request);
         BOOST_LOG(info) << "Display helper: deferring APPLY until user session is ready.";
       } else {
         BOOST_LOG(warning) << "Display helper: no user session available; skipping APPLY.";
@@ -998,15 +1041,16 @@ namespace display_helper_integration {
     const bool system_profile_only = platf::is_running_as_system() && !user_session_ready();
 
     if (!system_profile_only) {
-      // Stream-start policy: if a helper is already running, hard-restart it immediately
-      // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
-      const bool hard_restart = (request.session != nullptr);
-      bool helper_ready = ensure_helper_started(hard_restart, true);
+      // Stream-start policy: reuse existing helper and disarm any pending restore before APPLY.
+      bool helper_ready = ensure_helper_started(false, true);
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(hard_restart, true);
+        helper_ready = ensure_helper_started(false, true);
       }
 
       if (helper_ready) {
+        if (request.session) {
+          (void) disarm_helper_restore_if_running();
+        }
         auto payload = build_helper_apply_payload(request);
         if (!payload) {
           BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
@@ -1016,7 +1060,22 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        g_last_apply_used_helper.store(ok, std::memory_order_relaxed);
         if (ok && request.session) {
+          bool display_ready = true;
+          if (auto device_id = resolve_display_device_id(request)) {
+            display_ready = wait_for_device_ready(*device_id, kTopologyWaitTimeout);
+            if (!display_ready) {
+              BOOST_LOG(warning) << "Display helper: device_id " << *device_id
+                                 << " did not report a valid mode after APPLY.";
+            }
+          } else if (request.session->virtual_display) {
+            display_ready = wait_for_virtual_display_activation(kTopologyWaitTimeout);
+            if (!display_ready) {
+              BOOST_LOG(warning) << "Display helper: virtual display did not report ready after APPLY.";
+            }
+          }
+
           set_active_session(
             *request.session,
             request.session_overrides.device_id_override,
@@ -1065,6 +1124,21 @@ namespace display_helper_integration {
       platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
     }
     return true;
+  }
+
+  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout) {
+    if (!g_last_apply_used_helper.exchange(false, std::memory_order_acq_rel)) {
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    const int timeout_ms = static_cast<int>(std::max<long long>(timeout.count(), 0LL));
+    const auto result = platf::display_helper_client::wait_for_verification_result(timeout_ms);
+    if (!result.has_value()) {
+      BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    return *result ? ApplyVerificationStatus::Verified : ApplyVerificationStatus::Failed;
   }
 
   bool revert() {
@@ -1123,48 +1197,34 @@ namespace display_helper_integration {
   }
 
   bool apply_pending_if_ready() {
-    {
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        return false;
-      }
-    }
-
-    if (!user_session_ready()) {
+    const auto result = session_deferrals().take_ready(user_session_ready());
+    if (result.status == SessionDeferralManager::TakeStatus::NoPending ||
+        result.status == SessionDeferralManager::TakeStatus::SessionNotReady ||
+        result.status == SessionDeferralManager::TakeStatus::DelayPending) {
       return false;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    PendingApplyState pending;
-    {
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        return false;
-      }
-      auto &state = *pending_apply_state();
-      if (!state.ready_since) {
-        state.ready_since = now;
-        state.next_attempt = now + kDeferredApplyInitialDelay;
-        BOOST_LOG(info) << "Display helper: user session detected; delaying deferred APPLY for "
-                        << kDeferredApplyInitialDelay.count() << "ms.";
-        return false;
-      }
-      if (now < state.next_attempt) {
-        return false;
-      }
-      if (state.attempts >= kMaxDeferredApplyAttempts) {
-        BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up on session "
-                           << state.session_id << ".";
-        pending_apply_state().reset();
-        return false;
-      }
-      pending = state;
-      pending_apply_state().reset();
+    if (result.status == SessionDeferralManager::TakeStatus::DelayStarted) {
+      BOOST_LOG(info) << "Display helper: user session detected; delaying deferred APPLY for "
+                      << SessionDeferralManager::initial_delay().count() << "ms.";
+      return false;
     }
+
+    if (result.status == SessionDeferralManager::TakeStatus::DroppedMaxAttempts) {
+      BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up.";
+      return false;
+    }
+
+    if (!result.pending) {
+      return false;
+    }
+
+    auto pending = std::move(*result.pending);
 
     std::optional<rtsp_stream::launch_session_t> session;
     if (pending.has_session) {
       rtsp_stream::launch_session_t snapshot {};
+      snapshot.id = pending.session_id;
       snapshot.width = pending.session_snapshot.width;
       snapshot.height = pending.session_snapshot.height;
       snapshot.fps = pending.session_snapshot.fps;
@@ -1185,26 +1245,23 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
     const bool ok = apply(pending.request);
     if (!ok) {
-      pending.attempts += 1;
       pending.request.session = nullptr;
-      const auto delay = deferred_apply_retry_delay(pending.attempts);
-      pending.next_attempt = std::chrono::steady_clock::now() + delay;
-      std::lock_guard<std::mutex> lock(pending_apply_mutex());
-      if (!pending_apply_state()) {
-        pending_apply_state() = pending;
+      auto reschedule = session_deferrals().reschedule(std::move(pending));
+      if (reschedule.requeued) {
         BOOST_LOG(warning) << "Display helper: deferred APPLY failed; retrying in "
-                           << delay.count() << "ms (attempt " << pending.attempts
-                           << "/" << kMaxDeferredApplyAttempts << ").";
-      } else {
+                           << reschedule.delay.count() << "ms (attempt " << reschedule.attempts
+                           << "/" << SessionDeferralManager::max_attempts() << ").";
+      } else if (reschedule.dropped_for_newer) {
         BOOST_LOG(info) << "Display helper: deferred APPLY failed but a newer pending configuration is queued; dropping retry.";
+      } else if (reschedule.dropped_max_attempts) {
+        BOOST_LOG(warning) << "Display helper: deferred APPLY exceeded retry limit; giving up.";
       }
     }
     return ok;
   }
 
   void clear_pending_apply() {
-    std::lock_guard<std::mutex> lock(pending_apply_mutex());
-    pending_apply_state().reset();
+    session_deferrals().clear();
   }
 
   namespace {
@@ -1481,6 +1538,7 @@ namespace display_helper_integration {
     if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
       return;  // already running
     }
+    watchdog_instance().reset();
     g_watchdog_thread = std::jthread(watchdog_proc);
   }
 
@@ -1492,6 +1550,7 @@ namespace display_helper_integration {
       g_watchdog_thread.request_stop();
       g_watchdog_thread.join();
     }
+    watchdog_instance().reset();
     if (config::video.dd.config_revert_on_disconnect) {
       platf::display_helper_client::reset_connection();
     }

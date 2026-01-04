@@ -93,7 +93,13 @@ export interface AppForm {
   losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
-  ddConfigurationOption?: 'disabled' | 'verify_only' | 'ensure_active' | 'ensure_primary' | 'ensure_only_display' | null;
+  ddConfigurationOption?:
+    | 'disabled'
+    | 'verify_only'
+    | 'ensure_active'
+    | 'ensure_primary'
+    | 'ensure_only_display'
+    | null;
 }
 
 export interface ServerApp {

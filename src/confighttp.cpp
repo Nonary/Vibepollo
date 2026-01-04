@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <format>
 #include <fstream>
+#include <future>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -51,6 +52,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "webrtc_stream.h"
 
 #include <nlohmann/json.hpp>
 #if defined(_WIN32)
@@ -365,6 +367,70 @@ namespace confighttp {
     headers.emplace("Content-Type", "application/json; charset=utf-8");
     add_cors_headers(headers);
     response->write(success_ok, output_tree.dump(), headers);
+  }
+
+  nlohmann::json load_webrtc_ice_servers() {
+    auto env = std::getenv("SUNSHINE_WEBRTC_ICE_SERVERS");
+    if (!env || !*env) {
+      return nlohmann::json::array();
+    }
+
+    try {
+      auto parsed = nlohmann::json::parse(env);
+      if (parsed.is_array()) {
+        return parsed;
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "WebRTC: invalid SUNSHINE_WEBRTC_ICE_SERVERS: "sv << e.what();
+    }
+
+    return nlohmann::json::array();
+  }
+
+  nlohmann::json webrtc_session_to_json(const webrtc_stream::SessionState &state) {
+    nlohmann::json output;
+    output["id"] = state.id;
+    output["audio"] = state.audio;
+    output["video"] = state.video;
+    output["encoded"] = state.encoded;
+    output["audio_packets"] = state.audio_packets;
+    output["video_packets"] = state.video_packets;
+    output["audio_dropped"] = state.audio_dropped;
+    output["video_dropped"] = state.video_dropped;
+    output["audio_queue_frames"] = state.audio_queue_frames;
+    output["video_queue_frames"] = state.video_queue_frames;
+    output["video_inflight_frames"] = state.video_inflight_frames;
+    output["has_remote_offer"] = state.has_remote_offer;
+    output["has_local_answer"] = state.has_local_answer;
+    output["ice_candidates"] = state.ice_candidates;
+    output["width"] = state.width ? nlohmann::json(*state.width) : nlohmann::json(nullptr);
+    output["height"] = state.height ? nlohmann::json(*state.height) : nlohmann::json(nullptr);
+    output["fps"] = state.fps ? nlohmann::json(*state.fps) : nlohmann::json(nullptr);
+    output["bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
+    output["codec"] = state.codec ? nlohmann::json(*state.codec) : nlohmann::json(nullptr);
+    output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
+    output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
+    output["audio_codec"] = state.audio_codec ? nlohmann::json(*state.audio_codec) : nlohmann::json(nullptr);
+    output["profile"] = state.profile ? nlohmann::json(*state.profile) : nlohmann::json(nullptr);
+    output["video_pacing_mode"] = state.video_pacing_mode ? nlohmann::json(*state.video_pacing_mode) : nlohmann::json(nullptr);
+    output["video_pacing_slack_ms"] = state.video_pacing_slack_ms ? nlohmann::json(*state.video_pacing_slack_ms) : nlohmann::json(nullptr);
+    output["video_max_frame_age_ms"] = state.video_max_frame_age_ms ? nlohmann::json(*state.video_max_frame_age_ms) : nlohmann::json(nullptr);
+    output["last_audio_bytes"] = state.last_audio_bytes;
+    output["last_video_bytes"] = state.last_video_bytes;
+    output["last_video_idr"] = state.last_video_idr;
+    output["last_video_frame_index"] = state.last_video_frame_index;
+
+    auto now = std::chrono::steady_clock::now();
+    auto age_or_null = [&now](const std::optional<std::chrono::steady_clock::time_point> &tp) -> nlohmann::json {
+      if (!tp) {
+        return nullptr;
+      }
+      return std::chrono::duration_cast<std::chrono::milliseconds>(now - *tp).count();
+    };
+
+    output["last_audio_age_ms"] = age_or_null(state.last_audio_time);
+    output["last_video_age_ms"] = age_or_null(state.last_video_time);
+    return output;
   }
 
   /**
@@ -983,6 +1049,20 @@ namespace confighttp {
         }
       }
 
+      // Add computed app ids for UI clients (best-effort, do not persist).
+      if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+        try {
+          const auto apps_snapshot = proc::proc.get_apps();
+          const auto count = std::min(file_tree["apps"].size(), apps_snapshot.size());
+          for (size_t idx = 0; idx < count; ++idx) {
+            auto &app = file_tree["apps"][idx];
+            app["id"] = apps_snapshot[idx].id;
+            app["index"] = static_cast<int>(idx);
+          }
+        } catch (...) {
+        }
+      }
+
       // If any normalization occurred, persist back to disk
       if (mutated) {
         try {
@@ -1000,8 +1080,159 @@ namespace confighttp {
   }
 
   /**
-   * @brief Save an application. To save a new application the UUID must be empty.
-   *        To update an existing application, you must provide the current UUID of the application.
+   * @brief Serve a specific application's cover image by UUID.
+   *        Looks for files named @c uuid with a supported image extension in the covers directory.
+   * @api_examples{/api/apps/@c uuid/cover| GET| null}
+   */
+  void getAppCover(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string uuid;
+    if (request->path_match.size() > 1) {
+      uuid = request->path_match[1];
+    }
+    if (uuid.empty()) {
+      bad_request(response, request, "Missing application uuid");
+      return;
+    }
+
+    const fs::path cover_dir = platf::appdata() / "covers";
+    const std::vector<std::string> extensions = {".png", ".jpg", ".jpeg"};
+    fs::path cover_path;
+    for (const auto &ext : extensions) {
+      fs::path candidate = cover_dir / (uuid + ext);
+      if (fs::exists(candidate)) {
+        cover_path = std::move(candidate);
+        break;
+      }
+    }
+
+    if (cover_path.empty()) {
+      // Fallback to image-path from apps config if present
+      try {
+        std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+        nlohmann::json file_tree = nlohmann::json::parse(content);
+        if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+          for (const auto &app : file_tree["apps"]) {
+            if (!app.contains("uuid") || !app["uuid"].is_string()) {
+              continue;
+            }
+            if (app["uuid"].get<std::string>() != uuid) {
+              continue;
+            }
+            if (app.contains("image-path") && app["image-path"].is_string()) {
+              std::string raw_path = app["image-path"].get<std::string>();
+              boost::algorithm::trim(raw_path);
+              if (!raw_path.empty() && raw_path.front() == '"' && raw_path.back() == '"') {
+                raw_path = raw_path.substr(1, raw_path.size() - 2);
+              }
+              constexpr std::string_view file_prefix = "file://";
+              if (raw_path.rfind(file_prefix, 0) == 0) {
+                raw_path.erase(0, file_prefix.size());
+                if (!raw_path.empty() && raw_path.front() == '/') {
+                  raw_path.erase(0, 1);
+                }
+              }
+#ifdef _WIN32
+              const char *appdata = std::getenv("APPDATA");
+              if (appdata) {
+                const std::string key = "%APPDATA%";
+                auto pos = raw_path.find(key);
+                if (pos != std::string::npos) {
+                  raw_path.replace(pos, key.size(), appdata);
+                }
+              }
+              const char *userprofile = std::getenv("USERPROFILE");
+              if (userprofile) {
+                const std::string key = "%USERPROFILE%";
+                auto pos = raw_path.find(key);
+                if (pos != std::string::npos) {
+                  raw_path.replace(pos, key.size(), userprofile);
+                }
+              }
+#endif
+              fs::path candidate = raw_path;
+              if (candidate.is_relative()) {
+                bool resolved = false;
+                if (app.contains("working-dir") && app["working-dir"].is_string()) {
+                  fs::path working_dir = app["working-dir"].get<std::string>();
+                  fs::path from_working = working_dir / candidate;
+                  if (fs::exists(from_working)) {
+                    candidate = std::move(from_working);
+                    resolved = true;
+                  }
+                }
+                if (!resolved) {
+                  fs::path rel_candidate = candidate;
+                  auto rel_string = rel_candidate.generic_string();
+                  if (rel_string.rfind("./assets/", 0) == 0) {
+                    rel_string.erase(0, std::string("./assets/").size());
+                  } else if (rel_string.rfind("assets/", 0) == 0) {
+                    rel_string.erase(0, std::string("assets/").size());
+                  }
+                  fs::path from_assets = fs::path(SUNSHINE_ASSETS_DIR) / rel_string;
+                  if (fs::exists(from_assets)) {
+                    candidate = std::move(from_assets);
+                    resolved = true;
+                  }
+                }
+                if (!resolved) {
+                  candidate = cover_dir / candidate;
+                }
+              }
+              if (!candidate.has_extension()) {
+                auto with_png = candidate;
+                with_png += ".png";
+                if (fs::exists(with_png)) {
+                  cover_path = std::move(with_png);
+                  break;
+                }
+              }
+              if (fs::exists(candidate)) {
+                cover_path = std::move(candidate);
+                break;
+              }
+            }
+            break;
+          }
+        }
+      } catch (...) {
+      }
+    }
+
+    if (cover_path.empty()) {
+      not_found(response, request);
+      return;
+    }
+
+    auto ext = cover_path.extension().string();
+    if (!ext.empty() && ext.front() == '.') {
+      ext.erase(0, 1);
+    }
+    boost::algorithm::to_lower(ext);
+
+    auto mimeType = mime_types.find(ext);
+    if (mimeType == mime_types.end()) {
+      bad_request(response, request);
+      return;
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", mimeType->second);
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    std::ifstream in(cover_path.string(), std::ios::binary);
+    if (!in) {
+      not_found(response, request);
+      return;
+    }
+    response->write(success_ok, in, headers);
+  }
+
+  /**
+   * @brief Save an application. To save a new application the index must be `-1`. To update an existing application, you must provide the current index of the application.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    * The body for the post request should be JSON serialized in the following format:
@@ -2197,6 +2428,487 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void listWebRTCSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &session : webrtc_stream::list_sessions()) {
+      output["sessions"].push_back(webrtc_session_to_json(session));
+    }
+    send_response(response, output);
+  }
+
+  void createWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    BOOST_LOG(debug) << "WebRTC: create session request received";
+
+    webrtc_stream::SessionOptions options;
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    auto body = ss.str();
+    if (!body.empty()) {
+      if (!check_content_type(response, request, "application/json")) {
+        return;
+      }
+      try {
+        nlohmann::json input = nlohmann::json::parse(body);
+        if (input.contains("audio")) {
+          options.audio = input.at("audio").get<bool>();
+        }
+        if (input.contains("host_audio")) {
+          options.host_audio = input.at("host_audio").get<bool>();
+        }
+        if (input.contains("video")) {
+          options.video = input.at("video").get<bool>();
+        }
+        if (input.contains("encoded")) {
+          options.encoded = input.at("encoded").get<bool>();
+        }
+        if (input.contains("width")) {
+          options.width = input.at("width").get<int>();
+        }
+        if (input.contains("height")) {
+          options.height = input.at("height").get<int>();
+        }
+        if (input.contains("fps")) {
+          options.fps = input.at("fps").get<int>();
+        }
+        if (input.contains("bitrate_kbps")) {
+          options.bitrate_kbps = input.at("bitrate_kbps").get<int>();
+        }
+        if (input.contains("codec")) {
+          options.codec = input.at("codec").get<std::string>();
+        }
+        if (input.contains("hdr")) {
+          options.hdr = input.at("hdr").get<bool>();
+        }
+        if (input.contains("audio_channels")) {
+          options.audio_channels = input.at("audio_channels").get<int>();
+        }
+        if (input.contains("audio_codec")) {
+          options.audio_codec = input.at("audio_codec").get<std::string>();
+        }
+        if (input.contains("profile")) {
+          options.profile = input.at("profile").get<std::string>();
+        }
+        if (input.contains("app_id")) {
+          options.app_id = input.at("app_id").get<int>();
+        }
+        if (input.contains("resume")) {
+          options.resume = input.at("resume").get<bool>();
+        }
+        if (input.contains("video_pacing_mode")) {
+          options.video_pacing_mode = input.at("video_pacing_mode").get<std::string>();
+        }
+        if (input.contains("video_pacing_slack_ms")) {
+          options.video_pacing_slack_ms = input.at("video_pacing_slack_ms").get<int>();
+        }
+        if (input.contains("video_max_frame_age_ms")) {
+          options.video_max_frame_age_ms = input.at("video_max_frame_age_ms").get<int>();
+        }
+
+        if (options.codec) {
+          auto lower = *options.codec;
+          boost::algorithm::to_lower(lower);
+          if (lower != "h264" && lower != "hevc" && lower != "av1") {
+            bad_request(response, request, "Unsupported codec");
+            return;
+          }
+          options.codec = std::move(lower);
+        }
+        if (options.audio_codec) {
+          auto lower = *options.audio_codec;
+          boost::algorithm::to_lower(lower);
+          if (lower != "opus" && lower != "aac") {
+            bad_request(response, request, "Unsupported audio codec");
+            return;
+          }
+          options.audio_codec = std::move(lower);
+        }
+        if (options.audio_channels) {
+          int channels = *options.audio_channels;
+          if (channels != 2 && channels != 6 && channels != 8) {
+            bad_request(response, request, "Unsupported audio channel count");
+            return;
+          }
+        }
+        if (options.video_pacing_mode) {
+          auto lower = *options.video_pacing_mode;
+          boost::algorithm::to_lower(lower);
+          if (lower == "smooth") {
+            lower = "smoothness";
+          }
+          if (lower != "latency" && lower != "balanced" && lower != "smoothness") {
+            bad_request(response, request, "Unsupported video pacing mode");
+            return;
+          }
+          options.video_pacing_mode = std::move(lower);
+        }
+        if (options.video_pacing_slack_ms) {
+          const int slack_ms = *options.video_pacing_slack_ms;
+          if (slack_ms < 0 || slack_ms > 10) {
+            bad_request(response, request, "video_pacing_slack_ms must be between 0 and 10");
+            return;
+          }
+        }
+        if (options.video_max_frame_age_ms) {
+          const int max_age_ms = *options.video_max_frame_age_ms;
+          if (max_age_ms < 5 || max_age_ms > 250) {
+            bad_request(response, request, "video_max_frame_age_ms must be between 5 and 250");
+            return;
+          }
+        }
+      } catch (const std::exception &e) {
+        bad_request(response, request, e.what());
+        return;
+      }
+    }
+
+    BOOST_LOG(debug) << "WebRTC: creating session";
+    if (auto error = webrtc_stream::ensure_capture_started(options)) {
+      bad_request(response, request, error->c_str());
+      return;
+    }
+    auto session = webrtc_stream::create_session(options);
+    BOOST_LOG(debug) << "WebRTC: session created id=" << session.id;
+    nlohmann::json output;
+    output["status"] = true;
+    output["session"] = webrtc_session_to_json(session);
+    output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
+    output["cert_pem"] = webrtc_stream::get_server_cert_pem();
+    output["ice_servers"] = load_webrtc_ice_servers();
+    send_response(response, output);
+  }
+
+  void getWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    auto session = webrtc_stream::get_session(session_id);
+    if (!session) {
+      bad_request(response, request, "Session not found");
+      return;
+    }
+
+    nlohmann::json output;
+    output["session"] = webrtc_session_to_json(*session);
+    send_response(response, output);
+  }
+
+  void deleteWebRTCSession(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    nlohmann::json output;
+    if (webrtc_stream::close_session(session_id)) {
+      output["status"] = true;
+    } else {
+      output["error"] = "Session not found";
+    }
+    send_response(response, output);
+  }
+
+  void postWebRTCOffer(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input = nlohmann::json::parse(ss.str());
+      auto sdp = input.at("sdp").get<std::string>();
+      auto type = input.value("type", "offer");
+      nlohmann::json output;
+      if (!webrtc_stream::set_remote_offer(session_id, sdp, type)) {
+        if (!webrtc_stream::get_session(session_id)) {
+          output["error"] = "Session not found";
+        } else {
+          output["error"] = "Failed to process offer";
+        }
+        send_response(response, output);
+        return;
+      }
+
+      std::string answer_sdp;
+      std::string answer_type;
+      if (webrtc_stream::wait_for_local_answer(session_id, answer_sdp, answer_type, std::chrono::seconds {3})) {
+        output["status"] = true;
+        output["answer_ready"] = true;
+        output["sdp"] = answer_sdp;
+        output["type"] = answer_type;
+      } else {
+        output["status"] = true;
+        output["answer_ready"] = false;
+        output["sdp"] = nullptr;
+        output["type"] = nullptr;
+      }
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void getWebRTCAnswer(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::string answer_sdp;
+    std::string answer_type;
+    nlohmann::json output;
+    if (webrtc_stream::get_local_answer(session_id, answer_sdp, answer_type)) {
+      output["status"] = true;
+      output["answer_ready"] = true;
+      output["sdp"] = answer_sdp;
+      output["type"] = answer_type;
+    } else {
+      output["status"] = false;
+      output["error"] = "Answer not ready";
+    }
+    send_response(response, output);
+  }
+
+  void postWebRTCIce(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input = nlohmann::json::parse(ss.str());
+      nlohmann::json output;
+      constexpr std::size_t kMaxCandidatesPerRequest = 256;
+      std::vector<nlohmann::json> candidates;
+      if (input.is_array()) {
+        candidates.reserve(std::min<std::size_t>(input.size(), kMaxCandidatesPerRequest));
+        for (const auto &entry : input) {
+          if (candidates.size() >= kMaxCandidatesPerRequest) {
+            break;
+          }
+          candidates.push_back(entry);
+        }
+      } else if (input.contains("candidates") && input["candidates"].is_array()) {
+        const auto &arr = input["candidates"];
+        candidates.reserve(std::min<std::size_t>(arr.size(), kMaxCandidatesPerRequest));
+        for (const auto &entry : arr) {
+          if (candidates.size() >= kMaxCandidatesPerRequest) {
+            break;
+          }
+          candidates.push_back(entry);
+        }
+      } else {
+        candidates.push_back(input);
+      }
+
+      bool ok = true;
+      for (const auto &entry : candidates) {
+        if (!entry.is_object()) {
+          continue;
+        }
+        auto mid = entry.value("sdpMid", "");
+        auto mline_index = entry.value("sdpMLineIndex", -1);
+        auto candidate = entry.value("candidate", "");
+        if (candidate.empty()) {
+          continue;
+        }
+        if (!webrtc_stream::add_ice_candidate(session_id, std::move(mid), mline_index, std::move(candidate))) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        output["status"] = true;
+      } else {
+        output["error"] = "Session not found";
+      }
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void getWebRTCIce(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    std::size_t since = 0;
+    auto query = request->parse_query_string();
+    auto since_it = query.find("since");
+    if (since_it != query.end()) {
+      try {
+        since = static_cast<std::size_t>(std::stoull(since_it->second));
+      } catch (...) {
+        bad_request(response, request, "Invalid since parameter");
+        return;
+      }
+    }
+
+    auto candidates = webrtc_stream::get_local_candidates(session_id, since);
+    nlohmann::json output;
+    output["status"] = true;
+    output["candidates"] = nlohmann::json::array();
+    std::size_t last_index = since;
+    for (const auto &candidate : candidates) {
+      nlohmann::json item;
+      item["sdpMid"] = candidate.mid;
+      item["sdpMLineIndex"] = candidate.mline_index;
+      item["candidate"] = candidate.candidate;
+      item["index"] = candidate.index;
+      output["candidates"].push_back(std::move(item));
+      last_index = std::max(last_index, candidate.index);
+    }
+    output["next_since"] = last_index;
+    send_response(response, output);
+  }
+
+  void getWebRTCIceStream(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string session_id;
+    if (request->path_match.size() > 1) {
+      session_id = request->path_match[1];
+    }
+
+    if (!webrtc_stream::get_session(session_id)) {
+      bad_request(response, request, "Session not found");
+      return;
+    }
+
+    std::size_t since = 0;
+    auto query = request->parse_query_string();
+    auto since_it = query.find("since");
+    if (since_it != query.end()) {
+      try {
+        since = static_cast<std::size_t>(std::stoull(since_it->second));
+      } catch (...) {
+        bad_request(response, request, "Invalid since parameter");
+        return;
+      }
+    }
+
+    std::thread([response, session_id, since]() mutable {
+      response->close_connection_after_response = true;
+
+      response->write({
+        {"Content-Type", "text/event-stream"},
+        {"Cache-Control", "no-cache"},
+        {"Connection", "keep-alive"},
+        {"Access-Control-Allow-Origin", get_cors_origin()}
+      });
+
+      std::promise<bool> header_error;
+      response->send([&header_error](const SimpleWeb::error_code &ec) {
+        header_error.set_value(static_cast<bool>(ec));
+      });
+      if (header_error.get_future().get()) {
+        return;
+      }
+
+      auto last_index = since;
+      auto last_keepalive = std::chrono::steady_clock::now();
+
+      while (true) {
+        auto candidates = webrtc_stream::get_local_candidates(session_id, last_index);
+        for (const auto &candidate : candidates) {
+          nlohmann::json payload;
+          payload["sdpMid"] = candidate.mid;
+          payload["sdpMLineIndex"] = candidate.mline_index;
+          payload["candidate"] = candidate.candidate;
+
+          *response << "event: candidate\n";
+          *response << "id: " << candidate.index << "\n";
+          *response << "data: " << payload.dump() << "\n\n";
+
+          std::promise<bool> error;
+          response->send([&error](const SimpleWeb::error_code &ec) {
+            error.set_value(static_cast<bool>(ec));
+          });
+          if (error.get_future().get()) {
+            return;
+          }
+
+          last_index = std::max(last_index, candidate.index);
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_keepalive > std::chrono::seconds(2)) {
+          *response << "event: keepalive\n";
+          *response << "data: {}\n\n";
+          std::promise<bool> error;
+          response->send([&error](const SimpleWeb::error_code &ec) {
+            error.set_value(static_cast<bool>(ec));
+          });
+          if (error.get_future().get()) {
+            return;
+          }
+          last_keepalive = now;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      }
+    }).detach();
+  }
+
+  void getWebRTCCert(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
+    output["cert_pem"] = webrtc_stream::get_server_cert_pem();
+    send_response(response, output);
+  }
+
   /**
    * @brief Upload a cover image.
    * @param response The HTTP response object.
@@ -3043,6 +3755,7 @@ namespace confighttp {
     server.resource["^/api/health/crashdump$"]["GET"] = getCrashDumpStatus;
     server.resource["^/api/health/crashdump/dismiss$"]["POST"] = postCrashDumpDismiss;
 #endif
+    server.resource["^/api/apps/([A-Fa-f0-9-]+)/cover$"]["GET"] = getAppCover;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
@@ -3052,6 +3765,16 @@ namespace confighttp {
     server.resource["^/api/clients/disconnect$"]["POST"] = disconnectClient;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
+    server.resource["^/api/webrtc/sessions$"]["GET"] = listWebRTCSessions;
+    server.resource["^/api/webrtc/sessions$"]["POST"] = createWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["GET"] = getWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["DELETE"] = deleteWebRTCSession;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$"]["POST"] = postWebRTCOffer;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/answer$"]["GET"] = getWebRTCAnswer;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$"]["GET"] = getWebRTCIce;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$"]["POST"] = postWebRTCIce;
+    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice/stream$"]["GET"] = getWebRTCIceStream;
+    server.resource["^/api/webrtc/cert$"]["GET"] = getWebRTCCert;
     // Keep legacy cover upload endpoint present in upstream master
     server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
     server.resource["^/api/apps/purge_autosync$"]["POST"] = purgeAutoSyncedApps;

@@ -25,13 +25,18 @@
       results.
     </n-alert>
     <n-alert
-      v-if="form.losslessScalingEnabled && losslessExecutableCheckComplete && !losslessExecutableDetected"
+      v-if="
+        form.losslessScalingEnabled &&
+        losslessExecutableCheckComplete &&
+        !losslessExecutableDetected
+      "
       type="error"
       :show-icon="true"
       size="small"
       class="text-xs"
     >
-      Lossless Scaling executable not detected. Configure the executable path under Settings → Capture.
+      Lossless Scaling executable not detected. Configure the executable path under Settings →
+      Capture.
     </n-alert>
 
     <div v-if="form.losslessScalingEnabled" class="space-y-4">

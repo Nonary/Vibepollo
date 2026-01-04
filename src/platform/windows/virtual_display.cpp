@@ -1319,17 +1319,45 @@ namespace VDISPLAY {
     namespace pt = boost::property_tree;
 
     bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
+      const auto contains_ci = [](const std::string &haystack, const std::string &needle) {
+        if (needle.empty()) {
+          return true;
+        }
+        if (haystack.size() < needle.size()) {
+          return false;
+        }
+        for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
+          bool match = true;
+          for (size_t j = 0; j < needle.size(); ++j) {
+            if (std::tolower(static_cast<unsigned char>(haystack[i + j])) != std::tolower(static_cast<unsigned char>(needle[j]))) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      if (!device.m_monitor_device_path.empty()) {
+        // This is the most reliable signal (device instance path contains the driver stack identifiers).
+        if (contains_ci(device.m_monitor_device_path, "SUDOVDA") ||
+            contains_ci(device.m_monitor_device_path, "SUDOMAKER")) {
+          return true;
+        }
+      }
+
+      // Fallback: some environments may return an adapter-like friendly name instead of the per-display name.
       static const std::string sudoMakerDeviceString = "SudoMaker Virtual Display Adapter";
       if (equals_ci(device.m_friendly_name, sudoMakerDeviceString)) {
         return true;
       }
 
-      if (device.m_edid) {
-        static const std::string manufacturer = "SMK";
-        static const std::string product = "D1CE";
-        if (equals_ci(device.m_edid->m_manufacturer_id, manufacturer) && equals_ci(device.m_edid->m_product_code, product)) {
-          return true;
-        }
+      // Fallback: SudoVDA's synthetic EDID commonly uses manufacturer "SMK" (SudoMaker).
+      if (device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SMK")) {
+        return true;
       }
 
       return false;
@@ -1641,6 +1669,46 @@ namespace VDISPLAY {
       return std::nullopt;
     }
 
+    std::optional<std::wstring> resolve_virtual_display_name_from_devices_for_client(const char *client_name) {
+      if (!client_name || std::strlen(client_name) == 0) {
+        return std::nullopt;
+      }
+
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return std::nullopt;
+      }
+
+      std::optional<std::wstring> fallback;
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device)) {
+          continue;
+        }
+        if (device.m_friendly_name.empty() || !equals_ci(device.m_friendly_name, client_name)) {
+          continue;
+        }
+
+        if (device.m_info) {
+          if (!device.m_display_name.empty()) {
+            return platf::from_utf8(device.m_display_name);
+          }
+          if (!device.m_device_id.empty()) {
+            return platf::from_utf8(device.m_device_id);
+          }
+        }
+
+        if (!fallback) {
+          if (!device.m_display_name.empty()) {
+            fallback = platf::from_utf8(device.m_display_name);
+          } else if (!device.m_device_id.empty()) {
+            fallback = platf::from_utf8(device.m_device_id);
+          }
+        }
+      }
+
+      return fallback;
+    }
+
     std::optional<uuid_util::uuid_t> parse_uuid_string(const std::string &value) {
       if (value.empty()) {
         return std::nullopt;
@@ -1762,10 +1830,15 @@ namespace VDISPLAY {
       return *cached;
     }
 
-    constexpr auto RECOVERY_MONITOR_WINDOW = std::chrono::seconds(10);
     constexpr auto RECOVERY_STABLE_REQUIREMENT = std::chrono::seconds(2);
     constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(200);
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
+    constexpr auto RECOVERY_MISSING_GRACE = std::chrono::seconds(1);
+    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
+    constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
+    constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
     std::mutex g_virtual_display_recovery_abort_mutex;
@@ -1810,26 +1883,38 @@ namespace VDISPLAY {
       std::optional<std::wstring> current_display_name;
       std::optional<std::string> normalized_display_name;
       std::optional<std::string> current_device_id;
+      std::optional<std::wstring> current_monitor_device_path;
+      std::optional<std::string> normalized_monitor_device_path;
 
       explicit RecoveryMonitorState(const VirtualDisplayRecoveryParams &p):
           params(p),
           guid_uuid(guid_to_uuid(p.guid)),
           current_display_name(p.display_name),
-          current_device_id(p.device_id) {
+          current_device_id(p.device_id),
+          current_monitor_device_path(p.monitor_device_path) {
         if (current_display_name && !current_display_name->empty()) {
           normalized_display_name = normalize_display_name(platf::to_utf8(*current_display_name));
+        }
+        if (current_monitor_device_path && !current_monitor_device_path->empty()) {
+          normalized_monitor_device_path = normalize_display_name(platf::to_utf8(*current_monitor_device_path));
         }
       }
 
       void update_identifiers(
         const std::optional<std::wstring> &display_name,
-        const std::optional<std::string> &device_id
+        const std::optional<std::string> &device_id,
+        const std::optional<std::wstring> &monitor_device_path
       ) {
         current_display_name = display_name;
         current_device_id = device_id;
+        current_monitor_device_path = monitor_device_path;
         normalized_display_name.reset();
+        normalized_monitor_device_path.reset();
         if (current_display_name && !current_display_name->empty()) {
           normalized_display_name = normalize_display_name(platf::to_utf8(*current_display_name));
+        }
+        if (current_monitor_device_path && !current_monitor_device_path->empty()) {
+          normalized_monitor_device_path = normalize_display_name(platf::to_utf8(*current_monitor_device_path));
         }
       }
 
@@ -1837,6 +1922,12 @@ namespace VDISPLAY {
         std::string description;
         if (current_device_id && !current_device_id->empty()) {
           description += "device_id='" + *current_device_id + "'";
+        }
+        if (current_monitor_device_path && !current_monitor_device_path->empty()) {
+          if (!description.empty()) {
+            description += ' ';
+          }
+          description += "monitor_device_path='" + platf::to_utf8(*current_monitor_device_path) + "'";
         }
         if (current_display_name && !current_display_name->empty()) {
           if (!description.empty()) {
@@ -1859,12 +1950,13 @@ namespace VDISPLAY {
       missing,
       present_inactive,
       present_active,
+      unknown,
     };
 
-    MonitorTargetPresence monitor_target_presence(const RecoveryMonitorState &state) {
+    MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
-        return MonitorTargetPresence::missing;
+        return MonitorTargetPresence::unknown;
       }
 
       bool matched_inactive = false;
@@ -1874,6 +1966,18 @@ namespace VDISPLAY {
         }
 
         bool matches = false;
+        bool matched_by_client_name = false;
+        if (!matches && !state.params.client_name.empty() && !device.m_friendly_name.empty()
+            && equals_ci(device.m_friendly_name, state.params.client_name)) {
+          matches = true;
+          matched_by_client_name = true;
+        }
+        if (!matches && state.normalized_monitor_device_path && !device.m_monitor_device_path.empty()) {
+          const auto normalized_path = normalize_display_name(device.m_monitor_device_path);
+          if (!normalized_path.empty() && normalized_path == *state.normalized_monitor_device_path) {
+            matches = true;
+          }
+        }
         if (!matches && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
           matches = equals_ci(device.m_device_id, *state.current_device_id);
         }
@@ -1890,6 +1994,30 @@ namespace VDISPLAY {
         }
         if (!matches) {
           continue;
+        }
+
+        if (matched_by_client_name) {
+          auto adopted_display_name = state.current_display_name;
+          if (!device.m_display_name.empty()) {
+            adopted_display_name = platf::from_utf8(device.m_display_name);
+          }
+          auto adopted_device_id = state.current_device_id;
+          if (!device.m_device_id.empty()) {
+            adopted_device_id = device.m_device_id;
+          }
+          auto adopted_monitor_device_path = state.current_monitor_device_path;
+          if (!device.m_monitor_device_path.empty()) {
+            adopted_monitor_device_path = platf::from_utf8(device.m_monitor_device_path);
+          }
+
+          if (adopted_display_name != state.current_display_name
+              || adopted_device_id != state.current_device_id
+              || adopted_monitor_device_path != state.current_monitor_device_path) {
+            const auto before = state.describe_target();
+            state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
+            BOOST_LOG(debug) << "Virtual display recovery monitor adopted updated identifiers via client_name '"
+                             << state.params.client_name << "': " << before << " -> " << state.describe_target();
+          }
         }
 
         const bool is_active = device.m_info.has_value() || !device.m_display_name.empty();
@@ -1936,7 +2064,7 @@ namespace VDISPLAY {
         return false;
       }
 
-      state.update_identifiers(recreation->display_name, recreation->device_id);
+      state.update_identifiers(recreation->display_name, recreation->device_id, recreation->monitor_device_path);
       if (state.params.on_recovery_success) {
         state.params.on_recovery_success(*recreation);
       }
@@ -1945,9 +2073,12 @@ namespace VDISPLAY {
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
       unsigned int attempts = 0;
-      bool observed_present = false;
+      unsigned int backoff_cycles = 0;
       bool observed_active = false;
-      auto stable_since = std::chrono::steady_clock::now();
+      std::optional<std::chrono::steady_clock::time_point> active_since;
+      std::optional<std::chrono::steady_clock::time_point> inactive_since;
+      std::optional<std::chrono::steady_clock::time_point> missing_since;
+      auto recovery_cooldown_until = std::chrono::steady_clock::now();
 
       while (true) {
         if (monitor_should_abort(state)) {
@@ -1957,47 +2088,108 @@ namespace VDISPLAY {
 
         const auto now = std::chrono::steady_clock::now();
         const auto presence = monitor_target_presence(state);
-        if (presence == MonitorTargetPresence::present_active) {
-          observed_active = true;
-        }
 
-        const bool treat_as_present = (presence != MonitorTargetPresence::missing) &&
-                                      (!observed_active || presence == MonitorTargetPresence::present_active);
-        if (treat_as_present) {
-          if (!observed_present) {
-            observed_present = true;
-            stable_since = now;
-          } else if (now - stable_since >= RECOVERY_STABLE_REQUIREMENT) {
-            attempts = 0;
-          }
-
+        if (presence == MonitorTargetPresence::unknown) {
           std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
           continue;
         }
 
-        observed_present = false;
-        stable_since = now;
+        if (presence == MonitorTargetPresence::present_active) {
+          observed_active = true;
+          backoff_cycles = 0;
+          missing_since.reset();
+          inactive_since.reset();
+          if (!active_since) {
+            active_since = now;
+          } else if (now - *active_since >= RECOVERY_STABLE_REQUIREMENT) {
+            attempts = 0;
+          }
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        active_since.reset();
+
+        // Defer recovery attempts for a short grace window after a successful recovery. This allows
+        // the display stack and helper APPLY to stabilize without immediately retriggering recovery.
+        if (now < recovery_cooldown_until) {
+          if (presence == MonitorTargetPresence::missing) {
+            missing_since.reset();
+          } else {
+            inactive_since.reset();
+          }
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        std::optional<std::chrono::steady_clock::time_point> *issue_since = nullptr;
+        std::chrono::steady_clock::duration required_grace {};
+        const char *issue_label = "unknown";
+        if (presence == MonitorTargetPresence::missing) {
+          inactive_since.reset();
+          issue_since = &missing_since;
+          required_grace = RECOVERY_MISSING_GRACE;
+          issue_label = "missing";
+        } else {
+          missing_since.reset();
+          issue_since = &inactive_since;
+          required_grace = observed_active ? RECOVERY_INACTIVE_GRACE : RECOVERY_NO_ACTIVE_GRACE;
+          issue_label = "inactive";
+        }
+
+        if (!issue_since->has_value()) {
+          *issue_since = now;
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
+        const auto issue_for = now - **issue_since;
+        if (issue_for < required_grace) {
+          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          continue;
+        }
+
         if (attempts >= state.params.max_attempts) {
+          const auto base_backoff = RECOVERY_MAX_ATTEMPTS_BACKOFF;
+          const auto multiplier = std::min<unsigned int>(backoff_cycles, 4U);
+          auto backoff = base_backoff * (1U << multiplier);
+          if (backoff > RECOVERY_MAX_BACKOFF) {
+            backoff = RECOVERY_MAX_BACKOFF;
+          }
+          backoff_cycles += 1;
+
+          const auto backoff_ms = std::chrono::duration_cast<std::chrono::milliseconds>(backoff).count();
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
-                             << state.describe_target() << "; backing off.";
+                             << state.describe_target() << "; backing off for " << backoff_ms << "ms.";
           attempts = 0;
-          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+          recovery_cooldown_until = std::chrono::steady_clock::now() + backoff;
+          inactive_since.reset();
+          missing_since.reset();
+          std::this_thread::sleep_for(backoff);
           continue;
         }
 
         attempts += 1;
+        const auto issue_ms = std::chrono::duration_cast<std::chrono::milliseconds>(issue_for).count();
         BOOST_LOG(warning) << "Virtual display recovery monitor detected disappearance for "
                            << state.describe_target() << " (attempt "
-                           << attempts << '/' << state.params.max_attempts << ").";
+                           << attempts << '/' << state.params.max_attempts
+                           << ", " << issue_label << "_for=" << issue_ms << "ms).";
 
         if (monitor_should_abort(state)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
         const bool recovered = attempt_virtual_display_recovery(state);
-        if (!recovered) {
-          std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
-          continue;
+        inactive_since.reset();
+        missing_since.reset();
+        active_since.reset();
+
+        if (recovered) {
+          observed_active = false;
+          recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_POST_SUCCESS_GRACE;
+        } else {
+          recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_RETRY_DELAY;
         }
 
         std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
@@ -2091,7 +2283,8 @@ namespace VDISPLAY {
     const auto guid_uuid = guid_to_uuid(params.guid);
     const bool has_device_id = params.device_id && !params.device_id->empty();
     const bool has_display_name = params.display_name && !params.display_name->empty();
-    if (!has_device_id && !has_display_name) {
+    const bool has_client_name = !params.client_name.empty();
+    if (!has_device_id && !has_display_name && !has_client_name) {
       BOOST_LOG(debug) << "Virtual display recovery monitor skipped: no identifiers available.";
       return;
     }
@@ -2461,6 +2654,8 @@ namespace VDISPLAY {
     const auto enumeration_timeout = std::chrono::seconds(2);
     const auto activation_grace = std::chrono::milliseconds(500);
     const auto poll_interval = std::chrono::milliseconds(50);
+    const bool has_dynamic_hints =
+      (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
     while (true) {
       const auto now = std::chrono::steady_clock::now();
@@ -2503,11 +2698,12 @@ namespace VDISPLAY {
         bool resolution_conflict = false;
 
         for (const auto &candidate : *devices) {
-          if (!is_virtual_display_device(candidate)) {
+          const bool is_virtual = is_virtual_display_device(candidate);
+          if (!has_dynamic_hints && !is_virtual) {
             continue;
           }
 
-          if (candidate.m_info && candidate.m_info->m_resolution.m_width == width &&
+          if (is_virtual && candidate.m_info && candidate.m_info->m_resolution.m_width == width &&
               candidate.m_info->m_resolution.m_height == height) {
             if (!resolution_conflict) {
               if (!unique_resolution_candidate) {
@@ -2556,9 +2752,6 @@ namespace VDISPLAY {
               matches = true;
             }
           }
-
-          const bool has_dynamic_hints =
-            (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
           if (!matches && !has_dynamic_hints) {
             matches = true;
@@ -2746,7 +2939,10 @@ namespace VDISPLAY {
       const DWORD error_code = GetLastError();
       BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
 
-      auto reuse_name = resolve_virtual_display_name_from_devices();
+      auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+      if (!reuse_name) {
+        reuse_name = resolve_virtual_display_name_from_devices();
+      }
       std::optional<std::string> device_id;
       if (reuse_name) {
         device_id = resolveVirtualDisplayDeviceId(*reuse_name);
@@ -2754,7 +2950,9 @@ namespace VDISPLAY {
                          << (device_id ? *device_id : std::string("(none)")) << "'";
       }
       if (!device_id) {
-        device_id = resolveAnyVirtualDisplayDeviceId();
+        if (s_client_name && std::strlen(s_client_name) > 0) {
+          device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+        }
       }
 
       if (auto dpi = read_virtual_display_dpi_value()) {
@@ -2852,7 +3050,10 @@ namespace VDISPLAY {
     }
 
     if (!resolved_display_name) {
-      resolved_display_name = resolve_virtual_display_name_from_devices();
+      resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+      if (!resolved_display_name) {
+        resolved_display_name = resolve_virtual_display_name_from_devices();
+      }
     }
 
     std::optional<std::string> device_id;
@@ -2862,7 +3063,12 @@ namespace VDISPLAY {
                        << (device_id ? *device_id : std::string("(none)")) << "'";
     }
     if (!device_id) {
-      device_id = resolveAnyVirtualDisplayDeviceId();
+      if (s_client_name && std::strlen(s_client_name) > 0) {
+        device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+      }
+      if (!device_id && (!s_client_name || std::strlen(s_client_name) == 0)) {
+        device_id = resolveAnyVirtualDisplayDeviceId();
+      }
     }
 
     const auto display_config_ptr = display_config_identity ? &*display_config_identity : nullptr;
@@ -2875,11 +3081,13 @@ namespace VDISPLAY {
 
     // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
     if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
-      if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
-        if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
-          BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
-          resolved_display_name = gdi_name;
-        }
+      auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+      if (!gdi_name) {
+        gdi_name = resolve_virtual_display_name_from_devices();
+      }
+      if (gdi_name && !gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
+        BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
+        resolved_display_name = gdi_name;
       }
     }
 
@@ -3160,6 +3368,44 @@ namespace VDISPLAY {
       return fallback;
     }
 
+    return std::nullopt;
+  }
+
+  std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name) {
+    if (client_name.empty()) {
+      return std::nullopt;
+    }
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return std::nullopt;
+    }
+
+    std::optional<std::string> active_match;
+    std::optional<std::string> any_match;
+    for (const auto &device : *devices) {
+      if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
+        continue;
+      }
+      if (device.m_friendly_name.empty() || !equals_ci(device.m_friendly_name, client_name)) {
+        continue;
+      }
+
+      if (!any_match) {
+        any_match = device.m_device_id;
+      }
+      if (device.m_info) {
+        active_match = device.m_device_id;
+        break;
+      }
+    }
+
+    if (active_match) {
+      return active_match;
+    }
+    if (any_match) {
+      return any_match;
+    }
     return std::nullopt;
   }
 

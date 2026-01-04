@@ -63,17 +63,12 @@ const defaultGroups = [
       locale: 'en',
       sunshine_name: '',
       min_log_level: 2,
-      system_tray: 'enabled',
-      hide_tray_controls: 'disabled',
-      enable_pairing: 'enabled',
-      enable_discovery: 'enabled',
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
-      global_state_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
-      server_cmd: [] as Array<{ name: string; cmd: string; elevated?: boolean }>,
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,
+      system_tray: true,
     },
   },
   {
@@ -94,10 +89,8 @@ const defaultGroups = [
       mouse: 'enabled',
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
-      ds5_inputtino_randomize_mac: 'enabled',
-      enable_input_only_mode: 'disabled',
-      forward_rumble: 'enabled',
       keybindings: '[0x10,0xA0,0x11,0xA2,0x12,0xA4]',
+      ds5_inputtino_randomize_mac: true,
     },
   },
   {
@@ -118,8 +111,10 @@ const defaultGroups = [
       dd_refresh_rate_option: 'auto',
       dd_manual_refresh_rate: '',
       dd_hdr_option: 'auto',
+      dd_hdr_request_override: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_always_restore_from_golden: false,
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
@@ -129,12 +124,8 @@ const defaultGroups = [
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      dd_wa_hdr_toggle: false,
+      dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
-      keep_sink_default: 'enabled',
-      auto_capture_sink: 'enabled',
-      double_refreshrate: true,
-      fallback_mode: '1920x1080x60',
       max_bitrate: 0,
       minimum_fps_target: 20,
       lossless_scaling_path: '',
@@ -164,6 +155,7 @@ const defaultGroups = [
       pkey: '',
       cert: '',
       file_state: '',
+      vibeshine_file_state: '',
     },
   },
   {
@@ -202,10 +194,6 @@ const defaultGroups = [
       prefer_10bit_sdr: false,
       capture: '',
       encoder: '',
-      limit_framerate: 'enabled',
-      envvar_compatibility_mode: 'disabled',
-      legacy_ordering: 'disabled',
-      ignore_encoder_probe_failure: 'disabled',
     },
   },
   {
@@ -326,17 +314,8 @@ export const useConfigStore = defineStore('config', () => {
   // Track keys that should require manual save (no autosave)
   const manualSaveKeys = new Set<string>([
     'global_prep_cmd',
-    'server_cmd',
-    'global_state_cmd',
-    'dd_configuration_option',
     'dd_resolution_option',
     'dd_manual_resolution',
-    'dd_refresh_rate_option',
-    'dd_manual_refresh_rate',
-    'dd_hdr_option',
-    'dd_wa_hdr_toggle',
-    'dd_config_revert_delay',
-    'dd_config_revert_on_disconnect',
     'dd_mode_remapping',
   ]);
   const manualDirty = ref(false);
@@ -443,12 +422,7 @@ export const useConfigStore = defineStore('config', () => {
     const data = _data.value;
 
     // decode known JSON string fields
-    const specialOptions: Array<keyof ConfigDefaults> = [
-      'dd_mode_remapping',
-      'global_prep_cmd',
-      'global_state_cmd',
-      'server_cmd',
-    ];
+    const specialOptions: Array<keyof ConfigDefaults> = ['dd_mode_remapping', 'global_prep_cmd'];
     for (const key of specialOptions) {
       if (
         data &&
@@ -481,18 +455,6 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
-    // Migrate legacy HDR workaround delay -> boolean toggle (enabled if delay>0)
-    if (data) {
-      const hasNew = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle');
-      const hasLegacy = Object.prototype.hasOwnProperty.call(data, 'dd_wa_hdr_toggle_delay');
-      if (!hasNew && hasLegacy) {
-        const v = Number((data as Record<string, unknown>)['dd_wa_hdr_toggle_delay']);
-        if (Number.isFinite(v) && v > 0) {
-          (data as Record<string, unknown>)['dd_wa_hdr_toggle'] = true;
-        }
-      }
-    }
-
     // Keep frame limiter legacy and new flags in sync so toggles work across versions.
     if (data) {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_enable')) {
@@ -505,10 +467,9 @@ export const useConfigStore = defineStore('config', () => {
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
       if (legacyVsync) {
         if (!hasNewVsync) {
-          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (data as Record<
-            string,
-            unknown
-          >)['rtss_disable_vsync_ullm'];
+          (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = (
+            data as Record<string, unknown>
+          )['rtss_disable_vsync_ullm'];
         }
         delete (data as Record<string, unknown>)['rtss_disable_vsync_ullm'];
       }
@@ -528,9 +489,8 @@ export const useConfigStore = defineStore('config', () => {
     const otherBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
-      'dd_wa_hdr_toggle',
+      'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
-      'double_refreshrate',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
@@ -596,9 +556,7 @@ export const useConfigStore = defineStore('config', () => {
     };
     const normalizeStringArray = (v: any): string[] => {
       if (Array.isArray(v)) {
-        return v
-          .map((item) => String(item ?? '').trim())
-          .filter((item) => item.length > 0);
+        return v.map((item) => String(item ?? '').trim()).filter((item) => item.length > 0);
       }
       if (typeof v === 'string') {
         // Try JSON first

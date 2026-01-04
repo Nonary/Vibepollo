@@ -9,6 +9,7 @@
 #include "src/rtsp.h"
 
 #include <display_device/types.h>
+#include <chrono>
 #include <optional>
 #include <vector>
 
@@ -50,6 +51,17 @@ namespace display_helper_integration {
 
   // Capture the currently active topology before applying changes.
   std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
+
+#ifdef _WIN32
+  enum class ApplyVerificationStatus {
+    Verified,
+    Failed,
+    Unknown
+  };
+
+  // Wait for helper verification to finish after APPLY. Returns Unknown on timeout/unavailable.
+  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout);
+#endif
 
 #ifdef _WIN32
   struct FramegenEdidTargetSupport {

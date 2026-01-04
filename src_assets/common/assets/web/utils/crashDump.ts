@@ -20,9 +20,7 @@ export function isCrashDumpEligible(status?: CrashDumpStatus | null): boolean {
   return size >= MIN_CRASH_DUMP_SIZE_BYTES;
 }
 
-export function sanitizeCrashDumpStatus(
-  status?: CrashDumpStatus | null,
-): CrashDumpStatus | null {
+export function sanitizeCrashDumpStatus(status?: CrashDumpStatus | null): CrashDumpStatus | null {
   if (!status) {
     return null;
   }

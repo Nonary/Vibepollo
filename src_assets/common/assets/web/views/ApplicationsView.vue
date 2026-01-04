@@ -2,9 +2,7 @@
   <div class="max-w-3xl mx-auto px-6 py-8 space-y-4">
     <!-- Toolbar aligned to card -->
     <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-wider">
-        {{ $t('apps.applications_title') }}
-      </h2>
+      <h2 class="text-sm font-semibold uppercase tracking-wider">Applications</h2>
       <!-- Toolbar: one Primary + one secondary, 8-pt spacing -->
       <n-space align="center" :size="16" class="items-center">
         <!-- Windows + Playnite secondary action -->
@@ -18,7 +16,7 @@
             :loading="syncBusy"
             :disabled="syncBusy"
             @click="forceSync"
-            :aria-label="$t('playnite.force_sync')"
+            aria-label="Force sync now"
           >
             <svg
               class="w-4 h-4 mr-2 inline-block"
@@ -33,7 +31,7 @@
                 d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6"
               />
             </svg>
-            {{ $t('playnite.force_sync') }}
+            {{ $t('playnite.force_sync') || 'Force Sync' }}
           </n-button>
 
           <!-- Setup Playnite when disabled -->
@@ -58,7 +56,7 @@
                 d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95"
               />
             </svg>
-            {{ $t('playnite.setup_integration') }}
+            {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
           </n-button>
         </template>
 
@@ -77,7 +75,7 @@
               d="M12 5v14M5 12h14"
             />
           </svg>
-          {{ $t('_common.add') }}
+          Add
         </n-button>
       </n-space>
     </div>
@@ -86,218 +84,70 @@
     <div
       class="rounded-2xl overflow-hidden border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur"
     >
-      <template v-if="orderedApps.length">
-        <div
-          class="px-6 py-3 text-[11px] uppercase tracking-wide opacity-60 flex items-center justify-between"
+      <div v-if="apps && apps.length" class="divide-y divide-black/5 dark:divide-white/10">
+        <button
+          v-for="(app, i) in apps"
+          :key="appKey(app, i)"
+          type="button"
+          class="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          @click="openEdit(app, i)"
+          @keydown.enter.prevent="openEdit(app, i)"
+          @keydown.space.prevent="openEdit(app, i)"
         >
-          <span>{{ $t('apps.reorder_hint') }}</span>
-          <span v-if="reorderDirty" class="font-medium text-primary">{{
-            $t('apps.reorder_unsaved')
-          }}</span>
-        </div>
-        <div class="divide-y divide-black/5 dark:divide-white/10">
           <div
-            v-for="(app, i) in orderedApps"
-            :key="appKey(app, i)"
-            class="relative"
-            :ref="(el) => setRowRef(el, i)"
-            @dragover.prevent="handleDragOver(i, $event)"
-            @drop.prevent="handleDrop($event)"
+            class="flex items-center justify-between px-6 py-4 min-h-[56px] hover:bg-dark/10 dark:hover:bg-light/10"
           >
-            <div v-if="dragInsertIndex === i" class="drag-indicator" style="top: -1px"></div>
-            <div
-              class="app-row w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-              role="button"
-              tabindex="0"
-              draggable="true"
-              @dragstart="handleDragStart(i, $event)"
-              @dragend="handleDragEnd"
-              @click="openEdit(app, i)"
-              @keydown.enter.prevent="openEdit(app, i)"
-              @keydown.space.prevent="openEdit(app, i)"
-            >
-              <div
-                class="flex items-center gap-4 px-6 py-4 min-h-[56px] hover:bg-dark/10 dark:hover:bg-light/10"
-                :class="{ 'dragging-row': draggingIndex === i }"
-              >
-                <div
-                  class="drag-handle"
-                  @click.stop
-                  @pointerdown="handlePointerDown(i, $event)"
-                  :aria-label="$t('apps.drag_handle_label')"
-                  tabindex="-1"
-                  role="button"
-                >
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="1.6"
-                      d="M7 6h0m0 6h0m0 6h0m10-12h0m0 6h0m0 6h0"
-                    />
-                  </svg>
-                </div>
-                <div class="min-w-0 flex-1">
-                  <div class="text-sm font-semibold truncate flex items-center gap-2">
-                    <span class="truncate">{{ app.name || $t('apps.untitled') }}</span>
-                    <!-- Playnite or Custom badges -->
-                    <template v-if="app['playnite-id']">
-                      <n-tag
-                        size="small"
-                        class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200"
-                        >{{ $t('apps.playnite_badge') }}</n-tag
-                      >
-                      <span
-                        v-if="app['playnite-managed'] === 'manual'"
-                        class="text-[10px] opacity-70"
-                        >{{ $t('apps.playnite_label_manual') }}</span
-                      >
-                      <span
-                        v-else-if="(app['playnite-source'] || '') === 'installed'"
-                        class="text-[10px] opacity-70"
-                        >{{ $t('apps.playnite_label_installed') }}</span
-                      >
-                      <span
-                        v-else-if="(app['playnite-source'] || '') === 'recent'"
-                        class="text-[10px] opacity-70"
-                        >{{ $t('apps.playnite_label_recent') }}</span
-                      >
-                      <span
-                        v-else-if="(app['playnite-source'] || '') === 'category'"
-                        class="text-[10px] opacity-70"
-                        >{{ $t('apps.playnite_label_category') }}</span
-                      >
-                      <span
-                        v-else-if="(app['playnite-source'] || '') === 'recent+category'"
-                        class="text-[10px] opacity-70"
-                        >{{ $t('apps.playnite_label_recent_category') }}</span
-                      >
-                      <span v-else class="text-[10px] opacity-70">{{
-                        $t('apps.playnite_label_managed')
-                      }}</span>
-                    </template>
-                    <template v-else>
-                      <n-tag
-                        size="small"
-                        class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200"
-                        >{{ $t('apps.custom_badge') }}</n-tag
-                      >
-                    </template>
-                  </div>
-                  <div class="mt-0.5 text-[11px] opacity-60 truncate" v-if="app['working-dir']">
-                    {{ app['working-dir'] }}
-                  </div>
-                </div>
-                <div class="shrink-0 flex items-center gap-2 text-dark/50 dark:text-light/70">
-                  <n-button
-                    v-if="app.uuid"
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-semibold truncate flex items-center gap-2">
+                <span class="truncate">{{ app.name || '(untitled)' }}</span>
+                <!-- Playnite or Custom badges -->
+                <template v-if="app['playnite-id']">
+                  <n-tag
                     size="small"
-                    type="primary"
-                    strong
-                    class="h-8 px-3 rounded-md"
-                    :loading="isLaunching(app.uuid)"
-                    :disabled="isLaunching(app.uuid)"
-                    @click.stop="launch(app)"
-                    :aria-label="$t('apps.launch_now')"
+                    class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200"
+                    >Playnite</n-tag
                   >
-                    <svg
-                      class="w-4 h-4"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      aria-hidden
-                    >
-                      <path d="M8 5v14l11-7-11-7z" />
-                    </svg>
-                    <span class="ml-1 text-xs">{{ $t('apps.launch_now') }}</span>
-                  </n-button>
-                  <n-button
-                    v-if="isCurrentApp(app.uuid)"
+                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
+                    >manual</span
+                  >
+                  <span v-else-if="app['playnite-source']" class="text-[10px] opacity-70">{{
+                    String(app['playnite-source']).split('+').join(' + ')
+                  }}</span>
+                  <span v-else class="text-[10px] opacity-70">managed</span>
+                </template>
+                <template v-else>
+                  <n-tag
                     size="small"
-                    type="error"
-                    strong
-                    class="h-8 px-3 rounded-md"
-                    :loading="closingActive"
-                    :disabled="closingActive"
-                    @click.stop="closeActive(app)"
-                    :aria-label="$t('troubleshooting.force_close')"
+                    class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200"
+                    >Custom</n-tag
                   >
-                    <svg
-                      class="w-4 h-4"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      aria-hidden
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="1.6"
-                        d="M7 7l10 10M17 7 7 17"
-                      />
-                    </svg>
-                    <span class="ml-1 text-xs">{{ $t('troubleshooting.force_close') }}</span>
-                  </n-button>
-                  <svg
-                    class="w-4 h-4"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    aria-hidden
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="1.6"
-                      d="M9 6l6 6-6 6"
-                    />
-                  </svg>
-                </div>
+                </template>
+              </div>
+              <div class="mt-0.5 text-[11px] opacity-60 truncate" v-if="app['working-dir']">
+                {{ app['working-dir'] }}
               </div>
             </div>
-            <div v-if="dragInsertIndex === i + 1" class="drag-indicator" style="bottom: -1px"></div>
+            <div class="shrink-0 text-dark/50 dark:text-light/70">
+              <svg
+                class="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                aria-hidden
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.6"
+                  d="M9 6l6 6-6 6"
+                />
+              </svg>
+            </div>
           </div>
-        </div>
-        <div
-          v-if="orderedApps.length > 1"
-          class="flex items-center justify-between px-6 py-4 border-t border-black/5 dark:border-white/10 bg-dark/5 dark:bg-light/5"
-        >
-          <div class="text-xs opacity-70">
-            <span v-if="reorderDirty">{{ $t('apps.reorder_dirty_notice') }}</span>
-            <span v-else>{{ $t('apps.reorder_clean_notice') }}</span>
-          </div>
-          <n-space :size="8" align="center">
-            <n-button
-              tertiary
-              size="small"
-              @click="alphabetize"
-              :disabled="reorderSaving || orderedApps.length < 2"
-            >
-              {{ $t('apps.alphabetize') }}
-            </n-button>
-            <n-button
-              size="small"
-              type="default"
-              strong
-              @click="resetOrder"
-              :disabled="reorderSaving || !reorderDirty"
-            >
-              {{ $t('apps.reorder_reset') }}
-            </n-button>
-            <n-button
-              type="primary"
-              size="small"
-              strong
-              @click="saveOrder"
-              :loading="reorderSaving"
-              :disabled="!reorderDirty"
-            >
-              {{ $t('apps.reorder_save') }}
-            </n-button>
-          </n-space>
-        </div>
-      </template>
+        </button>
+      </div>
       <div v-else class="px-6 py-10 text-center text-sm opacity-60">
-        {{ $t('apps.none_configured') }}
+        No applications configured.
       </div>
     </div>
 
@@ -319,99 +169,26 @@
   </div>
 </template>
 <script setup lang="ts">
-import {
-  ref,
-  onMounted,
-  onBeforeUnmount,
-  computed,
-  watch,
-  defineAsyncComponent,
-  reactive,
-} from 'vue';
+import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue';
+// Lazy-load the modal when first opened
 const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
-import { NButton, NSpace, NTag, useMessage } from 'naive-ui';
+import { NButton, NSpace, NTag } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import type { App } from '@/stores/apps';
-import { useI18n } from 'vue-i18n';
+
+// Minimal shape used for rendering items returned by the backend
+// Use shared App type from store for consistency
 
 const appsStore = useAppsStore();
-const { apps, currentAppUuid } = storeToRefs(appsStore);
+const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
 const auth = useAuthStore();
 const router = useRouter();
-const message = useMessage();
-const { t } = useI18n();
-
-const orderedApps = ref<App[]>([]);
-const reorderDirty = ref(false);
-const reorderSaving = ref(false);
-const draggingIndex = ref<number | null>(null);
-const dragInsertIndex = ref<number | null>(null);
-const suppressClick = ref(false);
-const rowRefs = ref<(HTMLElement | null)[]>([]);
-const launching = reactive<Record<string, boolean>>({});
-const closingActive = ref(false);
-
-type PointerDragState = {
-  pointerId: number;
-  startY: number;
-  index: number;
-  started: boolean;
-  source: HTMLElement | null;
-};
-
-const pointerDrag = ref<PointerDragState | null>(null);
-let pointerListenersAttached = false;
-
-watch(
-  apps,
-  (next) => {
-    const list = Array.isArray(next) ? next : [];
-    if (!reorderDirty.value) {
-      orderedApps.value = list.slice();
-      return;
-    }
-
-    const byUuid = new Map<string, App>();
-    list.forEach((item) => {
-      if (item && typeof item === 'object' && item.uuid) {
-        byUuid.set(item.uuid, item);
-      }
-    });
-
-    const updated: App[] = [];
-    const seen = new Set<string>();
-
-    orderedApps.value.forEach((item) => {
-      if (item?.uuid && byUuid.has(item.uuid)) {
-        updated.push(byUuid.get(item.uuid)!);
-        seen.add(item.uuid);
-      } else if (!item?.uuid) {
-        updated.push(item);
-      }
-    });
-
-    list.forEach((item) => {
-      if (item?.uuid && !seen.has(item.uuid)) {
-        updated.push(item);
-      }
-    });
-
-    orderedApps.value = updated;
-  },
-  { immediate: true },
-);
-
-watch(reorderDirty, (dirty) => {
-  if (!dirty) {
-    orderedApps.value = (Array.isArray(apps.value) ? apps.value : []).slice();
-  }
-});
 
 const syncBusy = ref(false);
 const isWindows = computed(
@@ -425,302 +202,9 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);
 const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
-const currentIndex = ref<number>(-1);
-
-function setRowRef(el: Element | null, index: number): void {
-  rowRefs.value[index] = el instanceof HTMLElement ? el : null;
-}
-
-function isLaunching(uuid?: string | null): boolean {
-  return !!(uuid && launching[uuid]);
-}
-
-function isCurrentApp(uuid?: string | null): boolean {
-  return typeof uuid === 'string' && uuid.length > 0 && currentAppUuid.value === uuid;
-}
-
-async function launch(app: App): Promise<void> {
-  const uuid = typeof app?.uuid === 'string' ? app.uuid : '';
-  if (!uuid) {
-    message.error(t('apps.launch_missing_uuid'));
-    return;
-  }
-  if (isLaunching(uuid)) {
-    return;
-  }
-  launching[uuid] = true;
-  try {
-    const result = await appsStore.launchApp(uuid);
-    if (result.ok) {
-      message.success(t('apps.launch_success'));
-      return;
-    }
-    if (result.canceled) {
-      if (!auth.isAuthenticated) {
-        auth.requireLogin({ bypassLogoutGuard: true });
-      }
-      return;
-    }
-    message.error(result.error || t('apps.launch_failed'));
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : undefined;
-    message.error(reason || t('apps.launch_failed'));
-  } finally {
-    launching[uuid] = false;
-  }
-}
-
-async function closeActive(app: App): Promise<void> {
-  if (!isCurrentApp(app?.uuid) || closingActive.value) {
-    return;
-  }
-  closingActive.value = true;
-  try {
-    const result = await appsStore.closeActiveApp();
-    if (result.ok) {
-      message.success(t('troubleshooting.force_close_success'));
-    } else {
-      message.error(result.error || t('troubleshooting.force_close_error'));
-    }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : undefined;
-    message.error(reason || t('troubleshooting.force_close_error'));
-  } finally {
-    closingActive.value = false;
-  }
-}
-
-function resetDragState(): void {
-  cleanupPointerDrag();
-  draggingIndex.value = null;
-  dragInsertIndex.value = null;
-  window.setTimeout(() => {
-    suppressClick.value = false;
-  }, 0);
-}
-
-function handleDragStart(index: number, event: DragEvent): void {
-  if (reorderSaving.value) return;
-  if (index < 0 || index >= orderedApps.value.length) return;
-  draggingIndex.value = index;
-  dragInsertIndex.value = index;
-  suppressClick.value = true;
-  const uuid = orderedApps.value[index]?.uuid;
-  if (uuid) {
-    event.dataTransfer?.setData('text/plain', uuid);
-  }
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move';
-  }
-}
-
-function handleDragOver(index: number, event: DragEvent): void {
-  if (draggingIndex.value === null) return;
-  event.preventDefault();
-  const target = event.currentTarget as HTMLElement | null;
-  if (!target) return;
-  const rect = target.getBoundingClientRect();
-  const offset = event.clientY - rect.top;
-  const position = offset > rect.height / 2 ? index + 1 : index;
-  if (dragInsertIndex.value !== position) {
-    dragInsertIndex.value = position;
-  }
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = 'move';
-  }
-}
-
-function applyReorder(): void {
-  const from = draggingIndex.value;
-  let to = dragInsertIndex.value;
-  if (from === null || to === null) {
-    resetDragState();
-    return;
-  }
-  const list = orderedApps.value.slice();
-  if (from < 0 || from >= list.length) {
-    resetDragState();
-    return;
-  }
-  if (to > list.length) {
-    to = list.length;
-  }
-  if (to === from || to === from + 1) {
-    resetDragState();
-    return;
-  }
-  const [moved] = list.splice(from, 1);
-  if (!moved) {
-    resetDragState();
-    return;
-  }
-  if (to > from) {
-    to -= 1;
-  }
-  list.splice(to, 0, moved);
-  orderedApps.value = list;
-  reorderDirty.value = true;
-  resetDragState();
-}
-
-function handleDrop(event: DragEvent): void {
-  if (draggingIndex.value === null || dragInsertIndex.value === null) {
-    resetDragState();
-    return;
-  }
-  event.preventDefault();
-  applyReorder();
-}
-
-function handleDragEnd(): void {
-  resetDragState();
-}
-
-function handlePointerDown(index: number, event: PointerEvent): void {
-  if (event.pointerType === 'mouse') return;
-  if (reorderSaving.value) return;
-  if (pointerDrag.value) return;
-  pointerDrag.value = {
-    pointerId: event.pointerId,
-    startY: event.clientY,
-    index,
-    started: false,
-    source: event.currentTarget instanceof HTMLElement ? event.currentTarget : null,
-  };
-  event.preventDefault();
-  attachPointerListeners();
-  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
-}
-
-function handlePointerMove(event: PointerEvent): void {
-  const state = pointerDrag.value;
-  if (!state || event.pointerId !== state.pointerId) return;
-  const delta = event.clientY - state.startY;
-  if (!state.started) {
-    if (Math.abs(delta) < 6) return;
-    state.started = true;
-    draggingIndex.value = state.index;
-    dragInsertIndex.value = state.index;
-    suppressClick.value = true;
-  }
-  event.preventDefault();
-  updatePointerInsertIndex(event.clientY);
-}
-
-function handlePointerRelease(event: PointerEvent): void {
-  const state = pointerDrag.value;
-  if (!state || event.pointerId !== state.pointerId) return;
-  const started = state.started;
-  cleanupPointerDrag();
-  if (started) {
-    event.preventDefault();
-    applyReorder();
-  } else {
-    resetDragState();
-  }
-}
-
-function handlePointerCancel(event: PointerEvent): void {
-  const state = pointerDrag.value;
-  if (!state || event.pointerId !== state.pointerId) return;
-  cleanupPointerDrag();
-  resetDragState();
-}
-
-function updatePointerInsertIndex(clientY: number): void {
-  const rows = rowRefs.value
-    .map((el, idx) => ({ el, idx }))
-    .filter((item): item is { el: HTMLElement; idx: number } => item.el instanceof HTMLElement);
-  if (!rows.length) return;
-  let position = rows[rows.length - 1]!.idx + 1;
-  for (const { el, idx } of rows) {
-    const rect = el.getBoundingClientRect();
-    const midpoint = rect.top + rect.height / 2;
-    if (clientY < midpoint) {
-      position = idx;
-      break;
-    }
-  }
-  const maxPosition = orderedApps.value.length;
-  if (position > maxPosition) {
-    position = maxPosition;
-  }
-  if (dragInsertIndex.value !== position) {
-    dragInsertIndex.value = position;
-  }
-}
-
-function attachPointerListeners(): void {
-  if (pointerListenersAttached) return;
-  pointerListenersAttached = true;
-  window.addEventListener('pointermove', handlePointerMove, { passive: false });
-  window.addEventListener('pointerup', handlePointerRelease);
-  window.addEventListener('pointercancel', handlePointerCancel);
-}
-
-function detachPointerListeners(): void {
-  if (!pointerListenersAttached) return;
-  pointerListenersAttached = false;
-  window.removeEventListener('pointermove', handlePointerMove);
-  window.removeEventListener('pointerup', handlePointerRelease);
-  window.removeEventListener('pointercancel', handlePointerCancel);
-}
-
-function cleanupPointerDrag(): void {
-  const state = pointerDrag.value;
-  if (state?.source) {
-    state.source.releasePointerCapture?.(state.pointerId);
-  }
-  pointerDrag.value = null;
-  detachPointerListeners();
-}
-
-function resetOrder(): void {
-  orderedApps.value = (Array.isArray(apps.value) ? apps.value : []).slice();
-  reorderDirty.value = false;
-  resetDragState();
-}
-
-function alphabetize(): void {
-  if (orderedApps.value.length < 2) return;
-  const snapshot = orderedApps.value.slice();
-  const sorted = snapshot.slice().sort((a, b) => {
-    const nameA = a?.name || '';
-    const nameB = b?.name || '';
-    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base', numeric: true });
-  });
-  const changed = sorted.some((item, idx) => item !== snapshot[idx]);
-  if (!changed) {
-    message.info(t('apps.alphabetize_done'));
-    return;
-  }
-  orderedApps.value = sorted;
-  reorderDirty.value = true;
-  resetDragState();
-}
-
-async function saveOrder(): Promise<void> {
-  if (!reorderDirty.value || reorderSaving.value) return;
-  const uuids = orderedApps.value
-    .map((item) => item?.uuid)
-    .filter((uuid): uuid is string => typeof uuid === 'string' && uuid.length > 0);
-  if (!uuids.length) {
-    message.warning(t('apps.reorder_none'));
-    return;
-  }
-  reorderSaving.value = true;
-  const result = await appsStore.reorderApps(uuids);
-  if (result.ok) {
-    message.success(t('apps.reorder_saved'));
-    reorderDirty.value = false;
-  } else {
-    message.error(result.error || t('apps.reorder_save_failed'));
-  }
-  reorderSaving.value = false;
-}
+const currentIndex = ref<number | null>(-1);
 
 async function reload(): Promise<void> {
-  reorderDirty.value = false;
   await appsStore.loadApps(true);
 }
 
@@ -731,16 +215,8 @@ function openAdd(): void {
 }
 
 function openEdit(app: App, i: number): void {
-  if (suppressClick.value) return;
-  const uuid = app?.uuid;
-  if (uuid) {
-    const idx = apps.value.findIndex((item) => item?.uuid === uuid);
-    currentIndex.value = idx >= 0 ? idx : i;
-    currentApp.value = idx >= 0 && apps.value[idx] ? (apps.value[idx] as App) : app;
-  } else {
-    currentIndex.value = i;
-    currentApp.value = app;
-  }
+  currentApp.value = app;
+  currentIndex.value = i;
   showModal.value = true;
 }
 function appKey(app: App | null | undefined, index: number) {
@@ -762,10 +238,13 @@ async function forceSync(): Promise<void> {
 function gotoPlaynite(): void {
   try {
     router.push({ path: '/settings', query: { sec: 'playnite' } });
-  } catch {}
+  } catch {
+    // ignore navigation errors
+  }
 }
 
 async function fetchPlayniteStatus(): Promise<void> {
+  // Only attempt when authenticated; http layer blocks otherwise
   if (!auth.isAuthenticated) return;
   try {
     const r = await http.get('/api/playnite/status', { validateStatus: () => true });
@@ -780,32 +259,33 @@ async function fetchPlayniteStatus(): Promise<void> {
       playniteInstalled.value = !!(r.data as any).installed;
     }
   } catch {
+    // ignore; will retry on next auth change
   } finally {
     playniteStatusReady.value = true;
   }
 }
 
 onMounted(async () => {
+  // Ensure metadata/config present for platform + playnite detection
   try {
     await configStore.fetchConfig?.();
   } catch {}
+  // Defer Playnite status until authenticated to avoid 401/canceled requests
   if (auth.isAuthenticated) {
     void fetchPlayniteStatus();
   } else {
-    playniteStatusReady.value = false;
+    playniteStatusReady.value = false; // not ready yet
   }
+  // Also load apps list (safe if already loaded by bootstrap)
   try {
     await appsStore.loadApps(true);
   } catch {}
 });
 
+// When user logs in while this view is mounted, refresh Playnite status
 auth.onLogin(() => {
   playniteStatusReady.value = false;
   void fetchPlayniteStatus();
-});
-
-onBeforeUnmount(() => {
-  cleanupPointerDrag();
 });
 </script>
 <style scoped>
@@ -834,59 +314,4 @@ onBeforeUnmount(() => {
   background: #4da3ff;
 }
 /* Row chevron styling adapts via text color set inline */
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: 9999px;
-  color: rgba(0, 0, 0, 0.35);
-  cursor: grab;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease;
-}
-
-.drag-handle:hover {
-  background-color: rgba(0, 0, 0, 0.06);
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
-.app-row {
-  cursor: grab;
-}
-
-.app-row:active {
-  cursor: grabbing;
-}
-
-:global(.dark) .drag-handle {
-  color: rgba(255, 255, 255, 0.45);
-}
-
-:global(.dark) .drag-handle:hover {
-  background-color: rgba(255, 255, 255, 0.08);
-}
-
-.drag-indicator {
-  pointer-events: none;
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  height: 2px;
-  border-radius: 999px;
-  background: rgba(253, 184, 19, 0.85);
-}
-
-:global(.dark) .drag-indicator {
-  background: rgba(77, 163, 255, 0.85);
-}
-
-.dragging-row {
-  opacity: 0.7;
-}
 </style>

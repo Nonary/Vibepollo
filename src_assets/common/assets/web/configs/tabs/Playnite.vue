@@ -258,12 +258,10 @@
                     class="w-full"
                   />
                 </template>
-                <span>{
-                  !autoSyncEnabled
-                    ? $t('playnite.enable_autosync_hint') ||
-                      'Enable Auto-sync to edit these settings.'
-                    : disabledHint
-                }</span>
+                <span
+                  >{ !autoSyncEnabled ? $t('playnite.enable_autosync_hint') || 'Enable Auto-sync to
+                  edit these settings.' : disabledHint }</span
+                >
               </n-tooltip>
               <div class="form-text">{{ $t('playnite.sync_plugins_help') }}</div>
             </div>
@@ -450,17 +448,15 @@
                     class="w-full"
                   />
                 </template>
-                <span>{
-                  !autoSyncEnabled
-                    ? $t('playnite.enable_autosync_hint') ||
-                      'Enable Auto-sync to edit these settings.'
-                    : disabledHint
-                }}</span>
+                <span
+                  >{ !autoSyncEnabled ? $t('playnite.enable_autosync_hint') || 'Enable Auto-sync to
+                  edit these settings.' : disabledHint }}</span
+                >
               </n-tooltip>
               <div class="form-text">
                 {{
                   $t('playnite.exclude_categories_help') ||
-                    'Games tagged with these categories will never be auto-synced.'
+                  'Games tagged with these categories will never be auto-synced.'
                 }}
               </div>
             </div>
@@ -486,17 +482,15 @@
                     class="w-full"
                   />
                 </template>
-                <span>{
-                  !autoSyncEnabled
-                    ? $t('playnite.enable_autosync_hint') ||
-                      'Enable Auto-sync to edit these settings.'
-                    : disabledHint
-                }}</span>
+                <span
+                  >{ !autoSyncEnabled ? $t('playnite.enable_autosync_hint') || 'Enable Auto-sync to
+                  edit these settings.' : disabledHint }}</span
+                >
               </n-tooltip>
               <div class="form-text">
                 {{
                   $t('playnite.exclude_plugins_help') ||
-                    'Games imported from these plugins will never be auto-synced.'
+                  'Games imported from these plugins will never be auto-synced.'
                 }}
               </div>
             </div>
@@ -588,14 +582,8 @@
     </section>
   </div>
   <!-- Uninstall confirmation -->
-  <n-modal
-    :show="showDeleteAutosyncConfirm"
-    @update:show="(v) => (showDeleteAutosyncConfirm = v)"
-  >
-    <n-card
-      :bordered="false"
-      style="max-width: 32rem; width: 100%"
-    >
+  <n-modal :show="showDeleteAutosyncConfirm" @update:show="(v) => (showDeleteAutosyncConfirm = v)">
+    <n-card :bordered="false" style="max-width: 32rem; width: 100%">
       <template #header>
         <div class="flex items-center gap-2">
           <i class="fas fa-trash" />
@@ -615,9 +603,13 @@
           <n-button type="default" strong @click="showDeleteAutosyncConfirm = false">{{
             $t('_common.cancel') || 'Cancel'
           }}</n-button>
-          <n-button type="error" strong :loading="deletingAutosync" @click="confirmDeleteAutosync">{{
-            $t('_common.continue') || 'Continue'
-          }}</n-button>
+          <n-button
+            type="error"
+            strong
+            :loading="deletingAutosync"
+            @click="confirmDeleteAutosync"
+            >{{ $t('_common.continue') || 'Continue' }}</n-button
+          >
         </div>
       </template>
     </n-card>
@@ -955,8 +947,8 @@ function ensurePluginOptionsIncludeSelection() {
   const current = pluginOptions.value.slice();
   const byValue = new Map(current.map((o) => [o.value, o] as const));
   const selected = [
-    ...(((config.value?.playnite_exclude_plugins || []) as Array<{ id: string; name: string }>)),
-    ...(((config.value?.playnite_sync_plugins || []) as Array<{ id: string; name: string }>)),
+    ...((config.value?.playnite_exclude_plugins || []) as Array<{ id: string; name: string }>),
+    ...((config.value?.playnite_sync_plugins || []) as Array<{ id: string; name: string }>),
   ];
   let changed = false;
   for (const entry of selected || []) {
@@ -1015,7 +1007,7 @@ async function loadPlugins() {
               name: String(g?.name || g?.id || ''),
               pluginId: g?.pluginId ? String(g.pluginId) : '',
               pluginName: g?.pluginName ? String(g.pluginName) : '',
-            }))
+            })),
           );
         }
       } catch {}
@@ -1142,11 +1134,7 @@ function openDeleteAutosyncConfirm() {
 async function confirmDeleteAutosync() {
   deletingAutosync.value = true;
   try {
-    const r = await http.post(
-      '/api/apps/purge_autosync',
-      {},
-      { validateStatus: () => true },
-    );
+    const r = await http.post('/api/apps/purge_autosync', {}, { validateStatus: () => true });
     let body: any = null;
     try {
       body = r.data;
@@ -1155,22 +1143,19 @@ async function confirmDeleteAutosync() {
     if (ok) {
       notify(
         'success',
-        (t('playnite.delete_autosync_success') as any) ||
-          'Removed auto-synced Playnite games.',
+        (t('playnite.delete_autosync_success') as any) || 'Removed auto-synced Playnite games.',
       );
       showDeleteAutosyncConfirm.value = false;
     } else {
       const msg =
         ((t('playnite.delete_autosync_error') as any) ||
-          'Failed to delete auto-synced Playnite games.') +
-        (body?.error ? `: ${body.error}` : '');
+          'Failed to delete auto-synced Playnite games.') + (body?.error ? `: ${body.error}` : '');
       notify('error', msg);
     }
   } catch (e: any) {
     const msg =
       ((t('playnite.delete_autosync_error') as any) ||
-        'Failed to delete auto-synced Playnite games.') +
-      (e?.message ? `: ${e.message}` : '');
+        'Failed to delete auto-synced Playnite games.') + (e?.message ? `: ${e.message}` : '');
     notify('error', msg);
   }
   deletingAutosync.value = false;
@@ -1241,14 +1226,14 @@ onMounted(async () => {
     () => {
       ensurePluginOptionsIncludeSelection();
     },
-    { deep: true }
+    { deep: true },
   );
   watch(
     () => config.value?.playnite_sync_plugins,
     () => {
       ensurePluginOptionsIncludeSelection();
     },
-    { deep: true }
+    { deep: true },
   );
   // no screen-size watchers needed for exclusions table
 });
@@ -1396,10 +1381,14 @@ const policySummary = computed<string>(() => {
       : (t('playnite.summary_remove_uninstalled_off') as any) ||
           'Uninstalled games remain until removed manually.',
   );
-  const excluded = ((config.value?.playnite_exclude_categories || []) as Array<{
-    id: string;
-    name: string;
-  }>).map((o) => (o?.name || o?.id || '').toString().trim()).filter(Boolean);
+  const excluded = (
+    (config.value?.playnite_exclude_categories || []) as Array<{
+      id: string;
+      name: string;
+    }>
+  )
+    .map((o) => (o?.name || o?.id || '').toString().trim())
+    .filter(Boolean);
   if (excluded.length) {
     const shown = excluded.slice(0, 3);
     const sample = shown.join(', ');
@@ -1459,7 +1448,10 @@ function resetAutoSyncSection() {
     'playnite_autosync_require_replacement',
     d.playnite_autosync_require_replacement,
   );
-  store.updateOption('playnite_autosync_remove_uninstalled', d.playnite_autosync_remove_uninstalled);
+  store.updateOption(
+    'playnite_autosync_remove_uninstalled',
+    d.playnite_autosync_remove_uninstalled,
+  );
   store.updateOption('playnite_sync_categories', d.playnite_sync_categories);
   store.updateOption('playnite_sync_plugins', d.playnite_sync_plugins);
   notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');

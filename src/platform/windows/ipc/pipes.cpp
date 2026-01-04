@@ -334,12 +334,30 @@ namespace platf::dxgi {
 
   AnonymousPipeFactory::AnonymousPipeFactory() = default;
 
+  namespace {
+    constexpr uint32_t kMaxHandshakeFrameLen = 2 * 1024 * 1024;
+    constexpr size_t kMaxHandshakePrefetchBytes = 65536;
+
+    bool looks_like_framed_payload_header(const std::vector<uint8_t> &buffered) {
+      if (buffered.size() < sizeof(uint32_t)) {
+        return false;
+      }
+      uint32_t framed_len = 0;
+      std::memcpy(&framed_len, buffered.data(), sizeof(framed_len));
+      return framed_len > 0 && framed_len <= kMaxHandshakeFrameLen;
+    }
+
+    std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
+      std::unique_ptr<INamedPipe> control_pipe,
+      const NamedPipeFactory &factory);
+  }  // namespace
+
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName) {
     auto first_pipe = _pipe_factory.create_server(pipeName);
     if (!first_pipe) {
       return nullptr;
     }
-    return handshake_server(std::move(first_pipe));
+    return build_anonymous_server_pipe(std::move(first_pipe), _pipe_factory);
   }
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_client(const std::string &pipeName) {
@@ -425,6 +443,213 @@ namespace platf::dxgi {
     size_t _cursor {0};
   };
 
+  class AnonymousServerPipe final : public INamedPipe {
+  public:
+    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory) :
+        control_(std::move(control_pipe)),
+        pipe_factory_(std::move(factory)) {}
+
+    bool send(std::span<const uint8_t> bytes, int timeout_ms) override {
+      maybe_handshake();
+      auto *pipe = active_pipe();
+      return pipe ? pipe->send(bytes, timeout_ms) : false;
+    }
+
+    PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
+      maybe_handshake();
+      bytesRead = 0;
+      auto *pipe = active_pipe();
+      return pipe ? pipe->receive(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
+    }
+
+    PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
+      maybe_handshake();
+      bytesRead = 0;
+      auto *pipe = active_pipe();
+      return pipe ? pipe->receive_latest(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
+    }
+
+    void wait_for_client_connection(int milliseconds) override {
+      if (data_) {
+        data_->wait_for_client_connection(milliseconds);
+        return;
+      }
+      if (!control_) {
+        return;
+      }
+      control_->wait_for_client_connection(milliseconds);
+      maybe_handshake();
+    }
+
+    void disconnect() override {
+      if (data_) {
+        data_->disconnect();
+      }
+      if (control_) {
+        control_->disconnect();
+      }
+    }
+
+    bool is_connected() override {
+      if (data_) {
+        return data_->is_connected();
+      }
+      return control_ && control_->is_connected();
+    }
+
+  private:
+    INamedPipe *active_pipe() {
+      if (data_) {
+        return data_.get();
+      }
+      return control_.get();
+    }
+
+    bool send_handshake_message(const std::string &pipe_name) {
+      if (!control_ || !control_->is_connected()) {
+        return false;
+      }
+
+      std::wstring wpipe_name = utf8_to_wide(pipe_name);
+      AnonConnectMsg message {};
+      wcsncpy_s(message.pipe_name, wpipe_name.c_str(), _TRUNCATE);
+
+      auto bytes = std::span<const uint8_t>(
+        reinterpret_cast<const uint8_t *>(&message),
+        sizeof(message)
+      );
+      return control_->send(bytes, 5000);
+    }
+
+    AnonymousPipeFactory::HandshakeAckResult wait_for_handshake_ack(std::vector<uint8_t> &buffered) {
+      using enum platf::dxgi::PipeResult;
+      buffered.clear();
+
+      if (!control_) {
+        return AnonymousPipeFactory::HandshakeAckResult::Failed;
+      }
+
+      std::array<uint8_t, 64> chunk {};
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+
+      while (std::chrono::steady_clock::now() < deadline) {
+        size_t bytes_read = 0;
+        const PipeResult result = control_->receive(chunk, bytes_read, 1000);
+
+        if (result == Success) {
+          if (bytes_read == 0) {
+            continue;
+          }
+          buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(bytes_read));
+
+          if (looks_like_framed_payload_header(buffered)) {
+            return AnonymousPipeFactory::HandshakeAckResult::Fallback;
+          }
+
+          if (!buffered.empty() && buffered[0] == ACK_MSG) {
+            if (buffered.size() < sizeof(uint32_t)) {
+              size_t peek_read = 0;
+              const PipeResult peek = control_->receive(chunk, peek_read, 10);
+              if (peek == Success && peek_read > 0) {
+                buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(peek_read));
+                continue;
+              }
+              if (peek == BrokenPipe || peek == Error || peek == Disconnected) {
+                return AnonymousPipeFactory::HandshakeAckResult::Failed;
+              }
+            }
+            buffered.erase(buffered.begin());
+            return AnonymousPipeFactory::HandshakeAckResult::Acked;
+          }
+
+          if (buffered.size() > kMaxHandshakePrefetchBytes) {
+            return AnonymousPipeFactory::HandshakeAckResult::Fallback;
+          }
+          continue;
+        }
+
+        if (result == Timeout) {
+          continue;
+        }
+
+        if (result == BrokenPipe || result == Error || result == Disconnected) {
+          return AnonymousPipeFactory::HandshakeAckResult::Failed;
+        }
+      }
+
+      return AnonymousPipeFactory::HandshakeAckResult::Fallback;
+    }
+
+    void maybe_handshake() {
+      if (handshake_attempted_) {
+        return;
+      }
+      if (!control_ || !control_->is_connected()) {
+        return;
+      }
+      handshake_attempted_ = true;
+
+      std::string data_pipe_name = generate_guid();
+      if (data_pipe_name.empty()) {
+        return;
+      }
+
+      if (!send_handshake_message(data_pipe_name)) {
+        BOOST_LOG(debug) << "Anonymous handshake: unable to send handshake message; using control pipe.";
+        return;
+      }
+
+      std::vector<uint8_t> buffered;
+      const auto ack_result = wait_for_handshake_ack(buffered);
+      if (ack_result != AnonymousPipeFactory::HandshakeAckResult::Acked) {
+        BOOST_LOG(debug) << "Anonymous handshake: ACK not received; using control pipe.";
+        if (!buffered.empty()) {
+          control_ = std::make_unique<PrefetchedPipe>(std::move(control_), std::move(buffered));
+        }
+        return;
+      }
+
+      auto data_pipe = pipe_factory_.create_server(data_pipe_name);
+      if (!data_pipe) {
+        BOOST_LOG(warning) << "Anonymous handshake: failed to create data pipe; using control pipe.";
+        if (!buffered.empty()) {
+          control_ = std::make_unique<PrefetchedPipe>(std::move(control_), std::move(buffered));
+        }
+        return;
+      }
+      data_pipe->wait_for_client_connection(0);
+      if (!data_pipe->is_connected()) {
+        BOOST_LOG(warning) << "Anonymous handshake: client did not connect to data pipe; using control pipe.";
+        if (!buffered.empty()) {
+          control_ = std::make_unique<PrefetchedPipe>(std::move(control_), std::move(buffered));
+        }
+        return;
+      }
+
+      if (!buffered.empty()) {
+        BOOST_LOG(warning) << "Discarding " << buffered.size()
+                           << " byte(s) received alongside handshake ACK.";
+      }
+
+      control_->disconnect();
+      data_ = std::move(data_pipe);
+    }
+
+    std::unique_ptr<INamedPipe> control_;
+    std::unique_ptr<INamedPipe> data_;
+    NamedPipeFactory pipe_factory_;
+    bool handshake_attempted_ {false};
+  };
+
+  namespace {
+    std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
+      std::unique_ptr<INamedPipe> control_pipe,
+      const NamedPipeFactory &factory
+    ) {
+      return std::make_unique<AnonymousServerPipe>(std::move(control_pipe), factory);
+    }
+  }  // namespace
+
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::handshake_server(std::unique_ptr<INamedPipe> pipe) {
     std::string pipe_name = generate_guid();
 
@@ -446,8 +671,21 @@ namespace platf::dxgi {
     }
 
     auto dataPipe = _pipe_factory.create_server(pipe_name);
-    if (dataPipe) {
-      dataPipe->wait_for_client_connection(0);
+    if (!dataPipe) {
+      BOOST_LOG(warning) << "Anonymous handshake: failed to create data pipe; using control pipe.";
+      if (!buffered.empty()) {
+        return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(buffered));
+      }
+      return pipe;
+    }
+
+    dataPipe->wait_for_client_connection(0);
+    if (!dataPipe->is_connected()) {
+      BOOST_LOG(warning) << "Anonymous handshake: client did not connect to data pipe; using control pipe.";
+      if (!buffered.empty()) {
+        return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(buffered));
+      }
+      return pipe;
     }
 
     if (!buffered.empty()) {
@@ -508,27 +746,34 @@ namespace platf::dxgi {
           continue;
         }
         buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(bytes_read));
-        auto it = std::find(buffered.begin(), buffered.end(), ACK_MSG);
-        if (it != buffered.end()) {
-          const auto offset = static_cast<size_t>(std::distance(buffered.begin(), it));
-          BOOST_LOG(debug) << "Handshake ACK received (offset=" << offset
-                           << ", buffered=" << buffered.size() << ')';
-          buffered.erase(buffered.begin(), it + 1);
+        if (looks_like_framed_payload_header(buffered)) {
+          uint32_t framed_len = 0;
+          std::memcpy(&framed_len, buffered.data(), sizeof(framed_len));
+          BOOST_LOG(debug) << "Handshake ACK missing; framed payload detected (len=" << framed_len
+                           << "). Falling back to control pipe.";
+          return HandshakeAckResult::Fallback;
+        }
+
+        if (!buffered.empty() && buffered[0] == ACK_MSG) {
+          // ACK is a single byte and can collide with framed payload headers when reads are split.
+          // Do a non-blocking poll for more bytes so we can classify framed traffic correctly.
+          if (buffered.size() < sizeof(uint32_t)) {
+            size_t peek_read = 0;
+            const PipeResult peek = pipe->receive(chunk, peek_read, 10);
+            if (peek == Success && peek_read > 0) {
+              buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(peek_read));
+              continue;
+            }
+            if (peek == BrokenPipe || peek == Error || peek == Disconnected) {
+              return HandshakeAckResult::Failed;
+            }
+          }
+          BOOST_LOG(debug) << "Handshake ACK received (buffered=" << buffered.size() << ')';
+          buffered.erase(buffered.begin());
           return HandshakeAckResult::Acked;
         }
 
-        if (buffered.size() >= sizeof(uint32_t)) {
-          uint32_t framed_len = 0;
-          std::memcpy(&framed_len, buffered.data(), sizeof(framed_len));
-          constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;  // matches FramedPipe guard
-          if (framed_len > 0 && framed_len <= kMaxFrameLen) {
-            BOOST_LOG(debug) << "Handshake ACK missing; framed payload detected (len=" << framed_len
-                             << "). Falling back to control pipe.";
-            return HandshakeAckResult::Fallback;
-          }
-        }
-
-        if (buffered.size() > 65536) {
+        if (buffered.size() > kMaxHandshakePrefetchBytes) {
           BOOST_LOG(warning) << "Handshake ACK wait buffer exceeded 64KiB; assuming legacy fallback.";
           return HandshakeAckResult::Fallback;
         }
@@ -571,9 +816,14 @@ namespace platf::dxgi {
 
     std::wstring wpipeName(msg.pipe_name);
     std::string pipeNameStr = wide_to_utf8(wpipeName);
-    pipe->disconnect();
+    auto data_pipe = connect_to_data_pipe(pipeNameStr);
+    if (!data_pipe) {
+      BOOST_LOG(warning) << "Anonymous handshake: failed to connect to data pipe; using control pipe.";
+      return pipe;
+    }
 
-    return connect_to_data_pipe(pipeNameStr);
+    pipe->disconnect();
+    return data_pipe;
   }
 
   AnonymousPipeFactory::HandshakeMessageResult AnonymousPipeFactory::receive_handshake_message(
@@ -640,9 +890,8 @@ namespace platf::dxgi {
       return HandshakeMessageResult::Inline;
     }
 
-    BOOST_LOG(error) << "Did not receive handshake message in time.";
-    pipe->disconnect();
-    return HandshakeMessageResult::Failed;
+    BOOST_LOG(info) << "Did not receive handshake message in time; using inline control pipe.";
+    return HandshakeMessageResult::Inline;
   }
 
   bool AnonymousPipeFactory::send_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const {
@@ -1195,21 +1444,33 @@ namespace platf::dxgi {
     if (_rxbuf.size() < 4) {
       return false;
     }
-    uint32_t len = 0;
-    std::memcpy(&len, _rxbuf.data(), 4);
-    if (len > 2 * 1024 * 1024) {
-      return false;
+    constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;
+
+    while (_rxbuf.size() >= 4) {
+      uint32_t len = 0;
+      std::memcpy(&len, _rxbuf.data(), 4);
+
+      // Defensive resync: if the header is clearly invalid, drop bytes until we find
+      // a plausible frame boundary. This prevents a single stray write (e.g., unframed
+      // bytes) from wedging the protocol forever.
+      if (len == 0 || len > kMaxFrameLen) {
+        _rxbuf.erase(_rxbuf.begin());
+        continue;
+      }
+
+      if (_rxbuf.size() < 4u + len) {
+        return false;
+      }
+      if (dst.size() < len) {
+        return false;
+      }
+      std::memcpy(dst.data(), _rxbuf.data() + 4, len);
+      bytesRead = len;
+      _rxbuf.erase(_rxbuf.begin(), _rxbuf.begin() + 4 + len);
+      return true;
     }
-    if (_rxbuf.size() < 4u + len) {
-      return false;
-    }
-    if (dst.size() < len) {
-      return false;
-    }
-    std::memcpy(dst.data(), _rxbuf.data() + 4, len);
-    bytesRead = len;
-    _rxbuf.erase(_rxbuf.begin(), _rxbuf.begin() + 4 + len);
-    return true;
+
+    return false;
   }
 
   PipeResult FramedPipe::receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
