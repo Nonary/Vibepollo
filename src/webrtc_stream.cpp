@@ -3802,7 +3802,8 @@ namespace webrtc_stream {
       }
 
       BOOST_LOG(debug) << "WebRTC: attach_media_tracks enter id=" << session.state.id;
-      const std::string stream_id = "sunshine-" + session.state.id;
+      const std::string audio_stream_id = "sunshine-audio-" + session.state.id;
+      const std::string video_stream_id = "sunshine-video-" + session.state.id;
       bool requested_video_keyframe = false;
 
       if (session.state.audio && !session.audio_source) {
@@ -3839,7 +3840,7 @@ namespace webrtc_stream {
           BOOST_LOG(error) << "WebRTC: failed to create audio track for " << session.state.id;
           return false;
         }
-        if (!lwrtc_peer_add_audio_track(session.peer, session.audio_track, stream_id.c_str())) {
+        if (!lwrtc_peer_add_audio_track(session.peer, session.audio_track, audio_stream_id.c_str())) {
           BOOST_LOG(error) << "WebRTC: failed to add audio track for " << session.state.id;
           return false;
         }
@@ -3877,7 +3878,7 @@ namespace webrtc_stream {
           BOOST_LOG(error) << "WebRTC: failed to create video track for " << session.state.id;
           return false;
         }
-        if (!lwrtc_peer_add_video_track(session.peer, session.video_track, stream_id.c_str())) {
+        if (!lwrtc_peer_add_video_track(session.peer, session.video_track, video_stream_id.c_str())) {
           BOOST_LOG(error) << "WebRTC: failed to add video track for " << session.state.id;
           return false;
         }
@@ -4284,6 +4285,14 @@ namespace webrtc_stream {
     }
     const auto byte_count = shared_samples->size() * sizeof(int16_t);
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    struct AudioPushWork {
+      std::shared_ptr<lwrtc_audio_source_t> source;
+      std::shared_ptr<std::vector<int16_t>> samples;
+      int sample_rate = 0;
+      int channels = 0;
+      int frames = 0;
+    };
+    std::vector<AudioPushWork> direct_audio;
     bool queued_raw_audio = false;
 #endif
     {
@@ -4294,19 +4303,32 @@ namespace webrtc_stream {
         }
 
         {
-          RawAudioFrame raw;
-          raw.samples = shared_samples;
-          raw.sample_rate = sample_rate;
-          raw.channels = output_channels;
-          raw.frames = frames;
-          raw.timestamp = now;
-          bool dropped = session.raw_audio_frames.push(std::move(raw));
-          if (dropped) {
-            session.state.audio_dropped++;
-          }
 #ifdef SUNSHINE_ENABLE_WEBRTC
-          queued_raw_audio = true;
+          if (session.audio_source) {
+            direct_audio.push_back(AudioPushWork {
+              session.audio_source,
+              shared_samples,
+              sample_rate,
+              output_channels,
+              frames
+            });
+          } else
 #endif
+          {
+            RawAudioFrame raw;
+            raw.samples = shared_samples;
+            raw.sample_rate = sample_rate;
+            raw.channels = output_channels;
+            raw.frames = frames;
+            raw.timestamp = now;
+            bool dropped = session.raw_audio_frames.push(std::move(raw));
+            if (dropped) {
+              session.state.audio_dropped++;
+            }
+#ifdef SUNSHINE_ENABLE_WEBRTC
+            queued_raw_audio = true;
+#endif
+          }
         }
         session.state.audio_packets++;
         session.state.last_audio_time = now;
@@ -4314,6 +4336,19 @@ namespace webrtc_stream {
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    for (auto &work : direct_audio) {
+      if (!work.source || !work.samples || work.samples->empty()) {
+        continue;
+      }
+      lwrtc_audio_source_push(
+        work.source.get(),
+        work.samples->data(),
+        static_cast<int>(sizeof(int16_t) * 8),
+        work.sample_rate,
+        work.channels,
+        work.frames
+      );
+    }
     if (queued_raw_audio) {
       ensure_media_thread();
       webrtc_media_has_work.store(true, std::memory_order_release);
