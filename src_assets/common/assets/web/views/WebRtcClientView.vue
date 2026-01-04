@@ -37,7 +37,7 @@
             </div>
             <div class="metric">
               <i class="fas fa-film"></i>
-              <span>{{ stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--' }}</span>
+              <span>{{ displayVideoFps ? `${displayVideoFps.toFixed(0)} FPS` : '--' }}</span>
             </div>
           </div>
 
@@ -457,7 +457,7 @@
               <div class="metric-data">
                 <span class="metric-label">Frame Rate</span>
                 <span class="metric-value">{{
-                  stats.videoFps ? `${stats.videoFps.toFixed(0)} FPS` : '--'
+                  displayVideoFps ? `${displayVideoFps.toFixed(0)} FPS` : '--'
                 }}</span>
               </div>
             </div>
@@ -822,10 +822,11 @@ type PacingMode = (typeof pacingOptions)[number]['value'];
 
 const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
   latency: { slackMs: 0, maxAgeFrames: 1 },
-  balanced: { slackMs: 2, maxAgeFrames: 2 },
+  balanced: { slackMs: 2, maxAgeFrames: 1 },
   smoothness: { slackMs: 3, maxAgeFrames: 3 },
 };
 
+const MIN_FRAME_AGE_MS = 5;
 const MAX_FRAME_AGE_MS = 100;
 const MAX_FRAME_AGE_FRAMES = 10;
 
@@ -1179,6 +1180,10 @@ const renderIntervalMs = computed(
 );
 const LATENCY_SAMPLE_WINDOW_MS = 30000;
 const LATENCY_SMOOTH_TAU_MS = 2000;
+const LATENCY_FAST_TAU_MS = 300;
+const LATENCY_FAST_TRIGGER_MS = 12;
+const LATENCY_FAST_TRIGGER_RATIO = 1.15;
+const VIDEO_FPS_SMOOTH_TAU_MS = 1500;
 const latencySamples = ref<{ ts: number; value: number }[]>([]);
 const smoothedLatencyMs = ref<number | undefined>(undefined);
 let lastLatencySampleAt: number | null = null;
@@ -1189,6 +1194,9 @@ const oneWayRttMs = computed(() =>
 const videoPlayoutDelayMs = computed(
   () => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs,
 );
+const smoothedVideoFps = ref<number | undefined>(undefined);
+let lastVideoFpsSampleAt: number | null = null;
+const displayVideoFps = computed(() => smoothedVideoFps.value ?? stats.value.videoFps);
 const estimatedLatencyMs = computed(() => {
   const parts = [oneWayRttMs.value, videoPlayoutDelayMs.value, stats.value.videoDecodeMs].filter(
     (value) => typeof value === 'number',
@@ -1217,7 +1225,19 @@ watch(
     const now = Date.now();
     const lastAt = lastLatencySampleAt ?? now;
     const deltaMs = Math.max(0, now - lastAt);
-    const alpha = 1 - Math.exp(-deltaMs / LATENCY_SMOOTH_TAU_MS);
+    const current = smoothedLatencyMs.value;
+    const jumpMs =
+      typeof current === 'number' && Number.isFinite(current) ? value - current : undefined;
+    const jumpRatio =
+      typeof current === 'number' && Number.isFinite(current) && current > 0
+        ? value / current
+        : undefined;
+    const useFastTau =
+      jumpMs != null &&
+      (jumpMs >= LATENCY_FAST_TRIGGER_MS ||
+        (jumpRatio != null && jumpRatio >= LATENCY_FAST_TRIGGER_RATIO));
+    const tauMs = useFastTau ? LATENCY_FAST_TAU_MS : LATENCY_SMOOTH_TAU_MS;
+    const alpha = 1 - Math.exp(-deltaMs / tauMs);
     if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
       smoothedLatencyMs.value = value;
     } else {
@@ -1231,8 +1251,25 @@ watch(
     }
   },
 );
+
+watch(
+  () => stats.value.videoFps,
+  (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return;
+    const now = Date.now();
+    const lastAt = lastVideoFpsSampleAt ?? now;
+    const deltaMs = Math.max(0, now - lastAt);
+    const alpha = 1 - Math.exp(-deltaMs / VIDEO_FPS_SMOOTH_TAU_MS);
+    if (smoothedVideoFps.value == null || !Number.isFinite(smoothedVideoFps.value)) {
+      smoothedVideoFps.value = value;
+    } else {
+      smoothedVideoFps.value = smoothedVideoFps.value + alpha * (value - smoothedVideoFps.value);
+    }
+    lastVideoFpsSampleAt = now;
+  },
+);
 const overlayLines = computed(() => {
-  const fps = stats.value.videoFps ? stats.value.videoFps.toFixed(0) : '--';
+  const fps = displayVideoFps.value ? displayVideoFps.value.toFixed(0) : '--';
   const dropped = stats.value.videoFramesDropped ?? '--';
   const rttHalf = formatMs(oneWayRttMs.value);
   const jbuf = formatMs(videoPlayoutDelayMs.value);
@@ -1570,29 +1607,250 @@ function updateAudioElement(stream: MediaStream): void {
   }
 }
 
+const AUDIO_TARGET_BUFFER_MS = 20;
+const AUDIO_TARGET_PLAYOUT_MS = 20;
+const AUDIO_DRAIN_TARGET_MS = 10;
+const AUDIO_DRAIN_PLAYOUT_MS = 0;
+const AUDIO_DRAIN_TRIGGER_MS = 45;
+const AUDIO_DRAIN_RELEASE_MS = 25;
+const AUDIO_DRAIN_SUSTAIN_MS = 800;
+const AUDIO_DRAIN_RELEASE_SUSTAIN_MS = 1200;
 const AUDIO_BUFFER_RESET_THRESHOLD_MS = 120;
+const AUDIO_BUFFER_RESET_SUSTAIN_MS = 3000;
+const AUDIO_BUFFER_RESET_COOLDOWN_MS = 15000;
 const VIDEO_BUFFER_RESET_THRESHOLD_MS = 120;
 const VIDEO_RENDER_RESET_THRESHOLD_MS = 50;
 const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 50;
-const AV_BUFFER_RESET_SUSTAIN_MS = 3000;
-const AV_BUFFER_RESET_COOLDOWN_MS = 15000;
-let avBufferOverloadedSince: number | null = null;
-let lastAvBufferResetAt: number | null = null;
+const VIDEO_BUFFER_RESET_SUSTAIN_MS = 3000;
+const VIDEO_BUFFER_RESET_COOLDOWN_MS = 15000;
+const VIDEO_DRAIN_SUSTAIN_MS = 350;
+const VIDEO_DRAIN_RELEASE_SUSTAIN_MS = 800;
+const VIDEO_STARTUP_DRAIN_MS = 20000;
+const VIDEO_STARTUP_RELEASE_SUSTAIN_MS = 1000;
+let audioDrainOverloadedSince: number | null = null;
+let audioDrainReleaseSince: number | null = null;
+let audioDrainActive = false;
+let audioBufferOverloadedSince: number | null = null;
+let lastAudioBufferResetAt: number | null = null;
+let videoDrainOverloadedSince: number | null = null;
+let videoDrainReleaseSince: number | null = null;
+let videoDrainMode: 'off' | 'adaptive' | 'startup' = 'off';
+let videoBufferOverloadedSince: number | null = null;
+let lastVideoBufferResetAt: number | null = null;
+let lastVideoTargetMs: number | undefined = undefined;
+let videoStartupDrainUntil: number | null = null;
+let videoStartupDrainReleaseSince: number | null = null;
+
+function setAudioDrainActive(active: boolean): void {
+  if (audioDrainActive === active) return;
+  audioDrainActive = active;
+  client.setAudioLatencyTargets(
+    active ? AUDIO_DRAIN_TARGET_MS : AUDIO_TARGET_BUFFER_MS,
+    active ? AUDIO_DRAIN_PLAYOUT_MS : AUDIO_TARGET_PLAYOUT_MS,
+  );
+  pushVideoEvent(active ? 'audio-drain-on' : 'audio-drain-off');
+}
+
+function resetAudioDrainState(): void {
+  audioDrainOverloadedSince = null;
+  audioDrainReleaseSince = null;
+  if (audioDrainActive) {
+    setAudioDrainActive(false);
+  }
+}
+
+function resolveVideoBaseTargetMs(): number {
+  const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
+  const frames = clampMaxAgeFrames(
+    config.videoMaxFrameAgeFrames ?? null,
+    fps,
+    config.videoPacingMode,
+  );
+  const fromFrames = maxFrameAgeMsFromFrames(fps, frames);
+  const explicit =
+    typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)
+      ? Math.round(config.videoMaxFrameAgeMs)
+      : fromFrames;
+  return Math.min(MAX_FRAME_AGE_MS, Math.max(MIN_FRAME_AGE_MS, explicit));
+}
+
+function resolveVideoDrainTargetMs(baseTargetMs: number): number {
+  const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
+  const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+  return Math.max(MIN_FRAME_AGE_MS, baseTargetMs - frameMs * 0.5);
+}
+
+function resolveVideoStartupTargetMs(): number {
+  return 0;
+}
+
+function applyVideoTargetMs(targetMs?: number): void {
+  if (lastVideoTargetMs === targetMs) return;
+  lastVideoTargetMs = targetMs;
+  client.setVideoLatencyTarget(targetMs);
+}
+
+function setVideoDrainMode(
+  mode: 'off' | 'adaptive' | 'startup',
+  baseTargetMs: number,
+  overrideTargetMs?: number,
+): void {
+  const target =
+    mode === 'off' ? baseTargetMs : (overrideTargetMs ?? resolveVideoDrainTargetMs(baseTargetMs));
+  if (videoDrainMode === mode) {
+    applyVideoTargetMs(target);
+    return;
+  }
+  videoDrainMode = mode;
+  applyVideoTargetMs(target);
+  if (mode === 'startup') {
+    pushVideoEvent('video-drain-startup-on');
+  } else if (mode === 'adaptive') {
+    pushVideoEvent('video-drain-on');
+  } else {
+    pushVideoEvent('video-drain-off');
+  }
+}
+
+function resetVideoDrainState(): void {
+  videoDrainOverloadedSince = null;
+  videoDrainReleaseSince = null;
+  videoStartupDrainUntil = null;
+  videoStartupDrainReleaseSince = null;
+  const baseTargetMs = resolveVideoBaseTargetMs();
+  setVideoDrainMode('off', baseTargetMs);
+}
+
 watch(
-  () => [stats.value.audioJitterBufferMs, stats.value.videoJitterBufferMs] as const,
-  ([audioValue, videoValue]) => {
+  () => stats.value.audioJitterBufferMs,
+  (audioValue) => {
     if (!isConnected.value || !isTabActive()) {
-      avBufferOverloadedSince = null;
+      resetAudioDrainState();
+      audioBufferOverloadedSince = null;
       return;
     }
-    const audioOverloaded =
-      typeof audioValue === 'number' &&
-      Number.isFinite(audioValue) &&
-      audioValue >= AUDIO_BUFFER_RESET_THRESHOLD_MS;
+    if (typeof audioValue !== 'number' || !Number.isFinite(audioValue)) return;
+    const now = Date.now();
+    if (audioValue >= AUDIO_DRAIN_TRIGGER_MS) {
+      if (audioDrainOverloadedSince == null) {
+        audioDrainOverloadedSince = now;
+      }
+      audioDrainReleaseSince = null;
+      if (!audioDrainActive && now - audioDrainOverloadedSince >= AUDIO_DRAIN_SUSTAIN_MS) {
+        setAudioDrainActive(true);
+      }
+    } else if (audioDrainActive && audioValue <= AUDIO_DRAIN_RELEASE_MS) {
+      if (audioDrainReleaseSince == null) {
+        audioDrainReleaseSince = now;
+      }
+      if (now - audioDrainReleaseSince >= AUDIO_DRAIN_RELEASE_SUSTAIN_MS) {
+        setAudioDrainActive(false);
+      }
+    } else {
+      audioDrainOverloadedSince = null;
+      audioDrainReleaseSince = null;
+    }
+
+    const audioOverloaded = audioValue >= AUDIO_BUFFER_RESET_THRESHOLD_MS;
+    if (!audioOverloaded) {
+      audioBufferOverloadedSince = null;
+      return;
+    }
+    if (audioBufferOverloadedSince == null) {
+      audioBufferOverloadedSince = now;
+      return;
+    }
+    if (now - audioBufferOverloadedSince < AUDIO_BUFFER_RESET_SUSTAIN_MS) return;
+    if (
+      lastAudioBufferResetAt != null &&
+      now - lastAudioBufferResetAt < AUDIO_BUFFER_RESET_COOLDOWN_MS
+    ) {
+      return;
+    }
+    lastAudioBufferResetAt = now;
+    audioBufferOverloadedSince = null;
+    pushVideoEvent('audio-buffer-reset');
+    resetAudioElement();
+  },
+);
+
+watch(
+  () => videoPlayoutDelayMs.value,
+  (videoValue) => {
+    if (!isConnected.value || !isTabActive()) {
+      resetVideoDrainState();
+      return;
+    }
+    if (typeof videoValue !== 'number' || !Number.isFinite(videoValue)) return;
+    const now = Date.now();
+    const baseTargetMs = resolveVideoBaseTargetMs();
+    const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
+    const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+    if (videoStartupDrainUntil != null) {
+      if (now > videoStartupDrainUntil) {
+        videoStartupDrainUntil = null;
+        videoStartupDrainReleaseSince = null;
+        setVideoDrainMode('off', baseTargetMs);
+      } else {
+        const startupTargetMs = resolveVideoStartupTargetMs();
+        setVideoDrainMode('startup', baseTargetMs, startupTargetMs);
+        if (videoValue <= baseTargetMs + frameMs) {
+          if (videoStartupDrainReleaseSince == null) {
+            videoStartupDrainReleaseSince = now;
+          } else if (now - videoStartupDrainReleaseSince >= VIDEO_STARTUP_RELEASE_SUSTAIN_MS) {
+            videoStartupDrainUntil = null;
+            videoStartupDrainReleaseSince = null;
+            setVideoDrainMode('off', baseTargetMs);
+          }
+        } else {
+          videoStartupDrainReleaseSince = null;
+        }
+        return;
+      }
+    }
+    const triggerMs = Math.max(baseTargetMs + frameMs, frameMs * 2);
+    const releaseMs = Math.max(baseTargetMs + frameMs * 0.5, frameMs);
+
+    if (videoValue >= triggerMs) {
+      if (videoDrainOverloadedSince == null) {
+        videoDrainOverloadedSince = now;
+      }
+      videoDrainReleaseSince = null;
+      if (videoDrainMode !== 'adaptive' && now - videoDrainOverloadedSince >= VIDEO_DRAIN_SUSTAIN_MS) {
+        setVideoDrainMode('adaptive', baseTargetMs);
+      }
+    } else if (videoDrainMode === 'adaptive' && videoValue <= releaseMs) {
+      if (videoDrainReleaseSince == null) {
+        videoDrainReleaseSince = now;
+      }
+      if (now - videoDrainReleaseSince >= VIDEO_DRAIN_RELEASE_SUSTAIN_MS) {
+        setVideoDrainMode('off', baseTargetMs);
+      }
+    } else {
+      videoDrainOverloadedSince = null;
+      videoDrainReleaseSince = null;
+      if (videoDrainMode !== 'adaptive') {
+        setVideoDrainMode('off', baseTargetMs);
+      }
+    }
+  },
+);
+
+watch(
+  () => stats.value.videoJitterBufferMs,
+  (videoValue) => {
+    if (!isConnected.value || !isTabActive()) {
+      videoBufferOverloadedSince = null;
+      return;
+    }
     const videoOverloaded =
       typeof videoValue === 'number' &&
       Number.isFinite(videoValue) &&
       videoValue >= VIDEO_BUFFER_RESET_THRESHOLD_MS;
+    if (!videoOverloaded) {
+      videoBufferOverloadedSince = null;
+      return;
+    }
     const delayValue = renderDelayMs.value;
     const intervalValue = renderIntervalMs.value;
     const hasRenderSignal =
@@ -1602,24 +1860,22 @@ watch(
     const renderIntervalHigh =
       typeof intervalValue === 'number' && intervalValue >= VIDEO_INTERVAL_RESET_THRESHOLD_MS;
     const allowVideoReset = !hasRenderSignal || renderDelayHigh || renderIntervalHigh;
-    const bufferOverloaded = audioOverloaded || (videoOverloaded && allowVideoReset);
-    if (!bufferOverloaded) {
-      avBufferOverloadedSince = null;
-      return;
-    }
+    if (!allowVideoReset) return;
     const now = Date.now();
-    if (avBufferOverloadedSince == null) {
-      avBufferOverloadedSince = now;
+    if (videoBufferOverloadedSince == null) {
+      videoBufferOverloadedSince = now;
       return;
     }
-    if (now - avBufferOverloadedSince < AV_BUFFER_RESET_SUSTAIN_MS) return;
-    if (lastAvBufferResetAt != null && now - lastAvBufferResetAt < AV_BUFFER_RESET_COOLDOWN_MS) {
+    if (now - videoBufferOverloadedSince < VIDEO_BUFFER_RESET_SUSTAIN_MS) return;
+    if (
+      lastVideoBufferResetAt != null &&
+      now - lastVideoBufferResetAt < VIDEO_BUFFER_RESET_COOLDOWN_MS
+    ) {
       return;
     }
-    lastAvBufferResetAt = now;
-    avBufferOverloadedSince = null;
-    pushVideoEvent('av-buffer-reset');
-    resetAudioElement();
+    lastVideoBufferResetAt = now;
+    videoBufferOverloadedSince = null;
+    pushVideoEvent('video-buffer-reset');
     resetVideoElement();
   },
 );
@@ -1683,7 +1939,7 @@ function startServerSessionPolling(): void {
   stopServerSessionPolling();
   if (!sessionId.value) return;
   void fetchServerSession();
-  serverSessionTimer = window.setInterval(fetchServerSession, 1000);
+  serverSessionTimer = window.setInterval(fetchServerSession, 500);
 }
 
 function attachVideoDebug(el: HTMLVideoElement): () => void {
@@ -1765,6 +2021,8 @@ function statusTagType(state?: string | null) {
 async function connect() {
   isConnecting.value = true;
   audioAutoplayRequested = true;
+  resetAudioDrainState();
+  client.setAudioLatencyTargets(AUDIO_TARGET_BUFFER_MS, AUDIO_TARGET_PLAYOUT_MS);
   if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
     try {
       await requestFullscreen(inputTarget.value);
@@ -1799,6 +2057,10 @@ async function connect() {
             updateRemoteStreamInfo(stream);
             updateAudioElement(stream);
             if (hasVideo) {
+              videoStartupDrainUntil = Date.now() + VIDEO_STARTUP_DRAIN_MS;
+              videoStartupDrainReleaseSince = null;
+              const baseTargetMs = resolveVideoBaseTargetMs();
+              setVideoDrainMode('startup', baseTargetMs, resolveVideoStartupTargetMs());
               const playPromise = videoEl.value.play();
               if (playPromise && typeof playPromise.catch === 'function') {
                 playPromise.catch((error) => {
@@ -1812,6 +2074,9 @@ async function connect() {
         onConnectionState: (state) => {
           connectionState.value = state;
           isConnected.value = state === 'connected';
+          if (state === 'connected') {
+            applyVideoTargetMs(resolveVideoBaseTargetMs());
+          }
         },
         onIceState: (state) => {
           iceState.value = state;
@@ -1860,12 +2125,19 @@ async function disconnect() {
   inputMetrics.value = {};
   inputBufferedAmount.value = null;
   videoFrameMetrics.value = {};
+  smoothedVideoFps.value = undefined;
+  lastVideoFpsSampleAt = null;
   detachInputCapture();
   if (videoEl.value) videoEl.value.srcObject = null;
   if (audioEl.value) audioEl.value.srcObject = null;
   videoStream = null;
   audioStream = null;
   audioAutoplayRequested = false;
+  resetAudioDrainState();
+  resetVideoDrainState();
+  lastVideoTargetMs = undefined;
+  videoStartupDrainUntil = null;
+  videoStartupDrainReleaseSince = null;
   sessionId.value = null;
   serverSession.value = null;
   serverSessionUpdatedAt.value = null;

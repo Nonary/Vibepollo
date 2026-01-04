@@ -2080,8 +2080,14 @@ namespace webrtc_stream {
       auto audio_config = build_audio_config(options);
       apply_rtsp_video_overrides(video_config, rtsp_config);
       const auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
+      const bool force_reconfigure = was_idle_shutdown_pending;
 
-      if (webrtc_capture.active.load(std::memory_order_acquire) && webrtc_capture.config_key && *webrtc_capture.config_key == desired_key) {
+      if (
+        webrtc_capture.active.load(std::memory_order_acquire) &&
+        !force_reconfigure &&
+        webrtc_capture.config_key &&
+        *webrtc_capture.config_key == desired_key
+      ) {
         return std::nullopt;
       }
 
