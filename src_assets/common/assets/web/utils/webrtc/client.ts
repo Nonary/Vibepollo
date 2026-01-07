@@ -9,6 +9,7 @@ export interface WebRtcClientCallbacks {
   onStats?: (stats: WebRtcStatsSnapshot) => void;
   onInputMessage?: (message: GamepadFeedbackMessage) => void;
   onNegotiatedEncoding?: (encoding: string) => void;
+  onWarning?: (warning: string) => void;
   onError?: (error: Error) => void;
 }
 
@@ -78,6 +79,65 @@ function resolveEncodingPreference(encoding: string): string {
   return supported ? encoding : 'h264';
 }
 
+function parseFmtpParams(fmtpLine?: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (!fmtpLine) return params;
+  for (const entry of fmtpLine.split(';')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) {
+      params[trimmed.toLowerCase()] = '';
+      continue;
+    }
+    const key = trimmed.slice(0, eq).trim().toLowerCase();
+    const value = trimmed.slice(eq + 1).trim();
+    if (key) {
+      params[key] = value;
+    }
+  }
+  return params;
+}
+
+function getFmtpParam(fmtpLine: string | undefined, key: string): string | null {
+  const params = parseFmtpParams(fmtpLine);
+  const value = params[key.toLowerCase()];
+  if (value === undefined || value === '') return null;
+  return value;
+}
+
+function getCodecCapsForEncoding(encoding: string): RTCRtpCodecCapability[] {
+  const mimes = ENCODING_MIME[encoding.toLowerCase()];
+  if (!mimes) return [];
+  const caps = getVideoCodecCapabilities();
+  if (!caps?.codecs?.length) return [];
+  return caps.codecs.filter((codec) => mimes.includes(codec.mimeType.toLowerCase()));
+}
+
+function isHevcHdrCodec(codec: RTCRtpCodecCapability): boolean {
+  const profileId = getFmtpParam(codec.sdpFmtpLine ?? undefined, 'profile-id');
+  if (!profileId) {
+    return false;
+  }
+  return profileId !== '1';
+}
+
+function hasHevcHdrSupport(): boolean {
+  const hevcCaps = getCodecCapsForEncoding('hevc');
+  return hevcCaps.some((codec) => isHevcHdrCodec(codec));
+}
+
+function supportsHdrEncoding(encoding: string): boolean {
+  const normalized = encoding.toLowerCase();
+  if (normalized === 'hevc') {
+    return hasHevcHdrSupport();
+  }
+  if (normalized === 'av1') {
+    return getCodecCapsForEncoding('av1').length > 0;
+  }
+  return false;
+}
+
 function getOfferedVideoCodecNames(sdp: string): Set<string> {
   const codecs = new Set<string>();
   if (!sdp) return codecs;
@@ -113,7 +173,24 @@ function offerSupportsEncoding(sdp: string, encoding: string): boolean {
   return true;
 }
 
-function applyCodecPreferences(transceiver: RTCRtpTransceiver | null, encoding: string): void {
+function parseOfferedCodecNamesFromError(message: string): Set<string> {
+  const offered = new Set<string>();
+  const match = message.match(/\(offered:\s*([^)]+)\)\s*$/i);
+  if (!match) return offered;
+  const raw = match[1].trim();
+  if (!raw || raw.toLowerCase() === 'none') return offered;
+  for (const part of raw.split(',')) {
+    const name = part.trim().toLowerCase();
+    if (name) offered.add(name);
+  }
+  return offered;
+}
+
+function applyCodecPreferences(
+  transceiver: RTCRtpTransceiver | null,
+  encoding: string,
+  preferHdr = false,
+): void {
   if (!transceiver) return;
   const caps = getVideoCodecCapabilities();
   if (!caps?.codecs) return;
@@ -122,6 +199,12 @@ function applyCodecPreferences(transceiver: RTCRtpTransceiver | null, encoding: 
   const preferred = caps.codecs.filter((codec) => mimes.includes(codec.mimeType.toLowerCase()));
   if (!preferred.length) return;
   let filteredPreferred = preferred;
+  if (preferHdr && (mimes.includes('video/hevc') || mimes.includes('video/h265'))) {
+    const hdrPreferred = preferred.filter((codec) => isHevcHdrCodec(codec));
+    if (hdrPreferred.length) {
+      filteredPreferred = hdrPreferred;
+    }
+  }
   if (mimes.includes('video/h264')) {
     const packetizationMode1 = preferred.filter((codec) =>
       /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(codec.sdpFmtpLine ?? ''),
@@ -365,38 +448,103 @@ export class WebRtcClient {
     callbacks: WebRtcClientCallbacks = {},
     options: WebRtcClientConnectOptions = {},
   ): Promise<string> {
-    const resolvedEncoding = resolveEncodingPreference(config.encoding);
-    const primaryConfig =
-      resolvedEncoding === config.encoding ? config : { ...config, encoding: resolvedEncoding };
+    const hdrRequested = Boolean(config.hdr);
 
-    if (primaryConfig.encoding !== config.encoding) {
-      const id = await this.connectAttempt(primaryConfig, callbacks, options);
-      callbacks.onNegotiatedEncoding?.(primaryConfig.encoding);
-      return id;
+    if (config.encoding.toLowerCase() === 'av1' && getCodecCapsForEncoding('av1').length === 0) {
+      const warning =
+        "AV1 is selected, but this browser reports no AV1 decode support. This can be a false positive—it's not always possible to know until you try. If you get a black screen, switch to HEVC/H.264.";
+      callbacks.onWarning?.(warning);
+      console.warn(warning);
     }
 
-    try {
-      return await this.connectAttempt(primaryConfig, callbacks, options);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const requested = primaryConfig.encoding.toLowerCase();
-      const shouldFallback =
-        requested !== 'h264' && message.startsWith('Browser did not offer requested video codec');
-      if (!shouldFallback) {
-        const finalError =
-          error instanceof Error ? error : new Error('Failed to establish WebRTC session.');
-        callbacks.onError?.(finalError);
-        throw finalError;
+    if (hdrRequested) {
+      const normalized = config.encoding.toLowerCase();
+      if (normalized !== 'hevc' && normalized !== 'av1') {
+        const error = new Error('HDR requires HEVC or AV1 video encoding.');
+        callbacks.onError?.(error);
+        throw error;
+      }
+
+      // Browser codec capability reporting is inconsistent (especially for HEVC profiles).
+      // Treat this as a hint and allow the negotiation to proceed.
+      if (!supportsHdrEncoding(config.encoding)) {
+        const warning =
+          "HDR is enabled, but this browser reports no HDR-capable decoder/profile for the selected codec. This can be a false positive—it's not always possible to know until you try. If you see a black screen, disable HDR or switch codecs.";
+        callbacks.onWarning?.(warning);
+        console.warn(warning);
       }
     }
 
-    const id = await this.connectAttempt(
-      { ...primaryConfig, encoding: 'h264' },
-      callbacks,
-      options,
-    );
-    callbacks.onNegotiatedEncoding?.('h264');
-    return id;
+    try {
+      return await this.connectAttempt(config, callbacks, options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const requested = config.encoding.toLowerCase();
+      const isCodecOfferMismatch = message.startsWith('Browser did not offer requested video codec');
+
+      if (requested !== 'h264' && (isCodecOfferMismatch || message.includes('Failed to process offer'))) {
+        const offered = isCodecOfferMismatch ? parseOfferedCodecNamesFromError(message) : new Set<string>();
+        const hdrRequestedNow = Boolean(config.hdr);
+        const candidates: Array<{ encoding: 'hevc' | 'av1' | 'h264'; hdr: boolean; why: string }> = [];
+
+        if (hdrRequestedNow) {
+          if (requested === 'hevc' && (offered.has('av1') || offered.has('av1x'))) {
+            candidates.push({
+              encoding: 'av1',
+              hdr: true,
+              why: 'HEVC was requested but the browser did not offer H265; trying AV1 HDR.',
+            });
+          } else if (requested === 'av1' && (offered.has('h265') || offered.has('hevc'))) {
+            candidates.push({
+              encoding: 'hevc',
+              hdr: true,
+              why: 'AV1 was requested but the browser did not offer AV1; trying HEVC HDR.',
+            });
+          }
+          candidates.push({
+            encoding: 'h264',
+            hdr: false,
+            why: 'HDR/advanced codec negotiation failed; falling back to SDR H.264 for this session.',
+          });
+        } else {
+          candidates.push({
+            encoding: 'h264',
+            hdr: false,
+            why: 'Advanced codec negotiation failed; falling back to H.264 for this session.',
+          });
+        }
+
+        for (const candidate of candidates) {
+          if (
+            candidate.encoding === requested &&
+            candidate.hdr === hdrRequestedNow
+          ) {
+            continue;
+          }
+
+          const warning = `${hdrRequestedNow ? 'HDR requested; ' : ''}${candidate.why} (This does not change your saved settings.)`;
+          callbacks.onWarning?.(warning);
+          console.warn(warning);
+
+          try {
+            const id = await this.connectAttempt(
+              { ...config, encoding: candidate.encoding, hdr: candidate.hdr },
+              callbacks,
+              options,
+            );
+            callbacks.onNegotiatedEncoding?.(candidate.encoding);
+            return id;
+          } catch {
+            /* try next candidate */
+          }
+        }
+      }
+
+      const finalError =
+        error instanceof Error ? error : new Error('Failed to establish WebRTC session.');
+      callbacks.onError?.(finalError);
+      throw finalError;
+    }
   }
 
   private async connectAttempt(
@@ -427,7 +575,7 @@ export class WebRtcClient {
 
     const videoTransceiver = this.pc.addTransceiver('video', { direction: 'recvonly' });
     this.pc.addTransceiver('audio', { direction: 'recvonly' });
-    applyCodecPreferences(videoTransceiver, sessionConfig.encoding);
+    applyCodecPreferences(videoTransceiver, sessionConfig.encoding, Boolean(sessionConfig.hdr));
 
     const inputPriority = options.inputPriority ?? 'high';
     this.inputChannel = this.pc.createDataChannel('input', {

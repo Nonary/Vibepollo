@@ -137,19 +137,38 @@
                     <button
                       v-for="opt in encodingOptions"
                       :key="opt.value"
-                      @click="opt.supported && (config.encoding = opt.value)"
+                      @click="config.encoding = opt.value"
                       class="preset-chip"
                       :class="{
-                        active: config.encoding === opt.value && opt.supported,
-                        disabled: !opt.supported,
+                        active: config.encoding === opt.value,
+                        'reported-unsupported': !opt.supported,
                       }"
-                      :disabled="!opt.supported"
                       :title="opt.supported ? undefined : opt.hint"
                     >
                       {{ opt.label }}
-                      <span v-if="!opt.supported" class="unsupported-tag">N/A</span>
+                      <span v-if="!opt.supported" class="unsupported-tag">MAY NOT</span>
                     </button>
                   </div>
+                </div>
+
+                <div class="setting-group toggle-group">
+                  <div class="toggle-row">
+                    <div class="toggle-info">
+                      <label class="setting-label">{{ $t('webrtc.hdr') }}</label>
+                      <p class="setting-hint">{{ $t('webrtc.hdr_desc') }}</p>
+                    </div>
+                  <n-switch
+                      v-model:value="config.hdr"
+                    />
+                  </div>
+                  <n-alert
+                    v-if="hdrInlineWarning"
+                    type="warning"
+                    :show-icon="true"
+                    class="mt-2"
+                  >
+                    {{ hdrInlineWarning }}
+                  </n-alert>
                 </div>
 
                 <div class="setting-group">
@@ -569,6 +588,10 @@
                       {{ displayValue(stats.audioCodec) }}</span
                     >
                   </div>
+                  <div class="debug-item">
+                    <span class="debug-label">HDR</span>
+                    <span class="debug-value">{{ displayValue(serverSession?.hdr) }}</span>
+                  </div>
                 </div>
               </div>
 
@@ -806,11 +829,35 @@ const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport
 
 const encodingOptions = computed(() =>
   baseEncodingOptions.map((opt) => {
-    const supported = encodingSupport.value[opt.value];
-    const hint = supported ? '' : `${opt.label} unsupported by this browser`;
+    const supported = opt.value === 'av1' ? encodingSupport.value[opt.value] : true;
+    const hint = supported
+      ? ''
+      : `${opt.label} may be unsupported (browser-reported; this can be a false positive).`;
     return { ...opt, supported, hint };
   }),
 );
+
+const hdrCodecAdvertised = computed(() => {
+  if (config.encoding === 'av1') {
+    return encodingSupport.value.av1;
+  }
+  return encodingSupport.value.hevc;
+});
+
+const hdrInlineWarning = computed(() => {
+  if (!config.hdr) return null;
+  if (hdrRuntimeWarning.value) return hdrRuntimeWarning.value;
+  if (!hdrCodecAdvertised.value) {
+    return `This browser reports no ${config.encoding.toUpperCase()} decode support. This can be a false positive—it's not always possible to know until you try. If you get a black screen, switch codecs or disable HDR.`;
+  }
+  return null;
+});
+
+function ensureHdrEncoding(): void {
+  if (config.encoding === 'h264') {
+    config.encoding = 'hevc';
+  }
+}
 
 const pacingOptions = [
   { label: 'Latency', value: 'latency' },
@@ -866,6 +913,7 @@ const config = reactive<StreamConfig>({
   height: 1080,
   fps: 60,
   encoding: 'h264',
+  hdr: false,
   bitrateKbps: 20000,
   muteHostAudio: true,
   videoPacingMode: 'balanced',
@@ -873,10 +921,22 @@ const config = reactive<StreamConfig>({
   videoMaxFrameAgeFrames: pacingPresets.balanced.maxAgeFrames,
 });
 
+const negotiatedEncoding = ref<EncodingType | null>(null);
+const hdrRuntimeWarning = ref<string | null>(null);
+
 const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
 
 function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
   const normalized = { ...profileConfig };
+  if (typeof normalized.hdr !== 'boolean') {
+    normalized.hdr = false;
+  }
+  if (normalized.encoding !== 'h264' && normalized.encoding !== 'hevc' && normalized.encoding !== 'av1') {
+    normalized.encoding = 'h264';
+  }
+  if (normalized.hdr && normalized.encoding === 'h264') {
+    normalized.encoding = 'hevc';
+  }
   const fps = normalized.fps ?? 60;
   if (typeof normalized.videoMaxFrameAgeMs === 'number') {
     if (normalized.videoMaxFrameAgeFrames == null) {
@@ -932,32 +992,43 @@ const maxFrameAgeFrames = computed({
 });
 
 watch(
+  () => config.hdr,
+  (enabled) => {
+    if (!enabled) return;
+    ensureHdrEncoding();
+  },
+);
+
+watch(
+  () => config.encoding,
+  () => {
+    if (!config.hdr) return;
+    ensureHdrEncoding();
+  },
+);
+
+watch(
+  () => config.hdr,
+  (enabled) => {
+    if (!enabled) {
+      hdrRuntimeWarning.value = null;
+    }
+  },
+);
+
+watch(
+  () => config.encoding,
+  () => {
+    hdrRuntimeWarning.value = null;
+  },
+);
+
+watch(
   () => ({ ...config }),
   () => {
     persistCachedConfig();
   },
   { deep: true },
-);
-
-function resolveFallbackEncoding(): EncodingType {
-  const support = encodingSupport.value;
-  const fallback = (Object.keys(support) as EncodingType[]).find((key) => support[key]);
-  return fallback ?? 'h264';
-}
-
-function ensureEncodingSupported(): void {
-  const current = config.encoding as EncodingType;
-  if (!encodingSupport.value[current]) {
-    config.encoding = resolveFallbackEncoding();
-  }
-}
-
-watch(
-  () => config.encoding,
-  () => {
-    ensureEncodingSupported();
-  },
-  { immediate: true },
 );
 
 const appsStore = useAppsStore();
@@ -2262,6 +2333,8 @@ function statusTagType(state?: string | null) {
 
 async function connect() {
   isConnecting.value = true;
+  negotiatedEncoding.value = null;
+  hdrRuntimeWarning.value = null;
   audioAutoplayRequested = true;
   primeAudioAutoplay();
   resetAudioDrainState();
@@ -2333,7 +2406,13 @@ async function connect() {
         },
         onNegotiatedEncoding: (encoding) => {
           if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
-            config.encoding = encoding;
+            negotiatedEncoding.value = encoding;
+          }
+        },
+        onWarning: (warning) => {
+          notifyWarning('Configuration Warning', warning);
+          if (config.hdr && /^hdr\b/i.test(warning)) {
+            hdrRuntimeWarning.value = warning;
           }
         },
       },
@@ -2519,7 +2598,9 @@ onMounted(async () => {
     /* ignore */
   }
   encodingSupport.value = detectEncodingSupport();
-  ensureEncodingSupported();
+  if (config.hdr) {
+    ensureHdrEncoding();
+  }
   startSessionStatusPolling();
 });
 
@@ -2885,6 +2966,10 @@ watch(
   font-size: 0.5625rem;
   opacity: 0.6;
   text-transform: uppercase;
+}
+
+.preset-chip.reported-unsupported {
+  border-style: dashed;
 }
 
 .sub-settings {

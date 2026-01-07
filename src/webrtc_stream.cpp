@@ -2152,7 +2152,8 @@ namespace webrtc_stream {
           const auto verification_status =
             display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
           if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
-            return std::string {"Display helper validation failed; refusing to start capture."};
+            BOOST_LOG(warning)
+              << "Display helper validation failed; continuing with WebRTC capture anyway.";
           }
         }
 #endif
