@@ -64,6 +64,13 @@ export interface WebRtcSessionEndOptions {
 const VIDEO_MAX_FRAME_AGE_MIN_MS = 5;
 const VIDEO_MAX_FRAME_AGE_MAX_MS = 100;
 
+const webrtcAuthConfig = (overrides?: Record<string, any>) =>
+  ({
+    validateStatus: () => true,
+    __allowUnauthenticated: true,
+    ...(overrides || {}),
+  }) as any;
+
 function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
   const fps =
     typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
@@ -110,9 +117,11 @@ export class WebRtcHttpApi implements WebRtcApi {
       video_pacing_slack_ms: config.videoPacingSlackMs,
       video_max_frame_age_ms: videoMaxFrameAgeMs,
     };
-    const r = await http.post<WebRtcSessionResponse>('/api/webrtc/sessions', payload, {
-      validateStatus: () => true,
-    });
+    const r = await http.post<WebRtcSessionResponse>(
+      '/api/webrtc/sessions',
+      payload,
+      webrtcAuthConfig(),
+    );
     if (r.status !== 200 || !r.data?.session?.id) {
       const detail = r.data ? JSON.stringify(r.data) : 'no response body';
       throw new Error(`Failed to create WebRTC session (HTTP ${r.status}): ${detail}`);
@@ -128,7 +137,7 @@ export class WebRtcHttpApi implements WebRtcApi {
   async getSessionState(sessionId: string): Promise<WebRtcSessionFetchResult> {
     const r = await http.get<WebRtcSessionStateResponse>(
       `/api/webrtc/sessions/${encodeURIComponent(sessionId)}`,
-      { validateStatus: () => true },
+      webrtcAuthConfig(),
     );
     if (r.status !== 200) {
       const error = r.data?.error ? String(r.data.error) : undefined;
@@ -141,7 +150,7 @@ export class WebRtcHttpApi implements WebRtcApi {
     const r = await http.post<WebRtcOfferResponse>(
       `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/offer`,
       offer,
-      { validateStatus: () => true },
+      webrtcAuthConfig(),
     );
     if (r.status !== 200) {
       const detail = r.data ? JSON.stringify(r.data) : 'no response body';
@@ -173,7 +182,7 @@ export class WebRtcHttpApi implements WebRtcApi {
     await http.post(
       `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
       { candidates: payload },
-      { validateStatus: () => true },
+      webrtcAuthConfig(),
     );
   }
 
@@ -198,7 +207,7 @@ export class WebRtcHttpApi implements WebRtcApi {
       try {
         const r = await http.get<WebRtcIceResponse>(
           `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice`,
-          { params: { since: lastIndex }, validateStatus: () => true },
+          webrtcAuthConfig({ params: { since: lastIndex } }),
         );
         if (r.status === 200 && Array.isArray(r.data?.candidates)) {
           for (const candidate of r.data.candidates) {
@@ -291,9 +300,10 @@ export class WebRtcHttpApi implements WebRtcApi {
         /* ignore */
       }
     }
-    await http.delete(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}`, {
-      validateStatus: () => true,
-    });
+    await http.delete(
+      `/api/webrtc/sessions/${encodeURIComponent(sessionId)}`,
+      webrtcAuthConfig(),
+    );
   }
 
   private async waitForAnswer(sessionId: string): Promise<WebRtcAnswer | null> {
@@ -303,7 +313,7 @@ export class WebRtcHttpApi implements WebRtcApi {
       try {
         const r = await http.get<WebRtcOfferResponse>(
           `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/answer`,
-          { validateStatus: () => true },
+          webrtcAuthConfig(),
         );
         if (r.status === 200 && r.data?.error && r.data.error !== 'Answer not ready') {
           throw new Error(`Failed to fetch WebRTC answer: ${r.data.error}`);
