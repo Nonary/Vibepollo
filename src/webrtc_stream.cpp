@@ -439,6 +439,14 @@ namespace webrtc_stream {
       }
     }
 
+    struct WebRtcStreamStartParams {
+      int fps = 0;
+      bool gen1_framegen_fix = false;
+      bool gen2_framegen_fix = false;
+      std::optional<int> lossless_rtss_limit;
+      bool smooth_motion = false;
+    };
+
     struct WebRtcCaptureState {
       std::mutex mutex;
       std::atomic_bool active {false};
@@ -451,6 +459,7 @@ namespace webrtc_stream {
       std::atomic_bool feedback_shutdown {false};
       std::optional<int> app_id;
       std::optional<WebRtcCaptureConfigKey> config_key;
+      std::optional<WebRtcStreamStartParams> stream_start_params;
     };
 
     template<class T>
@@ -1232,6 +1241,10 @@ namespace webrtc_stream {
         std::optional<std::chrono::steady_clock::time_point> anchor_send;
         std::optional<std::chrono::steady_clock::time_point> last_drift_reset;
         std::optional<std::chrono::steady_clock::time_point> recovery_prefer_latest_until;
+        // Track whether the last frame had a capture timestamp. Used to detect
+        // transitions from static content (no timestamps) to motion (timestamps)
+        // and reset the anchor to prevent stale anchor drift issues.
+        bool last_frame_had_timestamp = true;
       };
       VideoPacingState video_pacing_state;
       VideoPacingConfig video_pacing;
@@ -1796,6 +1809,53 @@ namespace webrtc_stream {
       return config;
     }
 
+    WebRtcStreamStartParams compute_stream_start_params(const SessionOptions &options, int effective_app_id) {
+      WebRtcStreamStartParams params;
+      params.fps = options.fps.value_or(kDefaultFps);
+
+      bool lossless_scaling_framegen = false;
+      std::optional<int> lossless_scaling_target_fps;
+      std::optional<int> lossless_scaling_rtss_limit;
+      std::string frame_generation_provider = "lossless-scaling";
+
+      if (effective_app_id > 0) {
+        try {
+          auto apps_snapshot = proc::proc.get_apps();
+          const std::string app_id_str = std::to_string(effective_app_id);
+          for (const auto &app_ctx : apps_snapshot) {
+            if (app_ctx.id != app_id_str) {
+              continue;
+            }
+            params.gen1_framegen_fix = app_ctx.gen1_framegen_fix;
+            params.gen2_framegen_fix = app_ctx.gen2_framegen_fix;
+            lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
+            lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
+            lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
+            frame_generation_provider = app_ctx.frame_generation_provider;
+            break;
+          }
+        } catch (...) {
+        }
+      }
+
+      const bool using_lossless_provider = lossless_scaling_framegen &&
+                                           boost::iequals(frame_generation_provider, "lossless-scaling");
+      params.smooth_motion = boost::iequals(frame_generation_provider, "nvidia-smooth-motion");
+
+      if (using_lossless_provider) {
+        if (lossless_scaling_rtss_limit && *lossless_scaling_rtss_limit > 0) {
+          params.lossless_rtss_limit = lossless_scaling_rtss_limit;
+        } else if (lossless_scaling_target_fps && *lossless_scaling_target_fps > 0) {
+          int computed = (int) std::lround(*lossless_scaling_target_fps * 0.5);
+          if (computed > 0) {
+            params.lossless_rtss_limit = computed;
+          }
+        }
+      }
+
+      return params;
+    }
+
     VideoPacingConfig build_video_pacing_config(const SessionOptions &options) {
       VideoPacingConfig config;
       config.mode = video_pacing_mode_from_string(options.video_pacing_mode);
@@ -2028,6 +2088,7 @@ namespace webrtc_stream {
       webrtc_capture.mail.reset();
       webrtc_capture.app_id.reset();
       webrtc_capture.config_key.reset();
+      webrtc_capture.stream_start_params.reset();
       webrtc_capture.idle_shutdown_pending.store(false, std::memory_order_release);
       webrtc_capture.active.store(false, std::memory_order_release);
 
@@ -2039,13 +2100,8 @@ namespace webrtc_stream {
             display_helper_integration::stop_watchdog();
           }
         }
-        VDISPLAY::restorePhysicalHdrProfiles();
-        platf::frame_limiter_streaming_stop();
       }
 #endif
-      if (allow_platform_teardown) {
-        platf::streaming_will_stop();
-      }
 
       if (allow_platform_teardown) {
         config::set_runtime_output_name_override(std::nullopt);
@@ -2086,6 +2142,7 @@ namespace webrtc_stream {
       }
 
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
+      webrtc_capture.stream_start_params = compute_stream_start_params(options, effective_app_id);
       const int audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
       auto video_config = build_video_config(options);
       auto audio_config = build_audio_config(options);
@@ -2164,35 +2221,7 @@ namespace webrtc_stream {
       }
 
 #ifdef _WIN32
-      if (!rtsp_active) {
-        std::optional<int> lossless_rtss_limit;
-        const bool using_lossless_provider = launch_session->lossless_scaling_framegen &&
-                                             boost::iequals(launch_session->frame_generation_provider, "lossless-scaling");
-        const bool using_smooth_motion =
-          boost::iequals(launch_session->frame_generation_provider, "nvidia-smooth-motion");
-        if (using_lossless_provider) {
-          if (launch_session->lossless_scaling_rtss_limit && *launch_session->lossless_scaling_rtss_limit > 0) {
-            lossless_rtss_limit = launch_session->lossless_scaling_rtss_limit;
-          } else if (launch_session->lossless_scaling_target_fps && *launch_session->lossless_scaling_target_fps > 0) {
-            int computed = (int) std::lround(*launch_session->lossless_scaling_target_fps * 0.5);
-            if (computed > 0) {
-              lossless_rtss_limit = computed;
-            }
-          }
-        }
-        platf::frame_limiter_streaming_start(
-          launch_session->fps,
-          launch_session->gen1_framegen_fix,
-          launch_session->gen2_framegen_fix,
-          lossless_rtss_limit,
-          using_smooth_motion
-        );
-      }
 #endif
-
-      if (!rtsp_active) {
-        platf::streaming_will_start();
-      }
 
       auto mail = std::make_shared<safe::mail_raw_t>();
       webrtc_capture.mail = mail;
@@ -3573,6 +3602,19 @@ namespace webrtc_stream {
                 }
                 std::chrono::steady_clock::time_point target_send = now;
                 bool pace_frame = pacing.pace;
+
+                // Detect transition from static content (no timestamps) to motion (timestamps).
+                // When this happens, the anchor may be stale from before the static period.
+                // Reset the anchor to establish fresh timing and prevent drift-induced lag spikes.
+                const bool static_to_motion_transition =
+                  has_timestamp && !session.video_pacing_state.last_frame_had_timestamp;
+                if (static_to_motion_transition) {
+                  session.video_pacing_state.anchor_capture.reset();
+                  session.video_pacing_state.anchor_send.reset();
+                  session.last_video_push.reset();
+                }
+                session.video_pacing_state.last_frame_had_timestamp = has_timestamp;
+
                 const bool capture_in_future = has_timestamp && *frame.timestamp > now + max_frame_age;
                 if (capture_in_future) {
                   session.video_pacing_state.anchor_capture.reset();
@@ -4131,10 +4173,39 @@ namespace webrtc_stream {
     );
 
     SessionState snapshot = session.state;
-    std::lock_guard lg {session_mutex};
-    sessions.emplace(snapshot.id, std::move(session));
-    active_sessions.fetch_add(1, std::memory_order_relaxed);
+    const bool rtsp_active = rtsp_sessions_active.load(std::memory_order_relaxed);
+    bool first_session = false;
+    {
+      std::lock_guard lg {session_mutex};
+      sessions.emplace(snapshot.id, std::move(session));
+      first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
+    }
     BOOST_LOG(debug) << "WebRTC: create_session exit id=" << snapshot.id;
+    if (first_session && !rtsp_active) {
+#ifdef _WIN32
+      WebRtcStreamStartParams start_params;
+      {
+        std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
+        if (webrtc_capture.stream_start_params) {
+          start_params = *webrtc_capture.stream_start_params;
+        }
+      }
+      if (start_params.fps == 0) {
+        const int current_app_id = proc::proc.running();
+        const int requested_app_id = options.app_id.value_or(0);
+        const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
+        start_params = compute_stream_start_params(options, effective_app_id);
+      }
+      platf::frame_limiter_streaming_start(
+        start_params.fps,
+        start_params.gen1_framegen_fix,
+        start_params.gen2_framegen_fix,
+        start_params.lossless_rtss_limit,
+        start_params.smooth_motion
+      );
+#endif
+      platf::streaming_will_start();
+    }
     return snapshot;
   }
 
@@ -4153,6 +4224,7 @@ namespace webrtc_stream {
     std::shared_ptr<SessionKeyframeContext> keyframe_context;
 #endif
     bool removed = false;
+    bool last_session = false;
     {
       std::lock_guard lg {session_mutex};
       auto it = sessions.find(std::string {id});
@@ -4173,7 +4245,7 @@ namespace webrtc_stream {
 #endif
       sessions.erase(it);
       removed = true;
-      active_sessions.fetch_sub(1, std::memory_order_relaxed);
+      last_session = active_sessions.fetch_sub(1, std::memory_order_relaxed) == 1;
     }
     if (removed) {
       local_answer_cv.notify_all();
@@ -4204,9 +4276,20 @@ namespace webrtc_stream {
     if (video_track) {
       lwrtc_video_track_release(video_track);
     }
-    if (!has_active_sessions()) {
+    if (last_session) {
       stop_media_thread();
       reset_input_context();
+#ifdef _WIN32
+      const bool rtsp_active = rtsp_sessions_active.load(std::memory_order_relaxed);
+      if (!rtsp_active) {
+        VDISPLAY::restorePhysicalHdrProfiles();
+        platf::rtss_set_sync_limiter_override(std::nullopt);
+        platf::frame_limiter_streaming_stop();
+      }
+#endif
+      if (!rtsp_sessions_active.load(std::memory_order_relaxed)) {
+        platf::streaming_will_stop();
+      }
       schedule_webrtc_idle_shutdown();
     }
 #endif
