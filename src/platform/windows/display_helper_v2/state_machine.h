@@ -285,6 +285,8 @@ namespace display_helper::v2 {
     std::optional<Snapshot> recovery_snapshot_;
     std::set<std::string> snapshot_blacklist_;
 
+    std::chrono::steady_clock::time_point last_virtual_apply_display_event_restart_ {};
+
     StateObserver observer_;
     std::function<void(ApplyStatus)> apply_result_callback_;
     std::function<void(bool)> verification_result_callback_;
