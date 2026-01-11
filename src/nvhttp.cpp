@@ -624,7 +624,12 @@ namespace nvhttp {
     return std::nullopt;
   }
 
-  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args, req_https_t request = nullptr) {
+  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(
+    bool host_audio,
+    const args_t &args,
+    req_https_t request = nullptr,
+    bool allow_display_changes = true
+  ) {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
@@ -1500,7 +1505,8 @@ namespace nvhttp {
     (void) display_helper_integration::disarm_pending_restore();
 #endif
 
-    auto launch_session = make_launch_session(host_audio, args, request);
+    const bool allow_display_changes = true;
+    auto launch_session = make_launch_session(host_audio, args, request, allow_display_changes);
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
       if (pending_output_override) {
@@ -1870,10 +1876,14 @@ namespace nvhttp {
       BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
       request_virtual_display = true;
     }
-    apply_virtual_display_request(request_virtual_display);
-    if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
-      config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
-      pending_output_override = launch_session->virtual_display_device_id;
+    if (allow_display_changes) {
+      apply_virtual_display_request(request_virtual_display);
+      if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
+        config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
+        pending_output_override = launch_session->virtual_display_device_id;
+      }
+    } else {
+      BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
     }
 #endif
 
@@ -2052,7 +2062,8 @@ namespace nvhttp {
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
     const bool no_active_sessions {rtsp_stream::session_count() == 0};
-    if (no_active_sessions) {
+    const bool allow_display_changes = false;
+    if (no_active_sessions && allow_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
     }
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
@@ -2060,19 +2071,19 @@ namespace nvhttp {
     }
     // Prevent interleaving with hot-apply while we prep/resume a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
-    const auto launch_session = make_launch_session(host_audio, args, request);
+    const auto launch_session = make_launch_session(host_audio, args, request, allow_display_changes);
 
     if (no_active_sessions) {
-      if (
-        launch_session->output_name_override &&
-        !launch_session->output_name_override->empty() &&
-        !launch_session->virtual_display &&
-        !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)
-      ) {
+      if (allow_display_changes &&
+          launch_session->output_name_override &&
+          !launch_session->output_name_override->empty() &&
+          !launch_session->virtual_display &&
+          !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
         config::set_runtime_output_name_override(*launch_session->output_name_override);
       }
 
-      const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
+      const bool should_reapply_display =
+        allow_display_changes && config::video.dd.config_revert_on_disconnect;
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
