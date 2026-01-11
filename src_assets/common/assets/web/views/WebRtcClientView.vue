@@ -722,6 +722,8 @@ import {
   applyGamepadFeedback,
   attachInputCapture,
   type InputCaptureMetrics,
+  releaseKeyboardLock,
+  requestKeyboardLock,
 } from '@/utils/webrtc/input';
 import {
   EncodingType,
@@ -1878,6 +1880,7 @@ function startSessionStatusPolling(): void {
 }
 const ESC_HOLD_MS = 2000;
 let escHoldTimer: number | null = null;
+let fullscreenKeyboardLockRequested = false;
 function getFullscreenElement(): Element | null {
   return document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
 }
@@ -1933,6 +1936,9 @@ const onFullscreenChange = () => {
   isFullscreen.value = isFullscreenActive();
   if (!isFullscreen.value) {
     cancelEscHold();
+  }
+  if (!isFullscreen.value) {
+    releaseFullscreenKeyboardLock();
   }
   // Avoid hard resets here (they can trigger long rebuffering in some browsers).
   // Instead, force a drain window and allow a brief video playback-rate boost to catch up.
@@ -2044,6 +2050,22 @@ function cancelEscHold() {
   if (!escHoldTimer) return;
   window.clearTimeout(escHoldTimer);
   escHoldTimer = null;
+}
+
+function requestFullscreenKeyboardLock(): void {
+  if (fullscreenKeyboardLockRequested) return;
+  fullscreenKeyboardLockRequested = true;
+  void requestKeyboardLock().then((locked) => {
+    if (!locked) {
+      fullscreenKeyboardLockRequested = false;
+    }
+  });
+}
+
+function releaseFullscreenKeyboardLock(): void {
+  if (!fullscreenKeyboardLockRequested) return;
+  fullscreenKeyboardLockRequested = false;
+  releaseKeyboardLock();
 }
 
 function formatKbps(value?: number): string {
@@ -2910,9 +2932,22 @@ async function connect() {
   primeAudioAutoplay();
   resetAudioDrainState();
   client.setAudioLatencyTargets(AUDIO_TARGET_BUFFER_MS, AUDIO_TARGET_PLAYOUT_MS);
-  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
+  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {     
     try {
-      await requestFullscreen(inputTarget.value);
+      const target = inputTarget.value;
+      // Request keyboard lock as part of the user gesture that starts streaming.
+      // This makes it much more reliable than attempting it later during the
+      // async WebRTC setup.
+      requestFullscreenKeyboardLock();
+      const enterPromise = requestFullscreen(target);
+      requestFullscreenKeyboardLock();
+      await enterPromise;
+      try {
+        target.focus();
+      } catch {
+        /* ignore */
+      }
+      requestFullscreenKeyboardLock();
     } catch {
       /* ignore */
     }
@@ -3107,10 +3142,20 @@ async function toggleFullscreen() {
   try {
     if (isFullscreenActive()) {
       await exitFullscreen();
+      releaseFullscreenKeyboardLock();
       return;
     }
     if (!inputTarget.value) return;
-    await requestFullscreen(inputTarget.value);
+    const target = inputTarget.value;
+    const enterPromise = requestFullscreen(target);
+    requestFullscreenKeyboardLock();
+    await enterPromise;
+    try {
+      target.focus();
+    } catch {
+      /* ignore */
+    }
+    requestFullscreenKeyboardLock();
   } catch {
     /* ignore */
   }
@@ -3132,7 +3177,10 @@ watch(
   () => [inputEnabled.value, isConnected.value],
   ([enabled, connected]) => {
     detachInputCapture();
-    if (!enabled || !connected || !inputTarget.value) return;
+    if (!enabled || !connected || !inputTarget.value) {
+      releaseFullscreenKeyboardLock();
+      return;
+    }
     detachInput = attachInputCapture(
       inputTarget.value,
       (payload) => {
@@ -3147,6 +3195,9 @@ watch(
         shouldDrop: shouldDropInput,
       },
     );
+    if (isFullscreenActive()) {
+      requestFullscreenKeyboardLock();
+    }
   },
 );
 
@@ -3198,6 +3249,7 @@ onBeforeUnmount(() => {
   stopDiagnosticsSampling();
   stopWebrtcDiagnostics();
   stopSessionStatusPolling();
+  releaseFullscreenKeyboardLock();
   stopServerSessionPolling();
   void disconnect();
 });
