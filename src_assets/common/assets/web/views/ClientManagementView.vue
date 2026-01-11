@@ -99,6 +99,12 @@
           class="rounded-2xl border border-dark/[0.06] bg-light/[0.02] p-4 shadow-sm dark:border-light/[0.12]"
         >
           <div class="flex flex-wrap items-center gap-3">
+            <span
+              class="rounded-full px-3 py-1 text-xs font-semibold text-white"
+              :class="client.perm >= highlightPermissionThreshold ? 'bg-red-500' : 'bg-brand'"
+            >
+              [ {{ permToStr(client.perm) }} ]
+            </span>
             <span class="text-base font-medium">
               {{ client.name !== '' ? client.name : $t('troubleshooting.unpair_single_unknown') }}
             </span>
@@ -162,6 +168,38 @@
               <n-form-item :label="$t('pin.device_name')">
                 <n-input v-model:value="client.editName" />
               </n-form-item>
+
+              <div class="space-y-3">
+                <div class="grid gap-4 md:grid-cols-3">
+                  <div
+                    v-for="group in permissionGroups"
+                    :key="group.id"
+                    class="space-y-2"
+                  >
+                    <div class="text-xs font-medium uppercase tracking-wide opacity-70">
+                      {{ $t(group.labelKey) }}
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <n-button
+                        v-for="perm in group.permissions"
+                        :key="perm.key"
+                        size="small"
+                        :type="
+                          isSuppressed(client.editPerm, perm.key, perm.suppressedBy) ||
+                          checkPermission(client.editPerm, perm.key)
+                            ? 'primary'
+                            : 'default'
+                        "
+                        :ghost="!checkPermission(client.editPerm, perm.key)"
+                        :disabled="isSuppressed(client.editPerm, perm.key, perm.suppressedBy)"
+                        @click="togglePermission(client, perm.key)"
+                      >
+                        {{ $t(`permissions.${perm.key}`) }}
+                      </n-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <n-form-item :label="$t('pin.display_mode_override')">
                 <n-input v-model:value="client.editDisplayMode" placeholder="1920x1080x60" />
@@ -496,6 +534,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NForm,
   NFormItem,
   NInput,
@@ -524,11 +563,88 @@ type ClientVirtualDisplayLayout =
 type ClientPrefer10BitSdrOverride = 'enabled' | 'disabled' | null;
 type ClientSortMode = 'recent' | 'name';
 
+type PermissionToggleKey =
+  | 'list'
+  | 'view'
+  | 'launch'
+  | 'clipboard_set'
+  | 'clipboard_read'
+  | 'server_cmd'
+  | 'input_controller'
+  | 'input_touch'
+  | 'input_pen'
+  | 'input_mouse'
+  | 'input_kbd';
+
+interface PermissionGroup {
+  id: string;
+  labelKey: string;
+  permissions: Array<{ key: PermissionToggleKey; suppressedBy: PermissionToggleKey[] }>;
+}
+
+const permissionMapping = {
+  input_controller: 0x00000100,
+  input_touch: 0x00000200,
+  input_pen: 0x00000400,
+  input_mouse: 0x00000800,
+  input_kbd: 0x00001000,
+  _all_inputs: 0x00001f00,
+  clipboard_set: 0x00010000,
+  clipboard_read: 0x00020000,
+  file_upload: 0x00040000,
+  file_dwnload: 0x00080000,
+  server_cmd: 0x00100000,
+  _all_operations: 0x001f0000,
+  list: 0x01000000,
+  view: 0x02000000,
+  launch: 0x04000000,
+  _allow_view: 0x06000000,
+  _all_actions: 0x07000000,
+  _default: 0x03000000,
+  _no: 0x00000000,
+  _all: 0x071f1f00,
+} as const;
+
+const permissionGroups: PermissionGroup[] = [
+  {
+    id: 'actions',
+    labelKey: 'permissions.group_action',
+    permissions: [
+      { key: 'list', suppressedBy: ['view', 'launch'] },
+      { key: 'view', suppressedBy: ['launch'] },
+      { key: 'launch', suppressedBy: [] },
+    ],
+  },
+  {
+    id: 'operations',
+    labelKey: 'permissions.group_operation',
+    permissions: [
+      { key: 'clipboard_set', suppressedBy: [] },
+      { key: 'clipboard_read', suppressedBy: [] },
+      { key: 'server_cmd', suppressedBy: [] },
+    ],
+  },
+  {
+    id: 'inputs',
+    labelKey: 'permissions.group_input',
+    permissions: [
+      { key: 'input_controller', suppressedBy: [] },
+      { key: 'input_touch', suppressedBy: [] },
+      { key: 'input_pen', suppressedBy: [] },
+      { key: 'input_mouse', suppressedBy: [] },
+      { key: 'input_kbd', suppressedBy: [] },
+    ],
+  },
+];
+
+const highlightPermissionThreshold = 0x04000000;
+
 interface ClientApiEntry {
   uuid?: string;
   name?: string;
   connected?: boolean;
   last_seen?: number | string | null;
+  perm?: number | string;
   hdr_profile?: string;
   display_mode?: string;
   output_name_override?: string;
@@ -561,6 +677,7 @@ interface ClientViewModel {
   name: string;
   connected: boolean;
   lastSeen: number | null;
+  perm: number;
   hdrProfile: string;
   displayMode: string;
   outputOverride: string;
@@ -574,6 +691,7 @@ interface ClientViewModel {
   editHdrProfile: string | null;
   editName: string;
   editDisplayMode: string;
+  editPerm: number;
   editDisplayOverrideEnabled: boolean;
   editDisplaySelection: ClientDisplaySelection;
   editPhysicalOutputOverride: string | null;
@@ -640,6 +758,30 @@ function toBool(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+function permToStr(perm: number): string {
+  const segments = [];
+  segments.push((perm >> 24) & 0xff);
+  segments.push((perm >> 16) & 0xff);
+  segments.push((perm >> 8) & 0xff);
+  return segments.map((seg) => seg.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+}
+
+function checkPermission(perm: number, permission: PermissionToggleKey): boolean {
+  return (perm & permissionMapping[permission]) !== 0;
+}
+
+function isSuppressed(
+  perm: number,
+  permission: PermissionToggleKey,
+  suppressedBy: PermissionToggleKey[],
+): boolean {
+  return suppressedBy.some((suppressed) => checkPermission(perm, suppressed));
+}
+
+function togglePermission(client: ClientViewModel, permission: PermissionToggleKey): void {
+  client.editPerm ^= permissionMapping[permission];
+}
+
 function parseClientVirtualDisplayMode(value: unknown): ClientVirtualDisplayMode {
   const v = String(value ?? '')
     .trim()
@@ -682,6 +824,10 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const alwaysVirtual = toBool(entry.always_use_virtual_display, false);
   const hdrProfile = String(entry.hdr_profile ?? '').trim();
   const lastSeen = parseLastSeen(entry.last_seen);
+  const perm =
+    typeof entry.perm === 'number'
+      ? entry.perm
+      : Number.parseInt(String(entry.perm ?? '0'), 10) || 0;
   const configOverrides =
     entry.config_overrides &&
     typeof entry.config_overrides === 'object' &&
@@ -705,6 +851,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     name,
     connected: !!entry.connected,
     lastSeen,
+    perm,
     hdrProfile,
     displayMode,
     outputOverride,
@@ -717,6 +864,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editHdrProfile: hdrProfile || null,
     editName: name,
     editDisplayMode: displayMode,
+    editPerm: perm,
     editDisplayOverrideEnabled: overrideEnabled,
     editDisplaySelection: selection,
     editPhysicalOutputOverride: outputOverride || null,
@@ -737,6 +885,7 @@ function resetClientEdits(client: ClientViewModel): void {
   client.editName = client.name;
   client.editHdrProfile = (client.hdrProfile || '').trim() || null;
   client.editDisplayMode = client.displayMode;
+  client.editPerm = client.perm;
   client.editDisplayOverrideEnabled =
     client.alwaysUseVirtualDisplay ||
     !!(client.outputOverride || '').trim() ||
@@ -1081,6 +1230,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
       name: (client.editName || '').trim(),
       hdr_profile: String(client.editHdrProfile ?? '').trim(),
       display_mode: (client.editDisplayMode || '').trim(),
+      perm: client.editPerm & permissionMapping._all,
     };
 
     if (!client.editDisplayOverrideEnabled) {
@@ -1128,6 +1278,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     }
 
     client.name = payload.name;
+    client.perm = payload.perm;
     client.hdrProfile = payload.hdr_profile;
     client.displayMode = payload.display_mode;
     client.outputOverride = payload.output_name_override;
