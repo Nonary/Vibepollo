@@ -61,9 +61,6 @@ export interface WebRtcSessionEndOptions {
   keepalive?: boolean;
 }
 
-const VIDEO_MAX_FRAME_AGE_MIN_MS = 5;
-const VIDEO_MAX_FRAME_AGE_MAX_MS = 100;
-
 const webrtcAuthConfig = (overrides?: Record<string, any>) =>
   ({
     validateStatus: () => true,
@@ -71,32 +68,9 @@ const webrtcAuthConfig = (overrides?: Record<string, any>) =>
     ...(overrides || {}),
   }) as any;
 
-function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
-  const fps =
-    typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0 ? config.fps : 60;
-  const minMs = VIDEO_MAX_FRAME_AGE_MIN_MS;
-  const maxMs = VIDEO_MAX_FRAME_AGE_MAX_MS;
-  if (
-    typeof config.videoMaxFrameAgeFrames === 'number' &&
-    Number.isFinite(config.videoMaxFrameAgeFrames) &&
-    config.videoMaxFrameAgeFrames > 0
-  ) {
-    const frames = Math.round(config.videoMaxFrameAgeFrames);
-    const computed = Math.round((1000 / fps) * frames);
-    if (Number.isFinite(computed)) {
-      return Math.min(maxMs, Math.max(minMs, computed));
-    }
-  }
-  if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
-    return Math.min(maxMs, Math.max(minMs, Math.round(config.videoMaxFrameAgeMs)));
-  }
-  return undefined;
-}
-
 export class WebRtcHttpApi implements WebRtcApi {
   async createSession(config: StreamConfig): Promise<WebRtcSessionInfo> {
     const muteHostAudio = config.muteHostAudio ?? true;
-    const videoMaxFrameAgeMs = resolveVideoMaxFrameAgeMs(config);
     const payload = {
       audio: true,
       host_audio: !muteHostAudio,
@@ -113,9 +87,6 @@ export class WebRtcHttpApi implements WebRtcApi {
       profile: config.profile,
       app_id: config.appId,
       resume: config.resume,
-      video_pacing_mode: config.videoPacingMode,
-      video_pacing_slack_ms: config.videoPacingSlackMs,
-      video_max_frame_age_ms: videoMaxFrameAgeMs,
     };
     const r = await http.post<WebRtcSessionResponse>(
       '/api/webrtc/sessions',

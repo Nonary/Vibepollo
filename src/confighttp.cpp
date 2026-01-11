@@ -262,9 +262,6 @@ namespace confighttp {
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
     output["audio_codec"] = state.audio_codec ? nlohmann::json(*state.audio_codec) : nlohmann::json(nullptr);
     output["profile"] = state.profile ? nlohmann::json(*state.profile) : nlohmann::json(nullptr);
-    output["video_pacing_mode"] = state.video_pacing_mode ? nlohmann::json(*state.video_pacing_mode) : nlohmann::json(nullptr);
-    output["video_pacing_slack_ms"] = state.video_pacing_slack_ms ? nlohmann::json(*state.video_pacing_slack_ms) : nlohmann::json(nullptr);
-    output["video_max_frame_age_ms"] = state.video_max_frame_age_ms ? nlohmann::json(*state.video_max_frame_age_ms) : nlohmann::json(nullptr);
     output["last_audio_bytes"] = state.last_audio_bytes;
     output["last_video_bytes"] = state.last_video_bytes;
     output["last_video_idr"] = state.last_video_idr;
@@ -2050,15 +2047,6 @@ namespace confighttp {
         if (input.contains("resume")) {
           options.resume = input.at("resume").get<bool>();
         }
-        if (input.contains("video_pacing_mode")) {
-          options.video_pacing_mode = input.at("video_pacing_mode").get<std::string>();
-        }
-        if (input.contains("video_pacing_slack_ms")) {
-          options.video_pacing_slack_ms = input.at("video_pacing_slack_ms").get<int>();
-        }
-        if (input.contains("video_max_frame_age_ms")) {
-          options.video_max_frame_age_ms = input.at("video_max_frame_age_ms").get<int>();
-        }
 
         if (options.codec) {
           auto lower = *options.codec;
@@ -2082,32 +2070,6 @@ namespace confighttp {
           int channels = *options.audio_channels;
           if (channels != 2 && channels != 6 && channels != 8) {
             bad_request(response, request, "Unsupported audio channel count");
-            return;
-          }
-        }
-        if (options.video_pacing_mode) {
-          auto lower = *options.video_pacing_mode;
-          boost::algorithm::to_lower(lower);
-          if (lower == "smooth") {
-            lower = "smoothness";
-          }
-          if (lower != "latency" && lower != "balanced" && lower != "smoothness") {
-            bad_request(response, request, "Unsupported video pacing mode");
-            return;
-          }
-          options.video_pacing_mode = std::move(lower);
-        }
-        if (options.video_pacing_slack_ms) {
-          const int slack_ms = *options.video_pacing_slack_ms;
-          if (slack_ms < 0 || slack_ms > 10) {
-            bad_request(response, request, "video_pacing_slack_ms must be between 0 and 10");
-            return;
-          }
-        }
-        if (options.video_max_frame_age_ms) {
-          const int max_age_ms = *options.video_max_frame_age_ms;
-          if (max_age_ms < 5 || max_age_ms > 250) {
-            bad_request(response, request, "video_max_frame_age_ms must be between 5 and 250");
             return;
           }
         }

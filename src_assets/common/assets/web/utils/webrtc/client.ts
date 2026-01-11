@@ -443,6 +443,10 @@ export class WebRtcClient {
     return this.inputChannel?.bufferedAmount;
   }
 
+  get peerConnection(): RTCPeerConnection | undefined {
+    return this.pc;
+  }
+
   async connect(
     config: StreamConfig,
     callbacks: WebRtcClientCallbacks = {},
@@ -602,15 +606,31 @@ export class WebRtcClient {
     };
 
     this.pc.ontrack = (event) => {
-      this.remoteStream.addTrack(event.track);
-      if (event.track.kind === 'audio') {
+      const track = event.track;
+      const kind = track.kind;
+      for (const existing of this.remoteStream.getTracks()) {
+        if (existing.kind !== kind) continue;
+        this.remoteStream.removeTrack(existing);
+        try {
+          existing.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      const removeTrack = () => {
+        this.remoteStream.removeTrack(track);
+        track.removeEventListener('ended', removeTrack);
+      };
+      track.addEventListener('ended', removeTrack);
+      this.remoteStream.addTrack(track);
+      if (kind === 'audio') {
         applyAudioReceiverHints(
           event.receiver,
           this.audioJitterTargetMs,
           this.audioPlayoutDelayHintMs,
         );
-      } else if (event.track.kind === 'video') {
-        event.track.contentHint = 'motion';
+      } else if (kind === 'video') {
+        track.contentHint = 'motion';
         applyVideoReceiverHints(event.receiver, this.videoJitterTargetMs);
       }
       callbacks.onRemoteStream?.(this.remoteStream);

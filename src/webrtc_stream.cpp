@@ -16,6 +16,7 @@
 #include <cstring>
 #include <iomanip>
 #include <deque>
+#include <limits>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -25,6 +26,7 @@
 #include <thread>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 
 // lib includes
 #include <nlohmann/json.hpp>
@@ -82,7 +84,7 @@ namespace webrtc_stream {
   bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type);
 
   namespace {
-    constexpr std::size_t kMaxVideoFrames = 2;
+    constexpr std::size_t kMaxVideoFrames = 8;
     constexpr std::size_t kMaxAudioFrames = 4;
     constexpr short kAbsCoordinateMax = 32767;
     constexpr int kDefaultWidth = 1920;
@@ -93,21 +95,46 @@ namespace webrtc_stream {
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {500};
     constexpr auto kKeyframeResyncInterval = std::chrono::seconds {2};
-    constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
-    constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
-    constexpr auto kVideoPacingSlackSmooth = std::chrono::milliseconds {3};
-    constexpr auto kVideoPacingSlackMin = std::chrono::milliseconds {0};
-    constexpr auto kVideoPacingSlackMax = std::chrono::milliseconds {10};
-    constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
-    constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {100};
+    constexpr auto kVideoMaxFrameAgeDefault = std::chrono::milliseconds {33};  // ~2 frames at 60fps
     constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {kDefaultAudioPacketMs * kMaxAudioFrames};
-    constexpr auto kWebrtcStartupKeyframeHold = std::chrono::milliseconds {3000};
-    constexpr auto kWebrtcStartupKeyframeDeadline = std::chrono::milliseconds {8000};
+    // Startup keyframe window: Only pass keyframes initially to ensure clean start.
+    // Reduced from 3s/8s to 1s/3s for faster initial playback in low-latency scenarios.
+    // - Hold: Minimum time to wait for a keyframe before allowing delta frames
+    // - Deadline: Maximum time to wait before passing through any keyframe
+    constexpr auto kWebrtcStartupKeyframeHold = std::chrono::milliseconds {1000};
+    constexpr auto kWebrtcStartupKeyframeDeadline = std::chrono::milliseconds {3000};
     constexpr auto kWebrtcStartupExitKeyframeFreshness = std::chrono::milliseconds {250};
     constexpr std::size_t kVideoInflightFramesMin = 2;
-    constexpr std::size_t kVideoInflightFramesMax = 6;
+    constexpr std::size_t kVideoInflightFramesMax = 12;  // Increased for high refresh rate (120fps)
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
+    // Time budget for inflight frames: allow roughly this many ms worth of frames in-flight
+    constexpr auto kVideoInflightTimeBudget = std::chrono::milliseconds {100};
     constexpr auto kWebrtcIdleGracePeriod = std::chrono::minutes {5};
+
+    // In passthrough mode Sunshine provides pre-encoded frames, so libwebrtc's
+    // congestion control cannot change encoder quantization. To prevent the
+    // sender from creating large bursts / queues (which browsers react to by
+    // increasing jitter buffer / playout delay), apply a lightweight
+    // bitrate-based pacing schedule before pushing frames into libwebrtc.
+    constexpr int kWebrtcVideoBitratePacingHeadroomNum = 1;
+    constexpr int kWebrtcVideoBitratePacingHeadroomDen = 1;
+    constexpr auto kWebrtcVideoMaxPacingLeadDelta = std::chrono::milliseconds {250};
+    constexpr auto kWebrtcVideoMaxPacingLeadKeyframe = std::chrono::milliseconds {400};
+    constexpr std::size_t kWebrtcVideoMaxQueueFrames = 6;
+
+    std::chrono::nanoseconds duration_for_payload_at_bps(std::size_t bytes, std::int64_t bps) {
+      if (bytes == 0 || bps <= 0) {
+        return std::chrono::nanoseconds {0};
+      }
+      const std::uint64_t bits = static_cast<std::uint64_t>(bytes) * 8ULL;
+      const unsigned __int128 numerator =
+        static_cast<unsigned __int128>(bits) * static_cast<unsigned __int128>(1000000000ULL);
+      const unsigned __int128 denom = static_cast<unsigned __int128>(bps);
+      const unsigned __int128 ns_ceil = (numerator + denom - 1) / denom;
+      const auto ns_u64 = static_cast<std::uint64_t>(std::min<unsigned __int128>(
+        ns_ceil, static_cast<unsigned __int128>(std::numeric_limits<std::uint64_t>::max())));
+      return std::chrono::nanoseconds {static_cast<std::int64_t>(ns_u64)};
+    }
 
     struct SharedEncodedPayloadReleaseContext {
       std::shared_ptr<std::vector<std::uint8_t>> payload;
@@ -352,43 +379,9 @@ namespace webrtc_stream {
       std::chrono::steady_clock::time_point timestamp;
     };
 
-    enum class video_pacing_mode_e {
-      latency,
-      balanced,
-      smoothness
-    };
-
-    int max_age_frames_for_mode(video_pacing_mode_e mode) {
-      switch (mode) {
-        case video_pacing_mode_e::latency:
-          return 2;
-        case video_pacing_mode_e::balanced:
-          return 2;
-        case video_pacing_mode_e::smoothness:
-          return 3;
-        default:
-          return 2;
-      }
-    }
-
-    int max_age_ms_from_frames(int fps, int frames) {
-      if (fps <= 0) {
-        fps = kDefaultFps;
-      }
-      const double interval_ms = 1000.0 / static_cast<double>(fps);
-      return static_cast<int>(std::lround(interval_ms * static_cast<double>(frames)));
-    }
-
     struct VideoPacingConfig {
-      video_pacing_mode_e mode = video_pacing_mode_e::balanced;
-      std::chrono::nanoseconds slack = std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoPacingSlackBalanced);
-      std::chrono::nanoseconds max_frame_age = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::milliseconds {max_age_ms_from_frames(kDefaultFps, 2)});
+      std::chrono::nanoseconds max_frame_age = std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoMaxFrameAgeDefault);
       int max_age_frames = 2;
-      bool max_frame_age_override = false;
-      bool pace = true;
-      bool drop_old_frames = true;
-      bool prefer_latest = false;
     };
 
     bool starts_with_annexb(const std::vector<std::uint8_t> &data) {
@@ -412,31 +405,6 @@ namespace webrtc_stream {
             << static_cast<int>(data[i]);
       }
       return oss.str();
-    }
-
-    video_pacing_mode_e video_pacing_mode_from_string(const std::optional<std::string> &mode) {
-      if (!mode) {
-        return video_pacing_mode_e::balanced;
-      }
-      if (boost::iequals(*mode, "latency")) {
-        return video_pacing_mode_e::latency;
-      }
-      if (boost::iequals(*mode, "smooth") || boost::iequals(*mode, "smoothness")) {
-        return video_pacing_mode_e::smoothness;
-      }
-      return video_pacing_mode_e::balanced;
-    }
-
-    const char *video_pacing_mode_to_string(video_pacing_mode_e mode) {
-      switch (mode) {
-        case video_pacing_mode_e::latency:
-          return "latency";
-        case video_pacing_mode_e::smoothness:
-          return "smoothness";
-        case video_pacing_mode_e::balanced:
-        default:
-          return "balanced";
-      }
     }
 
     struct WebRtcStreamStartParams {
@@ -1241,6 +1209,7 @@ namespace webrtc_stream {
         std::optional<std::chrono::steady_clock::time_point> anchor_send;
         std::optional<std::chrono::steady_clock::time_point> last_drift_reset;
         std::optional<std::chrono::steady_clock::time_point> recovery_prefer_latest_until;
+        std::optional<std::chrono::steady_clock::time_point> bitrate_next_send;
         // Track whether the last frame had a capture timestamp. Used to detect
         // transitions from static content (no timestamps) to motion (timestamps)
         // and reset the anchor to prevent stale anchor drift issues.
@@ -1267,6 +1236,97 @@ namespace webrtc_stream {
     std::optional<RtspCaptureConfig> rtsp_capture_config;
     std::atomic_uint32_t webrtc_launch_session_id {0};
     WebRtcCaptureState webrtc_capture;
+
+    std::int64_t to_ms(std::chrono::steady_clock::duration duration) {
+      return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+    }
+
+    void log_webrtc_diagnostics(const std::chrono::steady_clock::time_point &now) {
+      struct LastCounters {
+        std::uint64_t video_packets = 0;
+        std::uint64_t video_dropped = 0;
+        std::uint64_t audio_packets = 0;
+        std::uint64_t audio_dropped = 0;
+        std::chrono::steady_clock::time_point last_at {};
+      };
+      static std::unordered_map<std::string, LastCounters> last;
+
+      std::lock_guard lg {session_mutex};
+      if (sessions.empty()) {
+        last.clear();
+        return;
+      }
+
+      BOOST_LOG(debug) << "WebRTC diag: sessions=" << sessions.size();
+
+      std::unordered_set<std::string> alive;
+      alive.reserve(sessions.size());
+
+      for (const auto &[id, session] : sessions) {
+        alive.insert(id);
+        auto &prev = last[id];
+        const auto dt_ms =
+          prev.last_at.time_since_epoch().count() != 0 ? std::max<std::int64_t>(1, to_ms(now - prev.last_at))
+                                                       : 1000;
+
+        const auto vp = session.state.video_packets;
+        const auto vd = session.state.video_dropped;
+        const auto ap = session.state.audio_packets;
+        const auto ad = session.state.audio_dropped;
+
+        const auto dvp = (vp >= prev.video_packets) ? (vp - prev.video_packets) : 0;
+        const auto dvd = (vd >= prev.video_dropped) ? (vd - prev.video_dropped) : 0;
+        const auto dap = (ap >= prev.audio_packets) ? (ap - prev.audio_packets) : 0;
+        const auto dad = (ad >= prev.audio_dropped) ? (ad - prev.audio_dropped) : 0;
+
+        const auto vpps = (dvp * 1000) / static_cast<std::uint64_t>(dt_ms);
+        const auto vdps = (dvd * 1000) / static_cast<std::uint64_t>(dt_ms);
+        const auto apps = (dap * 1000) / static_cast<std::uint64_t>(dt_ms);
+        const auto adps = (dad * 1000) / static_cast<std::uint64_t>(dt_ms);
+
+        prev.video_packets = vp;
+        prev.video_dropped = vd;
+        prev.audio_packets = ap;
+        prev.audio_dropped = ad;
+        prev.last_at = now;
+
+        const auto inflight = session.video_inflight ? session.video_inflight->load(std::memory_order_relaxed) : 0;
+        const auto last_video_age =
+          session.state.last_video_time ? to_ms(now - *session.state.last_video_time) : -1;
+        const auto last_audio_age =
+          session.state.last_audio_time ? to_ms(now - *session.state.last_audio_time) : -1;
+
+        const auto pace_next_ms = session.video_pacing_state.bitrate_next_send
+                                   ? std::max<std::int64_t>(0, to_ms(*session.video_pacing_state.bitrate_next_send - now))
+                                   : -1;
+
+        BOOST_LOG(debug) << "WebRTC diag id=" << id
+                         << " cfg=" << (session.video_config.width > 0 ? std::to_string(session.video_config.width) : "--")
+                         << 'x' << (session.video_config.height > 0 ? std::to_string(session.video_config.height) : "--")
+                         << '@' << session.video_config.framerate
+                         << " br_kbps=" << session.video_config.bitrate
+                         << " q_v=" << session.video_frames.size()
+                         << " q_a=" << session.audio_frames.size()
+                         << " q_raw_a=" << session.raw_audio_frames.size()
+                         << " inflight=" << inflight
+                         << " need_kf=" << (session.needs_keyframe ? 1 : 0)
+                         << " vpps=" << vpps
+                         << " vdps=" << vdps
+                         << " apps=" << apps
+                         << " adps=" << adps
+                         << " age_v_ms=" << last_video_age
+                         << " age_a_ms=" << last_audio_age
+                         << " pace_next_ms=" << pace_next_ms;
+      }
+
+      for (auto it = last.begin(); it != last.end();) {
+        if (alive.find(it->first) == alive.end()) {
+          it = last.erase(it);
+          continue;
+        }
+        ++it;
+      }
+    }
 
     std::shared_ptr<safe::mail_raw_t> current_capture_mail() {
       std::lock_guard<std::mutex> lock(webrtc_capture.mutex);
@@ -1858,55 +1918,12 @@ namespace webrtc_stream {
 
     VideoPacingConfig build_video_pacing_config(const SessionOptions &options) {
       VideoPacingConfig config;
-      config.mode = video_pacing_mode_from_string(options.video_pacing_mode);
-      config.max_age_frames = max_age_frames_for_mode(config.mode);
-      config.max_frame_age_override = false;
+      config.max_age_frames = 2;
       const int fps = options.fps.value_or(kDefaultFps);
       const int safe_fps = fps > 0 ? fps : kDefaultFps;
       const auto frame_interval =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)) / safe_fps;
-      config.max_frame_age = frame_interval * std::max(1, config.max_age_frames);
-      switch (config.mode) {
-        case video_pacing_mode_e::latency:
-          config.pace = false;
-          config.drop_old_frames = true;
-          config.prefer_latest = true;
-          config.slack = std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoPacingSlackLatency);
-          break;
-        case video_pacing_mode_e::smoothness:
-          config.pace = true;
-          config.drop_old_frames = false;
-          config.prefer_latest = false;
-          config.slack = std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoPacingSlackSmooth);
-          break;
-        case video_pacing_mode_e::balanced:
-        default:
-          config.pace = true;
-          config.drop_old_frames = true;
-          config.prefer_latest = false;
-          config.slack = std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoPacingSlackBalanced);
-          break;
-      }
-
-      if (options.video_pacing_slack_ms) {
-        const int ms = std::clamp(*options.video_pacing_slack_ms,
-                                  static_cast<int>(kVideoPacingSlackMin.count()),
-                                  static_cast<int>(kVideoPacingSlackMax.count()));
-        config.slack = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds {ms});
-      }
-      if (options.video_max_frame_age_ms) {
-        const int ms = std::clamp(*options.video_max_frame_age_ms,
-                                  static_cast<int>(kVideoMaxFrameAgeMin.count()),
-                                  static_cast<int>(kVideoMaxFrameAgeMax.count()));
-        config.max_frame_age = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds {ms});
-        config.max_frame_age_override = true;
-        const auto interval_ns = frame_interval.count();
-        if (interval_ns > 0) {
-          const auto max_age_ns = config.max_frame_age.count();
-          const auto frames = static_cast<int>((max_age_ns + interval_ns / 2) / interval_ns);
-          config.max_age_frames = std::max(1, frames);
-        }
-      }
+      config.max_frame_age = frame_interval * config.max_age_frames;
       return config;
     }
 
@@ -3372,19 +3389,28 @@ namespace webrtc_stream {
       }
 
       while (!webrtc_media_shutdown.load(std::memory_order_acquire)) {
+        bool had_work = false;
         {
           std::unique_lock<std::mutex> lock(webrtc_media_mutex);
-          webrtc_media_cv.wait(lock, []() {
+          webrtc_media_cv.wait_for(lock, 1s, []() {
             return webrtc_media_shutdown.load(std::memory_order_acquire) ||
                    webrtc_media_has_work.load(std::memory_order_acquire);
           });
-          webrtc_media_has_work.store(false, std::memory_order_release);
+          had_work = webrtc_media_has_work.exchange(false, std::memory_order_acq_rel);
         }
         if (webrtc_media_shutdown.load(std::memory_order_acquire)) {
           break;
         }
 
         const auto now = std::chrono::steady_clock::now();
+        static auto last_diag_at = now;
+        if (now - last_diag_at >= 1s) {
+          last_diag_at = now;
+          log_webrtc_diagnostics(now);
+        }
+        if (!had_work) {
+          continue;
+        }
         // Encoded video work - for passthrough mode (pre-encoded frames)
         struct EncodedVideoWork {
           std::shared_ptr<lwrtc_encoded_video_source_t> source;
@@ -3512,8 +3538,7 @@ namespace webrtc_stream {
               const int fps = std::max(1, session.video_config.framerate);
               const auto frame_interval = std::chrono::nanoseconds(1s) / fps;
               const auto &pacing = session.video_pacing;
-              const auto derived_max_frame_age = frame_interval * std::max(1, pacing.max_age_frames);
-              const auto max_frame_age = pacing.max_frame_age_override ? pacing.max_frame_age : derived_max_frame_age;
+              const auto max_frame_age = frame_interval * std::max(1, pacing.max_age_frames);
               auto map_capture_to_send = [&](const std::chrono::steady_clock::time_point &capture_time)
                 -> std::optional<std::chrono::steady_clock::time_point> {
                 if (!session.video_pacing_state.anchor_capture || !session.video_pacing_state.anchor_send) {
@@ -3560,12 +3585,7 @@ namespace webrtc_stream {
                 session.video_frames.size() >= kMaxVideoFrames ||
                 (oldest_age_after && *oldest_age_after > max_frame_age) ||
                 drift_reset_recently;
-              if (pacing.mode == video_pacing_mode_e::balanced && behind) {
-                while (session.video_frames.size() > 1) {
-                  drop_oldest_frame(waiting_for_keyframe);
-                }
-                session.video_pacing_state.recovery_prefer_latest_until = now + max_frame_age;
-              }
+              // Latency mode: always prefer latest frames, no extra dropping logic needed
               const bool recovery_active =
                 session.video_pacing_state.recovery_prefer_latest_until &&
                 now < *session.video_pacing_state.recovery_prefer_latest_until;
@@ -3601,7 +3621,15 @@ namespace webrtc_stream {
                   session.encoded_prefix_logs++;
                 }
                 std::chrono::steady_clock::time_point target_send = now;
-                bool pace_frame = pacing.pace;
+                bool pace_frame = false;
+                std::int64_t bitrate_pacing_bps = 0;
+
+                auto reset_video_pacing = [&]() {
+                  session.video_pacing_state.anchor_capture.reset();
+                  session.video_pacing_state.anchor_send.reset();
+                  session.video_pacing_state.bitrate_next_send.reset();
+                  session.last_video_push.reset();
+                };
 
                 // Detect transition from static content (no timestamps) to motion (timestamps).
                 // When this happens, the anchor may be stale from before the static period.
@@ -3609,9 +3637,7 @@ namespace webrtc_stream {
                 const bool static_to_motion_transition =
                   has_timestamp && !session.video_pacing_state.last_frame_had_timestamp;
                 if (static_to_motion_transition) {
-                  session.video_pacing_state.anchor_capture.reset();
-                  session.video_pacing_state.anchor_send.reset();
-                  session.last_video_push.reset();
+                  reset_video_pacing();
                 }
                 session.video_pacing_state.last_frame_had_timestamp = has_timestamp;
 
@@ -3619,31 +3645,63 @@ namespace webrtc_stream {
                 if (capture_in_future) {
                   session.video_pacing_state.anchor_capture.reset();
                   session.video_pacing_state.anchor_send.reset();
+                  session.video_pacing_state.bitrate_next_send.reset();
                   session.video_pacing_state.last_drift_reset = now;
                   session.last_video_push.reset();
                   target_send = now;
                   pace_frame = false;
                 }
-                if (pace_frame && frame.timestamp) {
-                  const auto capture_time = *frame.timestamp;
-                  if (!session.video_pacing_state.anchor_capture ||
-                      !session.video_pacing_state.anchor_send ||
-                      capture_time < *session.video_pacing_state.anchor_capture) {
-                    session.video_pacing_state.anchor_capture = capture_time;
-                    session.video_pacing_state.anchor_send = now;
+
+                // Bitrate-based pacing: schedule the push into libwebrtc to avoid bursty
+                // delivery / sender-side queues which browsers react to by increasing jitter
+                // buffer / playout delay.
+                if (frame.data && !frame.data->empty() && session.video_config.bitrate > 0) {
+                  bitrate_pacing_bps = static_cast<std::int64_t>(session.video_config.bitrate) * 1000LL;
+                  bitrate_pacing_bps =
+                    (bitrate_pacing_bps * kWebrtcVideoBitratePacingHeadroomNum) / kWebrtcVideoBitratePacingHeadroomDen;
+                  if (bitrate_pacing_bps > 0) {
+                    // If our schedule is behind real-time, catch up immediately.
+                    if (session.video_pacing_state.bitrate_next_send &&
+                        *session.video_pacing_state.bitrate_next_send + frame_interval < now) {
+                      session.video_pacing_state.bitrate_next_send = now;
+                    }
+
+                    auto scheduled = session.video_pacing_state.bitrate_next_send.value_or(now);
+                    if (scheduled < now) {
+                      scheduled = now;
+                    }
+
+                    const auto max_lead = frame.idr ? kWebrtcVideoMaxPacingLeadKeyframe : kWebrtcVideoMaxPacingLeadDelta;
+                    if (scheduled > now + max_lead) {
+                      // Too far ahead of real-time. Prefer dropping and resyncing rather than
+                      // letting latency grow without bound.
+                      if (!frame.idr && !session.video_frames.empty()) {
+                        session.state.video_dropped++;
+                        session.needs_keyframe = true;
+                        reset_video_pacing();
+                        return;
+                      }
+                      scheduled = now + max_lead;
+                    }
+
+                    target_send = std::max(target_send, scheduled);
+                    session.video_pacing_state.bitrate_next_send =
+                      target_send + duration_for_payload_at_bps(frame.data->size(), bitrate_pacing_bps);
+                    pace_frame = target_send > now;
                   }
-                  target_send = *session.video_pacing_state.anchor_send +
-                                (capture_time - *session.video_pacing_state.anchor_capture);
                 }
                 const bool target_too_old = target_send + max_frame_age < now;
-                if (pacing.drop_old_frames && target_too_old && !session.video_frames.empty()) {
+                // Latency mode: always drop old frames
+                if (target_too_old && !session.video_frames.empty()) {
                   session.state.video_dropped++;
                   session.needs_keyframe = true;
+                  reset_video_pacing();
                   return;
                 }
                 if (target_too_old) {
                   session.video_pacing_state.anchor_capture.reset();
                   session.video_pacing_state.anchor_send.reset();
+                  session.video_pacing_state.bitrate_next_send.reset();
                   session.video_pacing_state.last_drift_reset = now;
                   session.last_video_push.reset();
                   target_send = now;
@@ -3654,20 +3712,25 @@ namespace webrtc_stream {
                   // bias the schedule and grow the receiver jitter buffer.
                   target_send = std::max(target_send, *session.last_video_push + frame_interval);
                 }
-                if (target_send > now + max_frame_age) {
-                  session.video_pacing_state.anchor_capture.reset();
-                  session.video_pacing_state.anchor_send.reset();
-                  session.video_pacing_state.last_drift_reset = now;
-                  session.last_video_push.reset();
-                  target_send = now;
-                  pace_frame = false;
+                {
+                  const auto max_future_lead =
+                    frame.idr ? kWebrtcVideoMaxPacingLeadKeyframe : kWebrtcVideoMaxPacingLeadDelta;
+                  if (target_send > now + max_future_lead) {
+                    target_send = now + max_future_lead;
+                    pace_frame = true;
+                    if (bitrate_pacing_bps > 0 && frame.data && !frame.data->empty()) {
+                      session.video_pacing_state.bitrate_next_send =
+                        target_send + duration_for_payload_at_bps(frame.data->size(), bitrate_pacing_bps);
+                    }
+                  }
                 }
-                if (pacing.drop_old_frames && pace_frame && target_send < now) {
+                if (pace_frame && target_send < now) {
                   const auto drift = now - target_send;
                   if (drift > frame_interval) {
                     session.video_pacing_state.anchor_capture = frame.timestamp.value_or(now);
                     session.video_pacing_state.anchor_send = now;
                     session.video_pacing_state.last_drift_reset = now;
+                    session.video_pacing_state.bitrate_next_send.reset();
                     session.last_video_push.reset();
                     target_send = now;
                     pace_frame = false;
@@ -3683,13 +3746,19 @@ namespace webrtc_stream {
                 // upstream capture/encode pipeline delay.
                 work.timestamp = target_send;
                 work.target_send = target_send;
-                work.pacing_slack = pacing.slack;
+                work.pacing_slack = std::chrono::nanoseconds {0};  // Latency mode: no slack
                 work.pace = pace_frame;
                 work.session_id = session.state.id;
                 work.clear_keyframe_on_success =
                   waiting_for_keyframe && frame.idr && !startup_keyframe_active;
+                // Calculate max inflight frames based on framerate.
+                // Higher framerates need more inflight frames to maintain smooth delivery.
+                // Use time budget: ~100ms worth of frames, clamped to reasonable limits.
+                const auto fps_based_max = static_cast<std::size_t>(
+                  fps * std::chrono::duration_cast<std::chrono::duration<double>>(kVideoInflightTimeBudget).count()
+                );
                 work.max_inflight_frames = std::clamp<std::size_t>(
-                  static_cast<std::size_t>(std::max(1, session.video_pacing.max_age_frames)) * 2,
+                  std::max(fps_based_max, static_cast<std::size_t>(std::max(1, session.video_pacing.max_age_frames)) * 2),
                   kVideoInflightFramesMin,
                   kVideoInflightFramesMax
                 );
@@ -3699,24 +3768,20 @@ namespace webrtc_stream {
                   return;
                 }
               };
-              bool prefer_latest = false;
-              if (!waiting_for_keyframe) {
-                switch (pacing.mode) {
-                  case video_pacing_mode_e::latency:
-                    prefer_latest = true;
-                    break;
-                  case video_pacing_mode_e::balanced:
-                    prefer_latest = behind || recovery_active;
-                    break;
-                  case video_pacing_mode_e::smoothness:
-                    prefer_latest = recovery_active;
-                    break;
-                }
-              }
+              // Latency mode: always prefer latest frames unless waiting for keyframe
+              const bool prefer_latest = !waiting_for_keyframe;
               if (prefer_latest) {
-                EncodedVideoFrame latest;
-                if (session.video_frames.pop_latest(latest)) {
-                  handle_frame(std::move(latest));
+                EncodedVideoFrame frame;
+                // If we have a small backlog, drain in FIFO order to trade a bit of latency
+                // for fewer dropped frames during minor pacing delays.
+                if (session.video_frames.size() > 1) {
+                  if (session.video_frames.pop(frame)) {
+                    handle_frame(std::move(frame));
+                  }
+                } else {
+                  if (session.video_frames.pop_latest(frame)) {
+                    handle_frame(std::move(frame));
+                  }
                 }
               } else {
                 EncodedVideoFrame frame;
@@ -3771,6 +3836,7 @@ namespace webrtc_stream {
                   it->second.needs_keyframe = true;
                   it->second.video_pacing_state.anchor_capture.reset();
                   it->second.video_pacing_state.anchor_send.reset();
+                  it->second.video_pacing_state.bitrate_next_send.reset();
                   it->second.video_pacing_state.last_drift_reset = send_now;
                   it->second.last_video_push.reset();
                   if (!it->second.last_keyframe_request ||
@@ -3820,6 +3886,7 @@ namespace webrtc_stream {
                 // Reset pacing state on keyframe delivery to recover from any accumulated drift
                 it->second.video_pacing_state.anchor_capture.reset();
                 it->second.video_pacing_state.anchor_send.reset();
+                it->second.video_pacing_state.bitrate_next_send.reset();
                 it->second.last_video_push.reset();
               }
             }
@@ -4027,6 +4094,7 @@ namespace webrtc_stream {
           session.video_pacing_state.anchor_capture.reset();
           session.video_pacing_state.anchor_send.reset();
           session.video_pacing_state.recovery_prefer_latest_until.reset();
+          session.video_pacing_state.bitrate_next_send.reset();
           session.video_pacing_state.last_drift_reset = std::chrono::steady_clock::now();
           session.last_video_push.reset();
         }
@@ -4164,13 +4232,6 @@ namespace webrtc_stream {
     session.state.codec = video_format_to_codec(session.video_config.videoFormat);
     session.state.hdr = session.video_config.dynamicRange != 0;
     session.video_pacing = build_video_pacing_config(options);
-    session.state.video_pacing_mode = video_pacing_mode_to_string(session.video_pacing.mode);
-    session.state.video_pacing_slack_ms = static_cast<int>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(session.video_pacing.slack).count()
-    );
-    session.state.video_max_frame_age_ms = static_cast<int>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(session.video_pacing.max_frame_age).count()
-    );
 
     SessionState snapshot = session.state;
     const bool rtsp_active = rtsp_sessions_active.load(std::memory_order_relaxed);
@@ -4370,31 +4431,18 @@ namespace webrtc_stream {
       frame.timestamp = packet.frame_timestamp;
 
       const auto now = std::chrono::steady_clock::now();
-      const bool recovery_active =
-        session.video_pacing_state.recovery_prefer_latest_until &&
-        now < *session.video_pacing_state.recovery_prefer_latest_until;
-      bool prefer_latest_enqueue = false;
-      if (!session.needs_keyframe) {
-        switch (session.video_pacing.mode) {
-          case video_pacing_mode_e::latency:
-            prefer_latest_enqueue = true;
-            break;
-          case video_pacing_mode_e::balanced:
-          case video_pacing_mode_e::smoothness:
-            prefer_latest_enqueue = recovery_active;
-            break;
+      // Allow a small bounded backlog to reduce frame drops during minor pacing delays.
+      // Always try to preserve keyframes when trimming the queue.
+      const auto max_queue = session.needs_keyframe ? kMaxVideoFrames : kWebrtcVideoMaxQueueFrames;
+      while (session.video_frames.size() >= max_queue) {
+        if (!session.video_frames.drop_oldest(true)) {
+          break;
         }
-      }
-      if (prefer_latest_enqueue) {
-        while (!session.video_frames.empty()) {
-          if (!session.video_frames.drop_oldest()) {
-            break;
-          }
-          session.state.video_dropped++;
-        }
+        session.state.video_dropped++;
+        session.needs_keyframe = true;
       }
 
-      bool dropped = session.video_frames.push(std::move(frame), session.needs_keyframe);
+      bool dropped = session.video_frames.push(std::move(frame), true);
       session.state.video_packets++;
       session.state.last_video_time = now;
       session.state.last_video_bytes = payload->size();
@@ -4402,6 +4450,9 @@ namespace webrtc_stream {
       session.state.last_video_frame_index = packet.frame_index();
       if (dropped) {
         session.state.video_dropped++;
+        if (!packet.is_idr()) {
+          session.needs_keyframe = true;
+        }
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
