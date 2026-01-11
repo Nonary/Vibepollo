@@ -368,6 +368,8 @@ namespace stream {
 
   struct session_t {
     config_t config;
+    int stream_fps = 0;
+    int stream_fps_scaled = 0;
 
     safe::mail_t mail;
 
@@ -2378,11 +2380,14 @@ namespace stream {
             }
           }
 
+          // Frame limiter should follow the stream FPS the user/client selected (NVHTTP "mode" fps),
+          // not the capture display refresh rate.
+
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
           if (defer_stream_start) {
             deferred_stream_start_t deferred {
-              .fps = session.config.monitor.framerate,
-              .fps_scaled = session.config.monitor.encodingFramerate,
+              .fps = session.stream_fps,
+              .fps_scaled = session.stream_fps_scaled,
               .gen1_framegen_fix = session.config.gen1_framegen_fix,
               .gen2_framegen_fix = session.config.gen2_framegen_fix,
               .lossless_rtss_limit = lossless_rtss_limit,
@@ -2392,8 +2397,8 @@ namespace stream {
             BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
           } else {
             platf::frame_limiter_streaming_start(
-              session.config.monitor.framerate,
-              session.config.monitor.encodingFramerate,
+              session.stream_fps,
+              session.stream_fps_scaled,
               session.config.gen1_framegen_fix,
               session.config.gen2_framegen_fix,
               lossless_rtss_limit,
@@ -2462,6 +2467,16 @@ namespace stream {
       session->undo_cmds = std::move(launch_session.client_undo_cmds);
 
       session->config = config;
+      session->stream_fps = session->config.monitor.framerate;
+      session->stream_fps_scaled = session->config.monitor.encodingFramerate;
+      if (launch_session.fps > 0) {
+        int fps_millihz = launch_session.fps;
+        if (fps_millihz > 0 && fps_millihz < 1000) {
+          fps_millihz *= 1000;
+        }
+        session->stream_fps = (int) std::lround((double) fps_millihz / 1000.0);
+        session->stream_fps_scaled = fps_millihz;
+      }
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;

@@ -198,6 +198,22 @@ namespace nvhttp {
       );
     }
 
+    bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
+      if (timeout <= std::chrono::steady_clock::duration::zero()) {
+        return has_any_active_display();
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (has_any_active_display()) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+
+      return has_any_active_display();
+    }
+
     std::atomic<bool> virtual_display_cleanup_pending {false};
 
     void cleanup_virtual_display_state() {
@@ -2166,7 +2182,22 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      bool encoder_probe_failed = video::probe_encoders();
+      bool encoder_probe_failed = false;
+
+#ifdef _WIN32
+      if (!is_input_only && !has_any_active_display()) {
+        BOOST_LOG(info) << "No active display before encoder probe; waiting for activation.";
+        constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+        if (!wait_for_display_activation(kDisplayActivationTimeout)) {
+          BOOST_LOG(warning) << "Timed out waiting for a display to become active before encoder probe.";
+          encoder_probe_failed = true;
+        }
+      }
+#endif
+
+      if (!encoder_probe_failed) {
+        encoder_probe_failed = video::probe_encoders();
+      }
 
       if (encoder_probe_failed && !is_input_only) {
         BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
@@ -2200,7 +2231,13 @@ namespace nvhttp {
       // Still probe encoders once, if input only session is launched first
       // But we're ignoring if it's successful or not
       if (no_active_sessions && !proc::proc.virtual_display) {
+#ifdef _WIN32
+        if (has_any_active_display()) {
+          video::probe_encoders();
+        }
+#else
         video::probe_encoders();
+#endif
         if (current_appid == 0) {
           proc::proc.launch_input_only();
         }
@@ -2402,12 +2439,23 @@ namespace nvhttp {
         // encoder matches the active GPU (which could have changed
         // due to hotplugging, driver crash, primary monitor change,
         // or any number of other factors).
-        bool encoder_probe_failed = video::probe_encoders();
+        bool encoder_probe_failed = false;
 
-        // Probe encoders again before streaming to ensure our chosen
-        // encoder matches the active GPU (which could have changed
-        // due to hotplugging, driver crash, primary monitor change,
-        // or any number of other factors).
+#ifdef _WIN32
+        if (!launch_session->input_only && !has_any_active_display()) {
+          BOOST_LOG(info) << "No active display before resume encoder probe; waiting for activation.";
+          constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+          if (!wait_for_display_activation(kDisplayActivationTimeout)) {
+            BOOST_LOG(warning) << "Timed out waiting for a display to become active before resume encoder probe.";
+            encoder_probe_failed = true;
+          }
+        }
+#endif
+
+        if (!encoder_probe_failed) {
+          encoder_probe_failed = video::probe_encoders();
+        }
+
         // Skip encoder probing failure for input-only mode
         if (encoder_probe_failed && !launch_session->input_only) {
           tree.put("root.resume", 0);
