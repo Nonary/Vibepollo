@@ -332,6 +332,13 @@ namespace safe {
       _cv.notify_all();
     }
 
+    void reset() {
+      std::lock_guard lg {_lock};
+
+      _continue = true;
+      _queue.clear();
+    }
+
     [[nodiscard]] bool running() const {
       return _continue;
     }

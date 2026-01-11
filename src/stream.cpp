@@ -1412,14 +1412,14 @@ namespace stream {
         switch (socket_type) {
           case socket_e::video:
             if (message_queue) {
-              peer_to_video_session.emplace(session_id, message_queue);
+              peer_to_video_session.insert_or_assign(session_id, message_queue);
             } else {
               peer_to_video_session.erase(session_id);
             }
             break;
           case socket_e::audio:
             if (message_queue) {
-              peer_to_audio_session.emplace(session_id, message_queue);
+              peer_to_audio_session.insert_or_assign(session_id, message_queue);
             } else {
               peer_to_audio_session.erase(session_id);
             }
@@ -1453,7 +1453,6 @@ namespace stream {
           // For legacy PING packets, find the matching session by address.
           auto it = peer_to_session.find(peer.address());
           if (it != std::end(peer_to_session)) {
-            BOOST_LOG(debug) << "RAISE: "sv << peer.address().to_string() << ':' << peer.port() << " :: " << type_str;
             it->second->raise(peer, std::string {buf[buf_elem].data(), bytes});
           }
         } else if (bytes >= sizeof(SS_PING)) {
@@ -1462,7 +1461,6 @@ namespace stream {
           // For new PING packets that include a client identifier, search by payload.
           auto it = peer_to_session.find(std::string {ping->payload, sizeof(ping->payload)});
           if (it != std::end(peer_to_session)) {
-            BOOST_LOG(debug) << "RAISE: "sv << peer.address().to_string() << ':' << peer.port() << " :: " << type_str;
             it->second->raise(peer, std::string {buf[buf_elem].data(), bytes});
           }
         }
@@ -1915,6 +1913,18 @@ namespace stream {
   }
 
   int start_broadcast(broadcast_ctx_t &ctx) {
+    // Reset the shutdown event to ensure it's cleared even if something
+    // raised it between the last end_broadcast and now.
+    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    broadcast_shutdown_event->reset();
+
+    // Reset the packet queues which were stopped in end_broadcast.
+    // If not reset, the broadcast threads will exit immediately when pop() returns null.
+    auto video_packets = mail::man->queue<video::packet_t>(mail::video_packets);
+    auto audio_packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
+    video_packets->reset();
+    audio_packets->reset();
+
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
     auto protocol = address_family == net::IPV4 ? udp::v4() : udp::v6();
     auto control_port = net::map_port(CONTROL_PORT);
@@ -1964,6 +1974,10 @@ namespace stream {
     }
 
     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
+
+    // Restart the io_context in case it was stopped from a previous session.
+    // After calling stop(), restart() must be called before run() will work again.
+    ctx.io_context.restart();
 
     ctx.video_thread = std::thread {videoBroadcastThread, std::ref(ctx.video_sock)};
     ctx.audio_thread = std::thread {audioBroadcastThread, std::ref(ctx.audio_sock)};
@@ -2308,16 +2322,16 @@ namespace stream {
       BOOST_LOG(info) << "Session ended"sv;
     }
 
-    int start(session_t &session, const std::string &addr_string) {
-      session.input = input::alloc(session.mail);
+  int start(session_t &session, const std::string &addr_string) {
+    session.input = input::alloc(session.mail);
 
-      session.broadcast_ref = broadcast.ref();
-      if (!session.broadcast_ref) {
-        return -1;
-      }
+    session.broadcast_ref = broadcast.ref();
+    if (!session.broadcast_ref) {
+      return -1;
+    }
 
-      session.control.expected_peer_address = addr_string;
-      BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
+    session.control.expected_peer_address = addr_string;
+    BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
 
       // Insert this session into the session list
       {

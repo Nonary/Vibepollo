@@ -830,8 +830,8 @@ TEST(DisplayHelperV2RecoveryOperation, OrdersAndRetriesSnapshots) {
   storage.save(display_helper::v2::SnapshotTier::Previous, make_snapshot("previous"));
   storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot("golden"));
 
-  display.devices.push_back({"previous", "Display", "", std::nullopt});
-  display.devices.push_back({"golden", "Display", "", std::nullopt});
+  display.devices.push_back({"previous", "Display", "", "", std::nullopt, std::nullopt, {}});
+  display.devices.push_back({"golden", "Display", "", "", std::nullopt, std::nullopt, {}});
 
   display_helper::v2::RecoveryOperation recovery(display, snapshot_service, persistence, policy, clock);
   display_helper::v2::CancellationSource cancel;
@@ -869,7 +869,7 @@ TEST(DisplayHelperV2RecoveryOperation, CancelsDuringRetryDelay) {
 
   FakeDisplaySettings display;
   display.valid_topology_ids = {"A"};
-  display.devices.push_back({"A", "Display", "", std::nullopt});
+  display.devices.push_back({"A", "Display", "", "", std::nullopt, std::nullopt, {}});
 
   display_helper::v2::SnapshotService snapshot_service(display);
   display_helper::v2::InMemorySnapshotStorage storage;

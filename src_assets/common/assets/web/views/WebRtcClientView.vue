@@ -137,19 +137,38 @@
                     <button
                       v-for="opt in encodingOptions"
                       :key="opt.value"
-                      @click="opt.supported && (config.encoding = opt.value)"
+                      @click="config.encoding = opt.value"
                       class="preset-chip"
                       :class="{
-                        active: config.encoding === opt.value && opt.supported,
-                        disabled: !opt.supported,
+                        active: config.encoding === opt.value,
+                        'reported-unsupported': !opt.supported,
                       }"
-                      :disabled="!opt.supported"
                       :title="opt.supported ? undefined : opt.hint"
                     >
                       {{ opt.label }}
-                      <span v-if="!opt.supported" class="unsupported-tag">N/A</span>
+                      <span v-if="!opt.supported" class="unsupported-tag">MAY NOT</span>
                     </button>
                   </div>
+                </div>
+
+                <div class="setting-group toggle-group">
+                  <div class="toggle-row">
+                    <div class="toggle-info">
+                      <label class="setting-label">{{ $t('webrtc.hdr') }}</label>
+                      <p class="setting-hint">{{ $t('webrtc.hdr_desc') }}</p>
+                    </div>
+                  <n-switch
+                      v-model:value="config.hdr"
+                    />
+                  </div>
+                  <n-alert
+                    v-if="hdrInlineWarning"
+                    type="warning"
+                    :show-icon="true"
+                    class="mt-2"
+                  >
+                    {{ hdrInlineWarning }}
+                  </n-alert>
                 </div>
 
                 <div class="setting-group">
@@ -183,45 +202,6 @@
                     >
                       60 Mbps
                     </button>
-                  </div>
-                </div>
-
-                <div class="setting-group">
-                  <label class="setting-label">{{ $t('webrtc.frame_pacing') }}</label>
-                  <div class="preset-row">
-                    <button
-                      v-for="opt in pacingOptions"
-                      :key="opt.value"
-                      @click="applyPacingPreset(opt.value)"
-                      class="preset-chip"
-                      :class="{ active: config.videoPacingMode === opt.value }"
-                    >
-                      {{ opt.label }}
-                    </button>
-                  </div>
-                  <p class="setting-hint">{{ $t('webrtc.frame_pacing_desc') }}</p>
-                  <div class="sub-settings">
-                    <div class="sub-setting">
-                      <label>{{ $t('webrtc.frame_pacing_slack') }}</label>
-                      <n-input-number
-                        v-model:value="config.videoPacingSlackMs"
-                        :min="0"
-                        :max="10"
-                        size="small"
-                      />
-                    </div>
-                    <div class="sub-setting">
-                      <label>{{ $t('webrtc.frame_pacing_max_delay') }}</label>
-                      <n-input-number
-                        v-model:value="maxFrameAgeFrames"
-                        :min="1"
-                        :max="10"
-                        size="small"
-                      />
-                      <p class="setting-hint">
-                        ~{{ formatMs(maxFrameAgeMsFromFrames(config.fps, maxFrameAgeFrames)) }}
-                      </p>
-                    </div>
                   </div>
                 </div>
 
@@ -299,6 +279,66 @@
                 <n-switch v-model:value="autoFullscreen" size="small" />
                 <span>Fullscreen</span>
               </label>
+              <label class="toggle-item" title="Use WebGL frame pacer for smoother rendering (latest-frame-wins with 2-frame cap)">
+                <n-switch v-model:value="useFramePacer" :disabled="isConnected" size="small" />
+                <span>Paced</span>
+              </label>
+              <label class="toggle-item" title="Enable pacer diagnostics (hitch detection, percentiles). Disable to verify no overhead.">
+                <n-switch v-model:value="pacerDiagnostics" :disabled="!useFramePacer" size="small" />
+                <span>Diag</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Diagnostics Summary -->
+          <div v-if="isConnected" class="panel-card diagnostics-card">
+            <div class="card-header">
+              <div class="header-title">
+                <i class="fas fa-heart-pulse"></i>
+                <span>Diagnostics (30s)</span>
+              </div>
+              <div class="diag-actions">
+                <button class="diag-btn" @click="exportDiagnostics('json')">Export JSON</button>
+                <button class="diag-btn" @click="exportDiagnostics('csv')">CSV</button>
+              </div>
+            </div>
+            <div class="diag-summary">
+              <span class="diag-label">Likely bottleneck</span>
+              <span class="diag-value">{{ diagnosticsSummary }}</span>
+            </div>
+            <div class="diag-grid">
+              <div class="diag-item">
+                <span class="diag-label">Recv / Dec FPS</span>
+                <span class="diag-value">{{ formatFps(diagAverages.fpsReceived) }} / {{ formatFps(diagAverages.fpsDecoded) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Jitter buffer avg</span>
+                <span class="diag-value">{{ formatMs(diagAverages.avgJitterBufferMs) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Decode avg</span>
+                <span class="diag-value">{{ formatMs(diagAverages.avgDecodeMsPerFrame) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Present dt / delta</span>
+                <span class="diag-value">{{ formatMs(diagAverages.pacingDtMs) }} / {{ displayValue(diagAverages.presentedDelta) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Render interval</span>
+                <span class="diag-value">{{ formatMs(diagAverages.renderIntervalMs) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Server queue / age</span>
+                <span class="diag-value">{{ displayValue(diagAverages.serverQueue) }} / {{ formatMs(diagAverages.serverVideoAgeMs) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Packets lost (30s)</span>
+                <span class="diag-value">{{ displayValue(diagAverages.packetsLost) }}</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Jitter (avg)</span>
+                <span class="diag-value">{{ formatMs(diagAverages.jitterMs) }}</span>
+              </div>
             </div>
           </div>
 
@@ -384,11 +424,17 @@
               <video
                 ref="videoEl"
                 class="stream-video"
+                :class="{ hidden: useFramePacer }"
                 autoplay
                 playsinline
                 :controls="false"
                 disablePictureInPicture
               ></video>
+              <canvas
+                v-if="useFramePacer"
+                ref="canvasEl"
+                class="stream-video"
+              ></canvas>
               <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
 
               <!-- Idle State -->
@@ -569,6 +615,10 @@
                       {{ displayValue(stats.audioCodec) }}</span
                     >
                   </div>
+                  <div class="debug-item">
+                    <span class="debug-label">HDR</span>
+                    <span class="debug-value">{{ displayValue(serverSession?.hdr) }}</span>
+                  </div>
                 </div>
               </div>
 
@@ -618,7 +668,28 @@
                     <span class="debug-label">Frames dropped</span>
                     <span class="debug-value"
                       >{{ displayValue(stats.videoFramesDropped) }} /
-                      {{ displayValue(stats.videoFramesReceived) }}</span
+                      {{ displayValue(stats.videoFramesReceived) }}</span       
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Pacing dt / delta</span>
+                    <span class="debug-value"
+                      >{{ formatMs(videoPacingMetrics.dtMs ?? undefined) }} /
+                      {{ displayValue(videoPacingMetrics.presentedDelta ?? undefined) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Inbound recv/dec fps</span>
+                    <span class="debug-value"
+                      >{{ formatFps(inboundVideoStats.fpsReceived) }} /
+                      {{ formatFps(inboundVideoStats.fpsDecoded) }}</span
+                    >
+                  </div>
+                  <div class="debug-item">
+                    <span class="debug-label">Inbound jitter buf / decode</span>
+                    <span class="debug-value"
+                      >{{ formatMs(inboundVideoStats.avgJitterBufferMs ?? undefined) }} /
+                      {{ formatMs(inboundVideoStats.avgDecodeMsPerFrame ?? undefined) }}</span
                     >
                   </div>
                 </div>
@@ -646,6 +717,7 @@ import { ref, reactive, onBeforeUnmount, onMounted, watch, computed } from 'vue'
 import { NTag, NSwitch, NInputNumber, NPopover, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
+import { FramePacer, type FramePacerMetrics } from '@/utils/webrtc/framePacer';
 import {
   applyGamepadFeedback,
   attachInputCapture,
@@ -806,59 +878,34 @@ const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport
 
 const encodingOptions = computed(() =>
   baseEncodingOptions.map((opt) => {
-    const supported = encodingSupport.value[opt.value];
-    const hint = supported ? '' : `${opt.label} unsupported by this browser`;
+    const supported = opt.value === 'av1' ? encodingSupport.value[opt.value] : true;
+    const hint = supported
+      ? ''
+      : `${opt.label} may be unsupported (browser-reported; this can be a false positive).`;
     return { ...opt, supported, hint };
   }),
 );
 
-const pacingOptions = [
-  { label: 'Latency', value: 'latency' },
-  { label: 'Balanced', value: 'balanced' },
-  { label: 'Smooth', value: 'smoothness' },
-];
+const hdrCodecAdvertised = computed(() => {
+  if (config.encoding === 'av1') {
+    return encodingSupport.value.av1;
+  }
+  return encodingSupport.value.hevc;
+});
 
-type PacingMode = (typeof pacingOptions)[number]['value'];
+const hdrInlineWarning = computed(() => {
+  if (!config.hdr) return null;
+  if (hdrRuntimeWarning.value) return hdrRuntimeWarning.value;
+  if (!hdrCodecAdvertised.value) {
+    return `This browser reports no ${config.encoding.toUpperCase()} decode support. This can be a false positive—it's not always possible to know until you try. If you get a black screen, switch codecs or disable HDR.`;
+  }
+  return null;
+});
 
-const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
-  latency: { slackMs: 0, maxAgeFrames: 1 },
-  balanced: { slackMs: 2, maxAgeFrames: 1 },
-  smoothness: { slackMs: 3, maxAgeFrames: 3 },
-};
-
-const MIN_FRAME_AGE_MS = 5;
-const MAX_FRAME_AGE_MS = 100;
-const MAX_FRAME_AGE_FRAMES = 10;
-
-function maxAllowedFramesForFps(fps: number): number {
-  const safeFps = fps > 0 ? fps : 60;
-  const maxByMs = Math.floor((MAX_FRAME_AGE_MS * safeFps) / 1000);
-  return Math.max(1, Math.min(MAX_FRAME_AGE_FRAMES, maxByMs));
-}
-
-function clampMaxAgeFrames(
-  value: number | null | undefined,
-  fps: number,
-  mode?: PacingMode,
-): number {
-  const resolvedMode = mode ?? 'balanced';
-  const preset = pacingPresets[resolvedMode].maxAgeFrames;
-  const maxAllowed = maxAllowedFramesForFps(fps);
-  if (value == null || !Number.isFinite(value)) return Math.min(preset, maxAllowed);
-  return Math.min(maxAllowed, Math.max(1, Math.round(value)));
-}
-
-function maxFrameAgeMsFromFrames(fps: number, frames: number): number {
-  const safeFps = fps > 0 ? fps : 60;
-  return Math.round((1000 / safeFps) * frames);
-}
-
-function applyPacingPreset(mode: PacingMode) {
-  const preset = pacingPresets[mode];
-  config.videoPacingMode = mode;
-  config.videoPacingSlackMs = preset.slackMs;
-  config.videoMaxFrameAgeMs = undefined;
-  config.videoMaxFrameAgeFrames = clampMaxAgeFrames(preset.maxAgeFrames, config.fps, mode);
+function ensureHdrEncoding(): void {
+  if (config.encoding === 'h264') {
+    config.encoding = 'hevc';
+  }
 }
 
 const config = reactive<StreamConfig>({
@@ -866,33 +913,27 @@ const config = reactive<StreamConfig>({
   height: 1080,
   fps: 60,
   encoding: 'h264',
+  hdr: false,
   bitrateKbps: 20000,
   muteHostAudio: true,
-  videoPacingMode: 'balanced',
-  videoPacingSlackMs: pacingPresets.balanced.slackMs,
-  videoMaxFrameAgeFrames: pacingPresets.balanced.maxAgeFrames,
 });
+
+const negotiatedEncoding = ref<EncodingType | null>(null);
+const hdrRuntimeWarning = ref<string | null>(null);
 
 const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
 
 function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
   const normalized = { ...profileConfig };
-  const fps = normalized.fps ?? 60;
-  if (typeof normalized.videoMaxFrameAgeMs === 'number') {
-    if (normalized.videoMaxFrameAgeFrames == null) {
-      normalized.videoMaxFrameAgeFrames = Math.max(
-        1,
-        Math.round((normalized.videoMaxFrameAgeMs / 1000) * fps),
-      );
-    }
-    delete normalized.videoMaxFrameAgeMs;
+  if (typeof normalized.hdr !== 'boolean') {
+    normalized.hdr = false;
   }
-  const mode = normalized.videoPacingMode ?? 'balanced';
-  normalized.videoMaxFrameAgeFrames = clampMaxAgeFrames(
-    normalized.videoMaxFrameAgeFrames ?? null,
-    fps,
-    mode,
-  );
+  if (normalized.encoding !== 'h264' && normalized.encoding !== 'hevc' && normalized.encoding !== 'av1') {
+    normalized.encoding = 'h264';
+  }
+  if (normalized.hdr && normalized.encoding === 'h264') {
+    normalized.encoding = 'hevc';
+  }
   return normalized;
 }
 
@@ -917,19 +958,37 @@ function persistCachedConfig(): void {
   }
 }
 
-const maxFrameAgeFrames = computed({
-  get() {
-    return clampMaxAgeFrames(
-      config.videoMaxFrameAgeFrames ?? null,
-      config.fps,
-      config.videoPacingMode,
-    );
+watch(
+  () => config.hdr,
+  (enabled) => {
+    if (!enabled) return;
+    ensureHdrEncoding();
   },
-  set(value: number | null) {
-    config.videoMaxFrameAgeMs = undefined;
-    config.videoMaxFrameAgeFrames = clampMaxAgeFrames(value, config.fps, config.videoPacingMode);
+);
+
+watch(
+  () => config.encoding,
+  () => {
+    if (!config.hdr) return;
+    ensureHdrEncoding();
   },
-});
+);
+
+watch(
+  () => config.hdr,
+  (enabled) => {
+    if (!enabled) {
+      hdrRuntimeWarning.value = null;
+    }
+  },
+);
+
+watch(
+  () => config.encoding,
+  () => {
+    hdrRuntimeWarning.value = null;
+  },
+);
 
 watch(
   () => ({ ...config }),
@@ -937,27 +996,6 @@ watch(
     persistCachedConfig();
   },
   { deep: true },
-);
-
-function resolveFallbackEncoding(): EncodingType {
-  const support = encodingSupport.value;
-  const fallback = (Object.keys(support) as EncodingType[]).find((key) => support[key]);
-  return fallback ?? 'h264';
-}
-
-function ensureEncodingSupported(): void {
-  const current = config.encoding as EncodingType;
-  if (!encodingSupport.value[current]) {
-    config.encoding = resolveFallbackEncoding();
-  }
-}
-
-watch(
-  () => config.encoding,
-  () => {
-    ensureEncodingSupported();
-  },
-  { immediate: true },
 );
 
 const appsStore = useAppsStore();
@@ -1073,6 +1111,7 @@ const inputEnabled = ref(true);
 const showOverlay = ref(false);
 const inputTarget = ref<HTMLElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
+const canvasEl = ref<HTMLCanvasElement | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
 const isFullscreen = ref(false);
 const autoFullscreen = ref(true);
@@ -1176,6 +1215,132 @@ const videoFrameMetrics = ref<{
   avgDelayMs?: number;
   maxDelayMs?: number;
 }>({});
+const videoPacingMetrics = ref<{
+  dtMs?: number | null;
+  presentedDelta?: number | null;
+  now?: number;
+  expectedDisplayTime?: number;
+  mediaTime?: number;
+  processingDuration?: number;
+  receiveTime?: number;
+  rtpTimestamp?: number;
+}>({});
+const inboundVideoStats = ref<{
+  fpsReceived?: number;
+  fpsDecoded?: number;
+  framesDropped?: number;
+  avgJitterBufferMs?: number | null;
+  avgDecodeMsPerFrame?: number | null;
+  packetsLostDelta?: number;
+  jitter?: number;
+}>({});
+type DiagnosticsSample = {
+  ts: number;
+  pacingDtMs?: number | null;
+  presentedDelta?: number | null;
+  renderIntervalMs?: number;
+  renderDelayMs?: number;
+  fpsReceived?: number;
+  fpsDecoded?: number;
+  framesDropped?: number;
+  avgJitterBufferMs?: number | null;
+  avgDecodeMsPerFrame?: number | null;
+  packetsLostDelta?: number;
+  jitter?: number;
+  serverQueue?: number;
+  serverInflight?: number;
+  serverVideoAgeMs?: number;
+  serverFps?: number;
+};
+const DIAGNOSTICS_WINDOW_MS = 30000;
+const diagnosticsSamples = ref<DiagnosticsSample[]>([]);
+const diagAverages = computed(() => {
+  const samples = diagnosticsSamples.value;
+  const avg = <T>(values: T[], getter: (v: T) => number | null | undefined) => {
+    let sum = 0;
+    let count = 0;
+    values.forEach((v) => {
+      const value = getter(v);
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        sum += value;
+        count += 1;
+      }
+    });
+    return count ? sum / count : undefined;
+  };
+  const sum = <T>(values: T[], getter: (v: T) => number | null | undefined) => {
+    let total = 0;
+    let count = 0;
+    values.forEach((v) => {
+      const value = getter(v);
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        total += value;
+        count += 1;
+      }
+    });
+    return count ? total : undefined;
+  };
+  return {
+    pacingDtMs: avg(samples, (s) => s.pacingDtMs ?? undefined),
+    presentedDelta: avg(samples, (s) => s.presentedDelta ?? undefined),
+    renderIntervalMs: avg(samples, (s) => s.renderIntervalMs),
+    renderDelayMs: avg(samples, (s) => s.renderDelayMs),
+    fpsReceived: avg(samples, (s) => s.fpsReceived),
+    fpsDecoded: avg(samples, (s) => s.fpsDecoded),
+    framesDropped: avg(samples, (s) => s.framesDropped),
+    avgJitterBufferMs: avg(samples, (s) => s.avgJitterBufferMs ?? undefined),
+    avgDecodeMsPerFrame: avg(samples, (s) => s.avgDecodeMsPerFrame ?? undefined),
+    packetsLost: sum(samples, (s) => s.packetsLostDelta),
+    jitterMs: avg(samples, (s) => s.jitter),
+    serverQueue: avg(samples, (s) => s.serverQueue),
+    serverInflight: avg(samples, (s) => s.serverInflight),
+    serverVideoAgeMs: avg(samples, (s) => s.serverVideoAgeMs),
+    serverFps: avg(samples, (s) => s.serverFps),
+  };
+});
+const diagnosticsSummary = computed(() => {
+  const avg = diagAverages.value;
+  const frameMs = config.fps > 0 ? 1000 / config.fps : 16.7;
+  const messages: string[] = [];
+  if (typeof avg.serverQueue === 'number' && avg.serverQueue >= 3) {
+    messages.push('Server queueing');
+  }
+  if (typeof avg.serverVideoAgeMs === 'number' && avg.serverVideoAgeMs > frameMs * 3) {
+    messages.push('Server backlog/age');
+  }
+  if (
+    typeof avg.avgJitterBufferMs === 'number' &&
+    avg.avgJitterBufferMs > Math.max(80, frameMs * 3)
+  ) {
+    messages.push('Network jitter/buffer growth');
+  }
+  if (typeof avg.packetsLost === 'number' && avg.packetsLost > 0) {
+    messages.push('Packet loss');
+  }
+  if (
+    typeof avg.avgDecodeMsPerFrame === 'number' &&
+    avg.avgDecodeMsPerFrame > frameMs * 0.8
+  ) {
+    messages.push('Decode bottleneck');
+  }
+  if (
+    typeof avg.fpsReceived === 'number' &&
+    typeof avg.fpsDecoded === 'number' &&
+    avg.fpsDecoded < avg.fpsReceived * 0.9
+  ) {
+    messages.push('Decode lagging receive');
+  }
+  if (typeof avg.presentedDelta === 'number' && avg.presentedDelta > 1.05) {
+    messages.push('Presentation drops');
+  }
+  if (typeof avg.renderIntervalMs === 'number' && avg.renderIntervalMs > frameMs * 1.2) {
+    messages.push('Frontend render jitter');
+  }
+  if (!messages.length) {
+    return 'No obvious bottleneck detected (last 30s)';
+  }
+  return messages.join(' · ');
+});
 const renderFps = computed(() => {
   const intervalMs = videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs;
   if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
@@ -1304,6 +1469,16 @@ const overlayLines = computed(() => {
   const rendFps98 = renderFps98.value ? renderFps98.value.toFixed(1) : '--';
   const rendFps99 = renderFps99.value ? renderFps99.value.toFixed(1) : '--';
   const dropped = stats.value.videoFramesDropped ?? '--';
+  const paceDt = formatMs(videoPacingMetrics.value.dtMs ?? undefined);
+  const paceDelta = displayValue(videoPacingMetrics.value.presentedDelta ?? undefined);
+  const recvFpsDiag =
+    typeof inboundVideoStats.value.fpsReceived === 'number'
+      ? inboundVideoStats.value.fpsReceived.toFixed(1)
+      : '--';
+  const decFpsDiag =
+    typeof inboundVideoStats.value.fpsDecoded === 'number'
+      ? inboundVideoStats.value.fpsDecoded.toFixed(1)
+      : '--';
   const rttHalf = formatMs(oneWayRttMs.value);
   const jbuf = formatMs(videoPlayoutDelayMs.value);
   const dec = formatMs(stats.value.videoDecodeMs);
@@ -1322,11 +1497,89 @@ const overlayLines = computed(() => {
     `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
     `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
     `Render ${formatMs(renderDelayMs.value)} | frame ${formatMs(renderIntervalMs.value)} | size ${videoSizeLabel.value}`,
+    `Present ${paceDt} | delta ${paceDelta} | recv ${recvFpsDiag} / dec ${decFpsDiag}`,
+    framePacerMetrics.value
+      ? `Pacer swap ${framePacerMetrics.value.framesSwapped} | skip ${framePacerMetrics.value.framesSkipped} | rvfc ${formatMs(framePacerMetrics.value.avgRvfcIntervalMs)} | raf ${formatMs(framePacerMetrics.value.avgRafIntervalMs)}`
+      : useFramePacer.value
+        ? pacerDiagnostics.value
+          ? 'Pacer: initializing...'
+          : 'Pacer: active (diag off)'
+        : 'Pacer: disabled',
+    framePacerMetrics.value
+      ? `Hitch soft ${framePacerMetrics.value.softHitchCount} | hard ${framePacerMetrics.value.hardHitchCount} | p95 ${formatMs(framePacerMetrics.value.p95RafIntervalMs)} | p99 ${formatMs(framePacerMetrics.value.p99RafIntervalMs)}`
+      : useFramePacer.value && !pacerDiagnostics.value
+        ? 'Hitch detection: disabled'
+        : '',
   ];
 });
 let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
 let detachVideoFrames: (() => void) | null = null;
+let detachVideoPacing: (() => void) | null = null;
+
+// FramePacer: latest-frame-wins renderer with 2-slot buffer
+const useFramePacer = ref(true);
+const pacerDiagnostics = ref(true);
+let framePacer: FramePacer | null = null;
+const framePacerMetrics = ref<FramePacerMetrics | null>(null);
+
+// Sync diagnostics toggle with FramePacer instance
+watch(pacerDiagnostics, (enabled) => {
+  if (framePacer) {
+    framePacer.diagnosticsEnabled = enabled;
+    if (!enabled) {
+      // Clear metrics display when diagnostics disabled
+      framePacerMetrics.value = null;
+    }
+  }
+});
+
+function initFramePacer(): boolean {
+  if (framePacer) return true;
+  const video = videoEl.value;
+  const canvas = canvasEl.value;
+  if (!video || !canvas) return false;
+
+  framePacer = new FramePacer(video, canvas, {
+    onMetrics: (metrics) => {
+      framePacerMetrics.value = { ...metrics };
+    },
+    onError: (error) => {
+      console.error('[FramePacer]', error);
+      // Fallback to native video playback on error
+      useFramePacer.value = false;
+      destroyFramePacer();
+    },
+  }, {
+    diagnosticsEnabled: pacerDiagnostics.value,
+  });
+
+  if (!framePacer.init()) {
+    console.warn('[FramePacer] WebGL init failed, falling back to native video');
+    useFramePacer.value = false;
+    framePacer = null;
+    return false;
+  }
+
+  return true;
+}
+
+function startFramePacer(): void {
+  if (!useFramePacer.value) return;
+  if (!framePacer && !initFramePacer()) return;
+  framePacer?.start();
+}
+
+function stopFramePacer(): void {
+  framePacer?.stop();
+  framePacerMetrics.value = null;
+}
+
+function destroyFramePacer(): void {
+  framePacer?.destroy();
+  framePacer = null;
+  framePacerMetrics.value = null;
+}
 let lastTrackSnapshot: { video: number; audio: number } | null = null;
 let serverSessionTimer: number | null = null;
 let audioStream: MediaStream | null = null;
@@ -1336,6 +1589,172 @@ let audioPlayRetryUntilMs: number | null = null;
 let lastAudioPlayAttemptAtMs = 0;
 let lastAudioPlayErrorAtMs = 0;
 let audioPlaybackUnlocked = false;
+let webrtcDiagTimer: number | null = null;
+let lastWebrtcDiagSample: {
+  ts: number;
+  videoFramesReceived?: number;
+  videoFramesDropped?: number;
+  videoBytesReceived?: number;
+} | null = null;
+let stopInboundVideoStatsTimer: (() => void) | null = null;
+let diagnosticsSampleTimer: number | null = null;
+
+const WEBRTC_DIAG_LOG_INTERVAL_MS = 1000;
+function stopWebrtcDiagnostics(): void {
+  if (webrtcDiagTimer != null) {
+    window.clearInterval(webrtcDiagTimer);
+    webrtcDiagTimer = null;
+  }
+  lastWebrtcDiagSample = null;
+}
+
+function startWebrtcDiagnostics(): void {
+  stopWebrtcDiagnostics();
+  webrtcDiagTimer = window.setInterval(() => {
+    if (!isConnected.value) return;
+    // Keep this tied to the debug overlay to avoid spamming the console in normal use.
+    if (!showOverlay.value) return;
+
+    const now = Date.now();
+    const prev = lastWebrtcDiagSample;
+    const current = {
+      ts: now,
+      videoFramesReceived: stats.value.videoFramesReceived,
+      videoFramesDropped: stats.value.videoFramesDropped,
+      videoBytesReceived: stats.value.videoBytesReceived,
+    };
+    lastWebrtcDiagSample = current;
+
+    const dtMs = prev ? Math.max(1, now - prev.ts) : 1000;
+    const dFramesRecv =
+      typeof current.videoFramesReceived === 'number' && typeof prev?.videoFramesReceived === 'number'
+        ? Math.max(0, current.videoFramesReceived - prev.videoFramesReceived)
+        : undefined;
+    const dFramesDrop =
+      typeof current.videoFramesDropped === 'number' && typeof prev?.videoFramesDropped === 'number'
+        ? Math.max(0, current.videoFramesDropped - prev.videoFramesDropped)
+        : undefined;
+    const dBytes =
+      typeof current.videoBytesReceived === 'number' && typeof prev?.videoBytesReceived === 'number'
+        ? Math.max(0, current.videoBytesReceived - prev.videoBytesReceived)
+        : undefined;
+
+    const recvFps = typeof dFramesRecv === 'number' ? (dFramesRecv * 1000) / dtMs : undefined;
+    const dropFps = typeof dFramesDrop === 'number' ? (dFramesDrop * 1000) / dtMs : undefined;
+    const recvKbps = typeof dBytes === 'number' ? (dBytes * 8) / dtMs : undefined;
+
+    const videoDebugSnapshot = videoDebug.value;
+    const server = serverSession.value;
+
+    console.debug('[webrtc-diag]', {
+      t: new Date(now).toISOString(),
+      pc: connectionState.value,
+      ice: iceState.value,
+      cand: stats.value.candidatePair,
+      cfg: {
+        encoding: negotiatedEncoding.value,
+        server: serverVideoConfigLabel.value,
+        fps: config.fps,
+        bitrateKbps: config.bitrateKbps,
+      },
+      server: server
+        ? {
+            videoQueue: server.video_queue_frames,
+            videoInflight: server.video_inflight_frames,
+            videoPackets: server.video_packets,
+            videoDropped: server.video_dropped,
+            videoAgeMs: server.last_video_age_ms,
+            fps: serverVideoFps.value,
+          }
+        : null,
+      recv: {
+        fps: recvFps ?? stats.value.videoFps,
+        fpsInstant: stats.value.videoFps,
+        kbps: recvKbps ?? stats.value.videoBitrateKbps,
+        framesReceived: stats.value.videoFramesReceived,
+        framesDecoded: stats.value.videoFramesDecoded,
+        framesDropped: stats.value.videoFramesDropped,
+        dropFps,
+        decodeMs: stats.value.videoDecodeMs,
+      },
+      jitter: {
+        rttMs: stats.value.roundTripTimeMs,
+        vJitterMs: stats.value.videoJitterMs,
+        vJitterBufferMs: stats.value.videoJitterBufferMs,
+        vPlayoutDelayMs: stats.value.videoPlayoutDelayMs,
+        aJitterMs: stats.value.audioJitterMs,
+        aJitterBufferMs: stats.value.audioJitterBufferMs,
+        aPlayoutDelayMs: stats.value.audioPlayoutDelayMs,
+      },
+      render: {
+        readyState: videoDebugSnapshot?.readyState,
+        paused: videoDebugSnapshot?.paused,
+        size: videoSizeLabel.value,
+        fps: renderFps.value,
+        fps98: renderFps98.value,
+        fps99: renderFps99.value,
+        intervalMs: renderIntervalMs.value,
+        delayMs: renderDelayMs.value,
+      },
+      pacing: {
+        dtMs: videoPacingMetrics.value.dtMs,
+        presentedDelta: videoPacingMetrics.value.presentedDelta,
+        expectedDisplayTime: videoPacingMetrics.value.expectedDisplayTime,
+        mediaTime: videoPacingMetrics.value.mediaTime,
+        processingDuration: videoPacingMetrics.value.processingDuration,
+        receiveTime: videoPacingMetrics.value.receiveTime,
+        rtpTimestamp: videoPacingMetrics.value.rtpTimestamp,
+      },
+      inbound: {
+        fpsReceived: inboundVideoStats.value.fpsReceived,
+        fpsDecoded: inboundVideoStats.value.fpsDecoded,
+        framesDropped: inboundVideoStats.value.framesDropped,
+        avgJitterBufferMs: inboundVideoStats.value.avgJitterBufferMs,
+        avgDecodeMsPerFrame: inboundVideoStats.value.avgDecodeMsPerFrame,
+        packetsLostDelta: inboundVideoStats.value.packetsLostDelta,
+        jitter: inboundVideoStats.value.jitter,
+      },
+    });
+  }, WEBRTC_DIAG_LOG_INTERVAL_MS);
+}
+
+function stopDiagnosticsSampling(): void {
+  if (diagnosticsSampleTimer != null) {
+    window.clearInterval(diagnosticsSampleTimer);
+    diagnosticsSampleTimer = null;
+  }
+}
+
+function startDiagnosticsSampling(): void {
+  stopDiagnosticsSampling();
+  diagnosticsSampleTimer = window.setInterval(() => {
+    if (!isConnected.value) return;
+    const now = Date.now();
+    const sample: DiagnosticsSample = {
+      ts: now,
+      pacingDtMs: videoPacingMetrics.value.dtMs ?? null,
+      presentedDelta: videoPacingMetrics.value.presentedDelta ?? null,
+      renderIntervalMs: renderIntervalMs.value,
+      renderDelayMs: renderDelayMs.value,
+      fpsReceived: inboundVideoStats.value.fpsReceived,
+      fpsDecoded: inboundVideoStats.value.fpsDecoded,
+      framesDropped: inboundVideoStats.value.framesDropped,
+      avgJitterBufferMs: inboundVideoStats.value.avgJitterBufferMs ?? null,
+      avgDecodeMsPerFrame: inboundVideoStats.value.avgDecodeMsPerFrame ?? null,
+      packetsLostDelta: inboundVideoStats.value.packetsLostDelta,
+      jitter: inboundVideoStats.value.jitter,
+      serverQueue: serverSession.value?.video_queue_frames,
+      serverInflight: serverSession.value?.video_inflight_frames,
+      serverVideoAgeMs: serverSession.value?.last_video_age_ms,
+      serverFps: serverVideoFps.value,
+    };
+    diagnosticsSamples.value.push(sample);
+    const cutoff = now - DIAGNOSTICS_WINDOW_MS;
+    while (diagnosticsSamples.value.length && diagnosticsSamples.value[0].ts < cutoff) {
+      diagnosticsSamples.value.shift();
+    }
+  }, 1000);
+}
 
 function stopAudioPlayRetry(): void {
   if (audioPlayRetryTimer != null) {
@@ -1666,8 +2085,70 @@ function formatPercent(value?: number): string {
 }
 
 function displayValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '--';
+  if (value === null || value === undefined || value === '') return '--';       
   return String(value);
+}
+
+function exportDiagnostics(format: 'json' | 'csv'): void {
+  const ts = new Date();
+  const stamp = ts.toISOString().replace(/[:.]/g, '-');
+  const baseName = `webrtc-diagnostics-${stamp}`;
+  const payload = {
+    generatedAt: ts.toISOString(),
+    windowMs: DIAGNOSTICS_WINDOW_MS,
+    summary: diagnosticsSummary.value,
+    averages: diagAverages.value,
+    latest: diagnosticsSamples.value[diagnosticsSamples.value.length - 1] ?? null,
+    samples: diagnosticsSamples.value,
+  };
+
+  if (format === 'json') {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${baseName}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+
+  const fields: Array<keyof DiagnosticsSample> = [
+    'ts',
+    'pacingDtMs',
+    'presentedDelta',
+    'renderIntervalMs',
+    'renderDelayMs',
+    'fpsReceived',
+    'fpsDecoded',
+    'framesDropped',
+    'avgJitterBufferMs',
+    'avgDecodeMsPerFrame',
+    'packetsLostDelta',
+    'jitter',
+    'serverQueue',
+    'serverInflight',
+    'serverVideoAgeMs',
+    'serverFps',
+  ];
+  const lines = [
+    fields.join(','),
+    ...diagnosticsSamples.value.map((s) =>
+      fields
+        .map((field) => {
+          const value = s[field];
+          return value == null ? '' : String(value);
+        })
+        .join(','),
+    ),
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${baseName}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function pushVideoEvent(label: string): void {
@@ -1700,7 +2181,8 @@ function updateRemoteStreamInfo(stream: MediaStream): void {
 
 let videoStream: MediaStream | null = null;
 function updateVideoElement(stream: MediaStream): boolean {
-  const videoTrack = stream.getVideoTracks()[0];
+  const tracks = stream.getVideoTracks();
+  const videoTrack = tracks.length ? tracks[tracks.length - 1] : undefined;
   if (!videoEl.value || !videoTrack) return false;
   if (!videoStream) {
     videoStream = new MediaStream();
@@ -1721,7 +2203,8 @@ function updateVideoElement(stream: MediaStream): boolean {
 }
 
 function updateAudioElement(stream: MediaStream): void {
-  const audioTrack = stream.getAudioTracks()[0];
+  const tracks = stream.getAudioTracks();
+  const audioTrack = tracks.length ? tracks[tracks.length - 1] : undefined;
   if (!audioEl.value) return;
   if (!audioStream) {
     audioStream = new MediaStream();
@@ -1805,24 +2288,16 @@ function resetAudioDrainState(): void {
 }
 
 function resolveVideoBaseTargetMs(): number {
+  // Latency mode: use 2 frames as the base target
   const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-  const frames = clampMaxAgeFrames(
-    config.videoMaxFrameAgeFrames ?? null,
-    fps,
-    config.videoPacingMode,
-  );
-  const fromFrames = maxFrameAgeMsFromFrames(fps, frames);
-  const explicit =
-    typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)
-      ? Math.round(config.videoMaxFrameAgeMs)
-      : fromFrames;
-  return Math.min(MAX_FRAME_AGE_MS, Math.max(MIN_FRAME_AGE_MS, explicit));
+  const frameMs = Math.round(1000 / fps);
+  return Math.max(5, frameMs * 2);
 }
 
 function resolveVideoDrainTargetMs(baseTargetMs: number): number {
   const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-  const frameMs = maxFrameAgeMsFromFrames(fps, 1);
-  return Math.max(MIN_FRAME_AGE_MS, baseTargetMs - frameMs * 0.5);
+  const frameMs = Math.round(1000 / fps);
+  return Math.max(5, baseTargetMs - frameMs * 0.5);
 }
 
 function resolveVideoStartupTargetMs(): number {
@@ -1955,7 +2430,7 @@ watch(
     const now = Date.now();
     const baseTargetMs = resolveVideoBaseTargetMs();
     const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-    const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+    const frameMs = Math.round(1000 / fps);
     if (lastVideoPlayoutSample) {
       const deltaMs = now - lastVideoPlayoutSample.ts;
       const deltaValue = videoValue - lastVideoPlayoutSample.value;
@@ -2252,6 +2727,173 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
   };
 }
 
+function attachVideoPacingProbe(
+  el: HTMLVideoElement,
+  onSample: (sample: {
+    dtMs: number | null;
+    presentedDelta: number | null;
+    now: number;
+    expectedDisplayTime?: number;
+    mediaTime?: number;
+    processingDuration?: number;
+    receiveTime?: number;
+    rtpTimestamp?: number;
+  }) => void,
+): () => void {
+  if (typeof el.requestVideoFrameCallback === 'function') {
+    let handle = 0;
+    let lastNow: number | null = null;
+    let lastPresented: number | null = null;
+    const cb = (now: DOMHighResTimeStamp, meta: VideoFrameCallbackMetadata) => {
+      if (lastNow != null) {
+        const presentedFrames = typeof meta.presentedFrames === 'number' ? meta.presentedFrames : null;
+        onSample({
+          dtMs: now - lastNow,
+          presentedDelta:
+            presentedFrames != null && lastPresented != null ? presentedFrames - lastPresented : null,
+          now,
+          expectedDisplayTime: meta.expectedDisplayTime,
+          mediaTime: meta.mediaTime,
+          processingDuration: meta.processingDuration,
+          receiveTime: (meta as any).receiveTime,
+          rtpTimestamp: (meta as any).rtpTimestamp,
+        });
+        lastPresented = presentedFrames ?? lastPresented;
+      } else {
+        lastPresented = typeof meta.presentedFrames === 'number' ? meta.presentedFrames : null;
+      }
+      lastNow = now;
+      handle = el.requestVideoFrameCallback(cb);
+    };
+    handle = el.requestVideoFrameCallback(cb);
+    return () => {
+      if (handle) {
+        el.cancelVideoFrameCallback(handle);
+      }
+    };
+  }
+
+  let rafId = 0;
+  let lastT = el.currentTime;
+  const raf = (now: number) => {
+    const t = el.currentTime;
+    if (t !== lastT) {
+      onSample({ dtMs: null, presentedDelta: null, now, mediaTime: t });
+      lastT = t;
+    }
+    rafId = requestAnimationFrame(raf);
+  };
+  rafId = requestAnimationFrame(raf);
+  return () => cancelAnimationFrame(rafId);
+}
+
+function startInboundVideoStats(
+  pc: RTCPeerConnection,
+  onStats: (stats: {
+    fpsReceived?: number;
+    fpsDecoded?: number;
+    framesDropped?: number;
+    avgJitterBufferMs?: number | null;
+    avgDecodeMsPerFrame?: number | null;
+    packetsLostDelta?: number;
+    jitter?: number;
+  }) => void,
+  intervalMs = 1000,
+): () => void {
+  let prev:
+    | {
+        now: number;
+        framesReceived?: number;
+        framesDecoded?: number;
+        framesDropped?: number;
+        packetsLost?: number;
+        jitter?: number;
+        jitterBufferDelay?: number;
+        jitterBufferEmittedCount?: number;
+        totalDecodeTime?: number;
+      }
+    | null = null;
+
+  const id = window.setInterval(async () => {
+    try {
+      const report = await pc.getStats();
+      let best: any = null;
+      report.forEach((s) => {
+        if (s.type !== 'inbound-rtp') return;
+        if (s.kind !== 'video' && s.mediaType !== 'video') return;
+        const frames = typeof s.framesReceived === 'number' ? s.framesReceived : 0;
+        if (!best || frames > (best.framesReceived ?? 0)) {
+          best = s;
+        }
+      });
+      if (!best) return;
+
+      const now = performance.now();
+      const cur = {
+        now,
+        framesReceived: best.framesReceived,
+        framesDecoded: best.framesDecoded,
+        framesDropped: best.framesDropped,
+        packetsLost: best.packetsLost,
+        jitter: best.jitter,
+        jitterBufferDelay: best.jitterBufferDelay,
+        jitterBufferEmittedCount: best.jitterBufferEmittedCount,
+        totalDecodeTime: best.totalDecodeTime,
+      };
+
+      if (prev) {
+        const dt = (cur.now - prev.now) / 1000;
+        const dRecv =
+          typeof cur.framesReceived === 'number' && typeof prev.framesReceived === 'number'
+            ? cur.framesReceived - prev.framesReceived
+            : undefined;
+        const dDec =
+          typeof cur.framesDecoded === 'number' && typeof prev.framesDecoded === 'number'
+            ? cur.framesDecoded - prev.framesDecoded
+            : undefined;
+        const dDrop =
+          typeof cur.framesDropped === 'number' && typeof prev.framesDropped === 'number'
+            ? cur.framesDropped - prev.framesDropped
+            : undefined;
+
+        const avgJbMs =
+          typeof cur.jitterBufferDelay === 'number' &&
+          typeof cur.jitterBufferEmittedCount === 'number' &&
+          cur.jitterBufferEmittedCount > 0
+            ? (cur.jitterBufferDelay / cur.jitterBufferEmittedCount) * 1000
+            : null;
+        const avgDecodeMs =
+          typeof cur.totalDecodeTime === 'number' &&
+          typeof cur.framesDecoded === 'number' &&
+          cur.framesDecoded > 0
+            ? (cur.totalDecodeTime / cur.framesDecoded) * 1000
+            : null;
+
+        onStats({
+          fpsReceived: typeof dRecv === 'number' ? dRecv / dt : undefined,
+          fpsDecoded: typeof dDec === 'number' ? dDec / dt : undefined,
+          framesDropped: typeof dDrop === 'number' ? dDrop : undefined,
+          avgJitterBufferMs: avgJbMs,
+          avgDecodeMsPerFrame: avgDecodeMs,
+          packetsLostDelta:
+            typeof cur.packetsLost === 'number' && typeof prev.packetsLost === 'number'
+              ? cur.packetsLost - prev.packetsLost
+              : undefined,
+          jitter: cur.jitter,
+        });
+      }
+
+      prev = cur;
+    } catch {
+      /* ignore */
+    }
+  }, intervalMs);
+
+  return () => {
+    window.clearInterval(id);
+  };
+}
+
 function statusTagType(state?: string | null) {
   if (!state) return 'default';
   if (state === 'connected' || state === 'completed' || state === 'open') return 'success';
@@ -2262,6 +2904,8 @@ function statusTagType(state?: string | null) {
 
 async function connect() {
   isConnecting.value = true;
+  negotiatedEncoding.value = null;
+  hdrRuntimeWarning.value = null;
   audioAutoplayRequested = true;
   primeAudioAutoplay();
   resetAudioDrainState();
@@ -2309,6 +2953,11 @@ async function connect() {
                   pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
                 });
               }
+              // Start FramePacer for latest-frame-wins rendering
+              if (useFramePacer.value) {
+                // Wait for next tick to ensure canvas is mounted
+                setTimeout(() => startFramePacer(), 0);
+              }
             }
           }
         },
@@ -2317,6 +2966,25 @@ async function connect() {
           isConnected.value = state === 'connected';
           if (state === 'connected') {
             applyVideoTargetMs(resolveVideoBaseTargetMs());
+            if (!stopInboundVideoStatsTimer) {
+              const pc = client.peerConnection;
+              if (pc) {
+                stopInboundVideoStatsTimer = startInboundVideoStats(pc, (sample) => {
+                  inboundVideoStats.value = sample;
+                });
+              }
+            }
+            if (!diagnosticsSampleTimer) {
+              startDiagnosticsSampling();
+            }
+          } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+            if (stopInboundVideoStatsTimer) {
+              stopInboundVideoStatsTimer();
+              stopInboundVideoStatsTimer = null;
+            }
+            inboundVideoStats.value = {};
+            stopDiagnosticsSampling();
+            diagnosticsSamples.value = [];
           }
         },
         onIceState: (state) => {
@@ -2333,7 +3001,13 @@ async function connect() {
         },
         onNegotiatedEncoding: (encoding) => {
           if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
-            config.encoding = encoding;
+            negotiatedEncoding.value = encoding;
+          }
+        },
+        onWarning: (warning) => {
+          notifyWarning('Configuration Warning', warning);
+          if (config.hdr && /^hdr\b/i.test(warning)) {
+            hdrRuntimeWarning.value = warning;
           }
         },
       },
@@ -2368,11 +3042,20 @@ async function disconnect() {
   inputMetrics.value = {};
   inputBufferedAmount.value = null;
   videoFrameMetrics.value = {};
+  videoPacingMetrics.value = {};
+  inboundVideoStats.value = {};
+  diagnosticsSamples.value = [];
+  stopDiagnosticsSampling();
+  if (stopInboundVideoStatsTimer) {
+    stopInboundVideoStatsTimer();
+    stopInboundVideoStatsTimer = null;
+  }
   smoothedVideoFps.value = undefined;
   lastVideoFpsSampleAt = null;
   lastPlaybackRateUpdateAt = null;
   modeSwitchDrainUntil = null;
   detachInputCapture();
+  destroyFramePacer();
   if (videoEl.value) {
     try {
       videoEl.value.playbackRate = 1;
@@ -2476,9 +3159,16 @@ watch(videoEl, (el) => {
     detachVideoFrames();
     detachVideoFrames = null;
   }
+  if (detachVideoPacing) {
+    detachVideoPacing();
+    detachVideoPacing = null;
+  }
   if (!el) return;
   detachVideoEvents = attachVideoDebug(el);
   detachVideoFrames = attachVideoFrameMetrics(el);
+  detachVideoPacing = attachVideoPacingProbe(el, (sample) => {
+    videoPacingMetrics.value = sample;
+  });
 });
 
 onBeforeUnmount(() => {
@@ -2497,6 +3187,16 @@ onBeforeUnmount(() => {
     detachVideoEvents();
     detachVideoEvents = null;
   }
+  if (detachVideoPacing) {
+    detachVideoPacing();
+    detachVideoPacing = null;
+  }
+  if (stopInboundVideoStatsTimer) {
+    stopInboundVideoStatsTimer();
+    stopInboundVideoStatsTimer = null;
+  }
+  stopDiagnosticsSampling();
+  stopWebrtcDiagnostics();
   stopSessionStatusPolling();
   stopServerSessionPolling();
   void disconnect();
@@ -2519,7 +3219,9 @@ onMounted(async () => {
     /* ignore */
   }
   encodingSupport.value = detectEncodingSupport();
-  ensureEncodingSupported();
+  if (config.hdr) {
+    ensureHdrEncoding();
+  }
   startSessionStatusPolling();
 });
 
@@ -2528,8 +3230,10 @@ watch(
   (connected) => {
     if (connected) {
       stopSessionStatusPolling();
+      startWebrtcDiagnostics();
       return;
     }
+    stopWebrtcDiagnostics();
     startSessionStatusPolling();
   },
 );
@@ -2887,6 +3591,10 @@ watch(
   text-transform: uppercase;
 }
 
+.preset-chip.reported-unsupported {
+  border-style: dashed;
+}
+
 .sub-settings {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2984,6 +3692,69 @@ watch(
   border: 1px solid var(--border-subtle);
   border-radius: 1rem;
   overflow: hidden;
+}
+
+.diagnostics-card {
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.diag-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.diag-btn {
+  border: 1px solid var(--border-subtle);
+  background: rgb(var(--color-primary) / 0.1);
+  color: var(--text-primary);
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.diag-btn:hover {
+  border-color: rgb(var(--color-primary) / 0.5);
+  filter: brightness(1.1);
+}
+
+.diag-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  background: rgb(var(--color-primary) / 0.08);
+  border-radius: 0.75rem;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+
+.diag-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.diag-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.diag-value {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 /* Action Card */
