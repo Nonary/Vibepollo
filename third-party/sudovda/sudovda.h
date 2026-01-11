@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <iostream>
 #include <setupapi.h>
 #include <cfgmgr32.h>
 #include <stdio.h>
@@ -33,11 +32,14 @@ static const HANDLE OpenDevice(const GUID* interfaceGuid) {
 
 	for (DWORD i = 0; SetupDiEnumDeviceInterfaces(deviceInfoSet, nullptr, interfaceGuid, i, &deviceInterfaceData); ++i)
 	{
-		DWORD detailSize = 0;
-		SetupDiGetDeviceInterfaceDetailA(deviceInfoSet, &deviceInterfaceData, NULL, 0, &detailSize, NULL);
+                DWORD detailSize = 0;
+                SetupDiGetDeviceInterfaceDetailA(deviceInfoSet, &deviceInterfaceData, NULL, 0, &detailSize, NULL);
 
-		SP_DEVICE_INTERFACE_DETAIL_DATA_A *detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_A *)calloc(1, detailSize);
-		detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
+                SP_DEVICE_INTERFACE_DETAIL_DATA_A *detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_A *)calloc(1, detailSize);
+                if (!detail) {
+                        break;
+                }
+                detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);     
 
 		if (SetupDiGetDeviceInterfaceDetailA(deviceInfoSet, &deviceInterfaceData, detail, detailSize, &detailSize, NULL))
 		{
@@ -49,12 +51,13 @@ static const HANDLE OpenDevice(const GUID* interfaceGuid) {
 				FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH,
 				NULL);
 
-			if (handle != NULL && handle != INVALID_HANDLE_VALUE) {
-				break;
-			}
-		}
+                        if (handle != NULL && handle != INVALID_HANDLE_VALUE) {
+                                free(detail);
+                                break;
+                        }
+                }
 
-		free(detail);
+                free(detail);
 	}
 
 	SetupDiDestroyDeviceInfoList(deviceInfoSet);
@@ -62,109 +65,140 @@ static const HANDLE OpenDevice(const GUID* interfaceGuid) {
 }
 
 static const bool AddVirtualDisplay(HANDLE hDevice, UINT Width, UINT Height, UINT RefreshRate, const GUID& MonitorGuid, const CHAR* DeviceName, const CHAR* SerialNumber, VIRTUAL_DISPLAY_ADD_OUT& output) {
-	VIRTUAL_DISPLAY_ADD_PARAMS params{Width, Height, RefreshRate, MonitorGuid, {}, {}};
-	strncpy(params.DeviceName, DeviceName, 13);
-	strncpy(params.SerialNumber, SerialNumber, 13);
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+        if (!DeviceName || !SerialNumber) {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return false;
+        }
 
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_ADD_VIRTUAL_DISPLAY,
-		(LPVOID)&params,
+        VIRTUAL_DISPLAY_ADD_PARAMS params{Width, Height, RefreshRate, MonitorGuid, {}, {}};
+        strncpy(params.DeviceName, DeviceName, sizeof(params.DeviceName) - 1);
+        params.DeviceName[sizeof(params.DeviceName) - 1] = '\0';
+        strncpy(params.SerialNumber, SerialNumber, sizeof(params.SerialNumber) - 1);
+        params.SerialNumber[sizeof(params.SerialNumber) - 1] = '\0';
+
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_ADD_VIRTUAL_DISPLAY,
+                (LPVOID)&params,
 		sizeof(params),
 		(LPVOID)&output,
 		sizeof(output),
 		&bytesReturned,
-		nullptr
-	);
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] AddVirtualDisplay failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] AddVirtualDisplay failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
-static const bool RemoveVirtualDisplay(HANDLE hDevice, const GUID& MonitorGuid) {
-	VIRTUAL_DISPLAY_REMOVE_PARAMS params{MonitorGuid};
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_REMOVE_VIRTUAL_DISPLAY,
-		(LPVOID)&params,
+static const bool RemoveVirtualDisplay(HANDLE hDevice, const GUID& MonitorGuid) { 
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+
+        VIRTUAL_DISPLAY_REMOVE_PARAMS params{MonitorGuid};
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_REMOVE_VIRTUAL_DISPLAY,
+                (LPVOID)&params,
 		sizeof(params),
 		nullptr,
 		0,
-		&bytesReturned,
-		nullptr
-	);
+                &bytesReturned,
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] RemoveVirtualDisplay failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] RemoveVirtualDisplay failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
-static const bool SetRenderAdapter(HANDLE hDevice, const LUID& AdapterLuid) {
-	VIRTUAL_DISPLAY_SET_RENDER_ADAPTER_PARAMS params{AdapterLuid};
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_SET_RENDER_ADAPTER,
-		(LPVOID)&params,
+static const bool SetRenderAdapter(HANDLE hDevice, const LUID& AdapterLuid) {   
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+
+        VIRTUAL_DISPLAY_SET_RENDER_ADAPTER_PARAMS params{AdapterLuid};
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_SET_RENDER_ADAPTER,
+                (LPVOID)&params,
 		sizeof(params),
 		nullptr,
 		0,
-		&bytesReturned,
-		nullptr
-	);
+                &bytesReturned,
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] SetRenderAdapter failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] SetRenderAdapter failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
 static const bool GetWatchdogTimeout(HANDLE hDevice, VIRTUAL_DISPLAY_GET_WATCHDOG_OUT& output) {
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_GET_WATCHDOG,
-		nullptr,
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_GET_WATCHDOG,
+                nullptr,
 		0,
 		(LPVOID)&output,
 		sizeof(output),
-		&bytesReturned,
-		nullptr
-	);
+                &bytesReturned,
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] GetWatchdogTimeout failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] GetWatchdogTimeout failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
 static const bool GetProtocolVersion(HANDLE hDevice, VIRTUAL_DISPLAY_GET_PROTOCOL_VERSION_OUT& output) {
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_GET_PROTOCOL_VERSION,
-		nullptr,
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_GET_PROTOCOL_VERSION,
+                nullptr,
 		0,
 		(LPVOID)&output,
 		sizeof(output),
-		&bytesReturned,
-		nullptr
-	);
+                &bytesReturned,
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] GetProtocolVersion failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] GetProtocolVersion failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
 static const bool isProtocolCompatible(const SUVDA_PROTOCAL_VERSION& otherVersion) {
@@ -193,23 +227,28 @@ static const bool CheckProtocolCompatible(HANDLE hDevice) {
 }
 
 static const bool PingDriver(HANDLE hDevice) {
-	DWORD bytesReturned;
-	BOOL success = DeviceIoControl(
-		hDevice,
-		IOCTL_DRIVER_PING,
-		nullptr,
+        if (hDevice == nullptr || hDevice == INVALID_HANDLE_VALUE) {
+                SetLastError(ERROR_INVALID_HANDLE);
+                return false;
+        }
+
+        DWORD bytesReturned = 0;
+        BOOL success = DeviceIoControl(
+                hDevice,
+                IOCTL_DRIVER_PING,
+                nullptr,
 		0,
 		nullptr,
 		0,
-		&bytesReturned,
-		nullptr
-	);
+                &bytesReturned,
+                nullptr
+        );
 
-	if (!success) {
-		std::cerr << "[SUVDA] PingDriver failed: " << GetLastError() << std::endl;
-	}
+        if (!success) {
+                fprintf(stderr, "[SUDOVDA] PingDriver failed: %lu\n", (unsigned long)GetLastError());
+        }
 
-	return success;
+        return success;
 }
 
 static const bool GetAddedDisplayName(const VIRTUAL_DISPLAY_ADD_OUT& addedDisplay, wchar_t* deviceName) {
