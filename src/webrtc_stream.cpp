@@ -950,19 +950,19 @@ namespace webrtc_stream {
       if (type == "mouse_move") {
         const double x = message.value("x", 0.0);
         const double y = message.value("y", 0.0);
-        input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y));
+        input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y), crypto::PERM::_all_inputs);
         return;
       }
       if (type == "mouse_down" || type == "mouse_up") {
         if (message.contains("x") && message.contains("y")) {
           const double x = message.value("x", 0.0);
           const double y = message.value("y", 0.0);
-          input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y));
+          input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y), crypto::PERM::_all_inputs);
         }
 
         int mapped_button = map_mouse_button(message.value("button", -1));
         if (mapped_button > 0) {
-          input::passthrough(input_ctx, make_mouse_button_packet(mapped_button, type == "mouse_up"));
+          input::passthrough(input_ctx, make_mouse_button_packet(mapped_button, type == "mouse_up"), crypto::PERM::_all_inputs);
         }
         return;
       }
@@ -972,10 +972,10 @@ namespace webrtc_stream {
         const int vscroll = static_cast<int>(std::lround(-dy * 120.0));
         const int hscroll = static_cast<int>(std::lround(dx * 120.0));
         if (vscroll != 0) {
-          input::passthrough(input_ctx, make_scroll_packet(vscroll));
+          input::passthrough(input_ctx, make_scroll_packet(vscroll), crypto::PERM::_all_inputs);
         }
         if (hscroll != 0) {
-          input::passthrough(input_ctx, make_hscroll_packet(hscroll));
+          input::passthrough(input_ctx, make_hscroll_packet(hscroll), crypto::PERM::_all_inputs);
         }
         return;
       }
@@ -990,7 +990,7 @@ namespace webrtc_stream {
         if (message.contains("modifiers") && message["modifiers"].is_object()) {
           mods = modifiers_from_json(message["modifiers"]);
         }
-        input::passthrough(input_ctx, make_keyboard_packet(*key_code, type == "key_up", mods));
+        input::passthrough(input_ctx, make_keyboard_packet(*key_code, type == "key_up", mods), crypto::PERM::_all_inputs);
         return;
       }
       if (type == "gamepad_connect") {
@@ -1012,7 +1012,7 @@ namespace webrtc_stream {
         const uint8_t controller_type = parse_gamepad_type(message);
         const auto capabilities = static_cast<uint16_t>(message.value("capabilities", 0));
         const auto supported_buttons = static_cast<uint32_t>(message.value("supportedButtons", 0));
-        input::passthrough(input_ctx, make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons));
+        input::passthrough(input_ctx, make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons), crypto::PERM::_all_inputs);
         return;
       }
       if (type == "gamepad_state") {
@@ -1035,6 +1035,7 @@ namespace webrtc_stream {
           input::passthrough(
             input_ctx,
             make_gamepad_arrival_packet(controller, controller_type, capabilities, supported_buttons)
+          , crypto::PERM::_all_inputs
           );
         }
         const auto active_mask = static_cast<uint16_t>(message.value("activeMask", 0));
@@ -1064,6 +1065,7 @@ namespace webrtc_stream {
             clamp_i16(rs_x),
             clamp_i16(rs_y)
           )
+        , crypto::PERM::_all_inputs
         );
         return;
       }
@@ -1080,6 +1082,7 @@ namespace webrtc_stream {
         input::passthrough(
           input_ctx,
           make_gamepad_state_packet(controller, active_mask, 0, 0, 0, 0, 0, 0, 0)
+        , crypto::PERM::_all_inputs
         );
         return;
       }
@@ -1098,7 +1101,7 @@ namespace webrtc_stream {
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
           return;
         }
-        input::passthrough(input_ctx, make_gamepad_motion_packet(controller, motion_type, x, y, z));
+        input::passthrough(input_ctx, make_gamepad_motion_packet(controller, motion_type, x, y, z), crypto::PERM::_all_inputs);
         return;
       }
     }
@@ -2194,7 +2197,20 @@ namespace webrtc_stream {
       }
 
       if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
-        auto result = proc::proc.execute(requested_app_id, launch_session);
+        int result = -1;
+        try {
+          const auto apps_snapshot = proc::proc.get_apps();
+          const auto app_id_str = std::to_string(requested_app_id);
+          const auto it = std::find_if(apps_snapshot.begin(), apps_snapshot.end(), [&](const proc::ctx_t &app_ctx) {
+            return app_ctx.id == app_id_str;
+          });
+          if (it == apps_snapshot.end()) {
+            return std::string {"Requested application not found"};
+          }
+          result = proc::proc.execute(*it, launch_session);
+        } catch (...) {
+          result = -1;
+        }
         if (result != 0) {
           return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
         }
@@ -2347,7 +2363,7 @@ namespace webrtc_stream {
       ctx->last_mouse_move_seq.store(seq, std::memory_order_release);
       ctx->last_mouse_move_at_ms.store(now_ms, std::memory_order_release);
 
-      input::passthrough(input_ctx, make_abs_mouse_move_packet(unit_from_u16(x_u16), unit_from_u16(y_u16)));
+      input::passthrough(input_ctx, make_abs_mouse_move_packet(unit_from_u16(x_u16), unit_from_u16(y_u16)), crypto::PERM::_all_inputs);
     }
 
     void on_data_channel_message(void *user, const char *buffer, int length, int binary) {
@@ -4257,8 +4273,16 @@ namespace webrtc_stream {
         const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
         start_params = compute_stream_start_params(options, effective_app_id);
       }
+      const int fps_raw = start_params.fps;
+      const int fps_hz = fps_raw <= 0
+        ? kDefaultFps
+        : (fps_raw >= 1000
+            ? std::max(1, static_cast<int>(std::lround(static_cast<double>(fps_raw) / 1000.0)))
+            : fps_raw);
+      const int fps_millihz = fps_raw <= 0 ? (kDefaultFps * 1000) : (fps_raw >= 1000 ? fps_raw : fps_raw * 1000);
       platf::frame_limiter_streaming_start(
-        start_params.fps,
+        fps_hz,
+        fps_millihz,
         start_params.gen1_framegen_fix,
         start_params.gen2_framegen_fix,
         start_params.lossless_rtss_limit,
