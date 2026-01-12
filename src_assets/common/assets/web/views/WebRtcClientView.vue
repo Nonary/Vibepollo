@@ -168,7 +168,7 @@
           <video
             ref="videoEl"
             class="stream-video"
-            :class="{ hidden: useFramePacer }"
+            :class="{ 'pacer-source-hidden': useFramePacer }"
             autoplay
             playsinline
             :controls="false"
@@ -739,6 +739,8 @@ const videoEl = ref<HTMLVideoElement | null>(null);
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
 const isFullscreen = ref(false);
+const pseudoFullscreen = ref(false);
+const nativeVideoFullscreen = ref(false);
 const autoFullscreen = ref(true);
 const sessionId = ref<string | null>(null);
 const serverSession = ref<WebRtcSessionState | null>(null);
@@ -995,6 +997,7 @@ let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
 let detachVideoFrames: (() => void) | null = null;
 let detachVideoPacing: (() => void) | null = null;
+let detachVideoFullscreenEvents: (() => void) | null = null;
 let stopInboundVideoStatsTimer: (() => void) | null = null;
 let lastTrackSnapshot: { videoReady?: string; audioReady?: string } | null = null;
 
@@ -1194,17 +1197,73 @@ function getFullscreenElement(): Element | null {
   return document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
 }
 
-async function requestFullscreen(target: HTMLElement): Promise<void> {
+function isIosPhone(): boolean {
+  try {
+    const ua = navigator.userAgent ?? '';
+    return /\b(iPhone|iPod)\b/i.test(ua);
+  } catch {
+    return false;
+  }
+}
+
+function isNativeVideoFullscreenActive(): boolean {
+  if (nativeVideoFullscreen.value) return true;
+  try {
+    const anyVideo = videoEl.value as any;
+    return Boolean(anyVideo?.webkitDisplayingFullscreen);
+  } catch {
+    return false;
+  }
+}
+
+async function requestFullscreen(target: HTMLElement): Promise<boolean> {
   const anyTarget = target as any;
-  if (typeof target.requestFullscreen === 'function') { await target.requestFullscreen(); return; }
+  if (typeof target.requestFullscreen === 'function') {
+    try {
+      await target.requestFullscreen();
+      return true;
+    } catch { /* try fallback */ }
+  }
   if (typeof anyTarget.webkitRequestFullscreen === 'function') {
-    const result = anyTarget.webkitRequestFullscreen();
-    if (result && typeof result.then === 'function') await result;
-    return;
+    try {
+      const result = anyTarget.webkitRequestFullscreen();
+      if (result && typeof result.then === 'function') await result;
+      return true;
+    } catch { /* try fallback */ }
   }
-  if (videoEl.value && typeof (videoEl.value as any).webkitEnterFullscreen === 'function') {
-    (videoEl.value as any).webkitEnterFullscreen();
+  return false;
+}
+
+function tryEnterNativeVideoFullscreen(): boolean {
+  const video = videoEl.value;
+  if (!video) return false;
+  const anyVideo = video as any;
+  const enter = anyVideo?.webkitEnterFullscreen ?? anyVideo?.webkitEnterFullScreen;
+  if (typeof enter !== 'function') return false;
+  try {
+    enter.call(video);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+async function tryEnterFullscreen(target: HTMLElement): Promise<boolean> {
+  const video = videoEl.value;
+  // iOS phones are the most restrictive; prefer native video fullscreen there.
+  if (isIosPhone() && video) {
+    if (await requestFullscreen(video)) return true;
+    if (tryEnterNativeVideoFullscreen()) return true;
+    if (await requestFullscreen(target)) return true;
+    return false;
+  }
+
+  if (await requestFullscreen(target)) return true;
+  if (video) {
+    if (await requestFullscreen(video)) return true;
+    if (tryEnterNativeVideoFullscreen()) return true;
+  }
+  return false;
 }
 
 async function exitFullscreen(): Promise<void> {
@@ -1217,6 +1276,7 @@ async function exitFullscreen(): Promise<void> {
 }
 
 function isFullscreenActive(): boolean {
+  if (isNativeVideoFullscreenActive()) return true;
   const fullscreenEl = getFullscreenElement();
   return fullscreenEl === inputTarget.value || fullscreenEl === videoEl.value;
 }
@@ -1230,7 +1290,9 @@ function isTabActive(): boolean {
 }
 
 const onFullscreenChange = () => {
-  isFullscreen.value = isFullscreenActive();
+  const active = isFullscreenActive();
+  if (active) pseudoFullscreen.value = false;
+  isFullscreen.value = active || pseudoFullscreen.value;
   if (!isFullscreen.value) { cancelEscHold(); releaseFullscreenKeyboardLock(); }
   modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
   triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'fullscreen');
@@ -1515,13 +1577,12 @@ async function startConnect() {
   primeAudioAutoplay();
   resetAudioDrainState();
   client.setAudioLatencyTargets(AUDIO_TARGET_BUFFER_MS, AUDIO_TARGET_PLAYOUT_MS);
-  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
+  if (autoFullscreen.value && inputTarget.value && !isFullscreen.value) {
     try {
       const target = inputTarget.value;
-      requestFullscreenKeyboardLock();
-      const enterPromise = requestFullscreen(target);
-      requestFullscreenKeyboardLock();
-      await enterPromise;
+      const entered = await tryEnterFullscreen(target);
+      if (!entered) pseudoFullscreen.value = true;
+      onFullscreenChange();
       try { target.focus(); } catch { /* ignore */ }
       requestFullscreenKeyboardLock();
     } catch { /* ignore */ }
@@ -1680,6 +1741,12 @@ async function terminateSession() {
 
 async function toggleFullscreen() {
   try {
+    if (pseudoFullscreen.value && !isFullscreenActive()) {
+      pseudoFullscreen.value = false;
+      onFullscreenChange();
+      releaseFullscreenKeyboardLock();
+      return;
+    }
     if (isFullscreenActive()) {
       await exitFullscreen();
       releaseFullscreenKeyboardLock();
@@ -1687,9 +1754,10 @@ async function toggleFullscreen() {
     }
     if (!inputTarget.value) return;
     const target = inputTarget.value;
-    const enterPromise = requestFullscreen(target);
+    const entered = await tryEnterFullscreen(target);
+    if (!entered) pseudoFullscreen.value = true;
+    onFullscreenChange();
     requestFullscreenKeyboardLock();
-    await enterPromise;
     try { target.focus(); } catch { /* ignore */ }
     requestFullscreenKeyboardLock();
   } catch { /* ignore */ }
@@ -1722,14 +1790,27 @@ watch(() => [inputEnabled.value, isConnected.value], ([enabled, connected]) => {
   if (isFullscreenActive()) requestFullscreenKeyboardLock();
 });
 
+function attachVideoFullscreenEvents(el: HTMLVideoElement): () => void {
+  const onBegin = () => { nativeVideoFullscreen.value = true; onFullscreenChange(); };
+  const onEnd = () => { nativeVideoFullscreen.value = false; onFullscreenChange(); };
+  el.addEventListener('webkitbeginfullscreen', onBegin as EventListener);
+  el.addEventListener('webkitendfullscreen', onEnd as EventListener);
+  return () => {
+    el.removeEventListener('webkitbeginfullscreen', onBegin as EventListener);
+    el.removeEventListener('webkitendfullscreen', onEnd as EventListener);
+  };
+}
+
 watch(videoEl, (el) => {
   if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
   if (detachVideoFrames) { detachVideoFrames(); detachVideoFrames = null; }
   if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
+  if (detachVideoFullscreenEvents) { detachVideoFullscreenEvents(); detachVideoFullscreenEvents = null; }
   if (!el) return;
   detachVideoEvents = attachVideoDebug(el);
   detachVideoFrames = attachVideoFrameMetrics(el);
   detachVideoPacing = attachVideoPacingProbe(el, (sample) => { videoPacingMetrics.value = sample; });
+  detachVideoFullscreenEvents = attachVideoFullscreenEvents(el);
 });
 
 onBeforeUnmount(() => {
@@ -1745,7 +1826,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onPageHide);
   cancelEscHold();
   if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
+  if (detachVideoFrames) { detachVideoFrames(); detachVideoFrames = null; }
   if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
+  if (detachVideoFullscreenEvents) { detachVideoFullscreenEvents(); detachVideoFullscreenEvents = null; }
   if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
   stopDiagnosticsSampling();
   stopWebrtcDiagnostics();
@@ -2471,6 +2554,16 @@ watch(() => isConnected.value, (connected) => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.pacer-source-hidden {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .hidden {
