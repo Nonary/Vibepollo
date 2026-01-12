@@ -444,7 +444,9 @@
                     <i class="fas fa-play-circle"></i>
                   </div>
                   <h3>Ready to Stream</h3>
-                  <p>Select a game and click Start Streaming, or double-click a game to begin</p>
+                  <p>
+                    Select a game and click {{ $t(connectLabelKey) }}, or double-click a game to begin
+                  </p>
                 </div>
               </div>
 
@@ -714,7 +716,8 @@
 
 <script setup lang="ts">
 import { ref, reactive, onBeforeUnmount, onMounted, watch, computed } from 'vue';
-import { NTag, NSwitch, NInputNumber, NPopover, useMessage } from 'naive-ui';
+import { useI18n } from 'vue-i18n';
+import { NTag, NSwitch, NInputNumber, NPopover, useDialog, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
 import { FramePacer, type FramePacerMetrics } from '@/utils/webrtc/framePacer';
@@ -737,6 +740,8 @@ import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
 
+const { t } = useI18n();
+const dialog = useDialog();
 const message = useMessage();
 
 // ============================================
@@ -1071,9 +1076,21 @@ const selectedAppLabel = computed(() => {
   return selected?.name ? `Selected: ${selected.name}` : `Selected app id: ${selectedAppId.value}`;
 });
 
+const selectedAppName = computed(() => {
+  if (!selectedAppId.value) return null;
+  const selected = appsList.value.find((app) => appNumericId(app) === selectedAppId.value);
+  return selected?.name ?? null;
+});
+
+const hasRunningSession = computed(() => {
+  if (!sessionStatus.value) return false;
+  return sessionStatus.value.appRunning || sessionStatus.value.activeSessions > 0;
+});
+
 const resumeAvailable = computed(() => {
   if (selectedAppId.value) return false;
-  return sessionStatus.value?.paused ?? false;
+  if (!sessionStatus.value) return false;
+  return sessionStatus.value.activeSessions > 0 || sessionStatus.value.paused;
 });
 
 const api = new WebRtcHttpApi();
@@ -2924,7 +2941,22 @@ function statusTagType(state?: string | null) {
   return 'default';
 }
 
-async function connect() {
+async function confirmTerminateAndConnect(): Promise<void> {
+  dialog.warning({
+    title: t('webrtc.terminate_confirm_title'),
+    content: t('webrtc.terminate_confirm_message', {
+      app: selectedAppName.value ?? t('webrtc.terminate_confirm_app_fallback'),
+    }),
+    positiveText: t('webrtc.terminate_confirm_action'),
+    negativeText: t('_common.cancel'),
+    onPositiveClick: async () => {
+      await terminateSession();
+      await startConnect();
+    },
+  });
+}
+
+async function startConnect() {
   isConnecting.value = true;
   negotiatedEncoding.value = null;
   hdrRuntimeWarning.value = null;
@@ -3064,6 +3096,18 @@ async function connect() {
       startSessionStatusPolling();
     }
   }
+}
+
+async function connect() {
+  if (isConnecting.value) return;
+  if (selectedAppId.value && !sessionStatus.value) {
+    await fetchSessionStatus();
+  }
+  if (selectedAppId.value && hasRunningSession.value) {
+    await confirmTerminateAndConnect();
+    return;
+  }
+  await startConnect();
 }
 
 async function disconnect() {
