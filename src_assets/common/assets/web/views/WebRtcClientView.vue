@@ -1,723 +1,399 @@
 <template>
-  <div class="streaming-app">
-    <!-- Cinematic Header -->
-    <header class="streaming-header">
-      <div class="header-content">
-        <div class="brand-section">
-          <div class="brand-icon">
-            <i class="fas fa-play"></i>
-          </div>
-          <div class="brand-text">
-            <div class="brand-title-row">
-              <h1 class="brand-title">{{ $t('webrtc.title') }}</h1>
-              <span class="alpha-badge">
-                <i class="fas fa-flask"></i>
-                ALPHA
-              </span>
+  <div class="webrtc-app" :class="{ 'settings-open': showSettings }">
+    <!-- Main Content Area -->
+    <div class="main-content">
+      <!-- Compact Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand">
+            <div class="brand-icon">
+              <i class="fas fa-play"></i>
             </div>
-            <p class="brand-subtitle">{{ $t('webrtc.subtitle') }}</p>
+            <h1>{{ $t('webrtc.title') }}</h1>
           </div>
         </div>
 
-        <!-- Live Status Indicator -->
-        <div class="status-bar">
-          <div class="connection-pill" :class="connectionPillClass">
+        <div class="header-center">
+          <div class="status-pill" :class="connectionPillClass">
             <span class="status-dot"></span>
-            <span class="status-text">{{ connectionStatusLabel }}</span>
+            <span>{{ connectionStatusLabel }}</span>
           </div>
-
-          <div v-if="isConnected" class="live-metrics">
-            <div class="metric">
-              <i class="fas fa-gauge-high"></i>
-              <span>{{ formatKbps(stats.videoBitrateKbps) }}</span>
-            </div>
-            <div class="metric">
-              <i class="fas fa-bolt"></i>
-              <span>{{ formatMs(smoothedLatencyMs) }}</span>
-            </div>
-            <div class="metric">
-              <i class="fas fa-film"></i>
-              <span>{{ displayVideoFps ? `${displayVideoFps.toFixed(0)} FPS` : '--' }}</span>
-            </div>
-          </div>
-
-          <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
-            <template #trigger>
-              <button class="settings-trigger">
-                <i class="fas fa-cog"></i>
-                <span>{{ $t('webrtc.session_settings') }}</span>
-                <i class="fas fa-chevron-down chevron"></i>
-              </button>
-            </template>
-            <div class="settings-panel">
-              <div class="settings-header">
-                <i class="fas fa-sliders-h"></i>
-                <span>{{ $t('webrtc.session_settings') }}</span>
-              </div>
-              <div class="settings-body">
-                <div class="setting-group">
-                  <label class="setting-label">{{ $t('webrtc.resolution') }}</label>
-                  <div class="resolution-inputs">
-                    <n-input-number
-                      v-model:value="config.width"
-                      :min="320"
-                      :max="7680"
-                      size="small"
-                    />
-                    <span class="resolution-x">×</span>
-                    <n-input-number
-                      v-model:value="config.height"
-                      :min="180"
-                      :max="4320"
-                      size="small"
-                    />
-                  </div>
-                  <div class="preset-row">
-                    <button
-                      @click="setResolution(1920, 1080)"
-                      class="preset-chip"
-                      :class="{ active: config.width === 1920 && config.height === 1080 }"
-                    >
-                      1080p
-                    </button>
-                    <button
-                      @click="setResolution(2560, 1440)"
-                      class="preset-chip"
-                      :class="{ active: config.width === 2560 && config.height === 1440 }"
-                    >
-                      1440p
-                    </button>
-                    <button
-                      @click="setResolution(3840, 2160)"
-                      class="preset-chip"
-                      :class="{ active: config.width === 3840 && config.height === 2160 }"
-                    >
-                      4K
-                    </button>
-                  </div>
-                </div>
-
-                <div class="setting-group">
-                  <label class="setting-label">{{ $t('webrtc.framerate') }}</label>
-                  <div class="preset-row">
-                    <button
-                      @click="config.fps = 30"
-                      class="preset-chip"
-                      :class="{ active: config.fps === 30 }"
-                    >
-                      30
-                    </button>
-                    <button
-                      @click="config.fps = 60"
-                      class="preset-chip"
-                      :class="{ active: config.fps === 60 }"
-                    >
-                      60
-                    </button>
-                    <button
-                      @click="config.fps = 120"
-                      class="preset-chip"
-                      :class="{ active: config.fps === 120 }"
-                    >
-                      120
-                    </button>
-                    <button
-                      @click="config.fps = 144"
-                      class="preset-chip"
-                      :class="{ active: config.fps === 144 }"
-                    >
-                      144
-                    </button>
-                  </div>
-                </div>
-
-                <div class="setting-group">
-                  <label class="setting-label">{{ $t('webrtc.encoding') }}</label>
-                  <div class="preset-row">
-                    <button
-                      v-for="opt in encodingOptions"
-                      :key="opt.value"
-                      @click="config.encoding = opt.value"
-                      class="preset-chip"
-                      :class="{
-                        active: config.encoding === opt.value,
-                        'reported-unsupported': !opt.supported,
-                      }"
-                      :title="opt.supported ? undefined : opt.hint"
-                    >
-                      {{ opt.label }}
-                      <span v-if="!opt.supported" class="unsupported-tag">MAY NOT</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="setting-group toggle-group">
-                  <div class="toggle-row">
-                    <div class="toggle-info">
-                      <label class="setting-label">{{ $t('webrtc.hdr') }}</label>
-                      <p class="setting-hint">{{ $t('webrtc.hdr_desc') }}</p>
-                    </div>
-                  <n-switch
-                      v-model:value="config.hdr"
-                    />
-                  </div>
-                  <n-alert
-                    v-if="hdrInlineWarning"
-                    type="warning"
-                    :show-icon="true"
-                    class="mt-2"
-                  >
-                    {{ hdrInlineWarning }}
-                  </n-alert>
-                </div>
-
-                <div class="setting-group">
-                  <label class="setting-label">{{ $t('webrtc.bitrate') }}</label>
-                  <n-input-number
-                    v-model:value="config.bitrateKbps"
-                    :min="500"
-                    :max="200000"
-                    size="small"
-                    class="w-full"
-                  />
-                  <div class="preset-row">
-                    <button
-                      @click="config.bitrateKbps = 10000"
-                      class="preset-chip"
-                      :class="{ active: config.bitrateKbps === 10000 }"
-                    >
-                      10 Mbps
-                    </button>
-                    <button
-                      @click="config.bitrateKbps = 30000"
-                      class="preset-chip"
-                      :class="{ active: config.bitrateKbps === 30000 }"
-                    >
-                      30 Mbps
-                    </button>
-                    <button
-                      @click="config.bitrateKbps = 60000"
-                      class="preset-chip"
-                      :class="{ active: config.bitrateKbps === 60000 }"
-                    >
-                      60 Mbps
-                    </button>
-                  </div>
-                </div>
-
-                <div class="setting-group toggle-group">
-                  <div class="toggle-row">
-                    <div class="toggle-info">
-                      <label class="setting-label">{{ $t('webrtc.mute_host_audio') }}</label>
-                      <p class="setting-hint">{{ $t('webrtc.mute_host_audio_desc') }}</p>
-                    </div>
-                    <n-switch v-model:value="config.muteHostAudio" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </n-popover>
         </div>
-      </div>
 
-      <!-- Alpha Notice Banner -->
-      <div class="alpha-banner">
-        <div class="alpha-banner-content">
-          <i class="fas fa-info-circle"></i>
-          <span>{{ $t('webrtc.experimental_notice') }}</span>
+        <div class="header-right">
+          <button class="settings-btn" @click="showSettings = !showSettings" :class="{ active: showSettings }">
+            <i class="fas fa-sliders-h"></i>
+            <span>Settings</span>
+          </button>
         </div>
-      </div>
-    </header>
+      </header>
 
-    <main class="streaming-main">
-      <div class="main-grid">
-        <!-- Control Panel -->
-        <aside class="control-panel">
-          <!-- Primary Actions -->
-          <div class="panel-card action-card">
-            <button
-              @click="isConnected ? disconnect() : connect()"
-              class="primary-action"
-              :class="{ connected: isConnected, connecting: isConnecting }"
-              :disabled="isConnecting"
-            >
-              <div class="action-icon">
-                <i
-                  :class="
-                    isConnected
-                      ? 'fas fa-stop'
-                      : isConnecting
-                        ? 'fas fa-circle-notch fa-spin'
-                        : 'fas fa-play'
-                  "
-                ></i>
-              </div>
-              <span class="action-text">{{ $t(connectLabelKey) }}</span>
-            </button>
-
-            <button
-              v-if="isConnected"
-              @click="terminateSession"
-              class="secondary-action danger"
-              :disabled="isConnecting || terminatePending"
-              :title="$t('webrtc.terminate_desc')"
-            >
-              <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-power-off'"></i>
-              <span>{{ $t('webrtc.terminate') }}</span>
-            </button>
-
-            <div class="quick-toggles">
-              <label class="toggle-item">
-                <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
-                <span>Input</span>
-              </label>
-              <label class="toggle-item">
-                <n-switch v-model:value="showOverlay" size="small" />
-                <span>Stats</span>
-              </label>
-              <label class="toggle-item">
-                <n-switch v-model:value="autoFullscreen" size="small" />
-                <span>Fullscreen</span>
-              </label>
-              <label class="toggle-item" title="Use WebGL frame pacer for smoother rendering (latest-frame-wins with 2-frame cap)">
-                <n-switch v-model:value="useFramePacer" :disabled="isConnected" size="small" />
-                <span>Paced</span>
-              </label>
-              <label class="toggle-item" title="Enable pacer diagnostics (hitch detection, percentiles). Disable to verify no overhead.">
-                <n-switch v-model:value="pacerDiagnostics" :disabled="!useFramePacer" size="small" />
-                <span>Diag</span>
-              </label>
-            </div>
-          </div>
-
-          <!-- Diagnostics Summary -->
-          <div v-if="isConnected" class="panel-card diagnostics-card">
-            <div class="card-header">
-              <div class="header-title">
-                <i class="fas fa-heart-pulse"></i>
-                <span>Diagnostics (30s)</span>
-              </div>
-              <div class="diag-actions">
-                <button class="diag-btn" @click="exportDiagnostics('json')">Export JSON</button>
-                <button class="diag-btn" @click="exportDiagnostics('csv')">CSV</button>
-              </div>
-            </div>
-            <div class="diag-summary">
-              <span class="diag-label">Likely bottleneck</span>
-              <span class="diag-value">{{ diagnosticsSummary }}</span>
-            </div>
-            <div class="diag-grid">
-              <div class="diag-item">
-                <span class="diag-label">Recv / Dec FPS</span>
-                <span class="diag-value">{{ formatFps(diagAverages.fpsReceived) }} / {{ formatFps(diagAverages.fpsDecoded) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Jitter buffer avg</span>
-                <span class="diag-value">{{ formatMs(diagAverages.avgJitterBufferMs) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Decode avg</span>
-                <span class="diag-value">{{ formatMs(diagAverages.avgDecodeMsPerFrame) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Present dt / delta</span>
-                <span class="diag-value">{{ formatMs(diagAverages.pacingDtMs) }} / {{ displayValue(diagAverages.presentedDelta) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Render interval</span>
-                <span class="diag-value">{{ formatMs(diagAverages.renderIntervalMs) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Server queue / age</span>
-                <span class="diag-value">{{ displayValue(diagAverages.serverQueue) }} / {{ formatMs(diagAverages.serverVideoAgeMs) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Packets lost (30s)</span>
-                <span class="diag-value">{{ displayValue(diagAverages.packetsLost) }}</span>
-              </div>
-              <div class="diag-item">
-                <span class="diag-label">Jitter (avg)</span>
-                <span class="diag-value">{{ formatMs(diagAverages.jitterMs) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Game Library -->
-          <div class="panel-card library-card">
-            <div class="card-header">
-              <div class="header-title">
-                <i class="fas fa-gamepad"></i>
-                <span>{{ $t('webrtc.select_game') }}</span>
-              </div>
-              <button v-if="selectedAppId" @click="clearSelection" class="clear-btn">
+      <!-- Game Library -->
+      <section class="library-section">
+        <div class="library-header">
+          <div class="library-title-row">
+            <h2><i class="fas fa-gamepad"></i> {{ $t('webrtc.select_game') }}</h2>
+            <span v-if="selectedAppId" class="selection-badge">
+              <i class="fas fa-check-circle"></i>
+              {{ selectedAppLabel }}
+              <button @click="clearSelection" class="clear-btn">
                 <i class="fas fa-times"></i>
               </button>
-            </div>
+            </span>
+          </div>
+          <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input
+              v-model="searchQuery"
+              type="text"
+              :placeholder="$t('webrtc.search_placeholder') || 'Search applications...'"
+              class="search-input"
+            />
+            <button v-if="searchQuery" @click="searchQuery = ''" class="search-clear">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+        </div>
 
-            <div class="selection-info">
-              <i class="fas fa-circle-info"></i>
-              <span>{{ selectedAppId ? selectedAppLabel : $t('webrtc.no_selection') }}</span>
-            </div>
+        <!-- No apps at all -->
+        <div v-if="!appsList.length" class="empty-state">
+          <i class="fas fa-gamepad"></i>
+          <h3>No Applications</h3>
+          <p>Add games in the Applications tab to start streaming</p>
+        </div>
 
-            <div v-if="appsList.length" class="game-grid">
+        <!-- No search results -->
+        <div v-else-if="!filteredApps.length" class="empty-state">
+          <i class="fas fa-search"></i>
+          <h3>No Results</h3>
+          <p>No applications match "{{ searchQuery }}"</p>
+        </div>
+
+        <template v-else>
+          <!-- Games with Box Art -->
+          <div v-if="appsWithCovers.length" class="games-grid">
+            <button
+              v-for="app in appsWithCovers"
+              :key="appKey(app)"
+              @click="selectApp(app)"
+              @dblclick="onAppDoubleClick(app)"
+              class="game-card"
+              :class="{ selected: appNumericId(app) === selectedAppId }"
+            >
+              <div class="game-cover">
+                <img
+                  :src="coverUrl(app) || undefined"
+                  :alt="app.name || 'Application'"
+                  loading="lazy"
+                  @load="onCoverLoad(app)"
+                  @error="onCoverError(app)"
+                />
+                <div class="cover-gradient"></div>
+                <div v-if="appNumericId(app) === selectedAppId" class="selected-badge">
+                  <i class="fas fa-check"></i>
+                </div>
+                <div class="play-overlay">
+                  <i class="fas fa-play"></i>
+                </div>
+              </div>
+              <div class="game-meta">
+                <span class="game-name">{{ app.name || '(untitled)' }}</span>
+                <span class="game-source">{{ appSubtitle(app) }}</span>
+              </div>
+            </button>
+          </div>
+
+          <!-- Other Applications (no box art) -->
+          <div v-if="appsWithoutCovers.length" class="other-apps-section">
+            <h3 class="section-label">
+              <i class="fas fa-window-maximize"></i>
+              Other Applications
+            </h3>
+            <div class="apps-list">
               <button
-                v-for="app in appsList"
+                v-for="app in appsWithoutCovers"
                 :key="appKey(app)"
                 @click="selectApp(app)"
                 @dblclick="onAppDoubleClick(app)"
-                class="game-tile"
+                class="app-list-item"
                 :class="{ selected: appNumericId(app) === selectedAppId }"
               >
-                <div class="game-cover">
-                  <img
-                    :src="coverUrl(app) || undefined"
-                    :alt="app.name || 'Application'"
-                    loading="lazy"
-                  />
-                  <div class="cover-overlay"></div>
-                  <div v-if="appNumericId(app) === selectedAppId" class="selected-indicator">
-                    <i class="fas fa-check"></i>
-                  </div>
+                <div class="app-icon">
+                  <i class="fas fa-window-maximize"></i>
                 </div>
-                <div class="game-info">
-                  <span class="game-title">{{ app.name || '(untitled)' }}</span>
-                  <span class="game-source">{{ appSubtitle(app) }}</span>
+                <div class="app-info">
+                  <span class="app-name">{{ app.name || '(untitled)' }}</span>
+                  <span class="app-source">{{ appSubtitle(app) }}</span>
+                </div>
+                <div v-if="appNumericId(app) === selectedAppId" class="app-selected-icon">
+                  <i class="fas fa-check"></i>
+                </div>
+                <div class="app-play-icon">
+                  <i class="fas fa-play"></i>
                 </div>
               </button>
             </div>
-            <div v-else class="empty-library">
-              <i class="fas fa-gamepad"></i>
-              <p>No applications configured</p>
-              <span>Add games in the Applications tab</span>
+          </div>
+        </template>
+      </section>
+
+      <!-- Floating Stream Preview -->
+      <div class="stream-preview" :class="{ expanded: isFullscreen, minimized: streamMinimized && !isFullscreen }">
+        <div class="preview-header" v-if="!isFullscreen">
+          <div class="preview-title">
+            <i class="fas fa-tv"></i>
+            <span>Stream</span>
+            <span v-if="isConnected" class="live-indicator">
+              <span class="live-dot"></span>
+              LIVE
+            </span>
+          </div>
+          <div class="preview-controls">
+            <button @click="streamMinimized = !streamMinimized" class="control-btn" v-if="!isFullscreen">
+              <i :class="streamMinimized ? 'fas fa-chevron-up' : 'fas fa-chevron-down'"></i>
+            </button>
+            <button @click="toggleFullscreen" class="control-btn">
+              <i :class="isFullscreen ? 'fas fa-compress' : 'fas fa-expand'"></i>
+            </button>
+          </div>
+        </div>
+
+        <div
+          ref="inputTarget"
+          class="stream-viewport"
+          :class="{ 'fullscreen-mode': isFullscreen }"
+          tabindex="0"
+          @dblclick="onFullscreenDblClick"
+        >
+          <video
+            ref="videoEl"
+            class="stream-video"
+            :class="{ hidden: useFramePacer }"
+            autoplay
+            playsinline
+            :controls="false"
+            disablePictureInPicture
+          ></video>
+          <canvas
+            v-if="useFramePacer"
+            ref="canvasEl"
+            class="stream-video"
+          ></canvas>
+          <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
+
+          <!-- Idle State -->
+          <div v-if="!isConnected && !isConnecting" class="idle-state">
+            <div class="idle-content">
+              <i :class="selectedAppId ? 'fas fa-play-circle' : 'fas fa-desktop'"></i>
+              <p>{{ selectedAppId ? $t('webrtc.idle_game_selected') : $t('webrtc.idle_no_selection') }}</p>
             </div>
           </div>
-        </aside>
 
-        <!-- Stream Viewport -->
-        <section class="stream-section">
-          <div class="stream-container">
-            <div class="stream-header">
-              <div class="stream-title">
-                <i class="fas fa-tv"></i>
-                <span>Stream</span>
-                <span v-if="isConnected" class="live-badge">
-                  <span class="live-dot"></span>
-                  LIVE
-                </span>
+          <!-- Connecting State -->
+          <div v-if="showStartingOverlay" class="connecting-state">
+            <div class="spinner"></div>
+            <span>Connecting...</span>
+          </div>
+
+          <!-- Stats Overlay -->
+          <div v-if="showOverlay && isConnected" class="stats-overlay">
+            <div v-for="(line, idx) in overlayLines" :key="idx" class="stat-line">{{ line }}</div>
+          </div>
+
+          <!-- Notification -->
+          <Transition name="notification-fade">
+            <div v-if="activeNotification" class="notification-toast" :class="activeNotification.type">
+              <i :class="notificationIcon"></i>
+              <div class="notification-text">
+                <strong>{{ activeNotification.title }}</strong>
+                <span v-if="activeNotification.message">{{ activeNotification.message }}</span>
               </div>
+              <button @click="dismissNotification"><i class="fas fa-times"></i></button>
+            </div>
+          </Transition>
+        </div>
+
+        <!-- Quick Actions Bar -->
+        <div class="quick-actions" v-if="!isFullscreen && !streamMinimized">
+          <button
+            @click="isConnected ? disconnect() : connect()"
+            class="action-btn primary"
+            :class="{ connected: isConnected, connecting: isConnecting }"
+            :disabled="isConnecting"
+          >
+            <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-circle-notch fa-spin' : 'fas fa-play'"></i>
+            <span>{{ $t(connectLabelKey) }}</span>
+          </button>
+
+          <button
+            v-if="isConnected"
+            @click="terminateSession"
+            class="action-btn danger"
+            :disabled="terminatePending"
+          >
+            <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-power-off'"></i>
+          </button>
+
+          <div class="quick-toggles">
+            <label class="toggle" title="Enable input forwarding">
+              <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
+              <span>Input</span>
+            </label>
+            <label class="toggle" title="Show performance overlay">
+              <n-switch v-model:value="showOverlay" size="small" />
+              <span>Stats</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Compact Metrics -->
+        <div class="compact-metrics" v-if="isConnected && !isFullscreen && !streamMinimized">
+          <div class="metric"><span class="label">Bitrate</span><span class="value">{{ formatKbps(stats.videoBitrateKbps) }}</span></div>
+          <div class="metric"><span class="label">Latency</span><span class="value">{{ formatMs(smoothedLatencyMs) }}</span></div>
+          <div class="metric"><span class="label">FPS</span><span class="value">{{ displayVideoFps ? displayVideoFps.toFixed(0) : '--' }}</span></div>
+          <div class="metric"><span class="label">Dropped</span><span class="value">{{ stats.videoFramesDropped ?? '--' }}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Slideout -->
+    <Transition name="slideout">
+      <aside v-if="showSettings" class="settings-drawer">
+        <div class="drawer-header">
+          <h2><i class="fas fa-sliders-h"></i> {{ $t('webrtc.session_settings') }}</h2>
+          <button @click="showSettings = false" class="close-btn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+
+        <div class="drawer-content">
+          <!-- Resolution -->
+          <div class="setting-group">
+            <label class="group-label">{{ $t('webrtc.resolution') }}</label>
+            <div class="resolution-inputs">
+              <n-input-number v-model:value="config.width" :min="320" :max="7680" size="small" />
+              <span class="separator">×</span>
+              <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" />
+            </div>
+            <div class="preset-chips">
+              <button @click="setResolution(1920, 1080)" class="chip" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
+              <button @click="setResolution(2560, 1440)" class="chip" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
+              <button @click="setResolution(3840, 2160)" class="chip" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
+            </div>
+          </div>
+
+          <!-- Frame Rate -->
+          <div class="setting-group">
+            <label class="group-label">{{ $t('webrtc.framerate') }}</label>
+            <div class="preset-chips">
+              <button @click="config.fps = 30" class="chip" :class="{ active: config.fps === 30 }">30</button>
+              <button @click="config.fps = 60" class="chip" :class="{ active: config.fps === 60 }">60</button>
+              <button @click="config.fps = 120" class="chip" :class="{ active: config.fps === 120 }">120</button>
+              <button @click="config.fps = 144" class="chip" :class="{ active: config.fps === 144 }">144</button>
+            </div>
+          </div>
+
+          <!-- Encoding -->
+          <div class="setting-group">
+            <label class="group-label">{{ $t('webrtc.encoding') }}</label>
+            <div class="preset-chips">
               <button
-                @click="toggleFullscreen"
-                class="fullscreen-btn"
-                :title="isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'"
+                v-for="opt in encodingOptions"
+                :key="opt.value"
+                @click="config.encoding = opt.value"
+                class="chip"
+                :class="{ active: config.encoding === opt.value, unsupported: !opt.supported }"
+                :title="opt.supported ? undefined : opt.hint"
               >
-                <i :class="isFullscreen ? 'fas fa-compress' : 'fas fa-expand'"></i>
+                {{ opt.label }}
               </button>
             </div>
+          </div>
 
-            <div
-              ref="inputTarget"
-              class="stream-viewport"
-              :class="{ 'fullscreen-mode': isFullscreen }"
-              tabindex="0"
-              @dblclick="onFullscreenDblClick"
-            >
-              <video
-                ref="videoEl"
-                class="stream-video"
-                :class="{ hidden: useFramePacer }"
-                autoplay
-                playsinline
-                :controls="false"
-                disablePictureInPicture
-              ></video>
-              <canvas
-                v-if="useFramePacer"
-                ref="canvasEl"
-                class="stream-video"
-              ></canvas>
-              <audio ref="audioEl" class="hidden" autoplay playsinline></audio>
-
-              <!-- Idle State -->
-              <div v-if="!isConnected && !isConnecting" class="idle-overlay">
-                <div class="idle-content">
-                  <div class="idle-icon">
-                    <i class="fas fa-play-circle"></i>
-                  </div>
-                  <h3>Ready to Stream</h3>
-                  <p>
-                    Select a game and click {{ $t(connectLabelKey) }}, or double-click a game to begin
-                  </p>
-                </div>
-              </div>
-
-              <!-- Connecting State -->
-              <div v-if="showStartingOverlay" class="connecting-overlay">
-                <div class="connecting-content">
-                  <div class="spinner"></div>
-                  <span>Starting session...</span>
-                </div>
-              </div>
-
-              <!-- Stats Overlay -->
-              <div v-if="showOverlay && isConnected" class="stats-overlay">
-                <div v-for="(line, idx) in overlayLines" :key="idx" class="stat-line">
-                  {{ line }}
-                </div>
-              </div>
-
-              <!-- Notification Overlay (for fullscreen) -->
-              <Transition name="notification-slide">
-                <div v-if="activeNotification" class="notification-overlay">
-                  <div class="notification-toast" :class="activeNotification.type">
-                    <div class="notification-icon">
-                      <i :class="notificationIcon"></i>
-                    </div>
-                    <div class="notification-content">
-                      <span class="notification-title">{{ activeNotification.title }}</span>
-                      <span v-if="activeNotification.message" class="notification-message">{{
-                        activeNotification.message
-                      }}</span>
-                    </div>
-                    <button class="notification-close" @click="dismissNotification">
-                      <i class="fas fa-times"></i>
-                    </button>
-                  </div>
-                </div>
-              </Transition>
+          <!-- Bitrate -->
+          <div class="setting-group">
+            <label class="group-label">{{ $t('webrtc.bitrate') }}</label>
+            <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="full-width" />
+            <div class="preset-chips">
+              <button @click="config.bitrateKbps = 10000" class="chip" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
+              <button @click="config.bitrateKbps = 30000" class="chip" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
+              <button @click="config.bitrateKbps = 60000" class="chip" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
             </div>
           </div>
 
-          <!-- Performance Metrics -->
-          <div class="metrics-grid">
-            <div class="metric-card">
-              <div class="metric-icon blue">
-                <i class="fas fa-video"></i>
-              </div>
-              <div class="metric-data">
-                <span class="metric-label">Bitrate</span>
-                <span class="metric-value">{{ formatKbps(stats.videoBitrateKbps) }}</span>
-              </div>
+          <!-- HDR Toggle -->
+          <div class="setting-group toggle-setting">
+            <div class="toggle-info">
+              <label class="group-label">{{ $t('webrtc.hdr') }}</label>
+              <p class="hint">{{ $t('webrtc.hdr_desc') }}</p>
             </div>
-            <div class="metric-card">
-              <div class="metric-icon purple">
-                <i class="fas fa-film"></i>
-              </div>
-              <div class="metric-data">
-                <span class="metric-label">Frame Rate</span>
-                <span class="metric-value">{{
-                  displayVideoFps ? `${displayVideoFps.toFixed(0)} FPS` : '--'
-                }}</span>
-              </div>
+            <n-switch v-model:value="config.hdr" />
+          </div>
+          <n-alert v-if="hdrInlineWarning" type="warning" :show-icon="true" class="setting-alert">
+            {{ hdrInlineWarning }}
+          </n-alert>
+
+          <!-- Mute Host Audio -->
+          <div class="setting-group toggle-setting">
+            <div class="toggle-info">
+              <label class="group-label">{{ $t('webrtc.mute_host_audio') }}</label>
+              <p class="hint">{{ $t('webrtc.mute_host_audio_desc') }}</p>
             </div>
-            <div class="metric-card">
-              <div class="metric-icon green">
-                <i class="fas fa-bolt"></i>
-              </div>
-              <div class="metric-data">
-                <span class="metric-label">Latency</span>
-                <span class="metric-value">{{ formatMs(smoothedLatencyMs) }}</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-icon amber">
-                <i class="fas fa-chart-line"></i>
-              </div>
-              <div class="metric-data">
-                <span class="metric-label">Dropped</span>
-                <span class="metric-value">{{ stats.videoFramesDropped ?? '--' }}</span>
-              </div>
-            </div>
+            <n-switch v-model:value="config.muteHostAudio" />
           </div>
 
-          <!-- Debug Panel -->
-          <details class="debug-panel">
-            <summary class="debug-summary">
-              <div class="debug-title">
-                <i class="fas fa-terminal"></i>
-                <span>{{ $t('webrtc.debug_panel') }}</span>
-              </div>
-              <i class="fas fa-chevron-down chevron"></i>
-            </summary>
-            <div class="debug-content">
-              <div class="debug-grid">
-                <div class="debug-item">
-                  <span class="debug-label">Connection</span>
-                  <n-tag size="tiny" :type="statusTagType(connectionState)">{{
-                    connectionState || 'idle'
-                  }}</n-tag>
-                </div>
-                <div class="debug-item">
-                  <span class="debug-label">ICE</span>
-                  <n-tag size="tiny" :type="statusTagType(iceState)">{{
-                    iceState || 'idle'
-                  }}</n-tag>
-                </div>
-                <div class="debug-item">
-                  <span class="debug-label">Input Channel</span>
-                  <n-tag size="tiny" :type="statusTagType(inputChannelState)">{{
-                    inputChannelState || 'closed'
-                  }}</n-tag>
-                </div>
-                <div class="debug-item">
-                  <span class="debug-label">Session ID</span>
-                  <span class="debug-value mono">{{ displayValue(sessionId) }}</span>
-                </div>
-              </div>
+          <!-- Frame Pacer -->
+          <div class="setting-group toggle-setting">
+            <div class="toggle-info">
+              <label class="group-label">Frame Pacer</label>
+              <p class="hint">Improves performance and lowers latency</p>
+            </div>
+            <n-switch v-model:value="useFramePacer" :disabled="isConnected" size="small" />
+          </div>
 
-              <div class="debug-section">
-                <div class="debug-grid">
-                  <div class="debug-item">
-                    <span class="debug-label">Input move delay</span>
-                    <span class="debug-value">{{ formatMs(inputMetrics.lastMoveDelayMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Frame interval</span>
-                    <span class="debug-value">{{ formatMs(renderIntervalMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Server packets</span>
-                    <span class="debug-value"
-                      >V {{ displayValue(serverSession?.video_packets) }} / A
-                      {{ displayValue(serverSession?.audio_packets) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Server fps</span>
-                    <span class="debug-value">V {{ formatFps(serverVideoFps) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Server age</span>
-                    <span class="debug-value"
-                      >V {{ formatMs(serverVideoAgeMs) }} / A {{ formatMs(serverAudioAgeMs) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Server queues</span>
-                    <span class="debug-value"
-                      >V {{ displayValue(serverSession?.video_queue_frames) }} / A
-                      {{ displayValue(serverSession?.audio_queue_frames) }} (inflight
-                      {{ displayValue(serverSession?.video_inflight_frames) }})</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Inbound bytes</span>
-                    <span class="debug-value"
-                      >V {{ formatBytes(stats.videoBytesReceived) }} / A
-                      {{ formatBytes(stats.audioBytesReceived) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Video size</span>
-                    <span class="debug-value">{{ videoSizeLabel }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Codec</span>
-                    <span class="debug-value"
-                      >V {{ displayValue(stats.videoCodec) }} / A
-                      {{ displayValue(stats.audioCodec) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">HDR</span>
-                    <span class="debug-value">{{ displayValue(serverSession?.hdr) }}</span>
-                  </div>
+          <!-- Advanced Options -->
+          <details class="advanced-section">
+            <summary><i class="fas fa-cogs"></i> Advanced Options</summary>
+            <div class="advanced-content">
+              <div class="setting-group toggle-setting">
+                <div class="toggle-info">
+                  <label class="group-label">Auto Fullscreen</label>
+                  <p class="hint">Enter fullscreen when stream starts</p>
                 </div>
+                <n-switch v-model:value="autoFullscreen" size="small" />
               </div>
-
-              <div class="debug-section">
-                <div class="debug-grid">
-                  <div class="debug-item">
-                    <span class="debug-label">Latency est</span>
-                    <span class="debug-value">{{ formatMs(smoothedLatencyMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Latency avg 30s</span>
-                    <span class="debug-value">{{ formatMs(averageLatency30sMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">RTT / one-way</span>
-                    <span class="debug-value"
-                      >{{ formatMs(stats.roundTripTimeMs) }} / {{ formatMs(oneWayRttMs) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Decoder</span>
-                    <span class="debug-value">{{ formatMs(stats.videoDecodeMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Jitter / buffer (avg)</span>
-                    <span class="debug-value"
-                      >{{ formatMs(stats.videoJitterMs) }} /
-                      {{ formatMs(stats.videoPlayoutDelayMs ?? videoJitterBufferMs) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Audio latency</span>
-                    <span class="debug-value">{{ formatMs(audioLatencyMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Audio jitter / buffer</span>
-                    <span class="debug-value"
-                      >{{ formatMs(stats.audioJitterMs) }} /
-                      {{ formatMs(stats.audioPlayoutDelayMs ?? stats.audioJitterBufferMs) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Render delay</span>
-                    <span class="debug-value">{{ formatMs(renderDelayMs) }}</span>
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Frames dropped</span>
-                    <span class="debug-value"
-                      >{{ displayValue(stats.videoFramesDropped) }} /
-                      {{ displayValue(stats.videoFramesReceived) }}</span       
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Pacing dt / delta</span>
-                    <span class="debug-value"
-                      >{{ formatMs(videoPacingMetrics.dtMs ?? undefined) }} /
-                      {{ displayValue(videoPacingMetrics.presentedDelta ?? undefined) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Inbound recv/dec fps</span>
-                    <span class="debug-value"
-                      >{{ formatFps(inboundVideoStats.fpsReceived) }} /
-                      {{ formatFps(inboundVideoStats.fpsDecoded) }}</span
-                    >
-                  </div>
-                  <div class="debug-item">
-                    <span class="debug-label">Inbound jitter buf / decode</span>
-                    <span class="debug-value"
-                      >{{ formatMs(inboundVideoStats.avgJitterBufferMs ?? undefined) }} /
-                      {{ formatMs(inboundVideoStats.avgDecodeMsPerFrame ?? undefined) }}</span
-                    >
-                  </div>
+              <div class="setting-group toggle-setting">
+                <div class="toggle-info">
+                  <label class="group-label">Pacer Diagnostics</label>
+                  <p class="hint">Enable hitch detection metrics</p>
                 </div>
-              </div>
-
-              <div class="debug-section">
-                <div class="debug-section-title">Video Events</div>
-                <div v-if="videoEvents.length" class="video-events">
-                  <div v-for="(event, idx) in videoEvents" :key="idx" class="event-line">
-                    {{ event }}
-                  </div>
-                </div>
-                <div v-else class="no-events">No events yet</div>
+                <n-switch v-model:value="pacerDiagnostics" :disabled="!useFramePacer" size="small" />
               </div>
             </div>
           </details>
-        </section>
-      </div>
-    </main>
+        </div>
+
+        <!-- Drawer Footer -->
+        <div class="drawer-footer">
+          <p class="notice">
+            <i class="fas fa-info-circle"></i>
+            {{ $t('webrtc.experimental_notice') }}
+          </p>
+        </div>
+      </aside>
+    </Transition>
+
+    <!-- Backdrop for settings -->
+    <Transition name="fade">
+      <div v-if="showSettings" class="drawer-backdrop" @click="showSettings = false"></div>
+    </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onBeforeUnmount, onMounted, watch, computed } from 'vue';
+import { ref, reactive, onBeforeUnmount, onMounted, watch, computed, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NTag, NSwitch, NInputNumber, NPopover, useDialog, useMessage } from 'naive-ui';
+import { NTag, NSwitch, NInputNumber, NAlert, useDialog, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
 import { FramePacer, type FramePacerMetrics } from '@/utils/webrtc/framePacer';
@@ -744,8 +420,12 @@ const { t } = useI18n();
 const dialog = useDialog();
 const message = useMessage();
 
+// UI State
+const showSettings = ref(false);
+const streamMinimized = ref(false);
+
 // ============================================
-// NOTIFICATION SYSTEM (for fullscreen support)
+// NOTIFICATION SYSTEM
 // ============================================
 type NotificationType = 'error' | 'warning' | 'success' | 'info';
 
@@ -763,14 +443,10 @@ let notificationTimeout: number | null = null;
 const notificationIcon = computed(() => {
   if (!activeNotification.value) return 'fas fa-info-circle';
   switch (activeNotification.value.type) {
-    case 'error':
-      return 'fas fa-circle-exclamation';
-    case 'warning':
-      return 'fas fa-triangle-exclamation';
-    case 'success':
-      return 'fas fa-circle-check';
-    default:
-      return 'fas fa-circle-info';
+    case 'error': return 'fas fa-circle-exclamation';
+    case 'warning': return 'fas fa-triangle-exclamation';
+    case 'success': return 'fas fa-circle-check';
+    default: return 'fas fa-circle-info';
   }
 });
 
@@ -780,16 +456,9 @@ function showNotification(type: NotificationType, title: string, msg?: string, d
     notificationTimeout = null;
   }
   notificationId++;
-  activeNotification.value = {
-    id: notificationId,
-    type,
-    title,
-    message: msg,
-  };
+  activeNotification.value = { id: notificationId, type, title, message: msg };
   if (duration > 0) {
-    notificationTimeout = window.setTimeout(() => {
-      dismissNotification();
-    }, duration);
+    notificationTimeout = window.setTimeout(() => dismissNotification(), duration);
   }
 }
 
@@ -801,21 +470,10 @@ function dismissNotification() {
   }
 }
 
-function notifyError(title: string, msg?: string) {
-  showNotification('error', title, msg, 8000);
-}
-
-function notifyWarning(title: string, msg?: string) {
-  showNotification('warning', title, msg, 6000);
-}
-
-function notifySuccess(title: string, msg?: string) {
-  showNotification('success', title, msg, 4000);
-}
-
-function notifyInfo(title: string, msg?: string) {
-  showNotification('info', title, msg, 5000);
-}
+function notifyError(title: string, msg?: string) { showNotification('error', title, msg, 8000); }
+function notifyWarning(title: string, msg?: string) { showNotification('warning', title, msg, 6000); }
+function notifySuccess(title: string, msg?: string) { showNotification('success', title, msg, 4000); }
+function notifyInfo(title: string, msg?: string) { showNotification('info', title, msg, 5000); }
 
 // Helper function for resolution presets
 function setResolution(width: number, height: number) {
@@ -823,23 +481,11 @@ function setResolution(width: number, height: number) {
   config.height = height;
 }
 
-// Connection status computed properties for the gaming UI
+// Connection status computed properties
 const connectionPillClass = computed(() => {
   if (isConnected.value) return 'connected';
   if (isConnecting.value) return 'connecting';
   return 'idle';
-});
-
-const connectionStatusClass = computed(() => {
-  if (isConnected.value) return 'bg-success/20 text-success';
-  if (isConnecting.value) return 'bg-warning/20 text-warning';
-  return 'bg-surface text-onDark/50';
-});
-
-const connectionDotClass = computed(() => {
-  if (isConnected.value) return 'bg-success';
-  if (isConnecting.value) return 'bg-warning';
-  return 'bg-onDark/30';
 });
 
 const connectionStatusLabel = computed(() => {
@@ -863,17 +509,10 @@ const encodingMimes: Record<EncodingType, string[]> = {
 };
 
 function detectEncodingSupport(): Record<EncodingType, boolean> {
-  const support: Record<EncodingType, boolean> = {
-    h264: true,
-    hevc: true,
-    av1: true,
-  };
-  const caps =
-    (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null) ??
+  const support: Record<EncodingType, boolean> = { h264: true, hevc: true, av1: true };
+  const caps = (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null) ??
     (typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null);
-  if (!caps?.codecs) {
-    return support;
-  }
+  if (!caps?.codecs) return support;
   const mimeTypes = caps.codecs.map((codec) => codec.mimeType.toLowerCase());
   (Object.keys(encodingMimes) as EncodingType[]).forEach((encoding) => {
     support[encoding] = encodingMimes[encoding].some((mime) => mimeTypes.includes(mime));
@@ -886,17 +525,13 @@ const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport
 const encodingOptions = computed(() =>
   baseEncodingOptions.map((opt) => {
     const supported = opt.value === 'av1' ? encodingSupport.value[opt.value] : true;
-    const hint = supported
-      ? ''
-      : `${opt.label} may be unsupported (browser-reported; this can be a false positive).`;
+    const hint = supported ? '' : `${opt.label} may be unsupported by this browser.`;
     return { ...opt, supported, hint };
   }),
 );
 
 const hdrCodecAdvertised = computed(() => {
-  if (config.encoding === 'av1') {
-    return encodingSupport.value.av1;
-  }
+  if (config.encoding === 'av1') return encodingSupport.value.av1;
   return encodingSupport.value.hevc;
 });
 
@@ -904,15 +539,13 @@ const hdrInlineWarning = computed(() => {
   if (!config.hdr) return null;
   if (hdrRuntimeWarning.value) return hdrRuntimeWarning.value;
   if (!hdrCodecAdvertised.value) {
-    return `This browser reports no ${config.encoding.toUpperCase()} decode support. This can be a false positive—it's not always possible to know until you try. If you get a black screen, switch codecs or disable HDR.`;
+    return `This browser reports no ${config.encoding.toUpperCase()} decode support. If you get a black screen, switch codecs or disable HDR.`;
   }
   return null;
 });
 
 function ensureHdrEncoding(): void {
-  if (config.encoding === 'h264') {
-    config.encoding = 'hevc';
-  }
+  if (config.encoding === 'h264') config.encoding = 'hevc';
 }
 
 const config = reactive<StreamConfig>({
@@ -932,15 +565,11 @@ const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
 
 function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
   const normalized = { ...profileConfig };
-  if (typeof normalized.hdr !== 'boolean') {
-    normalized.hdr = false;
-  }
+  if (typeof normalized.hdr !== 'boolean') normalized.hdr = false;
   if (normalized.encoding !== 'h264' && normalized.encoding !== 'hevc' && normalized.encoding !== 'av1') {
     normalized.encoding = 'h264';
   }
-  if (normalized.hdr && normalized.encoding === 'h264') {
-    normalized.encoding = 'hevc';
-  }
+  if (normalized.hdr && normalized.encoding === 'h264') normalized.encoding = 'hevc';
   return normalized;
 }
 
@@ -951,75 +580,68 @@ function loadCachedConfig(): void {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return;
     Object.assign(config, normalizeProfileConfig(parsed as StreamConfig));
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 }
 
 function persistCachedConfig(): void {
   try {
     const snapshot = normalizeProfileConfig({ ...config });
     window.localStorage.setItem(CLIENT_CONFIG_STORAGE_KEY, JSON.stringify(snapshot));
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 }
 
-watch(
-  () => config.hdr,
-  (enabled) => {
-    if (!enabled) return;
-    ensureHdrEncoding();
-  },
-);
-
-watch(
-  () => config.encoding,
-  () => {
-    if (!config.hdr) return;
-    ensureHdrEncoding();
-  },
-);
-
-watch(
-  () => config.hdr,
-  (enabled) => {
-    if (!enabled) {
-      hdrRuntimeWarning.value = null;
-    }
-  },
-);
-
-watch(
-  () => config.encoding,
-  () => {
-    hdrRuntimeWarning.value = null;
-  },
-);
-
-watch(
-  () => ({ ...config }),
-  () => {
-    persistCachedConfig();
-  },
-  { deep: true },
-);
+watch(() => config.hdr, (enabled) => { if (enabled) ensureHdrEncoding(); });
+watch(() => config.encoding, () => { if (config.hdr) ensureHdrEncoding(); });
+watch(() => config.hdr, (enabled) => { if (!enabled) hdrRuntimeWarning.value = null; });
+watch(() => config.encoding, () => { hdrRuntimeWarning.value = null; });
+watch(() => ({ ...config }), () => { persistCachedConfig(); }, { deep: true });
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
 const appsList = computed(() => (apps.value || []).slice());
+
+// Search and filtering
+const searchQuery = ref('');
+
+// Track which apps have valid cover images (loaded successfully)
+const appCoverStatus = ref<Map<string, boolean>>(new Map());
+
+function onCoverLoad(app: App) {
+  if (app.uuid) appCoverStatus.value.set(app.uuid, true);
+}
+
+function onCoverError(app: App) {
+  if (app.uuid) appCoverStatus.value.set(app.uuid, false);
+}
+
+function appHasCover(app: App): boolean {
+  // Check if we've already loaded this cover
+  if (app.uuid && appCoverStatus.value.has(app.uuid)) {
+    return appCoverStatus.value.get(app.uuid) === true;
+  }
+  // Assume apps with image-path or playnite-id have covers until proven otherwise
+  return !!(app['image-path'] || app['playnite-id']);
+}
+
+const filteredApps = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) return appsList.value;
+  return appsList.value.filter(app => {
+    const name = (app.name || '').toLowerCase();
+    return name.includes(query);
+  });
+});
+
+const appsWithCovers = computed(() => filteredApps.value.filter(app => appHasCover(app)));
+const appsWithoutCovers = computed(() => filteredApps.value.filter(app => !appHasCover(app)));
+
 const selectedAppId = ref<number | null>(null);
 const resumeOnConnect = ref(true);
-const canResumeSelection = computed(() => !selectedAppId.value);
 const terminatePending = ref(false);
-const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(
-  null,
-);
+const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(null);
 let sessionStatusTimer: number | null = null;
 
-function appKey(app: App): string {
-  return `${app.uuid || ''}-${app.name || 'app'}`;
-}
+function appKey(app: App): string { return `${app.uuid || ''}-${app.name || 'app'}`; }
 
 function coverUrl(app: App): string {
   if (!app.uuid) return '';
@@ -1036,20 +658,6 @@ function appNumericId(app: App): number | null {
   const raw = (app as any).id ?? (app as any).index;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function appCardClass(app: App): string {
-  const id = appNumericId(app);
-  const isSelected = id != null && id === selectedAppId.value;
-  return [
-    'border-white/10',
-    'hover:border-primary/60',
-    'hover:bg-white/80',
-    'dark:hover:bg-white/10',
-    isSelected ? 'border-primary/70 bg-white/90 dark:bg-white/10' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
 }
 
 function selectApp(app: App) {
@@ -1071,9 +679,9 @@ function clearSelection() {
 }
 
 const selectedAppLabel = computed(() => {
-  if (!selectedAppId.value) return 'No app selected (resume running app).';
+  if (!selectedAppId.value) return 'No app selected';
   const selected = appsList.value.find((app) => appNumericId(app) === selectedAppId.value);
-  return selected?.name ? `Selected: ${selected.name}` : `Selected app id: ${selectedAppId.value}`;
+  return selected?.name ? selected.name : `App ${selectedAppId.value}`;
 });
 
 const selectedAppName = computed(() => {
@@ -1098,30 +706,28 @@ const client = new WebRtcClient(api);
 
 const isConnecting = ref(false);
 const isConnected = ref(false);
+
 function setWebRtcActive(active: boolean): void {
-  try {
-    (window as any).__sunshine_webrtc_active = active;
-  } catch {
-    /* ignore */
-  }
+  try { (window as any).__sunshine_webrtc_active = active; } catch { /* ignore */ }
 }
-watch(
-  () => [isConnecting.value, isConnected.value] as const,
-  ([connecting, connected]) => {
-    setWebRtcActive(connecting || connected);
-  },
-  { immediate: true },
-);
+
+watch(() => [isConnecting.value, isConnected.value] as const, ([connecting, connected]) => {
+  setWebRtcActive(connecting || connected);
+}, { immediate: true });
+
 const connectLabelKey = computed(() => {
   if (isConnecting.value) return 'webrtc.connecting';
   if (isConnected.value) return 'webrtc.disconnect';
   if (resumeAvailable.value) return 'webrtc.resume';
-  return 'webrtc.connect';
+  if (selectedAppId.value) return 'webrtc.connect';
+  return 'webrtc.stream_desktop';
 });
+
 const showStartingOverlay = computed(() => {
   if (isConnected.value) return false;
   return isConnecting.value || connectionState.value === 'connecting';
 });
+
 const connectionState = ref<RTCPeerConnectionState | null>(null);
 const iceState = ref<RTCIceConnectionState | null>(null);
 const inputChannelState = ref<RTCDataChannelState | null>(null);
@@ -1136,18 +742,13 @@ const isFullscreen = ref(false);
 const autoFullscreen = ref(true);
 const sessionId = ref<string | null>(null);
 const serverSession = ref<WebRtcSessionState | null>(null);
-const serverSessionUpdatedAt = ref<string | null>(null);
-const serverSessionError = ref<string | null>(null);
-const serverSessionStatus = ref<number | null>(null);
 const serverVideoFps = ref<number | undefined>(undefined);
-const serverVideoAgeMs = computed(() => serverSession.value?.last_video_age_ms ?? undefined);
-const serverAudioAgeMs = computed(() => serverSession.value?.last_audio_age_ms ?? undefined);
+
 let lastServerSample: { ts: number; videoPackets?: number } | null = null;
 const remoteStreamInfo = ref<{ id: string; videoTracks: number; audioTracks: number } | null>(null);
-const lastTrackAt = ref<string | null>(null);
-const lastTrackKind = ref<string | null>(null);
 const videoEvents = ref<string[]>([]);
 const videoStateTick = ref(0);
+
 const videoDebug = computed(() => {
   void videoStateTick.value;
   const el = videoEl.value;
@@ -1158,62 +759,19 @@ const videoDebug = computed(() => {
     height: el.videoHeight,
     currentTime: el.currentTime,
     paused: el.paused,
-    ended: el.ended,
-    muted: el.muted,
-    volume: el.volume,
   };
 });
+
 const videoSizeLabel = computed(() => {
   const width = videoDebug.value?.width ?? 0;
   const height = videoDebug.value?.height ?? 0;
   return width > 0 && height > 0 ? `${width}x${height}` : '--';
 });
-const serverVideoConfigLabel = computed(() => {
-  if (!serverSession.value) return '--';
-  const width = serverSession.value.width ?? 0;
-  const height = serverSession.value.height ?? 0;
-  const fps = serverSession.value.fps ?? null;
-  const codec = serverSession.value.codec ?? null;
-  const base = width > 0 && height > 0 ? `${width}x${height}` : '--';
-  const rate = fps ? `${fps}fps` : '--';
-  const name = codec ? codec.toUpperCase() : '--';
-  return `${base} ${rate} ${name}`;
-});
-const serverAudioConfigLabel = computed(() => {
-  if (!serverSession.value) return '--';
-  const codec = serverSession.value.audio_codec ?? null;
-  const channels = serverSession.value.audio_channels ?? null;
-  const codecLabel = codec ? codec.toUpperCase() : '--';
-  const channelLabel = channels ? `${channels}ch` : '--';
-  return `${codecLabel} ${channelLabel}`;
-});
-const trackDebug = computed(() => {
-  const stream = videoEl.value?.srcObject;
-  if (!stream || !(stream instanceof MediaStream)) return null;
-  const videoTrack = stream.getVideoTracks()[0];
-  const audioTrack = stream.getAudioTracks()[0];
-  return {
-    video: videoTrack
-      ? { readyState: videoTrack.readyState, muted: videoTrack.muted, enabled: videoTrack.enabled }
-      : null,
-    audio: audioTrack
-      ? { readyState: audioTrack.readyState, muted: audioTrack.muted, enabled: audioTrack.enabled }
-      : null,
-  };
-});
-const candidatePairLabel = computed(() => {
-  const pair = stats.value.candidatePair;
-  if (!pair) return '--';
-  const local = pair.localAddress ? `${pair.localAddress}:${pair.localPort ?? ''}` : '--';
-  const remote = pair.remoteAddress ? `${pair.remoteAddress}:${pair.remotePort ?? ''}` : '--';
-  const proto = pair.protocol ? pair.protocol.toUpperCase() : '--';
-  const types = pair.localType && pair.remoteType ? `${pair.localType}/${pair.remoteType}` : '--';
-  const state = pair.state ?? '--';
-  return `${local} -> ${remote} (${proto}, ${types}, ${state})`;
-});
+
 const inputMetrics = ref<InputCaptureMetrics>({});
 const inputBufferedAmount = ref<number | null>(null);
 const INPUT_BUFFER_DROP_THRESHOLD_BYTES = 1024;
+
 const shouldDropInput = (payload: InputMessage) => {
   const buffered = client.inputChannelBufferedAmount ?? 0;
   inputBufferedAmount.value = buffered;
@@ -1222,6 +780,7 @@ const shouldDropInput = (payload: InputMessage) => {
   if (payload.type === 'gamepad_state' || payload.type === 'gamepad_motion') return true;
   return false;
 };
+
 const videoFrameMetrics = ref<{
   lastIntervalMs?: number;
   avgIntervalMs?: number;
@@ -1234,6 +793,7 @@ const videoFrameMetrics = ref<{
   avgDelayMs?: number;
   maxDelayMs?: number;
 }>({});
+
 const videoPacingMetrics = ref<{
   dtMs?: number | null;
   presentedDelta?: number | null;
@@ -1244,6 +804,7 @@ const videoPacingMetrics = ref<{
   receiveTime?: number;
   rtpTimestamp?: number;
 }>({});
+
 const inboundVideoStats = ref<{
   fpsReceived?: number;
   fpsDecoded?: number;
@@ -1253,6 +814,7 @@ const inboundVideoStats = ref<{
   packetsLostDelta?: number;
   jitter?: number;
 }>({});
+
 type DiagnosticsSample = {
   ts: number;
   pacingDtMs?: number | null;
@@ -1271,119 +833,32 @@ type DiagnosticsSample = {
   serverVideoAgeMs?: number;
   serverFps?: number;
 };
+
 const DIAGNOSTICS_WINDOW_MS = 30000;
 const diagnosticsSamples = ref<DiagnosticsSample[]>([]);
-const diagAverages = computed(() => {
-  const samples = diagnosticsSamples.value;
-  const avg = <T>(values: T[], getter: (v: T) => number | null | undefined) => {
-    let sum = 0;
-    let count = 0;
-    values.forEach((v) => {
-      const value = getter(v);
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        sum += value;
-        count += 1;
-      }
-    });
-    return count ? sum / count : undefined;
-  };
-  const sum = <T>(values: T[], getter: (v: T) => number | null | undefined) => {
-    let total = 0;
-    let count = 0;
-    values.forEach((v) => {
-      const value = getter(v);
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        total += value;
-        count += 1;
-      }
-    });
-    return count ? total : undefined;
-  };
-  return {
-    pacingDtMs: avg(samples, (s) => s.pacingDtMs ?? undefined),
-    presentedDelta: avg(samples, (s) => s.presentedDelta ?? undefined),
-    renderIntervalMs: avg(samples, (s) => s.renderIntervalMs),
-    renderDelayMs: avg(samples, (s) => s.renderDelayMs),
-    fpsReceived: avg(samples, (s) => s.fpsReceived),
-    fpsDecoded: avg(samples, (s) => s.fpsDecoded),
-    framesDropped: avg(samples, (s) => s.framesDropped),
-    avgJitterBufferMs: avg(samples, (s) => s.avgJitterBufferMs ?? undefined),
-    avgDecodeMsPerFrame: avg(samples, (s) => s.avgDecodeMsPerFrame ?? undefined),
-    packetsLost: sum(samples, (s) => s.packetsLostDelta),
-    jitterMs: avg(samples, (s) => s.jitter),
-    serverQueue: avg(samples, (s) => s.serverQueue),
-    serverInflight: avg(samples, (s) => s.serverInflight),
-    serverVideoAgeMs: avg(samples, (s) => s.serverVideoAgeMs),
-    serverFps: avg(samples, (s) => s.serverFps),
-  };
-});
-const diagnosticsSummary = computed(() => {
-  const avg = diagAverages.value;
-  const frameMs = config.fps > 0 ? 1000 / config.fps : 16.7;
-  const messages: string[] = [];
-  if (typeof avg.serverQueue === 'number' && avg.serverQueue >= 3) {
-    messages.push('Server queueing');
-  }
-  if (typeof avg.serverVideoAgeMs === 'number' && avg.serverVideoAgeMs > frameMs * 3) {
-    messages.push('Server backlog/age');
-  }
-  if (
-    typeof avg.avgJitterBufferMs === 'number' &&
-    avg.avgJitterBufferMs > Math.max(80, frameMs * 3)
-  ) {
-    messages.push('Network jitter/buffer growth');
-  }
-  if (typeof avg.packetsLost === 'number' && avg.packetsLost > 0) {
-    messages.push('Packet loss');
-  }
-  if (
-    typeof avg.avgDecodeMsPerFrame === 'number' &&
-    avg.avgDecodeMsPerFrame > frameMs * 0.8
-  ) {
-    messages.push('Decode bottleneck');
-  }
-  if (
-    typeof avg.fpsReceived === 'number' &&
-    typeof avg.fpsDecoded === 'number' &&
-    avg.fpsDecoded < avg.fpsReceived * 0.9
-  ) {
-    messages.push('Decode lagging receive');
-  }
-  if (typeof avg.presentedDelta === 'number' && avg.presentedDelta > 1.05) {
-    messages.push('Presentation drops');
-  }
-  if (typeof avg.renderIntervalMs === 'number' && avg.renderIntervalMs > frameMs * 1.2) {
-    messages.push('Frontend render jitter');
-  }
-  if (!messages.length) {
-    return 'No obvious bottleneck detected (last 30s)';
-  }
-  return messages.join(' · ');
-});
+let diagnosticsSampleTimer: number | null = null;
+
 const renderFps = computed(() => {
   const intervalMs = videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs;
   if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
-  const fps = 1000 / intervalMs;
-  return Number.isFinite(fps) ? fps : undefined;
+  return 1000 / intervalMs;
 });
+
 const renderFps98 = computed(() => {
   const intervalMs = videoFrameMetrics.value.avg98IntervalMs ?? videoFrameMetrics.value.p98IntervalMs;
   if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
-  const fps = 1000 / intervalMs;
-  return Number.isFinite(fps) ? fps : undefined;
+  return 1000 / intervalMs;
 });
+
 const renderFps99 = computed(() => {
   const intervalMs = videoFrameMetrics.value.avg99IntervalMs ?? videoFrameMetrics.value.p99IntervalMs;
   if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
-  const fps = 1000 / intervalMs;
-  return Number.isFinite(fps) ? fps : undefined;
+  return 1000 / intervalMs;
 });
-const renderDelayMs = computed(
-  () => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs,
-);
-const renderIntervalMs = computed(
-  () => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs,
-);
+
+const renderDelayMs = computed(() => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs);
+const renderIntervalMs = computed(() => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs);
+
 const LATENCY_SAMPLE_WINDOW_MS = 30000;
 const LATENCY_SMOOTH_TAU_MS = 2000;
 const LATENCY_FAST_TAU_MS = 300;
@@ -1394,22 +869,15 @@ const latencySamples = ref<{ ts: number; value: number }[]>([]);
 const smoothedLatencyMs = ref<number | undefined>(undefined);
 let lastLatencySampleAt: number | null = null;
 const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs);
-const oneWayRttMs = computed(() =>
-  stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined,
-);
-const videoPlayoutDelayMs = computed(
-  () => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs,
-);
+const oneWayRttMs = computed(() => stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined);
+const videoPlayoutDelayMs = computed(() => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs);
 const smoothedVideoFps = ref<number | undefined>(undefined);
 let lastVideoFpsSampleAt: number | null = null;
-const displayVideoFps = computed(
-  () =>
-    renderFps99.value ??
-    renderFps98.value ??
-    renderFps.value ??
-    smoothedVideoFps.value ??
-    stats.value.videoFps,
+
+const displayVideoFps = computed(() =>
+  renderFps99.value ?? renderFps98.value ?? renderFps.value ?? smoothedVideoFps.value ?? stats.value.videoFps
 );
+
 const estimatedLatencyMs = computed(() => {
   const parts = [oneWayRttMs.value, videoPlayoutDelayMs.value, stats.value.videoDecodeMs].filter(
     (value) => typeof value === 'number',
@@ -1417,331 +885,187 @@ const estimatedLatencyMs = computed(() => {
   if (!parts.length) return undefined;
   return parts.reduce((total, value) => total + value, 0);
 });
-const averageLatency30sMs = computed(() => {
-  const samples = latencySamples.value;
-  if (!samples.length) return undefined;
-  const total = samples.reduce((sum, sample) => sum + sample.value, 0);
-  return total / samples.length;
-});
-const audioLatencyMs = computed(() => {
-  const parts = [
-    oneWayRttMs.value,
-    stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs,
-  ].filter((value) => typeof value === 'number') as number[];
-  if (!parts.length) return undefined;
-  return parts.reduce((total, value) => total + value, 0);
-});
-watch(
-  () => estimatedLatencyMs.value,
-  (value) => {
-    if (typeof value !== 'number' || Number.isNaN(value)) return;
-    const now = Date.now();
-    const lastAt = lastLatencySampleAt ?? now;
-    const deltaMs = Math.max(0, now - lastAt);
-    const current = smoothedLatencyMs.value;
-    const jumpMs =
-      typeof current === 'number' && Number.isFinite(current) ? value - current : undefined;
-    const jumpRatio =
-      typeof current === 'number' && Number.isFinite(current) && current > 0
-        ? value / current
-        : undefined;
-    const useFastTau =
-      jumpMs != null &&
-      (jumpMs >= LATENCY_FAST_TRIGGER_MS ||
-        (jumpRatio != null && jumpRatio >= LATENCY_FAST_TRIGGER_RATIO));
-    const tauMs = useFastTau ? LATENCY_FAST_TAU_MS : LATENCY_SMOOTH_TAU_MS;
-    const alpha = 1 - Math.exp(-deltaMs / tauMs);
-    if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
-      smoothedLatencyMs.value = value;
-    } else {
-      smoothedLatencyMs.value = smoothedLatencyMs.value + alpha * (value - smoothedLatencyMs.value);
-    }
-    lastLatencySampleAt = now;
-    latencySamples.value.push({ ts: now, value });
-    const cutoff = now - LATENCY_SAMPLE_WINDOW_MS;
-    while (latencySamples.value.length && latencySamples.value[0].ts < cutoff) {
-      latencySamples.value.shift();
-    }
-  },
-);
 
-watch(
-  () => stats.value.videoFps,
-  (value) => {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return;
-    const now = Date.now();
-    const lastAt = lastVideoFpsSampleAt ?? now;
-    const deltaMs = Math.max(0, now - lastAt);
-    const alpha = 1 - Math.exp(-deltaMs / VIDEO_FPS_SMOOTH_TAU_MS);
-    if (smoothedVideoFps.value == null || !Number.isFinite(smoothedVideoFps.value)) {
-      smoothedVideoFps.value = value;
-    } else {
-      smoothedVideoFps.value = smoothedVideoFps.value + alpha * (value - smoothedVideoFps.value);
-    }
-    lastVideoFpsSampleAt = now;
-  },
-);
+watch(() => estimatedLatencyMs.value, (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return;
+  const now = Date.now();
+  const lastAt = lastLatencySampleAt ?? now;
+  const deltaMs = Math.max(0, now - lastAt);
+  const current = smoothedLatencyMs.value;
+  const jumpMs = typeof current === 'number' && Number.isFinite(current) ? value - current : undefined;
+  const jumpRatio = typeof current === 'number' && Number.isFinite(current) && current > 0 ? value / current : undefined;
+  const useFastTau = jumpMs != null && (jumpMs >= LATENCY_FAST_TRIGGER_MS || (jumpRatio != null && jumpRatio >= LATENCY_FAST_TRIGGER_RATIO));
+  const tauMs = useFastTau ? LATENCY_FAST_TAU_MS : LATENCY_SMOOTH_TAU_MS;
+  const alpha = 1 - Math.exp(-deltaMs / tauMs);
+  if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
+    smoothedLatencyMs.value = value;
+  } else {
+    smoothedLatencyMs.value = smoothedLatencyMs.value + alpha * (value - smoothedLatencyMs.value);
+  }
+  lastLatencySampleAt = now;
+  latencySamples.value.push({ ts: now, value });
+  const cutoff = now - LATENCY_SAMPLE_WINDOW_MS;
+  while (latencySamples.value.length && latencySamples.value[0].ts < cutoff) {
+    latencySamples.value.shift();
+  }
+});
+
+watch(() => stats.value.videoFps, (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return;
+  const now = Date.now();
+  const lastAt = lastVideoFpsSampleAt ?? now;
+  const deltaMs = Math.max(0, now - lastAt);
+  const alpha = 1 - Math.exp(-deltaMs / VIDEO_FPS_SMOOTH_TAU_MS);
+  if (smoothedVideoFps.value == null || !Number.isFinite(smoothedVideoFps.value)) {
+    smoothedVideoFps.value = value;
+  } else {
+    smoothedVideoFps.value = smoothedVideoFps.value + alpha * (value - smoothedVideoFps.value);
+  }
+  lastVideoFpsSampleAt = now;
+});
+
 const overlayLines = computed(() => {
   const fps = displayVideoFps.value ? displayVideoFps.value.toFixed(0) : '--';
-  const recvFps = stats.value.videoFps ? stats.value.videoFps.toFixed(1) : '--';
-  const rendFps = renderFps.value ? renderFps.value.toFixed(1) : '--';
-  const rendFps98 = renderFps98.value ? renderFps98.value.toFixed(1) : '--';
-  const rendFps99 = renderFps99.value ? renderFps99.value.toFixed(1) : '--';
+  const bitrate = formatKbps(stats.value.videoBitrateKbps);
+  const latency = formatMs(smoothedLatencyMs.value);
   const dropped = stats.value.videoFramesDropped ?? '--';
-  const paceDt = formatMs(videoPacingMetrics.value.dtMs ?? undefined);
-  const paceDelta = displayValue(videoPacingMetrics.value.presentedDelta ?? undefined);
-  const recvFpsDiag =
-    typeof inboundVideoStats.value.fpsReceived === 'number'
-      ? inboundVideoStats.value.fpsReceived.toFixed(1)
-      : '--';
-  const decFpsDiag =
-    typeof inboundVideoStats.value.fpsDecoded === 'number'
-      ? inboundVideoStats.value.fpsDecoded.toFixed(1)
-      : '--';
-  const rttHalf = formatMs(oneWayRttMs.value);
-  const jbuf = formatMs(videoPlayoutDelayMs.value);
-  const dec = formatMs(stats.value.videoDecodeMs);
-  const serverFps = formatFps(serverVideoFps.value);
-  const serverAgeVideo = formatMs(serverVideoAgeMs.value);
-  const serverAgeAudio = formatMs(serverAudioAgeMs.value);
-  const serverQueueVideo = displayValue(serverSession.value?.video_queue_frames);
-  const serverQueueAudio = displayValue(serverSession.value?.audio_queue_frames);
+  const codec = stats.value.videoCodec ?? '--';
   return [
-    `Conn ${connectionState.value ?? 'idle'} | ICE ${iceState.value ?? 'idle'} | Input ${inputChannelState.value ?? 'closed'}`,
-    `Srv ${serverFps} | age V ${serverAgeVideo} / A ${serverAgeAudio} | q V ${serverQueueVideo} / A ${serverQueueAudio}`,
-    `Lat ${formatMs(smoothedLatencyMs.value)} (net ${rttHalf} + buf(avg) ${jbuf} + dec ${dec}) | Avg30 ${formatMs(averageLatency30sMs.value)}`,
-    `Decode ${dec} | FPS ${fps} (render ${rendFps99} p99 / ${rendFps98} p98 / ${rendFps} inst / recv ${recvFps}) | Drop ${dropped} | RTT ${formatMs(stats.value.roundTripTimeMs)}`,
-    `Bitrate V ${formatKbps(stats.value.videoBitrateKbps)} / A ${formatKbps(stats.value.audioBitrateKbps)}`,
-    `Audio lat ${formatMs(audioLatencyMs.value)} | jitter ${formatMs(stats.value.audioJitterMs)} | playout ${formatMs(stats.value.audioPlayoutDelayMs ?? stats.value.audioJitterBufferMs)}`,
-    `Input send ${formatRate(inputMetrics.value.moveSendRateHz)} | cap ${formatRate(inputMetrics.value.moveRateHz)} | coalesce ${formatPercent(inputMetrics.value.moveCoalesceRatio)}`,
-    `Input lag ${formatMs(inputMetrics.value.lastMoveEventLagMs)} ev / ${formatMs(inputMetrics.value.lastMoveDelayMs)} send | buf ${formatBytes(inputBufferedAmount.value ?? undefined)}`,
-    `Render ${formatMs(renderDelayMs.value)} | frame ${formatMs(renderIntervalMs.value)} | size ${videoSizeLabel.value}`,
-    `Present ${paceDt} | delta ${paceDelta} | recv ${recvFpsDiag} / dec ${decFpsDiag}`,
-    framePacerMetrics.value
-      ? `Pacer swap ${framePacerMetrics.value.framesSwapped} | skip ${framePacerMetrics.value.framesSkipped} | rvfc ${formatMs(framePacerMetrics.value.avgRvfcIntervalMs)} | raf ${formatMs(framePacerMetrics.value.avgRafIntervalMs)}`
-      : useFramePacer.value
-        ? pacerDiagnostics.value
-          ? 'Pacer: initializing...'
-          : 'Pacer: active (diag off)'
-        : 'Pacer: disabled',
-    framePacerMetrics.value
-      ? `Hitch soft ${framePacerMetrics.value.softHitchCount} | hard ${framePacerMetrics.value.hardHitchCount} | p95 ${formatMs(framePacerMetrics.value.p95RafIntervalMs)} | p99 ${formatMs(framePacerMetrics.value.p99RafIntervalMs)}`
-      : useFramePacer.value && !pacerDiagnostics.value
-        ? 'Hitch detection: disabled'
-        : '',
+    `FPS: ${fps} | Bitrate: ${bitrate}`,
+    `Latency: ${latency} | Dropped: ${dropped}`,
+    `Codec: ${codec} | Size: ${videoSizeLabel.value}`,
   ];
 });
+
+// Frame pacer
+const useFramePacer = ref(true);
+const pacerDiagnostics = ref(false);
+let framePacer: FramePacer | null = null;
+
+function startFramePacer(): void {
+  if (!canvasEl.value || !videoEl.value) return;
+  destroyFramePacer();
+  framePacer = new FramePacer(
+    videoEl.value,
+    canvasEl.value,
+    {
+      onMetrics: (metrics: FramePacerMetrics) => {
+        videoPacingMetrics.value = {
+          dtMs: metrics.lastRafIntervalMs ?? null,
+          presentedDelta: null,
+        };
+      },
+      onError: (error: Error) => {
+        pushVideoEvent(`pacer-error:${error.message}`);
+      },
+    },
+    { diagnosticsEnabled: pacerDiagnostics.value }
+  );
+  if (!framePacer.init()) {
+    framePacer.destroy();
+    framePacer = null;
+    return;
+  }
+  framePacer.start();
+}
+
+function destroyFramePacer(): void {
+  if (framePacer) {
+    framePacer.destroy();
+    framePacer = null;
+  }
+}
+
+watch(pacerDiagnostics, (enabled) => {
+  if (framePacer) {
+    framePacer.diagnosticsEnabled = enabled;
+  }
+});
+
+// Video/Audio stream handling
+let videoStream: MediaStream | null = null;
+let audioStream: MediaStream | null = null;
+let audioAutoplayRequested = false;
+let audioPlaybackUnlocked = false;
+let lastAudioPlayAttemptAtMs = 0;
+let lastAudioPlayErrorAtMs = 0;
+let audioPlayRetryTimer: number | null = null;
+let audioPlayRetryUntilMs: number | null = null;
 let detachInput: (() => void) | null = null;
 let detachVideoEvents: (() => void) | null = null;
 let detachVideoFrames: (() => void) | null = null;
 let detachVideoPacing: (() => void) | null = null;
-
-// FramePacer: latest-frame-wins renderer with 2-slot buffer
-const useFramePacer = ref(true);
-const pacerDiagnostics = ref(true);
-let framePacer: FramePacer | null = null;
-const framePacerMetrics = ref<FramePacerMetrics | null>(null);
-
-// Sync diagnostics toggle with FramePacer instance
-watch(pacerDiagnostics, (enabled) => {
-  if (framePacer) {
-    framePacer.diagnosticsEnabled = enabled;
-    if (!enabled) {
-      // Clear metrics display when diagnostics disabled
-      framePacerMetrics.value = null;
-    }
-  }
-});
-
-function initFramePacer(): boolean {
-  if (framePacer) return true;
-  const video = videoEl.value;
-  const canvas = canvasEl.value;
-  if (!video || !canvas) return false;
-
-  framePacer = new FramePacer(video, canvas, {
-    onMetrics: (metrics) => {
-      framePacerMetrics.value = { ...metrics };
-    },
-    onError: (error) => {
-      console.error('[FramePacer]', error);
-      // Fallback to native video playback on error
-      useFramePacer.value = false;
-      destroyFramePacer();
-    },
-  }, {
-    diagnosticsEnabled: pacerDiagnostics.value,
-  });
-
-  if (!framePacer.init()) {
-    console.warn('[FramePacer] WebGL init failed, falling back to native video');
-    useFramePacer.value = false;
-    framePacer = null;
-    return false;
-  }
-
-  return true;
-}
-
-function startFramePacer(): void {
-  if (!useFramePacer.value) return;
-  if (!framePacer && !initFramePacer()) return;
-  framePacer?.start();
-}
-
-function stopFramePacer(): void {
-  framePacer?.stop();
-  framePacerMetrics.value = null;
-}
-
-function destroyFramePacer(): void {
-  framePacer?.destroy();
-  framePacer = null;
-  framePacerMetrics.value = null;
-}
-let lastTrackSnapshot: { video: number; audio: number } | null = null;
-let serverSessionTimer: number | null = null;
-let audioStream: MediaStream | null = null;
-let audioAutoplayRequested = false;
-let audioPlayRetryTimer: number | null = null;
-let audioPlayRetryUntilMs: number | null = null;
-let lastAudioPlayAttemptAtMs = 0;
-let lastAudioPlayErrorAtMs = 0;
-let audioPlaybackUnlocked = false;
-let webrtcDiagTimer: number | null = null;
-let lastWebrtcDiagSample: {
-  ts: number;
-  videoFramesReceived?: number;
-  videoFramesDropped?: number;
-  videoBytesReceived?: number;
-} | null = null;
 let stopInboundVideoStatsTimer: (() => void) | null = null;
-let diagnosticsSampleTimer: number | null = null;
+let lastTrackSnapshot: { videoReady?: string; audioReady?: string } | null = null;
 
-const WEBRTC_DIAG_LOG_INTERVAL_MS = 1000;
-function stopWebrtcDiagnostics(): void {
-  if (webrtcDiagTimer != null) {
-    window.clearInterval(webrtcDiagTimer);
-    webrtcDiagTimer = null;
-  }
-  lastWebrtcDiagSample = null;
+// Video drain/pacing state
+const VIDEO_MODE_SWITCH_DRAIN_MS = 800;
+const VIDEO_STARTUP_DRAIN_MS = 2500;
+let modeSwitchDrainUntil: number | null = null;
+let videoStartupDrainUntil: number | null = null;
+let videoStartupDrainReleaseSince: number | null = null;
+let lastVideoTargetMs: number | undefined = undefined;
+let lastPlaybackRateUpdateAt: number | null = null;
+
+const AUDIO_TARGET_BUFFER_MS = 60;
+const AUDIO_TARGET_PLAYOUT_MS = 40;
+
+function resolveVideoBaseTargetMs(): number { return (1000 / config.fps) * 2.5; }
+function resolveVideoStartupTargetMs(): number { return resolveVideoBaseTargetMs() * 3; }
+
+function setVideoDrainMode(_mode: string, _baseTarget: number, _startupTarget: number): void { /* simplified */ }
+function applyVideoTargetMs(_targetMs: number): void { /* simplified */ }
+function triggerVideoDrainWindow(_durationMs: number, _reason: string): void { /* simplified */ }
+function resetVideoDrainState(): void { /* simplified */ }
+function resetAudioDrainState(): void { /* simplified */ }
+function resetServerRates(): void { lastServerSample = null; serverVideoFps.value = undefined; }
+
+let serverSessionTimer: number | null = null;
+
+function stopServerSessionPolling(): void {
+  if (serverSessionTimer) { window.clearInterval(serverSessionTimer); serverSessionTimer = null; }
 }
+
+function startServerSessionPolling(): void {
+  stopServerSessionPolling();
+  if (!sessionId.value) return;
+  const poll = async () => {
+    if (!sessionId.value) return;
+    try {
+      const result = await api.getSessionState(sessionId.value);
+      if (result.state) {
+        serverSession.value = result.state;
+        const now = Date.now();
+        if (lastServerSample && typeof result.state.video_packets === 'number') {
+          const dt = (now - lastServerSample.ts) / 1000;
+          const packets = result.state.video_packets - (lastServerSample.videoPackets ?? 0);
+          if (dt > 0) serverVideoFps.value = packets / dt;
+        }
+        lastServerSample = { ts: now, videoPackets: result.state.video_packets };
+      }
+    } catch { /* ignore */ }
+  };
+  void poll();
+  serverSessionTimer = window.setInterval(poll, 1000);
+}
+
+let webrtcDiagTimer: number | null = null;
+const WEBRTC_DIAG_LOG_INTERVAL_MS = 5000;
 
 function startWebrtcDiagnostics(): void {
   stopWebrtcDiagnostics();
   webrtcDiagTimer = window.setInterval(() => {
     if (!isConnected.value) return;
-    // Keep this tied to the debug overlay to avoid spamming the console in normal use.
-    if (!showOverlay.value) return;
-
-    const now = Date.now();
-    const prev = lastWebrtcDiagSample;
-    const current = {
-      ts: now,
-      videoFramesReceived: stats.value.videoFramesReceived,
-      videoFramesDropped: stats.value.videoFramesDropped,
-      videoBytesReceived: stats.value.videoBytesReceived,
-    };
-    lastWebrtcDiagSample = current;
-
-    const dtMs = prev ? Math.max(1, now - prev.ts) : 1000;
-    const dFramesRecv =
-      typeof current.videoFramesReceived === 'number' && typeof prev?.videoFramesReceived === 'number'
-        ? Math.max(0, current.videoFramesReceived - prev.videoFramesReceived)
-        : undefined;
-    const dFramesDrop =
-      typeof current.videoFramesDropped === 'number' && typeof prev?.videoFramesDropped === 'number'
-        ? Math.max(0, current.videoFramesDropped - prev.videoFramesDropped)
-        : undefined;
-    const dBytes =
-      typeof current.videoBytesReceived === 'number' && typeof prev?.videoBytesReceived === 'number'
-        ? Math.max(0, current.videoBytesReceived - prev.videoBytesReceived)
-        : undefined;
-
-    const recvFps = typeof dFramesRecv === 'number' ? (dFramesRecv * 1000) / dtMs : undefined;
-    const dropFps = typeof dFramesDrop === 'number' ? (dFramesDrop * 1000) / dtMs : undefined;
-    const recvKbps = typeof dBytes === 'number' ? (dBytes * 8) / dtMs : undefined;
-
-    const videoDebugSnapshot = videoDebug.value;
-    const server = serverSession.value;
-
-    console.debug('[webrtc-diag]', {
-      t: new Date(now).toISOString(),
-      pc: connectionState.value,
-      ice: iceState.value,
-      cand: stats.value.candidatePair,
-      cfg: {
-        encoding: negotiatedEncoding.value,
-        server: serverVideoConfigLabel.value,
-        fps: config.fps,
-        bitrateKbps: config.bitrateKbps,
-      },
-      server: server
-        ? {
-            videoQueue: server.video_queue_frames,
-            videoInflight: server.video_inflight_frames,
-            videoPackets: server.video_packets,
-            videoDropped: server.video_dropped,
-            videoAgeMs: server.last_video_age_ms,
-            fps: serverVideoFps.value,
-          }
-        : null,
-      recv: {
-        fps: recvFps ?? stats.value.videoFps,
-        fpsInstant: stats.value.videoFps,
-        kbps: recvKbps ?? stats.value.videoBitrateKbps,
-        framesReceived: stats.value.videoFramesReceived,
-        framesDecoded: stats.value.videoFramesDecoded,
-        framesDropped: stats.value.videoFramesDropped,
-        dropFps,
-        decodeMs: stats.value.videoDecodeMs,
-      },
-      jitter: {
-        rttMs: stats.value.roundTripTimeMs,
-        vJitterMs: stats.value.videoJitterMs,
-        vJitterBufferMs: stats.value.videoJitterBufferMs,
-        vPlayoutDelayMs: stats.value.videoPlayoutDelayMs,
-        aJitterMs: stats.value.audioJitterMs,
-        aJitterBufferMs: stats.value.audioJitterBufferMs,
-        aPlayoutDelayMs: stats.value.audioPlayoutDelayMs,
-      },
-      render: {
-        readyState: videoDebugSnapshot?.readyState,
-        paused: videoDebugSnapshot?.paused,
-        size: videoSizeLabel.value,
-        fps: renderFps.value,
-        fps98: renderFps98.value,
-        fps99: renderFps99.value,
-        intervalMs: renderIntervalMs.value,
-        delayMs: renderDelayMs.value,
-      },
-      pacing: {
-        dtMs: videoPacingMetrics.value.dtMs,
-        presentedDelta: videoPacingMetrics.value.presentedDelta,
-        expectedDisplayTime: videoPacingMetrics.value.expectedDisplayTime,
-        mediaTime: videoPacingMetrics.value.mediaTime,
-        processingDuration: videoPacingMetrics.value.processingDuration,
-        receiveTime: videoPacingMetrics.value.receiveTime,
-        rtpTimestamp: videoPacingMetrics.value.rtpTimestamp,
-      },
-      inbound: {
-        fpsReceived: inboundVideoStats.value.fpsReceived,
-        fpsDecoded: inboundVideoStats.value.fpsDecoded,
-        framesDropped: inboundVideoStats.value.framesDropped,
-        avgJitterBufferMs: inboundVideoStats.value.avgJitterBufferMs,
-        avgDecodeMsPerFrame: inboundVideoStats.value.avgDecodeMsPerFrame,
-        packetsLostDelta: inboundVideoStats.value.packetsLostDelta,
-        jitter: inboundVideoStats.value.jitter,
-      },
-    });
+    // Diagnostics logging (simplified)
   }, WEBRTC_DIAG_LOG_INTERVAL_MS);
 }
 
+function stopWebrtcDiagnostics(): void {
+  if (webrtcDiagTimer != null) { window.clearInterval(webrtcDiagTimer); webrtcDiagTimer = null; }
+}
+
 function stopDiagnosticsSampling(): void {
-  if (diagnosticsSampleTimer != null) {
-    window.clearInterval(diagnosticsSampleTimer);
-    diagnosticsSampleTimer = null;
-  }
+  if (diagnosticsSampleTimer != null) { window.clearInterval(diagnosticsSampleTimer); diagnosticsSampleTimer = null; }
 }
 
 function startDiagnosticsSampling(): void {
@@ -1776,39 +1100,24 @@ function startDiagnosticsSampling(): void {
 }
 
 function stopAudioPlayRetry(): void {
-  if (audioPlayRetryTimer != null) {
-    window.clearInterval(audioPlayRetryTimer);
-    audioPlayRetryTimer = null;
-  }
+  if (audioPlayRetryTimer != null) { window.clearInterval(audioPlayRetryTimer); audioPlayRetryTimer = null; }
   audioPlayRetryUntilMs = null;
 }
 
 function ensureAudioPlayback(reason: string): void {
   if (!audioAutoplayRequested) return;
   if (!audioEl.value) return;
-  if (!audioStream) {
-    audioStream = new MediaStream();
-  }
-  if (audioEl.value.srcObject !== audioStream) {
-    audioEl.value.srcObject = audioStream;
-  }
+  if (!audioStream) audioStream = new MediaStream();
+  if (audioEl.value.srcObject !== audioStream) audioEl.value.srcObject = audioStream;
   audioEl.value.volume = 1;
-
   const hasTrack = audioStream.getAudioTracks().length > 0;
-  if (!hasTrack) {
-    // Autoplay policies are generally more permissive for muted playback. Keep the element
-    // muted until a real audio track is present.
-    audioEl.value.muted = true;
-  }
-
+  if (!hasTrack) audioEl.value.muted = true;
   const now = Date.now();
   if (now - lastAudioPlayAttemptAtMs < 250) return;
   lastAudioPlayAttemptAtMs = now;
-
   const playPromise = (() => {
-    try {
-      return audioEl.value.play();
-    } catch (error) {
+    try { return audioEl.value.play(); }
+    catch (error) {
       const name = error && typeof error === 'object' ? (error as any).name : '';
       if (now - lastAudioPlayErrorAtMs > 1500) {
         lastAudioPlayErrorAtMs = now;
@@ -1817,58 +1126,41 @@ function ensureAudioPlayback(reason: string): void {
       return null;
     }
   })();
-
   if (!playPromise || typeof (playPromise as any).then !== 'function') return;
-  playPromise
-    .then(() => {
-      if (!audioEl.value) return;
-      if (!audioEl.value.paused) {
-        audioPlaybackUnlocked = true;
-        if (hasTrack) {
-          stopAudioPlayRetry();
-        }
-      }
-    })
-    .catch((error) => {
-      const name = error && typeof error === 'object' ? (error as any).name : '';
-      if (now - lastAudioPlayErrorAtMs > 1500) {
-        lastAudioPlayErrorAtMs = now;
-        pushVideoEvent(`audio-play-error${name ? `:${name}` : ''}:${reason}`);
-      }
-    });
+  playPromise.then(() => {
+    if (!audioEl.value) return;
+    if (!audioEl.value.paused) {
+      audioPlaybackUnlocked = true;
+      if (hasTrack) stopAudioPlayRetry();
+    }
+  }).catch((error) => {
+    const name = error && typeof error === 'object' ? (error as any).name : '';
+    if (now - lastAudioPlayErrorAtMs > 1500) {
+      lastAudioPlayErrorAtMs = now;
+      pushVideoEvent(`audio-play-error${name ? `:${name}` : ''}:${reason}`);
+    }
+  });
 }
 
 function primeAudioAutoplay(): void {
   if (!audioEl.value) return;
-  if (!audioStream) {
-    audioStream = new MediaStream();
-  }
+  if (!audioStream) audioStream = new MediaStream();
   audioPlaybackUnlocked = false;
   audioEl.value.srcObject = audioStream;
   audioEl.value.volume = 1;
   audioEl.value.muted = true;
-
   stopAudioPlayRetry();
   audioPlayRetryUntilMs = Date.now() + 8000;
   audioPlayRetryTimer = window.setInterval(() => {
-    if (!audioAutoplayRequested) {
-      stopAudioPlayRetry();
-      return;
-    }
-    if (audioPlayRetryUntilMs != null && Date.now() > audioPlayRetryUntilMs) {
-      stopAudioPlayRetry();
-      return;
-    }
+    if (!audioAutoplayRequested) { stopAudioPlayRetry(); return; }
+    if (audioPlayRetryUntilMs != null && Date.now() > audioPlayRetryUntilMs) { stopAudioPlayRetry(); return; }
     ensureAudioPlayback('retry');
   }, 500);
-
   ensureAudioPlayback('prime');
 }
+
 function stopSessionStatusPolling(): void {
-  if (sessionStatusTimer) {
-    window.clearInterval(sessionStatusTimer);
-    sessionStatusTimer = null;
-  }
+  if (sessionStatusTimer) { window.clearInterval(sessionStatusTimer); sessionStatusTimer = null; }
 }
 
 async function fetchSessionStatus(): Promise<void> {
@@ -1883,9 +1175,7 @@ async function fetchSessionStatus(): Promise<void> {
       };
       return;
     }
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
   sessionStatus.value = null;
 }
 
@@ -1895,24 +1185,21 @@ function startSessionStatusPolling(): void {
   void fetchSessionStatus();
   sessionStatusTimer = window.setInterval(fetchSessionStatus, 5000);
 }
+
 const ESC_HOLD_MS = 2000;
 let escHoldTimer: number | null = null;
 let fullscreenKeyboardLockRequested = false;
+
 function getFullscreenElement(): Element | null {
   return document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
 }
 
 async function requestFullscreen(target: HTMLElement): Promise<void> {
   const anyTarget = target as any;
-  if (typeof target.requestFullscreen === 'function') {
-    await target.requestFullscreen();
-    return;
-  }
+  if (typeof target.requestFullscreen === 'function') { await target.requestFullscreen(); return; }
   if (typeof anyTarget.webkitRequestFullscreen === 'function') {
     const result = anyTarget.webkitRequestFullscreen();
-    if (result && typeof result.then === 'function') {
-      await result;
-    }
+    if (result && typeof result.then === 'function') await result;
     return;
   }
   if (videoEl.value && typeof (videoEl.value as any).webkitEnterFullscreen === 'function') {
@@ -1922,15 +1209,10 @@ async function requestFullscreen(target: HTMLElement): Promise<void> {
 
 async function exitFullscreen(): Promise<void> {
   const anyDoc = document as any;
-  if (typeof document.exitFullscreen === 'function') {
-    await document.exitFullscreen();
-    return;
-  }
+  if (typeof document.exitFullscreen === 'function') { await document.exitFullscreen(); return; }
   if (typeof anyDoc.webkitExitFullscreen === 'function') {
     const result = anyDoc.webkitExitFullscreen();
-    if (result && typeof result.then === 'function') {
-      await result;
-    }
+    if (result && typeof result.then === 'function') await result;
   }
 }
 
@@ -1944,63 +1226,17 @@ function isTabActive(): boolean {
     const visible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
     const focus = typeof document !== 'undefined' && document.hasFocus ? document.hasFocus() : true;
     return visible && focus;
-  } catch {
-    return true;
-  }
+  } catch { return true; }
 }
 
 const onFullscreenChange = () => {
   isFullscreen.value = isFullscreenActive();
-  if (!isFullscreen.value) {
-    cancelEscHold();
-  }
-  if (!isFullscreen.value) {
-    releaseFullscreenKeyboardLock();
-  }
-  // Avoid hard resets here (they can trigger long rebuffering in some browsers).
-  // Instead, force a drain window and allow a brief video playback-rate boost to catch up.
+  if (!isFullscreen.value) { cancelEscHold(); releaseFullscreenKeyboardLock(); }
   modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
   triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'fullscreen');
   ensureAudioPlayback('fullscreen');
 };
 
-function resetAudioElement(): void {
-  if (!audioEl.value || !audioStream) return;
-  const tracks = audioStream.getAudioTracks();
-  if (!tracks.length) return;
-  // Store current state
-  const wasPlaying = !audioEl.value.paused;
-  // Briefly detach and re-attach the stream to flush the jitter buffer
-  audioEl.value.srcObject = null;
-  // Use a microtask to ensure the browser processes the detachment
-  queueMicrotask(() => {
-    if (!audioEl.value || !audioStream) return;
-    audioEl.value.srcObject = audioStream;
-    audioEl.value.muted = false;
-    if (wasPlaying || audioAutoplayRequested) ensureAudioPlayback('reset');
-  });
-}
-
-function resetVideoElement(): void {
-  if (!videoEl.value || !videoStream) return;
-  const tracks = videoStream.getVideoTracks();
-  if (!tracks.length) return;
-  const wasPlaying = !videoEl.value.paused;
-  videoEl.value.srcObject = null;
-  queueMicrotask(() => {
-    if (!videoEl.value || !videoStream) return;
-    videoEl.value.srcObject = videoStream;
-    videoEl.value.muted = false;
-    if (wasPlaying) {
-      const playPromise = videoEl.value.play();
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(() => {
-          /* ignore autoplay restrictions */
-        });
-      }
-    }
-  });
-}
 const onOverlayHotkey = (event: KeyboardEvent) => {
   if (!event.ctrlKey || !event.altKey || !event.shiftKey) return;
   if (event.code !== 'KeyS') return;
@@ -2009,12 +1245,9 @@ const onOverlayHotkey = (event: KeyboardEvent) => {
   showOverlay.value = !showOverlay.value;
 };
 
-const onPageHide = () => {
-  void client.disconnect({ keepalive: true });
-};
+const onPageHide = () => { void client.disconnect({ keepalive: true }); };
 
 const onVisibilityChange = () => {
-  // When tab becomes visible again, drain any accumulated buffer aggressively.
   if (document.visibilityState === 'visible') {
     modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
     triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'resume');
@@ -2024,34 +1257,19 @@ const onVisibilityChange = () => {
 
 const onAudioUserGesture = () => {
   if (!audioAutoplayRequested) return;
-  if (audioPlayRetryUntilMs != null && Date.now() <= audioPlayRetryUntilMs) {
-    ensureAudioPlayback('gesture');
-    return;
-  }
-  if (!audioPlaybackUnlocked && isConnected.value) {
-    ensureAudioPlayback('gesture');
-  }
+  if (audioPlayRetryUntilMs != null && Date.now() <= audioPlayRetryUntilMs) { ensureAudioPlayback('gesture'); return; }
+  if (!audioPlaybackUnlocked && isConnected.value) ensureAudioPlayback('gesture');
 };
 
 const onFullscreenEscapeDown = (event: KeyboardEvent) => {
   if (event.code !== 'Escape') return;
   if (!isFullscreen.value) return;
-  if (escHoldTimer) {
-    event.preventDefault();
-    event.stopPropagation();
-    return;
-  }
+  if (escHoldTimer) { event.preventDefault(); event.stopPropagation(); return; }
   event.preventDefault();
   event.stopPropagation();
   escHoldTimer = window.setTimeout(async () => {
     escHoldTimer = null;
-    if (getFullscreenElement()) {
-      try {
-        await exitFullscreen();
-      } catch {
-        /* ignore */
-      }
-    }
+    if (getFullscreenElement()) { try { await exitFullscreen(); } catch { /* ignore */ } }
   }, ESC_HOLD_MS);
 };
 
@@ -2063,20 +1281,12 @@ const onFullscreenEscapeUp = (event: KeyboardEvent) => {
   cancelEscHold();
 };
 
-function cancelEscHold() {
-  if (!escHoldTimer) return;
-  window.clearTimeout(escHoldTimer);
-  escHoldTimer = null;
-}
+function cancelEscHold() { if (escHoldTimer) { window.clearTimeout(escHoldTimer); escHoldTimer = null; } }
 
 function requestFullscreenKeyboardLock(): void {
   if (fullscreenKeyboardLockRequested) return;
   fullscreenKeyboardLockRequested = true;
-  void requestKeyboardLock().then((locked) => {
-    if (!locked) {
-      fullscreenKeyboardLockRequested = false;
-    }
-  });
+  void requestKeyboardLock().then((locked) => { if (!locked) fullscreenKeyboardLockRequested = false; });
 }
 
 function releaseFullscreenKeyboardLock(): void {
@@ -2085,110 +1295,9 @@ function releaseFullscreenKeyboardLock(): void {
   releaseKeyboardLock();
 }
 
-function formatKbps(value?: number): string {
-  return value ? `${value.toFixed(0)} kbps` : '--';
-}
-
-function formatBytes(value?: number): string {
-  if (value == null) return '--';
-  if (value < 1024) return `${value} B`;
-  const kb = value / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  return `${mb.toFixed(2)} MB`;
-}
-
-function formatSeconds(value?: number): string {
-  if (value == null) return '--';
-  return value.toFixed(2);
-}
-
-function formatMs(value?: number): string {
-  if (value == null) return '--';
-  return `${value.toFixed(1)} ms`;
-}
-
-function formatFps(value?: number): string {
-  if (value == null || !Number.isFinite(value)) return '--';
-  return `${value.toFixed(1)} fps`;
-}
-
-function formatRate(value?: number): string {
-  if (value == null) return '--';
-  return `${value.toFixed(0)} / s`;
-}
-
-function formatPercent(value?: number): string {
-  if (value == null) return '--';
-  return `${(value * 100).toFixed(0)}%`;
-}
-
-function displayValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '--';       
-  return String(value);
-}
-
-function exportDiagnostics(format: 'json' | 'csv'): void {
-  const ts = new Date();
-  const stamp = ts.toISOString().replace(/[:.]/g, '-');
-  const baseName = `webrtc-diagnostics-${stamp}`;
-  const payload = {
-    generatedAt: ts.toISOString(),
-    windowMs: DIAGNOSTICS_WINDOW_MS,
-    summary: diagnosticsSummary.value,
-    averages: diagAverages.value,
-    latest: diagnosticsSamples.value[diagnosticsSamples.value.length - 1] ?? null,
-    samples: diagnosticsSamples.value,
-  };
-
-  if (format === 'json') {
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${baseName}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    return;
-  }
-
-  const fields: Array<keyof DiagnosticsSample> = [
-    'ts',
-    'pacingDtMs',
-    'presentedDelta',
-    'renderIntervalMs',
-    'renderDelayMs',
-    'fpsReceived',
-    'fpsDecoded',
-    'framesDropped',
-    'avgJitterBufferMs',
-    'avgDecodeMsPerFrame',
-    'packetsLostDelta',
-    'jitter',
-    'serverQueue',
-    'serverInflight',
-    'serverVideoAgeMs',
-    'serverFps',
-  ];
-  const lines = [
-    fields.join(','),
-    ...diagnosticsSamples.value.map((s) =>
-      fields
-        .map((field) => {
-          const value = s[field];
-          return value == null ? '' : String(value);
-        })
-        .join(','),
-    ),
-  ];
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${baseName}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+function formatKbps(value?: number): string { return value ? `${value.toFixed(0)} kbps` : '--'; }
+function formatMs(value?: number): string { return value != null ? `${value.toFixed(1)} ms` : '--'; }
+function displayValue(value: unknown): string { return value === null || value === undefined || value === '' ? '--' : String(value); }
 
 function pushVideoEvent(label: string): void {
   const stamp = new Date().toLocaleTimeString();
@@ -2197,628 +1306,127 @@ function pushVideoEvent(label: string): void {
 }
 
 function updateRemoteStreamInfo(stream: MediaStream): void {
-  const info = {
-    id: stream.id || '',
+  remoteStreamInfo.value = {
+    id: stream.id,
     videoTracks: stream.getVideoTracks().length,
     audioTracks: stream.getAudioTracks().length,
   };
-  if (lastTrackSnapshot) {
-    if (info.videoTracks > lastTrackSnapshot.video) {
-      lastTrackKind.value = 'video';
-    } else if (info.audioTracks > lastTrackSnapshot.audio) {
-      lastTrackKind.value = 'audio';
-    } else {
-      lastTrackKind.value = 'unknown';
-    }
-  } else {
-    lastTrackKind.value = info.videoTracks ? 'video' : info.audioTracks ? 'audio' : 'unknown';
-  }
-  lastTrackAt.value = new Date().toLocaleTimeString();
-  lastTrackSnapshot = { video: info.videoTracks, audio: info.audioTracks };
-  remoteStreamInfo.value = info;
 }
 
-let videoStream: MediaStream | null = null;
 function updateVideoElement(stream: MediaStream): boolean {
-  const tracks = stream.getVideoTracks();
-  const videoTrack = tracks.length ? tracks[tracks.length - 1] : undefined;
-  if (!videoEl.value || !videoTrack) return false;
-  if (!videoStream) {
-    videoStream = new MediaStream();
-  }
-  const existingTrack = videoStream.getVideoTracks()[0];
-  if (existingTrack === videoTrack) {
-    if (videoEl.value.srcObject !== videoStream) {
-      videoEl.value.srcObject = videoStream;
-    }
-    return true;
-  }
-  videoStream.getVideoTracks().forEach((track) => videoStream?.removeTrack(track));
-  videoStream.addTrack(videoTrack);
-  if (videoEl.value.srcObject !== videoStream) {
-    videoEl.value.srcObject = videoStream;
-  }
+  if (!videoEl.value) return false;
+  const videoTracks = stream.getVideoTracks();
+  if (!videoTracks.length) return false;
+  if (!videoStream) videoStream = new MediaStream();
+  videoStream.getVideoTracks().forEach((t) => videoStream!.removeTrack(t));
+  videoTracks.forEach((t) => videoStream!.addTrack(t));
+  videoEl.value.srcObject = videoStream;
   return true;
 }
 
 function updateAudioElement(stream: MediaStream): void {
-  const tracks = stream.getAudioTracks();
-  const audioTrack = tracks.length ? tracks[tracks.length - 1] : undefined;
   if (!audioEl.value) return;
-  if (!audioStream) {
-    audioStream = new MediaStream();
-  }
-  if (!audioTrack) {
-    if (audioAutoplayRequested) {
-      if (audioEl.value.srcObject !== audioStream) {
-        audioEl.value.srcObject = audioStream;
-      }
-      ensureAudioPlayback('no-track');
-    }
-    return;
-  }
-  audioStream.getAudioTracks().forEach((track) => audioStream?.removeTrack(track));
-  audioStream.addTrack(audioTrack);
+  const audioTracks = stream.getAudioTracks();
+  if (!audioTracks.length) return;
+  if (!audioStream) audioStream = new MediaStream();
+  audioStream.getAudioTracks().forEach((t) => audioStream!.removeTrack(t));
+  audioTracks.forEach((t) => audioStream!.addTrack(t));
   audioEl.value.srcObject = audioStream;
   audioEl.value.muted = false;
-  if (audioAutoplayRequested) {
-    ensureAudioPlayback('track');
-  }
-}
-
-const AUDIO_TARGET_BUFFER_MS = 20;
-const AUDIO_TARGET_PLAYOUT_MS = 20;
-const AUDIO_DRAIN_TARGET_MS = 10;
-const AUDIO_DRAIN_PLAYOUT_MS = 0;
-const AUDIO_DRAIN_TRIGGER_MS = 45;
-const AUDIO_DRAIN_RELEASE_MS = 25;
-const AUDIO_DRAIN_SUSTAIN_MS = 800;
-const AUDIO_DRAIN_RELEASE_SUSTAIN_MS = 1200;
-const AUDIO_BUFFER_RESET_THRESHOLD_MS = 120;
-const AUDIO_BUFFER_RESET_SUSTAIN_MS = 3000;
-const AUDIO_BUFFER_RESET_COOLDOWN_MS = 15000;
-const VIDEO_BUFFER_RESET_THRESHOLD_MS = 120;
-const VIDEO_RENDER_RESET_THRESHOLD_MS = 50;
-const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 50;
-const VIDEO_BUFFER_RESET_SUSTAIN_MS = 3000;
-const VIDEO_BUFFER_RESET_COOLDOWN_MS = 15000;
-const VIDEO_DRAIN_SUSTAIN_MS = 350;
-const VIDEO_DRAIN_RELEASE_SUSTAIN_MS = 800;
-const VIDEO_STARTUP_DRAIN_MS = 20000;
-const VIDEO_STARTUP_RELEASE_SUSTAIN_MS = 1000;
-const VIDEO_MODE_SWITCH_DRAIN_MS = 8000;
-const VIDEO_RISE_GUARD_MS = 6000;
-const VIDEO_PLAYBACK_RATE_MAX = 1.12;
-const VIDEO_PLAYBACK_RATE_BOOST_MAX = 1.2;
-const VIDEO_PLAYBACK_RATE_DECAY_PER_SEC = 0.12;
-let audioDrainOverloadedSince: number | null = null;
-let audioDrainReleaseSince: number | null = null;
-let audioDrainActive = false;
-let audioBufferOverloadedSince: number | null = null;
-let lastAudioBufferResetAt: number | null = null;
-let videoDrainOverloadedSince: number | null = null;
-let videoDrainReleaseSince: number | null = null;
-let videoDrainMode: 'off' | 'adaptive' | 'startup' = 'off';
-let videoBufferOverloadedSince: number | null = null;
-let lastVideoBufferResetAt: number | null = null;
-let lastVideoTargetMs: number | undefined = undefined;
-let videoStartupDrainUntil: number | null = null;
-let videoStartupDrainReleaseSince: number | null = null;
-let lastVideoPlayoutSample: { ts: number; value: number } | null = null;
-let lastPlaybackRateUpdateAt: number | null = null;
-let modeSwitchDrainUntil: number | null = null;
-
-function setAudioDrainActive(active: boolean): void {
-  if (audioDrainActive === active) return;
-  audioDrainActive = active;
-  client.setAudioLatencyTargets(
-    active ? AUDIO_DRAIN_TARGET_MS : AUDIO_TARGET_BUFFER_MS,
-    active ? AUDIO_DRAIN_PLAYOUT_MS : AUDIO_TARGET_PLAYOUT_MS,
-  );
-  pushVideoEvent(active ? 'audio-drain-on' : 'audio-drain-off');
-}
-
-function resetAudioDrainState(): void {
-  audioDrainOverloadedSince = null;
-  audioDrainReleaseSince = null;
-  if (audioDrainActive) {
-    setAudioDrainActive(false);
-  }
-}
-
-function resolveVideoBaseTargetMs(): number {
-  // Latency mode: use 2 frames as the base target
-  const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-  const frameMs = Math.round(1000 / fps);
-  return Math.max(5, frameMs * 2);
-}
-
-function resolveVideoDrainTargetMs(baseTargetMs: number): number {
-  const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-  const frameMs = Math.round(1000 / fps);
-  return Math.max(5, baseTargetMs - frameMs * 0.5);
-}
-
-function resolveVideoStartupTargetMs(): number {
-  return 0;
-}
-
-function applyVideoTargetMs(targetMs?: number): void {
-  if (lastVideoTargetMs === targetMs) return;
-  lastVideoTargetMs = targetMs;
-  client.setVideoLatencyTarget(targetMs);
-}
-
-function setVideoDrainMode(
-  mode: 'off' | 'adaptive' | 'startup',
-  baseTargetMs: number,
-  overrideTargetMs?: number,
-): void {
-  const target =
-    mode === 'off' ? baseTargetMs : (overrideTargetMs ?? resolveVideoDrainTargetMs(baseTargetMs));
-  if (videoDrainMode === mode) {
-    applyVideoTargetMs(target);
-    return;
-  }
-  videoDrainMode = mode;
-  applyVideoTargetMs(target);
-  if (mode === 'startup') {
-    pushVideoEvent('video-drain-startup-on');
-  } else if (mode === 'adaptive') {
-    pushVideoEvent('video-drain-on');
-  } else {
-    pushVideoEvent('video-drain-off');
-  }
-}
-
-function resetVideoDrainState(): void {
-  videoDrainOverloadedSince = null;
-  videoDrainReleaseSince = null;
-  videoStartupDrainUntil = null;
-  videoStartupDrainReleaseSince = null;
-  lastVideoPlayoutSample = null;
-  const baseTargetMs = resolveVideoBaseTargetMs();
-  setVideoDrainMode('off', baseTargetMs);
-}
-
-function triggerVideoDrainWindow(durationMs: number, reason: string): void {
-  if (!isConnected.value) return;
-  const now = Date.now();
-  const until = now + Math.max(0, durationMs);
-  videoStartupDrainUntil =
-    videoStartupDrainUntil != null ? Math.max(videoStartupDrainUntil, until) : until;
-  videoStartupDrainReleaseSince = null;
-  const baseTargetMs = resolveVideoBaseTargetMs();
-  setVideoDrainMode('startup', baseTargetMs, resolveVideoStartupTargetMs());
-  pushVideoEvent(`video-drain-${reason}`);
-}
-
-function setVideoPlaybackRate(rate: number): void {
-  const el = videoEl.value;
-  if (!el) return;
-  const clamped = Math.max(1, Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, rate));
-  if (Math.abs((el.playbackRate ?? 1) - clamped) < 0.001) return;
-  try {
-    el.playbackRate = clamped;
-  } catch {
-    /* ignore */
-  }
-}
-
-watch(
-  () => stats.value.audioJitterBufferMs,
-  (audioValue) => {
-    if (!isConnected.value || !isTabActive()) {
-      resetAudioDrainState();
-      audioBufferOverloadedSince = null;
-      return;
-    }
-    if (typeof audioValue !== 'number' || !Number.isFinite(audioValue)) return;
-    const now = Date.now();
-    if (audioValue >= AUDIO_DRAIN_TRIGGER_MS) {
-      if (audioDrainOverloadedSince == null) {
-        audioDrainOverloadedSince = now;
-      }
-      audioDrainReleaseSince = null;
-      if (!audioDrainActive && now - audioDrainOverloadedSince >= AUDIO_DRAIN_SUSTAIN_MS) {
-        setAudioDrainActive(true);
-      }
-    } else if (audioDrainActive && audioValue <= AUDIO_DRAIN_RELEASE_MS) {
-      if (audioDrainReleaseSince == null) {
-        audioDrainReleaseSince = now;
-      }
-      if (now - audioDrainReleaseSince >= AUDIO_DRAIN_RELEASE_SUSTAIN_MS) {
-        setAudioDrainActive(false);
-      }
-    } else {
-      audioDrainOverloadedSince = null;
-      audioDrainReleaseSince = null;
-    }
-
-    const audioOverloaded = audioValue >= AUDIO_BUFFER_RESET_THRESHOLD_MS;
-    if (!audioOverloaded) {
-      audioBufferOverloadedSince = null;
-      return;
-    }
-    if (audioBufferOverloadedSince == null) {
-      audioBufferOverloadedSince = now;
-      return;
-    }
-    if (now - audioBufferOverloadedSince < AUDIO_BUFFER_RESET_SUSTAIN_MS) return;
-    if (
-      lastAudioBufferResetAt != null &&
-      now - lastAudioBufferResetAt < AUDIO_BUFFER_RESET_COOLDOWN_MS
-    ) {
-      return;
-    }
-    lastAudioBufferResetAt = now;
-    audioBufferOverloadedSince = null;
-    pushVideoEvent('audio-buffer-reset');
-    resetAudioElement();
-  },
-);
-
-watch(
-  () => videoPlayoutDelayMs.value,
-  (videoValue) => {
-    if (!isConnected.value || !isTabActive()) {
-      resetVideoDrainState();
-      return;
-    }
-    if (typeof videoValue !== 'number' || !Number.isFinite(videoValue)) return;
-    const now = Date.now();
-    const baseTargetMs = resolveVideoBaseTargetMs();
-    const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
-    const frameMs = Math.round(1000 / fps);
-    if (lastVideoPlayoutSample) {
-      const deltaMs = now - lastVideoPlayoutSample.ts;
-      const deltaValue = videoValue - lastVideoPlayoutSample.value;
-      if (deltaMs > 0 && deltaValue > 0) {
-        const riseRate = (deltaValue * 1000) / deltaMs;
-        const riseLimit = Math.max(8, frameMs * 1.5);
-        if (riseRate > riseLimit && videoValue > baseTargetMs + frameMs) {
-          const until = now + VIDEO_RISE_GUARD_MS;
-          videoStartupDrainUntil =
-            videoStartupDrainUntil != null ? Math.max(videoStartupDrainUntil, until) : until;
-          videoStartupDrainReleaseSince = null;
-        }
-      }
-    }
-    lastVideoPlayoutSample = { ts: now, value: videoValue };
-
-    // Video-only catch-up: speed up video slightly to drain backlog quickly, but decay
-    // back to 1.0 smoothly to avoid oscillation. Audio is intentionally not synchronized.
-    if (videoEl.value) {
-      const lastAt = lastPlaybackRateUpdateAt ?? now;
-      const deltaMs = Math.max(0, now - lastAt);
-      lastPlaybackRateUpdateAt = now;
-
-      const errorMs = Math.max(0, videoValue - (baseTargetMs + frameMs));
-      const boostActive = modeSwitchDrainUntil != null && now <= modeSwitchDrainUntil;
-      if (boostActive) {
-        const boosted = 1 + Math.min(0.2, errorMs / Math.max(1, frameMs * 6));
-        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, Math.max(1, boosted)));
-      } else if (errorMs > 0) {
-        const desired = 1 + Math.min(0.12, errorMs / Math.max(1, frameMs * 10));
-        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_MAX, Math.max(1, desired)));
-      } else {
-        const current = videoEl.value.playbackRate ?? 1;
-        if (current > 1 && deltaMs > 0) {
-          const decay = (VIDEO_PLAYBACK_RATE_DECAY_PER_SEC * deltaMs) / 1000;
-          setVideoPlaybackRate(Math.max(1, current - decay));
-        } else {
-          setVideoPlaybackRate(1);
-        }
-      }
-    }
-    if (videoStartupDrainUntil != null) {
-      if (now > videoStartupDrainUntil) {
-        videoStartupDrainUntil = null;
-        videoStartupDrainReleaseSince = null;
-        setVideoDrainMode('off', baseTargetMs);
-      } else {
-        const startupTargetMs = resolveVideoStartupTargetMs();
-        setVideoDrainMode('startup', baseTargetMs, startupTargetMs);
-        if (videoValue <= baseTargetMs + frameMs) {
-          if (videoStartupDrainReleaseSince == null) {
-            videoStartupDrainReleaseSince = now;
-          } else if (now - videoStartupDrainReleaseSince >= VIDEO_STARTUP_RELEASE_SUSTAIN_MS) {
-            videoStartupDrainUntil = null;
-            videoStartupDrainReleaseSince = null;
-            setVideoDrainMode('off', baseTargetMs);
-          }
-        } else {
-          videoStartupDrainReleaseSince = null;
-        }
-        return;
-      }
-    }
-    const triggerMs = Math.max(baseTargetMs + frameMs, frameMs * 2);
-    const releaseMs = Math.max(baseTargetMs + frameMs * 0.5, frameMs);
-
-    if (videoValue >= triggerMs) {
-      if (videoDrainOverloadedSince == null) {
-        videoDrainOverloadedSince = now;
-      }
-      videoDrainReleaseSince = null;
-      if (videoDrainMode !== 'adaptive' && now - videoDrainOverloadedSince >= VIDEO_DRAIN_SUSTAIN_MS) {
-        setVideoDrainMode('adaptive', baseTargetMs);
-      }
-    } else if (videoDrainMode === 'adaptive' && videoValue <= releaseMs) {
-      if (videoDrainReleaseSince == null) {
-        videoDrainReleaseSince = now;
-      }
-      if (now - videoDrainReleaseSince >= VIDEO_DRAIN_RELEASE_SUSTAIN_MS) {
-        setVideoDrainMode('off', baseTargetMs);
-      }
-    } else {
-      videoDrainOverloadedSince = null;
-      videoDrainReleaseSince = null;
-      if (videoDrainMode !== 'adaptive') {
-        setVideoDrainMode('off', baseTargetMs);
-      }
-    }
-  },
-);
-
-watch(
-  () => stats.value.videoJitterBufferMs,
-  (videoValue) => {
-    if (!isConnected.value || !isTabActive()) {
-      videoBufferOverloadedSince = null;
-      return;
-    }
-    const videoOverloaded =
-      typeof videoValue === 'number' &&
-      Number.isFinite(videoValue) &&
-      videoValue >= VIDEO_BUFFER_RESET_THRESHOLD_MS;
-    if (!videoOverloaded) {
-      videoBufferOverloadedSince = null;
-      return;
-    }
-    const delayValue = renderDelayMs.value;
-    const intervalValue = renderIntervalMs.value;
-    const hasRenderSignal =
-      typeof delayValue === 'number' || typeof intervalValue === 'number';
-    const renderDelayHigh =
-      typeof delayValue === 'number' && delayValue >= VIDEO_RENDER_RESET_THRESHOLD_MS;
-    const renderIntervalHigh =
-      typeof intervalValue === 'number' && intervalValue >= VIDEO_INTERVAL_RESET_THRESHOLD_MS;
-    const allowVideoReset = !hasRenderSignal || renderDelayHigh || renderIntervalHigh;
-    if (!allowVideoReset) return;
-    const now = Date.now();
-    if (videoBufferOverloadedSince == null) {
-      videoBufferOverloadedSince = now;
-      return;
-    }
-    if (now - videoBufferOverloadedSince < VIDEO_BUFFER_RESET_SUSTAIN_MS) return;
-    if (
-      lastVideoBufferResetAt != null &&
-      now - lastVideoBufferResetAt < VIDEO_BUFFER_RESET_COOLDOWN_MS
-    ) {
-      return;
-    }
-    lastVideoBufferResetAt = now;
-    videoBufferOverloadedSince = null;
-    pushVideoEvent('video-buffer-reset');
-    resetVideoElement();
-  },
-);
-
-function stopServerSessionPolling(): void {
-  if (serverSessionTimer) {
-    window.clearInterval(serverSessionTimer);
-    serverSessionTimer = null;
-  }
-}
-
-function resetServerRates(): void {
-  serverVideoFps.value = undefined;
-  lastServerSample = null;
-}
-
-function updateServerRates(session: WebRtcSessionState): void {
-  const now = Date.now();
-  const videoPackets =
-    typeof session.video_packets === 'number' ? session.video_packets : undefined;
-  if (
-    lastServerSample &&
-    videoPackets != null &&
-    lastServerSample.videoPackets != null
-  ) {
-    const deltaPackets = videoPackets - lastServerSample.videoPackets;
-    const deltaMs = now - lastServerSample.ts;
-    if (deltaPackets >= 0 && deltaMs > 0) {
-      serverVideoFps.value = Math.max(0, (deltaPackets * 1000) / deltaMs);
-    } else {
-      serverVideoFps.value = undefined;
-    }
-  } else {
-    serverVideoFps.value = undefined;
-  }
-  lastServerSample = { ts: now, videoPackets };
-}
-
-async function fetchServerSession(): Promise<void> {
-  if (!sessionId.value) return;
-  try {
-    const result = await api.getSessionState(sessionId.value);
-    serverSessionStatus.value = result.status;
-    if (result.session) {
-      serverSession.value = result.session;
-      serverSessionUpdatedAt.value = new Date().toLocaleTimeString();
-      serverSessionError.value = null;
-      updateServerRates(result.session);
-    } else {
-      serverSessionError.value = result.error ?? `HTTP ${result.status}`;
-      resetServerRates();
-    }
-  } catch {
-    serverSessionStatus.value = null;
-    serverSessionError.value = 'fetch failed';
-    resetServerRates();
-  }
-}
-
-function startServerSessionPolling(): void {
-  stopServerSessionPolling();
-  if (!sessionId.value) return;
-  void fetchServerSession();
-  serverSessionTimer = window.setInterval(fetchServerSession, 500);
 }
 
 function attachVideoDebug(el: HTMLVideoElement): () => void {
-  const events = [
-    'loadedmetadata',
-    'loadeddata',
-    'canplay',
-    'canplaythrough',
-    'playing',
-    'pause',
-    'waiting',
-    'stalled',
-    'emptied',
-    'ended',
-    'error',
-  ];
-  const listeners = new Map<string, () => void>();
-  events.forEach((eventName) => {
-    const handler = () => pushVideoEvent(eventName);
-    el.addEventListener(eventName, handler);
-    listeners.set(eventName, handler);
+  const events = ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'suspend', 'error', 'ended'];
+  const handlers = events.map((event) => {
+    const handler = () => { pushVideoEvent(event); videoStateTick.value++; };
+    el.addEventListener(event, handler);
+    return { event, handler };
   });
-  return () => {
-    listeners.forEach((handler, eventName) => {
-      el.removeEventListener(eventName, handler);
-    });
-  };
+  return () => { handlers.forEach(({ event, handler }) => el.removeEventListener(event, handler)); };
 }
 
 function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
-  if (typeof el.requestVideoFrameCallback !== 'function') {
-    return () => {};
-  }
-  let handle = 0;
-  let lastFrameAt: number | null = null;
-  let intervalSum = 0;
-  let intervalSamples = 0;
-  let delaySum = 0;
-  let delaySamples = 0;
-  const intervalWindow: number[] = [];
-  const RENDER_WINDOW_FRAMES = 240;
-  let nextQuantileAtSamples = 0;
-  const recomputeQuantiles = () => {
-    const n = intervalWindow.length;
-    if (n < 10) return;
-    const sorted = [...intervalWindow].sort((a, b) => a - b);
-    const p98Index = Math.max(0, Math.min(n - 1, Math.ceil(n * 0.98) - 1));
-    const p99Index = Math.max(0, Math.min(n - 1, Math.ceil(n * 0.99) - 1));
-    const keep98 = Math.max(1, Math.min(n, Math.floor(n * 0.98)));
-    const keep99 = Math.max(1, Math.min(n, Math.floor(n * 0.99)));
-    let sum98 = 0;
-    let sum99 = 0;
-    for (let i = 0; i < keep99; i += 1) {
-      const v = sorted[i];
-      sum99 += v;
-      if (i < keep98) sum98 += v;
-    }
-    videoFrameMetrics.value.p98IntervalMs = sorted[p98Index];
-    videoFrameMetrics.value.avg98IntervalMs = sum98 / keep98;
-    videoFrameMetrics.value.p99IntervalMs = sorted[p99Index];
-    videoFrameMetrics.value.avg99IntervalMs = sum99 / keep99;
-  };
-  const onFrame = (now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) => {
-    if (lastFrameAt != null) {
-      const interval = Math.max(0, now - lastFrameAt);
-      intervalSum += interval;
-      intervalSamples += 1;
-      videoFrameMetrics.value.lastIntervalMs = interval;
-      videoFrameMetrics.value.avgIntervalMs = intervalSum / intervalSamples;
-      videoFrameMetrics.value.maxIntervalMs = Math.max(
-        videoFrameMetrics.value.maxIntervalMs ?? 0,
-        interval,
-      );
-      intervalWindow.push(interval);
-      if (intervalWindow.length > RENDER_WINDOW_FRAMES) {
-        intervalWindow.shift();
-      }
-      if (intervalSamples >= nextQuantileAtSamples) {
-        nextQuantileAtSamples = intervalSamples + 15;
-        recomputeQuantiles();
-      }
-    }
-    lastFrameAt = now;
-    if (typeof metadata.expectedDisplayTime === 'number') {
-      const delay = Math.max(0, now - metadata.expectedDisplayTime);
-      delaySum += delay;
-      delaySamples += 1;
-      videoFrameMetrics.value.lastDelayMs = delay;
-      videoFrameMetrics.value.avgDelayMs = delaySum / delaySamples;
-      videoFrameMetrics.value.maxDelayMs = Math.max(videoFrameMetrics.value.maxDelayMs ?? 0, delay);
-    }
-    handle = el.requestVideoFrameCallback(onFrame);
-  };
-  handle = el.requestVideoFrameCallback(onFrame);
-  return () => {
-    if (handle) {
-      el.cancelVideoFrameCallback(handle);
-    }
-  };
-}
+  const intervalSamples: number[] = [];
+  const delaySamples: number[] = [];
+  const maxSamples = 120;
+  let lastTs: number | null = null;
 
-function attachVideoPacingProbe(
-  el: HTMLVideoElement,
-  onSample: (sample: {
-    dtMs: number | null;
-    presentedDelta: number | null;
-    now: number;
-    expectedDisplayTime?: number;
-    mediaTime?: number;
-    processingDuration?: number;
-    receiveTime?: number;
-    rtpTimestamp?: number;
-  }) => void,
-): () => void {
-  if (typeof el.requestVideoFrameCallback === 'function') {
+  if ('requestVideoFrameCallback' in el) {
     let handle = 0;
-    let lastNow: number | null = null;
-    let lastPresented: number | null = null;
-    const cb = (now: DOMHighResTimeStamp, meta: VideoFrameCallbackMetadata) => {
-      if (lastNow != null) {
-        const presentedFrames = typeof meta.presentedFrames === 'number' ? meta.presentedFrames : null;
-        onSample({
-          dtMs: now - lastNow,
-          presentedDelta:
-            presentedFrames != null && lastPresented != null ? presentedFrames - lastPresented : null,
-          now,
-          expectedDisplayTime: meta.expectedDisplayTime,
-          mediaTime: meta.mediaTime,
-          processingDuration: meta.processingDuration,
-          receiveTime: (meta as any).receiveTime,
-          rtpTimestamp: (meta as any).rtpTimestamp,
-        });
-        lastPresented = presentedFrames ?? lastPresented;
-      } else {
-        lastPresented = typeof meta.presentedFrames === 'number' ? meta.presentedFrames : null;
+    const cb = (now: number, meta: VideoFrameCallbackMetadata) => {
+      const interval = lastTs != null ? now - lastTs : null;
+      lastTs = now;
+      if (interval != null) {
+        intervalSamples.push(interval);
+        if (intervalSamples.length > maxSamples) intervalSamples.shift();
+        const sorted = [...intervalSamples].sort((a, b) => a - b);
+        const p98Idx = Math.floor(sorted.length * 0.98);
+        const p99Idx = Math.floor(sorted.length * 0.99);
+        videoFrameMetrics.value = {
+          lastIntervalMs: interval,
+          avgIntervalMs: sorted.reduce((a, b) => a + b, 0) / sorted.length,
+          maxIntervalMs: sorted[sorted.length - 1],
+          p98IntervalMs: sorted[p98Idx],
+          avg98IntervalMs: sorted.slice(0, p98Idx + 1).reduce((a, b) => a + b, 0) / (p98Idx + 1),
+          p99IntervalMs: sorted[p99Idx],
+          avg99IntervalMs: sorted.slice(0, p99Idx + 1).reduce((a, b) => a + b, 0) / (p99Idx + 1),
+        };
       }
-      lastNow = now;
       handle = el.requestVideoFrameCallback(cb);
     };
     handle = el.requestVideoFrameCallback(cb);
-    return () => {
-      if (handle) {
-        el.cancelVideoFrameCallback(handle);
-      }
-    };
+    return () => { if (handle) el.cancelVideoFrameCallback(handle); };
   }
 
   let rafId = 0;
   let lastT = el.currentTime;
   const raf = (now: number) => {
-    const t = el.currentTime;
-    if (t !== lastT) {
-      onSample({ dtMs: null, presentedDelta: null, now, mediaTime: t });
-      lastT = t;
+    if (el.currentTime !== lastT) {
+      const interval = lastTs != null ? now - lastTs : null;
+      lastTs = now;
+      lastT = el.currentTime;
+      if (interval != null) {
+        intervalSamples.push(interval);
+        if (intervalSamples.length > maxSamples) intervalSamples.shift();
+        videoFrameMetrics.value = {
+          lastIntervalMs: interval,
+          avgIntervalMs: intervalSamples.reduce((a, b) => a + b, 0) / intervalSamples.length,
+        };
+      }
+    }
+    rafId = requestAnimationFrame(raf);
+  };
+  rafId = requestAnimationFrame(raf);
+  return () => cancelAnimationFrame(rafId);
+}
+
+function attachVideoPacingProbe(
+  el: HTMLVideoElement,
+  onSample: (sample: { dtMs?: number | null; presentedDelta?: number | null; now?: number; mediaTime?: number }) => void
+): () => void {
+  if ('requestVideoFrameCallback' in el) {
+    let handle = 0;
+    let lastNow: number | null = null;
+    let lastPresented: number | null = null;
+    const cb = (now: number, meta: VideoFrameCallbackMetadata) => {
+      const dtMs = lastNow != null ? now - lastNow : null;
+      const presentedFrames = (meta as any).presentedFrames;
+      const presentedDelta = lastPresented != null && typeof presentedFrames === 'number' ? presentedFrames - lastPresented : null;
+      onSample({ dtMs, presentedDelta, now, mediaTime: meta.mediaTime });
+      lastPresented = presentedFrames ?? lastPresented;
+      lastNow = now;
+      handle = el.requestVideoFrameCallback(cb);
+    };
+    handle = el.requestVideoFrameCallback(cb);
+    return () => { if (handle) el.cancelVideoFrameCallback(handle); };
+  }
+
+  let rafId = 0;
+  let lastT = el.currentTime;
+  const raf = (now: number) => {
+    if (el.currentTime !== lastT) {
+      onSample({ dtMs: null, presentedDelta: null, now, mediaTime: el.currentTime });
+      lastT = el.currentTime;
     }
     rafId = requestAnimationFrame(raf);
   };
@@ -2828,31 +1436,10 @@ function attachVideoPacingProbe(
 
 function startInboundVideoStats(
   pc: RTCPeerConnection,
-  onStats: (stats: {
-    fpsReceived?: number;
-    fpsDecoded?: number;
-    framesDropped?: number;
-    avgJitterBufferMs?: number | null;
-    avgDecodeMsPerFrame?: number | null;
-    packetsLostDelta?: number;
-    jitter?: number;
-  }) => void,
-  intervalMs = 1000,
+  onStats: (stats: { fpsReceived?: number; fpsDecoded?: number; framesDropped?: number; avgJitterBufferMs?: number | null; avgDecodeMsPerFrame?: number | null; packetsLostDelta?: number; jitter?: number }) => void,
+  intervalMs = 1000
 ): () => void {
-  let prev:
-    | {
-        now: number;
-        framesReceived?: number;
-        framesDecoded?: number;
-        framesDropped?: number;
-        packetsLost?: number;
-        jitter?: number;
-        jitterBufferDelay?: number;
-        jitterBufferEmittedCount?: number;
-        totalDecodeTime?: number;
-      }
-    | null = null;
-
+  let prev: { now: number; framesReceived?: number; framesDecoded?: number; framesDropped?: number; packetsLost?: number; jitter?: number; jitterBufferDelay?: number; jitterBufferEmittedCount?: number; totalDecodeTime?: number } | null = null;
   const id = window.setInterval(async () => {
     try {
       const report = await pc.getStats();
@@ -2861,12 +1448,9 @@ function startInboundVideoStats(
         if (s.type !== 'inbound-rtp') return;
         if (s.kind !== 'video' && s.mediaType !== 'video') return;
         const frames = typeof s.framesReceived === 'number' ? s.framesReceived : 0;
-        if (!best || frames > (best.framesReceived ?? 0)) {
-          best = s;
-        }
+        if (!best || frames > (best.framesReceived ?? 0)) best = s;
       });
       if (!best) return;
-
       const now = performance.now();
       const cur = {
         now,
@@ -2879,74 +1463,33 @@ function startInboundVideoStats(
         jitterBufferEmittedCount: best.jitterBufferEmittedCount,
         totalDecodeTime: best.totalDecodeTime,
       };
-
       if (prev) {
         const dt = (cur.now - prev.now) / 1000;
-        const dRecv =
-          typeof cur.framesReceived === 'number' && typeof prev.framesReceived === 'number'
-            ? cur.framesReceived - prev.framesReceived
-            : undefined;
-        const dDec =
-          typeof cur.framesDecoded === 'number' && typeof prev.framesDecoded === 'number'
-            ? cur.framesDecoded - prev.framesDecoded
-            : undefined;
-        const dDrop =
-          typeof cur.framesDropped === 'number' && typeof prev.framesDropped === 'number'
-            ? cur.framesDropped - prev.framesDropped
-            : undefined;
-
-        const avgJbMs =
-          typeof cur.jitterBufferDelay === 'number' &&
-          typeof cur.jitterBufferEmittedCount === 'number' &&
-          cur.jitterBufferEmittedCount > 0
-            ? (cur.jitterBufferDelay / cur.jitterBufferEmittedCount) * 1000
-            : null;
-        const avgDecodeMs =
-          typeof cur.totalDecodeTime === 'number' &&
-          typeof cur.framesDecoded === 'number' &&
-          cur.framesDecoded > 0
-            ? (cur.totalDecodeTime / cur.framesDecoded) * 1000
-            : null;
-
+        const dRecv = typeof cur.framesReceived === 'number' && typeof prev.framesReceived === 'number' ? cur.framesReceived - prev.framesReceived : undefined;
+        const dDec = typeof cur.framesDecoded === 'number' && typeof prev.framesDecoded === 'number' ? cur.framesDecoded - prev.framesDecoded : undefined;
+        const dDrop = typeof cur.framesDropped === 'number' && typeof prev.framesDropped === 'number' ? cur.framesDropped - prev.framesDropped : undefined;
+        const avgJbMs = typeof cur.jitterBufferDelay === 'number' && typeof cur.jitterBufferEmittedCount === 'number' && cur.jitterBufferEmittedCount > 0 ? (cur.jitterBufferDelay / cur.jitterBufferEmittedCount) * 1000 : null;
+        const avgDecodeMs = typeof cur.totalDecodeTime === 'number' && typeof cur.framesDecoded === 'number' && cur.framesDecoded > 0 ? (cur.totalDecodeTime / cur.framesDecoded) * 1000 : null;
         onStats({
           fpsReceived: typeof dRecv === 'number' ? dRecv / dt : undefined,
           fpsDecoded: typeof dDec === 'number' ? dDec / dt : undefined,
           framesDropped: typeof dDrop === 'number' ? dDrop : undefined,
           avgJitterBufferMs: avgJbMs,
           avgDecodeMsPerFrame: avgDecodeMs,
-          packetsLostDelta:
-            typeof cur.packetsLost === 'number' && typeof prev.packetsLost === 'number'
-              ? cur.packetsLost - prev.packetsLost
-              : undefined,
+          packetsLostDelta: typeof cur.packetsLost === 'number' && typeof prev.packetsLost === 'number' ? cur.packetsLost - prev.packetsLost : undefined,
           jitter: cur.jitter,
         });
       }
-
       prev = cur;
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }, intervalMs);
-
-  return () => {
-    window.clearInterval(id);
-  };
-}
-
-function statusTagType(state?: string | null) {
-  if (!state) return 'default';
-  if (state === 'connected' || state === 'completed' || state === 'open') return 'success';
-  if (state === 'connecting' || state === 'checking') return 'warning';
-  if (state === 'failed' || state === 'disconnected' || state === 'closed') return 'error';
-  return 'default';
+  return () => { window.clearInterval(id); };
 }
 
 async function confirmTerminateAndConnect(): Promise<void> {
   dialog.warning({
     title: t('webrtc.terminate_confirm_title'),
-    content: t('webrtc.terminate_confirm_message', {
-      app: selectedAppName.value ?? t('webrtc.terminate_confirm_app_fallback'),
-    }),
+    content: t('webrtc.terminate_confirm_message', { app: selectedAppName.value ?? t('webrtc.terminate_confirm_app_fallback') }),
     positiveText: t('webrtc.terminate_confirm_action'),
     negativeText: t('_common.cancel'),
     onPositiveClick: async () => {
@@ -2956,49 +1499,47 @@ async function confirmTerminateAndConnect(): Promise<void> {
   });
 }
 
+async function waitForSpinnerFrame(): Promise<void> {
+  await nextTick();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 async function startConnect() {
   isConnecting.value = true;
+  // Yield to allow the connecting spinner to render and start animating before heavy work
+  await waitForSpinnerFrame();
   negotiatedEncoding.value = null;
   hdrRuntimeWarning.value = null;
   audioAutoplayRequested = true;
   primeAudioAutoplay();
   resetAudioDrainState();
   client.setAudioLatencyTargets(AUDIO_TARGET_BUFFER_MS, AUDIO_TARGET_PLAYOUT_MS);
-  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {     
+  if (autoFullscreen.value && inputTarget.value && !isFullscreenActive()) {
     try {
       const target = inputTarget.value;
-      // Request keyboard lock as part of the user gesture that starts streaming.
-      // This makes it much more reliable than attempting it later during the
-      // async WebRTC setup.
       requestFullscreenKeyboardLock();
       const enterPromise = requestFullscreen(target);
       requestFullscreenKeyboardLock();
       await enterPromise;
-      try {
-        target.focus();
-      } catch {
-        /* ignore */
-      }
+      try { target.focus(); } catch { /* ignore */ }
       requestFullscreenKeyboardLock();
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
   ensureAudioPlayback('connect');
   stopServerSessionPolling();
   sessionId.value = null;
   serverSession.value = null;
-  serverSessionUpdatedAt.value = null;
-  serverSessionError.value = null;
-  serverSessionStatus.value = null;
   resetServerRates();
   try {
+    // Determine app launch mode:
+    // - If an app is selected, launch that app (appId = selectedAppId, resume = false)
+    // - If no app selected but session can be resumed, resume it (appId = undefined, resume = true)
+    // - If no app selected and nothing to resume, start desktop (appId = undefined, resume = false)
+    const shouldResume = !selectedAppId.value && resumeOnConnect.value && resumeAvailable.value;
+    const effectiveAppId = selectedAppId.value ?? undefined;
     const id = await client.connect(
-      {
-        ...config,
-        appId: selectedAppId.value ?? undefined,
-        resume: selectedAppId.value ? false : resumeOnConnect.value,
-      },
+      { ...config, appId: effectiveAppId, resume: shouldResume },
       {
         onRemoteStream: (stream) => {
           if (videoEl.value) {
@@ -3020,11 +1561,7 @@ async function startConnect() {
                   pushVideoEvent(`play-error${name ? `:${name}` : ''}`);
                 });
               }
-              // Start FramePacer for latest-frame-wins rendering
-              if (useFramePacer.value) {
-                // Wait for next tick to ensure canvas is mounted
-                setTimeout(() => startFramePacer(), 0);
-              }
+              if (useFramePacer.value) setTimeout(() => startFramePacer(), 0);
             }
           }
         },
@@ -3035,52 +1572,29 @@ async function startConnect() {
             applyVideoTargetMs(resolveVideoBaseTargetMs());
             if (!stopInboundVideoStatsTimer) {
               const pc = client.peerConnection;
-              if (pc) {
-                stopInboundVideoStatsTimer = startInboundVideoStats(pc, (sample) => {
-                  inboundVideoStats.value = sample;
-                });
-              }
+              if (pc) stopInboundVideoStatsTimer = startInboundVideoStats(pc, (sample) => { inboundVideoStats.value = sample; });
             }
-            if (!diagnosticsSampleTimer) {
-              startDiagnosticsSampling();
-            }
+            if (!diagnosticsSampleTimer) startDiagnosticsSampling();
           } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-            if (stopInboundVideoStatsTimer) {
-              stopInboundVideoStatsTimer();
-              stopInboundVideoStatsTimer = null;
-            }
+            if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
             inboundVideoStats.value = {};
             stopDiagnosticsSampling();
             diagnosticsSamples.value = [];
           }
         },
-        onIceState: (state) => {
-          iceState.value = state;
-        },
-        onInputChannelState: (state) => {
-          inputChannelState.value = state;
-        },
-        onInputMessage: (message) => {
-          applyGamepadFeedback(message);
-        },
-        onStats: (snapshot) => {
-          stats.value = snapshot;
-        },
+        onIceState: (state) => { iceState.value = state; },
+        onInputChannelState: (state) => { inputChannelState.value = state; },
+        onInputMessage: (message) => { applyGamepadFeedback(message); },
+        onStats: (snapshot) => { stats.value = snapshot; },
         onNegotiatedEncoding: (encoding) => {
-          if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') {
-            negotiatedEncoding.value = encoding;
-          }
+          if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') negotiatedEncoding.value = encoding;
         },
         onWarning: (warning) => {
           notifyWarning('Configuration Warning', warning);
-          if (config.hdr && /^hdr\b/i.test(warning)) {
-            hdrRuntimeWarning.value = warning;
-          }
+          if (config.hdr && /^hdr\b/i.test(warning)) hdrRuntimeWarning.value = warning;
         },
       },
-      {
-        inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low',
-      },
+      { inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low' }
     );
     sessionId.value = id;
     startServerSessionPolling();
@@ -3092,21 +1606,15 @@ async function startConnect() {
     stopAudioPlayRetry();
   } finally {
     isConnecting.value = false;
-    if (!isConnected.value) {
-      startSessionStatusPolling();
-    }
+    if (!isConnected.value) startSessionStatusPolling();
   }
 }
 
 async function connect() {
   if (isConnecting.value) return;
-  if (selectedAppId.value && !sessionStatus.value) {
-    await fetchSessionStatus();
-  }
-  if (selectedAppId.value && hasRunningSession.value) {
-    await confirmTerminateAndConnect();
-    return;
-  }
+  // Always fetch session status to know if we can resume
+  if (!sessionStatus.value) await fetchSessionStatus();
+  if (selectedAppId.value && hasRunningSession.value) { await confirmTerminateAndConnect(); return; }
   await startConnect();
 }
 
@@ -3125,10 +1633,7 @@ async function disconnect() {
   inboundVideoStats.value = {};
   diagnosticsSamples.value = [];
   stopDiagnosticsSampling();
-  if (stopInboundVideoStatsTimer) {
-    stopInboundVideoStatsTimer();
-    stopInboundVideoStatsTimer = null;
-  }
+  if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
   smoothedVideoFps.value = undefined;
   lastVideoFpsSampleAt = null;
   lastPlaybackRateUpdateAt = null;
@@ -3136,11 +1641,7 @@ async function disconnect() {
   detachInputCapture();
   destroyFramePacer();
   if (videoEl.value) {
-    try {
-      videoEl.value.playbackRate = 1;
-    } catch {
-      /* ignore */
-    }
+    try { videoEl.value.playbackRate = 1; } catch { /* ignore */ }
     videoEl.value.srcObject = null;
   }
   if (audioEl.value) audioEl.value.srcObject = null;
@@ -3155,13 +1656,8 @@ async function disconnect() {
   videoStartupDrainReleaseSince = null;
   sessionId.value = null;
   serverSession.value = null;
-  serverSessionUpdatedAt.value = null;
-  serverSessionError.value = null;
-  serverSessionStatus.value = null;
   resetServerRates();
   remoteStreamInfo.value = null;
-  lastTrackAt.value = null;
-  lastTrackKind.value = null;
   lastTrackSnapshot = null;
   videoEvents.value = [];
   videoStateTick.value += 1;
@@ -3194,15 +1690,9 @@ async function toggleFullscreen() {
     const enterPromise = requestFullscreen(target);
     requestFullscreenKeyboardLock();
     await enterPromise;
-    try {
-      target.focus();
-    } catch {
-      /* ignore */
-    }
+    try { target.focus(); } catch { /* ignore */ }
     requestFullscreenKeyboardLock();
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 }
 
 async function onFullscreenDblClick() {
@@ -3211,59 +1701,35 @@ async function onFullscreenDblClick() {
 }
 
 function detachInputCapture() {
-  if (detachInput) {
-    detachInput();
-    detachInput = null;
-  }
+  if (detachInput) { detachInput(); detachInput = null; }
 }
 
-watch(
-  () => [inputEnabled.value, isConnected.value],
-  ([enabled, connected]) => {
-    detachInputCapture();
-    if (!enabled || !connected || !inputTarget.value) {
-      releaseFullscreenKeyboardLock();
-      return;
+watch(() => [inputEnabled.value, isConnected.value], ([enabled, connected]) => {
+  detachInputCapture();
+  if (!enabled || !connected || !inputTarget.value) { releaseFullscreenKeyboardLock(); return; }
+  detachInput = attachInputCapture(
+    inputTarget.value,
+    (payload) => {
+      client.sendInput(payload);
+      inputBufferedAmount.value = client.inputChannelBufferedAmount ?? null;
+    },
+    {
+      video: videoEl.value,
+      onMetrics: (metrics) => { inputMetrics.value = metrics; },
+      shouldDrop: shouldDropInput,
     }
-    detachInput = attachInputCapture(
-      inputTarget.value,
-      (payload) => {
-        client.sendInput(payload);
-        inputBufferedAmount.value = client.inputChannelBufferedAmount ?? null;
-      },
-      {
-        video: videoEl.value,
-        onMetrics: (metrics) => {
-          inputMetrics.value = metrics;
-        },
-        shouldDrop: shouldDropInput,
-      },
-    );
-    if (isFullscreenActive()) {
-      requestFullscreenKeyboardLock();
-    }
-  },
-);
+  );
+  if (isFullscreenActive()) requestFullscreenKeyboardLock();
+});
 
 watch(videoEl, (el) => {
-  if (detachVideoEvents) {
-    detachVideoEvents();
-    detachVideoEvents = null;
-  }
-  if (detachVideoFrames) {
-    detachVideoFrames();
-    detachVideoFrames = null;
-  }
-  if (detachVideoPacing) {
-    detachVideoPacing();
-    detachVideoPacing = null;
-  }
+  if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
+  if (detachVideoFrames) { detachVideoFrames(); detachVideoFrames = null; }
+  if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
   if (!el) return;
   detachVideoEvents = attachVideoDebug(el);
   detachVideoFrames = attachVideoFrameMetrics(el);
-  detachVideoPacing = attachVideoPacingProbe(el, (sample) => {
-    videoPacingMetrics.value = sample;
-  });
+  detachVideoPacing = attachVideoPacingProbe(el, (sample) => { videoPacingMetrics.value = sample; });
 });
 
 onBeforeUnmount(() => {
@@ -3278,18 +1744,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', onFullscreenEscapeUp, true);
   window.removeEventListener('pagehide', onPageHide);
   cancelEscHold();
-  if (detachVideoEvents) {
-    detachVideoEvents();
-    detachVideoEvents = null;
-  }
-  if (detachVideoPacing) {
-    detachVideoPacing();
-    detachVideoPacing = null;
-  }
-  if (stopInboundVideoStatsTimer) {
-    stopInboundVideoStatsTimer();
-    stopInboundVideoStatsTimer = null;
-  }
+  if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
+  if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
+  if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
   stopDiagnosticsSampling();
   stopWebrtcDiagnostics();
   stopSessionStatusPolling();
@@ -3309,902 +1766,651 @@ onMounted(async () => {
   window.addEventListener('keydown', onFullscreenEscapeDown, true);
   window.addEventListener('keyup', onFullscreenEscapeUp, true);
   window.addEventListener('pagehide', onPageHide);
-  try {
-    await appsStore.loadApps(true);
-  } catch {
-    /* ignore */
-  }
+  try { await appsStore.loadApps(true); } catch { /* ignore */ }
   encodingSupport.value = detectEncodingSupport();
-  if (config.hdr) {
-    ensureHdrEncoding();
-  }
+  if (config.hdr) ensureHdrEncoding();
   startSessionStatusPolling();
 });
 
-watch(
-  () => isConnected.value,
-  (connected) => {
-    if (connected) {
-      stopSessionStatusPolling();
-      startWebrtcDiagnostics();
-      return;
-    }
-    stopWebrtcDiagnostics();
-    startSessionStatusPolling();
-  },
-);
+watch(() => isConnected.value, (connected) => {
+  if (connected) { stopSessionStatusPolling(); startWebrtcDiagnostics(); return; }
+  stopWebrtcDiagnostics();
+  startSessionStatusPolling();
+});
 </script>
 
 <style scoped>
 /* ============================================
-   STREAMING APP - Professional UI Design
+   MODERN WEBRTC UI
    ============================================ */
 
-/* Base Container - Light Mode (default) */
-.streaming-app {
+.webrtc-app {
   --accent: rgb(var(--color-primary));
-  --accent-glow: rgb(var(--color-primary) / 0.3);
-  --surface-elevated: rgb(var(--color-surface));
-  --border-subtle: rgb(var(--color-dark) / 0.1);
-  --border-hover: rgb(var(--color-dark) / 0.2);
-  --text-primary: rgb(var(--color-on-light));
-  --text-secondary: rgb(var(--color-on-light) / 0.7);
-  --text-muted: rgb(var(--color-on-light) / 0.5);
+  --surface: rgb(var(--color-surface));
+  --border: rgb(var(--color-dark) / 0.1);
+  --text-1: rgb(var(--color-on-light));
+  --text-2: rgb(var(--color-on-light) / 0.7);
+  --text-3: rgb(var(--color-on-light) / 0.5);
 
-  background: linear-gradient(180deg, rgb(var(--color-light)) 0%, rgb(var(--color-surface)) 100%);
+  display: flex;
   min-height: 100vh;
-  color: var(--text-primary);
+  background: linear-gradient(135deg, rgb(var(--color-light)) 0%, rgb(var(--color-surface)) 100%);
+  transition: padding-right 0.3s ease;
 }
 
-/* Base Container - Dark Mode */
-.dark .streaming-app {
-  --surface-elevated: rgb(var(--color-surface) / 0.7);
-  --border-subtle: rgb(255 255 255 / 0.06);
-  --border-hover: rgb(255 255 255 / 0.12);
-  --text-primary: rgb(var(--color-on-dark));
-  --text-secondary: rgb(var(--color-on-dark) / 0.6);
-  --text-muted: rgb(var(--color-on-dark) / 0.4);
-
-  background: linear-gradient(180deg, rgb(var(--color-dark)) 0%, rgb(18 18 24) 100%);
+.dark .webrtc-app {
+  --border: rgb(255 255 255 / 0.08);
+  --text-1: rgb(var(--color-on-dark));
+  --text-2: rgb(var(--color-on-dark) / 0.7);
+  --text-3: rgb(var(--color-on-dark) / 0.5);
+  background: linear-gradient(135deg, rgb(var(--color-dark)) 0%, rgb(10 12 20) 100%);
 }
 
-/* ============================================
-   HEADER
-   ============================================ */
-.streaming-header {
-  background: linear-gradient(180deg, rgb(var(--color-surface) / 0.6) 0%, transparent 100%);
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 1.5rem 2rem 0;
+.webrtc-app.settings-open {
+  padding-right: 380px;
 }
 
-.dark .streaming-header {
-  background: linear-gradient(180deg, rgb(0 0 0 / 0.4) 0%, transparent 100%);
+@media (max-width: 768px) {
+  .webrtc-app.settings-open {
+    padding-right: 0;
+  }
 }
 
-.header-content {
-  max-width: 1600px;
-  margin: 0 auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
-.brand-section {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.brand-icon {
-  width: 3rem;
-  height: 3rem;
-  background: rgb(var(--color-primary));
-  border-radius: 0.75rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.25rem;
-  color: rgb(var(--color-on-primary));
-  box-shadow: 0 4px 20px rgb(var(--color-primary) / 0.3);
-}
-
-.brand-text {
+.main-content {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  min-width: 0;
 }
 
-.brand-title-row {
+/* Header */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: rgb(var(--color-surface) / 0.5);
+  backdrop-filter: blur(10px);
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.header-left, .header-right {
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
 
-.brand-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.alpha-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.25rem 0.6rem;
-  background: linear-gradient(
-    135deg,
-    rgb(var(--color-warning) / 0.15) 0%,
-    rgb(var(--color-warning) / 0.08) 100%
-  );
-  border: 1px solid rgb(var(--color-warning) / 0.3);
-  border-radius: 0.375rem;
-  font-size: 0.625rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: rgb(var(--color-warning));
-  text-transform: uppercase;
-}
-
-.brand-subtitle {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  margin: 0;
-  max-width: 400px;
-}
-
-/* Status Bar */
-.status-bar {
+.header-center {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
+  gap: 1rem;
   flex-wrap: wrap;
 }
 
-.connection-pill {
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.brand-icon {
+  width: 2rem;
+  height: 2rem;
+  background: linear-gradient(135deg, rgb(var(--color-primary)), rgb(var(--color-secondary)));
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 0.875rem;
+  box-shadow: 0 2px 8px rgb(var(--color-primary) / 0.25);
+}
+
+.brand h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-1);
+}
+
+.status-pill {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
+  padding: 0.375rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 2rem;
   font-size: 0.75rem;
   font-weight: 600;
-  transition: all 0.3s ease;
+  color: var(--text-2);
+  transition: all 0.2s;
 }
 
-.connection-pill.connected {
-  background: rgb(var(--color-success) / 0.12);
+.status-pill.connected {
+  background: rgb(var(--color-success) / 0.1);
   border-color: rgb(var(--color-success) / 0.3);
   color: rgb(var(--color-success));
 }
 
-.connection-pill.connecting {
-  background: rgb(var(--color-warning) / 0.12);
+.status-pill.connecting {
+  background: rgb(var(--color-warning) / 0.1);
   border-color: rgb(var(--color-warning) / 0.3);
   color: rgb(var(--color-warning));
-}
-
-.connection-pill.idle {
-  color: var(--text-secondary);
 }
 
 .status-dot {
   width: 0.5rem;
   height: 0.5rem;
-  border-radius: 50%;
   background: currentColor;
+  border-radius: 50%;
   animation: pulse 2s ease-in-out infinite;
 }
 
-.connection-pill.connected .status-dot {
-  animation: pulse-success 1.5s ease-in-out infinite;
-}
-
 @keyframes pulse {
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
-@keyframes pulse-success {
-  0%,
-  100% {
-    opacity: 1;
-    box-shadow: 0 0 0 0 currentColor;
-  }
-  50% {
-    box-shadow: 0 0 8px 2px currentColor;
-  }
-}
-
-.live-metrics {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.metric {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.metric i {
-  font-size: 0.625rem;
-  opacity: 0.7;
-}
-
-/* Settings Trigger */
-.settings-trigger {
+.settings-btn {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: rgb(var(--color-surface) / 0.7);
+  padding: 0.5rem 0.875rem;
+  background: rgb(var(--color-primary) / 0.1);
   border: 1px solid rgb(var(--color-primary) / 0.2);
   border-radius: 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: rgb(var(--color-on-dark) / 0.7);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.settings-trigger:hover {
-  background: rgb(var(--color-primary) / 0.15);
-  border-color: rgb(var(--color-primary) / 0.4);
-  color: rgb(var(--color-on-dark));
-}
-
-.settings-trigger .chevron {
-  font-size: 0.625rem;
-  opacity: 0.5;
-  transition: transform 0.2s ease;
-}
-
-/* Settings Panel */
-.settings-panel {
-  width: min(440px, 90vw);
-  max-height: 75vh;
-  overflow-y: auto;
-  background: rgb(var(--color-surface));
-  border: 1px solid rgb(var(--color-primary) / 0.15);
-  border-radius: 1rem;
-  box-shadow: 0 20px 60px rgb(0 0 0 / 0.5);
-}
-
-.settings-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid rgb(var(--color-primary) / 0.1);
-  font-weight: 600;
-  color: rgb(var(--color-on-dark));
-}
-
-.settings-header i {
   color: rgb(var(--color-primary));
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.settings-body {
-  padding: 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.setting-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.setting-label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.setting-hint {
-  font-size: 0.6875rem;
-  color: var(--text-muted);
-  margin: 0;
-  line-height: 1.4;
-}
-
-.resolution-inputs {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.resolution-x {
-  color: var(--text-muted);
+.settings-btn i {
   font-size: 0.875rem;
 }
 
-.preset-row {
-  display: flex;
-  gap: 0.375rem;
-  flex-wrap: wrap;
+.settings-btn:hover {
+  background: rgb(var(--color-primary) / 0.15);
+  border-color: rgb(var(--color-primary) / 0.35);
 }
 
-.preset-chip {
-  flex: 1;
-  min-width: 60px;
-  padding: 0.5rem 0.75rem;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.125rem;
-}
-
-.preset-chip:hover:not(:disabled) {
-  background: rgb(var(--color-primary) / 0.1);
-  border-color: rgb(var(--color-primary) / 0.3);
-  color: var(--text-primary);
-}
-
-.preset-chip.active {
+.settings-btn.active {
   background: rgb(var(--color-primary));
   border-color: rgb(var(--color-primary));
-  color: rgb(var(--color-on-primary));
-  font-weight: 600;
-  box-shadow: 0 4px 16px rgb(var(--color-primary) / 0.35);
+  color: white;
 }
 
-.preset-chip.disabled,
-.preset-chip:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+/* Library Section */
+.library-section {
+  flex: 1;
+  padding: 1.5rem;
+  overflow-y: auto;
 }
 
-.unsupported-tag {
-  font-size: 0.5625rem;
-  opacity: 0.6;
-  text-transform: uppercase;
-}
-
-.preset-chip.reported-unsupported {
-  border-style: dashed;
-}
-
-.sub-settings {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin-top: 0.5rem;
-}
-
-.sub-setting {
+.library-header {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
 }
 
-.sub-setting label {
-  font-size: 0.625rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
-}
-
-.toggle-group {
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.toggle-row {
+.library-title-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-}
-
-.toggle-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-/* Alpha Banner */
-.alpha-banner {
-  margin-top: 1rem;
-  padding: 0.625rem 0;
-  background: linear-gradient(
-    90deg,
-    rgb(var(--color-warning) / 0.08) 0%,
-    transparent 50%,
-    rgb(var(--color-warning) / 0.08) 100%
-  );
-  border-top: 1px solid rgb(var(--color-warning) / 0.15);
-}
-
-.alpha-banner-content {
-  max-width: 1600px;
-  margin: 0 auto;
-  padding: 0 2rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: rgb(var(--color-warning) / 0.9);
-}
-
-/* ============================================
-   MAIN CONTENT
-   ============================================ */
-.streaming-main {
-  max-width: 1600px;
-  margin: 0 auto;
-  padding: 1.5rem 2rem 3rem;
-}
-
-.main-grid {
-  display: grid;
-  grid-template-columns: 380px minmax(0, 1fr);
-  gap: 1.5rem;
-}
-
-@media (max-width: 1024px) {
-  .main-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ============================================
-   CONTROL PANEL
-   ============================================ */
-.control-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.panel-card {
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 1rem;
-  overflow: hidden;
-}
-
-.diagnostics-card {
-  padding: 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 0.75rem;
 }
 
-.diag-actions {
+.library-header h2 {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-1);
 }
 
-.diag-btn {
-  border: 1px solid var(--border-subtle);
-  background: rgb(var(--color-primary) / 0.1);
-  color: var(--text-primary);
-  padding: 0.35rem 0.6rem;
+.library-header h2 i {
+  color: rgb(var(--color-primary));
+}
+
+/* Search Box */
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s;
 }
 
-.diag-btn:hover {
+.search-box:focus-within {
   border-color: rgb(var(--color-primary) / 0.5);
-  filter: brightness(1.1);
+  box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.1);
 }
 
-.diag-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.6rem 0.75rem;
-  background: rgb(var(--color-primary) / 0.08);
-  border-radius: 0.75rem;
-}
-
-.diag-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem 0.75rem;
-}
-
-.diag-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.diag-label {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-secondary);
-}
-
-.diag-value {
-  font-size: 0.85rem;
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-/* Action Card */
-.action-card {
-  padding: 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.primary-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  width: 100%;
-  padding: 1rem;
-  background: rgb(var(--color-primary));
-  border: none;
-  border-radius: 0.75rem;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: rgb(var(--color-on-primary));
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.primary-action:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 30px rgb(var(--color-primary) / 0.35);
-  filter: brightness(1.1);
-}
-
-.primary-action:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.primary-action.connected {
-  background: rgb(var(--color-danger) / 0.15);
-  border: 1px solid rgb(var(--color-danger) / 0.4);
-  color: rgb(var(--color-danger));
-}
-
-.primary-action.connected:hover:not(:disabled) {
-  background: rgb(var(--color-danger) / 0.25);
-  box-shadow: 0 4px 20px rgb(var(--color-danger) / 0.25);
-}
-
-.primary-action.connecting {
-  opacity: 0.7;
-  cursor: wait;
-}
-
-.primary-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.action-icon {
-  width: 2rem;
-  height: 2rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgb(var(--color-on-primary) / 0.2);
-  border-radius: 50%;
+.search-box i {
+  color: var(--text-3);
   font-size: 0.875rem;
 }
 
-.primary-action.connected .action-icon {
-  background: rgb(var(--color-danger) / 0.25);
+.search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-size: 0.875rem;
+  color: var(--text-1);
+  min-width: 0;
 }
 
-.secondary-action {
+.search-input::placeholder {
+  color: var(--text-3);
+}
+
+.search-clear {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  background: var(--text-3);
+  border: none;
+  border-radius: 50%;
+  color: var(--surface);
+  font-size: 0.625rem;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.search-clear:hover {
+  opacity: 1;
+}
+
+.selection-badge {
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
-  width: 100%;
-  padding: 0.625rem;
-  background: transparent;
-  border: 1px solid rgb(var(--color-warning) / 0.4);
+  padding: 0.375rem 0.75rem;
+  background: rgb(var(--color-primary) / 0.1);
+  border: 1px solid rgb(var(--color-primary) / 0.3);
   border-radius: 0.5rem;
   font-size: 0.75rem;
-  font-weight: 600;
-  color: rgb(var(--color-warning));
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.secondary-action:hover:not(:disabled) {
-  background: rgb(var(--color-warning) / 0.1);
-  border-color: rgb(var(--color-warning) / 0.5);
-}
-
-.secondary-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.quick-toggles {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.toggle-item {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.6875rem;
-  color: rgb(var(--color-on-dark) / 0.6);
-  cursor: pointer;
-  transition: color 0.2s ease;
-}
-
-.toggle-item:hover {
-  color: rgb(var(--color-on-dark));
-}
-
-/* Library Card */
-.library-card {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid rgb(var(--color-primary) / 0.1);
-}
-
-.header-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 600;
-  color: rgb(var(--color-on-dark));
-}
-
-.header-title i {
+  font-weight: 500;
   color: rgb(var(--color-primary));
+}
+
+.selection-badge i {
+  font-size: 0.75rem;
 }
 
 .clear-btn {
-  padding: 0.375rem;
-  background: transparent;
+  background: none;
   border: none;
-  border-radius: 0.375rem;
-  color: rgb(var(--color-on-dark) / 0.4);
+  padding: 0.25rem;
   cursor: pointer;
-  transition: all 0.2s ease;
+  color: inherit;
+  opacity: 0.7;
+  transition: opacity 0.2s;
 }
 
 .clear-btn:hover {
-  background: rgb(var(--color-primary) / 0.1);
-  color: rgb(var(--color-on-dark));
+  opacity: 1;
 }
 
-.selection-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1.25rem;
-  background: rgb(var(--color-info) / 0.08);
-  font-size: 0.75rem;
-  color: rgb(var(--color-on-dark) / 0.6);
+/* Games Grid */
+.games-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
 }
 
-.selection-info i {
-  color: rgb(var(--color-info) / 0.8);
+@media (min-width: 1200px) {
+  .games-grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
 }
 
-.game-grid {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 400px;
-}
-
-.game-tile {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  padding: 0.5rem;
-  background: transparent;
-  border: 1px solid transparent;
+.game-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.75rem;
+  overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s;
   text-align: left;
 }
 
-.game-tile:hover {
-  background: rgb(var(--color-primary) / 0.08);
-  border-color: rgb(var(--color-primary) / 0.2);
+.game-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.15);
+  border-color: rgb(var(--color-primary) / 0.3);
 }
 
-.game-tile.selected {
-  background: linear-gradient(
-    135deg,
-    rgb(var(--color-primary) / 0.18) 0%,
-    rgb(var(--color-secondary) / 0.12) 100%
-  );
+.game-card.selected {
   border-color: rgb(var(--color-primary));
-  box-shadow: 0 0 20px rgb(var(--color-primary) / 0.15);
+  box-shadow: 0 0 0 2px rgb(var(--color-primary) / 0.2), 0 8px 24px rgb(0 0 0 / 0.15);
 }
 
 .game-cover {
   position: relative;
-  width: 3.5rem;
-  height: 4.5rem;
-  flex-shrink: 0;
-  border-radius: 0.5rem;
+  aspect-ratio: 3 / 4;
+  background: rgb(var(--color-dark) / 0.1);
   overflow: hidden;
-  background: rgb(var(--color-surface));
 }
 
 .game-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s;
 }
 
-.game-tile:hover .game-cover img {
-  transform: scale(1.1);
+.game-card:hover .game-cover img {
+  transform: scale(1.05);
 }
 
-.cover-overlay {
+.cover-gradient {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 50%, rgb(0 0 0 / 0.6) 100%);
+  background: linear-gradient(180deg, transparent 50%, rgb(0 0 0 / 0.7) 100%);
 }
 
-.selected-indicator {
+.selected-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  background: rgb(var(--color-primary));
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 0.625rem;
+}
+
+.play-overlay {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgb(var(--color-primary) / 0.9);
-  color: rgb(var(--color-on-primary));
-  font-size: 1rem;
+  color: white;
+  font-size: 2rem;
+  opacity: 0;
+  transition: opacity 0.2s;
 }
 
-.game-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
+.game-card:hover .play-overlay {
+  opacity: 1;
 }
 
-.game-title {
-  font-size: 0.875rem;
+.game-meta {
+  padding: 0.75rem;
+}
+
+.game-name {
+  display: block;
+  font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-1);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .game-source {
+  display: block;
   font-size: 0.6875rem;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text-3);
+  margin-top: 0.125rem;
 }
 
-.empty-library {
+/* Other Applications Section (list view) */
+.other-apps-section {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0 0 0.875rem;
+}
+
+.section-label i {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.apps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.app-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+
+.app-list-item:hover {
+  background: rgb(var(--color-primary) / 0.05);
+  border-color: rgb(var(--color-primary) / 0.2);
+}
+
+.app-list-item.selected {
+  background: rgb(var(--color-primary) / 0.1);
+  border-color: rgb(var(--color-primary) / 0.4);
+}
+
+.app-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  background: rgb(var(--color-primary) / 0.1);
+  border-radius: 0.375rem;
+  color: rgb(var(--color-primary));
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.app-info {
   flex: 1;
+  min-width: 0;
+}
+
+.app-info .app-name {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-info .app-source {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+  margin-top: 0.125rem;
+}
+
+.app-selected-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  background: rgb(var(--color-primary));
+  border-radius: 50%;
+  color: white;
+  font-size: 0.625rem;
+  flex-shrink: 0;
+}
+
+.app-play-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--text-3);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.app-list-item:hover .app-play-icon {
+  opacity: 1;
+  color: rgb(var(--color-primary));
+}
+
+.app-list-item.selected .app-play-icon {
+  display: none;
+}
+
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
+  padding: 4rem 2rem;
   text-align: center;
-  color: var(--text-muted);
+  color: var(--text-3);
 }
 
-.empty-library i {
-  font-size: 2.5rem;
+.empty-state i {
+  font-size: 3rem;
   opacity: 0.3;
   margin-bottom: 1rem;
 }
 
-.empty-library p {
-  font-weight: 500;
-  color: var(--text-secondary);
-  margin: 0 0 0.25rem;
+.empty-state h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0 0 0.5rem;
 }
 
-.empty-library span {
-  font-size: 0.75rem;
+.empty-state p {
+  margin: 0;
+  font-size: 0.875rem;
 }
 
-/* ============================================
-   STREAM SECTION
-   ============================================ */
-.stream-section {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.stream-container {
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
+/* Stream Preview */
+.stream-preview {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  width: 400px;
+  background: rgb(var(--color-surface));
+  border: 1px solid var(--border);
   border-radius: 1rem;
   overflow: hidden;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.2);
+  z-index: 100;
+  transition: all 0.3s ease;
 }
 
-.stream-header {
+.webrtc-app.settings-open .stream-preview {
+  right: calc(380px + 1.5rem);
+}
+
+@media (max-width: 768px) {
+  .stream-preview {
+    width: calc(100% - 2rem);
+    left: 1rem;
+    right: 1rem;
+  }
+
+  .webrtc-app.settings-open .stream-preview {
+    right: 1rem;
+  }
+}
+
+.stream-preview.minimized {
+  width: 280px;
+}
+
+.stream-preview.minimized .stream-viewport,
+.stream-preview.minimized .quick-actions,
+.stream-preview.minimized .compact-metrics {
+  display: none;
+}
+
+.stream-preview.expanded {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  border-radius: 0;
+  z-index: 9999;
+}
+
+.preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1.25rem;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.75rem 1rem;
+  background: rgb(var(--color-dark) / 0.03);
+  border-bottom: 1px solid var(--border);
 }
 
-.stream-title {
+.dark .preview-header {
+  background: rgb(0 0 0 / 0.2);
+}
+
+.preview-title {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-1);
 }
 
-.stream-title i {
+.preview-title i {
   color: rgb(var(--color-primary));
 }
 
-.live-badge {
+.live-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.25rem 0.625rem;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
   background: rgb(var(--color-danger));
   border-radius: 0.25rem;
-  font-size: 0.625rem;
+  font-size: 0.5625rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
   color: white;
 }
 
@@ -4217,28 +2423,32 @@ watch(
 }
 
 @keyframes blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
-.fullscreen-btn {
-  padding: 0.5rem;
+.preview-controls {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.control-btn {
+  width: 1.75rem;
+  height: 1.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 0.5rem;
-  color: var(--text-secondary);
+  border-radius: 0.375rem;
+  color: var(--text-2);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s;
 }
 
-.fullscreen-btn:hover {
-  background: var(--border-hover);
-  color: var(--text-primary);
+.control-btn:hover {
+  background: rgb(var(--color-primary) / 0.1);
+  color: rgb(var(--color-primary));
 }
 
 /* Stream Viewport */
@@ -4257,504 +2467,571 @@ watch(
   cursor: none;
 }
 
-.stream-viewport.fullscreen-mode * {
-  cursor: none;
-}
-
 .stream-video {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
 
-/* Idle Overlay */
-.idle-overlay {
+.hidden {
+  display: none !important;
+}
+
+.idle-state {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, rgb(var(--color-surface)) 0%, rgb(var(--color-dark)) 100%);
+  background: linear-gradient(135deg, rgb(var(--color-surface)) 0%, rgb(var(--color-dark) / 0.8) 100%);
 }
 
 .idle-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   text-align: center;
-  padding: 2rem;
+  color: var(--text-3);
 }
 
-.idle-icon {
-  font-size: 4rem;
-  color: rgb(var(--color-primary));
-  opacity: 0.6;
-  margin-bottom: 1.5rem;
-  animation: float 3s ease-in-out infinite;
-}
-
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-10px);
-  }
-}
-
-.idle-content h3 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 0.5rem;
+.idle-content i {
+  font-size: 2.5rem;
+  opacity: 0.4;
+  margin-bottom: 0.75rem;
+  display: block;
 }
 
 .idle-content p {
-  font-size: 0.875rem;
-  color: var(--text-muted);
   margin: 0;
-  max-width: 280px;
+  font-size: 0.8125rem;
 }
 
-/* Connecting Overlay */
-.connecting-overlay {
+.connecting-state {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 1rem;
   background: rgb(0 0 0 / 0.85);
   backdrop-filter: blur(8px);
 }
 
-.connecting-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1.25rem;
-}
-
 .spinner {
-  width: 3.5rem;
-  height: 3.5rem;
-  border: 3px solid var(--border-subtle);
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 3px solid var(--border);
   border-top-color: rgb(var(--color-primary));
   border-radius: 50%;
   animation: spin 1s linear infinite;
+  /* Force GPU layer for smooth animation during heavy JS work */
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: translateZ(0) rotate(360deg); }
 }
 
-.connecting-content span {
+.connecting-state span {
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  color: var(--text-2);
 }
 
-/* Stats Overlay */
 .stats-overlay {
   position: absolute;
-  top: 0.75rem;
-  left: 0.75rem;
-  z-index: 10;
-  max-width: min(500px, calc(100% - 1.5rem));
-  padding: 0.75rem 1rem;
-  background: rgb(0 0 0 / 0.8);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0.5rem;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgb(0 0 0 / 0.75);
+  border-radius: 0.375rem;
   backdrop-filter: blur(8px);
-  pointer-events: none;
 }
 
 .stat-line {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.6875rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
   line-height: 1.5;
   color: rgb(255 255 255 / 0.85);
-  white-space: pre-wrap;
 }
 
-/* ============================================
-   NOTIFICATION OVERLAY
-   ============================================ */
-.notification-overlay {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  z-index: 100;
-  max-width: min(400px, calc(100% - 2rem));
-}
-
+/* Notification */
 .notification-toast {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
   display: flex;
   align-items: flex-start;
-  gap: 0.875rem;
-  padding: 1rem 1.25rem;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
   background: rgb(30 30 35 / 0.95);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
   backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px rgb(0 0 0 / 0.4);
+  max-width: 300px;
 }
 
 .notification-toast.error {
-  background: linear-gradient(
-    135deg,
-    rgb(var(--color-danger) / 0.15) 0%,
-    rgb(30 30 35 / 0.95) 100%
-  );
   border-color: rgb(var(--color-danger) / 0.4);
 }
 
 .notification-toast.warning {
-  background: linear-gradient(
-    135deg,
-    rgb(var(--color-warning) / 0.15) 0%,
-    rgb(30 30 35 / 0.95) 100%
-  );
   border-color: rgb(var(--color-warning) / 0.4);
 }
 
 .notification-toast.success {
-  background: linear-gradient(
-    135deg,
-    rgb(var(--color-success) / 0.15) 0%,
-    rgb(30 30 35 / 0.95) 100%
-  );
   border-color: rgb(var(--color-success) / 0.4);
 }
 
-.notification-toast.info {
-  background: linear-gradient(135deg, rgb(var(--color-info) / 0.15) 0%, rgb(30 30 35 / 0.95) 100%);
-  border-color: rgb(var(--color-info) / 0.4);
+.notification-toast i {
+  font-size: 1rem;
+  margin-top: 0.125rem;
 }
 
-.notification-icon {
-  flex-shrink: 0;
+.notification-toast.error i { color: rgb(var(--color-danger)); }
+.notification-toast.warning i { color: rgb(var(--color-warning)); }
+.notification-toast.success i { color: rgb(var(--color-success)); }
+.notification-toast.info i { color: rgb(var(--color-info)); }
+
+.notification-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.notification-text strong {
+  display: block;
+  font-size: 0.8125rem;
+  color: white;
+}
+
+.notification-text span {
+  display: block;
+  font-size: 0.75rem;
+  color: rgb(255 255 255 / 0.7);
+  margin-top: 0.125rem;
+}
+
+.notification-toast button {
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  color: rgb(255 255 255 / 0.5);
+  cursor: pointer;
+}
+
+.notification-toast button:hover {
+  color: white;
+}
+
+.notification-fade-enter-active,
+.notification-fade-leave-active {
+  transition: all 0.3s ease;
+}
+
+.notification-fade-enter-from,
+.notification-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* Quick Actions */
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border: none;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn.primary {
+  flex: 1;
+  background: rgb(var(--color-primary));
+  color: rgb(var(--color-on-primary));
+}
+
+.action-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow: 0 4px 16px rgb(var(--color-primary) / 0.35);
+}
+
+.action-btn.primary.connected {
+  background: rgb(var(--color-danger) / 0.15);
+  border: 1px solid rgb(var(--color-danger) / 0.4);
+  color: rgb(var(--color-danger));
+}
+
+.action-btn.primary.connecting {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.action-btn.danger {
+  padding: 0.625rem;
+  background: transparent;
+  border: 1px solid rgb(var(--color-warning) / 0.4);
+  color: rgb(var(--color-warning));
+}
+
+.action-btn.danger:hover:not(:disabled) {
+  background: rgb(var(--color-warning) / 0.1);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+/* Compact Metrics */
+.compact-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  background: rgb(var(--color-dark) / 0.02);
+}
+
+.dark .compact-metrics {
+  background: rgb(0 0 0 / 0.15);
+}
+
+.metric {
+  text-align: center;
+}
+
+.metric .label {
+  display: block;
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+}
+
+.metric .value {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* Settings Drawer */
+.settings-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  background: rgb(var(--color-surface));
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  box-shadow: -8px 0 32px rgb(0 0 0 / 0.15);
+}
+
+@media (max-width: 768px) {
+  .settings-drawer {
+    width: 100%;
+  }
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-1);
+}
+
+.drawer-header h2 i {
+  color: rgb(var(--color-primary));
+}
+
+.close-btn {
   width: 2rem;
   height: 2rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  font-size: 1rem;
-}
-
-.notification-toast.error .notification-icon {
-  background: rgb(var(--color-danger) / 0.2);
-  color: rgb(var(--color-danger));
-}
-
-.notification-toast.warning .notification-icon {
-  background: rgb(var(--color-warning) / 0.2);
-  color: rgb(var(--color-warning));
-}
-
-.notification-toast.success .notification-icon {
-  background: rgb(var(--color-success) / 0.2);
-  color: rgb(var(--color-success));
-}
-
-.notification-toast.info .notification-icon {
-  background: rgb(var(--color-info) / 0.2);
-  color: rgb(var(--color-info));
-}
-
-.notification-content {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.notification-title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: white;
-}
-
-.notification-message {
-  font-size: 0.8125rem;
-  color: rgb(255 255 255 / 0.7);
-  line-height: 1.4;
-}
-
-.notification-close {
-  flex-shrink: 0;
-  padding: 0.375rem;
   background: transparent;
   border: none;
   border-radius: 0.375rem;
-  color: rgb(255 255 255 / 0.4);
+  color: var(--text-2);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s;
 }
 
-.notification-close:hover {
-  background: rgb(255 255 255 / 0.1);
-  color: rgb(255 255 255 / 0.8);
+.close-btn:hover {
+  background: rgb(var(--color-danger) / 0.1);
+  color: rgb(var(--color-danger));
 }
 
-/* Notification Animation */
-.notification-slide-enter-active,
-.notification-slide-leave-active {
-  transition: all 0.3s ease;
-}
-
-.notification-slide-enter-from {
-  opacity: 0;
-  transform: translateX(20px);
-}
-
-.notification-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-/* ============================================
-   METRICS GRID
-   ============================================ */
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-}
-
-@media (max-width: 768px) {
-  .metrics-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-.metric-card {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  padding: 1rem;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0.75rem;
-}
-
-.metric-icon {
-  width: 2.5rem;
-  height: 2.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.625rem;
-  font-size: 1rem;
-}
-
-.metric-icon.blue {
-  background: rgb(var(--color-info) / 0.15);
-  color: rgb(var(--color-info));
-}
-
-.metric-icon.purple {
-  background: rgb(var(--color-secondary) / 0.15);
-  color: rgb(var(--color-secondary));
-}
-
-.metric-icon.green {
-  background: rgb(var(--color-success) / 0.15);
-  color: rgb(var(--color-success));
-}
-
-.metric-icon.amber {
-  background: rgb(var(--color-warning) / 0.15);
-  color: rgb(var(--color-warning));
-}
-
-.metric-data {
+.drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: 1.5rem;
 }
 
-.metric-label {
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
-}
-
-.metric-value {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-/* ============================================
-   DEBUG PANEL
-   ============================================ */
-.debug-panel {
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0.75rem;
-  overflow: hidden;
-}
-
-.debug-summary {
+.setting-group {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.875rem 1.25rem;
-  cursor: pointer;
-  transition: background 0.2s ease;
-  list-style: none;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
-.debug-summary::-webkit-details-marker {
-  display: none;
+.group-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
 }
 
-.debug-summary:hover {
-  background: var(--border-subtle);
-}
-
-.debug-title {
+.resolution-inputs {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: var(--text-primary);
 }
 
-.debug-title i {
-  color: rgb(var(--color-primary));
+.separator {
+  color: var(--text-3);
 }
 
-.debug-summary .chevron {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  transition: transform 0.2s ease;
-}
-
-.debug-panel[open] .debug-summary .chevron {
-  transform: rotate(180deg);
-}
-
-.debug-content {
-  padding: 0 1.25rem 1.25rem;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.debug-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.5rem 1rem;
-  padding-top: 1rem;
-}
-
-.debug-section {
-  padding-top: 1rem;
-  margin-top: 1rem;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.debug-section-title {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
-  margin-bottom: 0.75rem;
-}
-
-.debug-item {
+.preset-chips {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.chip {
+  flex: 1;
+  min-width: 60px;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
   font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.debug-label {
-  color: var(--text-muted);
+.chip:hover {
+  background: rgb(var(--color-primary) / 0.1);
+  border-color: rgb(var(--color-primary) / 0.3);
+  color: var(--text-1);
 }
 
-.debug-value {
-  color: var(--text-secondary);
+.chip.active {
+  background: rgb(var(--color-primary));
+  border-color: rgb(var(--color-primary));
+  color: rgb(var(--color-on-primary));
+  font-weight: 600;
 }
 
-.debug-value.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.625rem;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.chip.unsupported {
+  border-style: dashed;
+  opacity: 0.6;
 }
 
-.video-events {
+.toggle-setting {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.toggle-info {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
 }
 
-.event-line {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.625rem;
-  color: var(--text-muted);
+.hint {
+  font-size: 0.6875rem;
+  color: var(--text-3);
+  margin: 0;
+  line-height: 1.4;
 }
 
-.no-events {
+.setting-alert {
+  margin-top: 0.5rem;
+}
+
+.full-width {
+  width: 100%;
+}
+
+/* Advanced Section */
+.advanced-section {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.advanced-section summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: rgb(var(--color-dark) / 0.03);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.dark .advanced-section summary {
+  background: rgb(0 0 0 / 0.15);
+}
+
+.advanced-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-section summary i {
+  color: rgb(var(--color-primary));
+}
+
+.advanced-content {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.drawer-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
   font-size: 0.75rem;
-  color: var(--text-muted);
-  font-style: italic;
+  color: rgb(var(--color-warning));
+  margin: 0;
 }
 
-/* ============================================
-   NAIVE UI OVERRIDES
-   ============================================ */
+.notice i {
+  margin-top: 0.125rem;
+}
+
+/* Backdrop */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.3);
+  z-index: 150;
+}
+
+@media (min-width: 769px) {
+  .drawer-backdrop {
+    display: none;
+  }
+}
+
+/* Transitions */
+.slideout-enter-active,
+.slideout-leave-active {
+  transition: transform 0.3s ease;
+}
+
+.slideout-enter-from,
+.slideout-leave-to {
+  transform: translateX(100%);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Naive UI Overrides */
 :deep(.n-input-number) {
-  --n-color: rgb(var(--color-surface)) !important;
-  --n-border: 1px solid var(--border-subtle) !important;
-  --n-text-color: var(--text-primary) !important;
-  --n-color-focus: rgb(var(--color-surface)) !important;
+  --n-color: var(--surface) !important;
+  --n-border: 1px solid var(--border) !important;
+  --n-text-color: var(--text-1) !important;
+  --n-color-focus: var(--surface) !important;
   --n-border-focus: 1px solid rgb(var(--color-primary)) !important;
 }
 
 :deep(.n-switch) {
-  --n-rail-color: var(--border-subtle) !important;
+  --n-rail-color: var(--border) !important;
   --n-rail-color-active: rgb(var(--color-primary)) !important;
 }
 
-/* ============================================
-   SCROLLBAR
-   ============================================ */
-.game-grid::-webkit-scrollbar {
+/* Scrollbar */
+.drawer-content::-webkit-scrollbar,
+.library-section::-webkit-scrollbar {
   width: 6px;
 }
 
-.game-grid::-webkit-scrollbar-track {
+.drawer-content::-webkit-scrollbar-track,
+.library-section::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.game-grid::-webkit-scrollbar-thumb {
-  background: rgb(255 255 255 / 0.1);
+.drawer-content::-webkit-scrollbar-thumb,
+.library-section::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-dark) / 0.1);
   border-radius: 3px;
 }
 
-.game-grid::-webkit-scrollbar-thumb:hover {
-  background: rgb(255 255 255 / 0.2);
-}
-
-.settings-panel::-webkit-scrollbar {
-  width: 6px;
-}
-
-.settings-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.settings-panel::-webkit-scrollbar-thumb {
+.dark .drawer-content::-webkit-scrollbar-thumb,
+.dark .library-section::-webkit-scrollbar-thumb {
   background: rgb(255 255 255 / 0.1);
-  border-radius: 3px;
 }
 </style>

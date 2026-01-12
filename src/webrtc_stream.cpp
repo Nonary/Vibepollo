@@ -2150,9 +2150,7 @@ namespace webrtc_stream {
         }
       }
 
-      if (requested_app_id <= 0 && current_app_id == 0) {
-        return std::string {"No running app to resume"};
-      }
+      // If no app requested and nothing running, we'll stream the desktop (effective_app_id = 0)
 
       if (rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
         return std::string {"RTSP session already active"};
