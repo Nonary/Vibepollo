@@ -25,10 +25,11 @@ const SYSTEM_KEY_CODES = [
   'AltRight',
   'ControlLeft',
   'ControlRight',
+  'Escape',
   'MetaLeft',
   'MetaRight',
-  'OSLeft',
-  'OSRight',
+  'Space',
+  'Tab',
 ];
 
 function getKeyboardLockApi(): {
@@ -42,6 +43,75 @@ function getKeyboardLockApi(): {
   return anyNavigator.keyboard ?? null;
 }
 
+let keyboardLockPending: Promise<boolean> | null = null;
+let keyboardLockActive = false;
+let keyboardLockHolders = 0;
+let keyboardLockPendingRequests = 0;
+
+export function requestKeyboardLock(keys?: string[]): Promise<boolean> {
+  const keyboardLockApi = getKeyboardLockApi();
+  if (!keyboardLockApi?.lock) return Promise.resolve(false);
+  if (typeof window !== 'undefined' && 'isSecureContext' in window && !(window as any).isSecureContext) {
+    return Promise.resolve(false);
+  }
+  if (keyboardLockActive) {
+    keyboardLockHolders += 1;
+    return Promise.resolve(true);
+  }
+  if (keyboardLockPending) {
+    keyboardLockPendingRequests += 1;
+    return keyboardLockPending;
+  }
+  keyboardLockPendingRequests = 1;
+  const pending = (keys ? keyboardLockApi.lock(keys) : keyboardLockApi.lock()).then(
+    () => {
+      keyboardLockActive = true;
+      keyboardLockHolders = keyboardLockPendingRequests;
+      keyboardLockPendingRequests = 0;
+      if (keyboardLockHolders === 0) {
+        try {
+          keyboardLockApi.unlock?.();
+        } catch {
+          /* ignore */
+        }
+        keyboardLockActive = false;
+      }
+      return keyboardLockActive;
+    },
+    () => {
+      keyboardLockPendingRequests = 0;
+      return false;
+    },
+  );
+  keyboardLockPending = pending;
+  pending.finally(() => {
+    if (keyboardLockPending === pending) {
+      keyboardLockPending = null;
+    }
+  });
+  return pending;
+}
+
+export function releaseKeyboardLock(): void {
+  if (keyboardLockPending) {
+    if (keyboardLockPendingRequests > 0) {
+      keyboardLockPendingRequests -= 1;
+    }
+    return;
+  }
+  if (keyboardLockHolders > 0) {
+    keyboardLockHolders -= 1;
+  }
+  if (!keyboardLockActive || keyboardLockHolders > 0) return;
+  const keyboardLockApi = getKeyboardLockApi();
+  try {
+    keyboardLockApi?.unlock?.();
+  } catch {
+    /* ignore */
+  }
+  keyboardLockActive = false;
+}
+
 function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | PointerEvent) {
   return {
     alt: event.altKey,
@@ -51,15 +121,48 @@ function modifiersFromEvent(event: KeyboardEvent | MouseEvent | WheelEvent | Poi
   };
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!target || typeof target !== 'object') return false;
+  if (!(target as any).tagName) return false;
+  const el = target as HTMLElement;
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if ((el as any).isContentEditable) return true;
+  return false;
+}
+
+function isFullscreenElement(element: HTMLElement): boolean {
+  try {
+    const fullscreenEl =
+      document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+    return fullscreenEl === element;
+  } catch {
+    return false;
+  }
+}
+
 function shouldPreventDefaultKey(event: KeyboardEvent): boolean {
+  if (event.code === 'Escape' || event.key === 'Escape') return true;
   if (event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar') return true;
   if (event.code === 'Tab' || event.key === 'Tab') return true;
   if (event.code === 'MetaLeft' || event.code === 'MetaRight') return true;
-  if (event.code === 'OSLeft' || event.code === 'OSRight') return true;
-  if (event.key === 'Meta' || event.key === 'OS') return true;
+  if (event.key === 'Meta') return true;
   if (event.key === 'Alt' || event.key === 'AltGraph' || event.key === 'Control') return true;
   if (event.metaKey || event.altKey || event.ctrlKey) return true;
   return false;
+}
+
+function isModifierCode(code: string): boolean {
+  return (
+    code === 'AltLeft' ||
+    code === 'AltRight' ||
+    code === 'ControlLeft' ||
+    code === 'ControlRight' ||
+    code === 'MetaLeft' ||
+    code === 'MetaRight' ||
+    code === 'ShiftLeft' ||
+    code === 'ShiftRight'
+  );
 }
 
 function resolveInputRect(
@@ -433,7 +536,11 @@ export function attachInputCapture(
   let queuedMoveAt = 0;
   let rafId = 0;
   let mouseMoveSeq = 0;
-  const pressedKeys = new Map<string, { key: string; code: string }>();
+  const pressedKeys = new Map<
+    string,
+    { key: string; code: string; chorded: boolean; lastRepeatSentAt?: number }
+  >();
+  const keyAutoReleaseTimers = new Map<string, number>();
   const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
   const supportsGamepad =
     gamepadEnabled &&
@@ -470,8 +577,7 @@ export function attachInputCapture(
     }
     return send(JSON.stringify(payload)) !== false;
   };
-  const keyboardLockApi = getKeyboardLockApi();
-  let keyboardLocked = false;
+  let keyboardLockRequested = false;
 
   const emitMetrics = () => {
     if (!onMetrics) return;
@@ -515,34 +621,129 @@ export function attachInputCapture(
         key: entry.key,
         code: entry.code,
         repeat: false,
-        modifiers: { alt: false, ctrl: false, shift: false, meta: false },
+        modifiers: { alt: false, ctrl: false, shift: false, meta: false },      
         ts,
       };
       sendPayload(payload);
     }
+    keyAutoReleaseTimers.forEach((timer) => {
+      window.clearTimeout(timer);
+    });
+    keyAutoReleaseTimers.clear();
     pressedKeys.clear();
   };
 
-  const requestKeyboardLock = () => {
-    if (!keyboardLockApi?.lock || keyboardLocked) return;
-    keyboardLockApi.lock(SYSTEM_KEY_CODES).then(
-      () => {
-        keyboardLocked = true;
-      },
-      () => {
-        /* ignore */
-      },
-    );
+  const clearKeyAutoRelease = (code: string) => {
+    const timer = keyAutoReleaseTimers.get(code);
+    if (!timer) return;
+    window.clearTimeout(timer);
+    keyAutoReleaseTimers.delete(code);
   };
 
-  const releaseKeyboardLock = () => {
-    if (!keyboardLocked) return;
-    try {
-      keyboardLockApi?.unlock?.();
-    } catch {
-      /* ignore */
+  const scheduleKeyAutoRelease = (event: KeyboardEvent) => {
+    const code = event.code;
+    if (isModifierCode(code)) return;
+    if (!pressedKeys.has(code)) return;
+    // Some browser/OS shortcuts (notably on macOS with Cmd combos like Cmd+D)
+    // can eat the keyup for the secondary key. Auto-release after a short delay
+    // to avoid a "stuck key" on the host.
+    if (!shouldPreventDefaultKey(event)) return;
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
+    clearKeyAutoRelease(code);
+    const timer = window.setTimeout(() => {
+      keyAutoReleaseTimers.delete(code);
+      const entry = pressedKeys.get(code);
+      if (!entry) return;
+      const payload: InputMessage = {
+        type: 'key_up',
+        key: entry.key,
+        code: entry.code,
+        repeat: false,
+        modifiers: { alt: false, ctrl: false, shift: false, meta: false },
+        ts: performance.now(),
+      };
+      sendPayload(payload);
+      pressedKeys.delete(code);
+    }, 750);
+    keyAutoReleaseTimers.set(code, timer);
+  };
+
+  const releaseStaleModifierKeys = (event: KeyboardEvent) => {
+    if (!pressedKeys.size) return;
+    const ts = performance.now();
+    const isPressed = (code: string) => pressedKeys.has(code);
+    const releaseCode = (code: string) => {
+      const entry = pressedKeys.get(code);
+      if (!entry) return;
+      const payload: InputMessage = {
+        type: 'key_up',
+        key: entry.key,
+        code: entry.code,
+        repeat: false,
+        modifiers: modifiersFromEvent(event),
+        ts,
+      };
+      sendPayload(payload);
+      pressedKeys.delete(code);
+    };
+
+    // If the browser/OS eats a modifier keyup (common on macOS for Cmd combos),
+    // clear it as soon as we observe the modifier is no longer held.
+    if (!event.metaKey) {
+      if (isPressed('MetaLeft')) releaseCode('MetaLeft');
+      if (isPressed('MetaRight')) releaseCode('MetaRight');
     }
-    keyboardLocked = false;
+    if (!event.ctrlKey) {
+      if (isPressed('ControlLeft')) releaseCode('ControlLeft');
+      if (isPressed('ControlRight')) releaseCode('ControlRight');
+    }
+    if (!event.altKey) {
+      if (isPressed('AltLeft')) releaseCode('AltLeft');
+      if (isPressed('AltRight')) releaseCode('AltRight');
+    }
+    if (!event.shiftKey) {
+      if (isPressed('ShiftLeft')) releaseCode('ShiftLeft');
+      if (isPressed('ShiftRight')) releaseCode('ShiftRight');
+    }
+  };
+
+  const releaseStaleChordedKeys = (event: KeyboardEvent) => {
+    // If the browser/OS ate the keyup for a non-modifier during a chord (Cmd/Ctrl/Alt),
+    // release it as soon as we observe the chord modifiers are no longer held.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (!pressedKeys.size) return;
+    const ts = performance.now();
+    for (const [code, entry] of pressedKeys) {
+      if (!entry.chorded) continue;
+      if (isModifierCode(code)) continue;
+      clearKeyAutoRelease(code);
+      const payload: InputMessage = {
+        type: 'key_up',
+        key: entry.key,
+        code: entry.code,
+        repeat: false,
+        modifiers: modifiersFromEvent(event),
+        ts,
+      };
+      sendPayload(payload);
+      pressedKeys.delete(code);
+    }
+  };
+
+  const requestKeyboardLockForCapture = () => {
+    if (keyboardLockRequested) return;
+    keyboardLockRequested = true;
+    void requestKeyboardLock().then((locked) => {
+      if (!locked) {
+        keyboardLockRequested = false;
+      }
+    });
+  };
+
+  const releaseKeyboardLockForCapture = () => {
+    if (!keyboardLockRequested) return;
+    keyboardLockRequested = false;
+    releaseKeyboardLock();
   };
 
   const queueMove = (event: MouseEvent | PointerEvent) => {
@@ -598,13 +799,39 @@ export function attachInputCapture(
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    requestKeyboardLock();
+    const fullscreen = isFullscreenElement(element);
+    if (!fullscreen) {
+      if (typeof document !== 'undefined' && document.activeElement !== element) return;
+      if (isEditableTarget(event.target)) return;
+    }
+    releaseStaleModifierKeys(event);
+    releaseStaleChordedKeys(event);
+    requestKeyboardLockForCapture();
     if (shouldPreventDefaultKey(event)) {
       event.preventDefault();
       event.stopPropagation();
     }
-    if (event.repeat) return;
-    pressedKeys.set(event.code, { key: event.key, code: event.code });
+    const existing = pressedKeys.get(event.code);
+    if (existing) {
+      if (isModifierCode(event.code)) return;
+      const now = performance.now();
+      if (existing.lastRepeatSentAt != null && now - existing.lastRepeatSentAt < 20) {
+        return;
+      }
+      existing.lastRepeatSentAt = now;
+      const payload: InputMessage = {
+        type: 'key_down',
+        key: existing.key,
+        code: existing.code,
+        repeat: true,
+        modifiers: modifiersFromEvent(event),
+        ts: now,
+      };
+      sendPayload(payload);
+      return;
+    }
+    const chorded = shouldPreventDefaultKey(event) && (event.metaKey || event.ctrlKey || event.altKey);
+    pressedKeys.set(event.code, { key: event.key, code: event.code, chorded });
     const payload: InputMessage = {
       type: 'key_down',
       key: event.key,
@@ -614,13 +841,22 @@ export function attachInputCapture(
       ts: performance.now(),
     };
     sendPayload(payload);
+    scheduleKeyAutoRelease(event);
   };
 
   const onKeyUp = (event: KeyboardEvent) => {
+    const fullscreen = isFullscreenElement(element);
+    if (!fullscreen) {
+      if (typeof document !== 'undefined' && document.activeElement !== element) return;
+      if (isEditableTarget(event.target)) return;
+    }
+    releaseStaleModifierKeys(event);
+    releaseStaleChordedKeys(event);
     if (shouldPreventDefaultKey(event)) {
       event.preventDefault();
       event.stopPropagation();
     }
+    clearKeyAutoRelease(event.code);
     pressedKeys.delete(event.code);
     const payload: InputMessage = {
       type: 'key_up',
@@ -636,7 +872,7 @@ export function attachInputCapture(
   const onMouseMove = (event: MouseEvent) => queueMove(event);
   const onMouseDown = (event: MouseEvent) => {
     element.focus();
-    requestKeyboardLock();
+    requestKeyboardLockForCapture();
     sendButton(event, 'mouse_down');
   };
   const onMouseUp = (event: MouseEvent) => sendButton(event, 'mouse_up');
@@ -647,7 +883,7 @@ export function attachInputCapture(
   const onPointerDown = (event: PointerEvent) => {
     if (event.pointerType === 'touch') return;
     element.focus();
-    requestKeyboardLock();
+    requestKeyboardLockForCapture();
     try {
       element.setPointerCapture(event.pointerId);
     } catch {
@@ -677,12 +913,12 @@ export function attachInputCapture(
   };
   const onBlur = () => {
     releaseAllKeys();
-    releaseKeyboardLock();
+    releaseKeyboardLockForCapture();
   };
   const onVisibilityChange = () => {
     if (document.hidden) {
       releaseAllKeys();
-      releaseKeyboardLock();
+      releaseKeyboardLockForCapture();
     }
   };
 
@@ -911,8 +1147,8 @@ export function attachInputCapture(
     element.addEventListener('mouseup', onMouseUp);
   }
   element.addEventListener('wheel', onWheel, { passive: false });
-  element.addEventListener('keydown', onKeyDown);
-  element.addEventListener('keyup', onKeyUp);
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyUp, true);
   element.addEventListener('contextmenu', onContextMenu);
   element.addEventListener('blur', onBlur);
   window.addEventListener('blur', onBlur);
@@ -938,15 +1174,19 @@ export function attachInputCapture(
       element.removeEventListener('mouseup', onMouseUp);
     }
     element.removeEventListener('wheel', onWheel);
-    element.removeEventListener('keydown', onKeyDown);
-    element.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
     element.removeEventListener('contextmenu', onContextMenu);
     element.removeEventListener('blur', onBlur);
     window.removeEventListener('blur', onBlur);
-    document.removeEventListener('visibilitychange', onVisibilityChange);
-    releaseKeyboardLock();
+    document.removeEventListener('visibilitychange', onVisibilityChange);       
+    releaseKeyboardLockForCapture();
+    keyAutoReleaseTimers.forEach((timer) => {
+      window.clearTimeout(timer);
+    });
+    keyAutoReleaseTimers.clear();
     if (supportsGamepad) {
-      window.removeEventListener('gamepadconnected', onGamepadConnected);
+      window.removeEventListener('gamepadconnected', onGamepadConnected);       
       window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
     }
     releaseAllKeys();
