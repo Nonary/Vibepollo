@@ -63,12 +63,15 @@ const defaultGroups = [
       locale: 'en',
       sunshine_name: '',
       min_log_level: 2,
+      enable_pairing: 'enabled',
+      enable_discovery: 'enabled',
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,
       system_tray: true,
+      hide_tray_controls: 'disabled',
     },
   },
   {
@@ -89,6 +92,8 @@ const defaultGroups = [
       mouse: 'enabled',
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
+      enable_input_only_mode: 'disabled',
+      forward_rumble: 'enabled',
       keybindings: '[0x10,0xA0,0x11,0xA2,0x12,0xA4]',
       ds5_inputtino_randomize_mac: true,
     },
@@ -101,6 +106,8 @@ const defaultGroups = [
       virtual_sink: '',
       install_steam_audio_drivers: 'enabled',
       stream_audio: 'enabled',
+      keep_sink_default: 'enabled',
+      auto_capture_sink: 'enabled',
       adapter_name: '',
       output_name: '',
       virtual_display_mode: 'disabled',
@@ -124,10 +131,11 @@ const defaultGroups = [
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      dd_wa_virtual_double_refresh: true,
+      double_refreshrate: true,
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
+      fallback_mode: '1920x1080x60',
       lossless_scaling_path: '',
     },
   },
@@ -187,11 +195,15 @@ const defaultGroups = [
     name: 'Advanced',
     options: {
       fec_percentage: 20,
+      limit_framerate: 'enabled',
       qp: 28,
       min_threads: 2,
       hevc_mode: 0,
       av1_mode: 0,
       prefer_10bit_sdr: false,
+      envvar_compatibility_mode: 'disabled',
+      legacy_ordering: 'disabled',
+      ignore_encoder_probe_failure: 'disabled',
       capture: '',
       encoder: '',
     },
@@ -220,6 +232,7 @@ const defaultGroups = [
       nvenc_latency_over_power: 'enabled',
       nvenc_opengl_vulkan_on_dxgi: 'enabled',
       nvenc_h264_cavlc: 'disabled',
+      nvenc_intra_refresh: 'disabled',
     },
   },
   {
@@ -455,6 +468,21 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
+    // Legacy: map old virtual double refresh workaround key to new config key.
+    if (data) {
+      if (
+        Object.prototype.hasOwnProperty.call(data, 'dd_wa_virtual_double_refresh') &&
+        !Object.prototype.hasOwnProperty.call(data, 'double_refreshrate')
+      ) {
+        (data as Record<string, unknown>)['double_refreshrate'] = (
+          data as Record<string, unknown>
+        )['dd_wa_virtual_double_refresh'];
+      }
+      if (Object.prototype.hasOwnProperty.call(data, 'dd_wa_virtual_double_refresh')) {
+        delete (data as Record<string, unknown>)['dd_wa_virtual_double_refresh'];
+      }
+    }
+
     // Keep frame limiter legacy and new flags in sync so toggles work across versions.
     if (data) {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_enable')) {
@@ -489,7 +517,7 @@ export const useConfigStore = defineStore('config', () => {
     const otherBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
-      'dd_wa_virtual_double_refresh',
+      'double_refreshrate',
       'dd_wa_dummy_plug_hdr10',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);

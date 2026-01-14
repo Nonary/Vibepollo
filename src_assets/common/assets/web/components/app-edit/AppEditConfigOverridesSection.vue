@@ -290,6 +290,8 @@ const DISALLOWED_KEYS = new Set<string>([
   'lan_encryption_mode',
   'wan_encryption_mode',
   'ping_timeout',
+  'enable_pairing',
+  'enable_discovery',
   'fec_percentage',
   'pkey',
   'cert',

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Checkbox from '@/Checkbox.vue';
 import { useConfigStore } from '@/stores/config';
 import { useI18n } from 'vue-i18n';
 import { NInputNumber, NSelect } from 'naive-ui';
