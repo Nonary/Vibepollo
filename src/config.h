@@ -38,6 +38,7 @@ namespace config {
     };
 
     bool limit_framerate;
+    // Config key: dd_wa_virtual_double_refresh (legacy alias: double_refreshrate)
     bool double_refreshrate;
 
     // ffmpeg params

@@ -349,6 +349,8 @@
     "fallback_mode_desc": "Resolution and refresh rate Sunshine restores if the requested mode fails (format: widthxheightxrefresh).",
     "limit_framerate": "Limit encoder framerate",
     "limit_framerate_desc": "Clamp the encoder FPS to Sunshine's negotiated stream rate. Helps avoid warp-mode bitrate spikes and fractional refresh mismatches.",
+    "dd_wa_virtual_double_refresh": "Double refresh rate for virtual displays",
+    "dd_wa_virtual_double_refresh_desc": "Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops. Leave this on unless a specific game or monitor behaves incorrectly.",
     "double_refreshrate": "Double refresh rate for virtual displays",
     "double_refreshrate_desc": "Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops. Leave this on unless a specific game or monitor behaves incorrectly.",
     "virtual_display_status_label": "SudoVDA driver status:",

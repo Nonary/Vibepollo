@@ -1155,7 +1155,7 @@ namespace proc {
         return value * 2;
       };
 
-      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix || config::video.double_refreshrate) {
+      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
         apply_refresh_override(saturating_double(launch_session->fps));
       }
     }

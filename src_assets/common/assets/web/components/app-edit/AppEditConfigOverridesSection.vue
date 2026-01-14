@@ -240,6 +240,10 @@ const configRef = (configStore as any).config;
 const tabsRef = (configStore as any).tabs;
 const metadataRef = (configStore as any).metadata;
 
+// Allow a small set of display-device (dd_) keys to be overridden even though
+// most dd_ keys are hidden to avoid confusion with the dedicated Display UI.
+const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
+
 const DD_KEYS = {
   configurationOption: 'dd_configuration_option',
   resolutionOption: 'dd_resolution_option',
@@ -251,7 +255,9 @@ const DD_KEYS = {
 } as const;
 
 function isHiddenOverrideKey(key: string): boolean {
-  return key.startsWith('dd_');
+  if (!key) return false;
+  if (!key.startsWith('dd_')) return false;
+  return !ALLOWED_DD_OVERRIDE_KEYS.has(key);
 }
 
 function getConfigState(): any {
@@ -387,6 +393,23 @@ function ensureOverridesObject(): void {
     overrides.value = {};
   }
 }
+
+function normalizeLegacyOverrideKeys(): void {
+  ensureOverridesObject();
+  const o = overrides.value as any;
+  // Apollo legacy key -> Sunshine key
+  if (o.double_refreshrate !== undefined && o.dd_wa_virtual_double_refresh === undefined) {
+    o.dd_wa_virtual_double_refresh = o.double_refreshrate;
+    delete o.double_refreshrate;
+  }
+}
+
+normalizeLegacyOverrideKeys();
+watch(
+  () => overrides.value,
+  () => normalizeLegacyOverrideKeys(),
+  { deep: false },
+);
 
 function setOverrideKey(key: string, value: unknown): void {
   ensureOverridesObject();

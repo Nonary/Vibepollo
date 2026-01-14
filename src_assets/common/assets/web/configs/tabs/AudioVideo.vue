@@ -8,6 +8,7 @@ import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelect
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
+import Checkbox from '@/Checkbox.vue';
 import { NCheckbox, NInput, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
@@ -341,13 +342,26 @@ function selectVirtualDisplayLayout(v: unknown) {
                 {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>
               <n-radio value="per_client">
-                {{ $t('config.virtual_display_mode_per_client') }}
+                {{ $t('config.virtual_display_mode_per_client') }}        
               </n-radio>
               <n-radio value="shared">
                 {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
-            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3">
+                  <Checkbox
+                    id="dd_wa_virtual_double_refresh"
+                    v-model="config.dd_wa_virtual_double_refresh"
+                    locale-prefix="config"
+                    :default="true"
+                    :disabled="virtualDisplayMode === 'disabled'"
+                  />
+                </div>
+              </template>
+            </PlatformLayout>
+            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">   
               <DisplayOutputSelector />
             </div>
             <div v-else class="mt-3 space-y-2">

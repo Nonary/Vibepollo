@@ -1447,10 +1447,10 @@ namespace config {
       modified_config_settings.erase(old_name);
     };
 
-    remap_option("dd_wa_virtual_double_refresh", "double_refreshrate");
+    remap_option("double_refreshrate", "dd_wa_virtual_double_refresh");
 
     bool_f(vars, "limit_framerate", video.limit_framerate);
-    bool_f(vars, "double_refreshrate", video.double_refreshrate);
+    bool_f(vars, "dd_wa_virtual_double_refresh", video.double_refreshrate);
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});

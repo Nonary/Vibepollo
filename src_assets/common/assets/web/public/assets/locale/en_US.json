@@ -239,6 +239,8 @@
     "dd_resolution_option_auto": "Use resolution provided by the client (default)",
     "dd_resolution_option_disabled": "Do not change resolution",
     "dd_resolution_option_manual": "Use manually entered resolution",
+    "dd_wa_virtual_double_refresh": "Double refresh rate for virtual displays",
+    "dd_wa_virtual_double_refresh_desc": "Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops. Leave this on unless a specific game or monitor behaves incorrectly.",
     "double_refreshrate": "Double refresh rate for virtual displays",
     "double_refreshrate_desc": "Creates Sunshine virtual displays at 2x the target refresh to prevent unexplained FPS drops. Leave this on unless a specific game or monitor behaves incorrectly.",
     "dd_wa_hdr_toggle_delay_desc_1": "When using virtual display device (VDD) for streaming, it might incorrectly display HDR color. Sunshine can try to mitigate this issue, by turning HDR off and then on again.",

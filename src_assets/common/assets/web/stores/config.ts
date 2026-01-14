@@ -131,7 +131,7 @@ const defaultGroups = [
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      double_refreshrate: true,
+      dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
       max_bitrate: 0,
       minimum_fps_target: 20,
@@ -468,18 +468,18 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
-    // Legacy: map old virtual double refresh workaround key to new config key.
+    // Legacy: normalize virtual double refresh key to Sunshine naming.
     if (data) {
       if (
-        Object.prototype.hasOwnProperty.call(data, 'dd_wa_virtual_double_refresh') &&
-        !Object.prototype.hasOwnProperty.call(data, 'double_refreshrate')
+        Object.prototype.hasOwnProperty.call(data, 'double_refreshrate') &&
+        !Object.prototype.hasOwnProperty.call(data, 'dd_wa_virtual_double_refresh')
       ) {
-        (data as Record<string, unknown>)['double_refreshrate'] = (
+        (data as Record<string, unknown>)['dd_wa_virtual_double_refresh'] = (
           data as Record<string, unknown>
-        )['dd_wa_virtual_double_refresh'];
+        )['double_refreshrate'];
       }
-      if (Object.prototype.hasOwnProperty.call(data, 'dd_wa_virtual_double_refresh')) {
-        delete (data as Record<string, unknown>)['dd_wa_virtual_double_refresh'];
+      if (Object.prototype.hasOwnProperty.call(data, 'double_refreshrate')) {
+        delete (data as Record<string, unknown>)['double_refreshrate'];
       }
     }
 
@@ -517,7 +517,7 @@ export const useConfigStore = defineStore('config', () => {
     const otherBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
-      'double_refreshrate',
+      'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);

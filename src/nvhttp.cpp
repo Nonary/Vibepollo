@@ -839,9 +839,6 @@ namespace nvhttp {
         apply_refresh_override(saturating_double(launch_session->fps));
       }
 
-      if (config::video.double_refreshrate) {
-        apply_refresh_override(saturating_double(launch_session->fps));
-      }
     }
     launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
