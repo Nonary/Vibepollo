@@ -254,8 +254,6 @@ const DD_KEYS = {
   hdrRequestOverride: 'dd_hdr_request_override',
 } as const;
 
-const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
-
 function isHiddenOverrideKey(key: string): boolean {
   if (!key.startsWith('dd_')) return false;
   return !ALLOWED_DD_OVERRIDE_KEYS.has(key);
