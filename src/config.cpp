@@ -1806,8 +1806,6 @@ namespace config {
       }
     }
 
-    ::video::active_hevc_mode = video.hevc_mode;
-    ::video::active_av1_mode = video.av1_mode;
   }
 
   int parse(int argc, char *argv[]) {

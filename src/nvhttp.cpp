@@ -2364,7 +2364,8 @@ namespace nvhttp {
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
     const bool no_active_sessions {rtsp_stream::session_count() == 0};
-    if (no_active_sessions) {
+    const bool allow_display_changes = false;
+    if (no_active_sessions && allow_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
     }
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
@@ -2384,27 +2385,9 @@ namespace nvhttp {
     }
 
     if (no_active_sessions) {
-      std::optional<std::string> session_output_override;
-      if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
-        session_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
-      }
-      if (session_output_override &&
-          boost::iequals(*session_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
-        launch_session->virtual_display = true;
-        session_output_override.reset();
-      }
-
-      if (
-        session_output_override &&
-        !launch_session->virtual_display &&
-        !session_output_override->empty()
-      ) {
-        config::set_runtime_output_name_override(*session_output_override);
-      }
-
       // Apply display configuration early if there are no active sessions
       if (!launch_session->input_only) {
-        const bool should_reapply_display = config::video.dd.config_revert_on_disconnect;
+        const bool should_reapply_display = allow_display_changes && config::video.dd.config_revert_on_disconnect;
         // We want to prepare display only if there are no active sessions at
         // the moment. This should be done before probing encoders as it could
         // change the active displays.
