@@ -1577,7 +1577,12 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
     if (!!(named_cert_p->perm & PERM::_all_actions)) {
       auto current_appid = proc::proc.running();
-      auto should_hide_inactive_apps = current_appid > 0 && current_appid != proc::input_only_app_id;
+      // Only expose the special "Terminate" entry (and the "busy minimal list" behavior)
+      // when input-only mode is enabled. Otherwise, Moonlight handles terminate/resume UI
+      // without needing a fake app entry in the list.
+      const bool show_terminate_entry =
+        config::input.enable_input_only_mode && current_appid > 0 && current_appid != proc::input_only_app_id;
+      const bool should_hide_inactive_apps = show_terminate_entry;
 
       auto app_list = proc::proc.get_apps();
 
@@ -1594,7 +1599,7 @@ namespace nvhttp {
             include = false;
           }
         } else if (appid == proc::terminate_app_id) {
-          include = false;
+          include = show_terminate_entry;
         }
 
         if (!include) {
