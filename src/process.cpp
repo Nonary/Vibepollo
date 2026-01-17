@@ -1382,18 +1382,6 @@ namespace proc {
     }
 #endif  // _WIN32
 
-    // Probe encoders again before streaming to ensure our chosen
-    // encoder matches the active GPU (which could have changed
-    // due to hotplugging, driver crash, primary monitor change,
-    // or any number of other factors).
-    if (rtsp_stream::session_count() == 0 && video::probe_encoders()) {
-      if (config::video.ignore_encoder_probe_failure) {
-        BOOST_LOG(warning) << "Encoder probe failed, but continuing due to user configuration.";
-      } else {
-        return 503;
-      }
-    }
-
     std::string fps_str;
     char fps_buf[8];
     snprintf(fps_buf, sizeof(fps_buf), "%.3f", (float) launch_session->fps / 1000.0f);
