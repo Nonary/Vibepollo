@@ -253,6 +253,16 @@ namespace VDISPLAY {
 
     uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
       constexpr uint64_t scale = 1000ull;
+      using dd_t = config::video_t::dd_t;
+      // Manual refresh rate override takes priority over everything, including doubled refresh rates.
+      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
+        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
+          const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
+          return static_cast<uint32_t>(
+            std::min<uint64_t>(forced, std::numeric_limits<uint32_t>::max())
+          );
+        }
+      }
       // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
       const bool needs_double_minimum = config::video.double_refreshrate || framegen_refresh_active;
       if (needs_double_minimum && base_fps_millihz > 0) {

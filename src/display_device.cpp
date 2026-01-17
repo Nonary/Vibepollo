@@ -758,6 +758,63 @@ namespace display_device {
 #endif
   }
 
+  bool refresh_rate_override_active(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    using refresh_rate_option_e = config::video_t::dd_t::refresh_rate_option_e;
+    if (video_config.dd.refresh_rate_option == refresh_rate_option_e::manual) {
+      return true;
+    }
+
+    if (session.client_display_mode_override) {
+      return false;
+    }
+
+    const auto remapping_type = determine_remapping_type(video_config);
+    if (!remapping_type || !is_fps_mapped(*remapping_type)) {
+      return false;
+    }
+
+    const auto &remapping_list {[&]() {
+      using enum remapping_type_e;
+      switch (*remapping_type) {
+        case resolution_only:
+          return video_config.dd.mode_remapping.resolution_only;
+        case refresh_rate_only:
+          return video_config.dd.mode_remapping.refresh_rate_only;
+        case mixed:
+        default:
+          return video_config.dd.mode_remapping.mixed;
+      }
+    }()};
+
+    if (remapping_list.empty()) {
+      return false;
+    }
+
+    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
+                             ? *session.framegen_refresh_rate
+                             : session.fps;
+    if (target_fps < 0) {
+      return false;
+    }
+    const FloatingPoint requested_fps = Rational {static_cast<unsigned int>(target_fps), 1u};
+
+    for (const auto &entry : remapping_list) {
+      const auto parsed_entry {parse_remapping_entry(entry, *remapping_type)};
+      if (!parsed_entry) {
+        return false;
+      }
+      if (!parsed_entry->final_refresh_rate) {
+        continue;
+      }
+      if (parsed_entry->requested_fps && parsed_entry->requested_fps != requested_fps) {
+        continue;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     const auto device_prep {parse_device_prep_option(video_config)};
     if (!device_prep) {

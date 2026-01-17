@@ -80,4 +80,12 @@ namespace display_device {
    * @examples_end
    */
   [[nodiscard]] std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+
+  /**
+   * @brief Check if a display refresh-rate override is active for the session.
+   *
+   * This returns true when a manual refresh rate is configured or when a
+   * refresh-rate remapping entry applies to the session's requested FPS.
+   */
+  [[nodiscard]] bool refresh_rate_override_active(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
 }  // namespace display_device

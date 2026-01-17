@@ -254,8 +254,9 @@ const DD_KEYS = {
   hdrRequestOverride: 'dd_hdr_request_override',
 } as const;
 
+const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
+
 function isHiddenOverrideKey(key: string): boolean {
-  if (!key) return false;
   if (!key.startsWith('dd_')) return false;
   return !ALLOWED_DD_OVERRIDE_KEYS.has(key);
 }
@@ -476,7 +477,9 @@ function cleanupDdConfigurationOptionIfUnused(): void {
   if (!globalDdConfigDisabled()) return;
   const o = overrides.value as any;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return;
-  const ddKeys = Object.keys(o).filter((k) => k.startsWith('dd_'));
+  const ddKeys = Object.keys(o).filter(
+    (k) => k.startsWith('dd_') && !ALLOWED_DD_OVERRIDE_KEYS.has(k),
+  );
   const hasOtherDdKeys = ddKeys.some((k) => k !== DD_KEYS.configurationOption);
   if (!hasOtherDdKeys && o[DD_KEYS.configurationOption] === 'verify_only') {
     clearOverrideKey(DD_KEYS.configurationOption);
