@@ -60,11 +60,19 @@ namespace fs = std::filesystem;
 using namespace SUDOVDA;
 
 namespace VDISPLAY {
+  enum class RestartCooldownBehavior {
+    skip,
+    wait,
+  };
+
+  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior);
+
   namespace {
     constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
     constexpr auto DRIVER_RESTART_TIMEOUT = std::chrono::seconds(5);
     constexpr auto DRIVER_RESTART_POLL_INTERVAL = std::chrono::milliseconds(500);
-    constexpr auto DRIVER_RESTART_FAILURE_COOLDOWN = std::chrono::seconds(10);
+    constexpr auto DRIVER_RESTART_FAILURE_COOLDOWN = std::chrono::seconds(3);
+    constexpr int DRIVER_RESTART_MAX_ATTEMPTS = 3;
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
     constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
@@ -245,6 +253,16 @@ namespace VDISPLAY {
 
     uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
       constexpr uint64_t scale = 1000ull;
+      using dd_t = config::video_t::dd_t;
+      // Manual refresh rate override takes priority over everything, including doubled refresh rates.
+      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
+        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
+          const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
+          return static_cast<uint32_t>(
+            std::min<uint64_t>(forced, std::numeric_limits<uint32_t>::max())
+          );
+        }
+      }
       // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
       const bool needs_double_minimum = config::video.dd.wa.virtual_double_refresh || framegen_refresh_active;
       if (needs_double_minimum && base_fps_millihz > 0) {
@@ -2382,7 +2400,7 @@ namespace VDISPLAY {
         if (retryInterval > 320) {
           if (!attempted_recovery) {
             attempted_recovery = true;
-            if (ensure_driver_is_ready()) {
+            if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
               retryInterval = 20;
               continue;
             }
@@ -2408,7 +2426,7 @@ namespace VDISPLAY {
     return DRIVER_STATUS::OK;
   }
 
-  bool ensure_driver_is_ready() {
+  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior) {
     if (driver_handle_responsive(SUDOVDA_DRIVER_HANDLE)) {
       return true;
     }
@@ -2421,46 +2439,59 @@ namespace VDISPLAY {
       return true;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    std::chrono::milliseconds cooldown_remaining {0};
-    if (should_skip_restart_attempt(now, cooldown_remaining)) {
-      BOOST_LOG(warning) << "Skipping SudoVDA restart attempt due to recent failure (cooldown "
-                         << cooldown_remaining.count() << " ms remaining).";
-      return false;
-    }
-
-    bool waited_for_restart = false;
-    auto instance_id = find_sudovda_device_instance_id();
-    if (!instance_id) {
-      BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
-      note_restart_failure(now);
-      return false;
-    }
-
-    BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << '.';
-
-    if (!restart_sudovda_device(*instance_id)) {
-      BOOST_LOG(error) << "SudoVDA adapter restart failed; streaming will continue with the active display. A reboot may be required.";
-      note_restart_failure(now);
-      return false;
-    }
-
-    waited_for_restart = true;
-    const auto deadline = std::chrono::steady_clock::now() + DRIVER_RESTART_TIMEOUT;
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (probe_driver_responsive_once()) {
-        BOOST_LOG(info) << "SudoVDA driver responded after restart.";
-        if (waited_for_restart) {
-          std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+    for (int attempt = 1; attempt <= DRIVER_RESTART_MAX_ATTEMPTS; ++attempt) {
+      const auto now = std::chrono::steady_clock::now();
+      std::chrono::milliseconds cooldown_remaining {0};
+      if (should_skip_restart_attempt(now, cooldown_remaining)) {
+        if (cooldown_behavior != RestartCooldownBehavior::wait) {
+          BOOST_LOG(warning) << "Skipping SudoVDA restart attempt due to recent failure (cooldown "
+                             << cooldown_remaining.count() << " ms remaining).";
+          return false;
         }
-        return true;
+
+        BOOST_LOG(info) << "Delaying SudoVDA restart attempt for " << cooldown_remaining.count()
+                        << " ms due to restart cooldown.";
+        std::this_thread::sleep_for(cooldown_remaining);
+        if (probe_driver_responsive_once()) {
+          return true;
+        }
       }
-      std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
+
+      auto instance_id = find_sudovda_device_instance_id();
+      if (!instance_id) {
+        BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
+        note_restart_failure(std::chrono::steady_clock::now());
+        return false;
+      }
+
+      BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << " (attempt "
+                     << attempt << '/' << DRIVER_RESTART_MAX_ATTEMPTS << ").";
+
+      if (!restart_sudovda_device(*instance_id)) {
+        BOOST_LOG(error) << "SudoVDA adapter restart failed; streaming will continue with the active display. A reboot may be required.";
+        note_restart_failure(std::chrono::steady_clock::now());
+        continue;
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + DRIVER_RESTART_TIMEOUT;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (probe_driver_responsive_once()) {
+          BOOST_LOG(info) << "SudoVDA driver responded after restart.";
+          std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+          return true;
+        }
+        std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
+      }
+
+      BOOST_LOG(error) << "SudoVDA driver did not respond within the restart timeout; streaming will continue with the active display. A reboot may be required.";
+      note_restart_failure(std::chrono::steady_clock::now());
     }
 
-    BOOST_LOG(error) << "SudoVDA driver did not respond within the restart timeout; streaming will continue with the active display. A reboot may be required.";
-    note_restart_failure(std::chrono::steady_clock::now());
     return false;
+  }
+
+  bool ensure_driver_is_ready() {
+    return ensure_driver_is_ready_impl(RestartCooldownBehavior::skip);
   }
 
   bool startPingThread(std::function<void()> failCb) {
@@ -3170,7 +3201,7 @@ namespace VDISPLAY {
 
         closeVDisplayDevice();
 
-        if (!ensure_driver_is_ready()) {
+        if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
           BOOST_LOG(warning) << "Driver recovery failed after virtual display creation failure.";
           return std::nullopt;
         }
@@ -3201,7 +3232,7 @@ namespace VDISPLAY {
 
       closeVDisplayDevice();
 
-      if (!ensure_driver_is_ready()) {
+      if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
         BOOST_LOG(warning) << "Driver recovery failed after virtual display vanished.";
         return std::nullopt;
       }

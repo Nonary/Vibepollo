@@ -151,6 +151,22 @@ namespace {
     return false;
   }
 
+  int active_display_count() {
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return 0;
+    }
+
+    int count = 0;
+    for (const auto &device : *devices) {
+      if (!device.m_info) {
+        continue;
+      }
+      ++count;
+    }
+    return count;
+  }
+
   double refresh_rate_value(const display_device::FloatingPoint &value) {
     return std::visit(
       [](const auto &v) -> double {
@@ -1000,6 +1016,41 @@ namespace {
 
 }  // namespace
 
+namespace display_helper_integration::detail {
+  bool should_stair_step_virtual_exclusive(const DisplayApplyRequest &request, int active_display_count) {
+    if (!request.configuration) {
+      return false;
+    }
+
+    if (active_display_count <= 1) {
+      return false;
+    }
+
+    if (request.configuration->m_device_id.empty()) {
+      return false;
+    }
+
+    if (request.virtual_display_arrangement &&
+        *request.virtual_display_arrangement != VirtualDisplayArrangement::Exclusive) {
+      return false;
+    }
+
+    using Prep = display_device::SingleDisplayConfiguration::DevicePreparation;
+    if (request.configuration->m_device_prep != Prep::EnsureOnlyDisplay) {
+      return false;
+    }
+
+    const bool virtual_involved = request.session &&
+                                 (request.session->virtual_display ||
+                                  request.session_overrides.virtual_display_override.value_or(false));
+    if (!virtual_involved) {
+      return false;
+    }
+
+    return true;
+  }
+}  // namespace display_helper_integration::detail
+
 namespace display_helper_integration {
   bool apply(const DisplayApplyRequest &request) {
     g_last_apply_used_helper.store(false, std::memory_order_relaxed);
@@ -1051,6 +1102,47 @@ namespace display_helper_integration {
         if (request.session) {
           (void) disarm_helper_restore_if_running();
         }
+
+        // Re-introduce the v1.13-era "stair stepping" behavior for multi-monitor systems:
+        // - Step 1: ExtendedPrimary + EnsurePrimary for the virtual display (keep physicals active)
+        // - Step 2: Exclusive + EnsureOnlyDisplay (disable physicals)
+        //
+        // This avoids a class of Windows/driver rejections where a direct exclusive apply leaves a
+        // secondary physical monitor active and/or steals primary.
+        if (detail::should_stair_step_virtual_exclusive(request, active_display_count())) {
+          using Prep = display_device::SingleDisplayConfiguration::DevicePreparation;
+
+          auto staged = request;
+          staged.virtual_display_arrangement = VirtualDisplayArrangement::ExtendedPrimary;
+          staged.topology.topology.clear();
+          staged.topology.monitor_positions.clear();
+          auto cfg = *staged.configuration;
+          cfg.m_device_prep = Prep::EnsurePrimary;
+          staged.configuration = cfg;
+
+          BOOST_LOG(info) << "Display helper: stair-step pre-apply (extended_primary) before exclusive.";
+          if (auto staged_payload = build_helper_apply_payload(staged)) {
+            const bool staged_ok = platf::display_helper_client::send_apply_json(*staged_payload);
+            BOOST_LOG(info) << "Display helper: stair-step pre-apply dispatch result=" << (staged_ok ? "true" : "false");
+            if (staged_ok) {
+              bool ready = true;
+              if (auto device_id = resolve_display_device_id(staged)) {
+                ready = wait_for_device_ready(*device_id, kTopologyWaitTimeout);
+              } else if (request.session && request.session->virtual_display) {
+                ready = wait_for_virtual_display_activation(kTopologyWaitTimeout);
+              }
+              if (!ready) {
+                BOOST_LOG(warning) << "Display helper: stair-step pre-apply did not become ready in time; continuing with exclusive apply.";
+              }
+
+              // Give the display stack a brief moment to settle before the exclusive step.
+              std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+          } else {
+            BOOST_LOG(warning) << "Display helper: stair-step pre-apply payload build failed; continuing with exclusive apply.";
+          }
+        }
+
         auto payload = build_helper_apply_payload(request);
         if (!payload) {
           BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";

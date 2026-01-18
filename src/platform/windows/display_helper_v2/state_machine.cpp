@@ -336,11 +336,37 @@ namespace display_helper::v2 {
     // During active apply with virtual display, restart the apply operation
     if ((state_ == State::InProgress || state_ == State::Verification) &&
         current_request_.virtual_layout.has_value()) {
+      if (current_request_.configuration) {
+        const std::string resolved = virtual_display_.device_id();
+        if (!resolved.empty() && boost::iequals(current_request_.configuration->m_device_id, resolved)) {
+          // Applying modes/HDR to an IDD can generate display events that do not require a full restart.
+          // Only restart when the virtual display device_id changes (e.g. device crash/recreate).
+          BOOST_LOG(debug) << "Display helper: display event during virtual display apply ignored (device id unchanged).";
+          return;
+        }
+      }
+
+      static constexpr auto kDebounce = std::chrono::milliseconds(250);
+      static constexpr auto kRestartDelay = std::chrono::milliseconds(100);
+
+      const auto now = system_.now();
+      if (last_virtual_apply_display_event_restart_.time_since_epoch().count() != 0) {
+        const auto elapsed = now - last_virtual_apply_display_event_restart_;
+        if (elapsed < kDebounce) {
+          BOOST_LOG(debug) << "Display helper: coalescing display event during virtual display apply.";
+          return;
+        }
+      }
+      last_virtual_apply_display_event_restart_ = now;
+
       BOOST_LOG(info) << "Display helper: display event during virtual display apply, restarting apply.";
+
+      // Cancel in-flight apply/verification work so their completions become stale.
+      system_.cancel_operations();
+      expected_topology_.reset();
       retarget_virtual_display_device_id_if_needed();
-      apply_attempt_ = 1;
       transition(State::InProgress, ApplyAction::Apply);
-      apply_.dispatch_apply(current_request_, std::chrono::milliseconds(0), false);
+      apply_.dispatch_apply(current_request_, kRestartDelay, false);
       return;
     }
 
