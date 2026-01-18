@@ -2393,6 +2393,16 @@ namespace confighttp {
             return;
           }
         }
+        if (options.hdr.value_or(false)) {
+          if (!options.encoded) {
+            bad_request(response, request, "HDR requires encoded video for WebRTC sessions");
+            return;
+          }
+          if (!options.codec || (*options.codec != "hevc" && *options.codec != "av1")) {
+            bad_request(response, request, "HDR requires HEVC or AV1 video encoding");
+            return;
+          }
+        }
       } catch (const std::exception &e) {
         bad_request(response, request, e.what());
         return;

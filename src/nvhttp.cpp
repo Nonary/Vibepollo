@@ -1800,6 +1800,7 @@ namespace nvhttp {
     // This must happen before any other display helper work to prevent restore/crash loops on virtual displays.
     (void) display_helper_integration::disarm_pending_restore();
 #endif
+    const bool allow_display_changes = true;
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
@@ -2114,15 +2115,18 @@ namespace nvhttp {
         }
       };
 
-      if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
-        BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
-        request_virtual_display = true;
-      }
+    if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+      BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
+      request_virtual_display = true;
+    }
+    if (allow_display_changes) {
       apply_virtual_display_request(request_virtual_display);
       if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
         config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
         pending_output_override = launch_session->virtual_display_device_id;
       }
+    } else {
+      BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
     }
 #endif
 
@@ -2315,6 +2319,7 @@ namespace nvhttp {
     output_override_guard.disable();
     runtime_overrides_guard.disable();
   }
+  }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
@@ -2385,14 +2390,22 @@ namespace nvhttp {
     }
 
     if (no_active_sessions) {
-      // Apply display configuration early if there are no active sessions
-      if (!launch_session->input_only) {
-        const bool should_reapply_display = allow_display_changes && config::video.dd.config_revert_on_disconnect;
-        // We want to prepare display only if there are no active sessions at
-        // the moment. This should be done before probing encoders as it could
-        // change the active displays.
+      if (allow_display_changes &&
+          launch_session->output_name_override &&
+          !launch_session->output_name_override->empty() &&
+          !launch_session->virtual_display &&
+          !boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      }
+
+      const bool should_reapply_display =
+        allow_display_changes && config::video.dd.config_revert_on_disconnect;
+      // We want to prepare display only if there are no active sessions at
+      // the moment. This should be done before probing encoders as it could
+      // change the active displays.
 
 #ifdef _WIN32
+        if (!launch_session->input_only) {
         if (should_reapply_display) {
           (void) display_helper_integration::apply_pending_if_ready();
         } else {
@@ -2408,7 +2421,9 @@ namespace nvhttp {
             active_output.empty() ? nullptr : active_output.c_str()
           );
         }
+        }
 #else
+        if (!launch_session->input_only) {
         if (should_reapply_display) {
           display_helper_integration::DisplayApplyBuilder noop_builder;
           noop_builder.set_session(*launch_session);
@@ -2417,6 +2432,7 @@ namespace nvhttp {
           }
         } else {
           BOOST_LOG(debug) << "Display helper: skipping resume apply; only deferrals are allowed.";
+        }
         }
 #endif
 
@@ -2449,7 +2465,6 @@ namespace nvhttp {
 
           return;
         }
-      }
     }
 
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
