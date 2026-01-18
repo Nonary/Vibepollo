@@ -15,6 +15,10 @@ export interface StreamConfig {
   resume?: boolean;
   clientName?: string;
   clientUuid?: string;
+  videoPacingMode?: 'latency' | 'balanced' | 'smoothness';
+  videoPacingSlackMs?: number;
+  videoMaxFrameAgeMs?: number;
+  videoMaxFrameAgeFrames?: number;
 }
 
 export interface WebRtcSessionInfo {
@@ -50,6 +54,9 @@ export interface WebRtcSessionState {
   profile?: string | null;
   client_name?: string | null;
   client_uuid?: string | null;
+  video_pacing_mode?: string | null;
+  video_pacing_slack_ms?: number | null;
+  video_max_frame_age_ms?: number | null;
   last_audio_bytes?: number;
   last_video_bytes?: number;
   last_video_idr?: boolean;
