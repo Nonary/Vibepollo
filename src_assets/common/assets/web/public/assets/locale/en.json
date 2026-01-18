@@ -33,7 +33,8 @@
     "add": "Add",
     "remove": "Remove",
     "clear_all": "Clear All",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "learn_more": "Learn More"
   },
   "apps": {
     "actions": "Actions",
@@ -117,7 +118,9 @@
     "description": "The web interface lost connectivity to the Sunshine service.",
     "retrying": "Attempting to reconnect… The page will refresh once available.",
     "refresh_now": "Refresh now",
-    "close_hint": "If you stopped Sunshine intentionally, you may close this tab."
+    "close_hint": "If you stopped Sunshine intentionally, you may close this tab.",
+    "output_name_desc_unix": "During Sunshine startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Sunshine startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab."
   },
   "config": {
     "amf": {
@@ -550,7 +553,37 @@
     "vibeshine_file_state": "Vibeshine state file",
     "virtual_display_layout": "Virtual display layout",
     "virtual_display_mode": "Virtual display mode",
-    "dd_step_4": "Step 4"
+    "dd_step_4": "Step 4",
+    "adapter_name_placeholder_unix": "/dev/dri/renderD128",
+    "audio_sink_placeholder_unix": "alsa_output.pci-0000_09_00.3.analog-stereo",
+    "audio_sink_desc_unix": "The name of the audio sink used for Audio Loopback. If you do not specify this, the system default is used. On Linux, pulseaudio selects the default monitor device; on macOS, use a loopback device such as Soundflower or BlackHole.",
+    "nvenc_section_desc": "Advanced NVIDIA NVENC tuning options. Change only if you need to address specific encoder behavior or performance issues.",
+    "nvenc_intra_refresh": "Intra refresh",
+    "nvenc_intra_refresh_desc": "Use gradual intra refresh instead of full IDR frames to smooth bitrate spikes. Disable if your client has decoder issues.",
+    "server_cmd": "Server Commands",
+    "server_cmd_desc": "Configure a list of commands to be executed when called from client during streaming.",
+    "enable_pairing": "Enable Pairing",
+    "enable_pairing_desc": "Enable pairing for the Moonlight client. This allows the client to authenticate with the host and establish a secure connection.",
+    "enable_discovery": "Enable Auto Discovery",
+    "enable_discovery_desc": "When disabled, you'll need to manually enter host IP on the client to pair.",
+    "enable_input_only_mode": "Enable Input Only Mode",
+    "enable_input_only_mode_desc": "Add an Input Only app entry. When enabled, the app list will only show the current running app and the Input Only entry when streaming. The Input Only entry will not receive any image or audio. Useful for operating the desktop on TV or connecting peripherals which the TV doesn't support with a phone.",
+    "forward_rumble": "Forward Rumble Messages",
+    "forward_rumble_desc": "Forward Rumble Messages to clients",
+    "hide_tray_controls": "Hide tray control options",
+    "hide_tray_controls_desc": "Do not show \"Force Stop\", \"Restart\" and \"Quit\" in tray menu.",
+    "fallback_mode": "Fallback Display Mode",
+    "fallback_mode_desc": "Apollo will use this mode when the client does not provide a mode or when the app is launched through the web UI. Format: [Width]x[Height]x[FPS]",
+    "keep_sink_default": "Keep virtual sink as default",
+    "auto_capture_sink": "Auto capture current sink",
+    "limit_framerate": "Limit capture framerate",
+    "limit_framerate_desc": "Limit the framerate being captured to client requested framerate. May not run at full framerate if vsync is enabled and display refreshrate does not match requested framerate. Could cause lag on some clients if disabled.",
+    "envvar_compatibility_mode": "ENVVAR compatibility mode",
+    "envvar_compatibility_mode_desc": "Enable compatibility mode for environment variables. This will modify the behavior of certain environment variables to be more compatible with older tools.",
+    "ignore_encoder_probe_failure": "Ignore Encoder Probe Failure",
+    "ignore_encoder_probe_failure_desc": "Allow streaming to continue even if probing for encoders fails. This may result in streaming failure if no encoder is available.",
+    "legacy_ordering": "App ordering for legacy clients",
+    "legacy_ordering_desc": "Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly. Artemis clients support this by default."
   },
   "index": {
     "description": "Sunshine is a self-hosted game stream host for Moonlight.",
