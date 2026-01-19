@@ -79,6 +79,7 @@ namespace VDISPLAY {
     constexpr std::wstring_view SUDOVDA_FRIENDLY_NAME_W = L"SudoMaker Virtual Display Adapter";
 
     std::atomic<bool> g_watchdog_feed_requested {false};
+    std::atomic<bool> g_watchdog_stop_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
@@ -2325,6 +2326,7 @@ namespace VDISPLAY {
   HANDLE SUDOVDA_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
 
   void closeVDisplayDevice() {
+    g_watchdog_stop_requested.store(true, std::memory_order_release);
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       setWatchdogFeedingEnabled(false);
       return;
@@ -2492,29 +2494,55 @@ namespace VDISPLAY {
       return false;
     }
 
+    HANDLE ping_handle = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(
+          GetCurrentProcess(),
+          SUDOVDA_DRIVER_HANDLE,
+          GetCurrentProcess(),
+          &ping_handle,
+          0,
+          FALSE,
+          DUPLICATE_SAME_ACCESS)) {
+      printf("[SUDOVDA] Watchdog: Failed to duplicate driver handle.\n");
+      return false;
+    }
+
     VIRTUAL_DISPLAY_GET_WATCHDOG_OUT watchdogOut;
-    if (GetWatchdogTimeout(SUDOVDA_DRIVER_HANDLE, watchdogOut)) {
+    if (GetWatchdogTimeout(ping_handle, watchdogOut)) {
       printf("[SUDOVDA] Watchdog: Timeout %d, Countdown %d\n", watchdogOut.Timeout, watchdogOut.Countdown);
     } else {
       printf("[SUDOVDA] Watchdog fetch failed!\n");
+      CloseHandle(ping_handle);
       return false;
     }
 
     if (!watchdogOut.Timeout) {
+      CloseHandle(ping_handle);
       return true;
     }
 
     const auto now = std::chrono::steady_clock::now();
     const auto deadline = now + WATCHDOG_INIT_GRACE;
+    g_watchdog_stop_requested.store(false, std::memory_order_release);
     g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
     g_watchdog_feed_requested.store(false, std::memory_order_release);
 
     const auto interval_ms = std::max<long long>(static_cast<long long>(watchdogOut.Timeout) * 1000ll / 3ll, 100ll);
     const auto sleep_duration = std::chrono::milliseconds(interval_ms);
 
-    std::thread ping_thread([sleep_duration, failCb = std::move(failCb)] {
+    std::thread ping_thread([sleep_duration, failCb = std::move(failCb), ping_handle] {
+      auto close_ping_handle = [ping_handle]() {
+        if (ping_handle != INVALID_HANDLE_VALUE) {
+          CloseHandle(ping_handle);
+        }
+      };
       uint8_t fail_count = 0;
       for (;;) {
+        if (g_watchdog_stop_requested.load(std::memory_order_acquire)) {
+          close_ping_handle();
+          return;
+        }
+
         const auto now_tp = std::chrono::steady_clock::now();
         bool should_feed = g_watchdog_feed_requested.load(std::memory_order_acquire);
         if (!should_feed && within_grace_period(now_tp)) {
@@ -2526,10 +2554,11 @@ namespace VDISPLAY {
           continue;
         }
 
-        if (!PingDriver(SUDOVDA_DRIVER_HANDLE)) {
+        if (!PingDriver(ping_handle)) {
           fail_count += 1;
           if (fail_count > 3) {
             failCb();
+            close_ping_handle();
             return;
           }
         } else {

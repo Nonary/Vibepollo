@@ -34,13 +34,13 @@ namespace webrtc_stream {
     std::optional<bool> hdr;
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
-    std::optional<std::string> profile;
-    std::optional<int> app_id;
-    std::optional<bool> resume;
+      std::optional<std::string> profile;
+      std::optional<int> app_id;
+      std::optional<bool> resume;
 
-    std::optional<std::string> video_pacing_mode;
-    std::optional<int> video_pacing_slack_ms;
-    std::optional<int> video_max_frame_age_ms;
+      std::optional<std::string> video_pacing_mode;
+      std::optional<int> video_pacing_slack_ms;
+      std::optional<int> video_max_frame_age_ms;
   };
 
   struct SessionState {
@@ -72,6 +72,9 @@ namespace webrtc_stream {
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
     std::optional<std::string> profile;
+    std::optional<std::string> video_pacing_mode;
+    std::optional<int> video_pacing_slack_ms;
+    std::optional<int> video_max_frame_age_ms;
 
     std::optional<std::string> video_pacing_mode;
     std::optional<int> video_pacing_slack_ms;
