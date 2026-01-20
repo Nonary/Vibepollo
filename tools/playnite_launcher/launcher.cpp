@@ -620,6 +620,9 @@ namespace playnite_launcher {
         if (game_focus_confirmed.load(std::memory_order_acquire)) {
           return;
         }
+        if (!got_started.load(std::memory_order_acquire)) {
+          return;
+        }
         if (config.focus_attempts <= 0 || config.focus_timeout_secs <= 0) {
           return;
         }
@@ -773,11 +776,7 @@ namespace playnite_launcher {
         BOOST_LOG(info) << "User unlocked. Proceeding with game launch.";
       }
 
-      if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
-        auto start_wait = std::chrono::steady_clock::now() + 5s;
-        while (!got_started.load() && std::chrono::steady_clock::now() < start_wait) {
-          std::this_thread::sleep_for(200ms);
-        }
+      if (config.focus_attempts > 0 && config.focus_timeout_secs > 0 && got_started.load()) {
         bool focused = false;
         auto overall_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, config.focus_timeout_secs));
         if (!focused && !last_install_dir.empty()) {
@@ -826,6 +825,8 @@ namespace playnite_launcher {
           }
         }
         BOOST_LOG(info) << (focused ? "Applied focus after launch" : "Focus not applied after launch");
+      } else if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
+        BOOST_LOG(info) << "Autofocus deferred until gameStarted signal";
       }
 
       auto focus_game_after_start = [&]() {
