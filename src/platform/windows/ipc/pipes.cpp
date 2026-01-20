@@ -1073,7 +1073,7 @@ namespace platf::dxgi {
       } else {
         DWORD overlappedErr = GetLastError();
         if (overlappedErr == ERROR_BROKEN_PIPE) {
-          BOOST_LOG(warning) << "IPC between Sunshine was severed, did the capture process crash?";
+          BOOST_LOG(warning) << "IPC pipe connection to helper process was lost.";
           _connected.store(false, std::memory_order_release);
           return BrokenPipe;
         }

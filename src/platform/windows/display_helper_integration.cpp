@@ -85,6 +85,11 @@ namespace {
   constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
   constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
 
+  // Retry configuration for helper connection during apply
+  constexpr int kHelperConnectMaxRetries = 5;
+  constexpr std::chrono::milliseconds kHelperConnectInitialBackoff {200};
+  constexpr std::chrono::milliseconds kHelperConnectMaxBackoff {2000};
+
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
@@ -1093,9 +1098,21 @@ namespace display_helper_integration {
 
     if (!system_profile_only) {
       // Stream-start policy: reuse existing helper and disarm any pending restore before APPLY.
-      bool helper_ready = ensure_helper_started(false, true);
-      if (!helper_ready) {
+      // Retry with exponential backoff to handle timing mismatches between client and helper pipe.
+      bool helper_ready = false;
+      auto backoff = kHelperConnectInitialBackoff;
+      for (int attempt = 0; attempt < kHelperConnectMaxRetries && !helper_ready; ++attempt) {
+        if (attempt > 0) {
+          BOOST_LOG(debug) << "Display helper: connection retry " << attempt << "/" << kHelperConnectMaxRetries
+                           << " after " << backoff.count() << "ms backoff.";
+          std::this_thread::sleep_for(backoff);
+          backoff = std::min(backoff * 2, kHelperConnectMaxBackoff);
+          platf::display_helper_client::reset_connection();
+        }
         helper_ready = ensure_helper_started(false, true);
+      }
+      if (!helper_ready) {
+        BOOST_LOG(warning) << "Display helper: failed to connect after " << kHelperConnectMaxRetries << " attempts.";
       }
 
       if (helper_ready) {
