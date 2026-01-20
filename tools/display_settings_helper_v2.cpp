@@ -7,6 +7,7 @@
   #include <algorithm>
   #include <atomic>
   #include <chrono>
+  #include <cctype>
   #include <cstdint>
   #include <cstring>
   #include <filesystem>
@@ -46,6 +47,7 @@ namespace {
     Revert = 2,
     Reset = 3,
     ExportGolden = 4,
+    LogLevel = 5,
     ApplyResult = 6,
     Disarm = 7,
     SnapshotCurrent = 8,
@@ -121,6 +123,44 @@ namespace {
     if (HWND console = GetConsoleWindow()) {
       ShowWindow(console, SW_HIDE);
     }
+  }
+
+  std::optional<int> parse_log_level_value(const char *value) {
+    if (!value || *value == '\0') {
+      return std::nullopt;
+    }
+
+    std::string lower(value);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+
+    if (lower == "verbose") {
+      return 0;
+    }
+    if (lower == "debug") {
+      return 1;
+    }
+    if (lower == "info") {
+      return 2;
+    }
+    if (lower == "warning") {
+      return 3;
+    }
+    if (lower == "error") {
+      return 4;
+    }
+    if (lower == "fatal") {
+      return 5;
+    }
+    if (lower == "none") {
+      return 6;
+    }
+    if (lower.size() == 1 && lower[0] >= '0' && lower[0] <= '6') {
+      return lower[0] - '0';
+    }
+
+    return std::nullopt;
   }
 
   void send_framed_content(platf::dxgi::AsyncNamedPipe &pipe, MsgType type, std::span<const uint8_t> payload = {}) {
@@ -351,11 +391,22 @@ namespace {
 
 int main(int argc, char *argv[]) {
   bool restore_mode = false;
+  std::optional<int> log_level_override;
+  constexpr const char *kLogLevelPrefix = "--log-level=";
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--restore") == 0) {
       restore_mode = true;
     } else if (std::strcmp(argv[i], "--no-startup-restore") == 0) {
       BOOST_LOG(info) << "--no-startup-restore is deprecated and ignored.";
+    } else if (std::strcmp(argv[i], "--log-level") == 0 && (i + 1) < argc) {
+      if (auto parsed = parse_log_level_value(argv[i + 1])) {
+        log_level_override = *parsed;
+      }
+      ++i;
+    } else if (std::strncmp(argv[i], kLogLevelPrefix, std::strlen(kLogLevelPrefix)) == 0) {
+      if (auto parsed = parse_log_level_value(argv[i] + std::strlen(kLogLevelPrefix))) {
+        log_level_override = *parsed;
+      }
     }
   }
 
@@ -367,7 +418,8 @@ int main(int argc, char *argv[]) {
   // Initialize logging early so we can log singleton conflicts and other early exits
   const auto log_dir = compute_log_dir();
   const auto log_file = log_dir / L"sunshine_display_helper.log";
-  auto log_guard = logging::init(2, log_file);
+  const int min_log_level = log_level_override.value_or(2);
+  auto log_guard = logging::init(min_log_level, log_file);
 
   BOOST_LOG(info) << "Display helper v2 starting up...";
 
@@ -600,6 +652,13 @@ int main(int argc, char *argv[]) {
         case MsgType::Ping:
           send_framed_content(async_pipe, MsgType::Ping);
           queue.push(display_helper::v2::PingCommand {cancellation.current_generation()});
+          break;
+        case MsgType::LogLevel:
+          if (!payload.empty()) {
+            const int level = std::clamp(static_cast<int>(payload.front()), 0, 6);
+            logging::reconfigure_min_log_level(level);
+            BOOST_LOG(info) << "Display helper log level updated to " << level;
+          }
           break;
         case MsgType::Stop:
           queue.push(display_helper::v2::StopCommand {cancellation.current_generation()});

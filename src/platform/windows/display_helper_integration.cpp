@@ -430,6 +430,7 @@ namespace {
         if (attempts > 0) {
           BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
         }
+        (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
         return true;
       }
       ++attempts;
@@ -713,6 +714,7 @@ namespace {
             }
           }
           if (ping_ok) {
+            (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
             return true;
           }
           platf::display_helper_client::reset_connection();
@@ -768,6 +770,7 @@ namespace {
         }
       }
       if (ping_ok) {
+        (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
         return true;
       }
       platf::display_helper_client::reset_connection();
@@ -797,14 +800,15 @@ namespace {
       return false;
     }
 
+    const std::wstring helper_args = L"--log-level=" + std::to_wstring(config::sunshine.min_log_level);
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    bool started = helper_proc().start(helper.wstring(), L"");
+    bool started = helper_proc().start(helper.wstring(), helper_args);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        started = helper_proc().start(helper.wstring(), L"");
+        started = helper_proc().start(helper.wstring(), helper_args);
       }
     }
     if (!started) {
@@ -833,7 +837,7 @@ namespace {
                            << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
           
-          const bool retry_started = helper_proc().start(helper.wstring(), L"");
+          const bool retry_started = helper_proc().start(helper.wstring(), helper_args);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             return false;

@@ -39,6 +39,9 @@ namespace platf::display_helper_client {
   // Request helper process to terminate gracefully.
   bool send_stop();
 
+  // Update helper log level to match Sunshine's minimum log level.
+  bool send_log_level(int min_log_level);
+
   // Lightweight liveness probe; returns true if a Ping frame was sent.
   // This does not wait for a reply; it only validates a healthy send path.
   bool send_ping();
