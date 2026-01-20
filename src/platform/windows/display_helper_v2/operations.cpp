@@ -1,8 +1,61 @@
 #include "src/platform/windows/display_helper_v2/operations.h"
 
 #include <algorithm>
+#include <sstream>
+
+#include "src/logging.h"
 
 namespace display_helper::v2 {
+  namespace {
+    const char *tier_to_string(SnapshotTier tier) {
+      switch (tier) {
+        case SnapshotTier::Current:
+          return "Current";
+        case SnapshotTier::Previous:
+          return "Previous";
+        case SnapshotTier::Golden:
+          return "Golden";
+        default:
+          return "Unknown";
+      }
+    }
+
+    const char *apply_status_to_string(ApplyStatus status) {
+      switch (status) {
+        case ApplyStatus::Ok:
+          return "Ok";
+        case ApplyStatus::HelperUnavailable:
+          return "HelperUnavailable";
+        case ApplyStatus::InvalidRequest:
+          return "InvalidRequest";
+        case ApplyStatus::VerificationFailed:
+          return "VerificationFailed";
+        case ApplyStatus::NeedsVirtualDisplayReset:
+          return "NeedsVirtualDisplayReset";
+        case ApplyStatus::Retryable:
+          return "Retryable";
+        case ApplyStatus::Fatal:
+          return "Fatal";
+        default:
+          return "Unknown";
+      }
+    }
+
+    std::string format_device_set(const std::set<std::string> &devices) {
+      std::ostringstream oss;
+      oss << "[";
+      bool first = true;
+      for (const auto &id : devices) {
+        if (!first) {
+          oss << ", ";
+        }
+        oss << "\"" << id << "\"";
+        first = false;
+      }
+      oss << "]";
+      return oss.str();
+    }
+  }  // namespace
   ApplyPolicy::ApplyPolicy(IClock &clock)
     : clock_(clock) {}
 
@@ -140,28 +193,50 @@ namespace display_helper::v2 {
     const auto available = available_devices();
     const auto tiers = snapshot_persistence_.recovery_order();
 
+    BOOST_LOG(info) << "Recovery: starting with " << available.size() << " available devices: "
+                    << format_device_set(available);
+
     for (const auto tier : tiers) {
       if (token.is_cancelled()) {
+        BOOST_LOG(info) << "Recovery: cancelled";
         return outcome;
       }
 
+      BOOST_LOG(info) << "Recovery: trying snapshot tier '" << tier_to_string(tier) << "'";
+
       auto snapshot = snapshot_persistence_.load(tier, available);
       if (!snapshot) {
+        BOOST_LOG(info) << "Recovery: tier '" << tier_to_string(tier)
+                        << "' skipped - no valid snapshot or missing devices";
         continue;
       }
 
+      BOOST_LOG(info) << "Recovery: loaded snapshot from tier '" << tier_to_string(tier)
+                      << "' with " << snapshot->m_topology.size() << " topology group(s), "
+                      << snapshot->m_modes.size() << " mode(s), "
+                      << snapshot->m_hdr_states.size() << " HDR state(s)";
+
       if (!snapshot_service_.validate(*snapshot)) {
+        BOOST_LOG(warning) << "Recovery: tier '" << tier_to_string(tier)
+                           << "' skipped - snapshot validation failed";
         continue;
       }
 
       for (int attempt = 0; attempt < 2; ++attempt) {
         if (token.is_cancelled()) {
+          BOOST_LOG(info) << "Recovery: cancelled during tier '" << tier_to_string(tier) << "'";
           return outcome;
         }
 
+        BOOST_LOG(info) << "Recovery: applying snapshot from tier '" << tier_to_string(tier)
+                        << "' (attempt " << (attempt + 1) << "/2)";
+
         const auto status = snapshot_service_.apply(*snapshot, token);
         if (status != ApplyStatus::Ok) {
+          BOOST_LOG(warning) << "Recovery: tier '" << tier_to_string(tier)
+                             << "' apply failed with status '" << apply_status_to_string(status) << "'";
           if (apply_policy_.should_skip_tier(status)) {
+            BOOST_LOG(info) << "Recovery: skipping to next tier due to fatal/invalid status";
             break;
           }
           if (attempt == 0) {
@@ -178,10 +253,15 @@ namespace display_helper::v2 {
         }
 
         if (snapshot_service_.matches_current(*snapshot)) {
+          BOOST_LOG(info) << "Recovery: tier '" << tier_to_string(tier)
+                          << "' successfully applied and verified";
           outcome.success = true;
           outcome.snapshot = *snapshot;
           return outcome;
         }
+
+        BOOST_LOG(warning) << "Recovery: tier '" << tier_to_string(tier)
+                           << "' applied but verification failed";
 
         if (attempt == 0) {
           clock_.sleep_for(std::chrono::milliseconds(300));
@@ -189,6 +269,7 @@ namespace display_helper::v2 {
       }
     }
 
+    BOOST_LOG(warning) << "Recovery: all snapshot tiers exhausted without success";
     return outcome;
   }
 

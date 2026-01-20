@@ -57,6 +57,7 @@ namespace platf::display_helper_client {
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
     ExportGolden = 4,  ///< Export current OS settings as golden snapshot
+    LogLevel = 5,  ///< Update helper log level (payload: [u8 min_log_level]).
     ApplyResult = 6,  ///< Helper acknowledgement for APPLY (payload: [u8 success][optional message...]).
     Disarm = 7,  ///< Cancel any pending restore/watchdog actions on the helper.
     SnapshotCurrent = 8,  ///< Save current session snapshot (rotate current->previous) without applying config.
@@ -174,7 +175,7 @@ namespace platf::display_helper_client {
     const std::vector<uint8_t> &payload,
     std::optional<int> send_timeout_override_ms = std::nullopt
   ) {
-    const bool is_ping = (type == MsgType::Ping);
+    const bool is_ping = (type == MsgType::Ping || type == MsgType::LogLevel);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
                       << ", payload_len=" << payload.size();
@@ -196,6 +197,11 @@ namespace platf::display_helper_client {
   static std::unique_ptr<platf::dxgi::INamedPipe> &pipe_singleton() {
     static std::unique_ptr<platf::dxgi::INamedPipe> s_pipe;
     return s_pipe;
+  }
+
+  static std::optional<int> &last_log_level_sent() {
+    static std::optional<int> level;
+    return level;
   }
 
   // Global mutex to serialize all access to the pipe (connect, reset, send)
@@ -258,6 +264,7 @@ namespace platf::display_helper_client {
       BOOST_LOG(debug) << "Display helper IPC: resetting cached connection";
     }
     pipe.reset();
+    last_log_level_sent().reset();
   }
 
   bool send_apply_json(const std::string &json) {
@@ -398,6 +405,26 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Stop, payload)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool send_log_level(int min_log_level) {
+    const int clamped = std::clamp(min_log_level, 0, 6);
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked()) {
+      return false;
+    }
+    auto &last_level = last_log_level_sent();
+    if (last_level && *last_level == clamped) {
+      return true;
+    }
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>(clamped));
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::LogLevel, payload)) {
+      last_level = clamped;
       return true;
     }
     return false;

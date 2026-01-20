@@ -85,6 +85,11 @@ namespace {
   constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
   constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
 
+  // Retry configuration for helper connection during apply
+  constexpr int kHelperConnectMaxRetries = 5;
+  constexpr std::chrono::milliseconds kHelperConnectInitialBackoff {200};
+  constexpr std::chrono::milliseconds kHelperConnectMaxBackoff {2000};
+
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
@@ -425,6 +430,7 @@ namespace {
         if (attempts > 0) {
           BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
         }
+        (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
         return true;
       }
       ++attempts;
@@ -708,6 +714,7 @@ namespace {
             }
           }
           if (ping_ok) {
+            (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
             return true;
           }
           platf::display_helper_client::reset_connection();
@@ -763,6 +770,7 @@ namespace {
         }
       }
       if (ping_ok) {
+        (void) platf::display_helper_client::send_log_level(config::sunshine.min_log_level);
         return true;
       }
       platf::display_helper_client::reset_connection();
@@ -792,14 +800,15 @@ namespace {
       return false;
     }
 
+    const std::wstring helper_args = L"--log-level=" + std::to_wstring(config::sunshine.min_log_level);
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    bool started = helper_proc().start(helper.wstring(), L"");
+    bool started = helper_proc().start(helper.wstring(), helper_args);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        started = helper_proc().start(helper.wstring(), L"");
+        started = helper_proc().start(helper.wstring(), helper_args);
       }
     }
     if (!started) {
@@ -828,7 +837,7 @@ namespace {
                            << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
           
-          const bool retry_started = helper_proc().start(helper.wstring(), L"");
+          const bool retry_started = helper_proc().start(helper.wstring(), helper_args);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             return false;
@@ -1093,9 +1102,21 @@ namespace display_helper_integration {
 
     if (!system_profile_only) {
       // Stream-start policy: reuse existing helper and disarm any pending restore before APPLY.
-      bool helper_ready = ensure_helper_started(false, true);
-      if (!helper_ready) {
+      // Retry with exponential backoff to handle timing mismatches between client and helper pipe.
+      bool helper_ready = false;
+      auto backoff = kHelperConnectInitialBackoff;
+      for (int attempt = 0; attempt < kHelperConnectMaxRetries && !helper_ready; ++attempt) {
+        if (attempt > 0) {
+          BOOST_LOG(debug) << "Display helper: connection retry " << attempt << "/" << kHelperConnectMaxRetries
+                           << " after " << backoff.count() << "ms backoff.";
+          std::this_thread::sleep_for(backoff);
+          backoff = std::min(backoff * 2, kHelperConnectMaxBackoff);
+          platf::display_helper_client::reset_connection();
+        }
         helper_ready = ensure_helper_started(false, true);
+      }
+      if (!helper_ready) {
+        BOOST_LOG(warning) << "Display helper: failed to connect after " << kHelperConnectMaxRetries << " attempts.";
       }
 
       if (helper_ready) {

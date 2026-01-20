@@ -4,9 +4,51 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <display_device/windows/persistent_state.h>
 
 namespace display_helper::v2 {
+  namespace {
+    template <typename MapType>
+    std::string format_map_keys(const MapType &map) {
+      std::ostringstream oss;
+      oss << "[";
+      bool first = true;
+      for (const auto &[key, _] : map) {
+        if (!first) {
+          oss << ", ";
+        }
+        oss << "\"" << key << "\"";
+        first = false;
+      }
+      oss << "]";
+      return oss.str();
+    }
+
+    std::string format_topology(const ActiveTopology &topology) {
+      std::ostringstream oss;
+      oss << "[";
+      bool first_group = true;
+      for (const auto &group : topology) {
+        if (!first_group) {
+          oss << ", ";
+        }
+        oss << "[";
+        bool first_id = true;
+        for (const auto &id : group) {
+          if (!first_id) {
+            oss << ", ";
+          }
+          oss << "\"" << id << "\"";
+          first_id = false;
+        }
+        oss << "]";
+        first_group = false;
+      }
+      oss << "]";
+      return oss.str();
+    }
+  }  // namespace
   ApplyStatus WinDisplaySettings::apply(const SingleDisplayConfiguration &config) {
     if (!ensure_initialized()) {
       return ApplyStatus::HelperUnavailable;
@@ -94,18 +136,38 @@ namespace display_helper::v2 {
 
   bool WinDisplaySettings::apply_snapshot(const Snapshot &snapshot) {
     if (!ensure_initialized()) {
+      BOOST_LOG(error) << "apply_snapshot: display device not initialized";
       return false;
     }
 
+    BOOST_LOG(info) << "apply_snapshot: applying snapshot with:"
+                    << "\n  topology: " << format_topology(snapshot.m_topology)
+                    << "\n  modes for devices: " << format_map_keys(snapshot.m_modes)
+                    << "\n  HDR states for devices: " << format_map_keys(snapshot.m_hdr_states)
+                    << "\n  primary device: " << (snapshot.m_primary_device.empty() ? "(none)" : snapshot.m_primary_device);
+
     try {
+      BOOST_LOG(debug) << "apply_snapshot: setting topology";
       (void) display_device_->setTopology(snapshot.m_topology);
+
+      BOOST_LOG(debug) << "apply_snapshot: setting display modes for " << snapshot.m_modes.size() << " device(s)";
       (void) display_device_->setDisplayModesTemporary(snapshot.m_modes);
+
+      BOOST_LOG(debug) << "apply_snapshot: setting HDR states for " << snapshot.m_hdr_states.size() << " device(s)";
       (void) display_device_->setHdrStates(snapshot.m_hdr_states);
+
       if (!snapshot.m_primary_device.empty()) {
+        BOOST_LOG(debug) << "apply_snapshot: setting primary device to " << snapshot.m_primary_device;
         (void) display_device_->setAsPrimary(snapshot.m_primary_device);
       }
+
+      BOOST_LOG(info) << "apply_snapshot: completed";
       return true;
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "apply_snapshot: exception - " << e.what();
+      return false;
     } catch (...) {
+      BOOST_LOG(error) << "apply_snapshot: unknown exception";
       return false;
     }
   }
