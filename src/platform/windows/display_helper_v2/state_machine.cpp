@@ -6,6 +6,87 @@
 #include "src/logging.h"
 
 namespace display_helper::v2 {
+  namespace {
+    const char *state_to_string(State state) {
+      switch (state) {
+        case State::Waiting:
+          return "Waiting";
+        case State::InProgress:
+          return "InProgress";
+        case State::Verification:
+          return "Verification";
+        case State::Recovery:
+          return "Recovery";
+        case State::RecoveryValidation:
+          return "RecoveryValidation";
+        case State::EventLoop:
+          return "EventLoop";
+        case State::VirtualDisplayMonitoring:
+          return "VirtualDisplayMonitoring";
+        default:
+          return "Unknown";
+      }
+    }
+
+    const char *action_to_string(ApplyAction action) {
+      switch (action) {
+        case ApplyAction::Apply:
+          return "Apply";
+        case ApplyAction::Revert:
+          return "Revert";
+        case ApplyAction::Disarm:
+          return "Disarm";
+        case ApplyAction::ExportGolden:
+          return "ExportGolden";
+        case ApplyAction::SnapshotCurrent:
+          return "SnapshotCurrent";
+        case ApplyAction::Reset:
+          return "Reset";
+        case ApplyAction::Ping:
+          return "Ping";
+        case ApplyAction::Stop:
+          return "Stop";
+        default:
+          return "Unknown";
+      }
+    }
+
+    const char *display_event_to_string(DisplayEvent event) {
+      switch (event) {
+        case DisplayEvent::DisplayChange:
+          return "DisplayChange";
+        case DisplayEvent::PowerResume:
+          return "PowerResume";
+        case DisplayEvent::DeviceArrival:
+          return "DeviceArrival";
+        case DisplayEvent::DeviceRemoval:
+          return "DeviceRemoval";
+        default:
+          return "Unknown";
+      }
+    }
+
+    const char *apply_status_to_string(ApplyStatus status) {
+      switch (status) {
+        case ApplyStatus::Ok:
+          return "Ok";
+        case ApplyStatus::HelperUnavailable:
+          return "HelperUnavailable";
+        case ApplyStatus::InvalidRequest:
+          return "InvalidRequest";
+        case ApplyStatus::VerificationFailed:
+          return "VerificationFailed";
+        case ApplyStatus::NeedsVirtualDisplayReset:
+          return "NeedsVirtualDisplayReset";
+        case ApplyStatus::Retryable:
+          return "Retryable";
+        case ApplyStatus::Fatal:
+          return "Fatal";
+        default:
+          return "Unknown";
+      }
+    }
+  }  // namespace
   StateMachine::StateMachine(
     ApplyPipeline &apply,
     RecoveryPipeline &recovery,
@@ -133,6 +214,11 @@ namespace display_helper::v2 {
       return;
     }
 
+    BOOST_LOG(info) << "Display helper: received Apply command"
+                    << (command.request.configuration ? " with configuration" : " without configuration")
+                    << ", prefer_golden_first=" << (command.request.prefer_golden_first ? "true" : "false")
+                    << (command.request.virtual_layout ? ", virtual_layout=" + *command.request.virtual_layout : "");
+
     apply_attempt_ = 1;
     apply_result_sent_ = false;
     current_request_ = command.request;
@@ -151,6 +237,8 @@ namespace display_helper::v2 {
       return;
     }
 
+    BOOST_LOG(info) << "Display helper: received Revert command, initiating recovery";
+
     system_.cancel_operations();
     recovery_armed_ = true;
     system_.arm_heartbeat();
@@ -161,6 +249,8 @@ namespace display_helper::v2 {
   }
 
   void StateMachine::handle_disarm_command(const DisarmCommand &) {
+    BOOST_LOG(info) << "Display helper: received Disarm command, resetting state";
+
     system_.cancel_operations();
     recovery_armed_ = false;
     system_.disarm_heartbeat();
@@ -287,6 +377,9 @@ namespace display_helper::v2 {
       return;
     }
 
+    BOOST_LOG(info) << "Display helper: recovery operation completed, success=" << (completed.success ? "true" : "false")
+                    << ", has_snapshot=" << (completed.snapshot ? "true" : "false");
+
     if (completed.success && completed.snapshot) {
       recovery_snapshot_ = completed.snapshot;
       transition(State::RecoveryValidation, ApplyAction::Revert);
@@ -294,6 +387,7 @@ namespace display_helper::v2 {
       return;
     }
 
+    BOOST_LOG(warning) << "Display helper: recovery failed or no valid snapshot found, entering event loop";
     transition(State::EventLoop, ApplyAction::Revert);
   }
 
@@ -319,8 +413,12 @@ namespace display_helper::v2 {
 
   void StateMachine::handle_display_event(const DisplayEventMessage &event) {
     if (is_stale(event.generation)) {
+      BOOST_LOG(debug) << "Display helper: ignoring stale display event " << display_event_to_string(event.event);
       return;
     }
+
+    BOOST_LOG(info) << "Display helper: received display event '" << display_event_to_string(event.event)
+                    << "' in state " << state_to_string(state_);
 
     // Virtual display monitoring: re-apply configuration when device crashes/recovers
     if (state_ == State::VirtualDisplayMonitoring) {
@@ -389,10 +487,15 @@ namespace display_helper::v2 {
     if (event.event != HelperEvent::HeartbeatTimeout) {
       return;
     }
+
+    BOOST_LOG(warning) << "Display helper: heartbeat timeout detected in state " << state_to_string(state_)
+                       << ", recovery_armed=" << (recovery_armed_ ? "true" : "false");
+
     if (!recovery_armed_) {
       return;
     }
 
+    BOOST_LOG(info) << "Display helper: initiating recovery due to heartbeat timeout";
     transition(State::Recovery, ApplyAction::Revert);
     recovery_.dispatch_recovery();
   }
@@ -401,6 +504,18 @@ namespace display_helper::v2 {
     if (next == state_) {
       return;
     }
+
+    if (status) {
+      BOOST_LOG(info) << "Display helper: state transition " << state_to_string(state_)
+                      << " -> " << state_to_string(next)
+                      << " (trigger: " << action_to_string(trigger)
+                      << ", status: " << apply_status_to_string(*status) << ")";
+    } else {
+      BOOST_LOG(info) << "Display helper: state transition " << state_to_string(state_)
+                      << " -> " << state_to_string(next)
+                      << " (trigger: " << action_to_string(trigger) << ")";
+    }
+
     if (observer_) {
       observer_(StateTransition {
         .from = state_,

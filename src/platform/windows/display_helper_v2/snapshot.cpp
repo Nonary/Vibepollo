@@ -2,10 +2,42 @@
 
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 
 #include <nlohmann/json.hpp>
 
+#include "src/logging.h"
+
 namespace display_helper::v2 {
+  namespace {
+    const char *tier_to_string(SnapshotTier tier) {
+      switch (tier) {
+        case SnapshotTier::Current:
+          return "Current";
+        case SnapshotTier::Previous:
+          return "Previous";
+        case SnapshotTier::Golden:
+          return "Golden";
+        default:
+          return "Unknown";
+      }
+    }
+
+    std::string format_string_vector(const std::vector<std::string> &vec) {
+      std::ostringstream oss;
+      oss << "[";
+      bool first = true;
+      for (const auto &s : vec) {
+        if (!first) {
+          oss << ", ";
+        }
+        oss << "\"" << s << "\"";
+        first = false;
+      }
+      oss << "]";
+      return oss.str();
+    }
+  }  // namespace
   FileSnapshotStorage::FileSnapshotStorage(SnapshotPaths paths)
     : paths_(std::move(paths)) {}
 
@@ -285,14 +317,22 @@ namespace display_helper::v2 {
   std::optional<Snapshot> SnapshotPersistence::load(
     SnapshotTier tier,
     const std::set<std::string> &available) {
+    BOOST_LOG(debug) << "Snapshot: attempting to load tier '" << tier_to_string(tier) << "'";
+
     auto snapshot = storage_.load(tier);
     if (!snapshot) {
+      BOOST_LOG(debug) << "Snapshot: tier '" << tier_to_string(tier) << "' not found or invalid";
       return std::nullopt;
     }
+
     const auto missing = storage_.missing_devices(*snapshot, available);
     if (!missing.empty()) {
+      BOOST_LOG(info) << "Snapshot: tier '" << tier_to_string(tier)
+                      << "' rejected - missing devices: " << format_string_vector(missing);
       return std::nullopt;
     }
+
+    BOOST_LOG(debug) << "Snapshot: tier '" << tier_to_string(tier) << "' loaded successfully";
     return snapshot;
   }
 
