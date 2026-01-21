@@ -84,7 +84,7 @@ namespace webrtc_stream {
   bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type);
 
   namespace {
-    constexpr std::size_t kMaxVideoFrames = 2;
+    constexpr std::size_t kMaxVideoFrames = 4;
     constexpr std::size_t kMaxAudioFrames = 4;
     constexpr short kAbsCoordinateMax = 32767;
     constexpr int kDefaultWidth = 1920;
@@ -93,7 +93,8 @@ namespace webrtc_stream {
     constexpr int kDefaultAudioChannels = 2;
     constexpr int kDefaultAudioPacketMs = 10;
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
-    constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {500};
+    constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {100};
+    constexpr std::size_t kKeyframeConsecutiveDrops = 3;
     constexpr auto kKeyframeResyncInterval = std::chrono::seconds {2};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
@@ -1233,6 +1234,7 @@ namespace webrtc_stream {
       std::shared_ptr<platf::img_t> last_video_frame;
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
       bool needs_keyframe = false;
+      std::size_t consecutive_drops = 0;
       std::optional<std::chrono::steady_clock::time_point> startup_keyframe_until;
       std::optional<std::chrono::steady_clock::time_point> startup_keyframe_deadline;
       std::optional<std::chrono::steady_clock::time_point> last_keyframe_request;
@@ -3483,15 +3485,13 @@ namespace webrtc_stream {
             if (session.encoded_video_source) {
               bool startup_keyframe_active = false;
               if (session.startup_keyframe_until || session.startup_keyframe_deadline) {
-                const bool min_elapsed =
-                  !session.startup_keyframe_until || now >= *session.startup_keyframe_until;
                 const bool deadline_elapsed =
                   session.startup_keyframe_deadline && now >= *session.startup_keyframe_deadline;
                 const bool keyframe_fresh =
                   session.last_keyframe_sent &&
                   now - *session.last_keyframe_sent <= kWebrtcStartupExitKeyframeFreshness;
 
-                if (min_elapsed && (keyframe_fresh || deadline_elapsed)) {
+                if (keyframe_fresh || deadline_elapsed) {
                   const bool had_keyframe_sent = session.last_keyframe_sent.has_value();
                   session.startup_keyframe_until.reset();
                   session.startup_keyframe_deadline.reset();
@@ -3631,7 +3631,18 @@ namespace webrtc_stream {
                 const bool target_too_old = target_send + max_frame_age < now;
                 if (pacing.drop_old_frames && target_too_old && !session.video_frames.empty()) {
                   session.state.video_dropped++;
-                  session.needs_keyframe = true;
+                  if (frame.idr) {
+                    session.needs_keyframe = true;
+                    session.consecutive_drops = 0;
+                  } else if (pacing.mode != video_pacing_mode_e::latency) {
+                    session.consecutive_drops++;
+                    if (session.consecutive_drops >= kKeyframeConsecutiveDrops) {
+                      session.needs_keyframe = true;
+                      session.consecutive_drops = 0;
+                    }
+                  } else {
+                    session.consecutive_drops = 0;
+                  }
                   return;
                 }
                 if (target_too_old) {
@@ -3720,11 +3731,16 @@ namespace webrtc_stream {
                   }
                 }
               }
-              if (waiting_for_keyframe && !queued_keyframe) {
-                if (!session.last_keyframe_request ||
-                    now - *session.last_keyframe_request >= kKeyframeRequestInterval) {
-                  session.last_keyframe_request = now;
-                  request_keyframe("waiting for video keyframe");
+              if (waiting_for_keyframe) {
+                const bool keyframe_fresh =
+                  session.last_keyframe_sent &&
+                  now - *session.last_keyframe_sent <= kWebrtcStartupExitKeyframeFreshness;
+                if (!queued_keyframe || !keyframe_fresh) {
+                  if (!session.last_keyframe_request ||
+                      now - *session.last_keyframe_request >= kKeyframeRequestInterval) {
+                    session.last_keyframe_request = now;
+                    request_keyframe("waiting for video keyframe");
+                  }
                 }
               }
               // Note: For encoded passthrough, we don't repeat frames like raw mode
@@ -3761,13 +3777,25 @@ namespace webrtc_stream {
                 auto it = sessions.find(work.session_id);
                 if (it != sessions.end()) {
                   it->second.state.video_dropped++;
-                  it->second.needs_keyframe = true;
+                  if (work.is_keyframe) {
+                    it->second.needs_keyframe = true;
+                    it->second.consecutive_drops = 0;
+                  } else if (it->second.video_pacing.mode != video_pacing_mode_e::latency) {
+                    it->second.consecutive_drops++;
+                    if (it->second.consecutive_drops >= kKeyframeConsecutiveDrops) {
+                      it->second.needs_keyframe = true;
+                      it->second.consecutive_drops = 0;
+                    }
+                  } else {
+                    it->second.consecutive_drops = 0;
+                  }
                   it->second.video_pacing_state.anchor_capture.reset();
                   it->second.video_pacing_state.anchor_send.reset();
                   it->second.video_pacing_state.last_drift_reset = send_now;
                   it->second.last_video_push.reset();
-                  if (!it->second.last_keyframe_request ||
-                      send_now - *it->second.last_keyframe_request >= kKeyframeRequestInterval) {
+                  if (it->second.needs_keyframe &&
+                      (!it->second.last_keyframe_request ||
+                       send_now - *it->second.last_keyframe_request >= kKeyframeRequestInterval)) {
                     it->second.last_keyframe_request = send_now;
                     request_keyframe("sender backlog");
                   }
@@ -3805,6 +3833,7 @@ namespace webrtc_stream {
             std::lock_guard lg {session_mutex};
             auto it = sessions.find(work.session_id);
             if (it != sessions.end()) {
+              it->second.consecutive_drops = 0;
               if (work.is_keyframe) {
                 it->second.last_keyframe_sent = std::chrono::steady_clock::now();
               }
