@@ -27,6 +27,7 @@ const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', 
 const losslessTargetModel = defineModel<number | null>('losslessTargetFps', { default: null });
 const losslessRtssModel = defineModel<number | null>('losslessRtssLimit', { default: null });
 const losslessFlowModel = defineModel<number | null>('losslessFlowScale', { default: null });
+const losslessLaunchDelayModel = defineModel<number | null>('losslessLaunchDelay', { default: null });
 
 const props = defineProps<{
   health: FrameGenHealth | null;
@@ -336,6 +337,23 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             />
             <p class="text-[12px] opacity-60 leading-relaxed">
               Frame blending strength (0–100). Sunshine recommends 50% as a balanced default.
+            </p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+              Lossless Launch Delay (seconds)
+            </label>
+            <n-input-number
+              v-model:value="losslessLaunchDelayModel"
+              :min="0"
+              :max="600"
+              :step="1"
+              :precision="0"
+              placeholder="0"
+              size="small"
+            />
+            <p class="text-[12px] opacity-60 leading-relaxed">
+              Wait additional seconds after the game starts before opening Lossless Scaling.
             </p>
           </div>
         </div>

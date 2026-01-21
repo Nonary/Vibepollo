@@ -769,7 +769,8 @@ namespace confighttp {
       std::vector<std::string> integer_keys = {
         "exit-timeout",
         "lossless-scaling-target-fps",
-        "lossless-scaling-rtss-limit"
+        "lossless-scaling-rtss-limit",
+        "lossless-scaling-launch-delay"
       };
 
       bool mutated = false;

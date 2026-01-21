@@ -1015,6 +1015,9 @@ namespace playnite_launcher::lossless {
     opt.ls1_sharpness = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS")), k_sharpness_min, k_sharpness_max);
     opt.anime4k_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE"));
     opt.anime4k_vrs = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS"));
+    if (auto delay = parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY"))) {
+      opt.launch_delay_seconds = std::max(0, *delay);
+    }
     if (auto configured = get_lossless_scaling_env_path()) {
       if (!configured->empty()) {
         opt.configured_path = configured;
@@ -1048,6 +1051,7 @@ namespace playnite_launcher::lossless {
     opt.ls1_sharpness = clamp_optional_int(_metadata.ls1_sharpness, k_sharpness_min, k_sharpness_max);
     opt.anime4k_type = _metadata.anime4k_type;
     opt.anime4k_vrs = _metadata.anime4k_vrs;
+    opt.launch_delay_seconds = std::max(0, _metadata.launch_delay_seconds);
     finalize_lossless_options(opt);
     return opt;
   }

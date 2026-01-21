@@ -80,6 +80,7 @@ export interface AppForm {
   losslessScalingRtssTouched: boolean;
   losslessScalingProfile: LosslessProfileKey;
   losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
+  losslessScalingLaunchDelay: number | null;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
   ddConfigurationOption?:
@@ -121,6 +122,7 @@ export interface ServerApp {
   'lossless-scaling-profile'?: string;
   'lossless-scaling-recommended'?: Record<string, unknown>;
   'lossless-scaling-custom'?: Record<string, unknown>;
+  'lossless-scaling-launch-delay'?: number | string | null;
   'virtual-display-mode'?: string;
   'virtual-display-layout'?: string;
   'dd-configuration-option'?: string;

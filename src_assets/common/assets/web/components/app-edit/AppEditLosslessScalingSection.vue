@@ -197,6 +197,30 @@
       </div>
       <n-switch v-model:value="losslessPerformanceModeModel" size="small" />
     </div>
+
+    <div
+      v-if="showLosslessLaunchSettings"
+      class="space-y-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
+    >
+      <div class="text-xs font-semibold uppercase tracking-wide opacity-70">Advanced Launch</div>
+      <div class="space-y-1">
+        <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+          Lossless Launch Delay (seconds)
+        </label>
+        <n-input-number
+          v-model:value="form.losslessScalingLaunchDelay"
+          :min="0"
+          :max="600"
+          :step="1"
+          :precision="0"
+          placeholder="0"
+          size="small"
+        />
+        <p class="text-[11px] opacity-60">
+          Wait additional seconds after the game starts before opening Lossless Scaling.
+        </p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -315,4 +339,7 @@ const resolutionFactorModel = computed<number>({
 
 const resolutionPercentDisplay = computed(() => resolutionPercentModel.value.toFixed(0));
 const resolutionFactorDisplay = computed(() => resolutionFactorModel.value.toFixed(2));
+const showLosslessLaunchSettings = computed(
+  () => form.value.losslessScalingEnabled || form.value.frameGenerationMode === 'lossless-scaling',
+);
 </script>
