@@ -2307,9 +2307,47 @@ namespace video {
       }
     });
 
-    // set max frame time based on client-requested target framerate.
-    double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : config.framerate;
-    std::chrono::duration<double, std::milli> max_frametime {1000.0 / minimum_fps_target};
+    // Set max frame time based on client-requested target framerate.
+    const bool legacy_rtsp_pacing = channel_data != nullptr;
+    double minimum_fps_target = 0.0;
+    std::chrono::duration<double, std::milli> max_frametime {0};
+    std::chrono::steady_clock::duration encode_frame_threshold {};
+    std::chrono::steady_clock::duration frame_variation_threshold {};
+    std::chrono::steady_clock::time_point encode_frame_timestamp {};
+
+    auto to_steady_duration = [](double seconds) {
+      return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    };
+
+    if (legacy_rtsp_pacing) {
+      double encoding_fps = 0.0;
+      if (config.framerateX100 > 0) {
+        encoding_fps = config.framerateX100 / 100.0;
+      } else if (config.framerate > 1000) {
+        encoding_fps = static_cast<double>(config.framerate) / 1000.0;
+      } else {
+        encoding_fps = static_cast<double>(config.framerate);
+      }
+      if (encoding_fps <= 0.0) {
+        encoding_fps = 1.0;
+      }
+      minimum_fps_target = (config::video.minimum_fps_target > 0.0)
+                             ? config::video.minimum_fps_target
+                             : std::max(encoding_fps / 5.0, 10.0);
+      if (minimum_fps_target <= 0.0) {
+        minimum_fps_target = 1.0;
+      }
+      max_frametime = std::chrono::duration<double, std::milli> {1000.0 / minimum_fps_target};
+      encode_frame_threshold = to_steady_duration(1.0 / encoding_fps);
+      frame_variation_threshold = encode_frame_threshold / 4;
+    } else {
+      minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : config.framerate;
+      if (minimum_fps_target <= 0.0) {
+        minimum_fps_target = 1.0;
+      }
+      max_frametime = std::chrono::duration<double, std::milli> {1000.0 / minimum_fps_target};
+    }
+
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2) << "fps ("sv << max_frametime.count() * 2 << "ms)"sv;
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);
@@ -2363,6 +2401,22 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
+          if (legacy_rtsp_pacing && frame_timestamp) {
+            auto time_diff = *frame_timestamp - encode_frame_timestamp;
+
+            // If new frame comes in way too fast, just drop
+            if (time_diff < -frame_variation_threshold) {
+              continue;
+            }
+
+            if (time_diff < frame_variation_threshold) {
+              *frame_timestamp = encode_frame_timestamp;
+            } else {
+              encode_frame_timestamp = *frame_timestamp;
+            }
+
+            encode_frame_timestamp += encode_frame_threshold;
+          }
           if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
             webrtc_stream::submit_video_frame(img);
           }
