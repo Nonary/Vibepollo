@@ -2209,17 +2209,6 @@ namespace webrtc_stream {
         }
 #endif
 
-#ifdef _WIN32
-        if (allow_display_changes) {
-          const auto verification_status =
-            display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
-          if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
-            BOOST_LOG(warning)
-              << "Display helper validation failed; continuing with WebRTC capture anyway.";
-          }
-        }
-#endif
-
         if (video::probe_encoders()) {
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
         }

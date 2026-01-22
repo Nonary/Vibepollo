@@ -33,6 +33,11 @@ DisplayApplyBuilder &DisplayApplyBuilder::set_virtual_display_watchdog(const boo
   return *this;
 }
 
+DisplayApplyBuilder &DisplayApplyBuilder::set_hdr_toggle_flag(const bool enable) {
+  attach_hdr_toggle_flag_ = enable;
+  return *this;
+}
+
 DisplayApplyBuilder &DisplayApplyBuilder::set_topology(const DisplayTopologyDefinition &topology) {
   topology_ = topology;
   return *this;
@@ -57,6 +62,7 @@ DisplayApplyRequest DisplayApplyBuilder::build() const {
   request.configuration = configuration_;
   request.session_overrides = session_overrides_;
   request.enable_virtual_display_watchdog = enable_virtual_display_watchdog_;
+  request.attach_hdr_toggle_flag = attach_hdr_toggle_flag_;
   request.topology = topology_;
   request.session = session_;
   request.virtual_display_arrangement = virtual_display_arrangement_;

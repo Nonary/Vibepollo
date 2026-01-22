@@ -67,18 +67,6 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/state_machine.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"
@@ -144,7 +132,6 @@ list(PREPEND PLATFORM_LIBRARIES
         shlwapi
         shell32
         crypt32
-        taskschd
         synchronization.lib
         Windowscodecs
         userenv

@@ -7,15 +7,11 @@
 #ifdef _WIN32
 
   #include <cstdint>
-  #include <optional>
   #include <string>
 
 namespace platf::display_helper_client {
   // Send APPLY with JSON payload (SingleDisplayConfiguration)
   bool send_apply_json(const std::string &json);
-
-  // Wait for helper verification result after APPLY. Returns nullopt on timeout/unavailable.
-  std::optional<bool> wait_for_verification_result(int timeout_ms);
 
   // Send REVERT (no payload)
   bool send_revert();
@@ -38,9 +34,6 @@ namespace platf::display_helper_client {
 
   // Request helper process to terminate gracefully.
   bool send_stop();
-
-  // Update helper log level to match Sunshine's minimum log level.
-  bool send_log_level(int min_log_level);
 
   // Lightweight liveness probe; returns true if a Ping frame was sent.
   // This does not wait for a reply; it only validates a healthy send path.

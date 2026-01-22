@@ -1822,7 +1822,7 @@ namespace {
             session_saved.store(true, std::memory_order_release);
             return;
           }
-          BOOST_LOG(warning) << "Failed to promote previous → current (copy error); will snapshot current instead.";
+          BOOST_LOG(warning) << "Failed to promote previous ΓåÆ current (copy error); will snapshot current instead.";
         }
       }
 

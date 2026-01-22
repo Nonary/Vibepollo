@@ -57,11 +57,9 @@ namespace platf::display_helper_client {
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
     ExportGolden = 4,  ///< Export current OS settings as golden snapshot
-    LogLevel = 5,  ///< Update helper log level (payload: [u8 min_log_level]).
     ApplyResult = 6,  ///< Helper acknowledgement for APPLY (payload: [u8 success][optional message...]).
     Disarm = 7,  ///< Cancel any pending restore/watchdog actions on the helper.
     SnapshotCurrent = 8,  ///< Save current session snapshot (rotate current->previous) without applying config.
-    VerificationResult = 9,  ///< Helper acknowledgement for verification completion (payload: [u8 success]).
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
   };
@@ -116,57 +114,6 @@ namespace platf::display_helper_client {
       BOOST_LOG(error) << "Display helper IPC: timed out waiting for APPLY result acknowledgement";
       return std::nullopt;
     }
-
-    std::optional<bool> wait_for_verification_result_locked(platf::dxgi::INamedPipe &pipe, int timeout_ms) {
-      using namespace std::chrono;
-
-      if (timeout_ms <= 0) {
-        return std::nullopt;
-      }
-
-      const auto deadline = steady_clock::now() + milliseconds(timeout_ms);
-      std::array<uint8_t, 2048> buffer {};
-
-      while (steady_clock::now() < deadline) {
-        const auto now = steady_clock::now();
-        auto remaining = duration_cast<milliseconds>(deadline - now);
-        if (remaining.count() < 0) {
-          remaining = milliseconds(0);
-        }
-        int wait_ms = static_cast<int>(std::max<long long>(remaining.count(), 100LL));
-        size_t bytes_read = 0;
-        auto result = pipe.receive(buffer, bytes_read, wait_ms);
-
-        if (result == platf::dxgi::PipeResult::Timeout) {
-          continue;
-        }
-        if (result != platf::dxgi::PipeResult::Success) {
-          BOOST_LOG(error) << "Display helper IPC: failed waiting for verification result (pipe error)";
-          return std::nullopt;
-        }
-        if (bytes_read == 0) {
-          BOOST_LOG(error) << "Display helper IPC: connection closed while waiting for verification result";
-          return std::nullopt;
-        }
-
-        const uint8_t msg_type = buffer[0];
-        if (msg_type == static_cast<uint8_t>(MsgType::VerificationResult)) {
-          bool success = bytes_read >= 2 && buffer[1] != 0;
-          return success;
-        }
-
-        if (msg_type == static_cast<uint8_t>(MsgType::Ping) ||
-            msg_type == static_cast<uint8_t>(MsgType::ApplyResult)) {
-          continue;
-        }
-
-        BOOST_LOG(debug) << "Display helper IPC: ignoring unexpected message type=" << static_cast<int>(msg_type)
-                         << " while awaiting verification result";
-      }
-
-      BOOST_LOG(error) << "Display helper IPC: timed out waiting for verification result acknowledgement";
-      return std::nullopt;
-    }
   }  // namespace
 
   static bool send_message(
@@ -175,7 +122,7 @@ namespace platf::display_helper_client {
     const std::vector<uint8_t> &payload,
     std::optional<int> send_timeout_override_ms = std::nullopt
   ) {
-    const bool is_ping = (type == MsgType::Ping || type == MsgType::LogLevel);
+    const bool is_ping = (type == MsgType::Ping);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
                       << ", payload_len=" << payload.size();
@@ -197,11 +144,6 @@ namespace platf::display_helper_client {
   static std::unique_ptr<platf::dxgi::INamedPipe> &pipe_singleton() {
     static std::unique_ptr<platf::dxgi::INamedPipe> s_pipe;
     return s_pipe;
-  }
-
-  static std::optional<int> &last_log_level_sent() {
-    static std::optional<int> level;
-    return level;
   }
 
   // Global mutex to serialize all access to the pipe (connect, reset, send)
@@ -264,7 +206,6 @@ namespace platf::display_helper_client {
       BOOST_LOG(debug) << "Display helper IPC: resetting cached connection";
     }
     pipe.reset();
-    last_log_level_sent().reset();
   }
 
   bool send_apply_json(const std::string &json) {
@@ -290,20 +231,6 @@ namespace platf::display_helper_client {
     }
 
     return false;
-  }
-
-  std::optional<bool> wait_for_verification_result(int timeout_ms) {
-    std::unique_lock<std::mutex> lk(pipe_mutex());
-    if (!ensure_connected_locked()) {
-      BOOST_LOG(warning) << "Display helper IPC: verification wait aborted - no connection";
-      return std::nullopt;
-    }
-    auto &pipe = pipe_singleton();
-    if (!pipe) {
-      BOOST_LOG(warning) << "Display helper IPC: verification wait aborted - no pipe instance";
-      return std::nullopt;
-    }
-    return wait_for_verification_result_locked(*pipe, timeout_ms);
   }
 
   bool send_revert() {
@@ -405,26 +332,6 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Stop, payload)) {
-      return true;
-    }
-    return false;
-  }
-
-  bool send_log_level(int min_log_level) {
-    const int clamped = std::clamp(min_log_level, 0, 6);
-    std::unique_lock<std::mutex> lk(pipe_mutex());
-    if (!ensure_connected_locked()) {
-      return false;
-    }
-    auto &last_level = last_log_level_sent();
-    if (last_level && *last_level == clamped) {
-      return true;
-    }
-    std::vector<uint8_t> payload;
-    payload.push_back(static_cast<uint8_t>(clamped));
-    auto &pipe = pipe_singleton();
-    if (pipe && send_message(*pipe, MsgType::LogLevel, payload)) {
-      last_level = clamped;
       return true;
     }
     return false;
