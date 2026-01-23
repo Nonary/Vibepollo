@@ -4064,6 +4064,21 @@ namespace {
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));
 
+    // Wait for a client connection before starting the async worker thread.
+    //
+    // Without this, the code below would immediately reach the cleanup path
+    // (async_pipe.is_connected() is false at startup), call async_pipe.stop(),
+    // and tear down the server pipe before Sunshine has any chance to connect.
+    async_pipe.wait_for_client_connection(15000);
+    if (!async_pipe.is_connected()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_connect_wait_log > kReconnectLogInterval) {
+        BOOST_LOG(info) << "Waiting for Sunshine to connect to display helper IPC...";
+        last_connect_wait_log = now;
+      }
+      continue;
+    }
+
     const auto connection_epoch = state.begin_connection_epoch();
     state.stop_restore_polling();
     state.begin_heartbeat_monitoring();
