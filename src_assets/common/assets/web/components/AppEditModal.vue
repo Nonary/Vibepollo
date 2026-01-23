@@ -345,6 +345,7 @@
             v-model:lossless-target-fps="form.losslessScalingTargetFps"
             v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
             v-model:lossless-flow-scale="losslessFlowScaleModel"
+            v-model:lossless-launch-delay="form.losslessScalingLaunchDelay"
             :health="frameGenHealth"
             :health-loading="frameGenHealthLoading"
             :health-error="frameGenHealthError"
@@ -577,6 +578,7 @@ function fresh(): AppForm {
     losslessScalingRtssTouched: false,
     losslessScalingProfile: 'recommended',
     losslessScalingProfiles: emptyLosslessProfileState(),
+    losslessScalingLaunchDelay: null,
     virtualDisplayMode: null,
     virtualDisplayLayout: null,
     ddConfigurationOption: null,
@@ -682,6 +684,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
   const lsEnabled = !!src['lossless-scaling-framegen'];
   const lsTarget = parseNumeric(src['lossless-scaling-target-fps']);
   const lsLimit = parseNumeric(src['lossless-scaling-rtss-limit']);
+  const lsLaunchDelayRaw = parseNumeric(src['lossless-scaling-launch-delay']);
+  const lsLaunchDelay = lsLaunchDelayRaw && lsLaunchDelayRaw > 0 ? Math.round(lsLaunchDelayRaw) : null;
   const profileKey = parseLosslessProfileKey(src['lossless-scaling-profile']);
   const losslessProfiles = emptyLosslessProfileState();
   losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
@@ -787,6 +791,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingRtssTouched: lsLimit !== null,
     losslessScalingProfile: profileKey,
     losslessScalingProfiles: losslessProfiles,
+    losslessScalingLaunchDelay: lsLaunchDelay,
     virtualDisplayMode: serverVirtualDisplayMode,
     virtualDisplayLayout: serverVirtualDisplayLayout,
     ddConfigurationOption: ddConfigValue,
@@ -883,6 +888,14 @@ function toServerPayload(f: AppForm): Record<string, any> {
     mode === 'lossless-scaling' ? payloadLosslessTarget : null;
   payload['lossless-scaling-rtss-limit'] =
     mode === 'lossless-scaling' ? payloadLosslessLimit : null;
+  const payloadLosslessDelayRaw = parseNumeric(f.losslessScalingLaunchDelay);
+  const payloadLosslessDelay =
+    payloadLosslessDelayRaw && payloadLosslessDelayRaw > 0
+      ? Math.round(payloadLosslessDelayRaw)
+      : null;
+  payload['lossless-scaling-launch-delay'] = losslessRuntimeActive
+    ? payloadLosslessDelay
+    : null;
   payload['lossless-scaling-profile'] =
     f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
   const buildLosslessProfilePayload = (profile: LosslessProfileOverrides) => {

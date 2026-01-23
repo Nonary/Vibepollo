@@ -43,6 +43,7 @@ export interface App {
   'lossless-scaling-profile'?: string;
   'lossless-scaling-recommended'?: Record<string, unknown>;
   'lossless-scaling-custom'?: Record<string, unknown>;
+  'lossless-scaling-launch-delay'?: number;
   // Fallback for any other server fields we don't model yet
   [key: string]: any;
 }

@@ -949,7 +949,8 @@ namespace confighttp {
         "exit-timeout",
         "lossless-scaling-target-fps",
         "lossless-scaling-rtss-limit",
-        "scale-factor"
+        "scale-factor",
+        "lossless-scaling-launch-delay"
       };
 
       bool mutated = false;

@@ -110,6 +110,7 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_LS1_SHARPNESS = "SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS";
     constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
+    constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
@@ -902,6 +903,18 @@ namespace proc {
           return;
         }
 
+        const int launch_delay_seconds = std::max(0, metadata.launch_delay_seconds);
+        if (launch_delay_seconds > 0) {
+          BOOST_LOG(info) << "Lossless Scaling: delaying launch by " << launch_delay_seconds << " seconds after game start";
+          auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(launch_delay_seconds);
+          while (std::chrono::steady_clock::now() < deadline) {
+            if (_lossless_stop_requested.load(std::memory_order_acquire)) {
+              return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          }
+        }
+
         auto options = playnite_launcher::lossless::read_lossless_scaling_options(metadata);
         if (!options.enabled) {
           BOOST_LOG(debug) << "Lossless Scaling: disabled by configuration, skipping auto launch";
@@ -945,7 +958,13 @@ namespace proc {
           return;
         }
 
-        playnite_launcher::lossless::lossless_scaling_restart_foreground(runtime, changed, install_dir, selection->path_utf8, selection->pid);
+        playnite_launcher::lossless::lossless_scaling_restart_foreground(
+          runtime,
+          changed,
+          install_dir,
+          selection->path_utf8,
+          selection->pid
+        );
         BOOST_LOG(info) << "Lossless Scaling: launched helper for PID=" << selection->pid << " (" << selection->path_utf8 << ')';
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Lossless Scaling: exception during auto launch: " << e.what();
@@ -1307,8 +1326,9 @@ namespace proc {
           device_uuid = uuid_util::uuid_t::parse(device_uuid_str);
         }
 
-        std::memcpy(&launch_session->display_guid, &device_uuid, sizeof(GUID));
-        std::memcpy(launch_session->virtual_display_guid_bytes.data(), device_uuid.b8, sizeof(device_uuid.b8));
+        GUID display_guid {};
+        std::memcpy(&display_guid, device_uuid.b8, sizeof(display_guid));
+        std::copy_n(device_uuid.b8, launch_session->virtual_display_guid_bytes.size(), launch_session->virtual_display_guid_bytes.begin());
 
         int target_fps = 0;
         if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
@@ -1331,7 +1351,7 @@ namespace proc {
           render_width,
           render_height,
           target_fps,
-          launch_session->display_guid
+          display_guid
         );
 
         if (display_info) {
@@ -1364,7 +1384,7 @@ namespace proc {
             launch_session->virtual_display_device_id.clear();
           }
 
-          std::memcpy(&_virtual_display_guid, &launch_session->display_guid, sizeof(_virtual_display_guid));
+          std::memcpy(&_virtual_display_guid, &display_guid, sizeof(_virtual_display_guid));
           _virtual_display_active = true;
         } else {
           BOOST_LOG(warning) << "Virtual display creation failed.";
@@ -1464,20 +1484,22 @@ namespace proc {
       _env[ENV_LOSSLESS_LS1_SHARPNESS] = "";
       _env[ENV_LOSSLESS_ANIME4K_TYPE] = "";
       _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
+      _env[ENV_LOSSLESS_LAUNCH_DELAY] = "";
     };
 
-    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = _app.lossless_scaling_framegen ? _app.frame_generation_provider : "";
+    const bool lossless_scaling_enabled = _app.lossless_scaling_framegen;
+    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = lossless_scaling_enabled ? _app.frame_generation_provider : "";
 
-    const bool using_lossless_provider = _app.lossless_scaling_framegen &&
+    const bool using_lossless_provider = lossless_scaling_enabled &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
-    if (using_lossless_provider) {
+    if (lossless_scaling_enabled) {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
-      if (effective_lossless_target) {
+      if (using_lossless_provider && effective_lossless_target) {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*effective_lossless_target);
       } else {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
       }
-      if (effective_lossless_rtss) {
+      if (using_lossless_provider && effective_lossless_rtss) {
         _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = std::to_string(*effective_lossless_rtss);
       } else {
         _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";
@@ -1490,8 +1512,13 @@ namespace proc {
       _lossless_should_start_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
       if (_lossless_should_start_support) {
         _lossless_metadata.enabled = true;
-        _lossless_metadata.target_fps = effective_lossless_target;
-        _lossless_metadata.rtss_limit = effective_lossless_rtss;
+        if (using_lossless_provider) {
+          _lossless_metadata.target_fps = effective_lossless_target;
+          _lossless_metadata.rtss_limit = effective_lossless_rtss;
+        } else {
+          _lossless_metadata.target_fps.reset();
+          _lossless_metadata.rtss_limit.reset();
+        }
         if (resolved_lossless_exe_path) {
           _lossless_metadata.configured_path = *resolved_lossless_exe_path;
         } else if (!config::lossless_scaling.exe_path.empty()) {
@@ -1511,6 +1538,7 @@ namespace proc {
         _lossless_metadata.ls1_sharpness = runtime.ls1_sharpness;
         _lossless_metadata.anime4k_type = runtime.anime4k_type;
         _lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
+        _lossless_metadata.launch_delay_seconds = _app.lossless_scaling_launch_delay_seconds;
       }
 #endif
 
@@ -1520,8 +1548,8 @@ namespace proc {
         if (effective_lossless_rtss && *effective_lossless_rtss > 0) {
           rtss_warmup_limit = *effective_lossless_rtss;
         }
+        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
       }
-      platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
 #endif
 
       auto set_string = [&](const char *key, const std::optional<std::string> &value) {
@@ -1570,6 +1598,7 @@ namespace proc {
       set_int(ENV_LOSSLESS_LS1_SHARPNESS, runtime.ls1_sharpness);
       set_string(ENV_LOSSLESS_ANIME4K_TYPE, runtime.anime4k_type);
       set_bool(ENV_LOSSLESS_ANIME4K_VRS, runtime.anime4k_vrs);
+      set_int(ENV_LOSSLESS_LAUNCH_DELAY, std::optional<int>(_app.lossless_scaling_launch_delay_seconds));
     } else {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
@@ -2747,11 +2776,15 @@ namespace proc {
               );
             }
           }
+
           if (app_node.contains("prep-cmd") && app_node["prep-cmd"].is_array()) {
-            for (auto &prep_node : app_node["prep-cmd"]) {
+            const auto &prep_nodes = app_node["prep-cmd"];
+            prep_cmds.reserve(prep_cmds.size() + prep_nodes.size());
+            for (const auto &prep_node : prep_nodes) {
               std::string do_cmd = parse_env_val(this_env, prep_node.value("do", ""));
               std::string undo_cmd = parse_env_val(this_env, prep_node.value("undo", ""));
               bool elevated = prep_node.value("elevated", false);
+
               prep_cmds.emplace_back(
                 std::move(do_cmd),
                 std::move(undo_cmd),
@@ -2879,6 +2912,26 @@ namespace proc {
             } else if (normalized == "extended_primary_isolated") {
               ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
             }
+          }
+        }
+
+        ctx.lossless_scaling_launch_delay_seconds = std::max(0, util::get_non_string_json_value<int>(app_node, "lossless-scaling-launch-delay", 0));
+
+        auto dd_config_override = util::get_non_string_json_value<std::string>(app_node, "dd-config", "");
+        if (!dd_config_override.empty()) {
+          const auto trimmed = boost::algorithm::trim_copy(dd_config_override);
+          if (boost::iequals(trimmed, "verify_only")) {
+            ctx.dd_config_option_override = config::video_t::dd_t::config_option_e::verify_only;
+          } else if (boost::iequals(trimmed, "ensure_active")) {
+            ctx.dd_config_option_override = config::video_t::dd_t::config_option_e::ensure_active;
+          } else if (boost::iequals(trimmed, "ensure_primary")) {
+            ctx.dd_config_option_override = config::video_t::dd_t::config_option_e::ensure_primary;
+          } else if (boost::iequals(trimmed, "ensure_only_display")) {
+            ctx.dd_config_option_override = config::video_t::dd_t::config_option_e::ensure_only_display;
+          } else if (boost::iequals(trimmed, "disabled")) {
+            ctx.dd_config_option_override = config::video_t::dd_t::config_option_e::disabled;
+          } else {
+            ctx.dd_config_option_override.reset();
           }
         }
 

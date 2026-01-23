@@ -70,6 +70,7 @@ namespace display_helper_integration {
     std::optional<display_device::SingleDisplayConfiguration> configuration;
     ActiveSessionState session_overrides {};
     bool enable_virtual_display_watchdog {false};
+    bool attach_hdr_toggle_flag {false};
     const rtsp_stream::launch_session_t *session {nullptr};
     DisplayTopologyDefinition topology {};
     std::optional<VirtualDisplayArrangement> virtual_display_arrangement;
@@ -85,6 +86,7 @@ namespace display_helper_integration {
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);
     DisplayApplyBuilder &clear_configuration();
     DisplayApplyBuilder &set_virtual_display_watchdog(bool enable);
+    DisplayApplyBuilder &set_hdr_toggle_flag(bool enable);
     DisplayApplyBuilder &set_topology(const DisplayTopologyDefinition &topology);
     DisplayTopologyDefinition &mutable_topology();
     ActiveSessionState &mutable_session_overrides();
@@ -99,6 +101,7 @@ namespace display_helper_integration {
     ActiveSessionState session_overrides_ {};
     DisplayTopologyDefinition topology_ {};
     bool enable_virtual_display_watchdog_ {false};
+    bool attach_hdr_toggle_flag_ {false};
     std::optional<VirtualDisplayArrangement> virtual_display_arrangement_;
   };
 

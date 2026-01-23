@@ -241,6 +241,13 @@ namespace playnite_launcher {
           cleanup_spawn_signal.store(true);
           grace_deadline_ms.store(steady_to_millis(now + std::chrono::seconds(15)));
           if (lossless_options.enabled && !fullscreen_lossless_applied) {
+            if (lossless_options.launch_delay_seconds > 0) {
+              BOOST_LOG(info) << "Lossless Scaling: delaying launch by " << lossless_options.launch_delay_seconds << " seconds after gameStarted";
+              auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(lossless_options.launch_delay_seconds);
+              while (std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(200ms);
+              }
+            }
             auto runtime = lossless::capture_lossless_scaling_state();
             if (!runtime.running_pids.empty()) {
               lossless::lossless_scaling_stop_processes(runtime);
@@ -253,7 +260,12 @@ namespace playnite_launcher {
             } else {
               fullscreen_lossless_backup = {};
             }
-            lossless::lossless_scaling_restart_foreground(runtime, changed, install_for_ls, exe_for_ls);
+            lossless::lossless_scaling_restart_foreground(
+              runtime,
+              changed,
+              install_for_ls,
+              exe_for_ls
+            );
           }
         } else if (msg.status_name == "gameStopped") {
           bool matches = false;
@@ -687,6 +699,16 @@ namespace playnite_launcher {
               BOOST_LOG(info) << "User unlocked. Proceeding with Lossless Scaling and autofocus.";
             }
             if (lossless_options.enabled && !lossless_profiles_applied) {
+              if (lossless_options.launch_delay_seconds > 0) {
+                BOOST_LOG(info) << "Lossless Scaling: delaying launch by " << lossless_options.launch_delay_seconds << " seconds after gameStarted";
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(lossless_options.launch_delay_seconds);
+                while (std::chrono::steady_clock::now() < deadline) {
+                  if (should_exit.load()) {
+                    return;
+                  }
+                  std::this_thread::sleep_for(200ms);
+                }
+              }
               auto runtime = lossless::capture_lossless_scaling_state();
               if (!runtime.running_pids.empty()) {
                 lossless::lossless_scaling_stop_processes(runtime);
@@ -699,7 +721,12 @@ namespace playnite_launcher {
               } else {
                 active_lossless_backup = {};
               }
-              lossless::lossless_scaling_restart_foreground(runtime, changed, last_install_dir, last_game_exe);
+              lossless::lossless_scaling_restart_foreground(
+                runtime,
+                changed,
+                last_install_dir,
+                last_game_exe
+              );
             }
           }
           if (msg.status_name == "gameStopped") {

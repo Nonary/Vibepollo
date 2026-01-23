@@ -28,6 +28,7 @@ namespace playnite_launcher::lossless {
     std::optional<int> ls1_sharpness;
     std::optional<std::string> anime4k_type;
     std::optional<bool> anime4k_vrs;
+    int launch_delay_seconds = 0;
   };
 
   struct lossless_scaling_profile_backup {
@@ -104,6 +105,7 @@ namespace playnite_launcher::lossless {
     std::optional<int> ls1_sharpness;
     std::optional<std::string> anime4k_type;
     std::optional<bool> anime4k_vrs;
+    int launch_delay_seconds = 0;
   };
 
   class lossless_scaling_options_loader {

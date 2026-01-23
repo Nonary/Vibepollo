@@ -1938,11 +1938,6 @@ namespace video {
       ctx->height = config.height;
       ctx->time_base = AVRational {1, config.framerate};
       ctx->framerate = AVRational {config.framerate, 1};
-      if (config.framerateX100 > 0) {
-        AVRational fps = video::framerateX100_to_rational(config.framerateX100);
-        ctx->framerate = fps;
-        ctx->time_base = AVRational {fps.den, fps.num};
-      }
 
       switch (config.videoFormat) {
         case 0:
@@ -2360,7 +2355,7 @@ namespace video {
       }
     }
 
-    std::chrono::steady_clock::time_point encode_frame_timestamp;
+    std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
 
     while (true) {
       // Break out of the encoding loop if any of the following are true:
@@ -2397,27 +2392,25 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
-          auto time_diff = *frame_timestamp - encode_frame_timestamp;
-
-          // If new frame comes in way too fast, just drop
-          if (time_diff < -frame_variation_threshold) {
-            continue;
-          }
-          if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
-            webrtc_stream::submit_video_frame(img);
-          }
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             break;
           }
 
-          if (time_diff < frame_variation_threshold) {
-            *frame_timestamp = encode_frame_timestamp;
-          } else {
+          if (!encode_frame_timestamp) {
             encode_frame_timestamp = *frame_timestamp;
           }
 
-          encode_frame_timestamp += encode_frame_threshold;
+          const auto time_diff = (*frame_timestamp > *encode_frame_timestamp)
+            ? (*frame_timestamp - *encode_frame_timestamp)
+            : (*encode_frame_timestamp - *frame_timestamp);
+          if (time_diff < frame_variation_threshold) {
+            *frame_timestamp = *encode_frame_timestamp;
+          } else {
+            *encode_frame_timestamp = *frame_timestamp;
+          }
+
+          *encode_frame_timestamp += encode_frame_threshold;
         } else if (!images->running()) {
           break;
         }
@@ -2960,8 +2953,8 @@ namespace video {
     encoder.av1.capabilities.set();
 
     // First, test encoder viability
-    config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
-    config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
+    config_t config_max_ref_frames {1920, 1080, 60, 1000, 1, 1, 1, 0, 0, 0};
+    config_t config_autoselect {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 0};
 
     // If the encoder isn't supported at all (not even H.264), bail early
     // Try to reuse cached display if same device type
@@ -3064,14 +3057,14 @@ namespace video {
     {
       // H.264 is special because encoders may support YUV 4:4:4 without supporting 10-bit color depth
       if (encoder.flags & YUV444_SUPPORT) {
-        config_t config_h264_yuv444 {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 1};
+        config_t config_h264_yuv444 {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 1};
         encoder.h264[encoder_t::YUV444] = disp->is_codec_supported(encoder.h264.name, config_h264_yuv444) &&
                                           validate_config(disp, encoder, config_h264_yuv444) >= 0;
       } else {
         encoder.h264[encoder_t::YUV444] = false;
       }
 
-      const config_t generic_hdr_config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, 1, 1, 0};
+      const config_t generic_hdr_config = {1920, 1080, 60, 1000, 1, 0, 3, 1, 1, 0};
 
       // Reset the display since we're switching from SDR to HDR. Keep probing on the
       // current active display without attempting a display swap.

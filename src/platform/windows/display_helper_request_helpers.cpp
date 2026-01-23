@@ -219,10 +219,6 @@ namespace display_helper_integration::helpers {
     const int display_fps = framegen_display_fps > 0 ? framegen_display_fps : base_fps;
     BOOST_LOG(debug) << "display_fps: " << display_fps;
 
-    const bool refresh_rate_override_active =
-      display_device::refresh_rate_override_active(effective_video_config_, session_);
-    BOOST_LOG(debug) << "refresh_rate_override_active: " << refresh_rate_override_active;
-
     const auto config_mode = effective_video_config_.virtual_display_mode;
     BOOST_LOG(debug) << "config_mode: " << static_cast<int>(config_mode);
     const bool config_selects_virtual = (config_mode == config::video_t::virtual_display_mode_e::per_client || config_mode == config::video_t::virtual_display_mode_e::shared);
@@ -234,11 +230,10 @@ namespace display_helper_integration::helpers {
     const bool double_virtual_refresh =
       session_requests_virtual &&
       effective_video_config_.double_refreshrate &&
-      !refresh_rate_override_active;
+      !display_device::refresh_rate_override_active(effective_video_config_, session_);
     // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
-    const bool needs_double_minimum =
-      !refresh_rate_override_active && (double_virtual_refresh || framegen_active);
-    const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : 0;
+    const bool needs_double_minimum = double_virtual_refresh || framegen_active;
+    const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;
     // Use the higher of display_fps (which may already be doubled by framegen) or the minimum
     const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
     BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
@@ -322,8 +317,6 @@ namespace display_helper_integration::helpers {
     const bool desktop_session = session_targets_desktop(session_);
     const bool gen1_framegen_fix = session_.gen1_framegen_fix;
     const bool gen2_framegen_fix = session_.gen2_framegen_fix;
-    const bool refresh_rate_override_active =
-      display_device::refresh_rate_override_active(effective_video_config_, session_);
     const bool best_effort_refresh = config::frame_limiter.disable_vsync &&
                                      (!platf::has_nvidia_gpu() || !platf::frame_limiter_nvcp::is_available());
     bool should_force_refresh = gen1_framegen_fix || gen2_framegen_fix || best_effort_refresh;
@@ -345,8 +338,7 @@ namespace display_helper_integration::helpers {
         cfg_effective.m_device_prep = layout_flags.device_prep;
       }
 
-      if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session &&
-          !refresh_rate_override_active) {
+      if (dummy_plug_mode && !gen1_framegen_fix && !gen2_framegen_fix && !desktop_session) {
         cfg_effective.m_refresh_rate = display_device::Rational {30u, 1u};
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
@@ -356,7 +348,7 @@ namespace display_helper_integration::helpers {
       const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
       const bool refresh_rate_disabled = effective_video_config_.dd.refresh_rate_option == config::video_t::dd_t::refresh_rate_option_e::disabled;
 
-      if (should_force_refresh && !refresh_rate_override_active) {
+      if (should_force_refresh) {
         cfg_effective.m_refresh_rate = display_device::Rational {10000u, 1u};
         // Only set resolution if user hasn't explicitly disabled resolution changes
         if (!resolution_disabled && !cfg_effective.m_resolution && effective_width >= 0 && effective_height >= 0) {

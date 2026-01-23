@@ -97,15 +97,7 @@ target_compile_options(sunshine_wgc_capture PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
 # Display settings helper: detached helper that applies/reverts display settings via IPC
 add_executable(sunshine_display_helper
-        display_settings_helper_v2.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/state_machine.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp
+        display_settings_helper.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp
         ${CMAKE_SOURCE_DIR}/src/logging.cpp)

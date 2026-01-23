@@ -75,10 +75,6 @@ namespace webrtc_stream {
     std::optional<std::string> video_pacing_mode;
     std::optional<int> video_pacing_slack_ms;
     std::optional<int> video_max_frame_age_ms;
-
-    std::optional<std::string> video_pacing_mode;
-    std::optional<int> video_pacing_slack_ms;
-    std::optional<int> video_max_frame_age_ms;
  
     std::optional<std::chrono::steady_clock::time_point> last_audio_time;
     std::optional<std::chrono::steady_clock::time_point> last_video_time;

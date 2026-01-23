@@ -9,7 +9,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <future>
 #include <list>
 #include <memory>
 #include <optional>
@@ -100,16 +99,6 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_do_cmds;
     std::list<crypto::command_entry_t> client_undo_cmds;
 
-#ifdef _WIN32
-    GUID display_guid {};
-    enum class display_helper_gate_status_e : uint8_t {
-      proceed,        // Verified/ready (or no-op)
-      proceed_gaveup, // Unknown/unavailable/timeout
-      abort_failed    // Verified failure
-    };
-
-    std::shared_future<display_helper_gate_status_e> display_helper_gate;
-#endif
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
@@ -119,7 +108,6 @@ namespace rtsp_stream {
    * @param launch_session_id The ID of the session to clear.
    */
   void launch_session_clear(uint32_t launch_session_id);
-
   /**
    * @brief Get the number of active sessions.
    * @return Count of active sessions.
