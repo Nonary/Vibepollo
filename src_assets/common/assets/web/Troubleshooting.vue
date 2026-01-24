@@ -109,11 +109,11 @@
           </n-button>
           <n-button
             type="primary"
-            :aria-label="$t('troubleshooting.copy_logs')"
+            :aria-label="$t('troubleshooting.export_logs')"
             @click="exportLogs"
           >
             <i class="fas fa-download" />
-            <span>{{ $t('troubleshooting.copy_logs') }}</span>
+            <span>{{ $t('troubleshooting.export_logs') }}</span>
           </n-button>
         </div>
       </div>
