@@ -96,6 +96,13 @@
           </p>
         </div>
         <div class="flex flex-col sm:flex-row gap-2">
+          <n-select
+            v-if="logSourceOptions.length > 1"
+            v-model:value="logSource"
+            class="min-w-[200px]"
+            :options="logSourceOptions"
+            :placeholder="translate('troubleshooting.logs_source', 'Log source')"
+          />
           <n-input
             v-model:value="logFilter"
             :placeholder="$t('troubleshooting.logs_find')"
@@ -168,8 +175,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { NButton, NInput, NAlert, NScrollbar } from 'naive-ui';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { NButton, NInput, NAlert, NScrollbar, NSelect } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
@@ -178,6 +186,7 @@ import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump'
 
 const store = useConfigStore();
 const authStore = useAuthStore();
+const { t } = useI18n();
 const platform = computed(() => store.metadata.platform);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
@@ -191,6 +200,39 @@ const latestLogs = ref('Loading...');
 const displayedLogs = ref('Loading...');
 const logFilter = ref('');
 const wrapLongLines = ref(true);
+const logSource = ref('sunshine');
+
+const translate = (key: string, fallback: string) => {
+  const value = t(key);
+  return value === key ? fallback : value;
+};
+
+const logSourceOptions = computed(() => {
+  const options = [
+    { label: translate('troubleshooting.logs_source_sunshine', 'Sunshine'), value: 'sunshine' },
+  ];
+  if (platform.value === 'windows') {
+    options.push(
+      {
+        label: translate('troubleshooting.logs_source_display_helper', 'Display helper'),
+        value: 'display_helper',
+      },
+      {
+        label: translate('troubleshooting.logs_source_playnite', 'Playnite'),
+        value: 'playnite',
+      },
+      {
+        label: translate('troubleshooting.logs_source_playnite_launcher', 'Playnite launcher'),
+        value: 'playnite_launcher',
+      },
+      {
+        label: translate('troubleshooting.logs_source_wgc', 'WGC helper'),
+        value: 'wgc',
+      },
+    );
+  }
+  return options;
+});
 
 const logScrollbar = ref<InstanceType<typeof NScrollbar> | null>(null);
 const autoScrollEnabled = ref(true);
@@ -218,6 +260,22 @@ const newLogsAvailable = computed(() => unseenLines.value > 0);
 const showJumpToLatest = computed(
   () => !newLogsAvailable.value && !isAtBottom.value && !autoScrollEnabled.value,
 );
+
+function resetLogState() {
+  latestLogs.value = 'Loading...';
+  displayedLogs.value = 'Loading...';
+  latestLineCount.value = 0;
+  displayedLineCount.value = 0;
+  autoScrollEnabled.value = true;
+  isAtBottom.value = true;
+}
+
+function buildLogUrl() {
+  if (logSource.value === 'sunshine') return './api/logs';
+  const params = new URLSearchParams();
+  params.set('source', logSource.value);
+  return `./api/logs?${params.toString()}`;
+}
 
 function getLogContainer() {
   // Naive UI's <n-scrollbar> exposes `scrollbarInstRef` (a Vue ref) which is sometimes
@@ -315,7 +373,7 @@ async function refreshLogs() {
   if (authStore.loggingIn && authStore.loggingIn.value) return;
 
   try {
-    const r = await http.get('./api/logs', {
+    const r = await http.get(buildLogUrl(), {
       responseType: 'text',
       transformResponse: [(v) => v],
     });
@@ -448,6 +506,12 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (logInterval) window.clearInterval(logInterval);
   if (loginDisposer) loginDisposer();
+});
+
+watch(logSource, () => {
+  resetLogState();
+  void refreshLogs();
+  nextTick(() => scrollToBottom());
 });
 
 </script>
