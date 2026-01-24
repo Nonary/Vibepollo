@@ -685,14 +685,15 @@ namespace {
       return false;
     }
 
+    const bool allow_system_fallback = platf::is_running_as_system() && !user_session_ready();
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    bool started = helper_proc().start(helper.wstring(), L"");
+    bool started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        started = helper_proc().start(helper.wstring(), L"");
+        started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
       }
     }
     if (!started) {
@@ -721,7 +722,7 @@ namespace {
                            << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
           
-          const bool retry_started = helper_proc().start(helper.wstring(), L"");
+          const bool retry_started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             return false;
@@ -942,38 +943,6 @@ namespace display_helper_integration {
   bool apply(const DisplayApplyRequest &request) {
     if (request.action == DisplayApplyAction::Skip) {
       BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
-      return false;
-    }
-
-    if (request.action == DisplayApplyAction::Apply &&
-        platf::is_running_as_system() &&
-        !user_session_ready()) {
-      if (request.session) {
-        std::lock_guard<std::mutex> lock(pending_apply_mutex());
-        pending_apply_state().emplace();
-        auto &pending = *pending_apply_state();
-        pending.request = request;
-        pending.has_session = true;
-        pending.session_id = request.session->id;
-        pending.session_snapshot.width = request.session->width;
-        pending.session_snapshot.height = request.session->height;
-        pending.session_snapshot.fps = request.session->fps;
-        pending.session_snapshot.enable_hdr = request.session->enable_hdr;
-        pending.session_snapshot.enable_sops = request.session->enable_sops;
-        pending.session_snapshot.virtual_display = request.session->virtual_display;
-        pending.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
-        pending.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
-        pending.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
-        pending.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
-        pending.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
-        pending.attempts = 0;
-        pending.ready_since.reset();
-        pending.next_attempt = std::chrono::steady_clock::time_point {};
-        pending.request.session = nullptr;
-        BOOST_LOG(info) << "Display helper: deferring APPLY until user session is ready.";
-      } else {
-        BOOST_LOG(warning) << "Display helper: no user session available; skipping APPLY.";
-      }
       return false;
     }
 

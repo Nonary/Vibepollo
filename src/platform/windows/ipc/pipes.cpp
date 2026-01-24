@@ -68,13 +68,28 @@ namespace platf::dxgi {
     bool isSystem = platf::dxgi::is_running_as_system();
 
     safe_token token;
-    if (!obtain_access_token(isSystem, token)) {
-      return false;
-    }
-
     util::c_ptr<TOKEN_USER> tokenUser;
     PSID raw_user_sid = nullptr;
-    if (!extract_user_sid_from_token(token, tokenUser, raw_user_sid)) {
+
+    if (isSystem) {
+      token.reset(platf::dxgi::retrieve_users_token(false));
+      if (!token) {
+        BOOST_LOG(warning) << "No user token available; creating SYSTEM-only pipe ACL.";
+      }
+    } else {
+      HANDLE raw_token = nullptr;
+      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
+        BOOST_LOG(error) << "OpenProcessToken failed in create_security_descriptor, error=" << GetLastError();
+        return false;
+      }
+      token.reset(raw_token);
+    }
+
+    if (token) {
+      if (!extract_user_sid_from_token(token, tokenUser, raw_user_sid)) {
+        return false;
+      }
+    } else if (!isSystem) {
       return false;
     }
 
@@ -89,24 +104,6 @@ namespace platf::dxgi {
     }
 
     return build_access_control_list(isSystem, desc, raw_user_sid, system_sid.get(), out_pacl);
-  }
-
-  bool NamedPipeFactory::obtain_access_token(bool isSystem, safe_token &token) const {
-    if (isSystem) {
-      token.reset(platf::dxgi::retrieve_users_token(false));
-      if (!token) {
-        BOOST_LOG(error) << "Failed to retrieve user token when running as SYSTEM";
-        return false;
-      }
-    } else {
-      HANDLE raw_token = nullptr;
-      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
-        BOOST_LOG(error) << "OpenProcessToken failed in create_security_descriptor, error=" << GetLastError();
-        return false;
-      }
-      token.reset(raw_token);
-    }
-    return true;
   }
 
   bool NamedPipeFactory::extract_user_sid_from_token(const safe_token &token, util::c_ptr<TOKEN_USER> &tokenUser, PSID &raw_user_sid) const {
@@ -169,10 +166,12 @@ namespace platf::dxgi {
       eaSys.Trustee.ptstrName = (LPTSTR) system_sid;
       eaList.push_back(eaSys);
 
-      EXPLICIT_ACCESS eaUser = eaSys;
-      eaUser.Trustee.TrusteeType = TRUSTEE_IS_USER;
-      eaUser.Trustee.ptstrName = (LPTSTR) raw_user_sid;
-      eaList.push_back(eaUser);
+      if (raw_user_sid && IsValidSid(raw_user_sid)) {
+        EXPLICIT_ACCESS eaUser = eaSys;
+        eaUser.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        eaUser.Trustee.ptstrName = (LPTSTR) raw_user_sid;
+        eaList.push_back(eaUser);
+      }
     }
 
     if (!eaList.empty() && !init_sd_with_explicit_aces(desc, eaList, out_pacl)) {

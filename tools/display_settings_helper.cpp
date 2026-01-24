@@ -1536,7 +1536,6 @@ namespace {
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
     std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
     std::filesystem::path golden_path;  // file to store golden snapshot
-    std::filesystem::path session_path;  // legacy single-file path (migration only)
     std::filesystem::path session_current_path;  // file to store current session baseline snapshot (first apply)
     std::filesystem::path session_previous_path;  // file to persist last known-good baseline across runs
     std::atomic<bool> session_saved {false};
@@ -1784,14 +1783,14 @@ namespace {
         return;
       }
       std::error_code ec_exist;
-      const bool exists = std::filesystem::exists(session_path, ec_exist);
+      const bool exists = std::filesystem::exists(session_current_path, ec_exist);
       if (exists && !ec_exist) {
         session_saved.store(true, std::memory_order_release);
         BOOST_LOG(info) << "Session baseline already exists; preserving existing snapshot: "
-                        << session_path.string();
+                        << session_current_path.string();
         return;
       }
-      const bool saved = controller.save_display_settings_snapshot_to_file(session_path);
+      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
       session_saved.store(saved, std::memory_order_release);
       BOOST_LOG(info) << "Saved session baseline snapshot to file: "
                       << (saved ? "true" : "false");
@@ -1802,7 +1801,7 @@ namespace {
         return;
       }
       std::error_code ec_exist;
-      if (std::filesystem::exists(session_path, ec_exist) && !ec_exist) {
+      if (std::filesystem::exists(session_current_path, ec_exist) && !ec_exist) {
         session_saved.store(true, std::memory_order_release);
         return;
       }
@@ -1816,7 +1815,7 @@ namespace {
         auto prev = controller.load_display_settings_snapshot(session_previous_path);
         if (prev && !controller.is_topology_the_same(prev->m_topology, expected_topology)) {
           std::error_code ec_copy;
-          std::filesystem::copy_file(session_previous_path, session_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+          std::filesystem::copy_file(session_previous_path, session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
           if (!ec_copy) {
             BOOST_LOG(info) << "Promoted previous session snapshot to current.";
             session_saved.store(true, std::memory_order_release);
@@ -1826,7 +1825,7 @@ namespace {
         }
       }
 
-      const bool saved = controller.save_display_settings_snapshot_to_file(session_path);
+      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
       session_saved.store(saved, std::memory_order_release);
       BOOST_LOG(info) << "Saved session baseline snapshot (fresh) to file: " << (saved ? "true" : "false");
     }
@@ -3069,6 +3068,67 @@ namespace {
     return path;
   }
 
+  std::filesystem::path compute_snapshot_dir() {
+    // When running as SYSTEM, prefer a shared ProgramData location for snapshots.
+    if (platf::dxgi::is_running_as_system()) {
+      std::wstring programDataW;
+      programDataW.resize(MAX_PATH);
+      if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, programDataW.data()))) {
+        programDataW.resize(wcslen(programDataW.c_str()));
+        auto path = std::filesystem::path(programDataW) / L"Sunshine";
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+        return path;
+      }
+    }
+
+    // Default to per-user roaming AppData (or fallback locations inside compute_log_dir).
+    return compute_log_dir();
+  }
+
+  struct SnapshotPaths {
+    std::filesystem::path golden;
+    std::filesystem::path session_current;
+    std::filesystem::path session_previous;
+    std::filesystem::path vibeshine_state;
+  };
+
+  SnapshotPaths make_snapshot_paths(const std::filesystem::path &root) {
+    return SnapshotPaths {
+      .golden = root / L"display_golden_restore.json",
+      .session_current = root / L"display_session_current.json",
+      .session_previous = root / L"display_session_previous.json",
+      .vibeshine_state = root / L"vibeshine_state.json",
+    };
+  }
+
+  std::vector<std::filesystem::path> snapshot_search_roots() {
+    std::vector<std::filesystem::path> roots;
+    const auto user_root = compute_log_dir();
+    if (!user_root.empty()) {
+      roots.push_back(user_root);
+    }
+    {
+      std::wstring programDataW;
+      programDataW.resize(MAX_PATH);
+      if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, programDataW.data()))) {
+        programDataW.resize(wcslen(programDataW.c_str()));
+        roots.push_back(std::filesystem::path(programDataW) / L"Sunshine");
+      }
+    }
+    // De-duplicate while preserving order.
+    std::vector<std::filesystem::path> uniq;
+    for (const auto &root : roots) {
+      if (root.empty()) {
+        continue;
+      }
+      if (std::find(uniq.begin(), uniq.end(), root) == uniq.end()) {
+        uniq.push_back(root);
+      }
+    }
+    return uniq;
+  }
+
   bool create_restore_scheduled_task() {
     BOOST_LOG(info) << "Attempting to create scheduled task 'VibeshineDisplayRestore'...";
 
@@ -3921,60 +3981,67 @@ namespace {
   }
 
   const auto logdir = compute_log_dir();
+  const auto snapshot_dir = compute_snapshot_dir();
   const auto logfile = (logdir / L"sunshine_display_helper.log");
-  const auto goldenfile = (logdir / L"display_golden_restore.json");
-  const auto sessionfile = (logdir / L"display_session_restore.json");
-  const auto session_current = (logdir / L"display_session_current.json");
-  const auto session_previous = (logdir / L"display_session_previous.json");
-  const auto vibeshine_state_file = (logdir / L"vibeshine_state.json");
+  const auto active_snapshots = make_snapshot_paths(snapshot_dir);
+  const auto search_roots = snapshot_search_roots();
   auto _log_guard = logging::init(2 /*info*/, logfile);
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
     dd_log_bridge().install();
     ServiceState state;
-    state.golden_path = goldenfile;
-    state.session_path = sessionfile;
-    state.session_current_path = session_current;
-    state.session_previous_path = session_previous;
+    state.golden_path = active_snapshots.golden;
+    state.session_current_path = active_snapshots.session_current;
+    state.session_previous_path = active_snapshots.session_previous;
     {
-      // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine)
+      // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine).
       std::vector<std::string> persisted;
-      if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
-        BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size() << ")";
-        state.controller.set_snapshot_exclusions(persisted);
+      for (const auto &root : search_roots) {
+        const auto vibeshine_state_file = root / L"vibeshine_state.json";
+        if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
+          BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size()
+                          << ") at " << vibeshine_state_file.string();
+          state.controller.set_snapshot_exclusions(persisted);
+          break;
+        }
       }
     }
 
     {
-      std::error_code ec_cur, ec_legacy;
-      const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);
-      const bool legacy_exists = std::filesystem::exists(state.session_path, ec_legacy);
-      if (cur_exists && !ec_cur) {
-        if (validate_session_snapshot(state, state.session_current_path)) {
-          state.session_saved.store(true, std::memory_order_release);
-          BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
-                          << state.session_current_path.string();
-        }
-      } else if (legacy_exists && !ec_legacy) {
-        std::error_code ec_copy;
-        std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
-        (void) ec_copy;
-        std::filesystem::copy_file(state.session_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
-        if (!ec_copy) {
-          if (validate_session_snapshot(state, state.session_current_path)) {
+      for (const auto &root : search_roots) {
+        auto paths = make_snapshot_paths(root);
+        std::error_code ec_cur;
+        const bool cur_exists = std::filesystem::exists(paths.session_current, ec_cur);
+        if (cur_exists && !ec_cur) {
+          if (validate_session_snapshot(state, paths.session_current)) {
             state.session_saved.store(true, std::memory_order_release);
-            BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+            BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
+                            << paths.session_current.string();
+            if (paths.session_current != state.session_current_path) {
+              std::error_code ec_copy;
+              std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
+              std::filesystem::copy_file(paths.session_current, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+            }
+            break;
           }
-          std::error_code ec_rm;
-          (void) std::filesystem::remove(state.session_path, ec_rm);
         }
       }
     }
     {
-      std::error_code ec_prev_check;
-      if (std::filesystem::exists(state.session_previous_path, ec_prev_check) && !ec_prev_check) {
-        (void) validate_session_snapshot(state, state.session_previous_path);
+      for (const auto &root : search_roots) {
+        auto paths = make_snapshot_paths(root);
+        std::error_code ec_prev_check;
+        if (std::filesystem::exists(paths.session_previous, ec_prev_check) && !ec_prev_check) {
+          if (validate_session_snapshot(state, paths.session_previous)) {
+            if (paths.session_previous != state.session_previous_path) {
+              std::error_code ec_copy;
+              std::filesystem::create_directories(state.session_previous_path.parent_path(), ec_copy);
+              std::filesystem::copy_file(paths.session_previous, state.session_previous_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+            }
+            break;
+          }
+        }
       }
     }
 
@@ -3999,47 +4066,56 @@ namespace {
   dd_log_bridge().install();
   ServiceState state;
   // Suppression of startup restore is deprecated; REVERTs are always allowed.
-  state.golden_path = goldenfile;
-  state.session_path = sessionfile;  // legacy
-  state.session_current_path = session_current;
-  state.session_previous_path = session_previous;
+  state.golden_path = active_snapshots.golden;
+  state.session_current_path = active_snapshots.session_current;
+  state.session_previous_path = active_snapshots.session_previous;
   {
-    // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine)
+    // Load snapshot exclusions from vibeshine_state.json (source of truth from Sunshine).
     std::vector<std::string> persisted;
-    if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
-      BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size() << ")";
-      state.controller.set_snapshot_exclusions(persisted);
+    for (const auto &root : search_roots) {
+      const auto vibeshine_state_file = root / L"vibeshine_state.json";
+      if (load_vibeshine_snapshot_exclusions(vibeshine_state_file, persisted)) {
+        BOOST_LOG(info) << "Loaded snapshot exclusions from vibeshine_state.json (" << persisted.size()
+                        << ") at " << vibeshine_state_file.string();
+        state.controller.set_snapshot_exclusions(persisted);
+        break;
+      }
     }
   }
   {
-    std::error_code ec_cur, ec_legacy;
-    const bool cur_exists = std::filesystem::exists(state.session_current_path, ec_cur);
-    const bool legacy_exists = std::filesystem::exists(state.session_path, ec_legacy);
-    if (cur_exists && !ec_cur) {
-      if (validate_session_snapshot(state, state.session_current_path)) {
-        state.session_saved.store(true, std::memory_order_release);
-        BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
-                        << state.session_current_path.string();
-      }
-    } else if (legacy_exists && !ec_legacy) {
-      std::error_code ec_copy;
-      std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
-      (void) ec_copy;
-      std::filesystem::copy_file(state.session_path, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
-      if (!ec_copy) {
-        if (validate_session_snapshot(state, state.session_current_path)) {
+    for (const auto &root : search_roots) {
+      auto paths = make_snapshot_paths(root);
+      std::error_code ec_cur;
+      const bool cur_exists = std::filesystem::exists(paths.session_current, ec_cur);
+      if (cur_exists && !ec_cur) {
+        if (validate_session_snapshot(state, paths.session_current)) {
           state.session_saved.store(true, std::memory_order_release);
-          BOOST_LOG(info) << "Migrated legacy session snapshot to current: " << state.session_current_path.string();
+          BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
+                          << paths.session_current.string();
+          if (paths.session_current != state.session_current_path) {
+            std::error_code ec_copy;
+            std::filesystem::create_directories(state.session_current_path.parent_path(), ec_copy);
+            std::filesystem::copy_file(paths.session_current, state.session_current_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+          }
+          break;
         }
-        std::error_code ec_rm;
-        (void) std::filesystem::remove(state.session_path, ec_rm);
       }
     }
   }
   {
-    std::error_code ec_prev_check;
-    if (std::filesystem::exists(state.session_previous_path, ec_prev_check) && !ec_prev_check) {
-      (void) validate_session_snapshot(state, state.session_previous_path);
+    for (const auto &root : search_roots) {
+      auto paths = make_snapshot_paths(root);
+      std::error_code ec_prev_check;
+      if (std::filesystem::exists(paths.session_previous, ec_prev_check) && !ec_prev_check) {
+        if (validate_session_snapshot(state, paths.session_previous)) {
+          if (paths.session_previous != state.session_previous_path) {
+            std::error_code ec_copy;
+            std::filesystem::create_directories(state.session_previous_path.parent_path(), ec_copy);
+            std::filesystem::copy_file(paths.session_previous, state.session_previous_path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+          }
+          break;
+        }
+      }
     }
   }
   // Topology-based retries disabled; no watcher needed anymore.
