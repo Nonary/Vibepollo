@@ -59,7 +59,7 @@
               }}
             </p>
           </div>
-          <n-button type="primary" strong @click="downloadPlayniteLogs">
+          <n-button type="primary" strong @click="exportLogs">
             {{ $t('troubleshooting.collect_playnite_logs') || 'Export Logs' }}
           </n-button>
         </div>
@@ -109,11 +109,10 @@
           </n-button>
           <n-button
             type="primary"
-            :disabled="!actualLogs"
             :aria-label="$t('troubleshooting.copy_logs')"
-            @click="copyLogs"
+            @click="exportLogs"
           >
-            <i class="fas fa-copy" />
+            <i class="fas fa-download" />
             <span>{{ $t('troubleshooting.copy_logs') }}</span>
           </n-button>
         </div>
@@ -123,19 +122,24 @@
         <n-button
           v-if="newLogsAvailable"
           class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
-          type="warning"
+          type="primary"
+          strong
           @click="jumpToLatest"
         >
           {{ $t('troubleshooting.new_logs_available') }}
-          <span v-if="unseenLines > 0" class="ml-2 rounded bg-warning/20 px-2 py-0.5 text-xs">
+          <span
+            v-if="unseenLines > 0"
+            class="ml-2 rounded bg-dark/10 dark:bg-light/10 px-2 py-0.5 text-xs"
+          >
             +{{ unseenLines }}
           </span>
           <i class="fas fa-arrow-down ml-2" />
         </n-button>
         <n-button
-          v-else-if="!autoScrollEnabled"
+          v-else-if="showJumpToLatest"
           class="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
           type="primary"
+          strong
           @click="jumpToLatest"
         >
           {{ $t('troubleshooting.jump_to_latest') }}
@@ -147,10 +151,14 @@
           style="height: 520px"
           class="border border-dark/10 dark:border-light/10 rounded-lg"
           @scroll="onLogScroll"
+          @wheel="pauseAutoScroll"
+          @mousedown="pauseAutoScroll"
+          @touchstart="pauseAutoScroll"
         >
           <pre
             class="m-0 bg-light dark:bg-dark font-mono text-[13px] leading-5 text-dark dark:text-light p-4"
             :class="{ 'whitespace-pre-wrap': wrapLongLines, 'whitespace-pre': !wrapLongLines }"
+            @mousedown="pauseAutoScroll"
             >{{ actualLogs }}</pre
           >
         </n-scrollbar>
@@ -162,7 +170,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { NButton, NInput, NAlert, NScrollbar } from 'naive-ui';
-import type { ScrollbarInst } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
@@ -180,33 +187,70 @@ const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
 const restartPressed = ref(false);
 
-const logs = ref('Loading...');
+const latestLogs = ref('Loading...');
+const displayedLogs = ref('Loading...');
 const logFilter = ref('');
 const wrapLongLines = ref(true);
 
-const logScrollbar = ref<ScrollbarInst | null>(null);
+const logScrollbar = ref<InstanceType<typeof NScrollbar> | null>(null);
 const autoScrollEnabled = ref(true);
-const newLogsAvailable = ref(false);
-const unseenLines = ref(0);
-const lastObservedLine = ref('');
+const latestLineCount = ref(0);
+const displayedLineCount = ref(0);
+const isAtBottom = ref(true);
 
 let logInterval: number | null = null;
 let loginDisposer: (() => void) | null = null;
 
 const filteredLines = computed(() => {
-  if (!logFilter.value) return logs.value;
+  if (!logFilter.value) return displayedLogs.value;
   const term = logFilter.value;
-  return logs.value
+  return displayedLogs.value
     .split('\n')
     .filter((l) => l.includes(term))
     .join('\n');
 });
 
 const actualLogs = computed(() => filteredLines.value);
+const unseenLines = computed(() =>
+  Math.max(0, latestLineCount.value - displayedLineCount.value),
+);
+const newLogsAvailable = computed(() => unseenLines.value > 0);
+const showJumpToLatest = computed(
+  () => !newLogsAvailable.value && !isAtBottom.value && !autoScrollEnabled.value,
+);
+
+function getLogContainer() {
+  // Naive UI's <n-scrollbar> exposes `scrollbarInstRef` (a Vue ref) which is sometimes
+  // auto-unwrapped by the component public instance proxy. Handle both shapes.
+  const maybe = (logScrollbar.value as any)?.scrollbarInstRef;
+  const internal = maybe && typeof maybe === 'object' && 'value' in maybe ? maybe.value : maybe;
+  const fromInst = internal?.containerRef ?? null;
+  if (fromInst) return fromInst;
+
+  // Fallback: query the DOM in case the internal instance shape changes.
+  const rootEl = (logScrollbar.value as any)?.$el as HTMLElement | undefined;
+  if (!rootEl) return null;
+  return (
+    rootEl.querySelector<HTMLElement>('.n-scrollbar-container') ??
+    rootEl.querySelector<HTMLElement>('[class*="-scrollbar-container"]') ??
+    null
+  );
+}
+
+function hasActiveLogSelection() {
+  if (typeof window === 'undefined') return false;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) return false;
+  const container = getLogContainer();
+  if (!container) return false;
+  const anchor = selection.anchorNode;
+  const focus = selection.focusNode;
+  return !!anchor && !!focus && container.contains(anchor) && container.contains(focus);
+}
 
 function handleFilterInput() {
   nextTick(() => {
-    const container = logScrollbar.value?.containerRef;
+    const container = getLogContainer();
     if (!container) return;
     const atBottom = isNearBottom(container);
     if (atBottom && autoScrollEnabled.value) {
@@ -220,14 +264,15 @@ function toggleWrap() {
 }
 
 function onLogScroll() {
-  const container = logScrollbar.value?.containerRef;
+  const container = getLogContainer();
   if (!container) return;
   const atBottom = isNearBottom(container);
+  isAtBottom.value = atBottom;
   if (atBottom) {
     autoScrollEnabled.value = true;
-    newLogsAvailable.value = false;
-    unseenLines.value = 0;
-    lastObservedLine.value = extractLastLine(logs.value);
+    displayedLogs.value = latestLogs.value;
+    displayedLineCount.value = latestLineCount.value;
+    scrollToBottom();
   } else {
     autoScrollEnabled.value = false;
   }
@@ -239,10 +284,30 @@ function isNearBottom(el: HTMLElement) {
 }
 
 function scrollToBottom() {
-  const container = logScrollbar.value?.containerRef;
-  if (!container) return;
-  logScrollbar.value?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-  lastObservedLine.value = extractLastLine(logs.value);
+  const doScroll = () => {
+    // Avoid relying on scrollHeight math (and keep types happy).
+    // Naive UI's internal scrollbar clamps large values to the bottom.
+    logScrollbar.value?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
+
+    // Fallback for cases where the component method no-ops (e.g., container not ready yet).
+    const container = getLogContainer();
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    container.scrollTo?.({ top: container.scrollHeight, behavior: 'auto' });
+    isAtBottom.value = isNearBottom(container);
+  };
+
+  doScroll();
+  if (typeof window !== 'undefined') {
+    window.requestAnimationFrame(() => doScroll());
+  }
+}
+
+function pauseAutoScroll() {
+  if (!autoScrollEnabled.value) return;
+  autoScrollEnabled.value = false;
+  displayedLogs.value = latestLogs.value;
+  displayedLineCount.value = latestLineCount.value;
 }
 
 async function refreshLogs() {
@@ -255,47 +320,58 @@ async function refreshLogs() {
       transformResponse: [(v) => v],
     });
     if (r.status !== 200 || typeof r.data !== 'string') return;
-    const prev = logs.value || '';
-    const prevLines = prev ? prev.split('\n') : [];
     const nextText = r.data;
 
-    logs.value = nextText;
+    latestLogs.value = nextText;
 
     const nextLines = nextText ? nextText.split('\n') : [];
+    latestLineCount.value = nextLines.length;
 
-    if (!autoScrollEnabled.value) {
-      const fallbackAnchor = lastLineOf(prevLines);
-      const anchor = lastObservedLine.value || fallbackAnchor;
-      let unseen = 0;
-      if (anchor) {
-        const anchorIndex = nextLines.lastIndexOf(anchor);
-        unseen =
-          anchorIndex === -1 ? nextLines.length : Math.max(nextLines.length - anchorIndex - 1, 0);
-      } else {
-        unseen = nextLines.length;
-      }
-
-      unseenLines.value = unseen;
-      newLogsAvailable.value = unseen > 0;
+    const selectionActive = hasActiveLogSelection();
+    const container = getLogContainer();
+    const atBottom = container ? isNearBottom(container) : true;
+    isAtBottom.value = atBottom;
+    if (!atBottom && autoScrollEnabled.value) {
+      autoScrollEnabled.value = false;
     }
+    const shouldAutoScroll = autoScrollEnabled.value && atBottom && !selectionActive;
 
-    await nextTick();
-    if (autoScrollEnabled.value) {
+    if (shouldAutoScroll) {
+      displayedLogs.value = nextText;
+      displayedLineCount.value = latestLineCount.value;
+      await nextTick();
       scrollToBottom();
-      newLogsAvailable.value = false;
-      unseenLines.value = 0;
-      lastObservedLine.value = extractLastLine(nextText);
-    } else if (!lastObservedLine.value && nextLines.length) {
-      lastObservedLine.value = extractLastLine(nextText);
+    } else {
+      if (latestLineCount.value < displayedLineCount.value) {
+        displayedLogs.value = nextText;
+        displayedLineCount.value = latestLineCount.value;
+      }
     }
   } catch {
     // ignore errors
   }
 }
 
-function downloadPlayniteLogs() {
+function exportLogs() {
   try {
-    if (typeof window !== 'undefined') window.location.href = './api/logs/export';
+    if (typeof window === 'undefined') return;
+    if (platform.value === 'windows') {
+      window.location.href = './api/logs/export';
+      return;
+    }
+    const content = actualLogs.value || '';
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .replace('T', '_')
+      .replace('Z', '');
+    link.href = url;
+    link.download = `sunshine-logs-${timestamp}.log`;
+    link.click();
+    window.URL.revokeObjectURL(url);
   } catch (_) {}
 }
 
@@ -324,17 +400,12 @@ function exportCrashBundle() {
 }
 
 function jumpToLatest() {
-  scrollToBottom();
   autoScrollEnabled.value = true;
-  newLogsAvailable.value = false;
-  unseenLines.value = 0;
-  lastObservedLine.value = extractLastLine(logs.value);
-}
-
-async function copyLogs() {
-  try {
-    await navigator.clipboard.writeText(actualLogs.value || '');
-  } catch {}
+  displayedLogs.value = latestLogs.value;
+  displayedLineCount.value = latestLineCount.value;
+  nextTick(() => {
+    scrollToBottom();
+  });
 }
 
 async function closeApp() {
@@ -367,7 +438,7 @@ onMounted(async () => {
   await refreshCrashDumpStatus();
 
   nextTick(() => {
-    if (logScrollbar.value?.containerRef) scrollToBottom();
+    if (getLogContainer()) scrollToBottom();
   });
 
   logInterval = window.setInterval(refreshLogs, 5000);
@@ -379,19 +450,6 @@ onBeforeUnmount(() => {
   if (loginDisposer) loginDisposer();
 });
 
-function extractLastLine(text: string) {
-  if (!text) return '';
-  return lastLineOf(text.split('\n'));
-}
-
-function lastLineOf(lines: string[]) {
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (lines[i]) {
-      return lines[i];
-    }
-  }
-  return '';
-}
 </script>
 
 <style scoped>
