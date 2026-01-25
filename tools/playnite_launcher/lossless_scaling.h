@@ -4,8 +4,8 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 
 namespace playnite_launcher::lossless {
 
@@ -29,6 +29,7 @@ namespace playnite_launcher::lossless {
     std::optional<std::string> anime4k_type;
     std::optional<bool> anime4k_vrs;
     int launch_delay_seconds = 0;
+    bool legacy_auto_detect = false;
   };
 
   struct lossless_scaling_profile_backup {
@@ -106,6 +107,7 @@ namespace playnite_launcher::lossless {
     std::optional<std::string> anime4k_type;
     std::optional<bool> anime4k_vrs;
     int launch_delay_seconds = 0;
+    bool legacy_auto_detect = false;
   };
 
   class lossless_scaling_options_loader {
@@ -130,11 +132,12 @@ namespace playnite_launcher::lossless {
 
   lossless_scaling_options read_lossless_scaling_options();
   lossless_scaling_options read_lossless_scaling_options(const lossless_scaling_app_metadata &metadata);
+  std::optional<DWORD> lossless_scaling_select_focus_pid(const std::string &install_dir_utf8, const std::string &exe_path_utf8, std::optional<DWORD> preferred_pid);
   lossless_scaling_runtime_state capture_lossless_scaling_state();
   void lossless_scaling_stop_processes(lossless_scaling_runtime_state &state);
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup);
   bool lossless_scaling_restore_global_profile(const lossless_scaling_profile_backup &backup);
-  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8 = std::string(), const std::string &exe_path_utf8 = std::string(), DWORD focused_game_pid = 0);
+  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8 = std::string(), const std::string &exe_path_utf8 = std::string(), DWORD focused_game_pid = 0, bool legacy_auto_detect = false);
 #ifdef SUNSHINE_TESTS
   bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch);
 #endif

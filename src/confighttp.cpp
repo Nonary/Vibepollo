@@ -765,7 +765,8 @@ namespace confighttp {
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
-        "lossless-scaling-framegen"
+        "lossless-scaling-framegen",
+        "lossless-scaling-legacy-auto-detect"
       };
 
       // List of keys to convert to integers

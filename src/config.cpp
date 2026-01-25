@@ -836,7 +836,8 @@ namespace config {
   };
 
   lossless_scaling_t lossless_scaling {
-    {}  // exe_path
+    {},  // exe_path
+    false  // legacy_auto_detect
   };
 
   sunshine_t sunshine {
@@ -1511,6 +1512,7 @@ namespace config {
       frame_limiter.disable_vsync = true;
     }
     string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
+    bool_f(vars, "lossless_scaling_legacy_auto_detect", lossless_scaling.legacy_auto_detect);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

@@ -129,6 +129,7 @@ const defaultGroups = [
       max_bitrate: 0,
       minimum_fps_target: 20,
       lossless_scaling_path: '',
+      lossless_scaling_legacy_auto_detect: false,
     },
   },
   {

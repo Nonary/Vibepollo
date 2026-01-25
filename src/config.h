@@ -271,6 +271,7 @@ namespace config {
 
   struct lossless_scaling_t {
     std::string exe_path;
+    bool legacy_auto_detect {false};
   };
 
   namespace flag {

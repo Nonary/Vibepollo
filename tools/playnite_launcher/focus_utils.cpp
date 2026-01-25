@@ -161,12 +161,49 @@ namespace playnite_launcher::focus {
   }
 
   bool confirm_foreground_pid(DWORD pid) {
-    HWND fg = GetForegroundWindow();
-    DWORD fpid = 0;
-    if (fg) {
-      GetWindowThreadProcessId(fg, &fpid);
+    if (!pid) {
+      return false;
     }
-    return fpid == pid;
+    HWND fg = GetForegroundWindow();
+    if (!fg) {
+      return false;
+    }
+    if (!IsWindowVisible(fg) || IsIconic(fg) || GetWindow(fg, GW_OWNER) != nullptr) {
+      return false;
+    }
+    DWORD fpid = 0;
+    GetWindowThreadProcessId(fg, &fpid);
+    if (fpid != pid) {
+      return false;
+    }
+    auto is_cloaked = [&](HWND hwnd) -> bool {
+      using DwmGetWindowAttribute_t = HRESULT (WINAPI *)(HWND, DWORD, PVOID, DWORD);
+      static HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+      static auto fn = dwm ? reinterpret_cast<DwmGetWindowAttribute_t>(GetProcAddress(dwm, "DwmGetWindowAttribute")) : nullptr;
+      if (!fn) {
+        return false;
+      }
+      DWORD cloaked = 0;
+      constexpr DWORD kDwmwaCloaked = 14;
+      if (SUCCEEDED(fn(hwnd, kDwmwaCloaked, &cloaked, sizeof(cloaked)))) {
+        return cloaked != 0;
+      }
+      return false;
+    };
+    if (is_cloaked(fg)) {
+      return false;
+    }
+    RECT rect {};
+    if (!GetWindowRect(fg, &rect)) {
+      return false;
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+      return false;
+    }
+    if (!MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) {
+      return false;
+    }
+    return true;
   }
 
   bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel) {

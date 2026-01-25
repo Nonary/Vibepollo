@@ -103,6 +103,7 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_TYPE = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE";
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
+    constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
@@ -921,7 +922,8 @@ namespace proc {
           changed,
           install_dir,
           selection->path_utf8,
-          selection->pid
+          selection->pid,
+          metadata.legacy_auto_detect
         );
         BOOST_LOG(info) << "Lossless Scaling: launched helper for PID=" << selection->pid << " (" << selection->path_utf8 << ')';
       } catch (const std::exception &e) {
@@ -1183,6 +1185,7 @@ namespace proc {
       _env[ENV_LOSSLESS_ANIME4K_TYPE] = "";
       _env[ENV_LOSSLESS_ANIME4K_VRS] = "";
       _env[ENV_LOSSLESS_LAUNCH_DELAY] = "";
+      _env[ENV_LOSSLESS_LEGACY_AUTO_DETECT] = "";
     };
 
     const bool lossless_scaling_enabled = _app.lossless_scaling_framegen;
@@ -1237,6 +1240,7 @@ namespace proc {
         _lossless_metadata.anime4k_type = runtime.anime4k_type;
         _lossless_metadata.anime4k_vrs = runtime.anime4k_vrs;
         _lossless_metadata.launch_delay_seconds = _app.lossless_scaling_launch_delay_seconds;
+        _lossless_metadata.legacy_auto_detect = _app.lossless_scaling_legacy_auto_detect;
       }
 #endif
 
@@ -1297,6 +1301,7 @@ namespace proc {
       set_string(ENV_LOSSLESS_ANIME4K_TYPE, runtime.anime4k_type);
       set_bool(ENV_LOSSLESS_ANIME4K_VRS, runtime.anime4k_vrs);
       set_int(ENV_LOSSLESS_LAUNCH_DELAY, std::optional<int>(_app.lossless_scaling_launch_delay_seconds));
+      set_bool(ENV_LOSSLESS_LEGACY_AUTO_DETECT, std::optional<bool>(_app.lossless_scaling_legacy_auto_detect));
     } else {
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
@@ -2214,6 +2219,8 @@ namespace proc {
           populate_lossless_overrides(*custom_node, ctx.lossless_scaling_custom);
         }
         ctx.lossless_scaling_launch_delay_seconds = std::max(0, lossless_scaling_launch_delay.value_or(0));
+        const auto legacy_override = app_node.get_optional<bool>("lossless-scaling-legacy-auto-detect"s);
+        ctx.lossless_scaling_legacy_auto_detect = legacy_override.value_or(config::lossless_scaling.legacy_auto_detect);
         if (dd_config_override && !dd_config_override->empty()) {
           const auto trimmed = boost::algorithm::trim_copy(*dd_config_override);
           if (boost::iequals(trimmed, "verify_only")) {

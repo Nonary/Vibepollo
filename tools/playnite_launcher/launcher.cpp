@@ -260,11 +260,17 @@ namespace playnite_launcher {
             } else {
               fullscreen_lossless_backup = {};
             }
+            DWORD focus_pid = 0;
+            if (auto selected = lossless::lossless_scaling_select_focus_pid(install_for_ls, exe_for_ls, std::nullopt)) {
+              focus_pid = *selected;
+            }
             lossless::lossless_scaling_restart_foreground(
               runtime,
               changed,
               install_for_ls,
-              exe_for_ls
+              exe_for_ls,
+              focus_pid,
+              lossless_options.legacy_auto_detect
             );
           }
         } else if (msg.status_name == "gameStopped") {
@@ -616,6 +622,9 @@ namespace playnite_launcher {
       std::atomic<bool> got_started {false};
       std::atomic<bool> request_game_focus {false};
       std::atomic<bool> game_focus_confirmed {false};
+      std::atomic<int> game_focus_successes_left {0};
+      std::atomic<bool> lossless_refocus_pending {false};
+      std::atomic<bool> had_focus_success {false};
       std::atomic<int64_t> focus_retry_deadline_ms {0};
       std::atomic<int64_t> next_focus_attempt_ms {std::numeric_limits<int64_t>::min()};
       std::string last_install_dir;
@@ -629,9 +638,6 @@ namespace playnite_launcher {
       std::atomic<bool> watcher_spawned {false};
 
       auto schedule_focus_retry = [&]() {
-        if (game_focus_confirmed.load(std::memory_order_acquire)) {
-          return;
-        }
         if (!got_started.load(std::memory_order_acquire)) {
           return;
         }
@@ -642,6 +648,12 @@ namespace playnite_launcher {
         auto deadline = now + std::chrono::seconds(std::max(1, config.focus_timeout_secs));
         focus_retry_deadline_ms.store(steady_to_millis(deadline), std::memory_order_relaxed);
         next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
+        int attempts = std::max(0, config.focus_attempts);
+        if (focus_exit_on_first_flag && attempts > 1) {
+          attempts = 1;
+        }
+        game_focus_successes_left.store(attempts, std::memory_order_release);
+        game_focus_confirmed.store(false, std::memory_order_release);
         request_game_focus.store(true, std::memory_order_release);
       };
 
@@ -721,11 +733,17 @@ namespace playnite_launcher {
               } else {
                 active_lossless_backup = {};
               }
+              DWORD focus_pid = 0;
+              if (auto selected = lossless::lossless_scaling_select_focus_pid(last_install_dir, last_game_exe, std::nullopt)) {
+                focus_pid = *selected;
+              }
               lossless::lossless_scaling_restart_foreground(
                 runtime,
                 changed,
                 last_install_dir,
-                last_game_exe
+                last_game_exe,
+                focus_pid,
+                lossless_options.legacy_auto_detect
               );
             }
           }
@@ -733,6 +751,9 @@ namespace playnite_launcher {
             should_exit.store(true);
             request_game_focus.store(false, std::memory_order_release);
             game_focus_confirmed.store(false, std::memory_order_release);
+            game_focus_successes_left.store(0, std::memory_order_release);
+            lossless_refocus_pending.store(false, std::memory_order_release);
+            had_focus_success.store(false, std::memory_order_release);
             focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
             next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
             if (lossless_profiles_applied) {
@@ -803,58 +824,85 @@ namespace playnite_launcher {
         BOOST_LOG(info) << "User unlocked. Proceeding with game launch.";
       }
 
-      if (config.focus_attempts > 0 && config.focus_timeout_secs > 0 && got_started.load()) {
-        bool focused = false;
-        auto overall_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, config.focus_timeout_secs));
-        if (!focused && !last_install_dir.empty()) {
-          try {
-            std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
-            BOOST_LOG(info) << "Autofocus: trying installDir=" << last_install_dir;
-            int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(overall_deadline - std::chrono::steady_clock::now()).count());
-            if (remaining > 0) {
-              focused = focus::focus_by_install_dir_extended(wdir, config.focus_attempts, remaining, focus_exit_on_first_flag, [&]() {
-                return should_exit.load();
-              });
-            }
-          } catch (...) {
-          }
+      if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
+        if (got_started.load()) {
+          schedule_focus_retry();
+          BOOST_LOG(info) << "Autofocus scheduled after launch";
+        } else {
+          BOOST_LOG(info) << "Autofocus deferred until gameStarted signal";
         }
-        if (!focused && !last_game_exe.empty()) {
+      }
+
+      auto restart_lossless_after_refocus = [&]() {
+        if (!lossless_options.enabled || !lossless_profiles_applied) {
+          return;
+        }
+        auto runtime = lossless::capture_lossless_scaling_state();
+        if (!runtime.running_pids.empty()) {
+          lossless::lossless_scaling_stop_processes(runtime);
+        }
+        DWORD focus_pid = 0;
+        if (auto selected = lossless::lossless_scaling_select_focus_pid(last_install_dir, last_game_exe, std::nullopt)) {
+          focus_pid = *selected;
+        }
+        BOOST_LOG(info) << "Autofocus: refocus detected; restarting Lossless Scaling";
+        lossless::lossless_scaling_restart_foreground(
+          runtime,
+          true,
+          last_install_dir,
+          last_game_exe,
+          focus_pid,
+          lossless_options.legacy_auto_detect
+        );
+      };
+
+      auto normalize_path = [](std::wstring value) {
+        for (auto &ch : value) {
+          if (ch == L'/') {
+            ch = L'\\';
+          }
+          ch = static_cast<wchar_t>(std::towlower(ch));
+        }
+        return value;
+      };
+
+      auto path_equals = [&](const std::wstring &lhs, const std::wstring &rhs) -> bool {
+        if (lhs.empty() || rhs.empty()) {
+          return false;
+        }
+        return normalize_path(lhs) == normalize_path(rhs);
+      };
+
+      auto foreground_pid = [&]() -> DWORD {
+        HWND fg = GetForegroundWindow();
+        if (!fg || !IsWindowVisible(fg) || IsIconic(fg) || GetWindow(fg, GW_OWNER) != nullptr) {
+          return 0;
+        }
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        return pid;
+      };
+
+      auto is_game_foreground = [&]() -> bool {
+        DWORD pid = foreground_pid();
+        if (!pid) {
+          return false;
+        }
+        std::wstring img;
+        if (!focus::get_process_image_path(pid, img)) {
+          return false;
+        }
+        if (!last_game_exe.empty()) {
           try {
             std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
-            std::filesystem::path p = wexe;
-            std::wstring base = p.filename().wstring();
-            if (!base.empty()) {
-              int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(overall_deadline - std::chrono::steady_clock::now()).count());
-              if (remaining > 0) {
-                focused = focus::focus_process_by_name_extended(base.c_str(), config.focus_attempts, remaining, focus_exit_on_first_flag, [&]() {
-                  return should_exit.load();
-                });
-              }
+            if (path_equals(img, wexe)) {
+              return true;
             }
           } catch (...) {
           }
         }
-        if (!focused && !got_started.load() && !game_focus_confirmed.load(std::memory_order_acquire)) {
-          int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(overall_deadline - std::chrono::steady_clock::now()).count());
-          if (remaining > 0) {
-            focused = focus::focus_process_by_name_extended(L"Playnite.DesktopApp.exe", config.focus_attempts, remaining, focus_exit_on_first_flag, [&]() {
-              return should_exit.load() || got_started.load();
-            });
-          }
-        }
-        if (!focused && !got_started.load() && !game_focus_confirmed.load(std::memory_order_acquire)) {
-          int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(overall_deadline - std::chrono::steady_clock::now()).count());
-          if (remaining > 0) {
-            focused = focus::focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", config.focus_attempts, remaining, focus_exit_on_first_flag, [&]() {
-              return should_exit.load() || got_started.load();
-            });
-          }
-        }
-        BOOST_LOG(info) << (focused ? "Applied focus after launch" : "Focus not applied after launch");
-      } else if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
-        BOOST_LOG(info) << "Autofocus deferred until gameStarted signal";
-      }
+        return false;
+      };
 
       auto focus_game_after_start = [&]() {
         if (!request_game_focus.load(std::memory_order_acquire)) {
@@ -865,7 +913,8 @@ namespace playnite_launcher {
           return;
         }
         auto now = std::chrono::steady_clock::now();
-        if (game_focus_confirmed.load(std::memory_order_acquire)) {
+        int attempts_left = game_focus_successes_left.load(std::memory_order_acquire);
+        if (attempts_left <= 0) {
           request_game_focus.store(false, std::memory_order_release);
           return;
         }
@@ -884,50 +933,76 @@ namespace playnite_launcher {
             return;
           }
         }
-        bool expected = true;
-        if (!request_game_focus.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+        bool visible = is_game_foreground();
+        if (visible) {
+          game_focus_confirmed.store(true, std::memory_order_release);
+          had_focus_success.store(true, std::memory_order_release);
+          if (lossless_refocus_pending.exchange(false, std::memory_order_acq_rel)) {
+            restart_lossless_after_refocus();
+          }
+          if (focus_exit_on_first_flag) {
+            request_game_focus.store(false, std::memory_order_release);
+            return;
+          }
+          next_focus_attempt_ms.store(steady_to_millis(now + 1s), std::memory_order_relaxed);
           return;
+        }
+        if (had_focus_success.load(std::memory_order_acquire)) {
+          lossless_refocus_pending.store(true, std::memory_order_release);
         }
         int remaining = config.focus_timeout_secs;
         if (deadline_ms != 0) {
           auto deadline = millis_to_steady(deadline_ms);
           remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(deadline - now).count());
         }
-        remaining = std::max(1, remaining);
-        bool focused = false;
+        if (remaining <= 0) {
+          request_game_focus.store(false, std::memory_order_release);
+          return;
+        }
+        int slice = std::clamp(remaining, 1, 3);
+        bool applied = false;
         auto cancel = [&]() {
           return should_exit.load();
         };
-        if (!focused && !last_install_dir.empty()) {
-          try {
-            std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
-            focused = focus::focus_by_install_dir_extended(wdir, config.focus_attempts, remaining, focus_exit_on_first_flag, cancel);
-          } catch (...) {
-          }
-        }
-        if (!focused && !last_game_exe.empty()) {
+        if (!applied && !last_game_exe.empty()) {
           try {
             std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
             std::filesystem::path p = wexe;
             std::wstring base = p.filename().wstring();
             if (!base.empty()) {
-              focused = focus::focus_process_by_name_extended(base.c_str(), config.focus_attempts, remaining, focus_exit_on_first_flag, cancel);
+              applied = focus::focus_process_by_name_extended(base.c_str(), 1, slice, true, cancel);
             }
           } catch (...) {
           }
         }
-        BOOST_LOG(info) << (focused ? "Autofocus: foreground confirmed for launched game" : "Autofocus: unable to confirm game foreground after start");
-        if (focused) {
-          game_focus_confirmed.store(true, std::memory_order_release);
-          next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
-          focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
-        } else {
-          auto retry_at = now + 750ms;
-          next_focus_attempt_ms.store(steady_to_millis(retry_at), std::memory_order_relaxed);
-          if (deadline_ms == 0 || retry_at < millis_to_steady(deadline_ms)) {
-            request_game_focus.store(true, std::memory_order_release);
+        if (!applied && !last_install_dir.empty()) {
+          try {
+            std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
+            applied = focus::focus_by_install_dir_extended(wdir, 1, slice, true, cancel);
+          } catch (...) {
           }
         }
+        bool confirmed = applied && is_game_foreground();
+        if (applied) {
+          had_focus_success.store(true, std::memory_order_release);
+          if (lossless_refocus_pending.exchange(false, std::memory_order_acq_rel)) {
+            restart_lossless_after_refocus();
+          }
+        }
+        if (confirmed) {
+          game_focus_confirmed.store(true, std::memory_order_release);
+          int left = game_focus_successes_left.fetch_sub(1, std::memory_order_acq_rel) - 1;
+          BOOST_LOG(info) << "Autofocus: focus confirmed for launched game (remaining=" << left << ')';
+          if (left <= 0) {
+            request_game_focus.store(false, std::memory_order_release);
+          }
+        } else {
+          game_focus_confirmed.store(false, std::memory_order_release);
+          if (applied) {
+            BOOST_LOG(debug) << "Autofocus: focus attempt did not confirm foreground";
+          }
+        }
+        next_focus_attempt_ms.store(steady_to_millis(now + 1s), std::memory_order_relaxed);
       };
 
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.timeout_sec);

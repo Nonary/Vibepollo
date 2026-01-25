@@ -545,6 +545,8 @@
     "frame_limiter_enable": "Enable frame limiter",
     "frame_limiter_provider": "Frame limiter provider",
     "lossless_scaling_path": "Lossless Scaling executable",
+    "lossless_scaling_legacy_auto_detect_label": "Use legacy Lossless auto-detection",
+    "lossless_scaling_legacy_auto_detect_desc": "Uses a timer-based auto-apply flow instead of the Lossless Scaling hotkey. Not recommended unless the hotkey method fails, because detection can be less reliable.",
     "rtss_frame_limit_type": "RTSS frame limit type",
     "rtss_install_path": "RTSS install path",
     "vibeshine_file_state": "Vibeshine state file",
