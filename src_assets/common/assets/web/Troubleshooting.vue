@@ -206,9 +206,21 @@
             <div v-else class="space-y-2">
               <div class="flex items-center justify-between text-xs font-semibold text-dark/80 dark:text-light/80">
                 <span>{{ translate('troubleshooting.search_results', 'Results') }}</span>
-                <span class="text-[11px] opacity-60">{{ searchContextLabel }}</span>
+                <span class="text-[11px] opacity-60">
+                  {{ searchContextLabel }}
+                  <template v-if="resultsRangeLabel"> | {{ resultsRangeLabel }}</template>
+                </span>
               </div>
-              <div v-if="matchCount === 0" class="rounded-md border border-dark/10 dark:border-light/10 p-3 text-sm opacity-70">
+              <div
+                v-if="searchInProgress"
+                class="rounded-md border border-dark/10 dark:border-light/10 p-3 text-sm opacity-70"
+              >
+                {{ translate('troubleshooting.search_pending', 'Searching...') }}
+              </div>
+              <div
+                v-else-if="matchCount === 0"
+                class="rounded-md border border-dark/10 dark:border-light/10 p-3 text-sm opacity-70"
+              >
                 {{ translate('troubleshooting.search_no_matches', 'No matches') }}
               </div>
               <button
@@ -241,7 +253,11 @@
                       >
                         <span
                           :class="
-                            segment.isActive ? 'log-match-active' : segment.isMatch ? 'log-match' : ''
+                            segment.isMatch
+                              ? snippetLine.lineIndex === activeLineIndex
+                                ? 'log-match-active'
+                                : 'log-match'
+                              : ''
                           "
                           >{{ segment.text }}</span
                         >
@@ -285,6 +301,15 @@ const displayedLogs = ref('Loading...');
 const logFilter = ref('');
 const searchTerm = ref('');
 const logSource = ref('sunshine');
+type LogSegment = { text: string; isMatch: boolean };
+const matchLines = ref<number[]>([]);
+const matchCount = ref(0);
+const searchInProgress = ref(false);
+const searchResultLimit = 200;
+const searchChunkSize = 1000;
+let searchTaskId = 0;
+let searchTaskTimer: number | null = null;
+const segmentCache = new Map<number, { term: string; text: string; segments: LogSegment[] }>();
 
 const translate = (key: string, fallback: string) => {
   const value = t(key);
@@ -363,46 +388,15 @@ const lineNumberWidth = computed(() => {
   return `${digits}ch`;
 });
 const contextLines = 5;
-
-const searchIndex = computed(() => {
-  const term = searchTerm.value;
-  const matchesByLine = new Map<number, Array<{ start: number; end: number }>>();
-  const matchLines: number[] = [];
-  let matchCount = 0;
-  if (!term) return { matchesByLine, matchLines, matchCount };
-  const needle = term.toLowerCase();
-  if (!needle) return { matchesByLine, matchLines, matchCount };
-  logLinesLower.value.forEach((lower, lineIndex) => {
-    let fromIndex = 0;
-    let lineHasMatch = false;
-    while (fromIndex <= lower.length) {
-      const matchIndex = lower.indexOf(needle, fromIndex);
-      if (matchIndex === -1) break;
-      matchCount += 1;
-      lineHasMatch = true;
-      const lineMatches = matchesByLine.get(lineIndex);
-      if (lineMatches) {
-        lineMatches.push({ start: matchIndex, end: matchIndex + needle.length });
-      } else {
-        matchesByLine.set(lineIndex, [{ start: matchIndex, end: matchIndex + needle.length }]);
-      }
-      fromIndex = matchIndex + needle.length;
-    }
-    if (lineHasMatch) matchLines.push(lineIndex);
-  });
-  return { matchesByLine, matchLines, matchCount };
-});
-
-const matchesByLine = computed(() => searchIndex.value.matchesByLine);
-const matchLines = computed(() => searchIndex.value.matchLines ?? []);
-const matchCount = computed(() => searchIndex.value.matchCount ?? 0);
 const activeMatchIndex = ref(-1);
 const activeLineIndex = computed(() =>
   activeMatchIndex.value >= 0 ? matchLines.value[activeMatchIndex.value] ?? null : null,
 );
 
 const searchPending = computed(
-  () => rawSearchActive.value && rawSearch.value !== searchTerm.value,
+  () =>
+    rawSearchActive.value &&
+    (rawSearch.value !== searchTerm.value || searchInProgress.value),
 );
 const matchCountLabel = computed(() => {
   if (!rawSearchActive.value) return '';
@@ -418,14 +412,47 @@ const searchContextLabel = computed(() =>
   tCount('troubleshooting.search_context', '{count} lines of context', contextLines),
 );
 
+const resultsWindow = computed(() => {
+  const total = matchLines.value.length;
+  if (total <= searchResultLimit) {
+    return { start: 0, end: total };
+  }
+  let start = 0;
+  if (activeMatchIndex.value >= 0) {
+    const half = Math.floor(searchResultLimit / 2);
+    start = Math.max(
+      0,
+      Math.min(activeMatchIndex.value - half, Math.max(0, total - searchResultLimit)),
+    );
+  }
+  return { start, end: Math.min(total, start + searchResultLimit) };
+});
+
+const resultsRangeLabel = computed(() => {
+  const total = matchLines.value.length;
+  if (total <= searchResultLimit) return '';
+  const { start, end } = resultsWindow.value;
+  const translated = t('troubleshooting.search_results_window', {
+    start: start + 1,
+    end,
+    count: total,
+  });
+  if (translated === 'troubleshooting.search_results_window') {
+    return `Showing ${start + 1}-${end} of ${total} results`;
+  }
+  return translated;
+});
+
 const searchResults = computed(() => {
-  if (!searchActive.value) return [];
+  if (!searchActive.value || searchInProgress.value) return [];
   const lines = logLines.value;
-  return matchLines.value.map((lineIndex, id) => {
-    const start = Math.max(0, lineIndex - contextLines);
-    const end = Math.min(lines.length - 1, lineIndex + contextLines);
+  const { start: windowStart, end: windowEnd } = resultsWindow.value;
+  return matchLines.value.slice(windowStart, windowEnd).map((lineIndex, offset) => {
+    const id = windowStart + offset;
+    const snippetStart = Math.max(0, lineIndex - contextLines);
+    const snippetEnd = Math.min(lines.length - 1, lineIndex + contextLines);
     const snippet = [];
-    for (let i = start; i <= end; i += 1) {
+    for (let i = snippetStart; i <= snippetEnd; i += 1) {
       snippet.push({ lineIndex: i, text: lines[i] ?? '' });
     }
     return { id, lineIndex, snippet };
@@ -434,30 +461,37 @@ const searchResults = computed(() => {
 
 
 function getLineSegments(line: string, lineIndex: number) {
-  const matches = matchesByLine.value.get(lineIndex);
-  const isActiveLine = activeLineIndex.value === lineIndex;
-  if (!matches || matches.length === 0) {
-    return [{ text: line.length === 0 ? ' ' : line, isMatch: false, isActive: false }];
+  const term = searchTerm.value.trim();
+  if (!term) {
+    return [{ text: line.length === 0 ? ' ' : line, isMatch: false }];
   }
-  const segments: Array<{ text: string; isMatch: boolean; isActive: boolean }> = [];
+  const cached = segmentCache.get(lineIndex);
+  if (cached && cached.term === term && cached.text === line) {
+    return cached.segments;
+  }
+  const needle = term.toLowerCase();
+  const lower = line.toLowerCase();
+  const segments: LogSegment[] = [];
   let cursor = 0;
-  for (const match of matches) {
-    if (match.start > cursor) {
-      segments.push({ text: line.slice(cursor, match.start), isMatch: false, isActive: false });
+  let matchIndex = lower.indexOf(needle, cursor);
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) {
+      segments.push({ text: line.slice(cursor, matchIndex), isMatch: false });
     }
     segments.push({
-      text: line.slice(match.start, match.end),
+      text: line.slice(matchIndex, matchIndex + needle.length),
       isMatch: true,
-      isActive: isActiveLine,
     });
-    cursor = match.end;
+    cursor = matchIndex + needle.length;
+    matchIndex = lower.indexOf(needle, cursor);
   }
   if (cursor < line.length) {
-    segments.push({ text: line.slice(cursor), isMatch: false, isActive: false });
+    segments.push({ text: line.slice(cursor), isMatch: false });
   }
   if (segments.length === 0) {
-    return [{ text: line.length === 0 ? ' ' : line, isMatch: false, isActive: false }];
+    segments.push({ text: line.length === 0 ? ' ' : line, isMatch: false });
   }
+  segmentCache.set(lineIndex, { term, text: line, segments });
   return segments;
 }
 const unseenLines = computed(() =>
@@ -611,6 +645,7 @@ function openSearchResult(index: number) {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;
   }
+  cancelSearchTask();
   logFilter.value = '';
   searchTerm.value = '';
 }
@@ -630,9 +665,87 @@ function clearSearch() {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;
   }
+  cancelSearchTask();
   pendingJumpLine.value = null;
   logFilter.value = '';
   searchTerm.value = '';
+}
+
+function cancelSearchTask() {
+  searchTaskId += 1;
+  searchInProgress.value = false;
+  if (searchTaskTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(searchTaskTimer);
+    searchTaskTimer = null;
+  }
+}
+
+function startSearch(term: string) {
+  cancelSearchTask();
+  segmentCache.clear();
+  matchLines.value = [];
+  matchCount.value = 0;
+  const trimmed = term.trim();
+  if (!trimmed) return;
+  const needle = trimmed.toLowerCase();
+  if (!needle) return;
+
+  const linesLower = logLinesLower.value;
+  const totalLines = linesLower.length;
+  let index = 0;
+  let count = 0;
+  const matches: number[] = [];
+  const jobId = searchTaskId;
+
+  if (typeof window === 'undefined') {
+    for (index = 0; index < totalLines; index += 1) {
+      const lower = linesLower[index] ?? '';
+      let fromIndex = 0;
+      let lineHasMatch = false;
+      while (fromIndex <= lower.length) {
+        const matchIndex = lower.indexOf(needle, fromIndex);
+        if (matchIndex === -1) break;
+        count += 1;
+        lineHasMatch = true;
+        fromIndex = matchIndex + needle.length;
+      }
+      if (lineHasMatch) matches.push(index);
+    }
+    matchLines.value = matches;
+    matchCount.value = count;
+    searchInProgress.value = false;
+    return;
+  }
+
+  const processChunk = () => {
+    if (jobId !== searchTaskId) return;
+    const end = Math.min(totalLines, index + searchChunkSize);
+    for (; index < end; index += 1) {
+      const lower = linesLower[index] ?? '';
+      let fromIndex = 0;
+      let lineHasMatch = false;
+      while (fromIndex <= lower.length) {
+        const matchIndex = lower.indexOf(needle, fromIndex);
+        if (matchIndex === -1) break;
+        count += 1;
+        lineHasMatch = true;
+        fromIndex = matchIndex + needle.length;
+      }
+      if (lineHasMatch) matches.push(index);
+    }
+    if (index < totalLines) {
+      searchTaskTimer = window.setTimeout(processChunk, 0);
+      return;
+    }
+    searchTaskTimer = null;
+    if (jobId !== searchTaskId) return;
+    matchLines.value = matches;
+    matchCount.value = count;
+    searchInProgress.value = false;
+  };
+
+  searchInProgress.value = true;
+  searchTaskTimer = window.setTimeout(processChunk, 0);
 }
 
 async function refreshLogs() {
@@ -782,6 +895,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;
   }
+  cancelSearchTask();
 });
 
 watch(rawSearch, (value) => {
@@ -802,6 +916,10 @@ watch(rawSearch, (value) => {
   searchDebounce = window.setTimeout(() => {
     searchTerm.value = value;
   }, 150);
+});
+
+watch([searchTerm, logLinesLower], ([term]) => {
+  startSearch(term);
 });
 
 watch(searchActive, (active) => {
