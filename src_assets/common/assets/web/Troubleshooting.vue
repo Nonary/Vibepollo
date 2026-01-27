@@ -996,6 +996,7 @@ watch(logSource, () => {
 
 .log-line-number {
   @apply text-left opacity-50 tabular-nums font-mono;
+  user-select: none;
 }
 
 .log-line-text {
