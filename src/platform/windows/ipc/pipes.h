@@ -466,7 +466,6 @@ namespace platf::dxgi {
      * @param token Output safe_token to receive the token.
      * @return `true` if successful, `false` otherwise.
      */
-    bool obtain_access_token(bool isSystem, safe_token &token) const;
 
     /**
      * @brief Extracts the user SID from a token.

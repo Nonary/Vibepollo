@@ -303,6 +303,9 @@ namespace confighttp {
   void downloadCrashBundle(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Display helper: export current OS state as golden restore snapshot
   void postExportGoldenDisplay(resp_https_t response, req_https_t request);
+  // Helper log readers (Windows-only)
+  bool is_helper_log_source(const std::string &source);
+  bool read_helper_log(const std::string &source, std::string &out);
 #endif
 
   enum class op_e {
@@ -941,7 +944,8 @@ namespace confighttp {
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
-        "lossless-scaling-framegen"
+        "lossless-scaling-framegen",
+        "lossless-scaling-legacy-auto-detect"
       };
 
       // List of keys to convert to integers
@@ -2982,11 +2986,35 @@ namespace confighttp {
 
     print_req(request);
 
+    auto read_sunshine_log = [](std::string &out) {
+      auto log_path = logging::current_log_file();
+      if (!log_path.empty()) {
+        const std::string log_path_str = log_path.string();
+        out = file_handler::read_file(log_path_str.c_str());
+      }
+    };
+
     std::string content;
-    auto log_path = logging::current_log_file();
-    if (!log_path.empty()) {
-      const std::string log_path_str = log_path.string();
-      content = file_handler::read_file(log_path_str.c_str());
+    std::string source = "sunshine";
+    const auto query = request->parse_query_string();
+    if (const auto it = query.find("source"); it != query.end() && !it->second.empty()) {
+      source = it->second;
+      boost::algorithm::to_lower(source);
+    }
+
+    bool handled = false;
+    if (source == "sunshine") {
+      read_sunshine_log(content);
+      handled = true;
+    }
+#ifdef _WIN32
+    else if (is_helper_log_source(source)) {
+      handled = true;
+      read_helper_log(source, content);
+    }
+#endif
+    if (!handled) {
+      read_sunshine_log(content);
     }
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";

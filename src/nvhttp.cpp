@@ -185,6 +185,9 @@ namespace nvhttp {
 #ifdef _WIN32
   namespace {
     bool display_helper_session_available() {
+      if (platf::is_running_as_system()) {
+        return true;
+      }
       HANDLE user_token = platf::retrieve_users_token(false);
       const bool available = (user_token != nullptr);
       if (user_token) {

@@ -137,6 +137,7 @@ const defaultGroups = [
       minimum_fps_target: 20,
       fallback_mode: '1920x1080x60',
       lossless_scaling_path: '',
+      lossless_scaling_legacy_auto_detect: false,
     },
   },
   {

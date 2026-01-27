@@ -661,6 +661,142 @@ namespace confighttp {
     }
   }
 
+  namespace {
+    struct log_candidate_t {
+      std::filesystem::path path;
+      std::filesystem::file_time_type mtime;
+    };
+
+    void add_log_candidate(const std::filesystem::path &path, std::vector<log_candidate_t> &out) {
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec) || std::filesystem::is_directory(path, ec)) {
+        return;
+      }
+      auto mtime = std::filesystem::last_write_time(path, ec);
+      if (ec) {
+        return;
+      }
+      out.push_back({path, mtime});
+    }
+
+    void add_session_log_candidates(const std::filesystem::path &dir, const std::string &prefix, std::vector<log_candidate_t> &out) {
+      std::error_code ec;
+      if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+        return;
+      }
+      for (std::filesystem::directory_iterator it(dir, ec); it != std::filesystem::directory_iterator(); ++it) {
+        if (ec) {
+          break;
+        }
+        std::error_code file_ec;
+        if (!it->is_regular_file(file_ec)) {
+          continue;
+        }
+        const auto filename = it->path().filename().string();
+        if (filename.rfind(prefix, 0) != 0) {
+          continue;
+        }
+        add_log_candidate(it->path(), out);
+      }
+    }
+
+    std::optional<std::filesystem::path> pick_latest_log(const std::vector<log_candidate_t> &candidates) {
+      if (candidates.empty()) {
+        return std::nullopt;
+      }
+      const auto it = std::max_element(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+        return a.mtime < b.mtime;
+      });
+      if (it == candidates.end()) {
+        return std::nullopt;
+      }
+      return it->path;
+    }
+
+    void add_helper_log_roots(const std::filesystem::path &root, const std::string &base_name, std::vector<log_candidate_t> &candidates, bool include_temp = true) {
+      if (root.empty()) {
+        return;
+      }
+      const auto sunshine_base = root / L"Sunshine";
+      add_session_log_candidates(sunshine_base / L"logs", base_name + "-", candidates);
+      add_log_candidate(sunshine_base / (base_name + ".log"), candidates);
+
+      if (include_temp) {
+        const auto temp_base = root / L"Temp";
+        add_session_log_candidates(temp_base / L"Sunshine" / L"logs", base_name + "-", candidates);
+        add_log_candidate(temp_base / (base_name + ".log"), candidates);
+      }
+    }
+
+    std::optional<std::filesystem::path> find_latest_helper_log(const std::string &base_name) {
+      std::vector<log_candidate_t> candidates;
+      try {
+        platf::dxgi::safe_token user_token;
+        user_token.reset(platf::dxgi::retrieve_users_token(false));
+
+        auto add_known_folder = [&](REFKNOWNFOLDERID id) {
+          PWSTR baseW = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &baseW)) && baseW) {
+            std::filesystem::path base = baseW;
+            CoTaskMemFree(baseW);
+            add_helper_log_roots(base, base_name, candidates);
+          }
+        };
+
+        add_known_folder(FOLDERID_RoamingAppData);
+        add_known_folder(FOLDERID_LocalAppData);
+      } catch (...) {}
+
+      auto add_csidl_root = [&](int csidl) {
+        wchar_t baseW[MAX_PATH] = {};
+        if (!SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, baseW))) {
+          return;
+        }
+        std::filesystem::path base = std::filesystem::path(baseW);
+        add_helper_log_roots(base, base_name, candidates);
+      };
+
+      add_csidl_root(CSIDL_APPDATA);
+      add_csidl_root(CSIDL_LOCAL_APPDATA);
+
+      try {
+        wchar_t tmpPathW[MAX_PATH] = {};
+        DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
+        if (n > 0 && n < _countof(tmpPathW)) {
+          std::filesystem::path temp_base = std::filesystem::path(tmpPathW);
+          add_helper_log_roots(temp_base, base_name, candidates, false);
+        }
+      } catch (...) {}
+
+      return pick_latest_log(candidates);
+    }
+  }  // namespace
+
+  bool is_helper_log_source(const std::string &source) {
+    return source == "display_helper" || source == "playnite" || source == "playnite_launcher" || source == "wgc";
+  }
+
+  bool read_helper_log(const std::string &source, std::string &out) {
+    std::string base_name;
+    if (source == "display_helper") {
+      base_name = "sunshine_display_helper";
+    } else if (source == "playnite") {
+      base_name = "sunshine_playnite";
+    } else if (source == "playnite_launcher") {
+      base_name = "sunshine_playnite_launcher";
+    } else if (source == "wgc") {
+      base_name = "sunshine_wgc_helper";
+    } else {
+      return false;
+    }
+
+    auto latest = find_latest_helper_log(base_name);
+    if (!latest) {
+      return false;
+    }
+    return read_file_if_exists(*latest, out);
+  }
+
   static std::vector<std::pair<std::string, std::string>> collect_support_logs() {
     std::vector<std::pair<std::string, std::string>> entries;
 

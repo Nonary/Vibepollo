@@ -127,6 +127,12 @@ const captureOptions = computed(() => {
 });
 
 const losslessConfiguredPath = computed(() => (config.value as any)?.lossless_scaling_path ?? '');
+const losslessLegacyAutoDetect = computed<boolean>({
+  get: () => !!(config.value as any)?.lossless_scaling_legacy_auto_detect,
+  set: (value) => {
+    (config.value as any).lossless_scaling_legacy_auto_detect = !!value;
+  },
+});
 const losslessSuggestedPath = computed(() => {
   if (losslessConfiguredPath.value) return normalizeWindowsPath(losslessConfiguredPath.value);
   const suggested = losslessStatus.value?.suggested_path as string | undefined;
@@ -480,6 +486,27 @@ const prefer10BitSdr = computed<boolean>({
           Enable Lossless Scaling per application from the Apps editor when you need frame
           generation or upscaling on a specific title.
         </p>
+
+        <div
+          class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-2">
+              <i
+                class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+              />
+              <div class="space-y-1">
+                <div class="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+                  {{ $t('config.lossless_scaling_legacy_auto_detect_label') }}
+                </div>
+                <p class="text-[11px] text-amber-900/80 dark:text-amber-100/80">
+                  {{ $t('config.lossless_scaling_legacy_auto_detect_desc') }}
+                </p>
+              </div>
+            </div>
+            <n-switch v-model:value="losslessLegacyAutoDetect" size="small" class="mt-0.5" />
+          </div>
+        </div>
 
         <div v-if="showLosslessAdvanced" class="space-y-2">
           <div class="flex items-center justify-between">

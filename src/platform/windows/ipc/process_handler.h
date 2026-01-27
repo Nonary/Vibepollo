@@ -43,7 +43,11 @@ public:
    * @param arguments Command line arguments (not including the executable path).
    * @return `true` on successful launch, `false` otherwise.
    */
-  bool start(const std::wstring &application_path, std::wstring_view arguments);
+  bool start(
+    const std::wstring &application_path,
+    std::wstring_view arguments,
+    bool allow_system_fallback = false
+  );
 
   /**
    * @brief Block until the process exits and obtain its exit code.

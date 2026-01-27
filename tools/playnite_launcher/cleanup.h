@@ -1,8 +1,8 @@
 #pragma once
 
 #include <string>
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 
 namespace playnite_launcher::cleanup {
 

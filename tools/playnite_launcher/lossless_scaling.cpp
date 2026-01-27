@@ -13,6 +13,7 @@
 #include <boost/property_tree/xml_parser.hpp>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
@@ -23,10 +24,12 @@
 #include <locale>
 #include <memory>
 #include <optional>
+#include <Psapi.h>
 #include <shlobj.h>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <UserEnv.h>
 #include <utility>
@@ -37,11 +40,13 @@
 using namespace std::chrono_literals;
 
 namespace playnite_launcher::lossless {
+  lossless_scaling_runtime_state capture_lossless_scaling_state();
   namespace {
 
     constexpr std::string_view k_lossless_profile_title = "Vibeshine";
     constexpr size_t k_lossless_max_executables = 256;
-    constexpr int k_lossless_auto_delay_seconds = 10;
+    constexpr auto k_lossless_observation_duration = std::chrono::seconds(10);
+    constexpr auto k_lossless_poll_interval = std::chrono::milliseconds(250);
     constexpr int k_sharpness_min = 1;
     constexpr int k_sharpness_max = 10;
     constexpr int k_flow_scale_min = 0;
@@ -49,6 +54,8 @@ namespace playnite_launcher::lossless {
     constexpr double k_resolution_factor_min = 1.0;
     constexpr double k_resolution_factor_max = 10.0;
     constexpr int k_max_frame_latency = 1;
+
+    std::filesystem::path lossless_scaling_settings_path();
 
     template<typename Fn>
     auto run_with_user_context(Fn &&fn) -> decltype(fn()) {
@@ -150,6 +157,245 @@ namespace playnite_launcher::lossless {
         return std::nullopt;
       }
       return converted;
+    }
+
+    struct lossless_hotkey_t {
+      WORD key = 0;
+      std::vector<WORD> modifiers;
+    };
+
+    bool is_extended_key(WORD vk) {
+      switch (vk) {
+        case VK_LWIN:
+        case VK_RWIN:
+        case VK_RMENU:
+        case VK_RCONTROL:
+        case VK_INSERT:
+        case VK_DELETE:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_UP:
+        case VK_DOWN:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_DIVIDE:
+        case VK_APPS:
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    std::optional<WORD> parse_hotkey_key(const std::string &value) {
+      std::string text = boost::algorithm::trim_copy(value);
+      if (text.empty()) {
+        return std::nullopt;
+      }
+      boost::algorithm::to_upper(text);
+      if (text.size() == 1) {
+        char c = text.front();
+        if (c >= 'A' && c <= 'Z') {
+          return static_cast<WORD>(c);
+        }
+        if (c >= '0' && c <= '9') {
+          return static_cast<WORD>(c);
+        }
+      }
+      if (text.size() > 1 && text.front() == 'F') {
+        try {
+          int fkey = std::stoi(text.substr(1));
+          if (fkey >= 1 && fkey <= 24) {
+            return static_cast<WORD>(VK_F1 + (fkey - 1));
+          }
+        } catch (...) {
+        }
+      }
+      struct NamedKey {
+        const char *name;
+        WORD vk;
+      };
+      static const std::array<NamedKey, 20> k_named_keys {{
+        {"SPACE", VK_SPACE},
+        {"TAB", VK_TAB},
+        {"ESC", VK_ESCAPE},
+        {"ESCAPE", VK_ESCAPE},
+        {"ENTER", VK_RETURN},
+        {"RETURN", VK_RETURN},
+        {"BACK", VK_BACK},
+        {"BACKSPACE", VK_BACK},
+        {"INSERT", VK_INSERT},
+        {"DELETE", VK_DELETE},
+        {"HOME", VK_HOME},
+        {"END", VK_END},
+        {"PAGEUP", VK_PRIOR},
+        {"PGUP", VK_PRIOR},
+        {"PAGEDOWN", VK_NEXT},
+        {"PGDN", VK_NEXT},
+        {"UP", VK_UP},
+        {"DOWN", VK_DOWN},
+        {"LEFT", VK_LEFT},
+        {"RIGHT", VK_RIGHT},
+      }};
+      for (const auto &entry : k_named_keys) {
+        if (text == entry.name) {
+          return entry.vk;
+        }
+      }
+      if (text.rfind("NUMPAD", 0) == 0 && text.size() == 7 && std::isdigit(text[6])) {
+        int num = text[6] - '0';
+        return static_cast<WORD>(VK_NUMPAD0 + num);
+      }
+      return std::nullopt;
+    }
+
+    std::vector<WORD> parse_hotkey_modifiers(const std::string &value) {
+      std::unordered_set<WORD> mods;
+      std::string token;
+      for (char ch : value) {
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '+' || ch == ',' || ch == ';' || ch == '|') {
+          if (!token.empty()) {
+            std::string lower = boost::algorithm::to_lower_copy(token);
+            if (lower == "alt" || lower == "menu") {
+              mods.insert(VK_MENU);
+            } else if (lower == "control" || lower == "ctrl") {
+              mods.insert(VK_CONTROL);
+            } else if (lower == "shift") {
+              mods.insert(VK_SHIFT);
+            } else if (lower == "win" || lower == "windows" || lower == "logo") {
+              mods.insert(VK_LWIN);
+            }
+            token.clear();
+          }
+          continue;
+        }
+        token.push_back(ch);
+      }
+      if (!token.empty()) {
+        std::string lower = boost::algorithm::to_lower_copy(token);
+        if (lower == "alt" || lower == "menu") {
+          mods.insert(VK_MENU);
+        } else if (lower == "control" || lower == "ctrl") {
+          mods.insert(VK_CONTROL);
+        } else if (lower == "shift") {
+          mods.insert(VK_SHIFT);
+        } else if (lower == "win" || lower == "windows" || lower == "logo") {
+          mods.insert(VK_LWIN);
+        }
+      }
+      std::vector<WORD> ordered;
+      ordered.reserve(mods.size());
+      const std::array<WORD, 4> order {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN};
+      for (auto vk : order) {
+        if (mods.find(vk) != mods.end()) {
+          ordered.push_back(vk);
+        }
+      }
+      return ordered;
+    }
+
+    bool send_hotkey_input(const lossless_hotkey_t &hotkey) {
+      if (!hotkey.key) {
+        return false;
+      }
+      std::vector<INPUT> inputs;
+      inputs.reserve((hotkey.modifiers.size() * 2) + 2);
+      auto append_key = [&](WORD vk, bool up) {
+        INPUT input {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = vk;
+        input.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+        if (is_extended_key(vk)) {
+          input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        inputs.push_back(input);
+      };
+      for (auto vk : hotkey.modifiers) {
+        append_key(vk, false);
+      }
+      append_key(hotkey.key, false);
+      append_key(hotkey.key, true);
+      for (auto it = hotkey.modifiers.rbegin(); it != hotkey.modifiers.rend(); ++it) {
+        append_key(*it, true);
+      }
+      if (inputs.empty()) {
+        return false;
+      }
+      UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+      if (sent != inputs.size()) {
+        BOOST_LOG(warning) << "Lossless Scaling: SendInput sent " << sent << " of " << inputs.size();
+        return false;
+      }
+      return true;
+    }
+
+    HWND focus_game_window(DWORD pid);
+    bool click_window_center(HWND hwnd);
+
+    bool apply_hotkey_for_pid(const lossless_hotkey_t &hotkey, DWORD pid, bool click_before_send, int attempts) {
+      if (attempts <= 0) {
+        return false;
+      }
+      for (int attempt = 0; attempt < attempts; ++attempt) {
+        HWND hwnd = nullptr;
+        if (pid) {
+          hwnd = focus_game_window(pid);
+          if (hwnd) {
+            std::this_thread::sleep_for(75ms);
+            if (click_before_send) {
+              click_window_center(hwnd);
+            }
+            std::this_thread::sleep_for(50ms);
+          }
+        }
+        bool sent = send_hotkey_input(hotkey);
+        if (pid) {
+          bool focused = focus::confirm_foreground_pid(pid);
+          BOOST_LOG(info) << "Lossless Scaling: hotkey attempt " << (attempt + 1) << "/" << attempts
+                          << " pid=" << pid << " focused=" << (focused ? "true" : "false")
+                          << " sent=" << (sent ? "true" : "false");
+        } else {
+          BOOST_LOG(info) << "Lossless Scaling: hotkey attempt " << (attempt + 1) << "/" << attempts
+                          << " pid=none sent=" << (sent ? "true" : "false");
+        }
+        if (sent) {
+          return true;
+        }
+        std::this_thread::sleep_for(150ms);
+      }
+      return false;
+    }
+
+    std::optional<lossless_hotkey_t> read_lossless_hotkey() {
+      auto worker = [&]() -> std::optional<lossless_hotkey_t> {
+        auto settings_path = lossless_scaling_settings_path();
+        if (settings_path.empty()) {
+          return std::nullopt;
+        }
+        boost::property_tree::ptree tree;
+        try {
+          boost::property_tree::read_xml(settings_path.string(), tree);
+        } catch (...) {
+          return std::nullopt;
+        }
+        auto hotkey_text = tree.get_optional<std::string>("Settings.Hotkey");
+        if (!hotkey_text || hotkey_text->empty()) {
+          return std::nullopt;
+        }
+        auto key = parse_hotkey_key(*hotkey_text);
+        if (!key) {
+          BOOST_LOG(warning) << "Lossless Scaling: unrecognized hotkey '" << *hotkey_text << "'";
+          return std::nullopt;
+        }
+        lossless_hotkey_t hotkey {};
+        hotkey.key = *key;
+        if (auto mods = tree.get_optional<std::string>("Settings.HotkeyModifierKeys")) {
+          hotkey.modifiers = parse_hotkey_modifiers(*mods);
+        }
+        return hotkey;
+      };
+      return run_with_user_context(worker);
     }
 
     std::optional<int> clamp_optional_int(std::optional<int> value, int min_value, int max_value) {
@@ -578,6 +824,246 @@ namespace playnite_launcher::lossless {
       return minimize_main_lossless_window(pid) || minimize_any_visible_window(pid);
     }
 
+    bool minimize_visible_windows_except(DWORD keep_pid) {
+      struct Ctx {
+        DWORD keep;
+        bool minimized = false;
+      } ctx {keep_pid, false};
+      EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+        auto *ctx = reinterpret_cast<Ctx *>(param);
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+          return TRUE;
+        }
+        if (GetWindow(hwnd, GW_OWNER) != nullptr) {
+          return TRUE;
+        }
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == 0 || pid == ctx->keep) {
+          return TRUE;
+        }
+        RECT rect {};
+        if (!GetWindowRect(hwnd, &rect)) {
+          return TRUE;
+        }
+        if ((rect.right - rect.left) <= 1 || (rect.bottom - rect.top) <= 1) {
+          return TRUE;
+        }
+        if (ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE)) {
+          ctx->minimized = true;
+        }
+        return TRUE;
+      },
+                  reinterpret_cast<LPARAM>(&ctx));
+      return ctx.minimized;
+    }
+
+    HWND focus_any_visible_window_for_pid(DWORD pid) {
+      struct Ctx {
+        DWORD target;
+        HWND focused = nullptr;
+      } ctx {pid, nullptr};
+      EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+        auto *ctx = reinterpret_cast<Ctx *>(param);
+        DWORD owner = 0;
+        GetWindowThreadProcessId(hwnd, &owner);
+        if (owner == ctx->target && IsWindowVisible(hwnd)) {
+          if (focus::try_focus_hwnd(hwnd)) {
+            ctx->focused = hwnd;
+            return FALSE;
+          }
+        }
+        return TRUE;
+      },
+                  reinterpret_cast<LPARAM>(&ctx));
+      return ctx.focused;
+    }
+
+    HWND focus_game_window(DWORD pid) {
+      if (!pid) {
+        return nullptr;
+      }
+      HWND hwnd = focus::find_main_window_for_pid(pid);
+      if (hwnd && focus::try_focus_hwnd(hwnd)) {
+        return hwnd;
+      }
+      return focus_any_visible_window_for_pid(pid);
+    }
+
+    bool click_window_center(HWND hwnd) {
+      if (!hwnd) {
+        return false;
+      }
+      RECT rect {};
+      if (!GetWindowRect(hwnd, &rect)) {
+        return false;
+      }
+      if ((rect.right - rect.left) <= 1 || (rect.bottom - rect.top) <= 1) {
+        return false;
+      }
+      POINT original {};
+      GetCursorPos(&original);
+      int x = rect.left + (rect.right - rect.left) / 2;
+      int y = rect.top + (rect.bottom - rect.top) / 2;
+      SetCursorPos(x, y);
+      INPUT inputs[2] {};
+      inputs[0].type = INPUT_MOUSE;
+      inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+      inputs[1].type = INPUT_MOUSE;
+      inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+      UINT sent = SendInput(2, inputs, sizeof(INPUT));
+      SetCursorPos(original.x, original.y);
+      return sent == 2;
+    }
+
+    std::wstring normalize_lowercase_path(std::wstring value) {
+      for (auto &ch : value) {
+        if (ch == L'/') {
+          ch = L'\\';
+        }
+        ch = static_cast<wchar_t>(std::towlower(ch));
+      }
+      return value;
+    }
+
+    std::optional<std::wstring> query_process_image_path_optional(DWORD pid) {
+      std::wstring path;
+      if (focus::get_process_image_path(pid, path)) {
+        return path;
+      }
+      return std::nullopt;
+    }
+
+    std::optional<std::wstring> normalize_utf8_path(const std::string &path_utf8) {
+      if (path_utf8.empty()) {
+        return std::nullopt;
+      }
+      try {
+        auto wide = platf::dxgi::utf8_to_wide(path_utf8);
+        if (wide.empty()) {
+          return std::nullopt;
+        }
+        return normalize_lowercase_path(wide);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    bool path_matches_prefix(const std::wstring &path, const std::wstring &dir_prefix) {
+      if (dir_prefix.empty()) {
+        return false;
+      }
+      if (path.size() < dir_prefix.size()) {
+        return false;
+      }
+      if (path.compare(0, dir_prefix.size(), dir_prefix) != 0) {
+        return false;
+      }
+      if (path.size() == dir_prefix.size()) {
+        return true;
+      }
+      return path[dir_prefix.size()] == L'\\';
+    }
+
+    bool path_matches_filter(const std::wstring &path, const std::optional<std::wstring> &install_dir_norm, const std::optional<std::wstring> &exe_path_norm) {
+      if (path.empty()) {
+        return false;
+      }
+      auto normalized = normalize_lowercase_path(path);
+      if (exe_path_norm && !exe_path_norm->empty() && normalized == *exe_path_norm) {
+        return true;
+      }
+      if (install_dir_norm && !install_dir_norm->empty()) {
+        return path_matches_prefix(normalized, *install_dir_norm);
+      }
+      return false;
+    }
+
+    bool is_ignored_process_path(const std::wstring &path) {
+      if (path.empty()) {
+        return false;
+      }
+      std::filesystem::path fs_path(path);
+      auto filename = fs_path.filename().wstring();
+      if (filename.empty()) {
+        return false;
+      }
+      auto lower = normalize_lowercase_path(filename);
+      return lower == L"losslessscaling.exe" ||
+             lower == L"lossless scaling.exe" ||
+             lower == L"playnite.fullscreenapp.exe" ||
+             lower == L"playnite.desktopapp.exe";
+    }
+
+    HWND wait_for_game_window(DWORD pid, std::chrono::milliseconds timeout) {
+      if (!pid) {
+        return nullptr;
+      }
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (auto hwnd = focus::find_main_window_for_pid(pid)) {
+          return hwnd;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+      return nullptr;
+    }
+
+    bool wait_for_lossless_ready(std::chrono::milliseconds timeout) {
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (std::chrono::steady_clock::now() < deadline) {
+        auto runtime = capture_lossless_scaling_state();
+        if (!runtime.running_pids.empty()) {
+          return true;
+        }
+        std::this_thread::sleep_for(150ms);
+      }
+      return false;
+    }
+
+    std::vector<DWORD> enumerate_process_ids_snapshot() {
+      DWORD needed = 0;
+      std::vector<DWORD> pids(1024);
+      while (true) {
+        if (!EnumProcesses(pids.data(), static_cast<DWORD>(pids.size() * sizeof(DWORD)), &needed)) {
+          return {};
+        }
+        if (needed < pids.size() * sizeof(DWORD)) {
+          pids.resize(needed / sizeof(DWORD));
+          break;
+        }
+        pids.resize(pids.size() * 2);
+      }
+      return pids;
+    }
+
+    bool sample_process_usage(DWORD pid, ULONGLONG &cpu_time, SIZE_T &working_set) {
+      HANDLE handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+      if (!handle) {
+        handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+      }
+      if (!handle) {
+        return false;
+      }
+      FILETIME creation {}, exit_time {}, kernel {}, user {};
+      BOOL got_times = GetProcessTimes(handle, &creation, &exit_time, &kernel, &user);
+      PROCESS_MEMORY_COUNTERS_EX pmc {};
+      BOOL got_mem = GetProcessMemoryInfo(handle, reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc), sizeof(pmc));
+      CloseHandle(handle);
+      if (!got_times) {
+        return false;
+      }
+      ULARGE_INTEGER kernel_int {};
+      kernel_int.HighPart = kernel.dwHighDateTime;
+      kernel_int.LowPart = kernel.dwLowDateTime;
+      ULARGE_INTEGER user_int {};
+      user_int.HighPart = user.dwHighDateTime;
+      user_int.LowPart = user.dwLowDateTime;
+      cpu_time = kernel_int.QuadPart + user_int.QuadPart;
+      working_set = got_mem ? pmc.WorkingSetSize : 0;
+      return true;
+    }
+
     void lossless_scaling_post_wm_close(const std::vector<DWORD> &pids) {
       if (pids.empty()) {
         return;
@@ -813,8 +1299,8 @@ namespace playnite_launcher::lossless {
       profile.put("Title", std::string(k_lossless_profile_title));
       profile.put("Path", filter_utf8);
       profile.put("Filter", filter_utf8);
-      profile.put("AutoScale", "true");
-      profile.put("AutoScaleDelay", k_lossless_auto_delay_seconds);
+      profile.put("AutoScale", options.legacy_auto_detect ? "true" : "false");
+      profile.put("AutoScaleDelay", 0);
       profile.put("SyncMode", "OFF");
       if (options.capture_api) {
         std::string capture = *options.capture_api;
@@ -1015,6 +1501,7 @@ namespace playnite_launcher::lossless {
     opt.ls1_sharpness = clamp_optional_int(parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LS1_SHARPNESS")), k_sharpness_min, k_sharpness_max);
     opt.anime4k_type = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_TYPE"));
     opt.anime4k_vrs = parse_env_flag_optional(std::getenv("SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS"));
+    opt.legacy_auto_detect = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT"));
     if (auto delay = parse_env_int_allow_zero(std::getenv("SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY"))) {
       opt.launch_delay_seconds = std::max(0, *delay);
     }
@@ -1052,6 +1539,7 @@ namespace playnite_launcher::lossless {
     opt.anime4k_type = _metadata.anime4k_type;
     opt.anime4k_vrs = _metadata.anime4k_vrs;
     opt.launch_delay_seconds = std::max(0, _metadata.launch_delay_seconds);
+    opt.legacy_auto_detect = _metadata.legacy_auto_detect;
     finalize_lossless_options(opt);
     return opt;
   }
@@ -1064,6 +1552,246 @@ namespace playnite_launcher::lossless {
   lossless_scaling_options read_lossless_scaling_options(const lossless_scaling_app_metadata &metadata) {
     lossless_scaling_metadata_loader loader(metadata);
     return loader.load();
+  }
+
+  std::optional<DWORD> lossless_scaling_select_focus_pid(const std::string &install_dir_utf8, const std::string &exe_path_utf8, std::optional<DWORD> preferred_pid) {
+    auto install_dir_norm = normalize_utf8_path(install_dir_utf8);
+    auto exe_path_norm = normalize_utf8_path(exe_path_utf8);
+    if (install_dir_norm && !install_dir_norm->empty() && install_dir_norm->back() != L'\\') {
+      install_dir_norm->push_back(L'\\');
+    }
+    const bool has_filter = (install_dir_norm && !install_dir_norm->empty()) || (exe_path_norm && !exe_path_norm->empty());
+
+    if (!has_filter) {
+      BOOST_LOG(warning) << "Lossless Scaling: PID selection using windowed heuristic (install/exe empty)";
+    }
+
+    auto snapshot = enumerate_process_ids_snapshot();
+    std::vector<DWORD> initial_candidates;
+    std::unordered_set<DWORD> allowed_pids;
+    initial_candidates.reserve(snapshot.size());
+    for (auto pid : snapshot) {
+      if (pid == 0) {
+        continue;
+      }
+      auto path = query_process_image_path_optional(pid);
+      if (!path) {
+        continue;
+      }
+      if (is_ignored_process_path(*path)) {
+        continue;
+      }
+      if (has_filter) {
+        if (path_matches_filter(*path, install_dir_norm, exe_path_norm)) {
+          initial_candidates.push_back(pid);
+        }
+      } else {
+        if (focus::find_main_window_for_pid(pid)) {
+          initial_candidates.push_back(pid);
+        }
+      }
+    }
+    if (initial_candidates.empty()) {
+      return std::nullopt;
+    }
+    if (initial_candidates.size() == 1) {
+      return initial_candidates.front();
+    }
+    allowed_pids.reserve(initial_candidates.size());
+    for (auto pid : initial_candidates) {
+      allowed_pids.insert(pid);
+    }
+
+    struct focus_process_candidate {
+      DWORD pid = 0;
+      ULONGLONG start_cpu = 0;
+      ULONGLONG last_cpu = 0;
+      SIZE_T peak_working_set = 0;
+      std::wstring path;
+      std::chrono::steady_clock::time_point first_seen;
+      std::chrono::steady_clock::time_point last_seen;
+    };
+
+    std::unordered_map<DWORD, focus_process_candidate> candidates;
+    auto deadline = std::chrono::steady_clock::now() + k_lossless_observation_duration;
+
+    SYSTEM_INFO sys_info {};
+    GetSystemInfo(&sys_info);
+    double cpu_count = sys_info.dwNumberOfProcessors > 0 ? static_cast<double>(sys_info.dwNumberOfProcessors) : 1.0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto now = std::chrono::steady_clock::now();
+      snapshot = enumerate_process_ids_snapshot();
+      for (auto pid : snapshot) {
+        if (pid == 0) {
+          continue;
+        }
+        if (!allowed_pids.empty() && allowed_pids.find(pid) == allowed_pids.end()) {
+          continue;
+        }
+        auto &entry = candidates[pid];
+        if (entry.pid == 0) {
+          auto path = query_process_image_path_optional(pid);
+          if (!path || is_ignored_process_path(*path)) {
+            candidates.erase(pid);
+            continue;
+          }
+          if (has_filter && !path_matches_filter(*path, install_dir_norm, exe_path_norm)) {
+            candidates.erase(pid);
+            continue;
+          }
+          entry.pid = pid;
+          entry.path = *path;
+          entry.first_seen = now;
+          entry.last_seen = now;
+        }
+        ULONGLONG cpu_time = 0;
+        SIZE_T working_set = 0;
+        if (!sample_process_usage(pid, cpu_time, working_set)) {
+          if (entry.start_cpu == 0) {
+            candidates.erase(pid);
+          }
+          continue;
+        }
+        if (entry.start_cpu == 0) {
+          entry.start_cpu = cpu_time;
+        }
+        entry.last_cpu = cpu_time;
+        entry.last_seen = now;
+        if (working_set > entry.peak_working_set) {
+          entry.peak_working_set = working_set;
+        }
+      }
+      std::this_thread::sleep_for(k_lossless_poll_interval);
+    }
+
+    if (candidates.empty()) {
+      return initial_candidates.front();
+    }
+
+    double max_cpu_ratio = 0.0;
+    double max_mem = 0.0;
+
+    struct candidate_score {
+      DWORD pid;
+      std::wstring path;
+      double cpu_ratio;
+      double mem_mb;
+      bool preferred_match;
+      bool exe_match;
+    };
+
+    std::vector<candidate_score> scores;
+    scores.reserve(candidates.size());
+
+    for (auto &[pid, candidate] : candidates) {
+      if (candidate.start_cpu == 0 || candidate.last_cpu < candidate.start_cpu) {
+        continue;
+      }
+      if (candidate.last_seen <= candidate.first_seen) {
+        continue;
+      }
+      if (candidate.path.empty()) {
+        continue;
+      }
+      double elapsed = std::chrono::duration<double>(candidate.last_seen - candidate.first_seen).count();
+      if (elapsed <= 0.1) {
+        elapsed = 0.1;
+      }
+      double cpu_seconds = static_cast<double>(candidate.last_cpu - candidate.start_cpu) / 10000000.0;
+      if (cpu_seconds < 0.0) {
+        cpu_seconds = 0.0;
+      }
+      double cpu_ratio = cpu_seconds / (elapsed * cpu_count);
+      if (cpu_ratio < 0.0) {
+        cpu_ratio = 0.0;
+      }
+      double mem_mb = static_cast<double>(candidate.peak_working_set) / (1024.0 * 1024.0);
+      auto normalized_path = normalize_lowercase_path(candidate.path);
+      bool matches = install_dir_norm && !install_dir_norm->empty()
+                       ? path_matches_prefix(normalized_path, *install_dir_norm)
+                       : false;
+      bool exe_match = exe_path_norm && !exe_path_norm->empty() && normalized_path == *exe_path_norm;
+      scores.push_back({pid, candidate.path, cpu_ratio, mem_mb, matches, exe_match});
+      max_cpu_ratio = std::max(max_cpu_ratio, cpu_ratio);
+      max_mem = std::max(max_mem, mem_mb);
+    }
+
+    if (scores.empty()) {
+      return initial_candidates.front();
+    }
+
+    bool cpu_low = max_cpu_ratio < 0.08;
+    double cpu_weight = cpu_low ? 0.5 : 0.7;
+    double mem_weight = 1.0 - cpu_weight;
+
+    auto ensure_dir_prefix = [](std::wstring value) {
+      if (!value.empty() && value.back() != L'\\') {
+        value.push_back(L'\\');
+      }
+      return normalize_lowercase_path(value);
+    };
+
+    std::wstring windows_dir_norm;
+    {
+      wchar_t windows_dir[MAX_PATH] = {};
+      UINT len = GetWindowsDirectoryW(windows_dir, ARRAYSIZE(windows_dir));
+      if (len > 0 && len < ARRAYSIZE(windows_dir)) {
+        windows_dir_norm = ensure_dir_prefix(std::wstring(windows_dir, len));
+      }
+    }
+
+    auto has_prefix = [](const std::wstring &value, const std::wstring &prefix) {
+      return !prefix.empty() && value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    };
+
+    const candidate_score *best = nullptr;
+    double best_score = -1.0;
+    DWORD root_pid = preferred_pid.value_or(0);
+
+    for (const auto &score : scores) {
+      double cpu_norm = max_cpu_ratio > 0.0 ? score.cpu_ratio / max_cpu_ratio : 0.0;
+      double mem_norm = max_mem > 0.0 ? score.mem_mb / max_mem : 0.0;
+      double combined = (cpu_weight * cpu_norm) + (mem_weight * mem_norm);
+      if (score.preferred_match) {
+        combined += 0.2;
+      }
+      if (score.exe_match) {
+        combined += 0.25;
+      }
+      if (root_pid && score.pid == root_pid) {
+        combined += score.preferred_match ? 0.05 : -0.05;
+      }
+      combined += std::min(score.cpu_ratio, 1.0) * 0.15;
+
+      if (!windows_dir_norm.empty()) {
+        auto normalized_path = normalize_lowercase_path(score.path);
+        bool system_path = has_prefix(normalized_path, windows_dir_norm);
+        if (system_path) {
+          combined -= 0.2;
+        }
+        if (system_path && score.cpu_ratio < 0.02 && score.mem_mb < 48.0) {
+          combined -= 0.05;
+        }
+      } else if (score.cpu_ratio < 0.015 && score.mem_mb < 32.0) {
+        combined -= 0.05;
+      }
+
+      if (combined > best_score) {
+        best_score = combined;
+        best = &score;
+      }
+    }
+
+    if (!best) {
+      return initial_candidates.front();
+    }
+
+    BOOST_LOG(debug) << "Lossless Scaling: focus candidate PID=" << best->pid
+                     << " cpu=" << best->cpu_ratio << " memMB=" << best->mem_mb;
+    BOOST_LOG(info) << "Lossless Scaling: selected focus PID=" << best->pid
+                    << " exe=" << platf::dxgi::wide_to_utf8(best->path);
+    return best->pid;
   }
 
   lossless_scaling_runtime_state capture_lossless_scaling_state() {
@@ -1096,18 +1824,18 @@ namespace playnite_launcher::lossless {
     state.stopped = true;
   }
 
-  bool focus_and_minimize_existing_instances(const lossless_scaling_runtime_state &state) {
-    if (state.stopped || !state.previously_running) {
-      return false;
+    bool focus_and_minimize_existing_instances(const lossless_scaling_runtime_state &state, bool minimize_window) {
+      if (state.stopped || !state.previously_running) {
+        return false;
+      }
+      bool handled = false;
+      for (DWORD pid : state.running_pids) {
+        bool focused = lossless_scaling_focus_window(pid);
+        bool minimized = minimize_window ? lossless_scaling_minimize_window(pid) : false;
+        handled = focused || minimized || handled;
+      }
+      return handled;
     }
-    bool handled = false;
-    for (DWORD pid : state.running_pids) {
-      bool focused = lossless_scaling_focus_window(pid);
-      bool minimized = lossless_scaling_minimize_window(pid);
-      handled = focused || minimized || handled;
-    }
-    return handled;
-  }
 
   bool should_launch_new_instance(const lossless_scaling_runtime_state &state, bool force_launch) {
     if (force_launch) {
@@ -1137,69 +1865,36 @@ namespace playnite_launcher::lossless {
     return false;
   }
 
-  std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi, DWORD game_pid) {
-    bool focused = false;
-    bool minimized = false;
-    if (pi.hProcess) {
-      WaitForInputIdle(pi.hProcess, 5000);
-      constexpr int kFocusRetries = 4;
-      constexpr auto kRetryDelay = std::chrono::milliseconds(120);
-      if (game_pid) {
-        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-        std::this_thread::sleep_for(150ms);
-        bool first_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-        focused = focused || first_lossless;
-        std::this_thread::sleep_for(150ms);
-        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-        std::this_thread::sleep_for(150ms);
-        bool second_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-        focused = focused || second_lossless;
-      } else {
-        focused = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-      }
-      minimized = lossless_scaling_minimize_window(pi.dwProcessId);
-      if (!focused) {
-        focused = lossless_scaling_focus_window(pi.dwProcessId);
-      }
-      if (game_pid) {
-        std::this_thread::sleep_for(150ms);
-        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-      }
-      CloseHandle(pi.hProcess);
-      pi.hProcess = nullptr;
-    }
-    if (pi.hThread) {
-      CloseHandle(pi.hThread);
-      pi.hThread = nullptr;
-    }
-    return {focused, minimized};
-  }
-
-  bool launch_lossless_executable(const std::wstring &exe, DWORD game_pid) {
-    if (exe.empty()) {
-      return false;
-    }
-    STARTUPINFOW si {sizeof(si)};
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOWNORMAL;
-    PROCESS_INFORMATION pi {};
-    std::wstring cmd = L"\"" + exe + L"\"";
-    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
-    cmdline.push_back(L'\0');
-
-    auto finalize_launch = [&](PROCESS_INFORMATION &proc_info) {
-      auto [focused, minimized] = focus_and_minimize_new_process(proc_info, game_pid);
-      if (!focused) {
-        BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
-      }
-      if (!minimized) {
-        BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
-      }
-      return true;
-    };
-
-    auto close_process_handles = [&]() {
+    std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi, DWORD game_pid, bool minimize_window) {
+      bool focused = false;
+      bool minimized = false;
       if (pi.hProcess) {
+        WaitForInputIdle(pi.hProcess, 5000);
+        constexpr int kFocusRetries = 4;
+        constexpr auto kRetryDelay = std::chrono::milliseconds(120);
+        if (game_pid) {
+          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+          std::this_thread::sleep_for(150ms);
+          bool first_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+          focused = focused || first_lossless;
+          std::this_thread::sleep_for(150ms);
+          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+          std::this_thread::sleep_for(150ms);
+          bool second_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+          focused = focused || second_lossless;
+        } else {
+          focused = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+        }
+        if (minimize_window) {
+          minimized = lossless_scaling_minimize_window(pi.dwProcessId);
+        }
+        if (!focused) {
+          focused = lossless_scaling_focus_window(pi.dwProcessId);
+        }
+        if (game_pid) {
+          std::this_thread::sleep_for(150ms);
+          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+        }
         CloseHandle(pi.hProcess);
         pi.hProcess = nullptr;
       }
@@ -1207,66 +1902,101 @@ namespace playnite_launcher::lossless {
         CloseHandle(pi.hThread);
         pi.hThread = nullptr;
       }
-    };
-
-    bool launched = false;
-    if (platf::dxgi::is_running_as_system()) {
-      winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
-      if (user_token) {
-        LPVOID raw_env = nullptr;
-        if (!CreateEnvironmentBlock(&raw_env, user_token.get(), FALSE)) {
-          raw_env = nullptr;
-        }
-        std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)> env_block(raw_env, DestroyEnvironmentBlock);
-        BOOL ok = FALSE;
-        if (ImpersonateLoggedOnUser(user_token.get())) {
-          auto revert_guard = util::fail_guard([&]() {
-            if (!RevertToSelf()) {
-              DWORD err = GetLastError();
-              BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation after launch, error=" << err;
-              DebugBreak();
-            }
-          });
-          ok = CreateProcessAsUserW(
-            user_token.get(),
-            exe.c_str(),
-            cmdline.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            CREATE_UNICODE_ENVIRONMENT,
-            env_block.get(),
-            nullptr,
-            &si,
-            &pi
-          );
-          if (!ok) {
-            BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
-          }
-        } else {
-          BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
-        }
-        if (ok) {
-          launched = true;
-        } else {
-          close_process_handles();
-        }
-      } else {
-        BOOST_LOG(debug) << "Lossless Scaling: no user token available for impersonated launch";
-      }
+      return {focused, minimized};
     }
-    if (!launched) {
-      if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
-        BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
-        close_process_handles();
+
+    bool launch_lossless_executable(const std::wstring &exe, DWORD game_pid, bool minimize_window) {
+      if (exe.empty()) {
         return false;
       }
-      launched = true;
+      STARTUPINFOW si {sizeof(si)};
+      si.dwFlags = STARTF_USESHOWWINDOW;
+      si.wShowWindow = SW_SHOWNORMAL;
+      PROCESS_INFORMATION pi {};
+      std::wstring cmd = L"\"" + exe + L"\"";
+      std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+      cmdline.push_back(L'\0');
+
+      auto finalize_launch = [&](PROCESS_INFORMATION &proc_info) {
+        auto [focused, minimized] = focus_and_minimize_new_process(proc_info, game_pid, minimize_window);
+        if (!focused) {
+          BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+        }
+        if (minimize_window && !minimized) {
+          BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
+        }
+        return true;
+      };
+
+      auto close_process_handles = [&]() {
+        if (pi.hProcess) {
+          CloseHandle(pi.hProcess);
+          pi.hProcess = nullptr;
+        }
+        if (pi.hThread) {
+          CloseHandle(pi.hThread);
+          pi.hThread = nullptr;
+        }
+      };
+
+      bool launched = false;
+      if (platf::dxgi::is_running_as_system()) {
+        winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
+        if (user_token) {
+          LPVOID raw_env = nullptr;
+          if (!CreateEnvironmentBlock(&raw_env, user_token.get(), FALSE)) {
+            raw_env = nullptr;
+          }
+          std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)> env_block(raw_env, DestroyEnvironmentBlock);
+          BOOL ok = FALSE;
+          if (ImpersonateLoggedOnUser(user_token.get())) {
+            auto revert_guard = util::fail_guard([&]() {
+              if (!RevertToSelf()) {
+                DWORD err = GetLastError();
+                BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation after launch, error=" << err;
+                DebugBreak();
+              }
+            });
+            ok = CreateProcessAsUserW(
+              user_token.get(),
+              exe.c_str(),
+              cmdline.data(),
+              nullptr,
+              nullptr,
+              FALSE,
+              CREATE_UNICODE_ENVIRONMENT,
+              env_block.get(),
+              nullptr,
+              &si,
+              &pi
+            );
+            if (!ok) {
+              BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
+            }
+          } else {
+            BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
+          }
+          if (ok) {
+            launched = true;
+          } else {
+            close_process_handles();
+          }
+        } else {
+          BOOST_LOG(debug) << "Lossless Scaling: no user token available for impersonated launch";
+        }
+      }
+      if (!launched) {
+        if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
+          BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
+          close_process_handles();
+          return false;
+        }
+        launched = true;
+      }
+      bool result = launched && finalize_launch(pi);
+      close_process_handles();
+      return result;
     }
-    bool result = launched && finalize_launch(pi);
-    close_process_handles();
-    return result;
-  }
 
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup) {
     backup = {};
@@ -1333,13 +2063,9 @@ namespace playnite_launcher::lossless {
     return run_with_user_context(worker);
   }
 
-  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8, DWORD focused_game_pid) {
-    if (focus_and_minimize_existing_instances(state)) {
-      return;
-    }
-    if (!should_launch_new_instance(state, force_launch)) {
-      return;
-    }
+  void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8, DWORD focused_game_pid, bool legacy_auto_detect) {
+    focus_and_minimize_existing_instances(state, !legacy_auto_detect);
+    const bool should_launch = should_launch_new_instance(state, force_launch);
 
     if (!install_dir_utf8.empty() || !exe_path_utf8.empty()) {
       auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
@@ -1356,21 +2082,112 @@ namespace playnite_launcher::lossless {
         BOOST_LOG(debug) << "Lossless Scaling: waiting up to " << timeout_secs << " seconds for game process to appear (checking " << exe_names.size() << " executables)";
         bool game_detected = wait_for_any_executable(exe_names, timeout_secs);
         if (game_detected) {
-          BOOST_LOG(info) << "Lossless Scaling: game detected, waiting 5 seconds before launch";
-          std::this_thread::sleep_for(5000ms);
+          BOOST_LOG(info) << "Lossless Scaling: game detected";
         }
       }
     }
 
-    auto exe = discover_lossless_scaling_exe(state);
-    if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
-      BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
+    if (should_launch) {
+      auto exe = discover_lossless_scaling_exe(state);
+      if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
+        BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
+        return;
+      }
+      if (launch_lossless_executable(*exe, focused_game_pid, !legacy_auto_detect)) {
+        BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
+      } else {
+        BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << GetLastError();
+        return;
+      }
+      if (!wait_for_lossless_ready(3s)) {
+        BOOST_LOG(debug) << "Lossless Scaling: hotkey readiness wait timed out";
+      } else {
+        std::this_thread::sleep_for(150ms);
+      }
+    }
+
+    auto hotkey = read_lossless_hotkey();
+    if (!hotkey) {
+      BOOST_LOG(warning) << "Lossless Scaling: no hotkey configured; skipping activation";
       return;
     }
-    if (launch_lossless_executable(*exe, focused_game_pid)) {
-      BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
+    if (!hotkey->modifiers.empty()) {
+      std::ostringstream mods;
+      for (size_t i = 0; i < hotkey->modifiers.size(); ++i) {
+        if (i > 0) {
+          mods << "+";
+        }
+        mods << "0x" << std::hex << static_cast<int>(hotkey->modifiers[i]);
+      }
+      BOOST_LOG(debug) << "Lossless Scaling: hotkey vk=0x" << std::hex << static_cast<int>(hotkey->key)
+                       << " mods=" << mods.str();
     } else {
-      BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << GetLastError();
+      BOOST_LOG(debug) << "Lossless Scaling: hotkey vk=0x" << std::hex << static_cast<int>(hotkey->key)
+                       << " mods=none";
+    }
+
+    DWORD target_pid = focused_game_pid;
+    if (!target_pid) {
+      if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {
+        target_pid = *selected;
+      }
+    }
+    if (legacy_auto_detect && !target_pid) {
+      for (int attempt = 0; attempt < 3 && !target_pid; ++attempt) {
+        std::this_thread::sleep_for(1s);
+        if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {
+          target_pid = *selected;
+          break;
+        }
+      }
+    }
+    if (!target_pid && !install_dir_utf8.empty()) {
+      try {
+        auto install_dir_w = platf::dxgi::utf8_to_wide(install_dir_utf8);
+        auto pids = focus::find_pids_under_install_dir_sorted(install_dir_w, false);
+        if (!pids.empty()) {
+          target_pid = pids.front();
+          BOOST_LOG(info) << "Lossless Scaling: fallback focus PID=" << target_pid << " via installDir";
+        }
+      } catch (...) {
+      }
+    }
+    if (legacy_auto_detect) {
+      return;
+    }
+
+    HWND target_hwnd = nullptr;
+    if (target_pid) {
+      target_hwnd = focus_game_window(target_pid);
+    }
+
+    bool sent = apply_hotkey_for_pid(*hotkey, target_pid, target_hwnd != nullptr, 3);
+    if (!sent) {
+      BOOST_LOG(warning) << "Lossless Scaling: failed to send hotkey after retries";
+    }
+
+    if (!target_pid) {
+      return;
+    }
+
+    constexpr int k_retarget_checks = 12;
+    for (int attempt = 0; attempt < k_retarget_checks; ++attempt) {
+      std::this_thread::sleep_for(1s);
+      auto next_pid_opt = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, target_pid);
+      if (!next_pid_opt || *next_pid_opt == target_pid) {
+        continue;
+      }
+      DWORD next_pid = *next_pid_opt;
+      BOOST_LOG(info) << "Lossless Scaling: retargeting from PID=" << target_pid << " to PID=" << next_pid;
+      apply_hotkey_for_pid(*hotkey, target_pid, true, 2);
+      HWND new_hwnd = wait_for_game_window(next_pid, 6s);
+      if (new_hwnd) {
+        focus::try_focus_hwnd(new_hwnd);
+      } else {
+        new_hwnd = focus_game_window(next_pid);
+      }
+      apply_hotkey_for_pid(*hotkey, next_pid, true, 2);
+      target_pid = next_pid;
     }
   }
 
