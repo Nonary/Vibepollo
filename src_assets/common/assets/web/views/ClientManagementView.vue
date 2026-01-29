@@ -243,8 +243,13 @@
                       @update:value="
                         (v) => applyClientDisplaySelection(client, v as ClientDisplaySelection)
                       "
-                      class="grid gap-3 sm:grid-cols-2"
+                      class="grid gap-3 sm:grid-cols-3"
                     >
+                      <n-radio value="global" class="app-radio-card cursor-pointer">
+                        <span class="app-radio-card-title">{{
+                          t('config.client_display_override_global')
+                        }}</span>
+                      </n-radio>
                       <n-radio value="virtual" class="app-radio-card cursor-pointer">
                         <span class="app-radio-card-title">{{
                           t('config.app_display_override_virtual')
@@ -327,7 +332,7 @@
                     </div>
                   </div>
 
-                  <div v-else class="space-y-5">
+                  <div v-else-if="client.editDisplaySelection === 'virtual'" class="space-y-5">
                     <div class="space-y-2">
                       <div class="flex items-center justify-between gap-3">
                         <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -416,6 +421,12 @@
                         {{ t('config.app_virtual_display_layout_follow_global') }}
                       </div>
                     </div>
+                  </div>
+
+                  <div v-else-if="client.editDisplaySelection === 'global'" class="space-y-2">
+                    <p class="text-[11px] opacity-70">
+                      {{ t('config.client_display_override_global_hint') }}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -551,7 +562,7 @@ import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOv
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
-type ClientDisplaySelection = 'physical' | 'virtual';
+type ClientDisplaySelection = 'global' | 'physical' | 'virtual';
 type ClientVirtualDisplayMode = 'disabled' | 'per_client' | 'shared' | null;
 type ClientVirtualDisplayLayout =
   | 'exclusive'
@@ -842,10 +853,21 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
         : 'disabled';
   const virtualMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
-  const overrideEnabled =
-    alwaysVirtual || !!outputOverride.trim() || virtualMode !== null || virtualLayout !== null;
-  const selection: ClientDisplaySelection =
-    alwaysVirtual || (virtualMode !== null && virtualMode !== 'disabled') ? 'virtual' : 'physical';
+  
+  // Determine if client has any display-related override set
+  const hasVirtualOverride = alwaysVirtual || (virtualMode !== null && virtualMode !== 'disabled');
+  const hasPhysicalOverride = !!outputOverride.trim();
+  const hasLayoutOverride = virtualLayout !== null;
+  const overrideEnabled = hasVirtualOverride || hasPhysicalOverride || hasLayoutOverride;
+  
+  // Determine display selection: global (no overrides), virtual, or physical
+  let selection: ClientDisplaySelection = 'global';
+  if (hasVirtualOverride) {
+    selection = 'virtual';
+  } else if (hasPhysicalOverride) {
+    selection = 'physical';
+  }
+  
   const client: ClientViewModel = {
     uuid: entry.uuid ?? '',
     name,
@@ -886,16 +908,24 @@ function resetClientEdits(client: ClientViewModel): void {
   client.editHdrProfile = (client.hdrProfile || '').trim() || null;
   client.editDisplayMode = client.displayMode;
   client.editPerm = client.perm;
-  client.editDisplayOverrideEnabled =
-    client.alwaysUseVirtualDisplay ||
-    !!(client.outputOverride || '').trim() ||
-    client.virtualDisplayMode !== null ||
-    client.virtualDisplayLayout !== null;
-  client.editDisplaySelection =
-    client.alwaysUseVirtualDisplay ||
-    (client.virtualDisplayMode !== null && client.virtualDisplayMode !== 'disabled')
-      ? 'virtual'
-      : 'physical';
+  
+  // Determine if client has any display-related override set
+  const hasVirtualOverride = client.alwaysUseVirtualDisplay || 
+    (client.virtualDisplayMode !== null && client.virtualDisplayMode !== 'disabled');
+  const hasPhysicalOverride = !!(client.outputOverride || '').trim();
+  const hasLayoutOverride = client.virtualDisplayLayout !== null;
+  
+  client.editDisplayOverrideEnabled = hasVirtualOverride || hasPhysicalOverride || hasLayoutOverride;
+  
+  // Determine display selection: global (no overrides), virtual, or physical
+  if (hasVirtualOverride) {
+    client.editDisplaySelection = 'virtual';
+  } else if (hasPhysicalOverride) {
+    client.editDisplaySelection = 'physical';
+  } else {
+    client.editDisplaySelection = 'global';
+  }
+  
   client.editPhysicalOutputOverride = client.outputOverride || null;
   client.editVirtualDisplayMode = client.virtualDisplayMode;
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
@@ -987,13 +1017,17 @@ function ensureHdrProfilesLoaded(): void {
 function applyClientDisplayOverrideEnabled(client: ClientViewModel, enabled: boolean): void {
   client.editDisplayOverrideEnabled = enabled;
   if (!enabled) {
-    client.editDisplaySelection = 'physical';
+    client.editDisplaySelection = 'global';
     client.editPhysicalOutputOverride = null;
     client.editVirtualDisplayMode = null;
     client.editVirtualDisplayLayout = null;
     return;
   }
 
+  // When enabling overrides, default to 'global' if not already set to something specific
+  if (client.editDisplaySelection !== 'virtual' && client.editDisplaySelection !== 'physical') {
+    client.editDisplaySelection = 'global';
+  }
   applyClientDisplaySelection(client, client.editDisplaySelection);
 }
 
@@ -1002,6 +1036,13 @@ function applyClientDisplaySelection(
   selection: ClientDisplaySelection,
 ): void {
   client.editDisplaySelection = selection;
+  if (selection === 'global') {
+    // When using global settings, clear per-client overrides
+    client.editPhysicalOutputOverride = null;
+    client.editVirtualDisplayMode = null;
+    client.editVirtualDisplayLayout = null;
+    return;
+  }
   if (selection === 'physical') {
     client.editVirtualDisplayMode = 'disabled';
     client.editVirtualDisplayLayout = null;
@@ -1233,7 +1274,8 @@ async function saveClient(client: ClientViewModel): Promise<void> {
       perm: client.editPerm & permissionMapping._all,
     };
 
-    if (!client.editDisplayOverrideEnabled) {
+    if (!client.editDisplayOverrideEnabled || client.editDisplaySelection === 'global') {
+      // Use global settings - clear all per-client display overrides
       payload.output_name_override = '';
       payload.always_use_virtual_display = false;
       payload.virtual_display_mode = '';

@@ -490,6 +490,8 @@
     "virtual_display_toggle_label": "Configure Physical or Virtual Display",
     "virtual_display_toggle_hint": "Override the display Sunshine uses for this app: switch to the Sunshine virtual display or pick a specific physical monitor. Leave unchecked to follow the global/client choice.",
     "client_display_override_hint": "Override how Sunshine chooses a display for this client. Leave unchecked to follow the global display settings.",
+    "client_display_override_global": "Use global settings",
+    "client_display_override_global_hint": "This client will use the global display settings configured in the Audio/Video tab.",
     "virtual_display_layout_exclusive": "Exclusive",
     "virtual_display_layout_exclusive_desc": "Disable every other monitor so only the Sunshine virtual display stays visible.",
     "virtual_display_layout_extended": "Extended",
