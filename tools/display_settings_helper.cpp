@@ -306,6 +306,17 @@ namespace {
       }
     }
 
+    bool set_as_primary(const std::string &device_id) {
+      if (!ensure_initialized()) {
+        return false;
+      }
+      try {
+        return m_dd->setAsPrimary(device_id);
+      } catch (...) {
+        return false;
+      }
+    }
+
     bool configuration_matches_current_state(const display_device::SingleDisplayConfiguration &cfg) const {
       if (!ensure_initialized()) {
         return false;
@@ -2917,7 +2928,8 @@ namespace {
       bool wa_hdr_toggle,
       std::optional<std::string> requested_virtual_layout,
       std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides,
-      std::vector<std::chrono::milliseconds> reapply_delays
+      std::vector<std::chrono::milliseconds> reapply_delays,
+      std::optional<std::string> primary_device_to_reapply = std::nullopt
     ) {
       cancel_post_apply_tasks();
       post_apply_thread = std::jthread(
@@ -2927,7 +2939,8 @@ namespace {
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
          monitor_position_overrides = std::move(monitor_position_overrides),
-         reapply_delays = std::move(reapply_delays)
+         reapply_delays = std::move(reapply_delays),
+         primary_device_to_reapply = std::move(primary_device_to_reapply)
         ](std::stop_token st) mutable {
           const auto apply_epoch = current_connection_epoch();
           auto cancelled = [&]() {
@@ -2993,6 +3006,17 @@ namespace {
               return;
             }
             BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+
+            // Re-apply primary display setting after monitor positions are set
+            // to ensure the primary designation is not lost when Windows re-evaluates the topology
+            if (primary_device_to_reapply && !primary_device_to_reapply->empty()) {
+              if (cancelled()) {
+                return;
+              }
+              BOOST_LOG(info) << "Display helper: re-applying primary display setting for device=" << *primary_device_to_reapply;
+              const bool primary_result = controller.set_as_primary(*primary_device_to_reapply);
+              BOOST_LOG(info) << "Display helper: primary device re-apply result=" << (primary_result ? "true" : "false");
+            }
           }
         }
       );
@@ -3673,6 +3697,7 @@ namespace {
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
     std::optional<display_device::ActiveTopology> sunshine_topology;
     std::optional<std::vector<std::string>> snapshot_exclude_devices;
+    std::optional<std::string> primary_device_to_reapply;
     std::string sanitized_json = json;
     try {
       auto j = nlohmann::json::parse(json);
@@ -3702,6 +3727,10 @@ namespace {
             );
           }
           j.erase("sunshine_monitor_positions");
+        }
+        if (j.contains("sunshine_ensure_primary_device") && j["sunshine_ensure_primary_device"].is_string()) {
+          primary_device_to_reapply = j["sunshine_ensure_primary_device"].get<std::string>();
+          j.erase("sunshine_ensure_primary_device");
         }
         if (j.contains("sunshine_snapshot_exclude_devices")) {
           snapshot_exclude_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
@@ -3808,7 +3837,8 @@ namespace {
         wa_hdr_toggle,
         requested_virtual_layout,
         std::move(monitor_position_overrides),
-        std::move(reapply_delays)
+        std::move(reapply_delays),
+        primary_device_to_reapply
       );
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";

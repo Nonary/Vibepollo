@@ -878,6 +878,14 @@ namespace {
       j["sunshine_monitor_positions"] = std::move(positions);
     }
 
+    // If device should be set as primary and monitor positions are being applied,
+    // pass the device_id so primary can be re-applied after monitor positions
+    if (!request.topology.monitor_positions.empty() &&
+        request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary &&
+        !request.configuration->m_device_id.empty()) {
+      j["sunshine_ensure_primary_device"] = request.configuration->m_device_id;
+    }
+
     // Pass golden-first restore preference to helper
     if (config::video.dd.always_restore_from_golden) {
       j["sunshine_always_restore_from_golden"] = true;
