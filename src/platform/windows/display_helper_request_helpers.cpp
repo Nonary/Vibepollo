@@ -94,6 +94,23 @@ namespace display_helper_integration::helpers {
       return std::nullopt;
     }
 
+    double fps_to_value(int fps) {
+      if (fps <= 0) {
+        return 0.0;
+      }
+      if (fps >= 1000) {
+        return static_cast<double>(fps) / 1000.0;
+      }
+      return static_cast<double>(fps);
+    }
+
+    display_device::Rational fps_to_refresh_rate(int fps) {
+      if (fps >= 1000) {
+        return display_device::Rational {static_cast<unsigned int>(fps), 1000u};
+      }
+      return display_device::Rational {static_cast<unsigned int>(fps), 1u};
+    }
+
     void apply_resolution_refresh_overrides(
       display_device::SingleDisplayConfiguration &config,
       int effective_width,
@@ -111,7 +128,7 @@ namespace display_helper_integration::helpers {
       }
       // Only apply refresh rate override if refresh rate changes are not disabled by user
       if (!refresh_rate_disabled && !config.m_refresh_rate && display_fps > 0) {
-        config.m_refresh_rate = display_device::Rational {static_cast<unsigned int>(display_fps), 1u};
+        config.m_refresh_rate = fps_to_refresh_rate(display_fps);
       }
     }
 
@@ -146,11 +163,11 @@ namespace display_helper_integration::helpers {
         return;
       }
       const double current = get_refresh_rate_value(*value);
-      if (current >= static_cast<double>(minimum_fps)) {
+      if (current >= fps_to_value(minimum_fps)) {
         return;  // Already at or above minimum, don't change
       }
       // Set to minimum fps as a Rational
-      value = display_device::Rational {static_cast<unsigned int>(minimum_fps), 1u};
+      value = fps_to_refresh_rate(minimum_fps);
     }
   }  // namespace
 

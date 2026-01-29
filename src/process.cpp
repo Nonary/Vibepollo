@@ -2920,8 +2920,19 @@ namespace proc {
           }
         }
 
+        std::optional<int> lossless_scaling_launch_delay;
+        if (app_node.contains("lossless-scaling-launch-delay")) {
+          lossless_scaling_launch_delay = util::get_non_string_json_value<int>(app_node, "lossless-scaling-launch-delay", 0);
+        }
+        std::optional<bool> legacy_override;
+        if (app_node.contains("lossless-scaling-legacy-auto-detect")) {
+          legacy_override = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-legacy-auto-detect", false);
+        }
+        std::optional<std::string> dd_config_override;
+        if (app_node.contains("dd-configuration-option")) {
+          dd_config_override = util::get_non_string_json_value<std::string>(app_node, "dd-configuration-option", "");
+        }
         ctx.lossless_scaling_launch_delay_seconds = std::max(0, lossless_scaling_launch_delay.value_or(0));
-        const auto legacy_override = app_node.get_optional<bool>("lossless-scaling-legacy-auto-detect"s);
         ctx.lossless_scaling_legacy_auto_detect = legacy_override.value_or(config::lossless_scaling.legacy_auto_detect);
         if (dd_config_override && !dd_config_override->empty()) {
           const auto trimmed = boost::algorithm::trim_copy(*dd_config_override);
