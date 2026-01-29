@@ -878,10 +878,11 @@ namespace {
       j["sunshine_monitor_positions"] = std::move(positions);
     }
 
-    // If device should be set as primary and monitor positions are being applied,
-    // pass the device_id so primary can be re-applied after monitor positions
-    if (!request.topology.monitor_positions.empty() &&
-        request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary &&
+    // When EnsurePrimary is requested, pass the device_id so primary can be re-applied
+    // after topology changes (which can cause Windows to reset primary display).
+    // This is needed because setTopology with SDC_ALLOW_PATH_ORDER_CHANGES lets Windows
+    // rearrange displays and potentially change which display is primary.
+    if (request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary &&
         !request.configuration->m_device_id.empty()) {
       j["sunshine_ensure_primary_device"] = request.configuration->m_device_id;
     }

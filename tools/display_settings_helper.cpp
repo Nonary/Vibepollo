@@ -3006,17 +3006,19 @@ namespace {
               return;
             }
             BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+          }
 
-            // Re-apply primary display setting after monitor positions are set
-            // to ensure the primary designation is not lost when Windows re-evaluates the topology
-            if (primary_device_to_reapply && !primary_device_to_reapply->empty()) {
-              if (cancelled()) {
-                return;
-              }
-              BOOST_LOG(info) << "Display helper: re-applying primary display setting for device=" << *primary_device_to_reapply;
-              const bool primary_result = controller.set_as_primary(*primary_device_to_reapply);
-              BOOST_LOG(info) << "Display helper: primary device re-apply result=" << (primary_result ? "true" : "false");
+          // Re-apply primary display setting after monitor positions and topology changes.
+          // Windows can reset the primary display when SetDisplayConfig is called with
+          // SDC_ALLOW_PATH_ORDER_CHANGES (used by setTopology), so we ensure the requested
+          // primary display is preserved.
+          if (primary_device_to_reapply && !primary_device_to_reapply->empty()) {
+            if (cancelled()) {
+              return;
             }
+            BOOST_LOG(info) << "Display helper: re-applying primary display setting for device=" << *primary_device_to_reapply;
+            const bool primary_result = controller.set_as_primary(*primary_device_to_reapply);
+            BOOST_LOG(info) << "Display helper: primary device re-apply result=" << (primary_result ? "true" : "false");
           }
         }
       );
