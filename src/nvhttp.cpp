@@ -1616,6 +1616,24 @@ namespace nvhttp {
       tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
     }
 
+    if (!video::has_attempted_encoder_probe()) {
+      BOOST_LOG(info) << "Serverinfo requested before initial encoder probe; probing encoders now.";
+#ifdef _WIN32
+      auto encoder_probe_display_result = VDISPLAY::ensure_display();
+      if (!encoder_probe_display_result.success) {
+        BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
+      }
+
+      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
+        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+      });
+#endif
+
+      if (video::probe_encoders()) {
+        BOOST_LOG(error) << "Failed to probe encoders for serverinfo response.";
+      }
+    }
+
     uint32_t codec_mode_flags = SCM_H264;
     if (video::last_encoder_probe_supported_yuv444_for_codec[0]) {
       codec_mode_flags |= SCM_H264_HIGH8_444;

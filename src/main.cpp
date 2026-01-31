@@ -347,8 +347,14 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
+  constexpr auto kStartupEncoderProbeDelay = std::chrono::minutes(2);
+  auto startup_probe = []() {
+    if (video::has_attempted_encoder_probe()) {
+      BOOST_LOG(debug) << "Startup encoder probe skipped; probe already attempted.";
+      return;
+    }
+
 #ifdef _WIN32
-  {
     // Ensure a display is available first; probing encoders generally requires a display.
     auto encoder_probe_display_result = VDISPLAY::ensure_display();
     if (!encoder_probe_display_result.success) {
@@ -358,18 +364,17 @@ int main(int argc, char *argv[]) {
     auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
       VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
     });
+#endif
 
     bool encoder_probe_failed = video::probe_encoders();
 
     if (encoder_probe_failed) {
       BOOST_LOG(error) << "Failed to probe encoders during startup.";
     }
-  }
-#else
-  if (video::probe_encoders()) {
-    BOOST_LOG(error) << "Failed to probe encoders during startup.";
-  }
-#endif
+  };
+
+  BOOST_LOG(info) << "Scheduling encoder probe 2 minutes after startup.";
+  task_pool.pushDelayed(startup_probe, kStartupEncoderProbeDelay);
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
