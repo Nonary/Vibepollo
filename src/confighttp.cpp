@@ -300,6 +300,7 @@ namespace confighttp {
   void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getCrashDumpStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postCrashDumpDismiss(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void getCrashBundleManifest(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void downloadCrashBundle(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Display helper: export current OS state as golden restore snapshot
   void postExportGoldenDisplay(resp_https_t response, req_https_t request);
@@ -3696,6 +3697,7 @@ namespace confighttp {
     server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
     // Export logs bundle (Windows only)
     server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
+    server.resource["^/api/logs/export_crash/manifest$"]["GET"] = getCrashBundleManifest;
     server.resource["^/api/logs/export_crash$"]["GET"] = downloadCrashBundle;
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;

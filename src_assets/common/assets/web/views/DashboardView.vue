@@ -111,9 +111,25 @@
                     <i class="fas fa-bug" />
                     <span>{{ $t('config.crash_dump_report') || 'Report Issue' }}</span>
                   </n-button>
-                  <n-button type="primary" strong size="small" @click="exportCrashBundle">
+                  <n-button
+                    type="primary"
+                    strong
+                    size="small"
+                    :loading="exportCrashPending"
+                    :disabled="exportCrashPending"
+                    @click="exportCrashBundle"
+                  >
                     <i class="fas fa-file-zipper" />
-                    <span>{{ $t('config.crash_dump_export') || 'Export Crash Bundle' }}</span>
+                    <span>
+                      {{
+                        exportCrashPending
+                          ? translate(
+                              'config.crash_dump_export_preparing',
+                              'Preparing Crash Bundle...',
+                            )
+                          : translate('config.crash_dump_export', 'Export Crash Bundle')
+                      }}
+                    </span>
                   </n-button>
                   <n-button tertiary size="small" @click="dismissCrashBundle">
                     <i class="fas fa-xmark" />
@@ -396,12 +412,18 @@ const playnite = ref<PlayniteStatus | null>(null);
 const updatingPlaynite = ref(false);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
+const exportCrashPending = ref(false);
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
 let started = false; // prevent duplicate concurrent checks
 const message = useMessage();
 const { t: $t } = useI18n();
+
+const translate = (key: string, fallback: string) => {
+  const value = $t(key);
+  return value === key ? fallback : value;
+};
 
 async function runVersionChecks() {
   if (started) return; // guard
@@ -530,9 +552,72 @@ onMounted(async () => {
 });
 
 function exportCrashBundle() {
+  return void exportCrashBundleAsync();
+}
+
+function parseContentDispositionFilename(header?: string): string | null {
+  if (!header) return null;
+  const filenameStar = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (filenameStar?.[1]) {
+    try {
+      return decodeURIComponent(filenameStar[1]);
+    } catch {
+      return filenameStar[1];
+    }
+  }
+  const filenameMatch = /filename="?([^\";]+)"?/i.exec(header);
+  return filenameMatch?.[1] || null;
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob);
+  const link = window.document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.URL.revokeObjectURL(url);
+}
+
+async function downloadCrashBundlePart(partIndex: number, filenameHint?: string) {
+  const r = await http.get(`/api/logs/export_crash?part=${partIndex}`, {
+    responseType: 'blob',
+    validateStatus: () => true,
+  });
+  if (r.status !== 200) {
+    throw new Error('crash bundle download failed');
+  }
+  const headerName = parseContentDispositionFilename(r.headers?.['content-disposition']);
+  const filename =
+    filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
+  triggerDownload(r.data as Blob, filename);
+}
+
+async function exportCrashBundleAsync() {
+  if (exportCrashPending.value) return;
+  exportCrashPending.value = true;
   try {
-    if (typeof window !== 'undefined') window.location.href = './api/logs/export_crash';
-  } catch {}
+    if (typeof window === 'undefined') return;
+    const manifest = await http.get('/api/logs/export_crash/manifest', {
+      validateStatus: () => true,
+    });
+    const parts = Array.isArray(manifest.data?.parts) ? manifest.data.parts : [];
+    if (manifest.status === 200 && parts.length > 0) {
+      const ordered = [...parts].sort((a, b) => Number(a.index) - Number(b.index));
+      for (const part of ordered) {
+        const index = Number(part.index) || 0;
+        if (index <= 0) continue;
+        await downloadCrashBundlePart(index, part.filename);
+      }
+    } else {
+      await downloadCrashBundlePart(1);
+    }
+  } catch {
+    message.error(
+      translate('config.crash_dump_export_error', 'Failed to export crash bundle.'),
+    );
+  } finally {
+    exportCrashPending.value = false;
+  }
 }
 
 async function refreshCrashDumpStatus(platformOverride?: string) {

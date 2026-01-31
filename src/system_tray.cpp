@@ -63,6 +63,26 @@ namespace system_tray {
 
   static int init_tray();
 
+  static void tray_log_bridge(enum tray_log_level level, const char *message) {
+    if (!message) {
+      return;
+    }
+    switch (level) {
+      case TRAY_LOG_DEBUG:
+        BOOST_LOG(debug) << message;
+        break;
+      case TRAY_LOG_INFO:
+        BOOST_LOG(info) << message;
+        break;
+      case TRAY_LOG_WARNING:
+        BOOST_LOG(warning) << message;
+        break;
+      case TRAY_LOG_ERROR:
+        BOOST_LOG(error) << message;
+        break;
+    }
+  }
+
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening UI from system tray"sv;
     launch_ui();
@@ -267,6 +287,7 @@ namespace system_tray {
 
   void run_tray() {
     // create the system tray
+    tray_set_log_callback(&tray_log_bridge);
   #if defined(__APPLE__) || defined(__MACH__)
     // macOS requires that UI elements be created on the main thread
     // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors

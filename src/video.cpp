@@ -1416,6 +1416,12 @@ namespace video {
   int active_av1_mode;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
+  std::atomic<bool> encoder_probe_attempted {false};
+  std::mutex encoder_probe_mutex;
+
+  bool has_attempted_encoder_probe() {
+    return encoder_probe_attempted.load(std::memory_order_acquire);
+  }
 
   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
     // We try this twice, in case we still get an error on reinitialization
@@ -3129,6 +3135,8 @@ namespace video {
   }
 
   int probe_encoders() {
+    std::lock_guard<std::mutex> lock(encoder_probe_mutex);
+    encoder_probe_attempted.store(true, std::memory_order_release);
     const auto cache_key = build_probe_cache_key();
     const bool hevc_mode_auto = config::video.hevc_mode == 0;
     const bool av1_mode_auto = config::video.av1_mode == 0;
