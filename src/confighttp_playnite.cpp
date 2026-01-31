@@ -9,6 +9,7 @@
   #include <algorithm>
   #include <array>
   #include <chrono>
+  #include <cctype>
   #include <cstdint>
   #include <filesystem>
   #include <fstream>
@@ -18,6 +19,7 @@
   #include <sstream>
   #include <string>
   #include <string_view>
+  #include <unordered_map>
   #include <unordered_set>
   #include <vector>
   #include <cwctype>
@@ -1081,6 +1083,7 @@ namespace confighttp {
   }
 
   struct CrashDumpInfo {
+    std::string process;
     std::filesystem::path path;
     std::filesystem::file_time_type write_time;
     std::uint64_t size;
@@ -1093,16 +1096,112 @@ namespace confighttp {
     std::uint64_t size;
   };
 
-  constexpr std::uint64_t kMinCrashDumpSizeBytes = 10ull * 1024ull * 1024ull;
+  struct CrashBundlePartPlan {
+    std::vector<ZipFileEntry> files;
+    bool include_logs = false;
+    std::string filename;
+    std::uint64_t estimated_size = 0;
+  };
 
-  static std::filesystem::path crash_dump_directory() {
+  struct CrashDumpTarget {
+    std::string process;
+    std::wstring prefix;
+  };
+
+  static const std::array<CrashDumpTarget, 4> kCrashDumpTargets = {{
+    {"sunshine.exe", L"sunshine.exe."},
+    {"sunshine_display_helper.exe", L"sunshine_display_helper.exe."},
+    {"sunshine_wgc_capture.exe", L"sunshine_wgc_capture.exe."},
+    {"playnite-launcher.exe", L"playnite-launcher.exe."},
+  }};
+
+  constexpr std::uint64_t kMinCrashDumpSunshineBytes = 10ull * 1024ull * 1024ull;
+  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
+
+  static std::wstring to_lower_wstring(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+      return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+  }
+
+  static std::string to_lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+  }
+
+  static void add_unique_path(std::vector<std::filesystem::path> &paths,
+                              std::unordered_set<std::wstring> &seen,
+                              const std::filesystem::path &path) {
+    if (path.empty()) {
+      return;
+    }
+    std::filesystem::path normalized = path.lexically_normal();
+    std::wstring key = to_lower_wstring(normalized.wstring());
+    if (!seen.insert(key).second) {
+      return;
+    }
+    paths.push_back(normalized);
+  }
+
+  static std::vector<std::filesystem::path> crash_dump_roots() {
+    std::vector<std::filesystem::path> roots;
+    std::unordered_set<std::wstring> seen;
+
     wchar_t sysDir[MAX_PATH] = {};
     UINT len = GetSystemDirectoryW(sysDir, _countof(sysDir));
-    if (len == 0 || len >= _countof(sysDir)) {
-      return {};
+    if (len > 0 && len < _countof(sysDir)) {
+      std::filesystem::path base(sysDir);
+      add_unique_path(roots, seen, base / L"config" / L"systemprofile" / L"AppData" / L"Local" / L"CrashDumps");
     }
-    std::filesystem::path base(sysDir);
-    return base / L"config" / L"systemprofile" / L"AppData" / L"Local" / L"CrashDumps";
+
+    try {
+      platf::dxgi::safe_token user_token;
+      user_token.reset(platf::dxgi::retrieve_users_token(false));
+      PWSTR localW = nullptr;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
+        std::filesystem::path base(localW);
+        CoTaskMemFree(localW);
+        add_unique_path(roots, seen, base / L"CrashDumps");
+      }
+    } catch (...) {}
+
+    wchar_t localBaseW[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localBaseW))) {
+      add_unique_path(roots, seen, std::filesystem::path(localBaseW) / L"CrashDumps");
+    }
+
+    return roots;
+  }
+
+  static std::vector<std::filesystem::path> wer_roots() {
+    std::vector<std::filesystem::path> roots;
+    std::unordered_set<std::wstring> seen;
+
+    auto add_wer_paths = [&](const std::filesystem::path &base) {
+      add_unique_path(roots, seen, base / L"Microsoft" / L"Windows" / L"WER" / L"ReportQueue");
+      add_unique_path(roots, seen, base / L"Microsoft" / L"Windows" / L"WER" / L"ReportArchive");
+    };
+
+    try {
+      platf::dxgi::safe_token user_token;
+      user_token.reset(platf::dxgi::retrieve_users_token(false));
+      PWSTR localW = nullptr;
+      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
+        std::filesystem::path base(localW);
+        CoTaskMemFree(localW);
+        add_wer_paths(base);
+      }
+    } catch (...) {}
+
+    wchar_t localBaseW[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localBaseW))) {
+      add_wer_paths(std::filesystem::path(localBaseW));
+    }
+
+    return roots;
   }
 
   static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft) {
@@ -1135,32 +1234,141 @@ namespace confighttp {
     return std::string(buf);
   }
 
-  static std::optional<CrashDumpInfo> find_recent_crash_dump(std::chrono::hours max_age) {
-    auto root = crash_dump_directory();
-    if (root.empty()) {
-      return std::nullopt;
+  static const CrashDumpTarget *match_crash_dump_target(const std::wstring &filename_lower) {
+    for (const auto &target : kCrashDumpTargets) {
+      if (filename_lower.rfind(target.prefix, 0) == 0) {
+        return &target;
+      }
     }
-    std::error_code ec {};
-    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
-      return std::nullopt;
-    }
+    return nullptr;
+  }
 
+  static bool is_sunshine_process(const std::string &process_lower) {
+    return process_lower == "sunshine.exe";
+  }
+
+  static bool read_text_file_best_effort(const std::filesystem::path &p, std::string &out_utf8) {
+    std::string raw;
+    if (!read_file_if_exists(p, raw)) {
+      return false;
+    }
+    if (raw.size() >= 2) {
+      const unsigned char b0 = static_cast<unsigned char>(raw[0]);
+      const unsigned char b1 = static_cast<unsigned char>(raw[1]);
+      const bool le_bom = (b0 == 0xFF && b1 == 0xFE);
+      const bool be_bom = (b0 == 0xFE && b1 == 0xFF);
+      if (le_bom || be_bom) {
+        const size_t byte_count = raw.size() - 2;
+        const size_t len16 = byte_count / 2;
+        std::wstring wide;
+        wide.resize(len16);
+        const unsigned char *data = reinterpret_cast<const unsigned char *>(raw.data() + 2);
+        for (size_t i = 0; i < len16; ++i) {
+          uint16_t code = 0;
+          if (be_bom) {
+            code = static_cast<uint16_t>((data[i * 2] << 8) | data[i * 2 + 1]);
+          } else {
+            code = static_cast<uint16_t>(data[i * 2] | (data[i * 2 + 1] << 8));
+          }
+          wide[i] = static_cast<wchar_t>(code);
+        }
+        while (!wide.empty() && wide.back() == L'\0') {
+          wide.pop_back();
+        }
+        if (!wide.empty()) {
+          int needed = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+          if (needed > 0) {
+            out_utf8.assign(static_cast<size_t>(needed), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out_utf8.data(), needed, nullptr, nullptr);
+            while (!out_utf8.empty() && out_utf8.back() == '\0') {
+              out_utf8.pop_back();
+            }
+            return true;
+          }
+        }
+      }
+    }
+    out_utf8 = raw;
+    return true;
+  }
+
+  static std::string trim_copy(std::string_view value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+      ++start;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+      --end;
+    }
+    std::string out(value.substr(start, end - start));
+    if (out.size() >= 2 && out.front() == '"' && out.back() == '"') {
+      out = out.substr(1, out.size() - 2);
+    }
+    return out;
+  }
+
+  static std::string filename_from_path(std::string value) {
+    const size_t pos = value.find_last_of("\\/");
+    if (pos != std::string::npos) {
+      value = value.substr(pos + 1);
+    }
+    return value;
+  }
+
+  static std::optional<std::string> wer_report_app_name(const std::string &content) {
+    std::string app_path;
+    std::string app_name;
+    std::string_view view(content);
+    size_t pos = 0;
+    while (pos < view.size()) {
+      size_t end = view.find_first_of("\r\n", pos);
+      if (end == std::string_view::npos) {
+        end = view.size();
+      }
+      std::string_view line = view.substr(pos, end - pos);
+      pos = end + 1;
+      if (end + 1 < view.size() && view[end] == '\r' && view[end + 1] == '\n') {
+        pos = end + 2;
+      }
+      const size_t eq = line.find('=');
+      if (eq == std::string_view::npos) {
+        continue;
+      }
+      std::string key = to_lower_ascii(trim_copy(line.substr(0, eq)));
+      std::string value = trim_copy(line.substr(eq + 1));
+      if (key == "apppath") {
+        app_path = value;
+      } else if (key == "appname") {
+        app_name = value;
+      }
+    }
+    if (!app_path.empty()) {
+      return to_lower_ascii(filename_from_path(app_path));
+    }
+    if (!app_name.empty()) {
+      return to_lower_ascii(app_name);
+    }
+    return std::nullopt;
+  }
+
+  static std::optional<CrashDumpInfo> newest_dmp_in_dir(const std::filesystem::path &dir, const std::string &process_lower) {
+    std::error_code ec {};
+    if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+      return std::nullopt;
+    }
     CrashDumpInfo best {};
     std::filesystem::file_time_type best_time {};
     bool have = false;
-    for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+    for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
       if (ec) {
-        return std::nullopt;
+        break;
       }
       if (!entry.is_regular_file(ec)) {
         continue;
       }
-      auto filename = entry.path().filename().wstring();
-      std::wstring lower = filename;
-      std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
-        return std::towlower(ch);
-      });
-      if (lower.rfind(L"sunshine.exe.", 0) != 0) {
+      auto ext = to_lower_wstring(entry.path().extension().wstring());
+      if (ext != L".dmp") {
         continue;
       }
       auto write_time = entry.last_write_time(ec);
@@ -1173,15 +1381,13 @@ namespace confighttp {
       if (size_ec) {
         continue;
       }
-      if (file_size_raw < kMinCrashDumpSizeBytes) {
-        continue;
-      }
       if (file_size_raw > std::numeric_limits<std::uint64_t>::max()) {
         continue;
       }
       const std::uint64_t file_size = static_cast<std::uint64_t>(file_size_raw);
       if (!have || write_time > best_time) {
         best_time = write_time;
+        best.process = process_lower;
         best.path = entry.path();
         best.write_time = write_time;
         best.size = file_size;
@@ -1191,12 +1397,197 @@ namespace confighttp {
     if (!have) {
       return std::nullopt;
     }
-    auto sys_time = file_time_to_system_clock(best.write_time);
-    auto now = std::chrono::system_clock::now();
-    if (sys_time + max_age < now) {
-      return std::nullopt;
-    }
     return best;
+  }
+
+  static bool is_recent_dump(const std::filesystem::file_time_type &write_time, std::chrono::hours max_age) {
+    auto sys_time = file_time_to_system_clock(write_time);
+    auto now = std::chrono::system_clock::now();
+    return sys_time + max_age >= now;
+  }
+
+  static bool should_accept_dump(const CrashDumpInfo &info) {
+    if (is_sunshine_process(info.process)) {
+      return info.size >= kMinCrashDumpSunshineBytes;
+    }
+    return true;
+  }
+
+  static std::vector<CrashDumpInfo> find_recent_crash_dumps(std::chrono::hours max_age) {
+    std::unordered_map<std::string, CrashDumpInfo> best;
+
+    auto consider = [&](CrashDumpInfo info) {
+      if (!is_recent_dump(info.write_time, max_age)) {
+        return;
+      }
+      if (!should_accept_dump(info)) {
+        return;
+      }
+      auto it = best.find(info.process);
+      if (it == best.end() || info.write_time > it->second.write_time) {
+        best[info.process] = std::move(info);
+      }
+    };
+
+    for (const auto &root : crash_dump_roots()) {
+      std::error_code ec {};
+      if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        continue;
+      }
+      for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+        if (ec) {
+          break;
+        }
+        if (!entry.is_regular_file(ec)) {
+          continue;
+        }
+        auto filename = entry.path().filename().wstring();
+        std::wstring lower = to_lower_wstring(filename);
+        const CrashDumpTarget *target = match_crash_dump_target(lower);
+        if (!target) {
+          continue;
+        }
+        auto write_time = entry.last_write_time(ec);
+        if (ec) {
+          ec.clear();
+          continue;
+        }
+        std::error_code size_ec {};
+        auto file_size_raw = std::filesystem::file_size(entry.path(), size_ec);
+        if (size_ec) {
+          continue;
+        }
+        if (file_size_raw > std::numeric_limits<std::uint64_t>::max()) {
+          continue;
+        }
+        CrashDumpInfo info;
+        info.process = target->process;
+        info.path = entry.path();
+        info.write_time = write_time;
+        info.size = static_cast<std::uint64_t>(file_size_raw);
+        consider(std::move(info));
+      }
+    }
+
+    for (const auto &root : wer_roots()) {
+      std::error_code ec {};
+      if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        continue;
+      }
+      for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+        if (ec) {
+          break;
+        }
+        if (!entry.is_directory(ec)) {
+          continue;
+        }
+        std::filesystem::path report_path = entry.path() / L"Report.wer";
+        std::string report;
+        if (!read_text_file_best_effort(report_path, report)) {
+          continue;
+        }
+        auto app_name = wer_report_app_name(report);
+        if (!app_name) {
+          continue;
+        }
+        const std::string process_lower = to_lower_ascii(*app_name);
+        bool is_target = false;
+        for (const auto &target : kCrashDumpTargets) {
+          if (process_lower == target.process) {
+            is_target = true;
+            break;
+          }
+        }
+        if (!is_target) {
+          continue;
+        }
+        auto dump = newest_dmp_in_dir(entry.path(), process_lower);
+        if (!dump) {
+          continue;
+        }
+        consider(std::move(*dump));
+      }
+    }
+
+    std::vector<CrashDumpInfo> results;
+    results.reserve(best.size());
+    for (auto &kv : best) {
+      results.push_back(std::move(kv.second));
+    }
+    std::sort(results.begin(), results.end(), [](const CrashDumpInfo &a, const CrashDumpInfo &b) {
+      return a.write_time > b.write_time;
+    });
+    return results;
+  }
+
+  static std::uint64_t estimate_zip_entry_size(std::size_t name_len, std::uint64_t data_size) {
+    constexpr std::uint64_t kLocalHeaderSize = 30;
+    constexpr std::uint64_t kCentralHeaderSize = 46;
+    return kLocalHeaderSize + kCentralHeaderSize + (static_cast<std::uint64_t>(name_len) * 2) + data_size;
+  }
+
+  static std::uint64_t estimate_zip_size(const std::vector<std::pair<std::string, std::string>> &data_entries,
+                                         const std::vector<ZipFileEntry> &file_entries) {
+    constexpr std::uint64_t kEndOfCentralDirectory = 22;
+    std::uint64_t total = kEndOfCentralDirectory;
+    for (const auto &entry : data_entries) {
+      total += estimate_zip_entry_size(entry.first.size(), static_cast<std::uint64_t>(entry.second.size()));
+    }
+    for (const auto &entry : file_entries) {
+      total += estimate_zip_entry_size(entry.name.size(), entry.size);
+    }
+    return total;
+  }
+
+  static std::string crash_bundle_base_name() {
+    char fname[80];
+    std::time_t tt = std::time(nullptr);
+    std::tm tm {};
+    localtime_s(&tm, &tt);
+    std::snprintf(fname, sizeof(fname), "sunshine_crashbundle-%04d%02d%02d-%02d%02d%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return std::string(fname);
+  }
+
+  static std::string crash_bundle_filename(const std::string &base, std::size_t part_index, std::size_t part_count) {
+    if (part_count <= 1) {
+      return base + ".zip";
+    }
+    return base + "-part" + std::to_string(part_index) + ".zip";
+  }
+
+  static std::vector<CrashBundlePartPlan> build_crash_bundle_plan(const std::vector<std::pair<std::string, std::string>> &logs,
+                                                                  const std::vector<CrashDumpInfo> &dumps) {
+    std::vector<CrashBundlePartPlan> parts;
+    const auto base = crash_bundle_base_name();
+    CrashBundlePartPlan current;
+    current.include_logs = true;
+    current.estimated_size = estimate_zip_size(logs, {});
+    parts.push_back(current);
+
+    auto add_new_part = [&](bool include_logs) {
+      CrashBundlePartPlan part;
+      part.include_logs = include_logs;
+      part.estimated_size = include_logs ? estimate_zip_size(logs, {}) : estimate_zip_size({}, {});
+      parts.push_back(part);
+    };
+
+    for (const auto &dump : dumps) {
+      ZipFileEntry entry {dump.path.filename().string(), dump.path, dump.write_time, dump.size};
+      const std::uint64_t entry_est = estimate_zip_entry_size(entry.name.size(), entry.size);
+      CrashBundlePartPlan *part = &parts.back();
+      const bool part_has_payload = part->include_logs ? !logs.empty() : !part->files.empty();
+      if (part->estimated_size + entry_est > kCrashBundleMaxBytes && part_has_payload) {
+        add_new_part(false);
+        part = &parts.back();
+      }
+      part->files.push_back(entry);
+      part->estimated_size += entry_est;
+    }
+
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      parts[i].filename = crash_bundle_filename(base, i + 1, parts.size());
+    }
+    return parts;
   }
 
   static inline void write_le16(std::ostream &out, uint16_t v) {
@@ -1380,24 +1771,26 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
+      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
       nlohmann::json out;
-      if (!info) {
+      if (dumps.empty()) {
         out["available"] = false;
         out["dismissed"] = false;
       } else {
-        auto captured = file_time_to_system_clock(info->write_time);
+        const auto &info = dumps.front();
+        auto captured = file_time_to_system_clock(info.write_time);
         std::string captured_iso = to_iso8601(captured);
         out["available"] = true;
-        out["path"] = info->path.string();
-        out["filename"] = info->path.filename().string();
-        out["size_bytes"] = info->size;
+        out["process"] = info.process;
+        out["path"] = info.path.string();
+        out["filename"] = info.path.filename().string();
+        out["size_bytes"] = info.size;
         out["captured_at"] = captured_iso;
         auto age = std::chrono::system_clock::now() - captured;
         out["age_seconds"] = std::chrono::duration_cast<std::chrono::seconds>(age).count();
         out["age_hours"] = std::chrono::duration_cast<std::chrono::hours>(age).count();
         if (auto dismissal = load_crash_dismissal_state()) {
-          bool matches = dismissal->filename == info->path.filename().string();
+          bool matches = dismissal->filename == info.path.filename().string();
           out["dismissed"] = matches;
           if (matches && !dismissal->dismissed_at.empty()) {
             out["dismissed_at"] = dismissal->dismissed_at;
@@ -1435,13 +1828,14 @@ namespace confighttp {
         bad_request(response, request, "Missing filename");
         return;
       }
-      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
-      if (!info) {
-        bad_request(response, request, "No recent Sunshine crash dumps found (within last 7 days)");
+      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
+      if (dumps.empty()) {
+        bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      std::string current_iso = to_iso8601(file_time_to_system_clock(info->write_time));
-      if (filename != info->path.filename().string()) {
+      const auto &info = dumps.front();
+      std::string current_iso = to_iso8601(file_time_to_system_clock(info.write_time));
+      if (filename != info.path.filename().string()) {
         bad_request(response, request, "Crash dump metadata mismatch");
         return;
       }
@@ -1462,20 +1856,69 @@ namespace confighttp {
     }
   }
 
+  void getCrashBundleManifest(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
+      if (dumps.empty()) {
+        bad_request(response, request, "No recent crash dumps found (within last 7 days)");
+        return;
+      }
+      auto entries = collect_support_logs();
+      auto plan = build_crash_bundle_plan(entries, dumps);
+      nlohmann::json out;
+      out["parts"] = nlohmann::json::array();
+      for (std::size_t i = 0; i < plan.size(); ++i) {
+        nlohmann::json part;
+        part["index"] = static_cast<int>(i + 1);
+        part["filename"] = plan[i].filename;
+        part["estimated_size_bytes"] = plan[i].estimated_size;
+        out["parts"].push_back(part);
+      }
+      send_response(response, out);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+
   void downloadCrashBundle(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
     }
     print_req(request);
     try {
-      auto info = find_recent_crash_dump(std::chrono::hours(24 * 7));
-      if (!info) {
-        bad_request(response, request, "No recent Sunshine crash dumps found (within last 7 days)");
+      std::size_t part_index = 1;
+      auto query = request->parse_query_string();
+      if (const auto it = query.find("part"); it != query.end()) {
+        try {
+          part_index = static_cast<std::size_t>(std::stoul(it->second));
+        } catch (...) {
+          bad_request(response, request, "Invalid crash bundle part index");
+          return;
+        }
+        if (part_index == 0) {
+          bad_request(response, request, "Invalid crash bundle part index");
+          return;
+        }
+      }
+
+      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
+      if (dumps.empty()) {
+        bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
       auto entries = collect_support_logs();
-      std::vector<ZipFileEntry> files;
-      files.push_back(ZipFileEntry {info->path.filename().string(), info->path, info->write_time, info->size});
+      auto plan = build_crash_bundle_plan(entries, dumps);
+      if (part_index > plan.size()) {
+        bad_request(response, request, "Invalid crash bundle part index");
+        return;
+      }
+      const auto &selected = plan[part_index - 1];
+      const std::vector<std::pair<std::string, std::string>> empty_entries;
+      const auto &data_entries = selected.include_logs ? entries : empty_entries;
 
       wchar_t tmpDir[MAX_PATH] = {};
       wchar_t tmpFile[MAX_PATH] = {};
@@ -1489,7 +1932,7 @@ namespace confighttp {
       }
       std::filesystem::path bundle_path(tmpFile);
       std::string error;
-      if (!write_zip_bundle_to_path(bundle_path, entries, files, error)) {
+      if (!write_zip_bundle_to_path(bundle_path, data_entries, selected.files, error)) {
         std::error_code ec {};
         std::filesystem::remove(bundle_path, ec);
         if (error.empty()) {
@@ -1507,11 +1950,7 @@ namespace confighttp {
         return;
       }
 
-      char fname[80];
-      std::time_t tt = std::time(nullptr);
-      std::tm tm {};
-      localtime_s(&tm, &tt);
-      std::snprintf(fname, sizeof(fname), "sunshine_crashbundle-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+      const std::string &fname = selected.filename.empty() ? crash_bundle_base_name() + ".zip" : selected.filename;
 
       SimpleWeb::CaseInsensitiveMultimap headers;
       headers.emplace("Content-Type", "application/zip");

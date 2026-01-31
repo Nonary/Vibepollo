@@ -78,8 +78,21 @@
               }}
             </p>
           </div>
-          <n-button type="error" strong @click="exportCrashBundle">
-            {{ $t('troubleshooting.export_crash_bundle') || 'Export Crash Bundle' }}
+          <n-button
+            type="error"
+            strong
+            :loading="exportCrashPending"
+            :disabled="exportCrashPending"
+            @click="exportCrashBundle"
+          >
+            {{
+              exportCrashPending
+                ? translate(
+                    'troubleshooting.export_crash_bundle_preparing',
+                    'Preparing Crash Bundle...',
+                  )
+                : translate('troubleshooting.export_crash_bundle', 'Export Crash Bundle')
+            }}
           </n-button>
         </div>
       </section>
@@ -291,6 +304,7 @@ const platform = computed(() => store.metadata.platform);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
 const crashDumpAvailable = computed(() => isCrashDumpEligible(crashDump.value));
+const exportCrashPending = ref(false);
 
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
@@ -837,9 +851,70 @@ async function refreshCrashDumpStatus() {
 }
 
 function exportCrashBundle() {
+  return void exportCrashBundleAsync();
+}
+
+function parseContentDispositionFilename(header?: string): string | null {
+  if (!header) return null;
+  const filenameStar = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (filenameStar?.[1]) {
+    try {
+      return decodeURIComponent(filenameStar[1]);
+    } catch {
+      return filenameStar[1];
+    }
+  }
+  const filenameMatch = /filename="?([^\";]+)"?/i.exec(header);
+  return filenameMatch?.[1] || null;
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob);
+  const link = window.document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.URL.revokeObjectURL(url);
+}
+
+async function downloadCrashBundlePart(partIndex: number, filenameHint?: string) {
+  const r = await http.get(`/api/logs/export_crash?part=${partIndex}`, {
+    responseType: 'blob',
+    validateStatus: () => true,
+  });
+  if (r.status !== 200) {
+    throw new Error('crash bundle download failed');
+  }
+  const headerName = parseContentDispositionFilename(r.headers?.['content-disposition']);
+  const filename =
+    filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
+  triggerDownload(r.data as Blob, filename);
+}
+
+async function exportCrashBundleAsync() {
+  if (exportCrashPending.value) return;
+  exportCrashPending.value = true;
   try {
-    if (typeof window !== 'undefined') window.location.href = './api/logs/export_crash';
-  } catch {}
+    if (typeof window === 'undefined') return;
+    const manifest = await http.get('/api/logs/export_crash/manifest', {
+      validateStatus: () => true,
+    });
+    const parts = Array.isArray(manifest.data?.parts) ? manifest.data.parts : [];
+    if (manifest.status === 200 && parts.length > 0) {
+      const ordered = [...parts].sort((a, b) => Number(a.index) - Number(b.index));
+      for (const part of ordered) {
+        const index = Number(part.index) || 0;
+        if (index <= 0) continue;
+        await downloadCrashBundlePart(index, part.filename);
+      }
+    } else {
+      await downloadCrashBundlePart(1);
+    }
+  } catch {
+    // ignore errors
+  } finally {
+    exportCrashPending.value = false;
+  }
 }
 
 function jumpToLatest() {
