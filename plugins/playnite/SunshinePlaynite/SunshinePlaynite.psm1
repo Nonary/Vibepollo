@@ -16,6 +16,7 @@ $script:LogPath = $null
 $script:HostLogger = $null
 $script:LogLevel = $null  # DEBUG | INFO | WARN | ERROR (case-insensitive)
 $script:Bg = $null
+$script:Bg2 = $null
 # Cooperative shutdown (shared across all runspaces)
 if (-not (Get-Variable -Name 'Cts' -Scope Script -ErrorAction SilentlyContinue)) {
   $script:Cts = New-Object System.Threading.CancellationTokenSource
@@ -485,6 +486,38 @@ public sealed class PerConnPump : IDisposable
   }
 }
 catch { Write-Log "Failed to load PerConnPump: $($_.Exception.Message)" }
+
+try {
+  if (-not ([System.Management.Automation.PSTypeName]'RunspaceCloser').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Threading;
+using System.Management.Automation;
+using System.Management.Automation.Runspaces;
+
+public static class RunspaceCloser
+{
+    public static bool Close(object psObj, object rsObj, int timeoutMs)
+    {
+        var ps = psObj as PowerShell;
+        var rs = rsObj as Runspace;
+        var done = new ManualResetEventSlim(false);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { if (ps != null) { ps.Stop(); } } catch { }
+            try { if (ps != null) { ps.Dispose(); } } catch { }
+            try { if (rs != null) { rs.Close(); } } catch { }
+            try { if (rs != null) { rs.Dispose(); } } catch { }
+            try { done.Set(); } catch { }
+        });
+        try { return done.Wait(timeoutMs); } catch { return false; }
+    }
+}
+"@
+    Write-Log "Loaded RunspaceCloser"
+  }
+}
+catch { Write-Log "Failed to load RunspaceCloser: $($_.Exception.Message)" }
 
 try {
   if (-not ([System.Management.Automation.PSTypeName]'AnonConnectMsgInterop.HandshakeUtil').Type) {
@@ -1286,7 +1319,9 @@ function OnApplicationStarted() {
   try {
     Initialize-Logging
     Write-Log "OnApplicationStarted invoked"
-      if (-not $script:Cts) { $script:Cts = New-Object System.Threading.CancellationTokenSource }
+      $ctsWasCancelled = $false
+      try { if ($script:Cts -and $script:Cts.IsCancellationRequested) { $ctsWasCancelled = $true } } catch {}
+      if (-not $script:Cts -or $ctsWasCancelled) { $script:Cts = New-Object System.Threading.CancellationTokenSource }
       # Initialize UI bridge with Playnite's Dispatcher and API
       try {
         $dispatcher = $null
@@ -1306,58 +1341,101 @@ function OnApplicationStarted() {
     catch { Write-Log "Failed to initialize UIBridge: $($_.Exception.Message)" }
     # Start background connector in a dedicated PowerShell runspace for proper function/variable scope
     try {
+      Ensure-ScriptVar -Name 'Bg' -Default $null
+      Ensure-ScriptVar -Name 'Bg2' -Default $null
+      Cleanup-StaleRunspaceByName -Name 'connector' -VarName 'Bg'
+      Cleanup-StaleRunspaceByName -Name 'pipe-server' -VarName 'Bg2'
+      if ($ctsWasCancelled) {
+        try {
+          $bag = Get-ScriptVarValue -Name 'Bg'
+          if ($bag) { Close-RunspaceFast -Bag $bag -TimeoutMs 300 }
+        } catch {}
+        try {
+          $bag2 = Get-ScriptVarValue -Name 'Bg2'
+          if ($bag2) { Close-RunspaceFast -Bag $bag2 -TimeoutMs 300 }
+        } catch {}
+        Set-ScriptVarValue -Name 'Bg' -Value $null
+        Set-ScriptVarValue -Name 'Bg2' -Value $null
+      }
+      $bgAlive = $false
+      $bg2Alive = $false
+      try {
+        $bag = Get-ScriptVarValue -Name 'Bg'
+        if ($bag) { $bgAlive = Test-RunspaceAlive -Bag $bag -Name 'connector' }
+      } catch {}
+      try {
+        $bag2 = Get-ScriptVarValue -Name 'Bg2'
+        if ($bag2) { $bg2Alive = Test-RunspaceAlive -Bag $bag2 -Name 'pipe-server' }
+      } catch {}
+
+      if ($bgAlive -and $bg2Alive) {
+        Write-Log "OnApplicationStarted: background runspaces already active; skipping re-init"
+        try { Register-GameCollectionEvents } catch { Write-Log "OnApplicationStarted: event registration failed: $($_.Exception.Message)" }
+        try { Ensure-SnapshotDebounceTimer } catch {}
+        try { Send-RunningGamesStatusSnapshot } catch { Write-Log ("OnApplicationStarted: running snapshot failed: {0}" -f $_.Exception.Message) }
+        return
+      }
+
       $modulePath = try { Join-Path $PSScriptRoot 'SunshinePlaynite.psm1' } catch { $null }
-      $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-      $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
-      $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
-      $rs.Open()
-      if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
-      if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
-      try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
-      try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
-      if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
-      $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
-      # Ensure connector runspace can access the shared launcher connections table
-      try { $rs.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
-      # No need to pass UI objects; UIBridge holds static references accessible across runspaces
-      $ps = [System.Management.Automation.PowerShell]::Create()
-      $ps.Runspace = $rs
-      if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
-      # Rebind this runspace's $global:LauncherConns to the injected shared instance
-      $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
-      $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
-      $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
-      $ps.AddScript('Start-ConnectorLoop -Token $Cts.Token') | Out-Null
-      $handle = $ps.BeginInvoke()
-      $script:Bg = @{ Runspace = $rs; PowerShell = $ps; Handle = $handle }
-      Write-Log "OnApplicationStarted: background runspace started"
-      try { Write-DebugLog ("OnApplicationStarted: RS1={0}" -f $rs.InstanceId) } catch {}
+      if (-not $bgAlive) {
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
+        $rs.Open()
+        if ($PlayniteApi) { $rs.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
+        if ($Outbox) { $rs.SessionStateProxy.SetVariable('Outbox', $Outbox) }
+        try { if ($global:SunshineLaunchedGameIds) { $rs.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+        try { if ($global:PendingLauncherGameIds) { $rs.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
+        if ($PSScriptRoot) { $rs.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
+        $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
+        # Ensure connector runspace can access the shared launcher connections table
+        try { $rs.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
+        # No need to pass UI objects; UIBridge holds static references accessible across runspaces
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
+        # Rebind this runspace's $global:LauncherConns to the injected shared instance
+        $ps.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+        $ps.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+        $ps.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
+        $ps.AddScript('Start-ConnectorLoop -Token $Cts.Token') | Out-Null
+        $handle = $ps.BeginInvoke()
+        $script:Bg = @{ Runspace = $rs; PowerShell = $ps; Handle = $handle }
+        Write-Log "OnApplicationStarted: background runspace started"
+        try { Write-DebugLog ("OnApplicationStarted: RS1={0}" -f $rs.InstanceId) } catch {}
+      } else {
+        Write-Log "OnApplicationStarted: connector runspace already active" -Level 'DEBUG'
+      }
 
       # Start pipe server in a separate runspace
-      $rs2 = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-      $rs2.ApartmentState = [System.Threading.ApartmentState]::MTA
-      $rs2.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
-      $rs2.Open()
-      if ($PlayniteApi) { $rs2.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
-      if ($Outbox) { $rs2.SessionStateProxy.SetVariable('Outbox', $Outbox) }
-      # Inject the existing shared LauncherConns object so this runspace uses the same instance
-      try { $rs2.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
-      try { if ($global:SunshineLaunchedGameIds) { $rs2.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
-      try { if ($global:PendingLauncherGameIds) { $rs2.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
-      if ($PSScriptRoot) { $rs2.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
-      $rs2.SessionStateProxy.SetVariable('Cts', $script:Cts)
-      $ps2 = [System.Management.Automation.PowerShell]::Create()
-      $ps2.Runspace = $rs2
-      if ($modulePath) { $ps2.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
-      # After module import (which initializes its own table), rebind to the injected shared instance
-      $ps2.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
-      $ps2.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
-      $ps2.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
-      $ps2.AddScript('Start-PipeServerLoop -Token $Cts.Token') | Out-Null
-      $handle2 = $ps2.BeginInvoke()
-      $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
-      Write-Log "OnApplicationStarted: pipe server runspace started"
-      try { Write-DebugLog ("OnApplicationStarted: RS2={0}" -f $rs2.InstanceId) } catch {}
+      if (-not $bg2Alive) {
+        $rs2 = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs2.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $rs2.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
+        $rs2.Open()
+        if ($PlayniteApi) { $rs2.SessionStateProxy.SetVariable('PlayniteApi', $PlayniteApi) }
+        if ($Outbox) { $rs2.SessionStateProxy.SetVariable('Outbox', $Outbox) }
+        # Inject the existing shared LauncherConns object so this runspace uses the same instance
+        try { $rs2.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
+        try { if ($global:SunshineLaunchedGameIds) { $rs2.SessionStateProxy.SetVariable('SunshineLaunchedGameIds', $global:SunshineLaunchedGameIds) } } catch {}
+        try { if ($global:PendingLauncherGameIds) { $rs2.SessionStateProxy.SetVariable('PendingLauncherGameIds', $global:PendingLauncherGameIds) } } catch {}
+        if ($PSScriptRoot) { $rs2.SessionStateProxy.SetVariable('PSScriptRoot', $PSScriptRoot) }
+        $rs2.SessionStateProxy.SetVariable('Cts', $script:Cts)
+        $ps2 = [System.Management.Automation.PowerShell]::Create()
+        $ps2.Runspace = $rs2
+        if ($modulePath) { $ps2.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
+        # After module import (which initializes its own table), rebind to the injected shared instance
+        $ps2.AddScript('$global:LauncherConns = $LauncherConns') | Out-Null
+        $ps2.AddScript('$global:SunshineLaunchedGameIds = $SunshineLaunchedGameIds') | Out-Null
+        $ps2.AddScript('$global:PendingLauncherGameIds = $PendingLauncherGameIds') | Out-Null
+        $ps2.AddScript('Start-PipeServerLoop -Token $Cts.Token') | Out-Null
+        $handle2 = $ps2.BeginInvoke()
+        $script:Bg2 = @{ Runspace = $rs2; PowerShell = $ps2; Handle = $handle2 }
+        Write-Log "OnApplicationStarted: pipe server runspace started"
+        try { Write-DebugLog ("OnApplicationStarted: RS2={0}" -f $rs2.InstanceId) } catch {}
+      } else {
+        Write-Log "OnApplicationStarted: pipe server runspace already active" -Level 'DEBUG'
+      }
       try { Register-GameCollectionEvents } catch { Write-Log "OnApplicationStarted: event registration failed: $($_.Exception.Message)" }
       try { Ensure-SnapshotDebounceTimer } catch {}
       try { Send-RunningGamesStatusSnapshot } catch { Write-Log ("OnApplicationStarted: running snapshot failed: {0}" -f $_.Exception.Message) }
@@ -1926,20 +2004,107 @@ function Close-RunspaceFast {
     $ps = $null; $rs = $null
     try { $ps = $Bag.PowerShell } catch {}
     try { $rs = $Bag.Runspace } catch {}
-    $done = New-Object System.Threading.ManualResetEventSlim($false)
-    $state = [PSCustomObject]@{ PS = $ps; RS = $rs; Done = $done }
-    [System.Threading.ThreadPool]::QueueUserWorkItem({ param($s)
-      try { if ($s.PS) { $s.PS.Stop() } } catch {}
-      try { if ($s.PS) { $s.PS.Dispose() } } catch {}
-      try { if ($s.RS) { $s.RS.Close() } } catch {}
-      try { if ($s.RS) { $s.RS.Dispose() } } catch {}
-      try { $s.Done.Set() } catch {}
-    }, $state) | Out-Null
-    if (-not $done.Wait($TimeoutMs)) {
+    $completed = $false
+    try {
+      $completed = [RunspaceCloser]::Close($ps, $rs, $TimeoutMs)
+    } catch { $completed = $false }
+    if (-not $completed) {
       Write-Log "Close-RunspaceFast: timeout after $TimeoutMs ms; abandoning cleanup."
     }
   } catch {
     Write-Log "Close-RunspaceFast: error: $($_.Exception.Message)"
+  }
+}
+
+# Guard against duplicate background runspaces on repeated Playnite start/stop cycles.
+function Test-RunspaceAlive {
+  param(
+    [Parameter(Mandatory=$true)][hashtable]$Bag,
+    [string]$Name = 'runspace'
+  )
+  try {
+    if (-not $Bag) { return $false }
+    $rs = $null; $ps = $null; $handle = $null
+    try { $rs = $Bag.Runspace } catch {}
+    try { $ps = $Bag.PowerShell } catch {}
+    try { $handle = $Bag.Handle } catch {}
+    if (-not $rs -or -not $ps) { return $false }
+    $state = $null
+    try { $state = $rs.RunspaceStateInfo.State } catch {}
+    if ($state -eq 'Closed' -or $state -eq 'Broken') { return $false }
+    if ($handle -and $handle.IsCompleted) {
+      try {
+        $psState = $ps.InvocationStateInfo.State
+        if ($psState -eq 'Completed' -or $psState -eq 'Failed' -or $psState -eq 'Stopped') { return $false }
+      } catch { return $false }
+    }
+    return $true
+  } catch {
+    Write-Log ("Test-RunspaceAlive({0}): error: {1}" -f $Name, $_.Exception.Message)
+    return $false
+  }
+}
+
+function Cleanup-StaleRunspace {
+  param(
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$true)][ref]$BagRef
+  )
+  try {
+    if (-not $BagRef.Value) { return }
+    if (Test-RunspaceAlive -Bag $BagRef.Value -Name $Name) { return }
+    try { Close-RunspaceFast -Bag $BagRef.Value -TimeoutMs 300 } catch {}
+    $BagRef.Value = $null
+    Write-Log ("Cleanup-StaleRunspace: cleared {0}" -f $Name) -Level 'DEBUG'
+  } catch {
+    Write-Log ("Cleanup-StaleRunspace: error clearing {0}: {1}" -f $Name, $_.Exception.Message)
+  }
+}
+
+function Ensure-ScriptVar {
+  param(
+    [Parameter(Mandatory=$true)][string]$Name,
+    $Default = $null
+  )
+  try {
+    $v = Get-Variable -Name $Name -Scope Script -ErrorAction SilentlyContinue
+    if (-not $v) {
+      Set-Variable -Name $Name -Scope Script -Value $Default -Force
+    }
+  } catch {
+    Write-Log ("Ensure-ScriptVar({0}): error: {1}" -f $Name, $_.Exception.Message)
+  }
+}
+
+function Get-ScriptVarValue {
+  param([Parameter(Mandatory=$true)][string]$Name)
+  try {
+    $v = Get-Variable -Name $Name -Scope Script -ErrorAction SilentlyContinue
+    if ($v) { return $v.Value }
+  } catch {}
+  return $null
+}
+
+function Set-ScriptVarValue {
+  param([Parameter(Mandatory=$true)][string]$Name, $Value = $null)
+  try { Set-Variable -Name $Name -Scope Script -Value $Value -Force } catch {}
+}
+
+function Cleanup-StaleRunspaceByName {
+  param(
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$true)][string]$VarName
+  )
+  try {
+    Ensure-ScriptVar -Name $VarName -Default $null
+    $bag = Get-ScriptVarValue -Name $VarName
+    if (-not $bag) { return }
+    if (Test-RunspaceAlive -Bag $bag -Name $Name) { return }
+    try { Close-RunspaceFast -Bag $bag -TimeoutMs 300 } catch {}
+    Set-ScriptVarValue -Name $VarName -Value $null
+    Write-Log ("Cleanup-StaleRunspace: cleared {0}" -f $Name) -Level 'DEBUG'
+  } catch {
+    Write-Log ("Cleanup-StaleRunspace: error clearing {0}: {1}" -f $Name, $_.Exception.Message)
   }
 }
 
