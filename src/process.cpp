@@ -2218,7 +2218,8 @@ namespace proc {
         if (auto custom_node = app_node.get_child_optional("lossless-scaling-custom"s)) {
           populate_lossless_overrides(*custom_node, ctx.lossless_scaling_custom);
         }
-        ctx.lossless_scaling_launch_delay_seconds = std::max(0, lossless_scaling_launch_delay.value_or(0));
+        ctx.lossless_scaling_launch_delay_seconds =
+          std::max(0, lossless_scaling_launch_delay.value_or(kLosslessScalingDefaultLaunchDelaySeconds));
         const auto legacy_override = app_node.get_optional<bool>("lossless-scaling-legacy-auto-detect"s);
         ctx.lossless_scaling_legacy_auto_detect = legacy_override.value_or(config::lossless_scaling.legacy_auto_detect);
         if (dd_config_override && !dd_config_override->empty()) {

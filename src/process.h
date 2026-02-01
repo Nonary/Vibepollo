@@ -47,6 +47,8 @@ namespace proc {
 
   typedef config::prep_cmd_t cmd_t;
 
+  inline constexpr int kLosslessScalingDefaultLaunchDelaySeconds = 5;
+
   struct active_session_guard_t {
     bool has_active_app {false};
     bool uses_playnite {false};
@@ -121,7 +123,7 @@ namespace proc {
     std::string lossless_scaling_profile {"custom"};
     lossless_scaling_profile_overrides_t lossless_scaling_recommended;
     lossless_scaling_profile_overrides_t lossless_scaling_custom;
-    int lossless_scaling_launch_delay_seconds {0};
+    int lossless_scaling_launch_delay_seconds {kLosslessScalingDefaultLaunchDelaySeconds};
     bool lossless_scaling_legacy_auto_detect {false};
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
 
