@@ -30,7 +30,8 @@ namespace platf {
   bool rtss_streaming_refresh(int fps);
 
   // Restore any RTSS settings modified at stream start.
-  void rtss_streaming_stop();
+  // If keep_process_running is true, Sunshine leaves RTSS running for pause/resume scenarios.
+  void rtss_streaming_stop(bool keep_process_running = false);
 
   void rtss_restore_pending_overrides();
 
