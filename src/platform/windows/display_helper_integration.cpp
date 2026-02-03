@@ -101,6 +101,8 @@ namespace {
     return armed;
   }
 
+  bool user_session_ready();
+
   bool request_includes_resolution(const display_helper_integration::DisplayApplyRequest &request) {
     if (!request.configuration) {
       return false;
@@ -139,11 +141,31 @@ namespace {
     BOOST_LOG(info) << "Display helper: deferring resolution apply for session " << pending_apply_state()->session_id << ".";
   }
 
+  void maybe_queue_deferred_resolution_apply_on_api_unavailable(
+    const display_helper_integration::DisplayApplyRequest &request
+  ) {
+    if (!request.session) {
+      return;
+    }
+    if (!request_includes_resolution(request)) {
+      return;
+    }
+    queue_deferred_resolution_apply(request);
+    BOOST_LOG(info) << "Display helper: API unavailable; queued deferred resolution apply for session "
+                    << pending_apply_state()->session_id << ".";
+  }
+
   bool should_defer_resolution_apply(const display_helper_integration::DisplayApplyRequest &request) {
     if (!request.session) {
       return false;
     }
     if (!request_includes_resolution(request)) {
+      return false;
+    }
+    if (!platf::is_running_as_system()) {
+      return false;
+    }
+    if (user_session_ready()) {
       return false;
     }
     return true;
@@ -391,22 +413,24 @@ namespace {
     return topology_ok;
   }
 
-  bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
+  display_device::SettingsManagerInterface::ApplyResult apply_in_process(
+    const display_helper_integration::DisplayApplyRequest &request
+  ) {
     if (!request.configuration) {
       BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
-      return false;
+      return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
     }
 
     auto ctx = make_settings_manager();
     if (!ctx) {
-      return false;
+      return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
     }
 
     const auto result = ctx->settings_mgr->applySettings(*request.configuration);
     const bool ok = (result == display_device::SettingsManagerInterface::ApplyResult::Ok);
     BOOST_LOG(info) << "Display helper (in-process): APPLY result=" << (ok ? "Ok" : "Failed");
     if (!ok) {
-      return false;
+      return result;
     }
 
     // Apply optional topology/placement tweaks when provided.
@@ -420,7 +444,7 @@ namespace {
       (void) ctx->display->setDisplayOrigin(device_id, point);
     }
 
-    return ok;
+    return display_device::SettingsManagerInterface::ApplyResult::Ok;
   }
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
@@ -1082,7 +1106,11 @@ namespace display_helper_integration {
         return false;
       }
 
-      if (!apply_in_process(request)) {
+      const auto apply_result = apply_in_process(request);
+      if (apply_result != display_device::SettingsManagerInterface::ApplyResult::Ok) {
+        if (apply_result == display_device::SettingsManagerInterface::ApplyResult::ApiTemporarilyUnavailable) {
+          maybe_queue_deferred_resolution_apply_on_api_unavailable(request);
+        }
         BOOST_LOG(warning) << "Display helper: in-process APPLY failed.";
         return false;
       }
@@ -1177,7 +1205,7 @@ namespace display_helper_integration {
       }
     }
 
-    if (!user_session_ready()) {
+    if (platf::is_running_as_system() && !user_session_ready()) {
       return false;
     }
 
