@@ -96,6 +96,9 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    // Keep the Playnite IPC client alive when the UI refreshes status.
+    // This updates the inactivity timer and ensures a fresh connection.
+    platf::playnite::ensure_client_for_api();
     nlohmann::json out;
     // Active reflects current pipe/server connection only
     out["active"] = platf::playnite::is_active();
