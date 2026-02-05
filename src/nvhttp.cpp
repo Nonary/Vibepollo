@@ -1591,7 +1591,6 @@ namespace nvhttp {
     tree.put("root.uniqueid", http::unique_id);
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
-    tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
@@ -1616,8 +1615,18 @@ namespace nvhttp {
       tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
     }
 
-    if (!video::has_attempted_encoder_probe()) {
-      BOOST_LOG(info) << "Serverinfo requested before initial encoder probe; probing encoders now.";
+    const bool hevc_auto_mode_unresolved = config::video.hevc_mode == 0 && video::active_hevc_mode == 0;
+    const bool av1_auto_mode_unresolved = config::video.av1_mode == 0 && video::active_av1_mode == 0;
+    const bool should_probe_for_serverinfo = !video::has_attempted_encoder_probe() ||
+                                             hevc_auto_mode_unresolved ||
+                                             av1_auto_mode_unresolved;
+
+    if (should_probe_for_serverinfo) {
+      if (!video::has_attempted_encoder_probe()) {
+        BOOST_LOG(info) << "Serverinfo requested before initial encoder probe; probing encoders now.";
+      } else {
+        BOOST_LOG(info) << "Serverinfo requested with unresolved codec probe state; retrying encoder probe.";
+      }
 #ifdef _WIN32
       auto encoder_probe_display_result = VDISPLAY::ensure_display();
       if (!encoder_probe_display_result.success) {
@@ -1629,10 +1638,26 @@ namespace nvhttp {
       });
 #endif
 
-      if (video::probe_encoders()) {
+      bool encoder_probe_failed = video::probe_encoders();
+#ifdef _WIN32
+      if (encoder_probe_failed && !has_any_active_display()) {
+        BOOST_LOG(info) << "Serverinfo encoder probe failed with no active display; waiting for activation before retry.";
+        constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+        if (wait_for_display_activation(kDisplayActivationTimeout)) {
+          BOOST_LOG(info) << "Display became active; retrying serverinfo encoder probe.";
+          encoder_probe_failed = video::probe_encoders();
+        } else {
+          BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying serverinfo encoder probe.";
+        }
+      }
+#endif
+
+      if (encoder_probe_failed) {
         BOOST_LOG(error) << "Failed to probe encoders for serverinfo response.";
       }
     }
+
+    tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
     uint32_t codec_mode_flags = SCM_H264;
     if (video::last_encoder_probe_supported_yuv444_for_codec[0]) {
