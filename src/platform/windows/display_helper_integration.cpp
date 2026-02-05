@@ -1059,47 +1059,49 @@ namespace display_helper_integration {
         return false;
       }
 
-      const bool system_profile_only = platf::is_running_as_system() && !user_session_ready();
-
-      if (!system_profile_only) {
-        // Stream-start policy: if a helper is already running, hard-restart it immediately
-        // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
-        const bool hard_restart = (request.session != nullptr);
-        bool helper_ready = ensure_helper_started(hard_restart, true);
-        if (!helper_ready) {
-          helper_ready = ensure_helper_started(hard_restart, true);
-        }
-
-        if (helper_ready) {
-          auto payload = build_helper_apply_payload(request);
-          if (!payload) {
-            BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
-            return false;
-          }
-
-          BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
-          const bool ok = platf::display_helper_client::send_apply_json(*payload);
-          BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-          if (ok && request.session) {
-            set_active_session(
-              *request.session,
-              request.session_overrides.device_id_override,
-              request.session_overrides.fps_override,
-              request.session_overrides.width_override,
-              request.session_overrides.height_override,
-              request.session_overrides.virtual_display_override,
-              request.session_overrides.framegen_refresh_override
-            );
-            if (request.enable_virtual_display_watchdog) {
-              platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
-            }
-          }
-          maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
-          return ok;
-        }
-
-        BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
+      // Prefer the helper for APPLY, even when running as SYSTEM without an interactive user session.
+      // In-process display APIs frequently return ERROR_ACCESS_DENIED in that context.
+      const bool system_no_user_session = platf::is_running_as_system() && !user_session_ready();
+      if (system_no_user_session) {
+        BOOST_LOG(debug) << "Display helper: SYSTEM context without user session; preferring helper dispatch.";
       }
+
+      // Stream-start policy: if a helper is already running, hard-restart it immediately
+      // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
+      const bool hard_restart = (request.session != nullptr);
+      bool helper_ready = ensure_helper_started(hard_restart, true);
+      if (!helper_ready) {
+        helper_ready = ensure_helper_started(hard_restart, true);
+      }
+
+      if (helper_ready) {
+        auto payload = build_helper_apply_payload(request);
+        if (!payload) {
+          BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
+          return false;
+        }
+
+        BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
+        const bool ok = platf::display_helper_client::send_apply_json(*payload);
+        BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        if (ok && request.session) {
+          set_active_session(
+            *request.session,
+            request.session_overrides.device_id_override,
+            request.session_overrides.fps_override,
+            request.session_overrides.width_override,
+            request.session_overrides.height_override,
+            request.session_overrides.virtual_display_override,
+            request.session_overrides.framegen_refresh_override
+          );
+          if (request.enable_virtual_display_watchdog) {
+            platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+          }
+        }
+        return ok;
+      }
+
+      BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
 
       if (!request.session) {
         BOOST_LOG(error) << "Display helper: missing session context for in-process APPLY.";
