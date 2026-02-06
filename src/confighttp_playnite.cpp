@@ -96,6 +96,9 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    // Keep the Playnite IPC client alive when the UI refreshes status.
+    // This updates the inactivity timer and ensures a fresh connection.
+    platf::playnite::ensure_client_for_api();
     nlohmann::json out;
     // Active reflects current pipe/server connection only
     out["active"] = platf::playnite::is_active();
@@ -1168,6 +1171,78 @@ namespace confighttp {
     return value;
   }
 
+  static bool has_dump_file_extension(const std::wstring &ext_lower) {
+    return ext_lower == L".dmp" || ext_lower == L".mdmp" || ext_lower == L".hdmp";
+  }
+
+  static bool ends_with_ascii(std::string_view value, std::string_view suffix) {
+    return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
+  }
+
+  static std::string trim_copy(std::string_view value);
+  static std::string filename_from_path(std::string value);
+
+  static bool has_numeric_instance_suffix(std::wstring_view value, std::size_t open_pos, std::size_t close_pos) {
+    if (open_pos == std::wstring_view::npos || close_pos == std::wstring_view::npos || close_pos <= open_pos + 1) {
+      return false;
+    }
+    for (std::size_t i = open_pos + 1; i < close_pos; ++i) {
+      if (!std::iswdigit(value[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static std::string normalize_process_name_for_matching(std::string value) {
+    value = to_lower_ascii(filename_from_path(trim_copy(value)));
+    if (value.empty()) {
+      return {};
+    }
+
+    const std::size_t close = value.rfind(')');
+    const std::size_t open = value.rfind('(');
+    if (open != std::string::npos && close != std::string::npos && close > open + 1) {
+      bool numeric_suffix = true;
+      for (std::size_t i = open + 1; i < close; ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(value[i]))) {
+          numeric_suffix = false;
+          break;
+        }
+      }
+      if (numeric_suffix && close == value.size() - 1) {
+        value.erase(open);
+      }
+    }
+
+    return value;
+  }
+
+  static const CrashDumpTarget *find_crash_dump_target_by_process(std::string process_name) {
+    process_name = normalize_process_name_for_matching(std::move(process_name));
+    if (process_name.empty()) {
+      return nullptr;
+    }
+
+    const bool has_exe = ends_with_ascii(process_name, ".exe");
+    for (const auto &target : kCrashDumpTargets) {
+      if (process_name == target.process) {
+        return &target;
+      }
+      if (!has_exe) {
+        if ((process_name + ".exe") == target.process) {
+          return &target;
+        }
+      } else if (process_name.size() > 4) {
+        const std::string without_ext = process_name.substr(0, process_name.size() - 4);
+        if (without_ext == target.process.substr(0, target.process.size() - 4)) {
+          return &target;
+        }
+      }
+    }
+    return nullptr;
+  }
+
   static void add_unique_path(std::vector<std::filesystem::path> &paths,
                               std::unordered_set<std::wstring> &seen,
                               const std::filesystem::path &path) {
@@ -1275,6 +1350,18 @@ namespace confighttp {
       if (filename_lower.rfind(target.prefix, 0) == 0) {
         return &target;
       }
+      if (!target.prefix.empty()) {
+        std::wstring base = target.prefix.substr(0, target.prefix.size() - 1);
+        if (filename_lower.rfind(base + L"(", 0) == 0) {
+          const std::size_t open = base.size();
+          const std::size_t close = filename_lower.find(L')', open + 1);
+          if (has_numeric_instance_suffix(filename_lower, open, close) &&
+              close + 1 < filename_lower.size() &&
+              filename_lower[close + 1] == L'.') {
+            return &target;
+          }
+        }
+      }
     }
     return nullptr;
   }
@@ -1380,10 +1467,10 @@ namespace confighttp {
       }
     }
     if (!app_path.empty()) {
-      return to_lower_ascii(filename_from_path(app_path));
+      return normalize_process_name_for_matching(app_path);
     }
     if (!app_name.empty()) {
-      return to_lower_ascii(app_name);
+      return normalize_process_name_for_matching(app_name);
     }
     return std::nullopt;
   }
@@ -1404,7 +1491,7 @@ namespace confighttp {
         continue;
       }
       auto ext = to_lower_wstring(entry.path().extension().wstring());
-      if (ext != L".dmp") {
+      if (!has_dump_file_extension(ext)) {
         continue;
       }
       auto write_time = entry.last_write_time(ec);
@@ -1483,6 +1570,10 @@ namespace confighttp {
         if (!target) {
           continue;
         }
+        auto ext = to_lower_wstring(entry.path().extension().wstring());
+        if (!has_dump_file_extension(ext)) {
+          continue;
+        }
         auto write_time = entry.last_write_time(ec);
         if (ec) {
           ec.clear();
@@ -1526,18 +1617,11 @@ namespace confighttp {
         if (!app_name) {
           continue;
         }
-        const std::string process_lower = to_lower_ascii(*app_name);
-        bool is_target = false;
-        for (const auto &target : kCrashDumpTargets) {
-          if (process_lower == target.process) {
-            is_target = true;
-            break;
-          }
-        }
-        if (!is_target) {
+        const CrashDumpTarget *target = find_crash_dump_target_by_process(*app_name);
+        if (!target) {
           continue;
         }
-        auto dump = newest_dmp_in_dir(entry.path(), process_lower);
+        auto dump = newest_dmp_in_dir(entry.path(), target->process);
         if (!dump) {
           continue;
         }

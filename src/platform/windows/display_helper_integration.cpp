@@ -96,6 +96,98 @@ namespace {
     return state;
   }
 
+  std::atomic<bool> &cold_start_resolution_deferral_armed() {
+    static std::atomic<bool> armed {true};
+    return armed;
+  }
+
+  bool user_session_ready();
+
+  bool request_includes_resolution(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.configuration) {
+      return false;
+    }
+    return request.configuration->m_resolution.has_value();
+  }
+
+  PendingApplyState make_pending_apply_state(const display_helper_integration::DisplayApplyRequest &request) {
+    PendingApplyState state;
+    state.request = request;
+    state.has_session = request.session != nullptr;
+    state.request.session = nullptr;
+
+    if (request.session) {
+      state.session_id = request.session->id;
+      state.session_snapshot.width = request.session->width;
+      state.session_snapshot.height = request.session->height;
+      state.session_snapshot.fps = request.session->fps;
+      state.session_snapshot.enable_hdr = request.session->enable_hdr;
+      state.session_snapshot.enable_sops = request.session->enable_sops;
+      state.session_snapshot.virtual_display = request.session->virtual_display;
+      state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
+      state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
+      state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
+      state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
+    }
+
+    return state;
+  }
+
+  void queue_deferred_resolution_apply(const display_helper_integration::DisplayApplyRequest &request) {
+    PendingApplyState state = make_pending_apply_state(request);
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    pending_apply_state() = std::move(state);
+    BOOST_LOG(info) << "Display helper: deferring resolution apply for session " << pending_apply_state()->session_id << ".";
+  }
+
+  void maybe_queue_deferred_resolution_apply_on_api_unavailable(
+    const display_helper_integration::DisplayApplyRequest &request
+  ) {
+    if (!request.session) {
+      return;
+    }
+    if (!request_includes_resolution(request)) {
+      return;
+    }
+    queue_deferred_resolution_apply(request);
+    BOOST_LOG(info) << "Display helper: API unavailable; queued deferred resolution apply for session "
+                    << pending_apply_state()->session_id << ".";
+  }
+
+  bool should_defer_resolution_apply(const display_helper_integration::DisplayApplyRequest &request) {
+    if (!request.session) {
+      return false;
+    }
+    if (!request_includes_resolution(request)) {
+      return false;
+    }
+    if (!platf::is_running_as_system()) {
+      return false;
+    }
+    if (user_session_ready()) {
+      return false;
+    }
+    return true;
+  }
+
+  void maybe_queue_deferred_resolution_apply(
+    const display_helper_integration::DisplayApplyRequest &request,
+    bool allow_resolution_deferral
+  ) {
+    if (!allow_resolution_deferral) {
+      return;
+    }
+    if (!should_defer_resolution_apply(request)) {
+      return;
+    }
+    bool expected = true;
+    if (!cold_start_resolution_deferral_armed().compare_exchange_strong(expected, false)) {
+      return;
+    }
+    queue_deferred_resolution_apply(request);
+  }
+
   bool user_session_ready() {
     HANDLE user_token = platf::dxgi::retrieve_users_token(false);
     if (!user_token) {
@@ -321,22 +413,24 @@ namespace {
     return topology_ok;
   }
 
-  bool apply_in_process(const display_helper_integration::DisplayApplyRequest &request) {
+  display_device::SettingsManagerInterface::ApplyResult apply_in_process(
+    const display_helper_integration::DisplayApplyRequest &request
+  ) {
     if (!request.configuration) {
       BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
-      return false;
+      return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
     }
 
     auto ctx = make_settings_manager();
     if (!ctx) {
-      return false;
+      return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
     }
 
     const auto result = ctx->settings_mgr->applySettings(*request.configuration);
     const bool ok = (result == display_device::SettingsManagerInterface::ApplyResult::Ok);
     BOOST_LOG(info) << "Display helper (in-process): APPLY result=" << (ok ? "Ok" : "Failed");
     if (!ok) {
-      return false;
+      return result;
     }
 
     // Apply optional topology/placement tweaks when provided.
@@ -350,7 +444,7 @@ namespace {
       (void) ctx->display->setDisplayOrigin(device_id, point);
     }
 
-    return ok;
+    return display_device::SettingsManagerInterface::ApplyResult::Ok;
   }
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
@@ -940,33 +1034,38 @@ namespace {
 }  // namespace
 
 namespace display_helper_integration {
-  bool apply(const DisplayApplyRequest &request) {
-    if (request.action == DisplayApplyAction::Skip) {
-      BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
-      return false;
-    }
-
-    if (request.action == DisplayApplyAction::Revert) {
-      const bool helper_ready = ensure_helper_started(false, true);
-      if (!helper_ready) {
-        BOOST_LOG(warning) << "Display helper: REVERT skipped (helper not reachable).";
-        clear_active_session();
+  namespace {
+    bool apply_internal(const DisplayApplyRequest &request, bool allow_resolution_deferral) {
+      if (request.action == DisplayApplyAction::Skip) {
+        BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
         return false;
       }
-      BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
-      const bool ok = platf::display_helper_client::send_revert();
-      BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
-      clear_active_session();
-      return ok;
-    }
 
-    if (request.action != DisplayApplyAction::Apply) {
-      return false;
-    }
+      if (request.action == DisplayApplyAction::Revert) {
+        const bool helper_ready = ensure_helper_started(false, true);
+        if (!helper_ready) {
+          BOOST_LOG(warning) << "Display helper: REVERT skipped (helper not reachable).";
+          clear_active_session();
+          return false;
+        }
+        BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
+        const bool ok = platf::display_helper_client::send_revert();
+        BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
+        clear_active_session();
+        return ok;
+      }
 
-    const bool system_profile_only = platf::is_running_as_system() && !user_session_ready();
+      if (request.action != DisplayApplyAction::Apply) {
+        return false;
+      }
 
-    if (!system_profile_only) {
+      // Prefer the helper for APPLY, even when running as SYSTEM without an interactive user session.
+      // In-process display APIs frequently return ERROR_ACCESS_DENIED in that context.
+      const bool system_no_user_session = platf::is_running_as_system() && !user_session_ready();
+      if (system_no_user_session) {
+        BOOST_LOG(debug) << "Display helper: SYSTEM context without user session; preferring helper dispatch.";
+      }
+
       // Stream-start policy: if a helper is already running, hard-restart it immediately
       // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
       const bool hard_restart = (request.session != nullptr);
@@ -1003,37 +1102,46 @@ namespace display_helper_integration {
       }
 
       BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
-    }
 
-    if (!request.session) {
-      BOOST_LOG(error) << "Display helper: missing session context for in-process APPLY.";
-      return false;
-    }
+      if (!request.session) {
+        BOOST_LOG(error) << "Display helper: missing session context for in-process APPLY.";
+        return false;
+      }
 
-    if (!apply_in_process(request)) {
-      BOOST_LOG(warning) << "Display helper: in-process APPLY failed.";
-      return false;
-    }
+      const auto apply_result = apply_in_process(request);
+      if (apply_result != display_device::SettingsManagerInterface::ApplyResult::Ok) {
+        if (apply_result == display_device::SettingsManagerInterface::ApplyResult::ApiTemporarilyUnavailable) {
+          maybe_queue_deferred_resolution_apply_on_api_unavailable(request);
+        }
+        BOOST_LOG(warning) << "Display helper: in-process APPLY failed.";
+        return false;
+      }
 
-    const auto device_id = request.configuration ? request.configuration->m_device_id : std::string {};
-    if (!verify_helper_topology(*request.session, device_id)) {
-      BOOST_LOG(warning) << "Display helper: topology verification failed after in-process APPLY.";
-    }
-    (void) apply_topology_definition(request.topology, "in-process");
+      const auto device_id = request.configuration ? request.configuration->m_device_id : std::string {};
+      if (!verify_helper_topology(*request.session, device_id)) {
+        BOOST_LOG(warning) << "Display helper: topology verification failed after in-process APPLY.";
+      }
+      (void) apply_topology_definition(request.topology, "in-process");
 
-    set_active_session(
-      *request.session,
-      request.session_overrides.device_id_override,
-      request.session_overrides.fps_override,
-      request.session_overrides.width_override,
-      request.session_overrides.height_override,
-      request.session_overrides.virtual_display_override,
-      request.session_overrides.framegen_refresh_override
-    );
-    if (request.enable_virtual_display_watchdog) {
-      platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+      set_active_session(
+        *request.session,
+        request.session_overrides.device_id_override,
+        request.session_overrides.fps_override,
+        request.session_overrides.width_override,
+        request.session_overrides.height_override,
+        request.session_overrides.virtual_display_override,
+        request.session_overrides.framegen_refresh_override
+      );
+      if (request.enable_virtual_display_watchdog) {
+        platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
+      }
+      maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
+      return true;
     }
-    return true;
+  }  // namespace
+
+  bool apply(const DisplayApplyRequest &request) {
+    return apply_internal(request, true);
   }
 
   bool revert() {
@@ -1099,7 +1207,7 @@ namespace display_helper_integration {
       }
     }
 
-    if (!user_session_ready()) {
+    if (platf::is_running_as_system() && !user_session_ready()) {
       return false;
     }
 
@@ -1152,7 +1260,7 @@ namespace display_helper_integration {
     }
 
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
-    const bool ok = apply(pending.request);
+    const bool ok = apply_internal(pending.request, false);
     if (!ok) {
       pending.attempts += 1;
       pending.request.session = nullptr;

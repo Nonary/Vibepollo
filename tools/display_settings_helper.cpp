@@ -43,6 +43,7 @@
   #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/settings_utils.h>
   #include <display_device/windows/win_api_layer.h>
+  #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_api_utils.h>
   #include <display_device/windows/win_display_device.h>
   #include <nlohmann/json.hpp>
@@ -260,6 +261,9 @@ namespace {
       if (!ensure_initialized()) {
         return false;
       }
+      // For user-requested APPLY operations, avoid triggering display stack recovery.
+      // Recovery is reserved for REVERT/restore paths where "best effort" repair is desired.
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
       try {
         if (base_topology && m_dd->isTopologyValid(*base_topology)) {
           (void) m_dd->setTopology(*base_topology);
@@ -295,10 +299,24 @@ namespace {
       return m_sm->resetPersistence();
     }
 
+    bool recover_display_stack() {
+      if (!ensure_initialized()) {
+        return false;
+      }
+      try {
+        m_wapi->recoverDisplayStack();
+        return true;
+      } catch (...) {
+        return false;
+      }
+    }
+
     bool set_display_origin(const std::string &device_id, const display_device::Point &origin) {
       if (!ensure_initialized()) {
         return false;
       }
+      // Treat monitor reposition as part of APPLY semantics (no recovery).
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
       try {
         return m_dd->setDisplayOrigin(device_id, origin);
       } catch (...) {
@@ -3762,7 +3780,16 @@ namespace {
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
 
-    if (state.controller.soft_test_display_settings(cfg, sunshine_topology)) {
+    bool validated = state.controller.soft_test_display_settings(cfg, sunshine_topology);
+    if (!validated) {
+      BOOST_LOG(warning) << "Display helper: configuration failed SDC_VALIDATE soft-test; attempting display stack recovery and retrying once.";
+      if (state.controller.recover_display_stack()) {
+        std::this_thread::sleep_for(500ms);
+        validated = state.controller.soft_test_display_settings(cfg, sunshine_topology);
+      }
+    }
+
+    if (validated) {
       BOOST_LOG(info) << "Display configuration validated, creating scheduled task before applying settings";
       const bool task_created = create_restore_scheduled_task();
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");

@@ -13,6 +13,7 @@
 // platform includes
 #include <UserEnv.h>
 #include <windows.h>
+#include <WtsApi32.h>
 
 // standard includes
 #include "src/logging.h"
@@ -22,6 +23,111 @@
 #include <algorithm>
 #include <system_error>
 #include <vector>
+
+namespace {
+
+  constexpr wchar_t kDefaultDesktopW[] = L"winsta0\\default";
+  constexpr wchar_t kWinlogonDesktopW[] = L"winsta0\\winlogon";
+
+  bool start_as_system_in_active_console_session(
+    const std::wstring &cmd_line,
+    const std::wstring &working_dir,
+    DWORD creation_flags,
+    STARTUPINFOEXW &si,
+    PROCESS_INFORMATION &pi
+  ) {
+    const DWORD session_id = WTSGetActiveConsoleSessionId();
+    if (session_id == 0xFFFFFFFF) {
+      BOOST_LOG(debug) << "Active console session id unavailable; cannot launch SYSTEM child in active session.";
+      return false;
+    }
+
+    HANDLE raw_process_token = nullptr;
+    if (!OpenProcessToken(
+          GetCurrentProcess(),
+          TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
+          &raw_process_token
+        )) {
+      BOOST_LOG(debug) << "OpenProcessToken failed while launching SYSTEM child in active session, winerr=" << GetLastError();
+      return false;
+    }
+    auto close_process_token = util::fail_guard([&]() {
+      CloseHandle(raw_process_token);
+    });
+
+    HANDLE raw_primary_token = nullptr;
+    if (!DuplicateTokenEx(
+          raw_process_token,
+          MAXIMUM_ALLOWED,
+          nullptr,
+          SecurityImpersonation,
+          TokenPrimary,
+          &raw_primary_token
+        )) {
+      BOOST_LOG(debug) << "DuplicateTokenEx failed while launching SYSTEM child in active session, winerr=" << GetLastError();
+      return false;
+    }
+    auto close_primary_token = util::fail_guard([&]() {
+      CloseHandle(raw_primary_token);
+    });
+
+    if (!SetTokenInformation(raw_primary_token, TokenSessionId, (PVOID) &session_id, sizeof(session_id))) {
+      BOOST_LOG(debug) << "SetTokenInformation(TokenSessionId=" << session_id
+                       << ") failed while launching SYSTEM child in active session, winerr=" << GetLastError();
+      return false;
+    }
+
+    void *env_block = nullptr;
+    if (!CreateEnvironmentBlock(&env_block, raw_primary_token, FALSE)) {
+      BOOST_LOG(debug) << "CreateEnvironmentBlock failed while launching SYSTEM child in active session, winerr=" << GetLastError();
+      env_block = nullptr;
+    }
+    auto destroy_env = util::fail_guard([&]() {
+      if (env_block) {
+        DestroyEnvironmentBlock(env_block);
+      }
+    });
+
+    // Ensure the child runs on the interactive window station/desktop for the active console session.
+    auto *prev_desktop = si.StartupInfo.lpDesktop;
+    const auto try_launch = [&](const wchar_t *desktop) {
+      si.StartupInfo.lpDesktop = const_cast<LPWSTR>(desktop);
+      return CreateProcessAsUserW(
+        raw_primary_token,
+        nullptr,
+        (LPWSTR) cmd_line.c_str(),
+        nullptr,
+        nullptr,
+        FALSE,
+        creation_flags,
+        env_block,
+        working_dir.empty() ? nullptr : working_dir.c_str(),
+        (LPSTARTUPINFOW) &si,
+        &pi
+      );
+    };
+
+    // Prefer the user's default desktop, but fall back to Winlogon if required (e.g. lock/login screen).
+    BOOL ok = try_launch(kDefaultDesktopW);
+    const wchar_t *launched_desktop = kDefaultDesktopW;
+    if (!ok) {
+      ok = try_launch(kWinlogonDesktopW);
+      launched_desktop = kWinlogonDesktopW;
+    }
+
+    si.StartupInfo.lpDesktop = prev_desktop;
+    if (!ok) {
+      BOOST_LOG(debug) << "CreateProcessAsUserW failed while launching SYSTEM child in active session (session_id="
+                       << session_id << "), winerr=" << GetLastError();
+    } else {
+      BOOST_LOG(info) << "Launched SYSTEM child in active console session (session_id=" << session_id
+                      << ", pid=" << pi.dwProcessId << ", desktop=" << (launched_desktop == kDefaultDesktopW ? "default" : "winlogon")
+                      << ").";
+    }
+    return ok;
+  }
+
+}  // namespace
 
 ProcessHandler::ProcessHandler():
     job_(create_kill_on_close_job()),
@@ -130,18 +236,25 @@ bool ProcessHandler::start(
       );
     } else if (allow_system_fallback) {
       BOOST_LOG(warning) << "No user session available; launching as SYSTEM: " << platf::to_utf8(application_path);
-      ret = CreateProcessW(
-        nullptr,
-        (LPWSTR) cmd_line.c_str(),
-        nullptr,
-        nullptr,
-        FALSE,
-        creation_flags,
-        nullptr,
-        working_dir.empty() ? nullptr : working_dir.c_str(),
-        (LPSTARTUPINFOW) &si,
-        &pi_
-      );
+
+      // Prefer launching into the active console session so display APIs (e.g., SetDisplayConfig)
+      // have a better chance of working while Sunshine runs as a service.
+      if (start_as_system_in_active_console_session(cmd_line, working_dir, creation_flags, si, pi_)) {
+        ret = TRUE;
+      } else {
+        ret = CreateProcessW(
+          nullptr,
+          (LPWSTR) cmd_line.c_str(),
+          nullptr,
+          nullptr,
+          FALSE,
+          creation_flags,
+          nullptr,
+          working_dir.empty() ? nullptr : working_dir.c_str(),
+          (LPSTARTUPINFOW) &si,
+          &pi_
+        );
+      }
     } else {
       BOOST_LOG(error) << "Failed to retrieve user token while launching: " << platf::to_utf8(application_path);
       return false;
