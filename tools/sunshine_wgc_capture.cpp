@@ -1620,10 +1620,38 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // Create GraphicsCaptureItem for monitor using interop
+  // Create GraphicsCaptureItem for monitor using interop.
+  // Virtual display topology can churn briefly while Sunshine is applying display settings,
+  // so retry monitor selection/item creation before treating startup as fatal.
   GraphicsCaptureItem item = nullptr;
   if (!display_manager.create_graphics_capture_item(item)) {
-    return 1;
+    constexpr int kMaxCreateItemAttempts = 8;
+    bool created = false;
+    for (int attempt = 1; attempt <= kMaxCreateItemAttempts && !created; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      if (!display_manager.select_monitor(g_config)) {
+        BOOST_LOG(warning) << "GraphicsCaptureItem retry " << attempt
+                           << "/" << kMaxCreateItemAttempts
+                           << ": monitor selection failed";
+        continue;
+      }
+      if (!display_manager.get_monitor_info()) {
+        BOOST_LOG(warning) << "GraphicsCaptureItem retry " << attempt
+                           << "/" << kMaxCreateItemAttempts
+                           << ": failed to query monitor info";
+        continue;
+      }
+      if (display_manager.create_graphics_capture_item(item)) {
+        BOOST_LOG(info) << "GraphicsCaptureItem created after retry " << attempt
+                        << "/" << kMaxCreateItemAttempts;
+        created = true;
+        break;
+      }
+    }
+    if (!created) {
+      BOOST_LOG(error) << "Failed to create GraphicsCaptureItem after retries";
+      return 1;
+    }
   }
 
   // Calculate final resolution based on config and monitor info
