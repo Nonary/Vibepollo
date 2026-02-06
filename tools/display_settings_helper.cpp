@@ -2175,6 +2175,28 @@ namespace {
         return st.stop_possible() && st.stop_requested();
       };
 
+      auto confirm_current_matches_golden = [&]() -> bool {
+        display_device::DisplaySettingsSnapshot cur;
+        const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+        if (should_cancel()) {
+          return false;
+        }
+        const bool ok = got_stable && equal_snapshots_strict(cur, *golden) && quiet_period(750ms, 150ms, st);
+        if (ok) {
+          BOOST_LOG(info) << "Golden restore: current state already matches golden snapshot; skipping apply.";
+        }
+        return ok;
+      };
+
+      if (should_cancel()) {
+        return false;
+      }
+      if (confirm_current_matches_golden()) {
+        BOOST_LOG(info) << "Golden restore confirmed without apply; clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
+        return true;
+      }
+
       // Attempt 1
       if (should_cancel()) {
         return false;
@@ -2205,6 +2227,11 @@ namespace {
       }
       if (should_cancel()) {
         return false;
+      }
+      if (confirm_current_matches_golden()) {
+        BOOST_LOG(info) << "Golden restore confirmed before retry apply; clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
+        return true;
       }
       (void) controller.apply_snapshot(*golden);
       display_device::DisplaySettingsSnapshot cur2;
@@ -2266,6 +2293,32 @@ namespace {
         return st.stop_possible() && st.stop_requested();
       };
 
+      auto confirm_current_matches_session = [&]() -> bool {
+        display_device::DisplaySettingsSnapshot cur;
+        const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+        if (should_cancel()) {
+          return false;
+        }
+        const bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period(750ms, 150ms, st);
+        if (ok) {
+          BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
+                          << "): current state already matches baseline; skipping apply.";
+        }
+        return ok;
+      };
+
+      if (should_cancel()) {
+        return false;
+      }
+      if (confirm_current_matches_session()) {
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()
+        )
+                              .count();
+        last_session_restore_success_ms.store(now_ms, std::memory_order_release);
+        return true;
+      }
+
       if (should_cancel()) {
         return false;
       }
@@ -2289,6 +2342,14 @@ namespace {
         }
         if (should_cancel()) {
           return false;
+        }
+        if (confirm_current_matches_session()) {
+          const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()
+          )
+                                .count();
+          last_session_restore_success_ms.store(now_ms, std::memory_order_release);
+          return true;
         }
         (void) controller.apply_snapshot(*base);
         display_device::DisplaySettingsSnapshot cur2;
@@ -2599,6 +2660,7 @@ namespace {
       }
       self->reset_restore_backoff();
       self->retry_revert_on_topology.store(false, std::memory_order_release);
+      self->exit_after_revert.store(false, std::memory_order_release);
       run_restore_cleanup("initial attempt");
 
       if (cancelled()) {
@@ -2713,6 +2775,7 @@ namespace {
           }
           self->reset_restore_backoff();
           self->retry_revert_on_topology.store(false, std::memory_order_release);
+          self->exit_after_revert.store(false, std::memory_order_release);
           run_restore_cleanup("polling attempt");
 
           if (cancelled()) {
