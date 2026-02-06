@@ -47,8 +47,8 @@ namespace confighttp {
 
   // Web UI endpoints
   void listApiTokens(resp_https_t response, req_https_t request);
+  void listApiTokenRoutes(resp_https_t response, req_https_t request);
   void revokeApiToken(resp_https_t response, req_https_t request);
-  void getTokenPage(resp_https_t response, req_https_t request);
   void loginUser(resp_https_t response, req_https_t request);
   void refreshSession(resp_https_t response, req_https_t request);
   void authStatus(resp_https_t response, req_https_t request);

@@ -17,6 +17,11 @@ const routes = [
   { path: '/logs', component: DashboardView },
   { path: '/troubleshooting', component: TroubleshootingView },
   { path: '/clients', component: ClientManagementView },
+  {
+    path: '/api-tokens',
+    alias: '/api-tokens/',
+    redirect: { path: '/clients', query: { sec: 'tokens' } },
+  },
   { path: '/webrtc', component: WebRtcClientView, meta: { container: 'full' } },
 ];
 

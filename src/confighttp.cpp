@@ -8,6 +8,7 @@
 
 // standard includes
 #include <algorithm>
+#include <array>
 #include <boost/regex.hpp>
 #include <chrono>
 #include <filesystem>
@@ -131,6 +132,74 @@ namespace confighttp {
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
+
+  bool is_token_route_eligible(std::string_view path) {
+    return path.rfind("/api/", 0) == 0 && path.rfind("/api/auth/", 0) != 0;
+  }
+
+  std::vector<std::string> ordered_methods_for_catalog(const std::set<std::string, std::less<>> &methods) {
+    static constexpr std::array<std::string_view, 5> preferred_order = {
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE"
+    };
+
+    std::vector<std::string> ordered;
+    ordered.reserve(methods.size());
+
+    for (const auto method : preferred_order) {
+      if (methods.contains(std::string(method))) {
+        ordered.emplace_back(method);
+      }
+    }
+
+    for (const auto &method : methods) {
+      if (std::find(preferred_order.begin(), preferred_order.end(), method) == preferred_order.end()) {
+        ordered.push_back(method);
+      }
+    }
+
+    return ordered;
+  }
+
+  namespace {
+    using token_route_methods_t = std::map<std::string, std::set<std::string, std::less<>>, std::less<>>;
+
+    std::mutex token_route_catalog_mutex;
+    token_route_methods_t token_route_catalog;
+
+    std::string normalize_route_pattern(std::string pattern) {
+      if (!pattern.empty() && pattern.front() == '^') {
+        pattern.erase(pattern.begin());
+      }
+      if (!pattern.empty() && pattern.back() == '$') {
+        pattern.pop_back();
+      }
+      return pattern;
+    }
+
+    void clear_token_route_catalog() {
+      std::scoped_lock lock(token_route_catalog_mutex);
+      token_route_catalog.clear();
+    }
+
+    void record_token_route(std::string path, std::string method) {
+      if (!is_token_route_eligible(path)) {
+        return;
+      }
+      boost::to_upper(method);
+      std::scoped_lock lock(token_route_catalog_mutex);
+      token_route_catalog[std::move(path)].insert(std::move(method));
+    }
+
+    token_route_methods_t snapshot_token_route_catalog() {
+      std::scoped_lock lock(token_route_catalog_mutex);
+      return token_route_catalog;
+    }
+
+  }  // namespace
 
   // Forward declaration for error helper implemented later
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
@@ -3070,6 +3139,33 @@ namespace confighttp {
   }
 
   /**
+   * @brief List all token-eligible API routes and methods.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void listApiTokenRoutes(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    const auto catalog = snapshot_token_route_catalog();
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["routes"] = nlohmann::json::array();
+
+    for (const auto &[path, methods] : catalog) {
+      output_tree["routes"].push_back({
+        {"path", path},
+        {"methods", ordered_methods_for_catalog(methods)}
+      });
+    }
+
+    send_response(response, output_tree);
+  }
+
+  /**
    * @brief Revoke (delete) an API token by its hash.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
@@ -3134,84 +3230,91 @@ namespace confighttp {
     server.resource["^/welcome/?$"]["GET"] = getSpaEntry;
     server.resource["^/login/?$"]["GET"] = getSpaEntry;
     server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
-    server.resource["^/api/pin$"]["POST"] = savePin;
-    server.resource["^/api/apps$"]["GET"] = getApps;
-    server.resource["^/api/logs$"]["GET"] = getLogs;
-    server.resource["^/api/apps$"]["POST"] = saveApp;
-    server.resource["^/api/config$"]["GET"] = getConfig;
-    server.resource["^/api/config$"]["POST"] = saveConfig;
+    clear_token_route_catalog();
+    auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
+      server.resource[pattern][method] = handler;
+      record_token_route(normalize_route_pattern(pattern), method);
+    };
+
+    register_api_route("^/api/pin$", "POST", savePin);
+    register_api_route("^/api/apps$", "GET", getApps);
+    register_api_route("^/api/logs$", "GET", getLogs);
+    register_api_route("^/api/apps$", "POST", saveApp);
+    register_api_route("^/api/config$", "GET", getConfig);
+    register_api_route("^/api/config$", "POST", saveConfig);
     // Partial updates for config settings; merges with existing file and
     // removes keys when value is null or empty string.
-    server.resource["^/api/config$"]["PATCH"] = patchConfig;
-    server.resource["^/api/metadata$"]["GET"] = getMetadata;
-    server.resource["^/api/configLocale$"]["GET"] = getLocale;
-    server.resource["^/api/restart$"]["POST"] = restart;
-    server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
+    register_api_route("^/api/config$", "PATCH", patchConfig);
+    register_api_route("^/api/metadata$", "GET", getMetadata);
+    register_api_route("^/api/configLocale$", "GET", getLocale);
+    register_api_route("^/api/restart$", "POST", restart);
+    register_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
-    server.resource["^/api/display/export_golden$"]["POST"] = postExportGoldenDisplay;
-    server.resource["^/api/display/golden_status$"]["GET"] = getGoldenStatus;
-    server.resource["^/api/display/golden$"]["DELETE"] = deleteGolden;
+    register_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
+    register_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
+    register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
 #endif
-    server.resource["^/api/password$"]["POST"] = savePassword;
-    server.resource["^/api/display-devices$"]["GET"] = getDisplayDevices;
+    register_api_route("^/api/password$", "POST", savePassword);
+    register_api_route("^/api/display-devices$", "GET", getDisplayDevices);
 #ifdef _WIN32
-    server.resource["^/api/framegen/edid-refresh$"]["GET"] = getFramegenEdidRefresh;
-    server.resource["^/api/health/vigem$"]["GET"] = getVigemHealth;
-    server.resource["^/api/health/crashdump$"]["GET"] = getCrashDumpStatus;
-    server.resource["^/api/health/crashdump/dismiss$"]["POST"] = postCrashDumpDismiss;
+    register_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
+    register_api_route("^/api/health/vigem$", "GET", getVigemHealth);
+    register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
+    register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
 #endif
-    server.resource["^/api/apps/([A-Fa-f0-9-]+)/cover$"]["GET"] = getAppCover;
-    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
-    server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
-    server.resource["^/api/clients/list$"]["GET"] = getClients;
-    server.resource["^/api/clients/hdr-profiles$"]["GET"] = getHdrProfiles;
-    server.resource["^/api/clients/update$"]["POST"] = updateClient;
-    server.resource["^/api/clients/unpair$"]["POST"] = unpair;
-    server.resource["^/api/clients/disconnect$"]["POST"] = disconnectClient;
-    server.resource["^/api/apps/close$"]["POST"] = closeApp;
-    server.resource["^/api/session/status$"]["GET"] = getSessionStatus;
-    server.resource["^/api/webrtc/sessions$"]["GET"] = listWebRTCSessions;
-    server.resource["^/api/webrtc/sessions$"]["POST"] = createWebRTCSession;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["GET"] = getWebRTCSession;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)$"]["DELETE"] = deleteWebRTCSession;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$"]["POST"] = postWebRTCOffer;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/answer$"]["GET"] = getWebRTCAnswer;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$"]["GET"] = getWebRTCIce;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$"]["POST"] = postWebRTCIce;
-    server.resource["^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice/stream$"]["GET"] = getWebRTCIceStream;
-    server.resource["^/api/webrtc/cert$"]["GET"] = getWebRTCCert;
+    register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
+    register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
+    register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
+    register_api_route("^/api/clients/list$", "GET", getClients);
+    register_api_route("^/api/clients/hdr-profiles$", "GET", getHdrProfiles);
+    register_api_route("^/api/clients/update$", "POST", updateClient);
+    register_api_route("^/api/clients/unpair$", "POST", unpair);
+    register_api_route("^/api/clients/disconnect$", "POST", disconnectClient);
+    register_api_route("^/api/apps/close$", "POST", closeApp);
+    register_api_route("^/api/session/status$", "GET", getSessionStatus);
+    register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
+    register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$", "POST", postWebRTCOffer);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/answer$", "GET", getWebRTCAnswer);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$", "GET", getWebRTCIce);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice$", "POST", postWebRTCIce);
+    register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/ice/stream$", "GET", getWebRTCIceStream);
+    register_api_route("^/api/webrtc/cert$", "GET", getWebRTCCert);
     // Keep legacy cover upload endpoint present in upstream master
-    server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
-    server.resource["^/api/apps/purge_autosync$"]["POST"] = purgeAutoSyncedApps;
+    register_api_route("^/api/covers/upload$", "POST", uploadCover);
+    register_api_route("^/api/apps/purge_autosync$", "POST", purgeAutoSyncedApps);
 #ifdef _WIN32
-    server.resource["^/api/playnite/status$"]["GET"] = getPlayniteStatus;
-    server.resource["^/api/rtss/status$"]["GET"] = getRtssStatus;
-    server.resource["^/api/lossless_scaling/status$"]["GET"] = getLosslessScalingStatus;
-    server.resource["^/api/playnite/install$"]["POST"] = installPlaynite;
-    server.resource["^/api/playnite/uninstall$"]["POST"] = uninstallPlaynite;
-    server.resource["^/api/playnite/games$"]["GET"] = getPlayniteGames;
-    server.resource["^/api/playnite/categories$"]["GET"] = getPlayniteCategories;
-    server.resource["^/api/playnite/force_sync$"]["POST"] = postPlayniteForceSync;
-    server.resource["^/api/playnite/launch$"]["POST"] = postPlayniteLaunch;
+    register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
+    register_api_route("^/api/rtss/status$", "GET", getRtssStatus);
+    register_api_route("^/api/lossless_scaling/status$", "GET", getLosslessScalingStatus);
+    register_api_route("^/api/playnite/install$", "POST", installPlaynite);
+    register_api_route("^/api/playnite/uninstall$", "POST", uninstallPlaynite);
+    register_api_route("^/api/playnite/games$", "GET", getPlayniteGames);
+    register_api_route("^/api/playnite/categories$", "GET", getPlayniteCategories);
+    register_api_route("^/api/playnite/force_sync$", "POST", postPlayniteForceSync);
+    register_api_route("^/api/playnite/launch$", "POST", postPlayniteLaunch);
     // Export logs bundle (Windows only)
-    server.resource["^/api/logs/export$"]["GET"] = downloadPlayniteLogs;
-    server.resource["^/api/logs/export_crash/manifest$"]["GET"] = getCrashBundleManifest;
-    server.resource["^/api/logs/export_crash$"]["GET"] = downloadCrashBundle;
+    register_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
+    register_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
+    register_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage;
     server.resource["^/assets\\/.+$"]["GET"] = getNodeModules;
-    server.resource["^/api/token$"]["POST"] = generateApiToken;
-    server.resource["^/api/tokens$"]["GET"] = listApiTokens;
-    server.resource["^/api/token/([a-fA-F0-9]+)$"]["DELETE"] = revokeApiToken;
-    // Session validation endpoint used by the web UI to detect HttpOnly session cookies
-    server.resource["^/api-tokens/?$"]["GET"] = getTokenPage;
-    server.resource["^/api/auth/login$"]["POST"] = loginUser;
-    server.resource["^/api/auth/refresh$"]["POST"] = refreshSession;
-    server.resource["^/api/auth/logout$"]["POST"] = logoutUser;
-    server.resource["^/api/auth/status$"]["GET"] = authStatus;
-    server.resource["^/api/auth/sessions$"]["GET"] = listSessions;
-    server.resource["^/api/auth/sessions/([A-Fa-f0-9]+)$"]["DELETE"] = revokeSession;
+    register_api_route("^/api/token$", "POST", generateApiToken);
+    register_api_route("^/api/tokens$", "GET", listApiTokens);
+    register_api_route("^/api/token/routes$", "GET", listApiTokenRoutes);
+    register_api_route("^/api/token/([a-fA-F0-9]+)$", "DELETE", revokeApiToken);
+    // Legacy token-management URL kept for backwards compatibility with older bookmarks.
+    server.resource["^/api-tokens/?$"]["GET"] = getSpaEntry;
+    register_api_route("^/api/auth/login$", "POST", loginUser);
+    register_api_route("^/api/auth/refresh$", "POST", refreshSession);
+    register_api_route("^/api/auth/logout$", "POST", logoutUser);
+    register_api_route("^/api/auth/status$", "GET", authStatus);
+    register_api_route("^/api/auth/sessions$", "GET", listSessions);
+    register_api_route("^/api/auth/sessions/([A-Fa-f0-9]+)$", "DELETE", revokeSession);
     server.config.reuse_address = true;
     server.config.address = net::af_to_any_address_string(address_family);
     server.config.port = port_https;
@@ -3251,27 +3354,6 @@ namespace confighttp {
 
     tcp.join();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
-  }
-
-  /**
-   * @brief Handles the HTTP request to serve the API token management page.
-   *
-   * This function authenticates the incoming request and, if successful,
-   * reads the "api-tokens.html" file from the web directory and sends its
-   * contents as an HTTP response with the appropriate content type.
-   *
-   * @param response The HTTP response object used to send data back to the client.
-   * @param request The HTTP request object containing client request data.
-   */
-  void getTokenPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    std::string content = file_handler::read_file(WEB_DIR "api-tokens.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    response->write(content, headers);
   }
 
   /**

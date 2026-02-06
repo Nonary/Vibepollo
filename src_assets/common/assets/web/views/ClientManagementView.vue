@@ -430,7 +430,9 @@
     </n-card>
 
     <TrustedDevicesCard />
-    <ApiTokenManager />
+    <section ref="apiTokensSectionRef" id="clients-api-tokens">
+      <ApiTokenManager />
+    </section>
 
     <!-- Confirm remove single client -->
     <n-modal :show="showConfirmRemove" @update:show="(v) => (showConfirmRemove = v)">
@@ -489,8 +491,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 import { http } from '@/http';
 import {
   NAlert,
@@ -591,8 +594,10 @@ interface DisplayDevice {
 }
 
 const { t } = useI18n();
+const route = useRoute();
 const message = useMessage();
 const configStore = useConfigStore();
+const apiTokensSectionRef = ref<HTMLElement | null>(null);
 const globalPrefer10BitSdr = computed<boolean>(() =>
   toBool((configStore.config as any)?.prefer_10bit_sdr, false),
 );
@@ -1250,17 +1255,36 @@ const displayDeviceOptions = computed(() => {
   return opts;
 });
 
+function scrollToTokenSection(): void {
+  apiTokensSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 onMounted(async () => {
   const auth = useAuthStore();
   await configStore.fetchConfig().catch(() => {});
   await auth.waitForAuthentication();
   await refreshClients();
+  if (route.query['sec'] === 'tokens') {
+    await nextTick();
+    scrollToTokenSection();
+  }
   if (refreshIntervalId === null) {
     refreshIntervalId = setInterval(() => {
       void refreshClients();
     }, 5000);
   }
 });
+
+watch(
+  () => route.query['sec'],
+  async (section) => {
+    if (section !== 'tokens') {
+      return;
+    }
+    await nextTick();
+    scrollToTokenSection();
+  },
+);
 
 onBeforeUnmount(() => {
   if (refreshIntervalId !== null) {

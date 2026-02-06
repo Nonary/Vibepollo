@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <vector>
 
 // lib includes
 #include <boost/asio.hpp>
@@ -23,6 +25,8 @@
 using namespace testing;
 
 namespace confighttp {
+  bool is_token_route_eligible(std::string_view path);
+  std::vector<std::string> ordered_methods_for_catalog(const std::set<std::string, std::less<>> &methods);
 
   class ConfigHttpAuthHelpersTest: public Test {
   protected:
@@ -260,6 +264,25 @@ namespace confighttp {
     EXPECT_EQ(scope_to_string(TokenScope::Read), "Read");
     EXPECT_EQ(scope_to_string(TokenScope::Write), "Write");
     EXPECT_THROW(scope_to_string(static_cast<TokenScope>(-1)), std::invalid_argument);
+  }
+
+  TEST(ConfigHttpHelpersTest, given_api_paths_when_checking_token_route_eligibility_then_should_filter_auth_routes) {
+    EXPECT_TRUE(is_token_route_eligible("/api/clients/list"));
+    EXPECT_TRUE(is_token_route_eligible("/api/token/routes"));
+    EXPECT_FALSE(is_token_route_eligible("/api/auth/login"));
+    EXPECT_FALSE(is_token_route_eligible("/api/auth/sessions/abc123"));
+    EXPECT_FALSE(is_token_route_eligible("/clients"));
+  }
+
+  TEST(ConfigHttpHelpersTest, given_unsorted_methods_when_ordering_catalog_methods_then_should_follow_preferred_order) {
+    std::set<std::string, std::less<>> methods {"PATCH", "DELETE", "POST", "GET", "TRACE"};
+    const auto ordered = ordered_methods_for_catalog(methods);
+    ASSERT_EQ(ordered.size(), 5);
+    EXPECT_EQ(ordered[0], "GET");
+    EXPECT_EQ(ordered[1], "POST");
+    EXPECT_EQ(ordered[2], "PATCH");
+    EXPECT_EQ(ordered[3], "DELETE");
+    EXPECT_EQ(ordered[4], "TRACE");
   }
 
   TEST(ConfigHttpSessionAuthTest, given_invalid_session_format_then_should_return_error) {
