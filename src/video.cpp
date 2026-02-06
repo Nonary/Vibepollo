@@ -1451,6 +1451,9 @@ namespace video {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
     const auto output_name = display_device::map_output_name(config::get_active_output_name());
     std::string current_display_name;
+    auto names_match = [](const std::string &lhs, const std::string &rhs) {
+      return boost::iequals(lhs, rhs);
+    };
 
     // If we have a current display index, let's start with that
     if (current_display_index >= 0 && current_display_index < display_names.size()) {
@@ -1476,7 +1479,7 @@ namespace video {
     // If we had a name previously, let's try to find it in the new list
     if (!current_display_name.empty()) {
       for (int x = 0; x < display_names.size(); ++x) {
-        if (display_names[x] == current_display_name) {
+        if (names_match(display_names[x], current_display_name)) {
           current_display_index = x;
           return;
         }
@@ -1484,9 +1487,20 @@ namespace video {
 
       // The old display was removed, so we'll start back at the first display again
       BOOST_LOG(warning) << "Previous active display ["sv << current_display_name << "] is no longer present"sv;
+
+      // If the previous display disappeared, prefer moving back to configured output before
+      // defaulting to index 0 (often primary physical display during transient display churn).
+      if (!output_name.empty()) {
+        for (int x = 0; x < display_names.size(); ++x) {
+          if (names_match(display_names[x], output_name)) {
+            current_display_index = x;
+            return;
+          }
+        }
+      }
     } else {
       for (int x = 0; x < display_names.size(); ++x) {
-        if (display_names[x] == output_name) {
+        if (names_match(display_names[x], output_name)) {
           current_display_index = x;
           return;
         }

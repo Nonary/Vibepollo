@@ -2882,8 +2882,14 @@ namespace {
         if (!wait_with_stop(st, delay)) {
           return;
         }
+        if (self->restore_requested.load(std::memory_order_acquire)) {
+          return;
+        }
         if (self->verify_last_configuration_sticky(kVerificationSettleDelay, st)) {
           continue;
+        }
+        if (self->restore_requested.load(std::memory_order_acquire)) {
+          return;
         }
         BOOST_LOG(info) << "Delayed re-apply attempt after activation 213Q902";
         self->best_effort_apply_last_cfg();
@@ -3802,7 +3808,7 @@ namespace {
       constexpr int kMaxSyncVerifyAttempts = 2;
       bool verified_sync = false;
       std::vector<std::chrono::milliseconds> reapply_delays {750ms};
-      if (cfg.m_hdr_state) {
+      if (cfg.m_hdr_state && *cfg.m_hdr_state == display_device::HdrState::Enabled) {
         // HDR state can be (re)applied asynchronously by Windows shortly after topology/mode changes,
         // especially for virtual displays. Schedule a few extra best-effort re-apply attempts to
         // enforce the requested HDR state.
@@ -3849,6 +3855,8 @@ namespace {
   void handle_revert(ServiceState &state, std::atomic<bool> &running) {
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
     state.retry_apply_on_topology.store(false, std::memory_order_release);
+    state.cancel_delayed_reapply();
+    state.cancel_post_apply_tasks();
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
