@@ -311,7 +311,7 @@ namespace platf {
     return rtss_warmup_process();
   }
 
-  void frame_limiter_streaming_stop() {
+  void frame_limiter_streaming_stop(bool keep_rtss_running) {
     if (g_gen1_framegen_fix_active || g_gen2_framegen_fix_active) {
       config::frame_limiter.enable = g_prev_frame_limiter_enabled;
       if (g_prev_frame_limiter_provider_set) {
@@ -330,7 +330,7 @@ namespace platf {
     }
 
     if (g_active_provider == frame_limiter_provider::rtss) {
-      rtss_streaming_stop();
+      rtss_streaming_stop(keep_rtss_running);
     }
 
     if (g_nvcp_started || g_active_provider == frame_limiter_provider::nvidia_control_panel) {

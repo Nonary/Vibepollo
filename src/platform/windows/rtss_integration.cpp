@@ -1131,7 +1131,7 @@ namespace platf {
     return applied_limit;
   }
 
-  void rtss_streaming_stop() {
+  void rtss_streaming_stop(bool keep_process_running) {
     g_sync_limiter_override.reset();
     auto cleanup = [&]() {
       g_original_limit.reset();
@@ -1148,7 +1148,9 @@ namespace platf {
         FreeLibrary(g_hooks.module);
         g_hooks = {};
       }
-      stop_rtss_process();
+      if (!keep_process_running) {
+        stop_rtss_process();
+      }
     };
 
     if (!g_settings_dirty) {

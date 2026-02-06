@@ -2163,6 +2163,7 @@ namespace proc {
 
   void proc_t::terminate(bool immediate, bool needs_refresh) {
     std::error_code ec;
+    const bool had_active_app = _app_id > 0;
     placebo = false;
 #ifdef _WIN32
     _deferred_launch = false;
@@ -2172,18 +2173,29 @@ namespace proc {
     // For Playnite-managed apps, request a graceful stop via Playnite first
 #ifdef _WIN32
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
-    if (!_app.playnite_id.empty()) {
+    if (had_active_app && !_app.playnite_id.empty()) {
+      bool should_request_playnite_stop = true;
       try {
-        // Ask Playnite to stop the game; then wait up to exit-timeout to let it close
-        platf::playnite::stop_game(_app.playnite_id);
-        while (remaining_timeout.count() > 0 && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-          std::this_thread::sleep_for(1s);
-          remaining_timeout -= 1s;
+        if (_process && !_process.running() && _process.native_exit_code() == 0) {
+          // The launcher already exited cleanly (typically after receiving gameStopped).
+          // Avoid sending a redundant stop command that can race into the next launch.
+          should_request_playnite_stop = false;
+          BOOST_LOG(debug) << "Playnite: launcher exited cleanly; skipping redundant stop request";
+        }
+      } catch (...) {}
+      try {
+        if (should_request_playnite_stop) {
+          // Ask Playnite to stop the game; then wait up to exit-timeout to let it close.
+          platf::playnite::stop_game(_app.playnite_id);
+          while (remaining_timeout.count() > 0 && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+            std::this_thread::sleep_for(1s);
+            remaining_timeout -= 1s;
+          }
         }
       } catch (...) {}
       // Stop the IPC client since the Playnite session is ending
       platf::playnite::stop_client_for_session();
-    } else if (_app.playnite_fullscreen) {
+    } else if (had_active_app && _app.playnite_fullscreen) {
       // For fullscreen mode, also stop the IPC client
       platf::playnite::stop_client_for_session();
     }
@@ -2234,7 +2246,7 @@ namespace proc {
     }
 #endif
 
-    bool has_run = _app_id > 0;
+    bool has_run = had_active_app;
 
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
@@ -2932,7 +2944,8 @@ namespace proc {
         if (app_node.contains("dd-configuration-option")) {
           dd_config_override = util::get_non_string_json_value<std::string>(app_node, "dd-configuration-option", "");
         }
-        ctx.lossless_scaling_launch_delay_seconds = std::max(0, lossless_scaling_launch_delay.value_or(0));
+        ctx.lossless_scaling_launch_delay_seconds =
+          std::max(0, lossless_scaling_launch_delay.value_or(kLosslessScalingDefaultLaunchDelaySeconds));
         ctx.lossless_scaling_legacy_auto_detect = legacy_override.value_or(config::lossless_scaling.legacy_auto_detect);
         if (dd_config_override && !dd_config_override->empty()) {
           const auto trimmed = boost::algorithm::trim_copy(*dd_config_override);

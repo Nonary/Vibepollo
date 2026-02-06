@@ -35,7 +35,7 @@ namespace platf {
   };
 
   void frame_limiter_streaming_start(int fps, int fps_scaled, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, bool smooth_motion);
-  void frame_limiter_streaming_stop();
+  void frame_limiter_streaming_stop(bool keep_rtss_running = false);
   void frame_limiter_streaming_refresh();
 
   bool frame_limiter_prepare_launch(bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit);

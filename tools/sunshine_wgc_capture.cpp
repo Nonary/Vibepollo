@@ -578,24 +578,37 @@ public:
    */
   bool select_monitor(const platf::dxgi::config_data_t &config) {
     if (config.display_name[0] != L'\0') {
-      // Enumerate monitors to find one matching displayName
-      struct EnumData {
-        const wchar_t *target_name;
-        HMONITOR found_monitor;
+      auto find_monitor_by_name = [&](const wchar_t *target_name) -> HMONITOR {
+        struct EnumData {
+          const wchar_t *target_name;
+          HMONITOR found_monitor;
+        };
+
+        EnumData enum_data = {target_name, nullptr};
+
+        auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
+          auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
+          if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
+            data->found_monitor = h_mon;
+            return FALSE;  // Stop enumeration
+          }
+          return TRUE;
+        };
+
+        EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
+        return enum_data.found_monitor;
       };
 
-      EnumData enum_data = {config.display_name, nullptr};
-
-      auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
-        auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
-        if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
-          data->found_monitor = h_mon;
-          return FALSE;  // Stop enumeration
+      _selected_monitor = find_monitor_by_name(config.display_name);
+      if (!_selected_monitor) {
+        // During virtual display topology transitions, monitor enumeration can lag briefly.
+        // Wait a short amount of time before falling back so we avoid capture bouncing.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+        while (!_selected_monitor && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          _selected_monitor = find_monitor_by_name(config.display_name);
         }
-        return TRUE;
-      };
-      EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
-      _selected_monitor = enum_data.found_monitor;
+      }
       if (!_selected_monitor) {
         BOOST_LOG(warning) << "Could not find monitor with name '" << winrt::to_string(config.display_name) << "', falling back to primary.";
       }

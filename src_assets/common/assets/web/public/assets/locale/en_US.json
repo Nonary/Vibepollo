@@ -630,6 +630,24 @@
     "display_mode_override": "Display mode override",
     "display_mode_override_desc": "Force Sunshine to use this resolution and refresh rate for this client (format: 1920x1080x60). Leave blank to use the client's request."
   },
+  "permissions": {
+    "group_action": "Action",
+    "group_operation": "Operation",
+    "group_input": "Input",
+    "list": "List Apps",
+    "view": "View Streams",
+    "launch": "Launch Apps",
+    "clipboard_set": "Write Clipboard",
+    "clipboard_read": "Read Clipboard",
+    "file_upload": "Upload Files",
+    "file_dwnload": "Download Files",
+    "server_cmd": "Server Commands",
+    "input_controller": "Controller Input",
+    "input_touch": "Touch Input",
+    "input_pen": "Pen Input",
+    "input_mouse": "Mouse Input",
+    "input_kbd": "Keyboard Input"
+  },
   "resource_card": {
     "github_discussions": "GitHub Discussions",
     "legal": "Legal",

@@ -96,6 +96,9 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    // Keep the Playnite IPC client alive when the UI refreshes status.
+    // This updates the inactivity timer and ensures a fresh connection.
+    platf::playnite::ensure_client_for_api();
     nlohmann::json out;
     // Active reflects current pipe/server connection only
     out["active"] = platf::playnite::is_active();
@@ -464,7 +467,16 @@ namespace confighttp {
     return true;
   }
 
-  static std::string build_zip_from_entries(const std::vector<std::pair<std::string, std::string>> &entries) {
+  static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft);
+  static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date);
+
+  struct ZipDataEntry {
+    std::string name;
+    std::string data;
+    std::optional<std::filesystem::file_time_type> write_time;
+  };
+
+  static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;
 
     struct CdEnt {
@@ -479,11 +491,9 @@ namespace confighttp {
     };
 
     std::vector<CdEnt> cd;
-    uint16_t dostime = 0, dosdate = 0;
-    current_dos_datetime(dostime, dosdate);
     for (const auto &e : entries) {
-      const std::string &name = e.first;
-      const std::string &data = e.second;
+      const std::string &name = e.name;
+      const std::string &data = e.data;
       boost::crc_32_type crc;
       crc.process_bytes(data.data(), data.size());
       uint32_t crc32 = crc.checksum();
@@ -493,6 +503,12 @@ namespace confighttp {
       const std::string &payload = use_deflate ? compressed : data;
       uint16_t method = use_deflate ? 8 : 0;
       uint32_t comp_size = static_cast<uint32_t>(payload.size());
+      uint16_t dostime = 0, dosdate = 0;
+      if (e.write_time) {
+        to_dos_datetime(file_time_to_system_clock(*e.write_time), dostime, dosdate);
+      } else {
+        current_dos_datetime(dostime, dosdate);
+      }
       uint32_t offset = static_cast<uint32_t>(out.size());
       write_le32(out, 0x04034b50u);
       write_le16(out, 20);
@@ -644,12 +660,20 @@ namespace confighttp {
     }
   }  // namespace
 
-  static bool read_file_if_exists(const std::filesystem::path &p, std::string &out) {
+  static bool read_file_if_exists(const std::filesystem::path &p, std::string &out, std::optional<std::filesystem::file_time_type> *write_time = nullptr) {
     std::error_code ec {};
     if (!std::filesystem::exists(p, ec) || std::filesystem::is_directory(p, ec)) {
       return false;
     }
     try {
+      if (write_time) {
+        auto mtime = std::filesystem::last_write_time(p, ec);
+        if (!ec) {
+          *write_time = mtime;
+        } else {
+          *write_time = std::nullopt;
+        }
+      }
       std::ifstream f(p, std::ios::binary);
       if (!f) {
         return false;
@@ -799,8 +823,8 @@ namespace confighttp {
     return read_file_if_exists(*latest, out);
   }
 
-  static std::vector<std::pair<std::string, std::string>> collect_support_logs() {
-    std::vector<std::pair<std::string, std::string>> entries;
+  static std::vector<ZipDataEntry> collect_support_logs() {
+    std::vector<ZipDataEntry> entries;
 
     // Sunshine log directory (session logging)
     try {
@@ -816,8 +840,9 @@ namespace confighttp {
             continue;
           }
           std::string data;
-          if (read_file_if_exists(it->path(), data)) {
-            entries.emplace_back(it->path().filename().string(), std::move(data));
+          std::optional<std::filesystem::file_time_type> mtime;
+          if (read_file_if_exists(it->path(), data, &mtime)) {
+            entries.push_back(ZipDataEntry {it->path().filename().string(), std::move(data), mtime});
             collected_directory = true;
           }
         }
@@ -826,8 +851,9 @@ namespace confighttp {
         auto current_log = logging::current_log_file();
         if (!current_log.empty()) {
           std::string data;
-          if (read_file_if_exists(current_log, data)) {
-            entries.emplace_back(current_log.filename().string(), std::move(data));
+          std::optional<std::filesystem::file_time_type> mtime;
+          if (read_file_if_exists(current_log, data, &mtime)) {
+            entries.push_back(ZipDataEntry {current_log.filename().string(), std::move(data), mtime});
           }
         }
       }
@@ -842,8 +868,9 @@ namespace confighttp {
         std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
         CoTaskMemFree(roamingW);
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
     } catch (...) {}
@@ -857,8 +884,9 @@ namespace confighttp {
         std::filesystem::path p = std::filesystem::path(localW) / L"Temp" / L"sunshine_playnite.log";
         CoTaskMemFree(localW);
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
     } catch (...) {}
@@ -868,8 +896,9 @@ namespace confighttp {
       if (n > 0 && n < _countof(tmpPathW)) {
         std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
     } catch (...) {}
@@ -879,24 +908,27 @@ namespace confighttp {
       {
         std::string data;
         auto p = base / L"playnite.log";
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
           any = true;
         }
       }
       {
         std::string data;
         auto p = base / L"extensions.log";
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
           any = true;
         }
       }
       {
         std::string data;
         auto p = base / L"launcher.log";
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
           any = true;
         }
       }
@@ -951,8 +983,9 @@ namespace confighttp {
           continue;
         }
         std::string data;
-        if (read_file_if_exists(it->path(), data)) {
-          entries.emplace_back(filename, std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(it->path(), data, &mtime)) {
+          entries.push_back(ZipDataEntry {filename, std::move(data), mtime});
         }
       }
     };
@@ -962,36 +995,41 @@ namespace confighttp {
       {
         std::filesystem::path p = base / L"sunshine_playnite.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
       {
         std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
       {
         std::filesystem::path p = base / L"sunshine_launcher.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
       {
         std::filesystem::path p = base / L"sunshine_display_helper.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
       {
         std::filesystem::path p = base / L"sunshine_wgc_helper.log";
         std::string data;
-        if (read_file_if_exists(p, data)) {
-          entries.emplace_back(p.filename().string(), std::move(data));
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(p, data, &mtime)) {
+          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
         }
       }
 
@@ -1035,17 +1073,18 @@ namespace confighttp {
       std::filesystem::path cfg = platf::appdata();
       std::filesystem::path p = cfg / "sunshine_launcher.log";
       std::string data;
-      if (read_file_if_exists(p, data)) {
-        entries.emplace_back(p.filename().string(), std::move(data));
+      std::optional<std::filesystem::file_time_type> mtime;
+      if (read_file_if_exists(p, data, &mtime)) {
+        entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
       }
     } catch (...) {}
 
     {
-      std::vector<std::pair<std::string, std::string>> dedup;
+      std::vector<ZipDataEntry> dedup;
       std::unordered_set<std::string> seen;
       dedup.reserve(entries.size());
       for (auto &e : entries) {
-        if (seen.insert(e.first).second) {
+        if (seen.insert(e.name).second) {
           dedup.emplace_back(std::move(e));
         }
       }
@@ -1130,6 +1169,78 @@ namespace confighttp {
       return static_cast<char>(std::tolower(ch));
     });
     return value;
+  }
+
+  static bool has_dump_file_extension(const std::wstring &ext_lower) {
+    return ext_lower == L".dmp" || ext_lower == L".mdmp" || ext_lower == L".hdmp";
+  }
+
+  static bool ends_with_ascii(std::string_view value, std::string_view suffix) {
+    return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
+  }
+
+  static std::string trim_copy(std::string_view value);
+  static std::string filename_from_path(std::string value);
+
+  static bool has_numeric_instance_suffix(std::wstring_view value, std::size_t open_pos, std::size_t close_pos) {
+    if (open_pos == std::wstring_view::npos || close_pos == std::wstring_view::npos || close_pos <= open_pos + 1) {
+      return false;
+    }
+    for (std::size_t i = open_pos + 1; i < close_pos; ++i) {
+      if (!std::iswdigit(value[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static std::string normalize_process_name_for_matching(std::string value) {
+    value = to_lower_ascii(filename_from_path(trim_copy(value)));
+    if (value.empty()) {
+      return {};
+    }
+
+    const std::size_t close = value.rfind(')');
+    const std::size_t open = value.rfind('(');
+    if (open != std::string::npos && close != std::string::npos && close > open + 1) {
+      bool numeric_suffix = true;
+      for (std::size_t i = open + 1; i < close; ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(value[i]))) {
+          numeric_suffix = false;
+          break;
+        }
+      }
+      if (numeric_suffix && close == value.size() - 1) {
+        value.erase(open);
+      }
+    }
+
+    return value;
+  }
+
+  static const CrashDumpTarget *find_crash_dump_target_by_process(std::string process_name) {
+    process_name = normalize_process_name_for_matching(std::move(process_name));
+    if (process_name.empty()) {
+      return nullptr;
+    }
+
+    const bool has_exe = ends_with_ascii(process_name, ".exe");
+    for (const auto &target : kCrashDumpTargets) {
+      if (process_name == target.process) {
+        return &target;
+      }
+      if (!has_exe) {
+        if ((process_name + ".exe") == target.process) {
+          return &target;
+        }
+      } else if (process_name.size() > 4) {
+        const std::string without_ext = process_name.substr(0, process_name.size() - 4);
+        if (without_ext == target.process.substr(0, target.process.size() - 4)) {
+          return &target;
+        }
+      }
+    }
+    return nullptr;
   }
 
   static void add_unique_path(std::vector<std::filesystem::path> &paths,
@@ -1239,6 +1350,18 @@ namespace confighttp {
       if (filename_lower.rfind(target.prefix, 0) == 0) {
         return &target;
       }
+      if (!target.prefix.empty()) {
+        std::wstring base = target.prefix.substr(0, target.prefix.size() - 1);
+        if (filename_lower.rfind(base + L"(", 0) == 0) {
+          const std::size_t open = base.size();
+          const std::size_t close = filename_lower.find(L')', open + 1);
+          if (has_numeric_instance_suffix(filename_lower, open, close) &&
+              close + 1 < filename_lower.size() &&
+              filename_lower[close + 1] == L'.') {
+            return &target;
+          }
+        }
+      }
     }
     return nullptr;
   }
@@ -1344,10 +1467,10 @@ namespace confighttp {
       }
     }
     if (!app_path.empty()) {
-      return to_lower_ascii(filename_from_path(app_path));
+      return normalize_process_name_for_matching(app_path);
     }
     if (!app_name.empty()) {
-      return to_lower_ascii(app_name);
+      return normalize_process_name_for_matching(app_name);
     }
     return std::nullopt;
   }
@@ -1368,7 +1491,7 @@ namespace confighttp {
         continue;
       }
       auto ext = to_lower_wstring(entry.path().extension().wstring());
-      if (ext != L".dmp") {
+      if (!has_dump_file_extension(ext)) {
         continue;
       }
       auto write_time = entry.last_write_time(ec);
@@ -1447,6 +1570,10 @@ namespace confighttp {
         if (!target) {
           continue;
         }
+        auto ext = to_lower_wstring(entry.path().extension().wstring());
+        if (!has_dump_file_extension(ext)) {
+          continue;
+        }
         auto write_time = entry.last_write_time(ec);
         if (ec) {
           ec.clear();
@@ -1490,18 +1617,11 @@ namespace confighttp {
         if (!app_name) {
           continue;
         }
-        const std::string process_lower = to_lower_ascii(*app_name);
-        bool is_target = false;
-        for (const auto &target : kCrashDumpTargets) {
-          if (process_lower == target.process) {
-            is_target = true;
-            break;
-          }
-        }
-        if (!is_target) {
+        const CrashDumpTarget *target = find_crash_dump_target_by_process(*app_name);
+        if (!target) {
           continue;
         }
-        auto dump = newest_dmp_in_dir(entry.path(), process_lower);
+        auto dump = newest_dmp_in_dir(entry.path(), target->process);
         if (!dump) {
           continue;
         }
@@ -1526,12 +1646,12 @@ namespace confighttp {
     return kLocalHeaderSize + kCentralHeaderSize + (static_cast<std::uint64_t>(name_len) * 2) + data_size;
   }
 
-  static std::uint64_t estimate_zip_size(const std::vector<std::pair<std::string, std::string>> &data_entries,
+  static std::uint64_t estimate_zip_size(const std::vector<ZipDataEntry> &data_entries,
                                          const std::vector<ZipFileEntry> &file_entries) {
     constexpr std::uint64_t kEndOfCentralDirectory = 22;
     std::uint64_t total = kEndOfCentralDirectory;
     for (const auto &entry : data_entries) {
-      total += estimate_zip_entry_size(entry.first.size(), static_cast<std::uint64_t>(entry.second.size()));
+      total += estimate_zip_entry_size(entry.name.size(), static_cast<std::uint64_t>(entry.data.size()));
     }
     for (const auto &entry : file_entries) {
       total += estimate_zip_entry_size(entry.name.size(), entry.size);
@@ -1555,7 +1675,7 @@ namespace confighttp {
     return base + "-part" + std::to_string(part_index) + ".zip";
   }
 
-  static std::vector<CrashBundlePartPlan> build_crash_bundle_plan(const std::vector<std::pair<std::string, std::string>> &logs,
+  static std::vector<CrashBundlePartPlan> build_crash_bundle_plan(const std::vector<ZipDataEntry> &logs,
                                                                   const std::vector<CrashDumpInfo> &dumps) {
     std::vector<CrashBundlePartPlan> parts;
     const auto base = crash_bundle_base_name();
@@ -1604,7 +1724,7 @@ namespace confighttp {
 
   
   static bool write_zip_bundle_to_path(const std::filesystem::path &dest,
-                                       const std::vector<std::pair<std::string, std::string>> &data_entries,
+                                       const std::vector<ZipDataEntry> &data_entries,
                                        const std::vector<ZipFileEntry> &file_entries,
                                        std::string &error) {
     std::ofstream out(dest, std::ios::binary | std::ios::trunc);
@@ -1653,11 +1773,9 @@ namespace confighttp {
       return true;
     };
 
-    uint16_t now_time = 0, now_date = 0;
-    current_dos_datetime(now_time, now_date);
     for (const auto &entry : data_entries) {
-      const std::string &name = entry.first;
-      const std::string &data = entry.second;
+      const std::string &name = entry.name;
+      const std::string &data = entry.data;
       boost::crc_32_type crc;
       crc.process_bytes(data.data(), data.size());
       uint32_t checksum = crc.checksum();
@@ -1667,7 +1785,13 @@ namespace confighttp {
       uint16_t method = use_deflate ? 8 : 0;
       uint32_t comp_size = static_cast<uint32_t>(payload.size());
       uint32_t uncomp_size = static_cast<uint32_t>(data.size());
-      if (!add_entry(name, method, checksum, comp_size, uncomp_size, now_time, now_date, payload)) {
+      uint16_t dostime = 0, dosdate = 0;
+      if (entry.write_time) {
+        to_dos_datetime(file_time_to_system_clock(*entry.write_time), dostime, dosdate);
+      } else {
+        current_dos_datetime(dostime, dosdate);
+      }
+      if (!add_entry(name, method, checksum, comp_size, uncomp_size, dostime, dosdate, payload)) {
         return false;
       }
     }
@@ -1917,7 +2041,7 @@ namespace confighttp {
         return;
       }
       const auto &selected = plan[part_index - 1];
-      const std::vector<std::pair<std::string, std::string>> empty_entries;
+      const std::vector<ZipDataEntry> empty_entries;
       const auto &data_entries = selected.include_logs ? entries : empty_entries;
 
       wchar_t tmpDir[MAX_PATH] = {};
