@@ -620,6 +620,8 @@ namespace playnite_launcher {
 
       std::atomic<bool> should_exit {false};
       std::atomic<bool> got_started {false};
+      std::atomic<bool> launch_command_sent {false};
+      std::atomic<int> launch_retry_budget {2};
       std::atomic<bool> request_game_focus {false};
       std::atomic<bool> game_focus_confirmed {false};
       std::atomic<int> game_focus_successes_left {0};
@@ -636,6 +638,20 @@ namespace playnite_launcher {
       bool lossless_profiles_applied = false;
 
       std::atomic<bool> watcher_spawned {false};
+
+      auto send_launch_command = [&](std::string_view reason) -> bool {
+        nlohmann::json j;
+        j["type"] = "command";
+        j["command"] = "launch";
+        j["id"] = config.game_id;
+        launch_command_sent.store(true, std::memory_order_release);
+        if (!client.send_json_line(j.dump())) {
+          BOOST_LOG(error) << "Failed to send launch command for id=" << config.game_id << " reason=" << reason;
+          return false;
+        }
+        BOOST_LOG(info) << "Launch command sent for id=" << config.game_id << " reason=" << reason;
+        return true;
+      };
 
       auto schedule_focus_retry = [&]() {
         if (!got_started.load(std::memory_order_acquire)) {
@@ -667,6 +683,10 @@ namespace playnite_launcher {
           return normalize_game_id(std::move(s));
         };
         if (!msg.status_game_id.empty() && norm(msg.status_game_id) == norm(config.game_id)) {
+          if (!launch_command_sent.load(std::memory_order_acquire)) {
+            BOOST_LOG(debug) << "Ignoring pre-launch status '" << msg.status_name << "' for id=" << msg.status_game_id;
+            return;
+          }
           if (!msg.status_install_dir.empty()) {
             bool changed = last_install_dir != msg.status_install_dir;
             last_install_dir = msg.status_install_dir;
@@ -693,6 +713,7 @@ namespace playnite_launcher {
           }
           if (msg.status_name == "gameStarted") {
             got_started.store(true);
+            launch_retry_budget.store(0, std::memory_order_release);
             schedule_focus_retry();
             // Wait for user to unlock if they launched the game while locked
             bool was_locked = false;
@@ -748,6 +769,22 @@ namespace playnite_launcher {
             }
           }
           if (msg.status_name == "gameStopped") {
+            if (!got_started.load(std::memory_order_acquire)) {
+              int retries_left = launch_retry_budget.load(std::memory_order_acquire);
+              while (retries_left > 0) {
+                if (launch_retry_budget.compare_exchange_weak(retries_left, retries_left - 1, std::memory_order_acq_rel)) {
+                  BOOST_LOG(info) << "Received gameStopped before gameStarted; retrying launch for id=" << config.game_id
+                                  << " retries_left=" << (retries_left - 1);
+                  if (!send_launch_command("retry-after-prestart-stop")) {
+                    should_exit.store(true);
+                  }
+                  return;
+                }
+              }
+              BOOST_LOG(debug) << "Ignoring gameStopped before fresh gameStarted for id=" << msg.status_game_id
+                               << " (retry budget exhausted)";
+              return;
+            }
             should_exit.store(true);
             request_game_focus.store(false, std::memory_order_release);
             game_focus_confirmed.store(false, std::memory_order_release);
@@ -799,12 +836,10 @@ namespace playnite_launcher {
         return 3;
       }
 
-      nlohmann::json j;
-      j["type"] = "command";
-      j["command"] = "launch";
-      j["id"] = config.game_id;
-      client.send_json_line(j.dump());
-      BOOST_LOG(info) << "Launch command sent for id=" << config.game_id;
+      if (!send_launch_command("initial")) {
+        client.stop();
+        return 3;
+      }
 
       // Wait for user to unlock if they launched the game while locked
       bool was_initially_locked = false;

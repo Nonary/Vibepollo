@@ -353,6 +353,8 @@ namespace platf::playnite {
         return;
       }
       BOOST_LOG(debug) << "Playnite: starting IPC client for game session";
+      // Ensure stale status ordering from prior sessions cannot leak into this launch.
+      playnite_session_tracker().reset();
       
       // Mark session as active - this prevents inactivity timeout
       session_active_.store(true, std::memory_order_release);
@@ -367,6 +369,7 @@ namespace platf::playnite {
     // Called when a session ends
     void stop_for_session() {
       BOOST_LOG(debug) << "Playnite: stopping IPC client after session end";
+      playnite_session_tracker().reset();
       session_active_.store(false, std::memory_order_release);
       api_started_.store(false, std::memory_order_release);
       stop_inactivity_monitor();
