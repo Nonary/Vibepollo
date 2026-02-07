@@ -3251,6 +3251,15 @@ namespace {
       BOOST_LOG(warning) << "Failed to get current username, using empty user for task";
     }
 
+    if (!has_username) {
+      BOOST_LOG(info) << "No interactive user available; skipping scheduled task creation (will retry when user logs in).";
+      task->Release();
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return true;
+    }
+
     const std::wstring task_name = build_restore_task_name(has_username ? username : std::wstring {});
 
     wchar_t exe_path[MAX_PATH];

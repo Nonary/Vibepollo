@@ -1212,15 +1212,6 @@ namespace proc {
     launch_session->height = render_height;
 
     this->initial_display = config::video.output_name;
-    // Executed when returning from function
-    auto fg = util::fail_guard([&]() {
-      // Restore to user defined output name
-      config::video.output_name = this->initial_display;
-      terminate();
-#ifdef _WIN32
-      display_helper_integration::revert();
-#endif
-    });
 
     if (!app.gamepad.empty()) {
       _saved_input_config = std::make_shared<config::input_t>(config::input);
@@ -1650,17 +1641,18 @@ namespace proc {
     }
 #endif
 
-    int err = launch_app_commands();
-    if (!err) {
-      fg.disable();
-    }
-    return err;
+    return launch_app_commands();
   }
 
   int proc_t::launch_app_commands() {
     std::error_code ec;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
+
+    // Executed when returning from function on failure
+    auto fg = util::fail_guard([&]() {
+      terminate();
+    });
 
 #ifdef _WIN32
     std::unordered_set<DWORD> lossless_baseline_pids;
@@ -1969,6 +1961,7 @@ namespace proc {
     system_tray::update_tray_playing(_app.name);
 #endif
 
+    fg.disable();
     return 0;
   }
 
