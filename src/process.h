@@ -162,6 +162,7 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
     bool last_run_app_frame_gen_limiter_fix() const;
+    bool is_launch_deferred() const;
     void terminate();
 
     // Hot-update app list and environment without disrupting a running app

@@ -2235,13 +2235,28 @@ namespace nvhttp {
 
     rtsp_stream::terminate_sessions();
 
-    if (proc::proc.running() > 0) {
+    const bool has_running_app = proc::proc.running() > 0;
+#ifdef _WIN32
+    const bool preserve_deferred_launch =
+      has_running_app &&
+      proc::proc.is_launch_deferred() &&
+      rtsp_stream::session_count() == 0;
+    if (preserve_deferred_launch) {
+      BOOST_LOG(info) << "Cancel requested while app launch is deferred; preserving deferred app and virtual display state.";
+    }
+#else
+    constexpr bool preserve_deferred_launch = false;
+#endif
+
+    if (has_running_app && !preserve_deferred_launch) {
       proc::proc.terminate();
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
 
 #ifdef _WIN32
-    schedule_virtual_display_cleanup();
+    if (!preserve_deferred_launch) {
+      schedule_virtual_display_cleanup();
+    }
 #endif
   }
 

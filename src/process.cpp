@@ -1902,6 +1902,15 @@ namespace proc {
     return _app.frame_gen_limiter_fix;
   }
 
+  bool proc_t::is_launch_deferred() const {
+#ifdef _WIN32
+    std::scoped_lock lk(_apps_mutex);
+    return _deferred_launch;
+#else
+    return false;
+#endif
+  }
+
   proc_t::~proc_t() {
     // It's not safe to call terminate() here because our proc_t is a static variable
     // that may be destroyed after the Boost loggers have been destroyed. Instead,
