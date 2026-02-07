@@ -1068,8 +1068,15 @@ namespace display_helper_integration {
 
       // Stream-start policy: if a helper is already running, hard-restart it immediately
       // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
+      // In SYSTEM/no-user-session mode we still keep hard restart to recover stale pipe state,
+      // but we avoid in-process display API fallback if helper IPC remains unavailable.
       const bool hard_restart = (request.session != nullptr);
+
       bool helper_ready = ensure_helper_started(hard_restart, true);
+      if (!helper_ready && hard_restart) {
+        BOOST_LOG(warning) << "Display helper: hard restart path unavailable; retrying helper start without restart.";
+        helper_ready = ensure_helper_started(false, true);
+      }
       if (!helper_ready) {
         helper_ready = ensure_helper_started(hard_restart, true);
       }
@@ -1099,6 +1106,12 @@ namespace display_helper_integration {
           }
         }
         return ok;
+      }
+
+      if (system_no_user_session) {
+        BOOST_LOG(warning) << "Display helper: helper unavailable in SYSTEM context without user session; skipping in-process APPLY fallback.";
+        maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
+        return false;
       }
 
       BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
