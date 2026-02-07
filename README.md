@@ -17,6 +17,9 @@ Vibeshine is an AI‑enhanced version of Sunshine, a popular remote streaming ap
 * **Native Virtualized Display**
   Vibeshine includes SudoVDA by default, with multiple stability improvements. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports.
 
+* **WebRTC Browser Streaming**
+  Vibeshine can stream straight to your web browser from the `/webrtc` page, so you can play without installing a separate client. It is designed for fast response and smooth audio/video, while still letting you use the regular Moonlight-compatible streaming path if you prefer.
+
 * **Redesigned Frontend with Full Mobile Support**
   The new Web UI makes it easy to add games and change settings without restarting the program. It’s fully responsive, so you can manage your library and configuration from a phone or tablet.
 
@@ -43,7 +46,7 @@ Vibeshine is an AI‑enhanced version of Sunshine, a popular remote streaming ap
 
 Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibeshine as a standalone fork.
 
-Currently, Vibeshine has already introduced over **50,000 new lines of code**, nearly matching the size of Sunshine’s original codebase.
+At this point, Vibeshine differs from upstream Sunshine by roughly **99,800 changed lines** (about **91,800 added** and **8,000 removed**). At that scale, asking upstream maintainers to accept large backports in one sweep is generally not sustainable, which is why Vibeshine continues as a standalone fork.
 
 ---
 
@@ -90,30 +93,22 @@ Broadly speaking, AI‑assisted development represents the future of software en
 
 ---
 
+## The Original “AI-Only” Goal (And Why It Changed)
+
+One of the original goals of Vibeshine was to prove a specific point: that an experienced developer could maintain a complex project using almost entirely AI‑generated code, as long as they provided the architecture and kept the system coherent.
+
+That idea hasn’t aged particularly well, not because it was wrong, but because the models scaled far faster than most projections. Most of Vibeshine was developed on GPT‑5, which (per METR’s public benchmark on metr.org at the time) only hit about a 50% success rate on 1‑hour tasks. A few months later, GPT‑5.2 landed and the same 50% point moved out to roughly 6.5‑hour tasks, which is a huge jump in practical autonomy.
+
+The result is that the “skill gap” in prompting and guiding the AI matters less than it did even a few months prior. You still need engineering judgment and architecture, but it’s now dramatically easier to get high‑quality, end‑to‑end results without the same level of careful orchestration. So the original “prove it’s possible” goal is basically moot: it’s not a niche workflow anymore, it’s simply where the tools have gone.
+
+---
+
 ## AI Models Used by Vibeshine
 
-Vibeshine primarily leverages:
+Vibeshine has always been built with **Codex** as the primary workflow, and in practice that has meant mostly the **GPT‑5 family** (today: **GPT‑5.3‑Codex**). I use it with the same principles as before: start from architecture, sanity‑check assumptions, and do the hard reasoning up front so the implementation lands cleanly.
 
-* **GPT‑5 (high/medium reasoning)** via Codex CLI on a ChatGPT Pro subscription:
+With **GPT‑5.3‑Codex**, there’s no real need to juggle a “fast but less capable” model anymore. In the past I’d reach for speed‑first models (like Sonnet, or smaller GPT “mini” variants) for quick turnaround, but **GPT‑5.3‑Codex** covers both: it’s about as fast as those options while also being strong enough to handle the hard engineering work in one pass.
 
-  * Medium reasoning for most code generation.
-  * High reasoning for complex or challenging features.
+Claude was used more heavily earlier on. Older Claude models had a tendency to go off on their own path, even when the architectural plan was clear. That behavior has mostly been fixed in newer Claude releases, but GPT still ended up being the more useful engineering tool for me because it will challenge you and not simply agree with whatever you ask for.
 
-* **GPT‑5 mini** via Visual Studio Code:
-
-  * Handles minor tasks such as formatting and documentation.
-  * Fast and cost‑effective, available with unlimited usage on the $10 GitHub Copilot plan.
-  * Nearly matches Claude Sonnet 4 in performance (only 6% lower on SWE Bench), surpassing GPT 4.1.
-
-Previously, I relied heavily on **Claude Sonnet 4**, which had some limitations:
-
-* Frequently strayed off my architectural plan
-* Rarely challenged the developer on prompts, would do anything you told it even if you were wrong.
-* Fast‑paced, but often would write bad code and correct it as it is working.
-
-In contrast, GPT‑5:
-
-* Actively double‑checks your inquiry and confidently tells you you’re wrong; making it feel like a true AI companion in the development process.
-* Thinks much longer up front to ensure that the code it writes is accurate and bug‑free and fits requirements.
-* Holistically understands the codebase, and considers how requested changes impact existing modules.
-* Can answer just about any question in a codebase, from how a feature works to how to add a new one.
+In general, GPT has felt more intelligent for the way I build and maintain this codebase. I may occasionally ask **Claude Opus 4.5** for a second opinion if GPT can’t resolve something cleanly end‑to‑end, but this is increasingly rare.
