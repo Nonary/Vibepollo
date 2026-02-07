@@ -2,6 +2,7 @@
 <CPackWiXPatch>
   <CPackWiXFragment Id="#PRODUCT">
     <Property Id="ALLUSERS" Value="1"/>
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1"/>
     <Property Id="LEGACY_SUNSHINE_PRESENT" Secure="yes">
       <RegistrySearch Id="SearchLegacySunshine64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw" Win64="yes"/>
       <RegistrySearch Id="SearchLegacySunshine32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw"/>
@@ -11,11 +12,8 @@
       <RegistrySearch Id="SearchLegacySunshineUninstall32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw"/>
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0"/>
+    <Property Id="INSTALL_SUDOVDA" Value="1"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
-    <Property Id="VIGEMBUS_PRESENT">
-      <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
-      <RegistrySearch Id="Search_ViGEmBus_Service32" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw"/>
-    </Property>
     <Feature Id="VibeshineExtras" Title="Vibeshine Components" Level="1" Absent="disallow">
       <ComponentRef Id="CtlStopSunshine"/>
       <ComponentRef Id="SunshineSvc"/>
@@ -23,6 +21,7 @@
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
+      <ComponentRef Id="ArpCustomUninstallEntry"/>
     </Feature>
 
     <InstallExecuteSequence>
@@ -53,38 +52,30 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE</Custom>
-      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE</Custom>
+      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
+      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
       <Custom Action="SetMigrateConfig" After="InstallSudovda">NOT REMOVE</Custom>
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="SetInstallGamepad" After="MigrateConfig">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
-      <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
 
       <!-- Uninstall before file removal -->
       <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
       <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
 
-      <!-- Prompts (VBS) to remove ViGEm and optionally delete install dir; only on manual uninstalls with full UI -->
+      <!-- Prompt (VBS) to remove Virtual Display Driver on manual uninstalls -->
       <Custom Action="AskRemoveSudovda" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
       <Custom Action="SetUninstallSudovda" After="AskRemoveSudovda">REMOVE="ALL" AND UILevel &gt; 2 AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND UILevel &gt; 2 AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
-      <Custom Action="AskRemoveGamepad" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
-      <Custom Action="SetUninstallGamepad" After="AskRemoveGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
-      <Custom Action="UninstallGamepad" After="SetUninstallGamepad">REMOVE="ALL" AND REMOVEGAMEPAD = "1"</Custom>
-      <Custom Action="AskDeleteInstallDir" After="UninstallGamepad">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
 
       <!-- Execute delete/prune after MSI removes its files -->
       <Custom Action="SetDeleteInstallDir" After="RemoveFiles">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
       <Custom Action="DeleteInstallDir" After="SetDeleteInstallDir">REMOVE="ALL" AND DELETEINSTALLDIR = "1"</Custom>
 
       <!-- If not deleting whole dir, prune everything but config -->
-      <Custom Action="SetPruneButConfig" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetPruneButConfig" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR &lt;&gt; "1"</Custom>
+      <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR &lt;&gt; "1"</Custom>
     </InstallExecuteSequence>
 
-    <!-- We can't suppress MSI's reboot prompts, so surface a notice in UI installs/uninstalls explaining no reboot is needed. -->
     <InstallUISequence>
-      <Custom Action="ShowRebootNotice" After="AppSearch">UILevel &gt; 2</Custom>
       <!-- Legacy Sunshine handling flow -->
       <!-- 1. Ask user if they want to uninstall legacy Sunshine (and launch if they agree) -->
       <Custom Action="AskUninstallLegacySunshine" After="AppSearch">LEGACY_SUNSHINE_PRESENT AND UILevel &gt; 2 AND NOT Installed</Custom>

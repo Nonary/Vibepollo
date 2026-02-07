@@ -6,9 +6,8 @@
     - Update PATH (add/remove)
     - Migrate config files
     - Add/remove firewall rules
-    - Install/uninstall Virtual Gamepad (ViGEm) via PowerShell helper
     - Install/uninstall Sunshine service and autostart configuration
-    - Optional prompts on uninstall for gamepad removal and deleting install dir
+    - Optional prompts on uninstall for deleting install dir
 
     Notes:
     - Relies on WixUtilExtension (WixQuietExec) to run commands quietly with logging.
@@ -23,14 +22,11 @@
     
     <!-- Embedded VBScript to prompt the user on uninstall -->
     <Binary Id="AskRmSudovdaVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_sudovda.vbs"/>
-    <Binary Id="AskRmGamepadVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_gamepad.vbs"/>
-    <Binary Id="AskDelInstDirVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_delete_install_dir.vbs"/>
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
     <!-- VBScripts for legacy Sunshine handling -->
     <Binary Id="AskUninstallLegacySunshineVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_legacy_sunshine.vbs"/>
     <Binary Id="WaitForLegacyUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_legacy_uninstall.vbs"/>
-    <Binary Id="RebootNoticeVbs" SourceFile="$(sys.SOURCEFILEDIR)reboot_notice.vbs"/>
 
   </Fragment>
 
@@ -112,7 +108,6 @@
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="InstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
     <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -129,7 +124,6 @@
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UninstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
     <CustomAction Id="PruneButConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -147,10 +141,6 @@
                  Property="InstallSudovda"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
 
-    <CustomAction Id="SetInstallGamepad"
-                 Property="InstallGamepad"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\install-gamepad.ps1&quot;"/>
-
     <!-- Immediate setter for pruning installed web assets directory before file copy -->
     <CustomAction Id="SetPruneWebDir"
                  Property="PruneWebDir"
@@ -164,15 +154,10 @@
 
 
     <CustomAction Id="AskRemoveSudovda" BinaryKey="AskRmSudovdaVbs" VBScriptCall="AskRemoveSudovda" Execute="immediate" Return="check" />
-    <CustomAction Id="AskRemoveGamepad" BinaryKey="AskRmGamepadVbs" VBScriptCall="AskRemoveGamepad" Execute="immediate" Return="check" />
     <CustomAction Id="SetUninstallSudovda"
                  Property="UninstallSudovda"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\uninstall.bat&quot;&quot;"/>
-    <CustomAction Id="SetUninstallGamepad"
-                 Property="UninstallGamepad"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;"/>
 
-    <CustomAction Id="AskDeleteInstallDir" BinaryKey="AskDelInstDirVbs" VBScriptCall="AskDeleteInstallDir" Execute="immediate" Return="check" />
     <CustomAction Id="SetDeleteInstallDir"
                  Property="DeleteInstallDir"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT].&quot;"/>
@@ -208,16 +193,29 @@
     <CustomAction Id="WaitForLegacyUninstall" BinaryKey="WaitForLegacyUninstallVbs" VBScriptCall="WaitForLegacyUninstall" Execute="immediate" Return="check" />
     
     <CustomAction Id="BlockLegacySunshineStillPresent" Error="Legacy Sunshine is still installed. In order to install Vibeshine it must be uninstalled first, click OK to start the uninstallation." />
-    <CustomAction Id="BlockUserCancelledLegacy" Error="Installation cancelled. Legacy Sunshine must be removed before installing VibeSunshine." />
+    <CustomAction Id="BlockUserCancelledLegacy" Error="Installation cancelled. Legacy Sunshine must be removed before installing Vibeshine." />
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />
-    <CustomAction Id="ShowRebootNotice" BinaryKey="RebootNoticeVbs" VBScriptCall="ShowRebootNotice" Execute="immediate" Return="check" />
 
   </Fragment>
 
   <Fragment>
     <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="ArpCustomUninstallEntry" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Vibeshine">
+          <RegistryValue Name="DisplayName" Type="string" Value="Vibeshine" KeyPath="yes" />
+          <RegistryValue Name="DisplayVersion" Type="string" Value="[ProductVersion]" />
+          <RegistryValue Name="Publisher" Type="string" Value="Nonary" />
+          <RegistryValue Name="InstallLocation" Type="string" Value="[INSTALL_ROOT]" />
+          <RegistryValue Name="DisplayIcon" Type="string" Value="[INSTALL_ROOT]sunshine.exe" />
+          <RegistryValue Name="UninstallString" Type="string" Value="&quot;[INSTALL_ROOT]uninstall.exe&quot;" />
+          <RegistryValue Name="QuietUninstallString" Type="string" Value="&quot;[INSTALL_ROOT]uninstall.exe&quot; /quiet" />
+          <RegistryValue Name="NoModify" Type="integer" Value="1" />
+          <RegistryValue Name="NoRepair" Type="integer" Value="1" />
+        </RegistryKey>
+      </Component>
+
       <Component Id="Env_Path" Guid="{0D8C0E3E-6A7D-48E2-9A1C-0B1A6B7D8C90}">
         <CreateFolder />
         <Environment Id="EnvPathSunshine"
@@ -232,13 +230,13 @@
         <CreateFolder />
         <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
                                     Id="FE_SunshineExe"
-                                    Name="Vibeshine Sunshine"
+                                    Name="Vibeshine"
                                     Program="[INSTALL_ROOT]sunshine.exe"
                                     Profile="all"
                                     Scope="any" />
         <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
                                     Id="FE_SunshineSvcExe"
-                                    Name="Vibeshine Sunshine Service"
+                                    Name="Vibeshine Service"
                                     Program="[INSTALL_ROOT]tools\sunshinesvc.exe"
                                     Profile="all"
                                     Scope="any" />

@@ -45,9 +45,31 @@ endif()
 # Enable libdisplaydevice logging in the main Sunshine binary only
 target_compile_definitions(sunshine PRIVATE SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
 
+# Build lightweight uninstall UI executable (same UX as installer, no embedded MSI payload)
+set(SUNSHINE_UNINSTALL_UI_EXE "${CMAKE_BINARY_DIR}/uninstall.exe")
+add_custom_command(
+    OUTPUT "${SUNSHINE_UNINSTALL_UI_EXE}"
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}" -UninstallOnly -OutputName "uninstall.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/cpack_artifacts/uninstall.exe" "${SUNSHINE_UNINSTALL_UI_EXE}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1"
+            "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/VibeshineInstaller.cs"
+            "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/app.manifest"
+            "${CMAKE_SOURCE_DIR}/LICENSE"
+            "${CMAKE_SOURCE_DIR}/sunshine.ico"
+    COMMENT "Building lightweight Vibeshine uninstaller UI"
+)
+add_custom_target(build_uninstall_ui ALL DEPENDS "${SUNSHINE_UNINSTALL_UI_EXE}")
+
 # Convenience target to build MSI via CPack (WiX)
 add_custom_target(package_msi
     COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
-    DEPENDS sunshine copy_playnite_plugin
+    DEPENDS sunshine copy_playnite_plugin build_uninstall_ui
     COMMENT "Building MSI installer via CPack (WiX)"
+)
+
+# Build custom elevated installer EXE that wraps the generated MSI
+add_custom_target(package_installer
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}"
+    DEPENDS package_msi
+    COMMENT "Building custom installer executable"
 )
