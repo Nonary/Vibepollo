@@ -62,6 +62,39 @@ function Get-GitInformationalVersion([string]$RepoRoot, [string]$fallbackTag) {
     return $fallbackTag
 }
 
+function Get-MsiProductVersion([string]$MsiPath) {
+    if ([string]::IsNullOrWhiteSpace($MsiPath) -or -not (Test-Path -LiteralPath $MsiPath)) {
+        return $null
+    }
+
+    $installer = $null
+    $database = $null
+    $view = $null
+    $record = $null
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.GetType().InvokeMember("OpenDatabase", [System.Reflection.BindingFlags]::InvokeMethod, $null, $installer, @($MsiPath, 0))
+        $view = $database.GetType().InvokeMember("OpenView", [System.Reflection.BindingFlags]::InvokeMethod, $null, $database, @("SELECT `Value` FROM `Property` WHERE `Property`='ProductVersion'"))
+        $view.GetType().InvokeMember("Execute", [System.Reflection.BindingFlags]::InvokeMethod, $null, $view, $null) | Out-Null
+        $record = $view.GetType().InvokeMember("Fetch", [System.Reflection.BindingFlags]::InvokeMethod, $null, $view, $null)
+        if ($null -ne $record) {
+            return [string]$record.StringData(1)
+        }
+    } catch {
+    } finally {
+        foreach ($com in @($record, $view, $database, $installer)) {
+            if ($null -ne $com) {
+                try {
+                    [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)
+                } catch {
+                }
+            }
+        }
+    }
+
+    return $null
+}
+
 function Resolve-CscPath {
     $candidates = @(
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -114,12 +147,33 @@ if ([string]::IsNullOrWhiteSpace($OutputName)) {
 $outputPath = Join-Path $artifactDir $OutputName
 
 $tagVersion = Get-GitTagVersion -RepoRoot $repoRoot
-if ($null -eq $tagVersion) {
-    throw "Could not determine installer version from git tag. Expected a tag like v1.2.3 or 1.2.3."
+$fallbackTag = if ($null -eq $tagVersion) { "" } else { $tagVersion.Tag }
+$informationalVersion = Get-GitInformationalVersion -RepoRoot $repoRoot -fallbackTag $fallbackTag
+$assemblyVersion = $null
+
+if (-not $UninstallOnly) {
+    $msiProductVersion = Get-MsiProductVersion -MsiPath $MsiPath
+    if (-not [string]::IsNullOrWhiteSpace($msiProductVersion) -and $msiProductVersion -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
+        $revision = if ([string]::IsNullOrWhiteSpace($matches[4])) { 0 } else { [int]$matches[4] }
+        $assemblyVersion = "{0}.{1}.{2}.{3}" -f [int]$matches[1], [int]$matches[2], [int]$matches[3], $revision
+        if ([string]::IsNullOrWhiteSpace($informationalVersion)) {
+            $informationalVersion = $msiProductVersion
+        }
+    }
 }
 
-$assemblyVersion = "{0}.{1}.{2}.0" -f $tagVersion.Major, $tagVersion.Minor, $tagVersion.Patch
-$informationalVersion = Get-GitInformationalVersion -RepoRoot $repoRoot -fallbackTag $tagVersion.Tag
+if ([string]::IsNullOrWhiteSpace($assemblyVersion) -and $null -ne $tagVersion) {
+    $assemblyVersion = "{0}.{1}.{2}.0" -f $tagVersion.Major, $tagVersion.Minor, $tagVersion.Patch
+}
+
+if ([string]::IsNullOrWhiteSpace($assemblyVersion)) {
+    $assemblyVersion = "0.0.0.0"
+    Write-Warning "Could not determine installer assembly version from MSI payload or git tag. Falling back to $assemblyVersion."
+}
+
+if ([string]::IsNullOrWhiteSpace($informationalVersion)) {
+    $informationalVersion = $assemblyVersion
+}
 if ($UninstallOnly) {
     $assemblyInfoPath = Join-Path $artifactDir "VibeshineUninstall.AssemblyInfo.cs"
     $assemblyTitle = "Vibeshine Uninstaller"
