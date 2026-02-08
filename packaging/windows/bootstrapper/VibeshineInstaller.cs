@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
@@ -2852,12 +2853,17 @@ namespace VibepolloInstaller {
         return explicitPath;
       }
 
-      var sidecarMsi = FindSidecarMsi();
-      if (!string.IsNullOrWhiteSpace(sidecarMsi)) {
-        return sidecarMsi;
+      // Prefer the embedded payload to avoid stale sidecar MSI files overriding the
+      // version and install target unexpectedly. Sidecar remains a fallback.
+      try {
+        return ExtractEmbeddedMsi();
+      } catch {
+        var sidecarMsi = FindSidecarMsi();
+        if (!string.IsNullOrWhiteSpace(sidecarMsi)) {
+          return sidecarMsi;
+        }
+        throw;
       }
-
-      return ExtractEmbeddedMsi();
     }
 
     private static string FindSidecarMsi() {
@@ -2879,8 +2885,7 @@ namespace VibepolloInstaller {
             + "or use the --msi option to specify a payload manually.");
         }
 
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        var versionToken = version == null ? "0.0.0.0" : version.ToString();
+        var versionToken = ComputeStreamSha256Hex(stream);
         var extractDirectory = Path.Combine(
           Path.GetTempPath(),
           "VibepolloInstaller",
@@ -2897,6 +2902,29 @@ namespace VibepolloInstaller {
         }
 
         return msiPath;
+      }
+    }
+
+    private static string ComputeStreamSha256Hex(Stream stream) {
+      if (stream == null) {
+        return "unknown";
+      }
+
+      if (stream.CanSeek) {
+        var originalPosition = stream.Position;
+        try {
+          using (var hasher = SHA256.Create()) {
+            var hash = hasher.ComputeHash(stream);
+            return string.Concat(hash.Select(b => b.ToString("x2")));
+          }
+        } finally {
+          stream.Position = originalPosition;
+        }
+      }
+
+      using (var hasher = SHA256.Create()) {
+        var hash = hasher.ComputeHash(stream);
+        return string.Concat(hash.Select(b => b.ToString("x2")));
       }
     }
 
