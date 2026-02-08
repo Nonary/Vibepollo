@@ -56,6 +56,7 @@ namespace VibeshineInstaller {
           parsed.InternalInstallVirtualDisplay,
           parsed.InternalInstallSaveLogs,
           false);
+        InstallerRunner.TryWriteInternalInstallResult(parsed.InternalInstallResultPath, internalInstall);
         return internalInstall.ExitCode;
       }
 
@@ -118,6 +119,7 @@ namespace VibeshineInstaller {
     private readonly Brush _statusNormalBrush = new SolidColorBrush(Color.FromRgb(245, 249, 255));
     private readonly Brush _statusBusyBrush = new SolidColorBrush(Color.FromRgb(147, 197, 253));
     private readonly Brush _statusSuccessBrush = new SolidColorBrush(Color.FromRgb(16, 185, 129));
+    private readonly Brush _statusWarningBrush = new SolidColorBrush(Color.FromRgb(251, 191, 36));
     private readonly Brush _statusErrorBrush = new SolidColorBrush(Color.FromRgb(255, 178, 196));
     private readonly Version _bundleVersion;
     private readonly InstallerRunner.InstalledProductInfo _installedProduct;
@@ -262,6 +264,7 @@ namespace VibeshineInstaller {
 
       var overlayLayout = new Grid();
       overlayLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+      overlayLayout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
       overlayLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       overlayCard.Child = overlayLayout;
 
@@ -274,11 +277,18 @@ namespace VibeshineInstaller {
       Grid.SetRow(_overlayAccentBar, 0);
       overlayLayout.Children.Add(_overlayAccentBar);
 
+      var overlayBodyScroll = new ScrollViewer {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Margin = new Thickness(0, 0, 0, 12)
+      };
+      Grid.SetRow(overlayBodyScroll, 1);
+      overlayLayout.Children.Add(overlayBodyScroll);
+
       var overlayStack = new StackPanel {
         Orientation = Orientation.Vertical
       };
-      Grid.SetRow(overlayStack, 1);
-      overlayLayout.Children.Add(overlayStack);
+      overlayBodyScroll.Content = overlayStack;
 
       _overlayTitleText = new TextBlock {
         FontSize = 17,
@@ -332,7 +342,8 @@ namespace VibeshineInstaller {
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition());
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      overlayStack.Children.Add(overlayButtons);
+      Grid.SetRow(overlayButtons, 2);
+      overlayLayout.Children.Add(overlayButtons);
 
       _overlaySecondaryButton = new Button {
         Content = "Cancel",
@@ -1002,6 +1013,16 @@ namespace VibeshineInstaller {
         var result = await actionFactory();
         if (result.Succeeded) {
           ProcessExitCode = 0;
+          if (result.Operation == InstallerOperation.Install && result.PartiallySucceeded) {
+            var warningDetail = BuildComponentFailureDetail(result.ComponentFailures);
+            if (!string.IsNullOrWhiteSpace(result.UserDetail)) {
+              warningDetail += "\n" + result.UserDetail;
+            }
+            SetStatus("Vibeshine installation completed with warnings.", warningDetail, _statusWarningBrush);
+            await ShowInstallPartialSuccessDialogAsync(result);
+            Close();
+            return;
+          }
           var detail = result.ExitCode == 3010
             ? "The operation completed and Windows restart is required."
             : "All selected changes were applied successfully.";
@@ -1063,6 +1084,20 @@ namespace VibeshineInstaller {
           await ShowOverlayInfoAsync("Installer error", exceptionFailureDetail);
         }
       }
+    }
+
+    private static string BuildComponentFailureDetail(IReadOnlyList<string> componentFailures) {
+      if (componentFailures == null || componentFailures.Count == 0) {
+        return "The operation completed with warnings.";
+      }
+
+      var lines = new List<string> {
+        "The operation completed, but some components failed:"
+      };
+      foreach (var failure in componentFailures.Where(item => !string.IsNullOrWhiteSpace(item))) {
+        lines.Add("- " + failure.Trim());
+      }
+      return string.Join("\n", lines);
     }
 
     private static string NormalizeInstallPath(string installPath) {
@@ -1516,81 +1551,55 @@ namespace VibeshineInstaller {
     private async Task ShowInstallFailureSupportDialogAsync(string failureDetail, InstallerResult installResult) {
       var decision = await ShowOverlayAsync(
         "Install failed",
-        failureDetail + "\n\nWould you like to save logs for support?",
+        failureDetail + "\n\nSave logs now, then report this issue on GitHub or Discord.",
+        "Save logs",
         "Not now",
-        string.Empty,
-        new SolidColorBrush(Color.FromRgb(16, 24, 42)),
-        new SolidColorBrush(Color.FromRgb(82, 96, 141)),
-        false,
+        new SolidColorBrush(Color.FromRgb(99, 102, 241)),
+        new SolidColorBrush(Color.FromRgb(165, 180, 252)),
+        true,
         content => {
-          content.Children.Add(new TextBlock {
-            Text = "Choose where you plan to report this issue:",
-            FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(203, 219, 241)),
-            Margin = new Thickness(0, 0, 0, 8),
-            TextWrapping = TextWrapping.Wrap
-          });
-
-          var buttonRow = new Grid();
-          buttonRow.ColumnDefinitions.Add(new ColumnDefinition());
-          buttonRow.ColumnDefinitions.Add(new ColumnDefinition());
-          content.Children.Add(buttonRow);
-
-          var githubButton = new Button {
-            Content = "Save logs for GitHub issue",
-            Height = 36,
-            Margin = new Thickness(0, 0, 6, 0),
-            Padding = new Thickness(12, 0, 12, 0),
-            FontWeight = FontWeights.SemiBold,
-            Background = new SolidColorBrush(Color.FromRgb(99, 102, 241)),
-            Foreground = new SolidColorBrush(Color.FromRgb(245, 249, 255)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(165, 180, 252))
-          };
-          githubButton.Click += (sender, eventArgs) => ResolveOverlay("github");
-          ApplyFlatButtonTemplate(githubButton, 7);
-          Grid.SetColumn(githubButton, 0);
-          buttonRow.Children.Add(githubButton);
-
-          var discordButton = new Button {
-            Content = "Save logs for Discord #vibeshine",
-            Height = 36,
-            Margin = new Thickness(6, 0, 0, 0),
-            Padding = new Thickness(12, 0, 12, 0),
-            FontWeight = FontWeights.SemiBold,
-            Background = new SolidColorBrush(Color.FromRgb(168, 85, 247)),
-            Foreground = new SolidColorBrush(Color.FromRgb(245, 249, 255)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(196, 181, 253))
-          };
-          discordButton.Click += (sender, eventArgs) => ResolveOverlay("discord");
-          ApplyFlatButtonTemplate(discordButton, 7);
-          Grid.SetColumn(discordButton, 1);
-          buttonRow.Children.Add(discordButton);
+          content.Children.Add(BuildSupportLinksTextBlock());
         },
         0);
 
-      if (!string.Equals(decision, "github", StringComparison.OrdinalIgnoreCase) &&
-          !string.Equals(decision, "discord", StringComparison.OrdinalIgnoreCase)) {
+      if (!string.Equals(decision, "primary", StringComparison.OrdinalIgnoreCase)) {
         return;
       }
 
-      await SaveInstallFailureSupportBundleAsync(
-        string.Equals(decision, "github", StringComparison.OrdinalIgnoreCase),
-        failureDetail,
-        installResult);
+      await SaveInstallFailureSupportBundleAsync(failureDetail, installResult);
     }
 
-    private async Task SaveInstallFailureSupportBundleAsync(bool githubTarget, string failureDetail, InstallerResult installResult) {
-      var destinationLabel = githubTarget ? "github" : "discord";
+    private async Task ShowInstallPartialSuccessDialogAsync(InstallerResult installResult) {
+      var warningDetail = BuildComponentFailureDetail(installResult == null ? null : installResult.ComponentFailures);
+      var decision = await ShowOverlayAsync(
+        "Install completed with warnings",
+        warningDetail + "\n\nSave logs now, then report this issue on GitHub or Discord.",
+        "Save logs",
+        "Not now",
+        new SolidColorBrush(Color.FromRgb(99, 102, 241)),
+        new SolidColorBrush(Color.FromRgb(165, 180, 252)),
+        true,
+        content => {
+          content.Children.Add(BuildSupportLinksTextBlock());
+        },
+        0);
+
+      if (!string.Equals(decision, "primary", StringComparison.OrdinalIgnoreCase)) {
+        return;
+      }
+
+      await SaveInstallWarningSupportBundleAsync(warningDetail, installResult);
+    }
+
+    private async Task SaveInstallFailureSupportBundleAsync(string failureDetail, InstallerResult installResult) {
       var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
       var saveDialog = new SaveFileDialog {
-        Title = githubTarget
-          ? "Save support logs for GitHub issue"
-          : "Save support logs for Discord #vibeshine",
+        Title = "Save support logs",
         Filter = "Log report (*.txt)|*.txt",
         DefaultExt = ".txt",
         AddExtension = true,
         OverwritePrompt = true,
-        FileName = "vibeshine-install-logs-" + destinationLabel + "-" + timestamp + ".txt",
+        FileName = "vibeshine-install-logs-" + timestamp + ".txt",
         InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
       };
 
@@ -1602,7 +1611,7 @@ namespace VibeshineInstaller {
       string error = null;
       var outputPath = saveDialog.FileName;
       try {
-        await Task.Run(() => WriteInstallFailureSupportReport(outputPath, githubTarget, failureDetail, installResult));
+        await Task.Run(() => WriteInstallFailureSupportReport(outputPath, failureDetail, installResult));
       } catch (Exception ex) {
         error = ex.Message;
       }
@@ -1613,21 +1622,87 @@ namespace VibeshineInstaller {
         return;
       }
 
-      var nextStep = githubTarget
-        ? "Attach this file when opening a GitHub issue."
-        : "Attach this file in Discord #vibeshine.";
+      var nextStep = "Attach this file on GitHub: https://github.com/Nonary/Vibeshine/issues\n"
+        + "Or Discord (#vibeshine): https://discord.com/invite/CGg5JxN";
       SetStatus("Support logs saved.", outputPath, _statusSuccessBrush);
       await ShowOverlayInfoAsync(
         "Logs saved",
         "Saved support logs to:\n" + outputPath + "\n\n" + nextStep);
     }
 
-    private void WriteInstallFailureSupportReport(string outputPath, bool githubTarget, string failureDetail, InstallerResult installResult) {
+    private async Task SaveInstallWarningSupportBundleAsync(string warningDetail, InstallerResult installResult) {
+      var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+      var saveDialog = new SaveFileDialog {
+        Title = "Save support logs",
+        Filter = "Log report (*.txt)|*.txt",
+        DefaultExt = ".txt",
+        AddExtension = true,
+        OverwritePrompt = true,
+        FileName = "vibeshine-install-warnings-" + timestamp + ".txt",
+        InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
+      };
+
+      var selected = saveDialog.ShowDialog(this);
+      if (selected != true || string.IsNullOrWhiteSpace(saveDialog.FileName)) {
+        return;
+      }
+
+      string error = null;
+      var outputPath = saveDialog.FileName;
+      try {
+        await Task.Run(() => WriteInstallWarningSupportReport(outputPath, warningDetail, installResult));
+      } catch (Exception ex) {
+        error = ex.Message;
+      }
+
+      if (!string.IsNullOrWhiteSpace(error)) {
+        SetStatus("Could not save support logs.", error, _statusErrorBrush);
+        await ShowOverlayInfoAsync("Could not save logs", error);
+        return;
+      }
+
+      var nextStep = "Attach this file on GitHub: https://github.com/Nonary/Vibeshine/issues\n"
+        + "Or Discord (#vibeshine): https://discord.com/invite/CGg5JxN";
+      SetStatus("Support logs saved.", outputPath, _statusSuccessBrush);
+      await ShowOverlayInfoAsync(
+        "Logs saved",
+        "Saved support logs to:\n" + outputPath + "\n\n" + nextStep);
+    }
+
+    private void WriteInstallFailureSupportReport(string outputPath, string failureDetail, InstallerResult installResult) {
       var candidateLogs = CollectSupportLogFiles(installResult == null ? null : installResult.LogPath);
-      var destination = githubTarget ? "GitHub issue" : "Discord #vibeshine";
+      var destination = "GitHub issue or Discord #vibeshine";
       var executionVersion = _bundleVersion.ToString(3);
       using (var writer = new StreamWriter(outputPath, false)) {
-        writer.WriteLine(BuildSupportSummary(destination, executionVersion, failureDetail, installResult, candidateLogs.Count));
+        writer.WriteLine(BuildSupportSummary(destination, executionVersion, failureDetail, installResult, candidateLogs.Count, "Vibeshine install failure report", "Failure detail:"));
+        writer.WriteLine();
+
+        if (candidateLogs.Count == 0) {
+          writer.WriteLine("No installer logs were found.");
+          return;
+        }
+
+        foreach (var file in candidateLogs) {
+          writer.WriteLine("===== BEGIN LOG: " + file + " =====");
+          try {
+            foreach (var line in File.ReadLines(file)) {
+              writer.WriteLine(line);
+            }
+          } catch (Exception ex) {
+            writer.WriteLine("[Could not read this log file: " + ex.Message + "]");
+          }
+          writer.WriteLine("===== END LOG: " + file + " =====");
+          writer.WriteLine();
+        }
+      }
+    }
+
+    private void WriteInstallWarningSupportReport(string outputPath, string warningDetail, InstallerResult installResult) {
+      var candidateLogs = CollectSupportLogFiles(installResult == null ? null : installResult.LogPath);
+      var destination = "GitHub issue or Discord #vibeshine";
+      var executionVersion = _bundleVersion.ToString(3);
+      using (var writer = new StreamWriter(outputPath, false)) {
+        writer.WriteLine(BuildSupportSummary(destination, executionVersion, warningDetail, installResult, candidateLogs.Count, "Vibeshine install warning report", "Warning detail:"));
         writer.WriteLine();
 
         if (candidateLogs.Count == 0) {
@@ -1726,11 +1801,13 @@ namespace VibeshineInstaller {
     private static string BuildSupportSummary(
       string destination,
       string installerVersion,
-      string failureDetail,
+      string detail,
       InstallerResult result,
-      int collectedLogCount) {
+      int collectedLogCount,
+      string reportTitle,
+      string detailLabel) {
       var lines = new List<string> {
-        "Vibeshine install failure report",
+        reportTitle,
         "Generated (UTC): " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
         "Destination: " + destination,
         "Installer version: " + installerVersion,
@@ -1738,15 +1815,53 @@ namespace VibeshineInstaller {
         "Operation: " + (result == null ? "install" : result.Operation.ToString()),
         "Collected logs: " + collectedLogCount,
         string.Empty,
-        "Failure detail:",
-        failureDetail ?? "Unknown error",
+        detailLabel,
+        detail ?? "Unknown error",
         string.Empty,
         "Next step:",
-        destination.IndexOf("GitHub", StringComparison.OrdinalIgnoreCase) >= 0
-          ? "Attach this file to your GitHub issue."
-          : "Attach this file in Discord #vibeshine."
+        "Attach this file on GitHub: https://github.com/Nonary/Vibeshine/issues",
+        "Or Discord (#vibeshine): https://discord.com/invite/CGg5JxN"
       };
       return string.Join(Environment.NewLine, lines);
+    }
+
+    private TextBlock BuildSupportLinksTextBlock() {
+      var block = new TextBlock {
+        FontSize = 12,
+        Foreground = new SolidColorBrush(Color.FromRgb(203, 219, 241)),
+        Margin = new Thickness(0, 0, 0, 8),
+        TextWrapping = TextWrapping.Wrap
+      };
+
+      block.Inlines.Add(new Run("Open an issue on "));
+      var githubLink = new Hyperlink(new Run("GitHub")) {
+        NavigateUri = new Uri("https://github.com/Nonary/Vibeshine/issues")
+      };
+      githubLink.Click += (sender, args) => OpenExternalUrl("https://github.com/Nonary/Vibeshine/issues");
+      block.Inlines.Add(githubLink);
+      block.Inlines.Add(new Run(" or join "));
+      var discordLink = new Hyperlink(new Run("Discord (#vibeshine)")) {
+        NavigateUri = new Uri("https://discord.com/invite/CGg5JxN")
+      };
+      discordLink.Click += (sender, args) => OpenExternalUrl("https://discord.com/invite/CGg5JxN");
+      block.Inlines.Add(discordLink);
+      block.Inlines.Add(new Run("."));
+
+      return block;
+    }
+
+    private static void OpenExternalUrl(string url) {
+      if (string.IsNullOrWhiteSpace(url)) {
+        return;
+      }
+
+      try {
+        Process.Start(new ProcessStartInfo {
+          FileName = url,
+          UseShellExecute = true
+        });
+      } catch {
+      }
     }
 
     private void SetStatus(string headline, string detail, Brush headlineBrush) {
@@ -1767,9 +1882,21 @@ namespace VibeshineInstaller {
     public string Message { get; set; }
     public string UserDetail { get; set; }
     public string LogPath { get; set; }
+    public List<string> ComponentFailures { get; set; }
     public bool Succeeded {
       get { return ExitCode == 0 || ExitCode == 3010; }
     }
+    public bool PartiallySucceeded {
+      get { return Succeeded && ComponentFailures != null && ComponentFailures.Count > 0; }
+    }
+  }
+
+  internal sealed class InternalInstallResultSnapshot {
+    public int ExitCode { get; set; }
+    public string Message { get; set; }
+    public string UserDetail { get; set; }
+    public string LogPath { get; set; }
+    public List<string> ComponentFailures { get; set; }
   }
 
   internal sealed class InstallerArguments {
@@ -1783,6 +1910,7 @@ namespace VibeshineInstaller {
     private const string InternalInstallPathToken = "--internal-install-path";
     private const string InternalInstallSudoVdaToken = "--internal-install-sudovda";
     private const string InternalInstallSaveLogsToken = "--internal-install-save-logs";
+    private const string InternalInstallResultPathToken = "--internal-install-result-path";
     private const string InternalUninstallDeleteInstallDirToken = "--internal-uninstall-delete-install-dir";
     private const string InternalUninstallRemoveSudoVdaToken = "--internal-uninstall-remove-sudovda";
 
@@ -1793,6 +1921,7 @@ namespace VibeshineInstaller {
     public string InternalInstallPath { get; set; }
     public bool InternalInstallVirtualDisplay { get; set; }
     public bool InternalInstallSaveLogs { get; set; }
+    public string InternalInstallResultPath { get; set; }
     public bool InternalUninstallDeleteInstallDir { get; set; }
     public bool InternalUninstallRemoveVirtualDisplayDriver { get; set; }
     public string MsiPathOverride { get; set; }
@@ -1844,6 +1973,10 @@ namespace VibeshineInstaller {
         }
         if (string.Equals(arg, InternalInstallSaveLogsToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
           parsed.InternalInstallSaveLogs = ParseBooleanToken(args[++index]);
+          continue;
+        }
+        if (string.Equals(arg, InternalInstallResultPathToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+          parsed.InternalInstallResultPath = args[++index];
           continue;
         }
         if (string.Equals(arg, InternalUninstallDeleteInstallDirToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
@@ -2338,6 +2471,7 @@ namespace VibeshineInstaller {
       };
 
       var exitCode = RunMsiexec(args, true, false);
+      var componentFailures = new List<string>();
       var savedLogPath = string.Empty;
       var saveLogsWarning = string.Empty;
       var saveLogsDetail = string.Empty;
@@ -2362,13 +2496,23 @@ namespace VibeshineInstaller {
           saveLogsDetail = "Could not save installer log copy.";
         }
       }
+      if (componentFailures.Count > 0) {
+        var componentSummary = "Component warnings: " + string.Join(" ", componentFailures);
+        resultMessage += " " + componentSummary;
+        if (string.IsNullOrWhiteSpace(saveLogsDetail)) {
+          saveLogsDetail = componentSummary;
+        } else {
+          saveLogsDetail += "\n" + componentSummary;
+        }
+      }
 
       return new InstallerResult {
         Operation = InstallerOperation.Install,
         ExitCode = exitCode,
         Message = resultMessage,
         UserDetail = saveLogsDetail,
-        LogPath = logPath
+        LogPath = logPath,
+        ComponentFailures = componentFailures
       };
     }
 
@@ -2814,6 +2958,7 @@ namespace VibeshineInstaller {
       string installDirectory,
       bool installVirtualDisplayDriver,
       bool saveInstallLogs) {
+      var resultPath = Path.Combine(Path.GetTempPath(), "vibeshine_install_result_" + Guid.NewGuid().ToString("N") + ".txt");
       var elevatedArgs = new List<string> {
         "--internal-elevated-install",
         "--internal-install-path",
@@ -2821,7 +2966,9 @@ namespace VibeshineInstaller {
         "--internal-install-sudovda",
         installVirtualDisplayDriver ? "1" : "0",
         "--internal-install-save-logs",
-        saveInstallLogs ? "1" : "0"
+        saveInstallLogs ? "1" : "0",
+        "--internal-install-result-path",
+        resultPath
       };
       if (!string.IsNullOrWhiteSpace(arguments.MsiPathOverride)) {
         elevatedArgs.Add("--msi");
@@ -2829,12 +2976,23 @@ namespace VibeshineInstaller {
       }
 
       var exitCode = RunElevatedBootstrapper(elevatedArgs);
+      var snapshot = TryReadInternalInstallResult(resultPath);
       var installLogPath = FindMostRecentLog(Path.GetTempPath(), "vibeshine_install_*.log");
+      if (snapshot != null && !string.IsNullOrWhiteSpace(snapshot.LogPath)) {
+        installLogPath = snapshot.LogPath;
+      }
+      TryDeleteFile(resultPath);
       return new InstallerResult {
         Operation = InstallerOperation.Install,
         ExitCode = exitCode,
-        Message = BuildResultMessage("Install", exitCode, installLogPath),
-        LogPath = installLogPath
+        Message = snapshot == null
+          ? BuildResultMessage("Install", exitCode, installLogPath)
+          : string.IsNullOrWhiteSpace(snapshot.Message)
+            ? BuildResultMessage("Install", exitCode, installLogPath)
+            : snapshot.Message,
+        UserDetail = snapshot == null ? string.Empty : snapshot.UserDetail,
+        LogPath = installLogPath,
+        ComponentFailures = snapshot == null ? new List<string>() : (snapshot.ComponentFailures ?? new List<string>())
       };
     }
 
@@ -2877,6 +3035,99 @@ namespace VibeshineInstaller {
           .FirstOrDefault();
       } catch {
         return null;
+      }
+    }
+
+    internal static void TryWriteInternalInstallResult(string resultPath, InstallerResult result) {
+      if (string.IsNullOrWhiteSpace(resultPath) || result == null) {
+        return;
+      }
+
+      try {
+        var failures = result.ComponentFailures == null
+          ? string.Empty
+          : string.Join("\n", result.ComponentFailures.Where(item => !string.IsNullOrWhiteSpace(item)));
+        var lines = new[] {
+          "ExitCode=" + result.ExitCode,
+          "MessageB64=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(result.Message ?? string.Empty)),
+          "UserDetailB64=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(result.UserDetail ?? string.Empty)),
+          "LogPathB64=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(result.LogPath ?? string.Empty)),
+          "ComponentFailuresB64=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(failures))
+        };
+        File.WriteAllLines(resultPath, lines, Encoding.UTF8);
+      } catch {
+      }
+    }
+
+    private static InternalInstallResultSnapshot TryReadInternalInstallResult(string resultPath) {
+      if (string.IsNullOrWhiteSpace(resultPath) || !File.Exists(resultPath)) {
+        return null;
+      }
+
+      try {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in File.ReadAllLines(resultPath, Encoding.UTF8)) {
+          if (string.IsNullOrWhiteSpace(line)) {
+            continue;
+          }
+          var splitIndex = line.IndexOf('=');
+          if (splitIndex <= 0) {
+            continue;
+          }
+          var key = line.Substring(0, splitIndex);
+          var value = splitIndex + 1 < line.Length ? line.Substring(splitIndex + 1) : string.Empty;
+          map[key] = value;
+        }
+
+        int parsedExitCode;
+        if (!int.TryParse(map.ContainsKey("ExitCode") ? map["ExitCode"] : "0", out parsedExitCode)) {
+          parsedExitCode = 0;
+        }
+
+        var failures = DecodeBase64Utf8(map, "ComponentFailuresB64")
+          .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+          .Select(item => item.Trim())
+          .Where(item => item.Length > 0)
+          .ToList();
+
+        return new InternalInstallResultSnapshot {
+          ExitCode = parsedExitCode,
+          Message = DecodeBase64Utf8(map, "MessageB64"),
+          UserDetail = DecodeBase64Utf8(map, "UserDetailB64"),
+          LogPath = DecodeBase64Utf8(map, "LogPathB64"),
+          ComponentFailures = failures
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    private static string DecodeBase64Utf8(IDictionary<string, string> values, string key) {
+      if (values == null || string.IsNullOrWhiteSpace(key) || !values.ContainsKey(key)) {
+        return string.Empty;
+      }
+
+      var raw = values[key] ?? string.Empty;
+      if (raw.Length == 0) {
+        return string.Empty;
+      }
+
+      try {
+        return Encoding.UTF8.GetString(Convert.FromBase64String(raw));
+      } catch {
+        return string.Empty;
+      }
+    }
+
+    private static void TryDeleteFile(string path) {
+      if (string.IsNullOrWhiteSpace(path)) {
+        return;
+      }
+      try {
+        if (File.Exists(path)) {
+          File.Delete(path);
+        }
+      } catch {
       }
     }
 
