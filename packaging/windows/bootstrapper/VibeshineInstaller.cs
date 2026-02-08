@@ -265,6 +265,7 @@ namespace VibepolloInstaller {
 
       var overlayLayout = new Grid();
       overlayLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+      overlayLayout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
       overlayLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       overlayCard.Child = overlayLayout;
 
@@ -277,11 +278,18 @@ namespace VibepolloInstaller {
       Grid.SetRow(_overlayAccentBar, 0);
       overlayLayout.Children.Add(_overlayAccentBar);
 
+      var overlayBodyScroll = new ScrollViewer {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Margin = new Thickness(0, 0, 0, 12)
+      };
+      Grid.SetRow(overlayBodyScroll, 1);
+      overlayLayout.Children.Add(overlayBodyScroll);
+
       var overlayStack = new StackPanel {
         Orientation = Orientation.Vertical
       };
-      Grid.SetRow(overlayStack, 1);
-      overlayLayout.Children.Add(overlayStack);
+      overlayBodyScroll.Content = overlayStack;
 
       _overlayTitleText = new TextBlock {
         FontSize = 17,
@@ -335,7 +343,8 @@ namespace VibepolloInstaller {
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition());
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
       overlayButtons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      overlayStack.Children.Add(overlayButtons);
+      Grid.SetRow(overlayButtons, 2);
+      overlayLayout.Children.Add(overlayButtons);
 
       _overlaySecondaryButton = new Button {
         Content = "Cancel",
@@ -1803,7 +1812,7 @@ namespace VibepolloInstaller {
     private static string BuildSupportSummary(
       string destination,
       string installerVersion,
-      string failureDetail,
+      string detail,
       InstallerResult result,
       int collectedLogCount,
       string reportTitle,
@@ -3179,7 +3188,6 @@ namespace VibepolloInstaller {
       if (string.IsNullOrWhiteSpace(path)) {
         return;
       }
-
       try {
         if (File.Exists(path)) {
           File.Delete(path);
