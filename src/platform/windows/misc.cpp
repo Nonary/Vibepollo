@@ -409,6 +409,25 @@ namespace platf {
     return session_id != 0xFFFFFFFF;
   }
 
+  bool is_lock_screen_active() {
+    HDESK hDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!hDesk) {
+      return false;
+    }
+
+    bool locked = false;
+    wchar_t name[256] {};
+    DWORD needed = 0;
+    if (GetUserObjectInformationW(hDesk, UOI_NAME, name, sizeof(name), &needed)) {
+      // Winlogon desktop indicates lock/login screen; intentionally do not treat
+      // other secure desktops (e.g. UAC prompts) as locked.
+      locked = (_wcsicmp(name, L"Winlogon") == 0);
+    }
+
+    CloseDesktop(hDesk);
+    return locked;
+  }
+
   // Note: This does NOT append a null terminator
   void append_string_to_environment_block(wchar_t *env_block, int &offset, const std::wstring &wstr) {
     std::memcpy(&env_block[offset], wstr.data(), wstr.length() * sizeof(wchar_t));

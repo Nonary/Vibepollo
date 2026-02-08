@@ -52,6 +52,12 @@ namespace platf {
   bool has_active_console_session();
 
   /**
+   * @brief Check whether the active input desktop is the lock screen desktop.
+   * @return true when the current desktop is Winlogon (lock/login), false otherwise.
+   */
+  bool is_lock_screen_active();
+
+  /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
    * @param elevated Specify whether to elevate the process.
    * @param cmd The command to run.

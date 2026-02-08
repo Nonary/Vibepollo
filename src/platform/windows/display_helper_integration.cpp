@@ -12,6 +12,7 @@
   #include <chrono>
   #include <cstdint>
   #include <filesystem>
+  #include <limits>
   #include <mutex>
   #include <optional>
   #include <string>
@@ -570,6 +571,10 @@ namespace {
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
   static std::atomic<std::int64_t> g_last_disarm_success_us {0};
 
+  // Tracks when the most recent successful APPLY completed, so the capture thread
+  // can add a stabilization delay before attempting to reinit after topology changes.
+  static std::atomic<std::int64_t> g_last_apply_completed_us {0};
+
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
@@ -1092,6 +1097,7 @@ namespace display_helper_integration {
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok && request.session) {
+          g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
           set_active_session(
             *request.session,
             request.session_overrides.device_id_override,
@@ -1104,6 +1110,10 @@ namespace display_helper_integration {
           if (request.enable_virtual_display_watchdog) {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
+        }
+        if (!ok && allow_resolution_deferral && request.session && platf::is_lock_screen_active()) {
+          BOOST_LOG(info) << "Display helper: APPLY failed during lock screen; queuing deferred apply for retry after unlock.";
+          queue_deferred_resolution_apply(request);
         }
         return ok;
       }
@@ -1136,6 +1146,7 @@ namespace display_helper_integration {
       }
       (void) apply_topology_definition(request.topology, "in-process");
 
+      g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
       set_active_session(
         *request.session,
         request.session_overrides.device_id_override,
@@ -1292,9 +1303,23 @@ namespace display_helper_integration {
     return ok;
   }
 
+  bool has_pending_apply() {
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    return pending_apply_state().has_value();
+  }
+
   void clear_pending_apply() {
     std::lock_guard<std::mutex> lock(pending_apply_mutex());
     pending_apply_state().reset();
+  }
+
+  int64_t ms_since_last_apply() {
+    const auto last_us = g_last_apply_completed_us.load(std::memory_order_relaxed);
+    if (last_us == 0) {
+      return std::numeric_limits<int64_t>::max();
+    }
+    const auto elapsed_us = now_steady_us() - last_us;
+    return elapsed_us / 1000;
   }
 
   namespace {
