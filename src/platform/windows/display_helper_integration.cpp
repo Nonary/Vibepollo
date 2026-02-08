@@ -12,6 +12,7 @@
   #include <chrono>
   #include <cstdint>
   #include <filesystem>
+  #include <limits>
   #include <mutex>
   #include <optional>
   #include <string>
@@ -36,6 +37,7 @@
   #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
+  #include "src/platform/windows/utils.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/ipc/misc_utils.h"
@@ -570,6 +572,10 @@ namespace {
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
   static std::atomic<std::int64_t> g_last_disarm_success_us {0};
 
+  // Tracks when the most recent successful APPLY completed, so the capture thread
+  // can add a stabilization delay before attempting to reinit after topology changes.
+  static std::atomic<std::int64_t> g_last_apply_completed_us {0};
+
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
@@ -1068,8 +1074,15 @@ namespace display_helper_integration {
 
       // Stream-start policy: if a helper is already running, hard-restart it immediately
       // rather than attempting graceful STOP (avoids apply timeouts and wedged restore loops).
+      // In SYSTEM/no-user-session mode we still keep hard restart to recover stale pipe state,
+      // but we avoid in-process display API fallback if helper IPC remains unavailable.
       const bool hard_restart = (request.session != nullptr);
+
       bool helper_ready = ensure_helper_started(hard_restart, true);
+      if (!helper_ready && hard_restart) {
+        BOOST_LOG(warning) << "Display helper: hard restart path unavailable; retrying helper start without restart.";
+        helper_ready = ensure_helper_started(false, true);
+      }
       if (!helper_ready) {
         helper_ready = ensure_helper_started(hard_restart, true);
       }
@@ -1085,6 +1098,7 @@ namespace display_helper_integration {
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok && request.session) {
+          g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
           set_active_session(
             *request.session,
             request.session_overrides.device_id_override,
@@ -1098,7 +1112,17 @@ namespace display_helper_integration {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
         }
+        if (!ok && allow_resolution_deferral && request.session && is_user_session_locked()) {
+          BOOST_LOG(info) << "Display helper: APPLY failed during lock screen; queuing deferred apply for retry after unlock.";
+          queue_deferred_resolution_apply(request);
+        }
         return ok;
+      }
+
+      if (system_no_user_session) {
+        BOOST_LOG(warning) << "Display helper: helper unavailable in SYSTEM context without user session; skipping in-process APPLY fallback.";
+        maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
+        return false;
       }
 
       BOOST_LOG(warning) << "Display helper: helper unavailable; falling back to in-process APPLY.";
@@ -1123,6 +1147,7 @@ namespace display_helper_integration {
       }
       (void) apply_topology_definition(request.topology, "in-process");
 
+      g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
       set_active_session(
         *request.session,
         request.session_overrides.device_id_override,
@@ -1279,9 +1304,23 @@ namespace display_helper_integration {
     return ok;
   }
 
+  bool has_pending_apply() {
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    return pending_apply_state().has_value();
+  }
+
   void clear_pending_apply() {
     std::lock_guard<std::mutex> lock(pending_apply_mutex());
     pending_apply_state().reset();
+  }
+
+  int64_t ms_since_last_apply() {
+    const auto last_us = g_last_apply_completed_us.load(std::memory_order_relaxed);
+    if (last_us == 0) {
+      return std::numeric_limits<int64_t>::max();
+    }
+    const auto elapsed_us = now_steady_us() - last_us;
+    return elapsed_us / 1000;
   }
 
   namespace {

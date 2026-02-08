@@ -17,6 +17,9 @@ namespace display_helper_integration {
   // Returns true if the helper accepted the command; false to allow fallback.
   bool apply(const DisplayApplyRequest &request);
 
+  // Returns true if a deferred APPLY request is currently queued.
+  bool has_pending_apply();
+
   // Retry a deferred APPLY request once a user session is available.
   bool apply_pending_if_ready();
 
@@ -72,6 +75,10 @@ namespace display_helper_integration {
     const std::string &device_hint,
     const std::vector<int> &targets_hz);
 #endif
+
+  // Returns milliseconds since the last successful display-helper APPLY completed.
+  // Returns a very large value if no apply has ever been performed.
+  int64_t ms_since_last_apply();
 
   // Start a lightweight watchdog during active streams that pings the helper periodically
   // and restarts/re-handshakes if it crashes. No-ops if already running.

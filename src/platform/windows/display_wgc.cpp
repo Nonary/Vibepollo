@@ -87,7 +87,8 @@ namespace platf::dxgi {
 
     _ipc_session->initialize_if_needed();
     if (!_ipc_session->is_initialized()) {
-      return capture_e::error;
+      BOOST_LOG(warning) << "WGC IPC helper failed to initialize; requesting capture reinit.";
+      return capture_e::reinit;
     }
 
     // Most of the code below is copy and pasted from display_vram_t with some elements removed such as cursor blending.
@@ -310,7 +311,8 @@ namespace platf::dxgi {
 
     _ipc_session->initialize_if_needed();
     if (!_ipc_session->is_initialized()) {
-      return capture_e::error;
+      BOOST_LOG(warning) << "WGC IPC helper failed to initialize; requesting capture reinit.";
+      return capture_e::reinit;
     }
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
