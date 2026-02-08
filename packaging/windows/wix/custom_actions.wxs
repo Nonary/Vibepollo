@@ -20,8 +20,6 @@
     
     <!-- Keep Restart Manager enabled (default) to stop services in basic/silent UI -->
     
-    <!-- Embedded VBScript to prompt the user on uninstall -->
-    <Binary Id="AskRmSudovdaVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_remove_sudovda.vbs"/>
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
     <!-- VBScripts for legacy Sunshine handling -->
@@ -65,6 +63,7 @@
         <CreateFolder/>
         <!-- Legacy service name cleanup (best-effort) -->
         <ServiceControl Id="SC_StopLegacy" Name="sunshinesvc" Stop="both" Remove="uninstall" Wait="yes" />
+        <ServiceControl Id="SC_StopLegacyVibeshine" Name="VibeshineService" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>
     </DirectoryRef>
   </Fragment>
@@ -153,7 +152,6 @@
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C if exist &quot;[INSTALL_ROOT]sunshine.exe&quot; ( &quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo ) else ( exit /b 0 )"/>
 
 
-    <CustomAction Id="AskRemoveSudovda" BinaryKey="AskRmSudovdaVbs" VBScriptCall="AskRemoveSudovda" Execute="immediate" Return="check" />
     <CustomAction Id="SetUninstallSudovda"
                  Property="UninstallSudovda"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\uninstall.bat&quot;&quot;"/>
@@ -164,10 +162,10 @@
     <!-- Immediate setter for quiet stop service -->
     <CustomAction Id="SetStopSvcQuietImmediate"
                  Property="StopSvcQuietImmediate"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('SunshineService','VibeshineService')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'SunshineService' -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('SunshineService','VibeshineService')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
     <!-- Immediate setter to prune everything except the config directory -->
     <CustomAction Id="SetPruneButConfig"
                  Property="PruneButConfig"
@@ -186,7 +184,7 @@
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetRemoveServiceQuiet"
                  Property="RemoveServiceQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete VibeshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null&quot;"/>
 
     <!-- Legacy Sunshine handling actions -->
     <CustomAction Id="AskUninstallLegacySunshine" BinaryKey="AskUninstallLegacySunshineVbs" VBScriptCall="AskUninstallLegacySunshine" Execute="immediate" Return="check" />
