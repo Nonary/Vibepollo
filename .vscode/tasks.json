@@ -1,0 +1,310 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "web: format",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "npm run format"
+      ],
+      "isBackground": false,
+      "problemMatcher": [],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}/src_assets/common/assets/web"
+      }
+    },
+    {
+      "label": "cpp: clang-format update",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/scripts/update_clang_format.py"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "cmake: configure",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\.vscode\\cmake_configure_if_needed.ps1",
+        "-Workspace",
+        "${workspaceFolder}",
+        "-BuildType",
+        "${input:cmakeBuildType}",
+        "-CMakePath",
+        "D:/Software/MSYS2/ucrt64/bin/cmake.exe"
+      ],
+      "problemMatcher": [],
+      "group": "build",
+      "options": {
+        "env": {
+          "PATH": "D:/Software/MSYS2/ucrt64/bin;${env:PATH}"
+        }
+      }
+    },
+    {
+      "label": "cmake: build",
+      "type": "process",
+      "command": "${config:cmake.cmakePath}",
+      "args": [
+        "--build",
+        "${workspaceFolder}/build",
+        "--config",
+        "${input:cmakeBuildType}",
+        "--target",
+        "all",
+        "-j",
+        "10"
+      ],
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "cmake: configure"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "options": {
+        "env": {
+          "PATH": "D:/Software/MSYS2/ucrt64/bin;${env:PATH}"
+        }
+      }
+    },
+    {
+      "label": "symbols: cv2pdb sunshine",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "& 'C:/Users/Chase/tools/cv2pdb64.exe' '${workspaceFolder}/build/sunshine.exe'; exit 0"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "symbols: copy to ProgramData",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "$dest = 'C:/ProgramData/Sunshine'; $pdb = '${workspaceFolder}/build/sunshine.pdb'; if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Force -Path $dest | Out-Null }; if (Test-Path $pdb) { Copy-Item -Path $pdb -Destination $dest -Force }"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "symbols: strip & copy",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "symbols: cv2pdb sunshine",
+        "symbols: copy to ProgramData"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "web: build UI",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "npm run build"
+      ],
+      "isBackground": false,
+      "problemMatcher": [
+        "$eslint-stylish"
+      ],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}/src_assets/common/assets/web"
+      }
+    },
+    {
+      "label": "webrtc: build libwebrtc (mingw)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/build_mingw_webrtc.ps1"
+      ],
+      "problemMatcher": [],
+      "group": "build",
+      "options": {
+        "env": {
+          "WEBRTC_VS_PATH": "D:/Software/Visual Studio",
+          "WEBRTC_WINSDK_DIR": "D:/Software/WinSDK"
+        }
+      }
+    },
+    {
+      "label": "cpack: WIX (msi)",
+      "type": "process",
+      "command": "D:/Software/MSYS2/ucrt64/bin/cpack.exe",
+      "args": [
+        "-G",
+        "WIX",
+        "--config",
+        "${workspaceFolder}/build/CPackConfig.cmake",
+        "-j",
+        "10"
+      ],
+      "problemMatcher": [],
+      "group": "build",
+      "options": {
+        "env": {
+          "WIX": "C:/Program Files (x86)/WiX Toolset v3.14",
+          "PATH": "D:/Software/MSYS2/ucrt64/bin;C:/Program Files (x86)/WiX Toolset v3.14/bin;${env:PATH}"
+        }
+      }
+    },
+    {
+      "label": "cpack: custom installer",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "cpack: WIX (msi)"
+      ],
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/packaging/windows/bootstrapper/build_bootstrapper.ps1",
+        "-BuildDir",
+        "${workspaceFolder}/build"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "cpack: WIX",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "cpack: custom installer"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "install: Vibepollo",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/install_vibepollo.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "clean: sunshine.exe",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Remove-Item -Path '${workspaceFolder}/build/sunshine.exe' -Force -ErrorAction SilentlyContinue"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "debug install",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "clean: sunshine.exe",
+        "cmake: build",
+        "symbols: cv2pdb sunshine",
+        "symbols: copy to ProgramData",
+        "cpack: custom installer",
+        "install: Vibepollo"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    },
+    {
+      "label": "pipeline: lint + build",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "web: format",
+        "cpp: clang-format update",
+        "cmake: build"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    },
+    {
+      "label": "pipeline: build + pack",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "cmake: build",
+        "symbols: strip & copy",
+        "cpack: custom installer"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "pipeline: build + pack + install",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "pipeline: build + pack",
+        "install: Vibepollo"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    },
+    {
+      "label": "pipeline: pack + install",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "cpack: custom installer",
+        "install: Vibepollo"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "cmakeBuildType",
+      "type": "pickString",
+      "description": "CMake build type",
+      "options": [
+        "Debug",
+        "Release"
+      ],
+      "default": "Debug"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # common packaging
 
 # common cpack options
-# Branding: show Vibeshine by Nonary in installer UI
+# Branding: show Vibepollo by Nonary in installer UI
 set(CPACK_PACKAGE_NAME "Vibepollo")
 set(CPACK_PACKAGE_VENDOR "Nonary")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION_NUMERIC})

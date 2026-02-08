@@ -46,9 +46,6 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA
         SetOutPath '\$INSTDIR'
         CreateShortCut '\$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\${CMAKE_PROJECT_NAME}.lnk' \
             '\$INSTDIR\\\\${CMAKE_PROJECT_NAME}.exe' '--shortcut'
-        ; Convenience link in install directory to uninstall ViGEm (Virtual Gamepad)
-        CreateShortCut '\$INSTDIR\\\\Uninstall Virtual Gamepad.lnk' \
-            'powershell.exe' '-ExecutionPolicy Bypass -File \"\$INSTDIR\\\\scripts\\\\uninstall-gamepad.ps1\"'
         ")
 set(CPACK_NSIS_DELETE_ICONS_EXTRA
         "${CPACK_NSIS_DELETE_ICONS_EXTRA}

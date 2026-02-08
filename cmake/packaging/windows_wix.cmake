@@ -6,7 +6,7 @@ set(CPACK_GENERATOR "WIX")
 
 # Product identity and visuals
 set(CPACK_WIX_PRODUCT_ICON "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/images/apollo.ico")
-set(CPACK_WIX_PROGRAM_MENU_FOLDER "Vibeshine")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "Vibepollo")
 
 # Stable Upgrade GUID to enable in-place upgrades
 # NOTE: Do not change once released, or upgrades will break.
