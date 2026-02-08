@@ -551,7 +551,7 @@ namespace nvhttp {
                 }
 
                 // Force the capture thread to reinitialize so it rebinds to the recreated display.
-                mail::man->event<int>(mail::switch_display)->raise(0);
+                mail::man->event<int>(mail::switch_display)->raise(-1);
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display.";
               }
             };
