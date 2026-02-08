@@ -1624,8 +1624,8 @@ namespace VibepolloInstaller {
       }
 
       var nextStep = githubTarget
-        ? "Attach this file when opening a GitHub issue."
-        : "Attach this file in Discord #vibeshine.";
+        ? "Attach this file on GitHub: https://github.com/Nonary/Vibepollo/issues"
+        : "Attach this file in Discord #vibeshine (Vibepollo users can use this channel for support too).";
       SetStatus("Support logs saved.", outputPath, _statusSuccessBrush);
       await ShowOverlayInfoAsync(
         "Logs saved",
@@ -1753,8 +1753,8 @@ namespace VibepolloInstaller {
         string.Empty,
         "Next step:",
         destination.IndexOf("GitHub", StringComparison.OrdinalIgnoreCase) >= 0
-          ? "Attach this file to your GitHub issue."
-          : "Attach this file in Discord #vibepollo."
+          ? "Attach this file on GitHub: https://github.com/Nonary/Vibepollo/issues"
+          : "Attach this file in Discord #vibeshine (Vibepollo users can use this channel for support too)."
       };
       return string.Join(Environment.NewLine, lines);
     }

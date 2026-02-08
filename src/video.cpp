@@ -42,6 +42,7 @@ extern "C" {
 #ifdef _WIN32
   #include <dxgi1_2.h>
   #include <wrl/client.h>
+  #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
@@ -67,6 +68,10 @@ namespace video {
   namespace {
 #ifdef _WIN32
     bool should_prefer_virtual_display() {
+      if (platf::is_lock_screen_active() && VDISPLAY::has_active_physical_display()) {
+        return false;
+      }
+
       if (!VDISPLAY::isSudaVDADriverInstalled()) {
         return false;
       }
@@ -1424,16 +1429,29 @@ namespace video {
   }
 
   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
-    // We try this twice, in case we still get an error on reinitialization
-    for (int x = 0; x < 2; ++x) {
+    // After a recent display-helper APPLY (topology change), the display subsystem
+    // may need time to settle. Use more retries with progressive delays.
+    int max_attempts = 2;
+    std::chrono::milliseconds base_delay = 200ms;
+#ifdef _WIN32
+    const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
+    if (ms_since_apply < 5000) {
+      max_attempts = 5;
+      base_delay = 300ms;
+    }
+#endif
+
+    for (int x = 0; x < max_attempts; ++x) {
       disp.reset();
       disp = platf::display(type, display_name, config);
       if (disp) {
         break;
       }
 
-      // The capture code depends on us to sleep between failures
-      std::this_thread::sleep_for(200ms);
+      // The capture code depends on us to sleep between failures.
+      // Use progressive delays for topology changes to give the display time to settle.
+      auto delay = base_delay + std::chrono::milliseconds(x * 100);
+      std::this_thread::sleep_for(delay);
     }
   }
 
@@ -1463,9 +1481,28 @@ namespace video {
 
     // If we now have no displays, let's put the old display array back and fail
     if (display_names.empty() && !old_display_names.empty()) {
+#ifdef _WIN32
+      // During a topology change (e.g. display helper just applied ensure_only_display),
+      // DXGI may temporarily report no displays. Don't fall back to stale names that
+      // include now-disabled physical displays — this causes the reinit loop to waste
+      // time trying to init on unavailable outputs. Instead, use the configured output
+      // name so the reinit loop targets the correct display.
+      const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
+      if (ms_since_apply < 5000 && !output_name.empty()) {
+        BOOST_LOG(info) << "No displays found after reenumeration during topology change; "
+                        << "using configured output ["sv << output_name << "] instead of stale list"sv;
+        display_names.clear();
+        display_names.emplace_back(output_name);
+      } else {
+        BOOST_LOG(error) << "No displays were found after reenumeration!"sv;
+        display_names = std::move(old_display_names);
+        return;
+      }
+#else
       BOOST_LOG(error) << "No displays were found after reenumeration!"sv;
       display_names = std::move(old_display_names);
       return;
+#endif
     } else if (display_names.empty()) {
       display_names.emplace_back(output_name);
     }
@@ -1750,6 +1787,21 @@ namespace video {
               // only support a single display session per device/application.
               disp.reset();
 
+#ifdef _WIN32
+              // After a recent display-helper APPLY (topology change), give the display
+              // subsystem time to settle before trying to reinit. Without this, DXGI
+              // may not yet reflect the new topology, causing repeated failures that
+              // leave the stream frozen.
+              {
+                const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
+                if (ms_since_apply < 1500) {
+                  auto settle_ms = std::max<int64_t>(0, 1500 - ms_since_apply);
+                  BOOST_LOG(info) << "Display topology recently changed; waiting " << settle_ms << "ms for display subsystem to settle";
+                  std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+                }
+              }
+#endif
+
               // Refresh display names since a display removal might have caused the reinitialization
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
 
@@ -1758,9 +1810,13 @@ namespace video {
                 continue;
               }
 
-              // Process any pending display switch with the new list of displays
+              // Process any pending display switch with the new list of displays.
+              // Negative values mean "reinit only; keep display selection logic intact".
               if (switch_display_event->peek()) {
-                display_p = std::clamp(*switch_display_event->pop(), 0, (int) display_names.size() - 1);
+                const int requested = *switch_display_event->pop();
+                if (requested >= 0) {
+                  display_p = std::clamp(requested, 0, (int) display_names.size() - 1);
+                }
               }
 
               // reset_display() will sleep between retries
@@ -2588,6 +2644,17 @@ namespace video {
     }
 
     while (encode_session_ctx_queue.running()) {
+#ifdef _WIN32
+      // After a recent display-helper APPLY, give the display subsystem time to settle.
+      {
+        const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
+        if (ms_since_apply < 1500) {
+          auto settle_ms = std::max<int64_t>(0, 1500 - ms_since_apply);
+          BOOST_LOG(info) << "Display topology recently changed; waiting " << settle_ms << "ms for display subsystem to settle";
+          std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+        }
+      }
+#endif
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
 
@@ -2596,9 +2663,13 @@ namespace video {
         continue;
       }
 
-      // Process any pending display switch with the new list of displays
+      // Process any pending display switch with the new list of displays.
+      // Negative values mean "reinit only; keep display selection logic intact".
       if (switch_display_event->peek()) {
-        display_p = std::clamp(*switch_display_event->pop(), 0, (int) display_names.size() - 1);
+        const int requested = *switch_display_event->pop();
+        if (requested >= 0) {
+          display_p = std::clamp(requested, 0, (int) display_names.size() - 1);
+        }
       }
 
       // reset_display() will sleep between retries

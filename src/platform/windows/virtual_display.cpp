@@ -3492,6 +3492,32 @@ namespace VDISPLAY {
     return std::nullopt;
   }
 
+  bool is_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) {
+      return false;
+    }
+
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return false;
+    }
+
+    for (const auto &device : *devices) {
+      if (!is_virtual_display_device(device)) {
+        continue;
+      }
+
+      if (!device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier)) {
+        return true;
+      }
+      if (!device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays() {
     std::vector<SudaVDADisplayInfo> result;
 

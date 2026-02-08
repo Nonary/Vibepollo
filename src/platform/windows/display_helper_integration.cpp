@@ -1112,7 +1112,7 @@ namespace display_helper_integration {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
         }
-        if (!ok && allow_resolution_deferral && request.session && is_user_session_locked()) {
+        if (!ok && allow_resolution_deferral && request.session && platf::is_lock_screen_active()) {
           BOOST_LOG(info) << "Display helper: APPLY failed during lock screen; queuing deferred apply for retry after unlock.";
           queue_deferred_resolution_apply(request);
         }

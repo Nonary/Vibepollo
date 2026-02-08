@@ -3,6 +3,7 @@
  * @brief Definitions for the configuration of Sunshine.
  */
 // standard includes
+#include <atomic>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -26,12 +27,14 @@
 // local includes
 #include "config.h"
 #include "config_playnite.h"
+#include "display_device.h"
 #include "display_helper_integration.h"
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "nvhttp.h"
+#include "globals.h"
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
@@ -45,6 +48,7 @@
   #include <shellapi.h>
   #include <Windows.h>
   #include "platform/windows/hotkey_manager.h"
+  #include "platform/windows/misc.h"
 #endif
 
 #if !defined(__ANDROID__) && !defined(__APPLE__)
@@ -63,6 +67,13 @@
 
 namespace fs = std::filesystem;
 using namespace std::literals;
+
+#ifdef _WIN32
+namespace VDISPLAY {
+  bool is_virtual_display_output(const std::string &output_identifier);
+  bool has_active_physical_display();
+}  // namespace VDISPLAY
+#endif
 
 #define CA_DIR "credentials"
 #define PRIVATE_KEY_FILE CA_DIR "/cakey.pem"
@@ -1976,6 +1987,10 @@ namespace config {
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
     std::shared_mutex g_output_override_mutex;
     std::optional<std::string> g_runtime_output_name_override;
+#ifdef _WIN32
+    std::optional<std::string> g_deferred_virtual_output_name_override;
+    std::atomic<bool> g_virtual_output_retry_worker_running {false};
+#endif
 
     // Runtime config override map applied on top of config file values (not persisted).
     // Used for per-application overrides so we can keep the effective config consistent
@@ -2056,6 +2071,92 @@ namespace config {
       std::scoped_lock lk(g_runtime_overrides_mutex);
       return g_runtime_config_overrides;
     }
+
+#ifdef _WIN32
+    bool is_virtual_output_override(const std::optional<std::string> &output_name) {
+      if (!output_name || output_name->empty()) {
+        return false;
+      }
+      if (*output_name == "sunshine:sudovda_virtual_display") {
+        return true;
+      }
+      return VDISPLAY::is_virtual_display_output(*output_name);
+    }
+
+    void schedule_deferred_virtual_output_reapply() {
+      bool expected = false;
+      if (!g_virtual_output_retry_worker_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;
+      }
+
+      std::thread([]() {
+        auto reset_running = util::fail_guard([]() {
+          g_virtual_output_retry_worker_running.store(false, std::memory_order_release);
+        });
+
+        constexpr auto kPollInterval = std::chrono::milliseconds(250);
+        // If we have any deferred display-helper APPLY work (e.g. resolution/HDR/exclusivity),
+        // ensure it runs before we force capture to reinit/retarget. Applying can itself cause
+        // a capture reinit, so order matters.
+        constexpr auto kPendingApplyMaxWait = std::chrono::seconds(8);
+
+        for (;;) {
+          std::optional<std::string> deferred_output;
+          {
+            std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
+            deferred_output = g_deferred_virtual_output_name_override;
+          }
+
+          if (!deferred_output || deferred_output->empty()) {
+            return;
+          }
+
+          if (platf::is_lock_screen_active()) {
+            std::this_thread::sleep_for(kPollInterval);
+            continue;
+          }
+
+          bool applied = false;
+          {
+            std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
+            if (!g_deferred_virtual_output_name_override || g_deferred_virtual_output_name_override->empty()) {
+              return;
+            }
+            if (!platf::is_lock_screen_active()) {
+              g_runtime_output_name_override = g_deferred_virtual_output_name_override;
+              g_deferred_virtual_output_name_override.reset();
+              applied = true;
+            }
+          }
+
+          if (applied) {
+            BOOST_LOG(info) << "Lock screen cleared; applied deferred virtual output override.";
+
+            // Ensure any queued helper APPLY runs before we request capture reinit, otherwise
+            // we can retarget capture first and then deadlock when APPLY triggers a reinit.
+            if (display_helper_integration::has_pending_apply()) {
+              const auto deadline = std::chrono::steady_clock::now() + kPendingApplyMaxWait;
+              while (display_helper_integration::has_pending_apply() &&
+                     std::chrono::steady_clock::now() < deadline) {
+                (void) display_helper_integration::apply_pending_if_ready();
+                std::this_thread::sleep_for(kPollInterval);
+              }
+              if (display_helper_integration::has_pending_apply()) {
+                BOOST_LOG(warning) << "Deferred virtual output override applied, but deferred display-helper APPLY is still pending; proceeding with capture retarget.";
+              }
+            }
+
+            if (mail::man) {
+              // -1 means "reinit only; keep display selection logic intact".
+              mail::man->event<int>(mail::switch_display)->raise(-1);
+              BOOST_LOG(info) << "Requested capture reinit after deferred virtual output override reapply.";
+            }
+            return;
+          }
+        }
+      }).detach();
+    }
+#endif
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
@@ -2064,12 +2165,43 @@ namespace config {
   }
 
   void set_runtime_output_name_override(std::optional<std::string> output_name) {
+    bool should_schedule_deferred_reapply = false;
+
     std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
     if (output_name && output_name->empty()) {
       g_runtime_output_name_override.reset();
+#ifdef _WIN32
+      g_deferred_virtual_output_name_override.reset();
+#endif
       return;
     }
+
+#ifdef _WIN32
+    // Lock screen can black out external outputs. Defer virtual override only when we
+    // have a usable physical fallback; otherwise keep virtual to avoid capture loss.
+    if (is_virtual_output_override(output_name) &&
+        platf::is_lock_screen_active() &&
+        VDISPLAY::has_active_physical_display()) {
+      if (!g_deferred_virtual_output_name_override || *g_deferred_virtual_output_name_override != *output_name) {
+        BOOST_LOG(info) << "Lock screen active; deferring virtual output override until unlock.";
+      }
+      g_deferred_virtual_output_name_override = std::move(output_name);
+      g_runtime_output_name_override.reset();
+      should_schedule_deferred_reapply = true;
+    } else {
+      g_runtime_output_name_override = std::move(output_name);
+      g_deferred_virtual_output_name_override.reset();
+    }
+#else
     g_runtime_output_name_override = std::move(output_name);
+#endif
+
+#ifdef _WIN32
+    lock.unlock();
+    if (should_schedule_deferred_reapply) {
+      schedule_deferred_virtual_output_reapply();
+    }
+#endif
   }
 
   std::optional<std::string> runtime_output_name_override() {
