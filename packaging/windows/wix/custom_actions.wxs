@@ -180,12 +180,9 @@
                  Property="UninstallSudovda"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\uninstall.bat&quot;&quot;"/>
 
-    <CustomAction Id="AskRemoveGamepad" BinaryKey="AskRmGamepadVbs" VBScriptCall="AskRemoveGamepad" Execute="immediate" Return="check" />
     <CustomAction Id="SetUninstallGamepad"
                  Property="UninstallGamepad"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;"/>
-
-    <CustomAction Id="AskDeleteInstallDir" BinaryKey="AskDelInstDirVbs" VBScriptCall="AskDeleteInstallDir" Execute="immediate" Return="check" />
 
     <CustomAction Id="SetDeleteInstallDir"
                  Property="DeleteInstallDir"
@@ -223,8 +220,6 @@
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete VibeshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null; sc.exe delete ApolloService | Out-Null; sc.exe delete ApolloSvc | Out-Null&quot;"/>
 
     <!-- Legacy Sunshine handling actions -->
-    <CustomAction Id="ShowRebootNotice" BinaryKey="RebootNoticeVbs" VBScriptCall="ShowRebootNotice" Execute="immediate" Return="ignore" />
-
     <CustomAction Id="AskUninstallLegacySunshine" BinaryKey="AskUninstallLegacySunshineVbs" VBScriptCall="AskUninstallLegacySunshine" Execute="immediate" Return="check" />
     <CustomAction Id="WaitForLegacyUninstall" BinaryKey="WaitForLegacyUninstallVbs" VBScriptCall="WaitForLegacyUninstall" Execute="immediate" Return="check" />
 

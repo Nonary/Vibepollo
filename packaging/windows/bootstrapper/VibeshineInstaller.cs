@@ -1827,7 +1827,7 @@ namespace VibepolloInstaller {
         "Collected logs: " + collectedLogCount,
         string.Empty,
         string.IsNullOrWhiteSpace(detailLabel) ? "Detail:" : detailLabel,
-        failureDetail ?? "Unknown error",
+        detail ?? "Unknown error",
         string.Empty,
         "Next step:",
         "Attach this file on GitHub: https://github.com/Nonary/Vibepollo/issues",
