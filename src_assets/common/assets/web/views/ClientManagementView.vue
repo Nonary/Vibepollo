@@ -208,6 +208,103 @@
                 </template>
               </n-form-item>
 
+              <n-form-item>
+                <n-checkbox v-model:checked="client.editAllowClientCommands" size="small">
+                  <div class="flex flex-col">
+                    <span>Allow Client Commands</span>
+                    <span class="text-[11px] opacity-60">
+                      Allow this client to run connect and disconnect commands.
+                    </span>
+                  </div>
+                </n-checkbox>
+              </n-form-item>
+
+              <div v-if="client.editAllowClientCommands" class="space-y-4">
+                <div
+                  class="space-y-3 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                      Connect Commands
+                    </div>
+                    <n-button size="tiny" tertiary @click="addClientCommand(client.editDoCommands)">
+                      <i class="fas fa-plus" /> {{ $t('_common.add') }}
+                    </n-button>
+                  </div>
+                  <div v-if="client.editDoCommands.length === 0" class="text-xs opacity-70">
+                    No commands configured.
+                  </div>
+                  <div v-else class="space-y-2">
+                    <div
+                      v-for="(command, index) in client.editDoCommands"
+                      :key="`do-${client.uuid}-${index}`"
+                      class="rounded-md border border-dark/10 dark:border-light/10 p-3"
+                    >
+                      <div class="grid gap-3 md:grid-cols-[1fr_auto_auto]">
+                        <n-input
+                          v-model:value="command.cmd"
+                          class="font-mono"
+                          :placeholder="$t('_common.cmd')"
+                        />
+                        <n-checkbox v-if="isWindows" v-model:checked="command.elevated" size="small">
+                          {{ $t('_common.elevated') }}
+                        </n-checkbox>
+                        <n-button
+                          size="small"
+                          type="error"
+                          secondary
+                          @click="removeClientCommand(client.editDoCommands, index)"
+                        >
+                          <i class="fas fa-trash" />
+                        </n-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  class="space-y-3 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                      Disconnect Commands
+                    </div>
+                    <n-button size="tiny" tertiary @click="addClientCommand(client.editUndoCommands)">
+                      <i class="fas fa-plus" /> {{ $t('_common.add') }}
+                    </n-button>
+                  </div>
+                  <div v-if="client.editUndoCommands.length === 0" class="text-xs opacity-70">
+                    No commands configured.
+                  </div>
+                  <div v-else class="space-y-2">
+                    <div
+                      v-for="(command, index) in client.editUndoCommands"
+                      :key="`undo-${client.uuid}-${index}`"
+                      class="rounded-md border border-dark/10 dark:border-light/10 p-3"
+                    >
+                      <div class="grid gap-3 md:grid-cols-[1fr_auto_auto]">
+                        <n-input
+                          v-model:value="command.cmd"
+                          class="font-mono"
+                          :placeholder="$t('_common.cmd')"
+                        />
+                        <n-checkbox v-if="isWindows" v-model:checked="command.elevated" size="small">
+                          {{ $t('_common.elevated') }}
+                        </n-checkbox>
+                        <n-button
+                          size="small"
+                          type="error"
+                          secondary
+                          @click="removeClientCommand(client.editUndoCommands, index)"
+                        >
+                          <i class="fas fa-trash" />
+                        </n-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div v-if="isWindows" class="space-y-3">
                 <n-checkbox
                   v-model:checked="client.editDisplayOverrideEnabled"
@@ -653,6 +750,9 @@ interface ClientApiEntry {
   virtual_display_layout?: string;
   prefer_10bit_sdr?: boolean | string | number | null;
   config_overrides?: Record<string, unknown> | null;
+  allow_client_commands?: boolean | string | number;
+  do?: unknown;
+  undo?: unknown;
 }
 
 interface ClientsListResponse {
@@ -686,6 +786,9 @@ interface ClientViewModel {
   virtualDisplayMode: ClientVirtualDisplayMode;
   virtualDisplayLayout: ClientVirtualDisplayLayout;
   configOverrides: Record<string, unknown>;
+  allowClientCommands: boolean;
+  doCommands: ClientCommandEntry[];
+  undoCommands: ClientCommandEntry[];
 
   editing: boolean;
   editHdrProfile: string | null;
@@ -699,6 +802,14 @@ interface ClientViewModel {
   editVirtualDisplayLayout: ClientVirtualDisplayLayout;
   editPrefer10BitSdr: ClientPrefer10BitSdrOverride;
   editConfigOverrides: Record<string, unknown>;
+  editAllowClientCommands: boolean;
+  editDoCommands: ClientCommandEntry[];
+  editUndoCommands: ClientCommandEntry[];
+}
+
+interface ClientCommandEntry {
+  cmd: string;
+  elevated: boolean;
 }
 
 interface DisplayDevice {
@@ -817,6 +928,27 @@ function parseLastSeen(value: unknown): number | null {
   return null;
 }
 
+function normalizeClientCommandEntry(value: unknown): ClientCommandEntry | null {
+  if (typeof value === 'string') {
+    return { cmd: value, elevated: false };
+  }
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const cmd = String(obj.cmd ?? '').trim();
+  if (!cmd) return null;
+  return {
+    cmd,
+    elevated: toBool(obj.elevated, false),
+  };
+}
+
+function normalizeClientCommandList(value: unknown): ClientCommandEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => normalizeClientCommandEntry(entry))
+    .filter((entry): entry is ClientCommandEntry => !!entry);
+}
+
 function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
   const name = entry.name ?? '';
   const displayMode = entry.display_mode ?? '';
@@ -842,6 +974,9 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
         : 'disabled';
   const virtualMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
+  const allowClientCommands = toBool(entry.allow_client_commands, true);
+  const doCommands = normalizeClientCommandList(entry.do);
+  const undoCommands = normalizeClientCommandList(entry.undo);
   const overrideEnabled =
     alwaysVirtual || !!outputOverride.trim() || virtualMode !== null || virtualLayout !== null;
   const selection: ClientDisplaySelection =
@@ -860,6 +995,9 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     virtualDisplayMode: virtualMode,
     virtualDisplayLayout: virtualLayout,
     configOverrides,
+    allowClientCommands,
+    doCommands,
+    undoCommands,
     editing: false,
     editHdrProfile: hdrProfile || null,
     editName: name,
@@ -872,6 +1010,9 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     editVirtualDisplayLayout: virtualLayout,
     editPrefer10BitSdr: prefer10,
     editConfigOverrides: JSON.parse(JSON.stringify(configOverrides)),
+    editAllowClientCommands: allowClientCommands,
+    editDoCommands: JSON.parse(JSON.stringify(doCommands)),
+    editUndoCommands: JSON.parse(JSON.stringify(undoCommands)),
   };
 
   if (client.editDisplayOverrideEnabled) {
@@ -901,10 +1042,30 @@ function resetClientEdits(client: ClientViewModel): void {
   client.editVirtualDisplayLayout = client.virtualDisplayLayout;
   client.editPrefer10BitSdr = client.prefer10BitSdr;
   client.editConfigOverrides = JSON.parse(JSON.stringify(client.configOverrides || {}));
+  client.editAllowClientCommands = client.allowClientCommands;
+  client.editDoCommands = JSON.parse(JSON.stringify(client.doCommands || []));
+  client.editUndoCommands = JSON.parse(JSON.stringify(client.undoCommands || []));
 
   if (client.editDisplayOverrideEnabled) {
     applyClientDisplaySelection(client, client.editDisplaySelection);
   }
+}
+
+function addClientCommand(commands: ClientCommandEntry[], index = -1): void {
+  const next: ClientCommandEntry = {
+    cmd: '',
+    elevated: false,
+  };
+  if (index < 0 || index >= commands.length) {
+    commands.push(next);
+    return;
+  }
+  commands.splice(index + 1, 0, next);
+}
+
+function removeClientCommand(commands: ClientCommandEntry[], index: number): void {
+  if (index < 0 || index >= commands.length) return;
+  commands.splice(index, 1);
 }
 
 const virtualDisplayModeOptions = computed(() => [
@@ -1231,6 +1392,25 @@ async function saveClient(client: ClientViewModel): Promise<void> {
       hdr_profile: String(client.editHdrProfile ?? '').trim(),
       display_mode: (client.editDisplayMode || '').trim(),
       perm: client.editPerm & permissionMapping._all,
+      allow_client_commands: !!client.editAllowClientCommands,
+      do: client.editDoCommands.reduce((result: ClientCommandEntry[], entry) => {
+        const cmd = String(entry?.cmd ?? '').trim();
+        if (!cmd) return result;
+        result.push({
+          cmd,
+          elevated: !!entry?.elevated,
+        });
+        return result;
+      }, []),
+      undo: client.editUndoCommands.reduce((result: ClientCommandEntry[], entry) => {
+        const cmd = String(entry?.cmd ?? '').trim();
+        if (!cmd) return result;
+        result.push({
+          cmd,
+          elevated: !!entry?.elevated,
+        });
+        return result;
+      }, []),
     };
 
     if (!client.editDisplayOverrideEnabled) {
@@ -1286,6 +1466,9 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     client.virtualDisplayMode = parseClientVirtualDisplayMode(payload.virtual_display_mode);
     client.virtualDisplayLayout = parseClientVirtualDisplayLayout(payload.virtual_display_layout);
     client.hdrProfile = payload.hdr_profile || '';
+    client.allowClientCommands = payload.allow_client_commands;
+    client.doCommands = JSON.parse(JSON.stringify(payload.do || []));
+    client.undoCommands = JSON.parse(JSON.stringify(payload.undo || []));
     client.prefer10BitSdr =
       payload.prefer_10bit_sdr === undefined
         ? null
