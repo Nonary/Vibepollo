@@ -2485,10 +2485,6 @@ namespace VibeshineInstaller {
       };
 
       var exitCode = RunMsiexec(args, true, false);
-      exitCode = RetryInstallWithSameProductReinstallIfNeeded(exitCode, args, msiPath, true, false);
-      if (exitCode != 0 && exitCode != 3010) {
-        TryRecoverServiceStateAfterFailedInstall();
-      }
       var componentFailures = new List<string>();
       var savedLogPath = string.Empty;
       var saveLogsWarning = string.Empty;
@@ -2761,15 +2757,6 @@ namespace VibeshineInstaller {
       }
 
       var exitCode = RunMsiexec(cliArgs, arguments.IsCliQuietMode(), true);
-      exitCode = RetryInstallWithSameProductReinstallIfNeeded(
-        exitCode,
-        cliArgs,
-        installMsiPath,
-        arguments.IsCliQuietMode(),
-        true);
-      if (exitCode != 0 && exitCode != 3010) {
-        TryRecoverServiceStateAfterFailedInstall();
-      }
       return new InstallerResult {
         Operation = InstallerOperation.Install,
         ExitCode = exitCode,
