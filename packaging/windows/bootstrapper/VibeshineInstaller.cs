@@ -2437,14 +2437,37 @@ namespace VibeshineInstaller {
       }
 
       var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
-      var migrationCleanupResult = RunPreinstallMigrationCleanup("preinstall", true, false);
-      if (migrationCleanupResult.ExitCode != 0) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Install,
-          ExitCode = migrationCleanupResult.ExitCode,
-          Message = "Install could not continue. " + migrationCleanupResult.Message,
-          LogPath = migrationCleanupResult.LogPath
-        };
+      var legacySunshineRegistrationResult = UninstallLegacySunshineRegistration();
+      if (legacySunshineRegistrationResult.ExitCode != 0 && legacySunshineRegistrationResult.ExitCode != 3010) {
+        return legacySunshineRegistrationResult;
+      }
+
+      var sunshineUninstallResult = UninstallInstalledProducts(
+        "preinstall_sunshine",
+        true,
+        false,
+        false,
+        false,
+        false,
+        new[] { InstalledProductKind.Sunshine });
+      if (sunshineUninstallResult.ExitCode != 0 && sunshineUninstallResult.ExitCode != 3010) {
+        return sunshineUninstallResult;
+      }
+
+      var uninstallResult = UninstallInstalledProducts(
+        "preinstall",
+        true,
+        false,
+        false,
+        false,
+        false,
+        new[] {
+          InstalledProductKind.Vibeshine,
+          InstalledProductKind.Vibepollo,
+          InstalledProductKind.Apollo
+        });
+      if (uninstallResult.ExitCode != 0 && uninstallResult.ExitCode != 3010) {
+        return uninstallResult;
       }
 
       var logPath = BuildLogPath("install");
@@ -2460,7 +2483,6 @@ namespace VibeshineInstaller {
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
       };
-      TryAppendSameProductReinstallProperties(args, msiPath);
 
       var exitCode = RunMsiexec(args, true, false);
       exitCode = RetryInstallWithSameProductReinstallIfNeeded(exitCode, args, msiPath, true, false);
@@ -2712,28 +2734,13 @@ namespace VibeshineInstaller {
     public static InstallerResult RunCli(InstallerArguments arguments) {
       var cliArgs = new List<string>(arguments.ForwardedArguments);
       var hasOperation = cliArgs.Any(IsOperationSwitch);
-      var installMsiPath = string.Empty;
 
       if (!hasOperation) {
-        installMsiPath = ResolveMsiPath(arguments.MsiPathOverride);
-        cliArgs.Insert(0, installMsiPath);
+        var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
+        cliArgs.Insert(0, msiPath);
         cliArgs.Insert(0, "/i");
       } else {
         TryInjectDefaultMsi(cliArgs, arguments);
-        installMsiPath = TryResolveInstallMsiPath(cliArgs);
-      }
-
-      if (!string.IsNullOrWhiteSpace(installMsiPath)) {
-        var migrationCleanupResult = RunPreinstallMigrationCleanup("preinstall_cli", arguments.IsCliQuietMode(), true);
-        if (migrationCleanupResult.ExitCode != 0) {
-          return new InstallerResult {
-            Operation = InstallerOperation.Install,
-            ExitCode = migrationCleanupResult.ExitCode,
-            Message = "Install could not continue. " + migrationCleanupResult.Message,
-            LogPath = migrationCleanupResult.LogPath
-          };
-        }
-        TryAppendSameProductReinstallProperties(cliArgs, installMsiPath);
       }
 
       if (!HasRestartBehavior(cliArgs)) {
@@ -2769,273 +2776,6 @@ namespace VibeshineInstaller {
         Message = BuildResultMessage("CLI operation", exitCode, logPath),
         LogPath = logPath
       };
-    }
-
-    private static InstallerResult RunPreinstallMigrationCleanup(
-      string logPhase,
-      bool hiddenWindow,
-      bool requestElevationIfNeeded) {
-      var migrationKinds = new HashSet<InstalledProductKind> {
-        InstalledProductKind.Sunshine,
-        InstalledProductKind.Vibepollo,
-        InstalledProductKind.Apollo
-      };
-      var hasMsiMigrationTarget = GetInstalledProducts(true)
-        .Any(product => migrationKinds.Contains(product.Kind));
-      var hasLegacySunshineRegistration = GetLegacySunshineRegistration() != null;
-      if (!hasMsiMigrationTarget && !hasLegacySunshineRegistration) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 0,
-          Message = "No preinstall migration cleanup is required."
-        };
-      }
-
-      TryDrainPreinstallLocks();
-
-      var restartRequired = false;
-      var cleanupLogPath = string.Empty;
-      if (hasMsiMigrationTarget) {
-        var migrationUninstallResult = UninstallInstalledProducts(
-          logPhase,
-          hiddenWindow,
-          requestElevationIfNeeded,
-          false,
-          false,
-          false,
-          new[] {
-            InstalledProductKind.Sunshine,
-            InstalledProductKind.Vibepollo,
-            InstalledProductKind.Apollo
-          });
-        if (migrationUninstallResult.ExitCode != 0 && migrationUninstallResult.ExitCode != 3010) {
-          return migrationUninstallResult;
-        }
-        if (!string.IsNullOrWhiteSpace(migrationUninstallResult.LogPath)) {
-          cleanupLogPath = migrationUninstallResult.LogPath;
-        }
-        if (migrationUninstallResult.ExitCode == 3010) {
-          restartRequired = true;
-        }
-      }
-
-      if (hasLegacySunshineRegistration) {
-        var legacySunshineRegistrationResult = UninstallLegacySunshineRegistration();
-        if (legacySunshineRegistrationResult.ExitCode != 0 && legacySunshineRegistrationResult.ExitCode != 3010) {
-          return legacySunshineRegistrationResult;
-        }
-        if (!string.IsNullOrWhiteSpace(legacySunshineRegistrationResult.LogPath)) {
-          cleanupLogPath = legacySunshineRegistrationResult.LogPath;
-        }
-        if (legacySunshineRegistrationResult.ExitCode == 3010) {
-          restartRequired = true;
-        }
-      }
-
-      if (restartRequired) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 3010,
-          Message = "Migration cleanup completed and requires a reboot before installation can continue.",
-          LogPath = cleanupLogPath
-        };
-      }
-
-      return new InstallerResult {
-        Operation = InstallerOperation.Uninstall,
-        ExitCode = 0,
-        Message = "Preinstall migration cleanup succeeded.",
-        LogPath = cleanupLogPath
-      };
-    }
-
-    private static readonly string[] PreinstallServiceNames = {
-      "SunshineService",
-      "sunshinesvc"
-    };
-
-    private static readonly string[] PostInstallServiceNames = {
-      "SunshineService",
-      "VibeshineService",
-      "sunshinesvc"
-    };
-
-    private static readonly string[] PreinstallProcessNames = {
-      "vibeshine",
-      "sunshine",
-      "sunshinesvc",
-      "apollo",
-      "vibepollo"
-    };
-
-    private static void TryDrainPreinstallLocks() {
-      foreach (var serviceName in PreinstallServiceNames) {
-        TryStopServiceAndWait(serviceName);
-      }
-
-      foreach (var processName in PreinstallProcessNames) {
-        TryKillProcessesByName(processName);
-      }
-    }
-
-    private static void TryKillProcessesByName(string processName) {
-      if (string.IsNullOrWhiteSpace(processName)) {
-        return;
-      }
-
-      Process[] processes;
-      try {
-        processes = Process.GetProcessesByName(processName);
-      } catch {
-        return;
-      }
-
-      foreach (var process in processes) {
-        try {
-          if (process.HasExited) {
-            continue;
-          }
-          process.Kill();
-          process.WaitForExit(5000);
-        } catch {
-        } finally {
-          process.Dispose();
-        }
-      }
-    }
-
-    private static void TryRunUtilityProcess(string executable, string arguments) {
-      if (string.IsNullOrWhiteSpace(executable)) {
-        return;
-      }
-
-      try {
-        var startInfo = new ProcessStartInfo {
-          FileName = executable,
-          Arguments = arguments ?? string.Empty,
-          UseShellExecute = false,
-          CreateNoWindow = true,
-          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
-        };
-
-        using (var process = Process.Start(startInfo)) {
-          if (process == null) {
-            return;
-          }
-          if (!process.WaitForExit(10000)) {
-            try {
-              process.Kill();
-              process.WaitForExit(5000);
-            } catch {
-            }
-          }
-        }
-      } catch {
-      }
-    }
-
-    private static void TryStopServiceAndWait(string serviceName) {
-      if (string.IsNullOrWhiteSpace(serviceName)) {
-        return;
-      }
-
-      TryRunUtilityProcess("net.exe", "stop " + serviceName);
-      WaitForServiceStateStopped(serviceName, TimeSpan.FromSeconds(15));
-    }
-
-    private static void TryRecoverServiceStateAfterFailedInstall() {
-      foreach (var serviceName in PostInstallServiceNames) {
-        TryStartServiceAndWait(serviceName);
-      }
-    }
-
-    private static void TryStartServiceAndWait(string serviceName) {
-      if (string.IsNullOrWhiteSpace(serviceName)) {
-        return;
-      }
-
-      TryRunUtilityProcess("net.exe", "start " + serviceName);
-      WaitForServiceStateRunning(serviceName, TimeSpan.FromSeconds(15));
-    }
-
-    private static void WaitForServiceStateStopped(string serviceName, TimeSpan timeout) {
-      if (string.IsNullOrWhiteSpace(serviceName) || timeout <= TimeSpan.Zero) {
-        return;
-      }
-
-      var deadline = DateTime.UtcNow + timeout;
-      while (DateTime.UtcNow < deadline) {
-        if (IsServiceStopped(serviceName)) {
-          return;
-        }
-        System.Threading.Thread.Sleep(500);
-      }
-    }
-
-    private static void WaitForServiceStateRunning(string serviceName, TimeSpan timeout) {
-      if (string.IsNullOrWhiteSpace(serviceName) || timeout <= TimeSpan.Zero) {
-        return;
-      }
-
-      var deadline = DateTime.UtcNow + timeout;
-      while (DateTime.UtcNow < deadline) {
-        if (IsServiceRunning(serviceName)) {
-          return;
-        }
-        System.Threading.Thread.Sleep(500);
-      }
-    }
-
-    private static bool IsServiceStopped(string serviceName) {
-      try {
-        var startInfo = new ProcessStartInfo {
-          FileName = "sc.exe",
-          Arguments = "query " + serviceName,
-          UseShellExecute = false,
-          CreateNoWindow = true,
-          RedirectStandardOutput = true,
-          RedirectStandardError = true,
-          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
-        };
-
-        using (var process = Process.Start(startInfo)) {
-          if (process == null) {
-            return false;
-          }
-          var output = process.StandardOutput.ReadToEnd();
-          process.WaitForExit(5000);
-          return output.IndexOf("STATE", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                 output.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-      } catch {
-        return false;
-      }
-    }
-
-    private static bool IsServiceRunning(string serviceName) {
-      try {
-        var startInfo = new ProcessStartInfo {
-          FileName = "sc.exe",
-          Arguments = "query " + serviceName,
-          UseShellExecute = false,
-          CreateNoWindow = true,
-          RedirectStandardOutput = true,
-          RedirectStandardError = true,
-          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
-        };
-
-        using (var process = Process.Start(startInfo)) {
-          if (process == null) {
-            return false;
-          }
-          var output = process.StandardOutput.ReadToEnd();
-          process.WaitForExit(5000);
-          return output.IndexOf("STATE", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                 output.IndexOf("RUNNING", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-      } catch {
-        return false;
-      }
     }
 
     private static InstallerResult UninstallInstalledProducts(
@@ -3235,105 +2975,6 @@ namespace VibeshineInstaller {
     private static bool HasProperty(List<string> args, string propertyName) {
       var prefix = propertyName + "=";
       return args.Any(arg => arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static int RetryInstallWithSameProductReinstallIfNeeded(
-      int exitCode,
-      List<string> args,
-      string msiPath,
-      bool hiddenWindow,
-      bool requestElevationIfNeeded) {
-      const int anotherVersionInstalled = 1638;
-      if (exitCode != anotherVersionInstalled || args == null) {
-        return exitCode;
-      }
-      if (HasProperty(args, "REINSTALL") && HasProperty(args, "REINSTALLMODE")) {
-        return exitCode;
-      }
-      if (string.IsNullOrWhiteSpace(msiPath) || !File.Exists(msiPath)) {
-        return exitCode;
-      }
-
-      var retryArgs = new List<string>(args);
-      if (!HasProperty(retryArgs, "REINSTALL")) {
-        retryArgs.Add("REINSTALL=ALL");
-      }
-      if (!HasProperty(retryArgs, "REINSTALLMODE")) {
-        retryArgs.Add("REINSTALLMODE=vams");
-      }
-      return RunMsiexec(retryArgs, hiddenWindow, requestElevationIfNeeded);
-    }
-
-    private static void TryAppendSameProductReinstallProperties(List<string> args, string msiPath) {
-      if (args == null || string.IsNullOrWhiteSpace(msiPath)) {
-        return;
-      }
-      if (!ShouldUseSameProductReinstall(msiPath)) {
-        return;
-      }
-
-      if (!HasProperty(args, "REINSTALL")) {
-        args.Add("REINSTALL=ALL");
-      }
-      if (!HasProperty(args, "REINSTALLMODE")) {
-        // Use vams (no 'u') to preserve existing HKCU settings during same-product reinstalls.
-        args.Add("REINSTALLMODE=vams");
-      }
-    }
-
-    private static bool ShouldUseSameProductReinstall(string msiPath) {
-      if (string.IsNullOrWhiteSpace(msiPath) || !File.Exists(msiPath)) {
-        return false;
-      }
-
-      var payloadInfo = TryGetPayloadMsiInfo(new InstallerArguments {
-        MsiPathOverride = msiPath
-      });
-      if (payloadInfo == null || string.IsNullOrWhiteSpace(payloadInfo.ProductCode)) {
-        return false;
-      }
-
-      if (IsInstalledProductCode(payloadInfo.ProductCode)) {
-        return true;
-      }
-
-      return GetInstalledProducts(true).Any(product =>
-        !string.IsNullOrWhiteSpace(product.ProductCode) &&
-        string.Equals(product.ProductCode, payloadInfo.ProductCode, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string TryResolveInstallMsiPath(List<string> cliArgs) {
-      if (cliArgs == null || cliArgs.Count == 0) {
-        return string.Empty;
-      }
-
-      var operationIndex = cliArgs.FindIndex(IsOperationSwitch);
-      if (operationIndex < 0 || operationIndex + 1 >= cliArgs.Count) {
-        return string.Empty;
-      }
-
-      var operation = cliArgs[operationIndex];
-      if (!string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase) &&
-          !string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase)) {
-        return string.Empty;
-      }
-
-      var candidate = cliArgs[operationIndex + 1];
-      if (string.IsNullOrWhiteSpace(candidate) ||
-          LooksLikeSwitch(candidate) ||
-          (candidate.StartsWith("{", StringComparison.Ordinal) && candidate.EndsWith("}", StringComparison.Ordinal))) {
-        return string.Empty;
-      }
-
-      try {
-        var fullPath = Path.GetFullPath(candidate);
-        if (File.Exists(fullPath)) {
-          return fullPath;
-        }
-      } catch {
-      }
-
-      return string.Empty;
     }
 
     private static bool HasLogSwitch(List<string> args) {
