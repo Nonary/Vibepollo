@@ -131,12 +131,12 @@
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
-    <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
+    <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="StopSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Quiet start after repair for non-full UI; run at commit to avoid FilesInUse/reboot prompts -->
     <CustomAction Id="StartSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
     <!-- Quiet process kill and service removal for manual uninstalls -->
-    <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="WixQuietExec" Return="ignore" />
+    <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -202,7 +202,7 @@
     <!-- Immediate setter for quiet start service -->
     <CustomAction Id="SetStartSvcQuiet"
                  Property="StartSvcQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $svc = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue; if(-not $svc){ $svc = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue } if($svc -and $svc.Status -ne 'Running'){ Start-Service -Name $svc.Name -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('ApolloService','VibeshineService','SunshineService')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Running') { Start-Service -Name $name -ErrorAction SilentlyContinue; $svc.WaitForStatus('Running','00:00:20') } break } } }&quot;"/>
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuietImmediate"
                  Property="KillProcsQuietImmediate"
