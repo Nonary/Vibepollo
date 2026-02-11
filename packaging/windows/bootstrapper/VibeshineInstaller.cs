@@ -2352,8 +2352,21 @@ namespace VibeshineInstaller {
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiEnumRelatedProducts(string lpUpgradeCode, uint dwReserved, uint iProductIndex, StringBuilder lpProductBuf);
 
+    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+    private static extern int MsiQueryProductState(string szProduct);
+
     [DllImport("msi.dll")]
     private static extern uint MsiCloseHandle(IntPtr hAny);
+
+    private static bool IsInstalledProductCode(string productCode) {
+      if (!LooksLikeProductCode(productCode)) {
+        return false;
+      }
+
+      // INSTALLSTATE values considered installed: 1=Advertised, 3=Local, 4=Source, 5=Default.
+      var state = MsiQueryProductState(productCode);
+      return state == 1 || state == 3 || state == 4 || state == 5;
+    }
 
     private static string ReadMsiProperty(string msiPath, string propertyName) {
       if (string.IsNullOrWhiteSpace(msiPath) || string.IsNullOrWhiteSpace(propertyName)) {
@@ -2450,6 +2463,10 @@ namespace VibeshineInstaller {
       TryAppendSameProductReinstallProperties(args, msiPath);
 
       var exitCode = RunMsiexec(args, true, false);
+      exitCode = RetryInstallWithSameProductReinstallIfNeeded(exitCode, args, msiPath, true, false);
+      if (exitCode != 0 && exitCode != 3010) {
+        TryRecoverServiceStateAfterFailedInstall();
+      }
       var componentFailures = new List<string>();
       var savedLogPath = string.Empty;
       var saveLogsWarning = string.Empty;
@@ -2737,6 +2754,15 @@ namespace VibeshineInstaller {
       }
 
       var exitCode = RunMsiexec(cliArgs, arguments.IsCliQuietMode(), true);
+      exitCode = RetryInstallWithSameProductReinstallIfNeeded(
+        exitCode,
+        cliArgs,
+        installMsiPath,
+        arguments.IsCliQuietMode(),
+        true);
+      if (exitCode != 0 && exitCode != 3010) {
+        TryRecoverServiceStateAfterFailedInstall();
+      }
       return new InstallerResult {
         Operation = InstallerOperation.Install,
         ExitCode = exitCode,
@@ -2749,41 +2775,61 @@ namespace VibeshineInstaller {
       string logPhase,
       bool hiddenWindow,
       bool requestElevationIfNeeded) {
+      var migrationKinds = new HashSet<InstalledProductKind> {
+        InstalledProductKind.Sunshine,
+        InstalledProductKind.Vibepollo,
+        InstalledProductKind.Apollo
+      };
+      var hasMsiMigrationTarget = GetInstalledProducts(true)
+        .Any(product => migrationKinds.Contains(product.Kind));
+      var hasLegacySunshineRegistration = GetLegacySunshineRegistration() != null;
+      if (!hasMsiMigrationTarget && !hasLegacySunshineRegistration) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 0,
+          Message = "No preinstall migration cleanup is required."
+        };
+      }
+
       TryDrainPreinstallLocks();
 
       var restartRequired = false;
       var cleanupLogPath = string.Empty;
-      var migrationUninstallResult = UninstallInstalledProducts(
-        logPhase,
-        hiddenWindow,
-        requestElevationIfNeeded,
-        false,
-        false,
-        false,
-        new[] {
-          InstalledProductKind.Sunshine,
-          InstalledProductKind.Vibepollo,
-          InstalledProductKind.Apollo
-        });
-      if (migrationUninstallResult.ExitCode != 0 && migrationUninstallResult.ExitCode != 3010) {
-        return migrationUninstallResult;
-      }
-      if (!string.IsNullOrWhiteSpace(migrationUninstallResult.LogPath)) {
-        cleanupLogPath = migrationUninstallResult.LogPath;
-      }
-      if (migrationUninstallResult.ExitCode == 3010) {
-        restartRequired = true;
+      if (hasMsiMigrationTarget) {
+        var migrationUninstallResult = UninstallInstalledProducts(
+          logPhase,
+          hiddenWindow,
+          requestElevationIfNeeded,
+          false,
+          false,
+          false,
+          new[] {
+            InstalledProductKind.Sunshine,
+            InstalledProductKind.Vibepollo,
+            InstalledProductKind.Apollo
+          });
+        if (migrationUninstallResult.ExitCode != 0 && migrationUninstallResult.ExitCode != 3010) {
+          return migrationUninstallResult;
+        }
+        if (!string.IsNullOrWhiteSpace(migrationUninstallResult.LogPath)) {
+          cleanupLogPath = migrationUninstallResult.LogPath;
+        }
+        if (migrationUninstallResult.ExitCode == 3010) {
+          restartRequired = true;
+        }
       }
 
-      var legacySunshineRegistrationResult = UninstallLegacySunshineRegistration();
-      if (legacySunshineRegistrationResult.ExitCode != 0 && legacySunshineRegistrationResult.ExitCode != 3010) {
-        return legacySunshineRegistrationResult;
-      }
-      if (!string.IsNullOrWhiteSpace(legacySunshineRegistrationResult.LogPath)) {
-        cleanupLogPath = legacySunshineRegistrationResult.LogPath;
-      }
-      if (legacySunshineRegistrationResult.ExitCode == 3010) {
-        restartRequired = true;
+      if (hasLegacySunshineRegistration) {
+        var legacySunshineRegistrationResult = UninstallLegacySunshineRegistration();
+        if (legacySunshineRegistrationResult.ExitCode != 0 && legacySunshineRegistrationResult.ExitCode != 3010) {
+          return legacySunshineRegistrationResult;
+        }
+        if (!string.IsNullOrWhiteSpace(legacySunshineRegistrationResult.LogPath)) {
+          cleanupLogPath = legacySunshineRegistrationResult.LogPath;
+        }
+        if (legacySunshineRegistrationResult.ExitCode == 3010) {
+          restartRequired = true;
+        }
       }
 
       if (restartRequired) {
@@ -2805,6 +2851,12 @@ namespace VibeshineInstaller {
 
     private static readonly string[] PreinstallServiceNames = {
       "SunshineService",
+      "sunshinesvc"
+    };
+
+    private static readonly string[] PostInstallServiceNames = {
+      "SunshineService",
+      "VibeshineService",
       "sunshinesvc"
     };
 
@@ -2891,6 +2943,21 @@ namespace VibeshineInstaller {
       WaitForServiceStateStopped(serviceName, TimeSpan.FromSeconds(15));
     }
 
+    private static void TryRecoverServiceStateAfterFailedInstall() {
+      foreach (var serviceName in PostInstallServiceNames) {
+        TryStartServiceAndWait(serviceName);
+      }
+    }
+
+    private static void TryStartServiceAndWait(string serviceName) {
+      if (string.IsNullOrWhiteSpace(serviceName)) {
+        return;
+      }
+
+      TryRunUtilityProcess("net.exe", "start " + serviceName);
+      WaitForServiceStateRunning(serviceName, TimeSpan.FromSeconds(15));
+    }
+
     private static void WaitForServiceStateStopped(string serviceName, TimeSpan timeout) {
       if (string.IsNullOrWhiteSpace(serviceName) || timeout <= TimeSpan.Zero) {
         return;
@@ -2899,6 +2966,20 @@ namespace VibeshineInstaller {
       var deadline = DateTime.UtcNow + timeout;
       while (DateTime.UtcNow < deadline) {
         if (IsServiceStopped(serviceName)) {
+          return;
+        }
+        System.Threading.Thread.Sleep(500);
+      }
+    }
+
+    private static void WaitForServiceStateRunning(string serviceName, TimeSpan timeout) {
+      if (string.IsNullOrWhiteSpace(serviceName) || timeout <= TimeSpan.Zero) {
+        return;
+      }
+
+      var deadline = DateTime.UtcNow + timeout;
+      while (DateTime.UtcNow < deadline) {
+        if (IsServiceRunning(serviceName)) {
           return;
         }
         System.Threading.Thread.Sleep(500);
@@ -2925,6 +3006,32 @@ namespace VibeshineInstaller {
           process.WaitForExit(5000);
           return output.IndexOf("STATE", StringComparison.OrdinalIgnoreCase) >= 0 &&
                  output.IndexOf("STOPPED", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    private static bool IsServiceRunning(string serviceName) {
+      try {
+        var startInfo = new ProcessStartInfo {
+          FileName = "sc.exe",
+          Arguments = "query " + serviceName,
+          UseShellExecute = false,
+          CreateNoWindow = true,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+        };
+
+        using (var process = Process.Start(startInfo)) {
+          if (process == null) {
+            return false;
+          }
+          var output = process.StandardOutput.ReadToEnd();
+          process.WaitForExit(5000);
+          return output.IndexOf("STATE", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 output.IndexOf("RUNNING", StringComparison.OrdinalIgnoreCase) >= 0;
         }
       } catch {
         return false;
@@ -3130,6 +3237,33 @@ namespace VibeshineInstaller {
       return args.Any(arg => arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static int RetryInstallWithSameProductReinstallIfNeeded(
+      int exitCode,
+      List<string> args,
+      string msiPath,
+      bool hiddenWindow,
+      bool requestElevationIfNeeded) {
+      const int anotherVersionInstalled = 1638;
+      if (exitCode != anotherVersionInstalled || args == null) {
+        return exitCode;
+      }
+      if (HasProperty(args, "REINSTALL") && HasProperty(args, "REINSTALLMODE")) {
+        return exitCode;
+      }
+      if (string.IsNullOrWhiteSpace(msiPath) || !File.Exists(msiPath)) {
+        return exitCode;
+      }
+
+      var retryArgs = new List<string>(args);
+      if (!HasProperty(retryArgs, "REINSTALL")) {
+        retryArgs.Add("REINSTALL=ALL");
+      }
+      if (!HasProperty(retryArgs, "REINSTALLMODE")) {
+        retryArgs.Add("REINSTALLMODE=vams");
+      }
+      return RunMsiexec(retryArgs, hiddenWindow, requestElevationIfNeeded);
+    }
+
     private static void TryAppendSameProductReinstallProperties(List<string> args, string msiPath) {
       if (args == null || string.IsNullOrWhiteSpace(msiPath)) {
         return;
@@ -3152,11 +3286,6 @@ namespace VibeshineInstaller {
         return false;
       }
 
-      var installedProduct = GetInstalledVibeshineProduct();
-      if (installedProduct == null || string.IsNullOrWhiteSpace(installedProduct.ProductCode)) {
-        return false;
-      }
-
       var payloadInfo = TryGetPayloadMsiInfo(new InstallerArguments {
         MsiPathOverride = msiPath
       });
@@ -3164,10 +3293,13 @@ namespace VibeshineInstaller {
         return false;
       }
 
-      return string.Equals(
-        installedProduct.ProductCode,
-        payloadInfo.ProductCode,
-        StringComparison.OrdinalIgnoreCase);
+      if (IsInstalledProductCode(payloadInfo.ProductCode)) {
+        return true;
+      }
+
+      return GetInstalledProducts(true).Any(product =>
+        !string.IsNullOrWhiteSpace(product.ProductCode) &&
+        string.Equals(product.ProductCode, payloadInfo.ProductCode, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string TryResolveInstallMsiPath(List<string> cliArgs) {
