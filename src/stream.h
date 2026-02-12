@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <atomic>
 #include <optional>
 #include <string>
 #include <utility>
@@ -48,6 +49,8 @@ namespace stream {
   };
 
   namespace session {
+    extern std::atomic_uint running_sessions;
+
     enum class state_e : int {
       STOPPED,  ///< The session is stopped
       STOPPING,  ///< The session is stopping

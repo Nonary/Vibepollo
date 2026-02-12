@@ -759,6 +759,7 @@ namespace config {
       video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
+      0,  // paused_virtual_display_timeout_secs
       false,  // always_restore_from_golden
       0,  // snapshot_restore_hotkey
 #ifdef _WIN32
@@ -1473,6 +1474,11 @@ namespace config {
       }
     }
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
+    {
+      int value = 0;
+      int_between_f(vars, "dd_paused_virtual_display_timeout_secs", value, {0, std::numeric_limits<int>::max()});
+      video.dd.paused_virtual_display_timeout_secs = std::max(0, value);
+    }
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     generic_f(vars, "dd_snapshot_exclude_devices", video.dd.snapshot_exclude_devices, dd::snapshot_exclude_devices_from_view);
@@ -2131,6 +2137,7 @@ namespace config {
       const auto prev_dd_manual_refresh_rate = video.dd.manual_refresh_rate;
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
+      const auto prev_dd_paused_virtual_display_timeout_secs = video.dd.paused_virtual_display_timeout_secs;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
@@ -2178,6 +2185,7 @@ namespace config {
                                       (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
                                       (prev_dd_revert_delay != video.dd.config_revert_delay) ||
                                       (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
                                        (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                        (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
                                        (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||

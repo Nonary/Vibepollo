@@ -660,6 +660,34 @@ function clearSnapshotHotkey(): void {
               />
             </div>
 
+            <div
+              v-if="usingVirtualDisplay && config.dd_configuration_option !== 'disabled'"
+              class="mt-4 rounded-lg border border-dark/10 dark:border-light/10 p-3 space-y-2"
+            >
+              <label for="dd_paused_virtual_display_timeout_secs" class="form-label">{{
+                $t('config.dd_paused_virtual_display_timeout_secs')
+              }}</label>
+              <n-input-number
+                id="dd_paused_virtual_display_timeout_secs"
+                v-model:value="config.dd_paused_virtual_display_timeout_secs"
+                :min="0"
+                placeholder="0"
+                class="w-full"
+              />
+              <p class="text-[11px] opacity-60">
+                {{ $t('config.dd_paused_virtual_display_timeout_secs_desc') }}
+              </p>
+              <p
+                v-if="Number(config.dd_paused_virtual_display_timeout_secs || 0) > 0"
+                class="text-[11px] text-amber-600"
+              >
+                {{ $t('config.dd_paused_virtual_display_timeout_secs_warning') }}
+              </p>
+              <p class="text-[11px] opacity-60">
+                {{ $t('config.dd_paused_virtual_display_timeout_secs_hotkey_hint') }}
+              </p>
+            </div>
+
             <div class="mt-4 space-y-2">
               <label for="dd_snapshot_restore_hotkey" class="form-label">
                 {{ $t('config.dd_snapshot_restore_hotkey') }}

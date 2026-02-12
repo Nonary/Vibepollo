@@ -49,6 +49,10 @@
 #include "platform/common.h"
 #include "webrtc_stream.h"
 
+#ifdef _WIN32
+  #include "platform/windows/virtual_display_cleanup.h"
+#endif
+
 #include <nlohmann/json.hpp>
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
@@ -2204,6 +2208,16 @@ namespace confighttp {
 
     BOOST_LOG(debug) << "WebRTC: creating session";
     if (auto error = webrtc_stream::ensure_capture_started(options)) {
+#ifdef _WIN32
+      // Lifecycle gap: if capture start fails after a virtual display was created/applied but
+      // before a session exists, ensure we don't leave the virtual display behind.
+      if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
+        (void) platf::virtual_display_cleanup::run(
+          "webrtc_session_start_failed",
+          config::video.dd.config_revert_on_disconnect
+        );
+      }
+#endif
       bad_request(response, request, error->c_str());
       return;
     }

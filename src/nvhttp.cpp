@@ -47,6 +47,7 @@
 #ifdef _WIN32
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
 #endif
 #include "process.h"
@@ -56,6 +57,7 @@
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
+#include "webrtc_stream.h"
 
 using namespace std::literals;
 
@@ -194,33 +196,31 @@ namespace nvhttp {
     std::atomic<bool> virtual_display_cleanup_pending {false};
 
     void cleanup_virtual_display_state() {
-      VDISPLAY::setWatchdogFeedingEnabled(false);
-      VDISPLAY::removeAllVirtualDisplays();
-      display_helper_integration::revert();
+      (void) platf::virtual_display_cleanup::run("cancel", true);
     }
 
     void schedule_virtual_display_cleanup() {
-    bool expected = false;
-    if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
-      return;
-    }
+      bool expected = false;
+      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
+        return;
+      }
 
-    std::thread([] {
-      auto guard = util::fail_guard([]() {
-        virtual_display_cleanup_pending.store(false, std::memory_order_release);
-      });
-      try {
-        // If a new session spun up while we were scheduling cleanup, leave displays alone.
-        if (rtsp_stream::session_count() > 0) {
-          BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
-          return;
-        }
+      std::thread([] {
+        auto guard = util::fail_guard([]() {
+          virtual_display_cleanup_pending.store(false, std::memory_order_release);
+        });
+        try {
+          // If a new session spun up while we were scheduling cleanup, leave displays alone.
+          if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+            BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
+            return;
+          }
 
-        cleanup_virtual_display_state();
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
-      } catch (...) {
-        BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+          cleanup_virtual_display_state();
+        } catch (const std::exception &e) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
         }
       }).detach();
     }
@@ -1930,6 +1930,22 @@ namespace nvhttp {
 
 #ifdef _WIN32
     prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, pending_output_override);
+
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+        return;
+      }
+
+      if (!launch_session->virtual_display) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Launch aborted before session start; removing virtual displays.";
+      (void) platf::virtual_display_cleanup::run(
+        "launch_aborted",
+        config::video.dd.config_revert_on_disconnect
+      );
+    });
 #endif
 
     // The display should be restored in case something fails as there are no other sessions.
@@ -2038,6 +2054,9 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
+  #ifdef _WIN32
+    virtual_display_teardown_guard.disable();
+  #endif
     output_override_guard.disable();
     runtime_overrides_guard.disable();
 
@@ -2113,6 +2132,22 @@ namespace nvhttp {
 
 #ifdef _WIN32
     prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, pending_output_override);
+
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+        return;
+      }
+
+      if (!launch_session->virtual_display) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Resume aborted before session start; removing virtual displays.";
+      (void) platf::virtual_display_cleanup::run(
+        "resume_aborted",
+        config::video.dd.config_revert_on_disconnect
+      );
+    });
 #endif
 
     if (no_active_sessions) {
@@ -2215,6 +2250,9 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
+  #ifdef _WIN32
+    virtual_display_teardown_guard.disable();
+  #endif
     output_override_guard.disable();
     revert_display_configuration = false;
   }

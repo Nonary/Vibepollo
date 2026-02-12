@@ -324,6 +324,28 @@ namespace {
       }
     }
 
+    bool can_reposition_device(const std::string &device_id) const {
+      if (device_id.empty() || !ensure_initialized()) {
+        return false;
+      }
+      try {
+        const auto normalized = normalize_device_id(device_id);
+        const auto devices = m_dd->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+        for (const auto &device : devices) {
+          if (device.m_device_id.empty()) {
+            continue;
+          }
+          if (normalize_device_id(device.m_device_id) != normalized) {
+            continue;
+          }
+          // Only attempt reposition for currently active displays.
+          return static_cast<bool>(device.m_info);
+        }
+      } catch (...) {
+      }
+      return false;
+    }
+
     bool configuration_matches_current_state(const display_device::SingleDisplayConfiguration &cfg) const {
       if (!ensure_initialized()) {
         return false;
@@ -954,7 +976,7 @@ namespace {
       }
       try {
         (void) m_dd->setTopology(snap.m_topology);
-        (void) m_dd->setDisplayModesTemporary(snap.m_modes);
+        (void) m_dd->setDisplayModes(snap.m_modes);
         (void) m_dd->setHdrStates(snap.m_hdr_states);
         if (!snap.m_primary_device.empty()) {
           (void) m_dd->setAsPrimary(snap.m_primary_device);
@@ -3066,6 +3088,8 @@ namespace {
           }
           if (!monitor_position_overrides.empty()) {
             bool reposition_result = true;
+            constexpr int kMinDisplayOrigin = -32768;
+            constexpr int kMaxDisplayOrigin = 32767;
             for (const auto &[device_id, origin] : monitor_position_overrides) {
               if (cancelled()) {
                 break;
@@ -3073,7 +3097,22 @@ namespace {
               if (device_id.empty()) {
                 continue;
               }
-              const bool ok_origin = controller.set_display_origin(device_id, origin);
+              if (!controller.can_reposition_device(device_id)) {
+                BOOST_LOG(warning) << "Display helper: skipping monitor position override for unavailable device_id="
+                                   << device_id;
+                reposition_result = false;
+                continue;
+              }
+              const auto clamped_origin = display_device::Point {
+                std::clamp(origin.m_x, kMinDisplayOrigin, kMaxDisplayOrigin),
+                std::clamp(origin.m_y, kMinDisplayOrigin, kMaxDisplayOrigin)
+              };
+              if (clamped_origin.m_x != origin.m_x || clamped_origin.m_y != origin.m_y) {
+                BOOST_LOG(warning) << "Display helper: clamped monitor position override for device_id=" << device_id
+                                   << " from (" << origin.m_x << "," << origin.m_y << ") to ("
+                                   << clamped_origin.m_x << "," << clamped_origin.m_y << ")";
+              }
+              const bool ok_origin = controller.set_display_origin(device_id, clamped_origin);
               reposition_result = reposition_result && ok_origin;
             }
             if (cancelled()) {
@@ -3539,110 +3578,46 @@ namespace {
   }
 
   bool validate_session_snapshot(ServiceState &state, const std::filesystem::path &path) {
-    auto snap = state.controller.load_display_settings_snapshot(path);
-    if (!snap) {
-      BOOST_LOG(warning) << "Existing session snapshot could not be parsed; removing path=" << path.string();
-    } else if (!state.controller.is_topology_valid(*snap) || snap->m_modes.empty()) {
-      BOOST_LOG(warning) << "Existing session snapshot is invalid (topology or modes missing); removing path="
-                         << path.string();
-      } else {
-      // Filter out devices not currently enumerated and devices on the exclusion list.
-      auto devices = state.controller.enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      std::set<std::string> valid_device_ids_norm;
-      std::set<std::string> exclusions_norm;
-      auto normalize = [](std::string id) {
-        id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) { return !std::isspace(ch); }));
-        id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), id.end());
-        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return id;
-      };
-      for (auto id : state.controller.snapshot_exclusions_copy_public()) {
-        exclusions_norm.insert(normalize(std::move(id)));
-      }
-      for (const auto &d : devices) {
-        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
-        if (!id.empty()) {
-          valid_device_ids_norm.insert(normalize(id));
-        }
-      }
+    (void) state;
 
-      auto is_allowed = [&](const std::string &device_id) {
-        const auto norm = normalize(device_id);
-        if (!valid_device_ids_norm.count(norm)) {
-          return false;
-        }
-        return exclusions_norm.empty() || !exclusions_norm.count(norm);
-      };
-
-      // Filter topology groups, removing devices that are not currently enumerated or are excluded.
-      display_device::ActiveTopology filtered_topology;
-      std::vector<std::string> filtered_out_excluded;
-      for (const auto &grp : snap->m_topology) {
-        std::vector<std::string> filtered_grp;
-        for (const auto &device_id : grp) {
-          if (is_allowed(device_id)) {
-            filtered_grp.push_back(device_id);
-          } else if (!exclusions_norm.empty() && exclusions_norm.count(normalize(device_id))) {
-            filtered_out_excluded.push_back(device_id);
-          }
-        }
-        if (!filtered_grp.empty()) {
-          filtered_topology.push_back(std::move(filtered_grp));
-        }
-      }
-
-      if (filtered_topology.empty()) {
-        BOOST_LOG(warning) << "Existing session snapshot rejected: no applicable devices remain after filtering; removing path="
-                           << path.string();
-      } else {
-        // Check if filtering changed anything
-        if (filtered_topology != snap->m_topology || !filtered_out_excluded.empty()) {
-          BOOST_LOG(info) << "Filtering devices from session snapshot: " << path.string();
-
-          // Update snapshot with filtered data
-          snap->m_topology = std::move(filtered_topology);
-
-          // Filter modes and hdr_states to only include allowed devices
-          for (auto it = snap->m_modes.begin(); it != snap->m_modes.end();) {
-            if (!is_allowed(it->first)) {
-              it = snap->m_modes.erase(it);
-            } else {
-              ++it;
-            }
-          }
-          for (auto it = snap->m_hdr_states.begin(); it != snap->m_hdr_states.end();) {
-            if (!is_allowed(it->first)) {
-              it = snap->m_hdr_states.erase(it);
-            } else {
-              ++it;
-            }
-          }
-
-          // Clear primary if it was filtered out
-          if (!snap->m_primary_device.empty() && !is_allowed(snap->m_primary_device)) {
-            snap->m_primary_device.clear();
-          }
-
-          if (!filtered_out_excluded.empty()) {
-            std::sort(filtered_out_excluded.begin(), filtered_out_excluded.end());
-            filtered_out_excluded.erase(std::unique(filtered_out_excluded.begin(), filtered_out_excluded.end()), filtered_out_excluded.end());
-            std::string joined;
-            for (size_t i = 0; i < filtered_out_excluded.size(); ++i) {
-              if (i > 0) {
-                joined += ", ";
-              }
-              joined += filtered_out_excluded[i];
-            }
-            BOOST_LOG(info) << "Excluded devices removed from session snapshot: [" << joined << "]";
-          }
-
-          // Re-save filtered snapshot (best effort, don't fail validation if save fails)
-          (void) state.controller.save_snapshot_to_file(*snap, path);
-        }
-        return true;
-      }
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) {
+      return false;
     }
 
+    FILE *f = _wfopen(path.wstring().c_str(), L"rb");
+    if (!f) {
+      BOOST_LOG(warning) << "Existing session snapshot could not be opened; removing path=" << path.string();
+      std::error_code ec_rm;
+      std::filesystem::remove(path, ec_rm);
+      return false;
+    }
+
+    auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
+    std::string data;
+    char buf[4096];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+      data.append(buf, n);
+    }
+
+    bool valid = false;
+    try {
+      auto j = nlohmann::json::parse(data, nullptr, false);
+      if (!j.is_discarded() && j.is_object()) {
+        const bool has_topology = j.contains("topology") && j["topology"].is_array() && !j["topology"].empty();
+        const bool has_modes = j.contains("modes") && j["modes"].is_object() && !j["modes"].empty();
+        valid = has_topology && has_modes;
+      }
+    } catch (...) {
+      valid = false;
+    }
+
+    if (valid) {
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Existing session snapshot is invalid (missing/empty topology or modes); removing path="
+                       << path.string();
     std::error_code ec_rm;
     std::filesystem::remove(path, ec_rm);
     return false;

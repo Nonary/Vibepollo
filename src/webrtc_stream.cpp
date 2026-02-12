@@ -67,6 +67,7 @@
 #include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/display_helper_integration.h"
 #include "src/platform/windows/display_helper_request_helpers.h"
+#include "src/platform/windows/virtual_display_cleanup.h"
 #include "src/platform/windows/virtual_display.h"
 #include "src/platform/windows/display_vram.h"
 #if !defined(SUNSHINE_SHADERS_DIR)
@@ -80,6 +81,36 @@
 #endif
 
 namespace webrtc_stream {
+  namespace {
+    std::atomic_uint64_t g_paused_display_cleanup_generation {0};
+
+    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason) {
+      const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+      std::thread([timeout, generation, reason = std::move(reason)]() {
+        std::this_thread::sleep_for(timeout);
+
+        if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
+          return;
+        }
+
+        if (has_active_sessions() || stream::session::running_sessions.load(std::memory_order_acquire) != 0) {
+          return;
+        }
+
+        if (proc::proc.running() <= 0) {
+          return;
+        }
+
+        BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
+                        << reason << ").";
+        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", true);
+        if (cleanup.helper_revert_dispatched) {
+          display_helper_integration::stop_watchdog();
+        }
+      }).detach();
+    }
+  }  // namespace
+
   bool add_local_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
   bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type);
 
@@ -2101,10 +2132,28 @@ namespace webrtc_stream {
 
 #ifdef _WIN32
       if (allow_platform_teardown) {
-        if (config::video.dd.config_revert_on_disconnect) {
-          const bool reverted = display_helper_integration::revert();
-          if (reverted) {
+        const bool is_paused = proc::proc.running() > 0;
+        const bool revert_enabled = config::video.dd.config_revert_on_disconnect;
+        const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
+        const bool skip_teardown_due_to_pause = is_paused && !revert_enabled;
+        if (!skip_teardown_due_to_pause) {
+          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+        }
+        if (skip_teardown_due_to_pause) {
+          if (paused_timeout_secs > 0) {
+            BOOST_LOG(info) << "Display cleanup: WebRTC session paused with revert-on-disconnect disabled; "
+                            << "scheduling virtual display cleanup in " << paused_timeout_secs << "s.";
+            schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "webrtc_session_paused");
+          } else {
+            BOOST_LOG(debug) << "Display cleanup: WebRTC session is paused; keeping virtual display alive (config_revert_on_disconnect=false).";
+          }
+        } else {
+          const auto cleanup =
+            platf::virtual_display_cleanup::run("webrtc_capture_stop", revert_enabled);
+          if (cleanup.helper_revert_dispatched) {
             display_helper_integration::stop_watchdog();
+          } else if (revert_enabled) {
+            BOOST_LOG(debug) << "Display helper: revert dispatch failed during WebRTC cleanup.";
           }
         }
       }
