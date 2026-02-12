@@ -1167,7 +1167,7 @@ namespace VibeshineInstaller {
           + "Vibeshine does not carry over Apollo/Vibepollo settings.\n"
           + "If you intend to stay in the Apollo ecosystem, Vibepollo is recommended instead.\n\n"
           + "If this is intentional, continue with Vibeshine.\n"
-          + "Continuing will uninstall Apollo and Vibepollo before installation.";
+          + "Continuing will let MSI uninstall Apollo and Vibepollo before installation.";
       }
 
       if (hasApollo) {
@@ -1175,13 +1175,13 @@ namespace VibeshineInstaller {
           + "Vibeshine does not carry over Apollo settings.\n"
           + "If you intend to stay in the Apollo ecosystem, Vibepollo is recommended instead.\n\n"
           + "If this is intentional, continue with Vibeshine.\n"
-          + "Continuing will uninstall Apollo before installation.";
+          + "Continuing will let MSI uninstall Apollo before installation.";
       }
 
       return "Vibepollo was detected on this PC.\n\n"
         + "Vibeshine does not carry over Vibepollo settings.\n"
         + "If this is intentional, continue with Vibeshine.\n"
-        + "Continuing will uninstall Vibepollo before installation.";
+        + "Continuing will let MSI uninstall Vibepollo before installation.";
     }
 
     private string BuildLegacySunshineMigrationWarning() {
@@ -1193,7 +1193,7 @@ namespace VibeshineInstaller {
       }
 
       return "Legacy Sunshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine replaces Sunshine and will automatically uninstall Sunshine first, then install Vibeshine.\n"
+        + "Vibeshine replaces Sunshine. MSI will automatically uninstall Sunshine first, then install Vibeshine.\n"
         + "No settings will be lost during this migration.\n\n"
         + "Click Continue to proceed.";
     }
@@ -2121,8 +2121,25 @@ namespace VibeshineInstaller {
     }
 
     public static List<InstalledProductInfo> GetInstalledApolloFamilyProducts() {
-      return GetInstalledProducts(true)
+      var products = GetInstalledProducts(true)
         .Where(product => product.Kind == InstalledProductKind.Apollo || product.Kind == InstalledProductKind.Vibepollo)
+        .ToList();
+
+      var existingKinds = new HashSet<InstalledProductKind>(products.Select(product => product.Kind));
+      foreach (var detectedKind in GetApolloFamilyKindsFromUninstallRegistry()) {
+        if (existingKinds.Contains(detectedKind)) {
+          continue;
+        }
+
+        products.Add(new InstalledProductInfo {
+          ProductCode = detectedKind.ToString(),
+          DisplayName = detectedKind == InstalledProductKind.Apollo ? "Apollo" : "Vibepollo",
+          Version = null,
+          Kind = detectedKind
+        });
+      }
+
+      return products
         .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
         .ToList();
     }
@@ -2340,6 +2357,48 @@ namespace VibeshineInstaller {
       return null;
     }
 
+    private static IEnumerable<InstalledProductKind> GetApolloFamilyKindsFromUninstallRegistry() {
+      var detectedKinds = new HashSet<InstalledProductKind>();
+      var uninstallRoots = new[] {
+        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+      };
+      var hives = new[] {
+        Registry.LocalMachine,
+        Registry.CurrentUser
+      };
+
+      foreach (var hive in hives) {
+        foreach (var uninstallRoot in uninstallRoots) {
+          using (var rootKey = hive.OpenSubKey(uninstallRoot)) {
+            if (rootKey == null) {
+              continue;
+            }
+
+            foreach (var subKeyName in rootKey.GetSubKeyNames()) {
+              if (string.IsNullOrWhiteSpace(subKeyName)) {
+                continue;
+              }
+
+              using (var productKey = rootKey.OpenSubKey(subKeyName)) {
+                if (productKey == null) {
+                  continue;
+                }
+
+                var displayName = Convert.ToString(productKey.GetValue("DisplayName"));
+                var kind = GetInstalledProductKind(displayName);
+                if (kind == InstalledProductKind.Apollo || kind == InstalledProductKind.Vibepollo) {
+                  detectedKinds.Add(kind);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return detectedKinds;
+    }
+
     private const uint MsiErrorSuccess = 0;
     private const uint MsiErrorMoreData = 234;
 
@@ -2437,39 +2496,6 @@ namespace VibeshineInstaller {
       }
 
       var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
-      var legacySunshineRegistrationResult = UninstallLegacySunshineRegistration();
-      if (legacySunshineRegistrationResult.ExitCode != 0 && legacySunshineRegistrationResult.ExitCode != 3010) {
-        return legacySunshineRegistrationResult;
-      }
-
-      var sunshineUninstallResult = UninstallInstalledProducts(
-        "preinstall_sunshine",
-        true,
-        false,
-        false,
-        false,
-        false,
-        new[] { InstalledProductKind.Sunshine });
-      if (sunshineUninstallResult.ExitCode != 0 && sunshineUninstallResult.ExitCode != 3010) {
-        return sunshineUninstallResult;
-      }
-
-      var uninstallResult = UninstallInstalledProducts(
-        "preinstall",
-        true,
-        false,
-        false,
-        false,
-        false,
-        new[] {
-          InstalledProductKind.Vibeshine,
-          InstalledProductKind.Vibepollo,
-          InstalledProductKind.Apollo
-        });
-      if (uninstallResult.ExitCode != 0 && uninstallResult.ExitCode != 3010) {
-        return uninstallResult;
-      }
-
       var logPath = BuildLogPath("install");
       var args = new List<string> {
         "/i",
@@ -2530,120 +2556,6 @@ namespace VibeshineInstaller {
       };
     }
 
-    private static InstallerResult UninstallLegacySunshineRegistration() {
-      var legacyRegistration = GetLegacySunshineRegistration();
-      if (legacyRegistration == null) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 0,
-          Message = "No legacy Sunshine installation was found."
-        };
-      }
-
-      var uninstallCommand = string.IsNullOrWhiteSpace(legacyRegistration.QuietUninstallString)
-        ? legacyRegistration.UninstallString
-        : legacyRegistration.QuietUninstallString;
-      if (string.IsNullOrWhiteSpace(uninstallCommand)) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 1603,
-          Message = "Legacy Sunshine was detected, but no uninstall command was found."
-        };
-      }
-
-      string executablePath;
-      string uninstallArguments;
-      if (!TrySplitExecutableAndArguments(uninstallCommand, out executablePath, out uninstallArguments)) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 1603,
-          Message = "Legacy Sunshine was detected, but the uninstall command could not be parsed."
-        };
-      }
-
-      var looksLikePath = executablePath.IndexOf('\\') >= 0 || executablePath.IndexOf('/') >= 0;
-      if (looksLikePath && !File.Exists(executablePath)) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 0,
-          Message = "Legacy Sunshine uninstall entry is stale; continuing with Vibeshine installation."
-        };
-      }
-
-      if (string.IsNullOrWhiteSpace(legacyRegistration.QuietUninstallString) &&
-          !IsMsiexecExecutable(executablePath) &&
-          !HasQuietUninstallSwitch(uninstallArguments)) {
-        uninstallArguments = string.IsNullOrWhiteSpace(uninstallArguments)
-          ? "/S"
-          : uninstallArguments + " /S";
-      }
-
-      int exitCode;
-      try {
-        var startInfo = new ProcessStartInfo {
-          FileName = executablePath,
-          Arguments = uninstallArguments ?? string.Empty,
-          UseShellExecute = false,
-          CreateNoWindow = true,
-          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
-        };
-
-        using (var process = Process.Start(startInfo)) {
-          if (process == null) {
-            return new InstallerResult {
-              Operation = InstallerOperation.Uninstall,
-              ExitCode = 1603,
-              Message = "Legacy Sunshine uninstall could not be started."
-            };
-          }
-
-          process.WaitForExit();
-          exitCode = process.ExitCode;
-        }
-      } catch (Exception ex) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 1603,
-          Message = "Legacy Sunshine uninstall failed to launch: " + ex.Message
-        };
-      }
-
-      if (exitCode != 0 && exitCode != 3010) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = exitCode,
-          Message = BuildResultMessage("Uninstall", exitCode, string.Empty)
-        };
-      }
-
-      if (!WaitForLegacySunshineRemoval(120)) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall,
-          ExitCode = 1603,
-          Message = "Legacy Sunshine is still installed. Please uninstall Sunshine completely, then run the installer again."
-        };
-      }
-
-      return new InstallerResult {
-        Operation = InstallerOperation.Uninstall,
-        ExitCode = exitCode,
-        Message = BuildResultMessage("Uninstall", exitCode, string.Empty)
-      };
-    }
-
-    private static bool WaitForLegacySunshineRemoval(int timeoutSeconds) {
-      var timeout = timeoutSeconds <= 0 ? 1 : timeoutSeconds;
-      var deadline = DateTime.UtcNow.AddSeconds(timeout);
-      while (DateTime.UtcNow < deadline) {
-        if (GetLegacySunshineRegistration() == null) {
-          return true;
-        }
-        System.Threading.Thread.Sleep(1000);
-      }
-
-      return GetLegacySunshineRegistration() == null;
-    }
-
     private static bool TrySplitExecutableAndArguments(string commandLine, out string executablePath, out string arguments) {
       executablePath = string.Empty;
       arguments = string.Empty;
@@ -2679,31 +2591,6 @@ namespace VibeshineInstaller {
       executablePath = value.Substring(0, firstSpace).Trim();
       arguments = value.Substring(firstSpace + 1).Trim();
       return executablePath.Length > 0;
-    }
-
-    private static bool HasQuietUninstallSwitch(string arguments) {
-      if (string.IsNullOrWhiteSpace(arguments)) {
-        return false;
-      }
-
-      var tokens = arguments
-        .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
-        .Select(token => token.Trim());
-      return tokens.Any(token =>
-        string.Equals(token, "/S", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/SILENT", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/VERYSILENT", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/QUIET", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/QN", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsMsiexecExecutable(string executablePath) {
-      if (string.IsNullOrWhiteSpace(executablePath)) {
-        return false;
-      }
-
-      var name = Path.GetFileNameWithoutExtension(executablePath.Trim());
-      return string.Equals(name, "msiexec", StringComparison.OrdinalIgnoreCase);
     }
 
     public static InstallerResult RunInteractiveUninstall(

@@ -47,6 +47,11 @@ set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
 )
 
+# Override CPack's default WiX template to control MajorUpgrade scheduling.
+# We schedule after InstallValidate to avoid RemoveExistingProducts 2613
+# failures in transactional upgrade flows.
+set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
+
 
 # ----------------------------------------------------------------------------
 # Sanitize version for WiX: must be x.x.x.x with integers [0,65534]

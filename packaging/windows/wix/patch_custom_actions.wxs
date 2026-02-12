@@ -25,6 +25,9 @@
     </Feature>
 
     <InstallExecuteSequence>
+      <!-- Remove conflicting products before installation starts. -->
+      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE</Custom>
+
       <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
       <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
