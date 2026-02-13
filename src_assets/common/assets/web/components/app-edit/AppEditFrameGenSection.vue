@@ -179,7 +179,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           Frame Generation Configuration
         </h3>
         <p class="text-[12px] leading-relaxed opacity-70">
-          Select how Sunshine coordinates frame generation and review the capture safeguards needed
+          Select how Vibepollo coordinates frame generation and review the capture safeguards needed
           for smooth playback.
         </p>
         <div class="flex flex-wrap items-center gap-2">
@@ -190,7 +190,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             <i class="fab fa-nvidia mr-1" /> NVIDIA Smooth Motion active
           </n-tag>
           <n-tag v-if="usingVirtualDisplay" size="small" type="success">
-            <i class="fas fa-display mr-1" /> Sunshine virtual screen in use
+            <i class="fas fa-display mr-1" /> Vibepollo virtual screen in use
           </n-tag>
         </div>
       </div>
@@ -214,7 +214,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           :clearable="false"
         />
         <p class="text-[12px] opacity-70 leading-relaxed">
-          None keeps Sunshine out of the loop, Game Provided trusts in-game frame generation,
+          None keeps Vibepollo out of the loop, Game Provided trusts in-game frame generation,
           Lossless Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch.
         </p>
       </div>
@@ -227,7 +227,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           <div class="space-y-1">
             <div class="font-medium text-sm">Lossless Scaling Frame Generation</div>
             <p class="text-[12px] opacity-70 leading-relaxed">
-              Use Sunshine&rsquo;s tuned profile or your Lossless Scaling defaults, then fine-tune
+              Use Vibepollo&rsquo;s tuned profile or your Lossless Scaling defaults, then fine-tune
               the runtime targets.
             </p>
           </div>
@@ -256,7 +256,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             </n-radio>
           </n-radio-group>
           <p class="text-[12px] opacity-60 leading-relaxed">
-            Recommended mirrors Sunshine&rsquo;s latency-focused template. Custom runs the profile
+            Recommended mirrors Vibepollo&rsquo;s latency-focused template. Custom runs the profile
             you maintain inside Lossless Scaling.
           </p>
         </div>
@@ -267,7 +267,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
               Frame Targets
             </label>
             <p class="text-[12px] opacity-60 leading-relaxed">
-              Sunshine inherits the FPS your streaming client requests and forwards it to Lossless
+              Vibepollo inherits the FPS your streaming client requests and forwards it to Lossless
               Scaling automatically. When RTSS is available we cap it at half of that request for
               steadier pacing.
             </p>
@@ -317,7 +317,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 @update:value="props.onLosslessRtssLimitChange"
               />
               <p class="text-[12px] opacity-60 leading-relaxed">
-                Sunshine defaults to half of the client request when left blank. Requires RTSS
+                Vibepollo defaults to half of the client request when left blank. Requires RTSS
                 installed and running.
               </p>
             </div>
@@ -336,7 +336,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
               size="small"
             />
             <p class="text-[12px] opacity-60 leading-relaxed">
-              Frame blending strength (0–100). Sunshine recommends 50% as a balanced default.
+              Frame blending strength (0–100). Vibepollo recommends 50% as a balanced default.
             </p>
           </div>
           <div class="space-y-1">

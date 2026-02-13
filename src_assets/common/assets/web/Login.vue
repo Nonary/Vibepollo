@@ -111,7 +111,7 @@ function redirectNowIfAuthenticated() {
 }
 
 onMounted(() => {
-  document.title = `Sunshine - ${t('auth.login_title')}`;
+  document.title = `Vibepollo - ${t('auth.login_title')}`;
   const urlParams = new URLSearchParams(window.location.search);
   const redirectParam = urlParams.get('redirect');
   if (redirectParam) {

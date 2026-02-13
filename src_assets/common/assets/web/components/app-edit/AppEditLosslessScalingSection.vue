@@ -6,7 +6,7 @@
           Lossless Scaling Upscaling
         </div>
         <p class="text-[11px] opacity-60">
-          Enable Lossless Scaling when you want Sunshine to manage upscaling before encoding.
+          Enable Lossless Scaling when you want Vibepollo to manage upscaling before encoding.
         </p>
       </div>
       <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
@@ -19,7 +19,7 @@
       size="small"
       class="text-xs"
     >
-      This application isn't managed by Playnite. Sunshine will try to guess which game executable
+      This application isn't managed by Playnite. Vibepollo will try to guess which game executable
       is running and apply the Lossless Scaling profile automatically, but that detection is
       best-effort and may not always succeed. Configure Playnite integration for more reliable
       results.
@@ -48,7 +48,7 @@
             <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
           </n-radio-group>
           <p class="text-[11px] opacity-60">
-            Recommended keeps Sunshine-tuned values for consistent latency and frame pacing. Custom
+            Recommended keeps Vibepollo-tuned values for consistent latency and frame pacing. Custom
             runs the profile you maintain inside Lossless Scaling.
           </p>
         </div>

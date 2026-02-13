@@ -111,7 +111,7 @@
                         </n-button>
                       </div>
                       <p class="mt-8 text-[10px] tracking-wider uppercase opacity-60 select-none">
-                        Sunshine
+                        Vibepollo
                       </p>
                     </div>
                   </div>
@@ -186,7 +186,7 @@ watch(
       '/clients': 'clients.nav',
       '/webrtc': 'webrtc.nav',
     };
-    const v = map[p] || 'Sunshine';
+    const v = map[p] || 'Vibepollo';
     pageTitle.value = v;
   },
   { immediate: true },

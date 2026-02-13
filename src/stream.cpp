@@ -6,12 +6,14 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <future>
 #include <optional>
 #include <queue>
+#include <thread>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -47,6 +49,7 @@ extern "C" {
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
 #endif
 
@@ -107,8 +110,39 @@ namespace stream {
   };
 
   namespace session {
-    extern std::atomic_uint running_sessions;
   }
+
+#ifdef _WIN32
+  namespace {
+    std::atomic_uint64_t g_paused_display_cleanup_generation {0};
+
+    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason) {
+      const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+      std::thread([timeout, generation, reason = std::move(reason)]() {
+        std::this_thread::sleep_for(timeout);
+
+        if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
+          return;
+        }
+
+        if (session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_sessions()) {
+          return;
+        }
+
+        if (proc::proc.running() <= 0) {
+          return;
+        }
+
+        BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
+                        << reason << ").";
+        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", true);
+        if (cleanup.helper_revert_dispatched) {
+          display_helper_integration::stop_watchdog();
+        }
+      }).detach();
+    }
+  }  // namespace
+#endif
 
 #pragma pack(push, 1)
 
@@ -2257,24 +2291,39 @@ namespace stream {
 #endif
         }
 
-        bool skip_display_revert = false;
-#ifdef _WIN32
-        if (is_paused && session.virtual_display.active) {
-          skip_display_revert = true;
-        }
-#endif
+        const bool webrtc_active = webrtc_stream::has_active_sessions();
+        const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
 
-        if (revert_display_config && !skip_display_revert) {
-          const bool reverted = display_helper_integration::revert();
+        const bool skip_teardown_due_to_pause = is_paused && !revert_display_config;
+
 #ifdef _WIN32
-          if (reverted) {
+        if (!skip_teardown_due_to_pause) {
+          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+        }
+        if (webrtc_active) {
+          BOOST_LOG(debug) << "Display cleanup: WebRTC session is still active; skipping RTSP-triggered teardown.";
+        } else if (skip_teardown_due_to_pause) {
+          if (paused_timeout_secs > 0) {
+            BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
+                            << "scheduling virtual display cleanup in " << paused_timeout_secs << "s.";
+            schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "rtsp_session_paused");
+          } else {
+            BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false).";
+          }
+        } else {
+          const auto cleanup = platf::virtual_display_cleanup::run("rtsp_session_end", revert_display_config);
+          if (cleanup.helper_revert_dispatched) {
             // If we reverted the display configuration, the helper watchdog is no longer needed.
             display_helper_integration::stop_watchdog();
-          } else {
-            BOOST_LOG(debug) << "Display helper: revert failed; leaving watchdog running.";
+          } else if (revert_display_config) {
+            BOOST_LOG(debug) << "Display helper: revert dispatch failed; leaving watchdog running.";
           }
-#endif
         }
+#else
+        if (revert_display_config && !skip_teardown_due_to_pause && !webrtc_active) {
+          (void) display_helper_integration::revert();
+        }
+#endif
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32

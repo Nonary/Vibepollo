@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-8 px-2 md:px-4">
+  <div class="dashboard-page space-y-8 px-2 md:px-4">
     <!-- Hero / Intro -->
     <section
       class="rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-surface/70 backdrop-blur p-5 md:p-6 shadow-sm"
@@ -91,7 +91,7 @@
                     {{
                       crashDumpMessage ||
                       $t('config.crash_dump_desc') ||
-                      'Sunshine detected a recent crash dump. Please export a crash bundle and include it when filing an issue.'
+                      'Vibepollo detected a recent crash dump. Please export a crash bundle and include it when filing an issue.'
                     }}
                   </p>
                   <p v-if="crashDumpDetails" class="text-xs opacity-60 m-0">
@@ -153,7 +153,7 @@
                   <p class="text-xs opacity-80 m-0">
                     {{
                       $t('config.vigem_missing_desc') ||
-                      'Sunshine requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:'
+                      'Vibepollo requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:'
                     }}
                     <span v-if="vigemVersion" class="ml-2 opacity-60">
                       ({{ $t('config.vigem_detected_version') || 'Detected' }}: {{ vigemVersion }})
@@ -367,26 +367,26 @@ import { useI18n } from 'vue-i18n';
 import { NCard, NAlert, NGrid, NGi, useMessage } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
-import SunshineVersion, { GitHubRelease } from '@/sunshine_version';
+import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
 import type { CrashDumpStatus } from '@/utils/crashDump';
 import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
 
-const installedVersion = ref<SunshineVersion>(new SunshineVersion('0.0.0'));
+const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
 const githubRelease = ref<GitHubRelease | null>(null);
 const preReleaseRelease = ref<GitHubRelease | null>(null);
 
 const githubVersion = computed(() =>
   githubRelease.value
-    ? SunshineVersion.fromRelease(githubRelease.value)
-    : new SunshineVersion('0.0.0'),
+    ? VibepolloVersion.fromRelease(githubRelease.value)
+    : new VibepolloVersion('0.0.0'),
 );
 const preReleaseVersion = computed(() =>
   preReleaseRelease.value
-    ? SunshineVersion.fromRelease(preReleaseRelease.value)
-    : new SunshineVersion('0.0.0'),
+    ? VibepolloVersion.fromRelease(preReleaseRelease.value)
+    : new VibepolloVersion('0.0.0'),
 );
 const notifyPreReleases = ref(false);
 const showPreNotes = ref(false);
@@ -442,7 +442,7 @@ async function runVersionChecks() {
     notifyPreReleases.value =
       cfg.notify_pre_releases === true || cfg.notify_pre_releases === 'enabled';
     const serverVersion = configStore.metadata?.version || cfg.version;
-    installedVersion.value = new SunshineVersion(serverVersion || '0.0.0');
+    installedVersion.value = new VibepolloVersion(serverVersion || '0.0.0');
     branch.value = cfg.branch || '';
     commit.value = cfg.commit || '';
 
@@ -465,10 +465,10 @@ async function runVersionChecks() {
         const prereleases = releases.filter((r: any) => r && r.prerelease && !r.draft);
         if (prereleases.length > 0) {
           let best = prereleases[0];
-          let bestV = SunshineVersion.fromRelease(best);
+          let bestV = VibepolloVersion.fromRelease(best);
           for (let i = 1; i < prereleases.length; i++) {
             const cand = prereleases[i];
-            const candV = SunshineVersion.fromRelease(cand);
+            const candV = VibepolloVersion.fromRelease(cand);
             if (candV.isGreater(bestV)) {
               best = cand;
               bestV = candV;
@@ -494,7 +494,7 @@ async function runVersionChecks() {
       // eslint-disable-next-line no-console
       console.warn('[Dashboard] releases list fetch failed', e);
     }
-    // Tag-based comparison handled below via SunshineVersion
+    // Tag-based comparison handled below via VibepolloVersion
 
     const plat = (configStore.metadata?.platform || '').toLowerCase();
     // ViGEm health (Windows only)
@@ -831,4 +831,34 @@ async function onPlayniteReinstallDone(res: { ok: boolean; error?: string }) {
 }
 </script>
 
-<style scoped></style>
+<style scoped>
+.dashboard-page :deep(.n-card) {
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.8);
+  backdrop-filter: blur(6px);
+}
+
+.dark .dashboard-page :deep(.n-card) {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+.dashboard-page :deep(.n-card .n-card__header),
+.dashboard-page :deep(.n-card .n-card-header),
+.dashboard-page :deep(.n-card .n-card__footer),
+.dashboard-page :deep(.n-card .n-card-footer) {
+  border-radius: 0.95rem;
+}
+
+.dashboard-page :deep(.n-alert),
+.dashboard-page :deep(.n-empty),
+.dashboard-page :deep(.n-input .n-input-wrapper),
+.dashboard-page :deep(.n-base-selection),
+.dashboard-page :deep(.n-base-selection .n-base-selection-label),
+.dashboard-page :deep(.n-data-table-wrapper),
+.dashboard-page :deep(.n-table-wrapper) {
+  border-radius: 0.8rem !important;
+}
+</style>

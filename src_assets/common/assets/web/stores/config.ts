@@ -121,6 +121,7 @@ const defaultGroups = [
       dd_hdr_request_override: 'auto',
       dd_config_revert_delay: 3000,
       dd_config_revert_on_disconnect: 'disabled',
+      dd_paused_virtual_display_timeout_secs: 0,
       dd_always_restore_from_golden: false,
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',

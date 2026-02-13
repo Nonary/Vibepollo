@@ -47,7 +47,9 @@ set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
 )
 
-# Use a repo-owned WiX template so MajorUpgrade behavior is explicit and stable.
+# Override CPack's default WiX template to control MajorUpgrade scheduling.
+# We schedule after InstallValidate to avoid RemoveExistingProducts 2613
+# failures in transactional upgrade flows.
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 

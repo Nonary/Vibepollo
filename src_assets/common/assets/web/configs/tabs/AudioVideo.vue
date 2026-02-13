@@ -24,7 +24,7 @@ const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
 
-// SudoVDA status mapping (Apollo-specific)
+// SudoVDA status mapping (Vibepollo-specific)
 const sudovdaStatus = computed(() => ({
   '1': t('config.sudovda_status_unknown'),
   '0': t('config.sudovda_status_ready'),

@@ -17,6 +17,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/misc.h"
 #include "src/platform/windows/virtual_display.h"
+#include "src/platform/windows/virtual_display_cleanup.h"
 
 using namespace std::literals;
 
@@ -67,11 +68,13 @@ namespace {
 
   void trigger_restore() {
     BOOST_LOG(info) << "Restore hotkey triggered; reverting display configuration.";
-    const bool reverted = display_helper_integration::revert();
-    (void) VDISPLAY::removeAllVirtualDisplays();
-    if (reverted) {
-      display_helper_integration::stop_watchdog();
+    const auto cleanup = platf::virtual_display_cleanup::run("restore_hotkey", true);
+    if (!cleanup.virtual_displays_removed) {
+      BOOST_LOG(warning) << "Restore hotkey cleanup: no virtual display was removed.";
     }
+    // Always stop watchdog here. If helper IPC is already unavailable, keeping
+    // watchdog alive can continue a failed helper restart loop.
+    display_helper_integration::stop_watchdog();
   }
 
   void hotkey_thread_main(int initial_vk, UINT initial_modifiers, HANDLE ready_event) {

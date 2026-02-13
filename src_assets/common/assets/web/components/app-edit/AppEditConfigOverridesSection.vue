@@ -396,7 +396,7 @@ function ensureOverridesObject(): void {
 function normalizeLegacyOverrideKeys(): void {
   ensureOverridesObject();
   const o = overrides.value as any;
-  // Apollo legacy key -> Sunshine key
+  // Vibepollo legacy key -> Vibepollo key
   if (o.double_refreshrate !== undefined && o.dd_wa_virtual_double_refresh === undefined) {
     o.dd_wa_virtual_double_refresh = o.double_refreshrate;
     delete o.double_refreshrate;

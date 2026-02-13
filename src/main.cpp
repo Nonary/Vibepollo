@@ -3,6 +3,7 @@
  * @brief Definitions for the main entry point for Sunshine.
  */
 // standard includes
+#include <algorithm>
 #include <codecvt>
 #include <csignal>
 #include <fstream>
@@ -17,15 +18,18 @@
 #include "main.h"
 #include "nvhttp.h"
 #include "process.h"
+#include "rtsp.h"
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
 #include "uuid.h"
 #include "video.h"
+#include "webrtc_stream.h"
 #ifdef _WIN32
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
   #include "src/platform/windows/virtual_display.h"
 #endif
 
@@ -351,6 +355,22 @@ int main(int argc, char *argv[]) {
   if (VDISPLAY::should_auto_enable_virtual_display()) {
     BOOST_LOG(info) << "No physical monitors detected at initialization. Initializing virtual display driver.";
     proc::initVDisplayDriver();
+  }
+
+  // Crash-recovery janitor: if Sunshine starts and finds active virtual displays before
+  // any RTSP/WebRTC sessions exist, force cleanup to prevent stuck fallback issues.
+  if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
+    const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+    const bool has_active_virtual_display = std::any_of(
+      virtual_displays.begin(),
+      virtual_displays.end(),
+      [](const VDISPLAY::SudaVDADisplayInfo &info) {
+        return info.is_active;
+      });
+    if (has_active_virtual_display) {
+      BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
+      (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
+    }
   }
 #endif
 

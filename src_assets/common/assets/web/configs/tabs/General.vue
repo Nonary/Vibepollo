@@ -10,7 +10,7 @@ const store = useConfigStore();
 const { config, metadata } = storeToRefs(store);
 const platform = computed(() => metadata.value?.platform || '');
 
-// Select options - Apollo includes Hungarian and Vietnamese
+// Select options - Vibepollo includes Hungarian and Vietnamese
 const localeOptions = [
   { label: 'Български (Bulgarian)', value: 'bg' },
   { label: 'Čeština (Czech)', value: 'cs' },
@@ -128,14 +128,14 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Apollo Name -->
+    <!-- Vibepollo Name -->
     <div class="mb-6">
       <label for="sunshine_name" class="form-label">{{ t('config.sunshine_name') }}</label>
       <n-input
         id="sunshine_name"
         v-model:value="config.sunshine_name"
         type="text"
-        placeholder="Apollo"
+        placeholder="Vibepollo"
       />
       <div class="text-[11px] opacity-60 mt-1">
         {{ t('config.sunshine_name_desc') }}
@@ -287,7 +287,7 @@ onMounted(() => {
       </div>
       <div class="text-[11px] opacity-60 mt-1">
         <a
-          href="https://github.com/ClassicOldSong/Apollo/wiki/Server-Commands"
+          href="https://github.com/ClassicOldSong/Vibepollo/wiki/Server-Commands"
           target="_blank"
           class="underline"
           >{{ t('_common.learn_more') }}</a

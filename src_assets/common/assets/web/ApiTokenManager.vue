@@ -1,30 +1,58 @@
 <template>
-  <n-space vertical size="large" class="max-w-6xl mx-auto px-4 py-6">
-    <n-page-header
-      title="API Token Management"
-      subtitle="Create scoped tokens, manage active ones, and test safely."
-    >
-      <template #extra>
-        <n-tag round type="info" size="small" class="inline-flex items-center gap-2">
+  <div class="api-token-manager w-full">
+    <n-space vertical size="large" class="token-stack w-full">
+      <section class="token-hero">
+        <div class="token-hero__copy">
+          <h2 class="token-hero__title">
+            <n-icon size="18"><i class="fas fa-key" /></n-icon>
+            {{ t('auth.title') }}
+          </h2>
+          <p class="token-hero__subtitle">{{ t('auth.subtitle') }}</p>
+        </div>
+        <n-tag round type="info" size="small" class="token-hero__tag">
           <n-icon size="14"><i class="fas fa-shield-halved" /></n-icon>
           Least-privilege scopes for better security
         </n-tag>
-      </template>
-    </n-page-header>
+      </section>
 
-    <n-card size="large">
+      <n-card size="large" class="token-panel">
       <template #header>
-        <n-space align="center" size="small">
-          <n-icon size="18"><i class="fas fa-key" /></n-icon>
-          <n-text strong>Create Token</n-text>
-        </n-space>
+        <div class="token-panel__heading">
+          <n-space align="center" size="small" class="token-panel__title">
+            <n-icon size="18"><i class="fas fa-key" /></n-icon>
+            <n-text strong>{{ t('auth.generate_new_token') }}</n-text>
+          </n-space>
+          <n-button
+            type="primary"
+            strong
+            size="small"
+            class="token-panel__action"
+            :loading="routeCatalogLoading"
+            @click="loadRouteCatalog"
+          >
+            <n-icon size="14"><i class="fas fa-rotate" /></n-icon>
+            {{ t('auth.refresh_routes') }}
+          </n-button>
+        </div>
       </template>
-      <n-space vertical size="large">
-        <n-text depth="3">
-          Choose one or more route scopes. Each scope grants specific HTTP methods for a path.
-        </n-text>
 
-        <n-form :model="draft" label-placement="top" size="medium">
+      <n-space vertical size="large" class="token-panel__body">
+        <n-alert type="info" secondary>
+          {{ t('auth.generate_token_help') }}
+        </n-alert>
+
+        <n-alert v-if="routeCatalogError" type="error" closable @close="routeCatalogError = ''">
+          {{ routeCatalogError }}
+        </n-alert>
+        <n-alert
+          v-else-if="!routeCatalogLoading && routeCatalog.length === 0"
+          type="warning"
+          :show-icon="true"
+        >
+          {{ t('auth.routes_empty') }}
+        </n-alert>
+
+        <n-form :model="draft" label-placement="top" size="medium" class="token-form-shell">
           <n-grid cols="24" x-gap="12" y-gap="12" responsive="screen">
             <n-form-item-gi :span="24" :s="12" label="Route" path="path">
               <n-select
@@ -46,36 +74,35 @@
               </n-text>
             </n-form-item-gi>
             <n-form-item-gi :span="24" :s="4" label=" " :show-feedback="false">
-              <n-button type="primary" size="medium" :disabled="!canAddScope" @click="addScope">
-                <n-icon class="mr-1" size="16"><i class="fas fa-plus" /></n-icon>
-                Add Scope
+              <n-button type="primary" size="medium" class="w-full" :disabled="!canAddScope" @click="addScope">
+                <n-icon size="16"><i class="fas fa-plus" /></n-icon>
+                {{ t('auth.add_scope') }}
               </n-button>
             </n-form-item-gi>
           </n-grid>
         </n-form>
 
-        <n-space v-if="scopes.length" vertical size="small">
-          <n-text depth="3" strong>Scopes</n-text>
-          <n-space vertical size="small">
-            <n-thing v-for="(s, idx) in scopes" :key="idx + ':' + s.path" :title="s.path">
-              <template #header-extra>
+        <n-space v-if="scopes.length" vertical size="small" class="token-scope-list">
+          <n-text depth="3" strong>{{ t('auth.selected_scopes') }}</n-text>
+          <div class="token-scope-grid">
+            <div v-for="(scope, idx) in scopes" :key="idx + ':' + scope.path" class="token-scope-card">
+              <div class="token-scope-card__header">
+                <n-text strong>{{ scope.path }}</n-text>
                 <n-button type="error" strong size="small" text @click="removeScope(idx)">
                   <n-icon size="14"><i class="fas fa-times" /></n-icon>
                   Remove
                 </n-button>
-              </template>
-              <template #description>
-                <n-space wrap size="small">
-                  <n-tag v-for="m in s.methods" :key="m" type="info" size="small" round>
-                    {{ m }}
-                  </n-tag>
-                </n-space>
-              </template>
-            </n-thing>
-          </n-space>
+              </div>
+              <n-space wrap size="small">
+                <n-tag v-for="method in scope.methods" :key="method" type="info" size="small" round>
+                  {{ method }}
+                </n-tag>
+              </n-space>
+            </div>
+          </div>
         </n-space>
 
-        <n-space align="center" size="small">
+        <n-space align="center" size="small" class="token-generate-row">
           <n-button
             type="success"
             size="medium"
@@ -83,8 +110,8 @@
             :loading="creating"
             @click="createToken"
           >
-            <n-icon class="mr-1" size="16"><i class="fas fa-key" /></n-icon>
-            Generate Token
+            <n-icon size="16"><i class="fas fa-key" /></n-icon>
+            {{ t('auth.generate_token') }}
           </n-button>
           <n-text v-if="creating" size="small" depth="3">Creating…</n-text>
         </n-space>
@@ -93,10 +120,15 @@
           {{ createError }}
         </n-alert>
       </n-space>
-    </n-card>
+      </n-card>
 
-    <n-modal :show="showTokenModal" @update:show="(v) => (showTokenModal = v)">
-      <n-card title="API Token Created" :bordered="false" style="max-width: 40rem; width: 100%">
+      <n-modal :show="showTokenModal" @update:show="(v) => (showTokenModal = v)">
+      <n-card
+        class="token-modal-card"
+        :title="t('auth.token_created_title')"
+        :bordered="false"
+        style="max-width: 40rem; width: 100%"
+      >
         <n-space vertical size="large">
           <n-alert type="warning" :show-icon="true">
             <n-icon class="mr-2" size="16"><i class="fas fa-triangle-exclamation" /></n-icon>
@@ -107,8 +139,8 @@
             <n-code :code="createdToken" language="bash" word-wrap />
             <n-space align="center" size="small">
               <n-button size="small" type="primary" @click="copy(createdToken)">
-                <n-icon class="mr-1" size="14"><i class="fas fa-copy" /></n-icon>
-                Copy
+                <n-icon size="14"><i class="fas fa-copy" /></n-icon>
+                {{ t('auth.copy_token') }}
               </n-button>
               <n-tag v-if="copied" type="success" size="small" round>Copied!</n-tag>
             </n-space>
@@ -122,12 +154,12 @@
           </n-space>
         </template>
       </n-card>
-    </n-modal>
+      </n-modal>
 
-    <n-card size="large">
+      <n-card size="large" class="token-panel">
       <template #header>
-        <n-space align="center" justify="space-between">
-          <n-space align="center" size="small">
+        <div class="token-panel__heading">
+          <n-space align="center" size="small" class="token-panel__title">
             <n-icon size="18"><i class="fas fa-lock" /></n-icon>
             <n-text strong>Active Tokens</n-text>
           </n-space>
@@ -136,19 +168,24 @@
             strong
             size="small"
             :loading="tokensLoading"
-            aria-label="Refresh tokens"
-            @click="loadTokens()"
+            class="token-panel__action"
+            :aria-label="t('auth.refresh')"
+            @click="loadTokens"
           >
-            <n-icon class="mr-1" size="14"><i class="fas fa-rotate" /></n-icon>
-            Refresh
+            <n-icon size="14"><i class="fas fa-rotate" /></n-icon>
+            {{ t('auth.refresh') }}
           </n-button>
-        </n-space>
+        </div>
       </template>
 
-      <n-space vertical size="large">
-        <n-form :model="tableControls" inline label-placement="top" class="flex flex-wrap gap-4">
-          <n-form-item label="Filter" path="filter">
-            <n-input v-model:value="tableControls.filter" placeholder="Filter by hash or path…" />
+      <n-space vertical size="large" class="token-panel__body">
+        <n-form :model="tableControls" inline label-placement="top" class="token-toolbar">
+          <n-form-item :label="t('auth.filter')" path="filter">
+            <n-input
+              v-model:value="tableControls.filter"
+              :placeholder="t('auth.search_tokens')"
+              clearable
+            />
           </n-form-item>
           <n-form-item label="Sort" path="sortBy">
             <n-select v-model:value="tableControls.sortBy" :options="sortOptions" />
@@ -164,77 +201,50 @@
           description="No active tokens."
         />
 
-        <div v-else class="overflow-auto">
-          <n-table :bordered="false" :single-line="false" class="min-w-[640px]">
-            <thead>
-              <tr>
-                <th class="w-40">Hash</th>
-                <th>Scopes</th>
-                <th class="w-28">Created</th>
-                <th class="w-24"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in filteredTokens" :key="t.hash">
-                <td class="align-middle">
-                  <n-text
-                    class="font-mono text-xs inline-block min-w-[70px] cursor-pointer"
-                    @click="copy(t.hash)"
-                    @keydown.enter.prevent="copy(t.hash)"
-                    tabindex="0"
-                  >
-                    {{ shortHash(t.hash) }}
-                  </n-text>
-                </td>
-                <td class="align-middle">
-                  <n-space wrap size="small">
-                    <n-card
-                      v-for="(s, idx) in t.scopes"
-                      :key="idx"
-                      size="small"
-                      bordered
-                      class="bg-transparent min-w-[160px]"
-                    >
-                      <n-space vertical size="xsmall">
-                        <n-text strong>{{ s.path }}</n-text>
-                        <n-space wrap size="small">
-                          <n-tag v-for="m in s.methods" :key="m" size="small" type="info" round>
-                            {{ m }}
-                          </n-tag>
-                        </n-space>
-                      </n-space>
-                    </n-card>
-                  </n-space>
-                </td>
-                <td class="text-xs opacity-70 align-middle">
-                  {{ t.createdAt ? formatTime(t.createdAt) : '—' }}
-                </td>
-                <td class="align-middle">
-                  <n-button
-                    size="small"
-                    type="error"
-                    :loading="revoking === t.hash"
-                    @click="promptRevoke(t)"
-                  >
-                    <n-icon class="mr-1" size="14"><i class="fas fa-ban" /></n-icon>
-                    Revoke
-                  </n-button>
-                </td>
-              </tr>
-            </tbody>
-          </n-table>
+        <div v-else class="token-records">
+          <article v-for="token in filteredTokens" :key="token.hash" class="token-record">
+            <div class="token-record__header">
+              <button type="button" class="token-hash-button" @click="copy(token.hash)">
+                <span class="token-hash-button__label">{{ t('auth.hash') }}</span>
+                <span class="token-hash-button__value">{{ shortHash(token.hash) }}</span>
+              </button>
+              <n-text depth="3" class="token-record__date">
+                {{ t('auth.created') }}: {{ token.createdAt ? formatTime(token.createdAt) : '—' }}
+              </n-text>
+              <n-button
+                size="small"
+                type="error"
+                :loading="revoking === token.hash"
+                @click="promptRevoke(token)"
+              >
+                <n-icon size="14"><i class="fas fa-ban" /></n-icon>
+                {{ t('auth.revoke') }}
+              </n-button>
+            </div>
+
+            <div class="token-record__scopes">
+              <div v-for="(scope, idx) in token.scopes" :key="idx" class="token-record-scope">
+                <n-text strong>{{ scope.path }}</n-text>
+                <n-space wrap size="small">
+                  <n-tag v-for="method in scope.methods" :key="method" size="small" type="info" round>
+                    {{ method }}
+                  </n-tag>
+                </n-space>
+              </div>
+            </div>
+          </article>
         </div>
       </n-space>
-    </n-card>
+      </n-card>
 
-    <n-card size="large">
+      <n-card size="large" class="token-panel">
       <template #header>
-        <n-space align="center" size="small">
+        <n-space align="center" size="small" class="token-panel__title">
           <n-icon size="18"><i class="fas fa-vial" /></n-icon>
           <n-text strong>Test Token</n-text>
         </n-space>
       </template>
-      <n-space vertical size="large">
+      <n-space vertical size="large" class="token-panel__body">
         <n-alert type="info" secondary>
           Tester performs only safe GET requests. Select a route and send a request with your token.
         </n-alert>
@@ -267,8 +277,8 @@
 
         <n-space align="center" size="small">
           <n-button type="primary" :disabled="!canSendTest" :loading="testing" @click="sendTest">
-            <n-icon class="mr-1" size="16"><i class="fas fa-paper-plane" /></n-icon>
-            Test Token
+            <n-icon size="16"><i class="fas fa-paper-plane" /></n-icon>
+            {{ t('auth.test_token') }}
           </n-button>
           <n-text v-if="testing" size="small" depth="3">Sending…</n-text>
         </n-space>
@@ -278,17 +288,18 @@
         </n-alert>
 
         <n-space v-if="testResponse" vertical size="small">
-          <n-text depth="3" strong>Response</n-text>
-          <n-scrollbar style="max-height: 60vh">
+          <n-text depth="3" strong>{{ t('auth.result') }}</n-text>
+          <n-scrollbar class="token-result-shell" style="max-height: 60vh">
             <n-code :code="testResponse" language="json" word-wrap />
           </n-scrollbar>
         </n-space>
       </n-space>
-    </n-card>
+      </n-card>
 
-    <n-modal :show="showRevoke" @update:show="(v) => (showRevoke = v)">
+      <n-modal :show="showRevoke" @update:show="(v) => (showRevoke = v)">
       <n-card
-        :title="$t('auth.confirm_revoke_title')"
+        class="token-modal-card"
+        :title="t('auth.confirm_revoke_title')"
         :bordered="false"
         style="max-width: 32rem; width: 100%"
       >
@@ -308,8 +319,9 @@
           </n-space>
         </template>
       </n-card>
-    </n-modal>
-  </n-space>
+      </n-modal>
+    </n-space>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -329,14 +341,11 @@ import {
   NIcon,
   NInput,
   NModal,
-  NPageHeader,
   NScrollbar,
   NSelect,
   NSpace,
-  NTable,
   NTag,
   NText,
-  NThing,
   useMessage,
 } from 'naive-ui';
 import { http } from '@/http';
@@ -799,3 +808,362 @@ watch(
   },
 );
 </script>
+
+<style scoped>
+.token-stack {
+  gap: 1.5rem !important;
+}
+
+.token-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 1rem;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background:
+    radial-gradient(circle at top right, rgb(var(--color-primary) / 0.12), transparent 42%),
+    linear-gradient(135deg, rgb(var(--color-light) / 0.88), rgb(var(--color-surface) / 0.82));
+}
+
+.dark .token-hero {
+  border-color: rgb(var(--color-light) / 0.16);
+  background:
+    radial-gradient(circle at top right, rgb(var(--color-primary) / 0.2), transparent 42%),
+    linear-gradient(135deg, rgb(var(--color-surface) / 0.9), rgb(var(--color-dark) / 0.88));
+}
+
+.token-hero__copy {
+  min-width: 16rem;
+  flex: 1;
+}
+
+.token-hero__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.token-hero__subtitle {
+  margin: 0.45rem 0 0;
+  opacity: 0.78;
+  max-width: 52rem;
+}
+
+.token-hero__tag {
+  margin-top: 0.1rem;
+}
+
+.token-panel {
+  border-radius: 1rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.82);
+  backdrop-filter: blur(6px);
+}
+
+.dark .token-panel {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+.token-panel__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.token-panel__title {
+  margin-right: auto;
+}
+
+.token-panel__action {
+  min-width: 8.5rem;
+}
+
+.token-panel__body {
+  gap: 1rem !important;
+}
+
+.token-form-shell {
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.9rem;
+  background: rgb(var(--color-light) / 0.46);
+  padding: 0.9rem;
+}
+
+.dark .token-form-shell {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-dark) / 0.3);
+}
+
+.token-scope-list {
+  gap: 0.55rem !important;
+}
+
+.token-scope-grid {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.token-scope-card {
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  border-radius: 0.8rem;
+  background: rgb(var(--color-light) / 0.62);
+  padding: 0.65rem 0.75rem;
+}
+
+.dark .token-scope-card {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.22);
+}
+
+.token-scope-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.token-generate-row {
+  justify-content: flex-start;
+}
+
+.token-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.token-toolbar :deep(.n-form-item) {
+  margin-bottom: 0;
+}
+
+.token-records {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.token-record {
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  border-radius: 0.9rem;
+  background: rgb(var(--color-light) / 0.55);
+  padding: 0.85rem;
+}
+
+.dark .token-record {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.26);
+}
+
+.token-record__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.token-record__date {
+  margin-left: auto;
+}
+
+.token-hash-button {
+  border: 1px solid rgb(var(--color-dark) / 0.16);
+  border-radius: 0.7rem;
+  background: rgb(var(--color-light) / 0.72);
+  color: inherit;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dark .token-hash-button {
+  border-color: rgb(var(--color-light) / 0.18);
+  background: rgb(var(--color-dark) / 0.4);
+}
+
+.token-hash-button:hover {
+  border-color: rgb(var(--color-primary) / 0.55);
+}
+
+.token-hash-button__label {
+  display: block;
+  font-size: 0.67rem;
+  line-height: 1;
+  opacity: 0.68;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+
+.token-hash-button__value {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.79rem;
+}
+
+.token-record__scopes {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.token-record-scope {
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.75rem;
+  background: rgb(var(--color-light) / 0.5);
+  padding: 0.55rem 0.65rem;
+}
+
+.dark .token-record-scope {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-dark) / 0.28);
+}
+
+.token-result-shell {
+  border: 1px solid rgb(var(--color-dark) / 0.11);
+  border-radius: 0.8rem;
+  padding: 0.35rem;
+  background: rgb(var(--color-light) / 0.58);
+}
+
+.dark .token-result-shell {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.35);
+}
+
+.token-modal-card {
+  border-radius: 1rem;
+  border: 1px solid rgb(var(--color-dark) / 0.12);
+}
+
+.dark .token-modal-card {
+  border-color: rgb(var(--color-light) / 0.14);
+}
+
+.api-token-manager :deep(.n-button .n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.api-token-manager :deep(.n-button .n-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.api-token-manager :deep(.n-button .n-icon .icon),
+.api-token-manager :deep(.n-button .n-icon .fa),
+.api-token-manager :deep(.n-button .n-icon .fas),
+.api-token-manager :deep(.n-button .n-icon .far),
+.api-token-manager :deep(.n-button .n-icon .fal),
+.api-token-manager :deep(.n-button .n-icon .fab) {
+  margin: 0 !important;
+  vertical-align: middle !important;
+  line-height: 1 !important;
+}
+
+.token-hero__title :deep(.n-icon),
+.token-panel__title :deep(.n-icon),
+.token-hero__tag :deep(.n-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.api-token-manager :deep(.n-alert) {
+  border-radius: 0.8rem;
+  border: 1px solid rgb(var(--color-dark) / 0.12);
+}
+
+.dark .api-token-manager :deep(.n-alert) {
+  border-color: rgb(var(--color-light) / 0.14);
+}
+
+.api-token-manager :deep(.n-alert.n-alert--info-type.n-alert--secondary),
+.api-token-manager :deep(.n-alert.n-alert--warning-type.n-alert--secondary) {
+  background: rgb(var(--color-light) / 0.52);
+}
+
+.dark .api-token-manager :deep(.n-alert.n-alert--info-type.n-alert--secondary),
+.dark .api-token-manager :deep(.n-alert.n-alert--warning-type.n-alert--secondary) {
+  background: rgb(var(--color-dark) / 0.32);
+}
+
+.api-token-manager :deep(.n-input .n-input-wrapper),
+.api-token-manager :deep(.n-base-selection) {
+  border-radius: 0.75rem !important;
+  border-color: rgb(var(--color-dark) / 0.18) !important;
+  background: rgb(var(--color-light) / 0.62) !important;
+}
+
+.dark .api-token-manager :deep(.n-input .n-input-wrapper),
+.dark .api-token-manager :deep(.n-base-selection) {
+  border-color: rgb(var(--color-light) / 0.18) !important;
+  background: rgb(var(--color-dark) / 0.36) !important;
+}
+
+.api-token-manager :deep(.n-base-selection .n-base-selection-label) {
+  border-radius: 0.75rem !important;
+  background: transparent !important;
+}
+
+.api-token-manager :deep(.n-code) {
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--color-dark) / 0.12);
+  background: rgb(var(--color-light) / 0.62);
+}
+
+.dark .api-token-manager :deep(.n-code) {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.36);
+}
+
+.api-token-manager :deep(.n-empty) {
+  border-radius: 0.85rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.45);
+  padding: 1rem;
+}
+
+.dark .api-token-manager :deep(.n-empty) {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.25);
+}
+
+@media (min-width: 960px) {
+  .token-scope-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .token-record__scopes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .token-hero {
+    padding: 1rem;
+  }
+
+  .token-record__date {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .token-panel__action {
+    width: 100%;
+  }
+}
+</style>

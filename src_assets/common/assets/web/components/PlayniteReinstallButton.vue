@@ -68,7 +68,7 @@ const icon = props.icon ?? 'fas fa-plug';
 const confirmTitle = props.confirmTitle ?? 'Install/Update Playnite Extension';
 const confirmMessage =
   props.confirmMessage ??
-  'This will (re)install the Sunshine Playnite extension and restart Playnite if needed. Continue?';
+  'This will (re)install the Vibepollo Playnite extension and restart Playnite if needed. Continue?';
 const cancelText = props.cancelText ?? 'Cancel';
 const continueText = props.continueText ?? 'Continue';
 const size = props.size ?? 'small';

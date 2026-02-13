@@ -48,24 +48,19 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "state_storage.h"
+#include "update.h"
 #ifdef _WIN32
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
 #endif
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "system_tray.h"
-#include "update.h"
-#include "utility.h"
-#include "uuid.h"
-#include "video.h"
+#include "webrtc_stream.h"
 #include "zwpad.h"
-
-#ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
-#endif
 
 using namespace std::literals;
 
@@ -229,10 +224,10 @@ namespace nvhttp {
     std::atomic<bool> virtual_display_cleanup_pending {false};
 
     void cleanup_virtual_display_state() {
-      VDISPLAY::setWatchdogFeedingEnabled(false);
-      VDISPLAY::removeAllVirtualDisplays();
-      display_helper_integration::stop_watchdog();
-      display_helper_integration::revert();
+      const auto cleanup = platf::virtual_display_cleanup::run("cancel", true);
+      if (cleanup.helper_revert_dispatched) {
+        display_helper_integration::stop_watchdog();
+      }
     }
 
     void schedule_virtual_display_cleanup() {
@@ -247,7 +242,7 @@ namespace nvhttp {
         });
         try {
           // If a new session spun up while we were scheduling cleanup, leave displays alone.
-          if (rtsp_stream::session_count() > 0) {
+          if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
             BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
             return;
           }
@@ -2183,6 +2178,22 @@ namespace nvhttp {
 
 #ifdef _WIN32
       prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
+
+      auto virtual_display_teardown_guard = util::fail_guard([&]() {
+        if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+          return;
+        }
+
+        if (!launch_session->virtual_display) {
+          return;
+        }
+
+        BOOST_LOG(info) << "Launch aborted before session start; removing virtual displays.";
+        (void) platf::virtual_display_cleanup::run(
+          "launch_aborted",
+          config::video.dd.config_revert_on_disconnect
+        );
+      });
 #endif
 
       // The display should be restored in case something fails as there are no other sessions.
@@ -2357,11 +2368,13 @@ namespace nvhttp {
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
       rtsp_stream::launch_session_raise(launch_session);
+#ifdef _WIN32
+      virtual_display_teardown_guard.disable();
+#endif
       revert_display_configuration = false;
       output_override_guard.disable();
       runtime_overrides_guard.disable();
     }
-
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -2447,6 +2460,22 @@ namespace nvhttp {
 
 #ifdef _WIN32
     prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
+
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+        return;
+      }
+
+      if (!launch_session->virtual_display) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Resume aborted before session start; removing virtual displays.";
+      (void) platf::virtual_display_cleanup::run(
+        "resume_aborted",
+        config::video.dd.config_revert_on_disconnect
+      );
+    });
 #endif
 
     if (no_active_sessions) {
@@ -2558,6 +2587,11 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
+#ifdef _WIN32
+    virtual_display_teardown_guard.disable();
+#endif
+    output_override_guard.disable();
+    revert_display_configuration = false;
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_client_connected(named_cert_p->name);

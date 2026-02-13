@@ -126,6 +126,7 @@ namespace VibepolloInstaller {
     private readonly InstallerRunner.InstalledProductInfo _installedProduct;
     private readonly InstallerRunner.InstalledProductInfo _legacySunshineProduct;
     private readonly InstallerRunner.LegacySunshineRegistration _legacySunshineRegistration;
+    private readonly InstallerRunner.LegacySunshineRegistration _legacyApolloRegistration;
     private readonly InstallerRunner.PayloadMsiInfo _payloadMsiInfo;
     private readonly string _licenseText;
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
@@ -145,6 +146,7 @@ namespace VibepolloInstaller {
       _installedProduct = InstallerRunner.GetInstalledVibepolloProduct();
       _legacySunshineProduct = InstallerRunner.GetInstalledSunshineProduct();
       _legacySunshineRegistration = InstallerRunner.GetLegacySunshineRegistration();
+      _legacyApolloRegistration = InstallerRunner.GetLegacyApolloRegistration();
       _uninstallUiRequested = BuildFlavor.IsUninstallOnly || arguments.UninstallUiRequested;
       var showInstallOptions = !BuildFlavor.IsUninstallOnly && _installedProduct == null;
       var displayVersion = GetTargetVersionText();
@@ -963,6 +965,19 @@ namespace VibepolloInstaller {
         }
       }
 
+      if (_legacyApolloRegistration != null) {
+        var proceed = await ShowOverlayConfirmAsync(
+          "Legacy Apollo detected",
+          BuildLegacyApolloMigrationWarning(),
+          "Uninstall Apollo",
+          "Cancel",
+          false);
+        if (!proceed) {
+          SetStatus("Install canceled.", "No changes were made.", _statusNormalBrush);
+          return;
+        }
+      }
+
       if (_legacySunshineProduct != null || _legacySunshineRegistration != null) {
         var proceedWithRemoval = await ShowOverlayConfirmAsync(
           "Sunshine detected",
@@ -1177,9 +1192,9 @@ namespace VibepolloInstaller {
         : string.Empty;
 
       return "Vibeshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibepollo does not carry over Vibeshine settings.\n"
+        + "Vibeshine does not carry over Vibeshine settings.\n"
         + "If you intend to stay in the Sunshine ecosystem, Vibeshine is recommended instead.\n\n"
-        + "If this is intentional, continue with Vibepollo.\n"
+        + "If this is intentional, continue with Vibeshine.\n"
         + "Continuing will uninstall Vibeshine before installation.";
     }
 
@@ -1189,7 +1204,7 @@ namespace VibepolloInstaller {
         : string.Empty;
 
       return "Apollo" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibepollo replaces Apollo and cannot be installed while Apollo is installed.\n"
+        + "Vibeshine replaces Apollo and cannot be installed while Apollo is installed.\n"
         + "Continuing will uninstall Apollo before installation.\n\n"
         + "Click Uninstall Apollo to proceed.";
     }
@@ -1203,9 +1218,21 @@ namespace VibepolloInstaller {
       }
 
       return "Sunshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibepollo replaces Sunshine and will automatically uninstall Sunshine first, then install Vibepollo.\n"
+        + "Vibeshine replaces Sunshine and will automatically uninstall Sunshine first, then install Vibeshine.\n"
         + "No settings will be lost during this migration.\n\n"
         + "Click Uninstall Sunshine to proceed.";
+    }
+
+    private string BuildLegacyApolloMigrationWarning() {
+      var versionSuffix = string.Empty;
+      if (_legacyApolloRegistration != null && !string.IsNullOrWhiteSpace(_legacyApolloRegistration.DisplayVersion)) {
+        versionSuffix = " (v" + _legacyApolloRegistration.DisplayVersion + ")";
+      }
+
+      return "Legacy Apollo" + versionSuffix + " was detected on this PC.\n\n"
+        + "Vibeshine replaces legacy Apollo and will automatically uninstall it first, then install Vibeshine.\n"
+        + "No settings will be carried over.\n\n"
+        + "Click Uninstall Apollo to proceed.";
     }
 
     private enum InstallActionKind {
@@ -2145,8 +2172,25 @@ namespace VibepolloInstaller {
     }
 
     public static List<InstalledProductInfo> GetInstalledApolloFamilyProducts() {
-      return GetInstalledProducts(true)
+      var products = GetInstalledProducts(true)
         .Where(product => product.Kind == InstalledProductKind.Apollo || product.Kind == InstalledProductKind.Vibepollo)
+        .ToList();
+
+      var existingKinds = new HashSet<InstalledProductKind>(products.Select(product => product.Kind));
+      foreach (var detectedKind in GetApolloFamilyKindsFromUninstallRegistry()) {
+        if (existingKinds.Contains(detectedKind)) {
+          continue;
+        }
+
+        products.Add(new InstalledProductInfo {
+          ProductCode = detectedKind.ToString(),
+          DisplayName = detectedKind == InstalledProductKind.Apollo ? "Apollo" : "Vibepollo",
+          Version = null,
+          Kind = detectedKind
+        });
+      }
+
+      return products
         .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
         .ToList();
     }
@@ -2204,6 +2248,64 @@ namespace VibepolloInstaller {
 
             return new LegacySunshineRegistration {
               DisplayName = displayName ?? "Sunshine",
+              DisplayVersion = Convert.ToString(key.GetValue("DisplayVersion")) ?? string.Empty,
+              UninstallString = uninstallString ?? string.Empty,
+              QuietUninstallString = quietUninstallString ?? string.Empty,
+              RegistryPath = uninstallRoot
+            };
+          }
+        }
+      }
+
+      return null;
+    }
+
+    public static LegacySunshineRegistration GetLegacyApolloRegistration() {
+      var roots = new[] {
+        Registry.LocalMachine,
+        Registry.CurrentUser
+      };
+
+      var uninstallRoots = new[] {
+        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Apollo",
+        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Apollo"
+      };
+
+      foreach (var root in roots) {
+        foreach (var uninstallRoot in uninstallRoots) {
+          using (var key = root.OpenSubKey(uninstallRoot)) {
+            if (key == null) {
+              continue;
+            }
+
+            var displayName = Convert.ToString(key.GetValue("DisplayName"));
+            if (!string.IsNullOrWhiteSpace(displayName) &&
+                !displayName.StartsWith("Apollo", StringComparison.OrdinalIgnoreCase)) {
+              continue;
+            }
+
+            var uninstallString = Convert.ToString(key.GetValue("UninstallString"));
+            var quietUninstallString = Convert.ToString(key.GetValue("QuietUninstallString"));
+            if (string.IsNullOrWhiteSpace(uninstallString) && string.IsNullOrWhiteSpace(quietUninstallString)) {
+              continue;
+            }
+
+            var commandForValidation = string.IsNullOrWhiteSpace(quietUninstallString)
+              ? uninstallString
+              : quietUninstallString;
+            string executablePath;
+            string uninstallArguments;
+            if (!TrySplitExecutableAndArguments(commandForValidation, out executablePath, out uninstallArguments)) {
+              continue;
+            }
+
+            var looksLikePath = executablePath.IndexOf('\\') >= 0 || executablePath.IndexOf('/') >= 0;
+            if (looksLikePath && !File.Exists(executablePath)) {
+              continue;
+            }
+
+            return new LegacySunshineRegistration {
+              DisplayName = displayName ?? "Apollo",
               DisplayVersion = Convert.ToString(key.GetValue("DisplayVersion")) ?? string.Empty,
               UninstallString = uninstallString ?? string.Empty,
               QuietUninstallString = quietUninstallString ?? string.Empty,
@@ -2362,6 +2464,48 @@ namespace VibepolloInstaller {
       }
 
       return null;
+    }
+
+    private static IEnumerable<InstalledProductKind> GetApolloFamilyKindsFromUninstallRegistry() {
+      var detectedKinds = new HashSet<InstalledProductKind>();
+      var uninstallRoots = new[] {
+        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+      };
+      var hives = new[] {
+        Registry.LocalMachine,
+        Registry.CurrentUser
+      };
+
+      foreach (var hive in hives) {
+        foreach (var uninstallRoot in uninstallRoots) {
+          using (var rootKey = hive.OpenSubKey(uninstallRoot)) {
+            if (rootKey == null) {
+              continue;
+            }
+
+            foreach (var subKeyName in rootKey.GetSubKeyNames()) {
+              if (string.IsNullOrWhiteSpace(subKeyName)) {
+                continue;
+              }
+
+              using (var productKey = rootKey.OpenSubKey(subKeyName)) {
+                if (productKey == null) {
+                  continue;
+                }
+
+                var displayName = Convert.ToString(productKey.GetValue("DisplayName"));
+                var kind = GetInstalledProductKind(displayName);
+                if (kind == InstalledProductKind.Apollo || kind == InstalledProductKind.Vibepollo) {
+                  detectedKinds.Add(kind);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return detectedKinds;
     }
 
     private const uint MsiErrorSuccess = 0;
@@ -2650,6 +2794,120 @@ namespace VibepolloInstaller {
       return GetLegacySunshineRegistration() == null;
     }
 
+    private static InstallerResult UninstallLegacyApolloRegistration() {
+      var legacyRegistration = GetLegacyApolloRegistration();
+      if (legacyRegistration == null) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 0,
+          Message = "No legacy Apollo installation was found."
+        };
+      }
+
+      var uninstallCommand = string.IsNullOrWhiteSpace(legacyRegistration.QuietUninstallString)
+        ? legacyRegistration.UninstallString
+        : legacyRegistration.QuietUninstallString;
+      if (string.IsNullOrWhiteSpace(uninstallCommand)) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 1603,
+          Message = "Legacy Apollo was detected, but no uninstall command was found."
+        };
+      }
+
+      string executablePath;
+      string uninstallArguments;
+      if (!TrySplitExecutableAndArguments(uninstallCommand, out executablePath, out uninstallArguments)) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 1603,
+          Message = "Legacy Apollo was detected, but the uninstall command could not be parsed."
+        };
+      }
+
+      var looksLikePath = executablePath.IndexOf('\\') >= 0 || executablePath.IndexOf('/') >= 0;
+      if (looksLikePath && !File.Exists(executablePath)) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 0,
+          Message = "Legacy Apollo uninstall entry is stale; continuing with Vibeshine installation."
+        };
+      }
+
+      if (string.IsNullOrWhiteSpace(legacyRegistration.QuietUninstallString) &&
+          !IsMsiexecExecutable(executablePath) &&
+          !HasQuietUninstallSwitch(uninstallArguments)) {
+        uninstallArguments = string.IsNullOrWhiteSpace(uninstallArguments)
+          ? "/S"
+          : uninstallArguments + " /S";
+      }
+
+      int exitCode;
+      try {
+        var startInfo = new ProcessStartInfo {
+          FileName = executablePath,
+          Arguments = uninstallArguments ?? string.Empty,
+          UseShellExecute = false,
+          CreateNoWindow = true,
+          WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+        };
+
+        using (var process = Process.Start(startInfo)) {
+          if (process == null) {
+            return new InstallerResult {
+              Operation = InstallerOperation.Uninstall,
+              ExitCode = 1603,
+              Message = "Legacy Apollo uninstall could not be started."
+            };
+          }
+
+          process.WaitForExit();
+          exitCode = process.ExitCode;
+        }
+      } catch (Exception ex) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 1603,
+          Message = "Legacy Apollo uninstall failed to launch: " + ex.Message
+        };
+      }
+
+      if (exitCode != 0 && exitCode != 3010) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = exitCode,
+          Message = BuildResultMessage("Uninstall", exitCode, string.Empty)
+        };
+      }
+
+      if (!WaitForLegacyApolloRemoval(120)) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 1603,
+          Message = "Legacy Apollo is still installed. Please uninstall Apollo completely, then run the installer again."
+        };
+      }
+
+      return new InstallerResult {
+        Operation = InstallerOperation.Uninstall,
+        ExitCode = exitCode,
+        Message = BuildResultMessage("Uninstall", exitCode, string.Empty)
+      };
+    }
+
+    private static bool WaitForLegacyApolloRemoval(int timeoutSeconds) {
+      var timeout = timeoutSeconds <= 0 ? 1 : timeoutSeconds;
+      var deadline = DateTime.UtcNow.AddSeconds(timeout);
+      while (DateTime.UtcNow < deadline) {
+        if (GetLegacyApolloRegistration() == null) {
+          return true;
+        }
+        System.Threading.Thread.Sleep(1000);
+      }
+
+      return GetLegacyApolloRegistration() == null;
+    }
+
     private static bool TrySplitExecutableAndArguments(string commandLine, out string executablePath, out string arguments) {
       executablePath = string.Empty;
       arguments = string.Empty;
@@ -2687,29 +2945,31 @@ namespace VibepolloInstaller {
       return executablePath.Length > 0;
     }
 
-    private static bool HasQuietUninstallSwitch(string arguments) {
-      if (string.IsNullOrWhiteSpace(arguments)) {
-        return false;
-      }
-
-      var tokens = arguments
-        .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
-        .Select(token => token.Trim());
-      return tokens.Any(token =>
-        string.Equals(token, "/S", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/SILENT", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/VERYSILENT", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/QUIET", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(token, "/QN", StringComparison.OrdinalIgnoreCase));
-    }
-
     private static bool IsMsiexecExecutable(string executablePath) {
       if (string.IsNullOrWhiteSpace(executablePath)) {
         return false;
       }
 
-      var name = Path.GetFileNameWithoutExtension(executablePath.Trim());
-      return string.Equals(name, "msiexec", StringComparison.OrdinalIgnoreCase);
+      var fileName = Path.GetFileName(executablePath).ToLowerInvariant();
+      return fileName == "msiexec.exe";
+    }
+
+    private static bool HasQuietUninstallSwitch(string uninstallArguments) {
+      if (string.IsNullOrWhiteSpace(uninstallArguments)) {
+        return false;
+      }
+
+      var tokens = uninstallArguments
+        .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(token => token.Trim('"', '\''))
+        .ToArray();
+      return tokens.Any(token =>
+        token.Equals("/quiet", StringComparison.OrdinalIgnoreCase) ||
+        token.Equals("/qn", StringComparison.OrdinalIgnoreCase) ||
+        token.Equals("/qb", StringComparison.OrdinalIgnoreCase) ||
+        token.Equals("/passive", StringComparison.OrdinalIgnoreCase) ||
+        token.Equals("/s", StringComparison.OrdinalIgnoreCase) ||
+        token.Equals("/silent", StringComparison.OrdinalIgnoreCase));
     }
 
     public static InstallerResult RunInteractiveUninstall(
@@ -2807,7 +3067,8 @@ namespace VibepolloInstaller {
       var hasMsiMigrationTarget = GetInstalledProducts(true)
         .Any(product => migrationKinds.Contains(product.Kind));
       var hasLegacySunshineRegistration = GetLegacySunshineRegistration() != null;
-      if (!hasMsiMigrationTarget && !hasLegacySunshineRegistration) {
+      var hasLegacyApolloRegistration = GetLegacyApolloRegistration() != null;
+      if (!hasMsiMigrationTarget && !hasLegacySunshineRegistration && !hasLegacyApolloRegistration) {
         return new InstallerResult {
           Operation = InstallerOperation.Uninstall,
           ExitCode = 0,
@@ -2852,6 +3113,19 @@ namespace VibepolloInstaller {
           cleanupLogPath = legacySunshineRegistrationResult.LogPath;
         }
         if (legacySunshineRegistrationResult.ExitCode == 3010) {
+          restartRequired = true;
+        }
+      }
+
+      if (hasLegacyApolloRegistration) {
+        var legacyApolloRegistrationResult = UninstallLegacyApolloRegistration();
+        if (legacyApolloRegistrationResult.ExitCode != 0 && legacyApolloRegistrationResult.ExitCode != 3010) {
+          return legacyApolloRegistrationResult;
+        }
+        if (!string.IsNullOrWhiteSpace(legacyApolloRegistrationResult.LogPath)) {
+          cleanupLogPath = legacyApolloRegistrationResult.LogPath;
+        }
+        if (legacyApolloRegistrationResult.ExitCode == 3010) {
           restartRequired = true;
         }
       }
