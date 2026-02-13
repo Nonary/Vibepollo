@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-8 px-2 md:px-4">
+  <div class="dashboard-page space-y-8 px-2 md:px-4">
     <!-- Hero / Intro -->
     <section
       class="rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-surface/70 backdrop-blur p-5 md:p-6 shadow-sm"
@@ -831,4 +831,34 @@ async function onPlayniteReinstallDone(res: { ok: boolean; error?: string }) {
 }
 </script>
 
-<style scoped></style>
+<style scoped>
+.dashboard-page :deep(.n-card) {
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.8);
+  backdrop-filter: blur(6px);
+}
+
+.dark .dashboard-page :deep(.n-card) {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+.dashboard-page :deep(.n-card .n-card__header),
+.dashboard-page :deep(.n-card .n-card-header),
+.dashboard-page :deep(.n-card .n-card__footer),
+.dashboard-page :deep(.n-card .n-card-footer) {
+  border-radius: 0.95rem;
+}
+
+.dashboard-page :deep(.n-alert),
+.dashboard-page :deep(.n-empty),
+.dashboard-page :deep(.n-input .n-input-wrapper),
+.dashboard-page :deep(.n-base-selection),
+.dashboard-page :deep(.n-base-selection .n-base-selection-label),
+.dashboard-page :deep(.n-data-table-wrapper),
+.dashboard-page :deep(.n-table-wrapper) {
+  border-radius: 0.8rem !important;
+}
+</style>

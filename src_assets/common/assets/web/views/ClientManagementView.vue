@@ -1,5 +1,5 @@
 <template>
-  <div class="px-4 pb-10 space-y-10">
+  <div class="clients-page px-4 pb-10 space-y-10">
     <h1 class="text-2xl font-semibold my-6 flex items-center gap-3 text-brand">
       <i class="fas fa-users-cog" /> {{ $t('clients.title') }}
     </h1>
@@ -1294,4 +1294,34 @@ onBeforeUnmount(() => {
 });
 </script>
 
-<style scoped></style>
+<style scoped>
+.clients-page :deep(.n-card) {
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.8);
+  backdrop-filter: blur(6px);
+}
+
+.dark .clients-page :deep(.n-card) {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+.clients-page :deep(.n-card .n-card__header),
+.clients-page :deep(.n-card .n-card-header),
+.clients-page :deep(.n-card .n-card__footer),
+.clients-page :deep(.n-card .n-card-footer) {
+  border-radius: 0.95rem;
+}
+
+.clients-page :deep(.n-alert),
+.clients-page :deep(.n-empty),
+.clients-page :deep(.n-input .n-input-wrapper),
+.clients-page :deep(.n-base-selection),
+.clients-page :deep(.n-base-selection .n-base-selection-label),
+.clients-page :deep(.n-data-table-wrapper),
+.clients-page :deep(.n-table-wrapper) {
+  border-radius: 0.8rem !important;
+}
+</style>
