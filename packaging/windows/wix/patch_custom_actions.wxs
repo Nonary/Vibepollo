@@ -13,6 +13,7 @@
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
+    <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Feature Id="VibeshineExtras" Title="Vibeshine Components" Level="1" Absent="disallow">
       <ComponentRef Id="CtlStopSunshine"/>
@@ -26,7 +27,7 @@
 
     <InstallExecuteSequence>
       <!-- Remove conflicting products before installation starts. -->
-      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE</Custom>
+      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
       <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
       <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>

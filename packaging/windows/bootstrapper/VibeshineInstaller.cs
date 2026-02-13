@@ -1167,7 +1167,7 @@ namespace VibeshineInstaller {
           + "Vibeshine does not carry over Apollo/Vibepollo settings.\n"
           + "If you intend to stay in the Apollo ecosystem, Vibepollo is recommended instead.\n\n"
           + "If this is intentional, continue with Vibeshine.\n"
-          + "Continuing will let MSI uninstall Apollo and Vibepollo before installation.";
+          + "Continuing will uninstall Apollo and Vibepollo before MSI installation starts.";
       }
 
       if (hasApollo) {
@@ -1175,13 +1175,13 @@ namespace VibeshineInstaller {
           + "Vibeshine does not carry over Apollo settings.\n"
           + "If you intend to stay in the Apollo ecosystem, Vibepollo is recommended instead.\n\n"
           + "If this is intentional, continue with Vibeshine.\n"
-          + "Continuing will let MSI uninstall Apollo before installation.";
+          + "Continuing will uninstall Apollo before MSI installation starts.";
       }
 
       return "Vibepollo was detected on this PC.\n\n"
         + "Vibeshine does not carry over Vibepollo settings.\n"
         + "If this is intentional, continue with Vibeshine.\n"
-        + "Continuing will let MSI uninstall Vibepollo before installation.";
+        + "Continuing will uninstall Vibepollo before MSI installation starts.";
     }
 
     private string BuildLegacySunshineMigrationWarning() {
@@ -1193,7 +1193,7 @@ namespace VibeshineInstaller {
       }
 
       return "Legacy Sunshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine replaces Sunshine. MSI will automatically uninstall Sunshine first, then install Vibeshine.\n"
+        + "Vibeshine replaces Sunshine. The bootstrapper will uninstall Sunshine first, then start MSI installation.\n"
         + "No settings will be lost during this migration.\n\n"
         + "Click Continue to proceed.";
     }
@@ -2495,6 +2495,24 @@ namespace VibeshineInstaller {
         return RunElevatedBootstrapperInstall(arguments, installDirectory, installVirtualDisplayDriver, saveInstallLogs);
       }
 
+      var uninstallCompetingProductsResult = UninstallInstalledProducts(
+        "install_remove_competing",
+        true,
+        false,
+        false,
+        false,
+        false,
+        new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+      var competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
+      if (!uninstallCompetingProductsResult.Succeeded) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Install,
+          ExitCode = uninstallCompetingProductsResult.ExitCode,
+          Message = BuildCompetingProductUninstallFailureMessage(uninstallCompetingProductsResult.Message),
+          LogPath = uninstallCompetingProductsResult.LogPath
+        };
+      }
+
       var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
       var logPath = BuildLogPath("install");
       var args = new List<string> {
@@ -2506,11 +2524,15 @@ namespace VibeshineInstaller {
         logPath,
         CreatePropertyArgument("INSTALL_ROOT", installDirectory),
         "INSTALL_SUDOVDA=" + (installVirtualDisplayDriver ? "1" : "0"),
+        "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
       };
 
       var exitCode = RunMsiexec(args, true, false);
+      if (exitCode == 0 && competingProductsRequireRestart) {
+        exitCode = 3010;
+      }
       var componentFailures = new List<string>();
       var savedLogPath = string.Empty;
       var saveLogsWarning = string.Empty;
@@ -2643,13 +2665,49 @@ namespace VibeshineInstaller {
         cliArgs.Add(logPath);
       }
 
+      var uninstallCompetingProducts = ShouldPreUninstallCompetingProducts(cliArgs);
+      var competingProductsRequireRestart = false;
+      if (uninstallCompetingProducts) {
+        var uninstallCompetingProductsResult = UninstallInstalledProducts(
+          "cli_remove_competing",
+          arguments.IsCliQuietMode(),
+          true,
+          false,
+          false,
+          false,
+          new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+        if (!uninstallCompetingProductsResult.Succeeded) {
+          return new InstallerResult {
+            Operation = InstallerOperation.Install,
+            ExitCode = uninstallCompetingProductsResult.ExitCode,
+            Message = BuildCompetingProductUninstallFailureMessage(uninstallCompetingProductsResult.Message),
+            LogPath = uninstallCompetingProductsResult.LogPath
+          };
+        }
+        competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
+      }
+      if (uninstallCompetingProducts && !HasProperty(cliArgs, "SKIP_REMOVE_CONFLICTING_PRODUCTS")) {
+        cliArgs.Add("SKIP_REMOVE_CONFLICTING_PRODUCTS=1");
+      }
+
       var exitCode = RunMsiexec(cliArgs, arguments.IsCliQuietMode(), true);
+      if (exitCode == 0 && competingProductsRequireRestart) {
+        exitCode = 3010;
+      }
       return new InstallerResult {
         Operation = InstallerOperation.Install,
         ExitCode = exitCode,
         Message = BuildResultMessage("CLI operation", exitCode, logPath),
         LogPath = logPath
       };
+    }
+
+    private static string BuildCompetingProductUninstallFailureMessage(string uninstallMessage) {
+      var prefix = "Failed to uninstall Apollo, Vibepollo, or Sunshine before starting Vibeshine installation.";
+      if (string.IsNullOrWhiteSpace(uninstallMessage)) {
+        return prefix;
+      }
+      return prefix + " " + uninstallMessage;
     }
 
     private static InstallerResult UninstallInstalledProducts(
@@ -2855,6 +2913,17 @@ namespace VibeshineInstaller {
       return args.Any(arg =>
         arg.StartsWith("/l", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(arg, "/log", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ShouldPreUninstallCompetingProducts(List<string> args) {
+      var operation = args.FirstOrDefault(IsOperationSwitch);
+      if (string.IsNullOrWhiteSpace(operation)) {
+        return false;
+      }
+
+      return string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/a", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildLogPath(string phase) {
