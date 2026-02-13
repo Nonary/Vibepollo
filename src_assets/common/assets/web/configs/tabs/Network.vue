@@ -92,7 +92,7 @@ const encryptionModeOptionsWan = [
           {{ $t('config.port_alert_2') }}
         </div>
       </div>
-      <!-- Create a port table for the various ports needed by Sunshine -->
+      <!-- Create a port table for the various ports needed by Vibeshine -->
       <div class="mt-4 grid grid-cols-12 gap-2 text-sm">
         <div class="col-span-4 font-semibold">
           {{ $t('config.port_protocol') }}

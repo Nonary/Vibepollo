@@ -107,14 +107,14 @@ function removeCmd(index: number) {
       <div class="form-text">{{ $t('config.locale_desc') }}</div>
     </div>
 
-    <!-- Sunshine Name -->
+    <!-- Vibeshine Name -->
     <div class="mb-6">
       <label for="sunshine_name" class="form-label">{{ $t('config.sunshine_name') }}</label>
       <n-input
         id="sunshine_name"
         v-model:value="config.sunshine_name"
         type="text"
-        placeholder="Sunshine"
+        placeholder="Vibeshine"
       />
       <div class="text-[11px] opacity-60 mt-1">
         {{ $t('config.sunshine_name_desc') }}

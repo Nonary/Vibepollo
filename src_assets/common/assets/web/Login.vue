@@ -5,7 +5,7 @@
     <n-card class="w-full max-w-md" :bordered="false">
       <n-space vertical size="large" class="w-full">
         <n-space vertical align="center" size="small">
-          <n-image src="/images/logo-sunshine-45.png" width="45" preview-disabled alt="Sunshine" />
+          <n-image src="/images/logo-sunshine-45.png" width="45" preview-disabled alt="Vibeshine" />
           <n-h2>{{ $t('auth.login_title') }}</n-h2>
         </n-space>
 
@@ -111,7 +111,7 @@ function redirectNowIfAuthenticated() {
 }
 
 onMounted(() => {
-  document.title = `Sunshine - ${t('auth.login_title')}`;
+  document.title = `Vibeshine - ${t('auth.login_title')}`;
   const urlParams = new URLSearchParams(window.location.search);
   const redirectParam = urlParams.get('redirect');
   if (redirectParam) {

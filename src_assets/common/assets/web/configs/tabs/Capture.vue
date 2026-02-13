@@ -225,7 +225,7 @@ const losslessStatusHint = computed(() => {
   if (losslessDetected.value) {
     return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
   }
-  return 'Sunshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
+  return 'Vibeshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
 });
 
 async function refreshLosslessStatus() {
@@ -557,7 +557,7 @@ const prefer10BitSdr = computed<boolean>({
     >
       <div class="space-y-4">
         <n-alert type="info" size="small" v-if="!losslessCandidates.length">
-          Sunshine searched common Steam and program directories but could not locate
+          Vibeshine searched common Steam and program directories but could not locate
           LosslessScaling.exe. Install Lossless Scaling from Steam or set the full path manually.
         </n-alert>
         <div v-else class="space-y-2">

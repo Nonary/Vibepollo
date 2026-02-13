@@ -490,7 +490,7 @@ function clearSnapshotHotkey(): void {
             <div class="px-0 text-sm font-medium">Save a display snapshot (improves stability)</div>
             <p class="text-[11px] opacity-60 mt-1">
               {{ $t('troubleshooting.dd_golden_help') }}
-              Saving a snapshot of your ideal monitor setup helps Sunshine recover when Windows
+              Saving a snapshot of your ideal monitor setup helps Vibeshine recover when Windows
               fails to restore displays after streaming.
             </p>
 

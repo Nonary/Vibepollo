@@ -64,7 +64,7 @@
             />
           </div>
           <p class="text-[11px] opacity-60">
-            Sunshine waits for this process. When it closes, the stream ends.
+            Vibeshine waits for this process. When it closes, the stream ends.
           </p>
         </section>
 
@@ -115,7 +115,7 @@
                     placeholder="Command to execute before the stream"
                   />
                   <p class="text-[11px] opacity-60">
-                    Runs before the primary command. Sunshine continues even if this command exits.
+                    Runs before the primary command. Vibeshine continues even if this command exits.
                   </p>
                 </div>
               </div>
@@ -150,7 +150,7 @@
           <i class="fas fa-image" /> Find Cover
         </n-button>
       </div>
-      <p class="text-[11px] opacity-60">Optional; stored only and not fetched by Sunshine.</p>
+      <p class="text-[11px] opacity-60">Optional; stored only and not fetched by Vibeshine.</p>
     </div>
   </div>
 </template>
