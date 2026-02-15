@@ -174,6 +174,9 @@ namespace platf::dxgi {
     BOOST_LOG(info) << "Desktop format ["sv << display->dxgi_format_to_string(dup_desc.ModeDesc.Format) << ']';
 
     display->display_refresh_rate = dup_desc.ModeDesc.RefreshRate;
+    if (display->display_refresh_rate.Denominator == 0) {
+      display->display_refresh_rate.Denominator = 1;
+    }
     double display_refresh_rate_decimal = (double) display->display_refresh_rate.Numerator / display->display_refresh_rate.Denominator;
     BOOST_LOG(info) << "Display refresh rate [" << display_refresh_rate_decimal << "Hz]";
     if (display->client_frame_rate_strict.Numerator > 0) {
@@ -282,12 +285,14 @@ namespace platf::dxgi {
         return client_frame_rate_strict;
       }
       // Adjust capture frame interval when display refresh rate is not integral but very close to requested fps.
-      if (display_refresh_rate.Denominator > 1) {
+      if (display_refresh_rate.Denominator > 1 && client_frame_rate > 0 && display_refresh_rate_rounded > 0) {
         DXGI_RATIONAL candidate = display_refresh_rate;
-        if (client_frame_rate % display_refresh_rate_rounded == 0) {
-          candidate.Numerator *= client_frame_rate / display_refresh_rate_rounded;
-        } else if (display_refresh_rate_rounded % client_frame_rate == 0) {
-          candidate.Denominator *= display_refresh_rate_rounded / client_frame_rate;
+        auto safe_mod = [](int a, int b) -> int { return b > 0 ? a % b : -1; };
+        auto safe_div = [](int a, int b) -> int { return b > 0 ? a / b : 0; };
+        if (safe_mod(client_frame_rate, display_refresh_rate_rounded) == 0) {
+          candidate.Numerator *= safe_div(client_frame_rate, display_refresh_rate_rounded);
+        } else if (safe_mod(display_refresh_rate_rounded, client_frame_rate) == 0) {
+          candidate.Denominator *= safe_div(display_refresh_rate_rounded, client_frame_rate);
         }
         double candidate_rate = (double) candidate.Numerator / candidate.Denominator;
         // Can only decrease requested fps, otherwise client may start accumulating frames and suffer increased latency.
@@ -328,30 +333,35 @@ namespace platf::dxgi {
 
       // Try to continue frame pacing group, snapshot() is called with zero timeout after waiting for client frame interval
       if (frame_pacing_group_start) {
-        const uint32_t seconds = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
-        const uint32_t remainder = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
-        const auto sleep_target = *frame_pacing_group_start +
-                                  std::chrono::nanoseconds(1s) * seconds +
-                                  std::chrono::nanoseconds(1s) * remainder / client_frame_rate_adjusted.Numerator;
-        const auto sleep_period = sleep_target - std::chrono::steady_clock::now();
-
-        if (sleep_period <= 0ns) {
-          // We missed next frame time, invalidating current frame pacing group
+        if (client_frame_rate_adjusted.Numerator == 0) {
           frame_pacing_group_start = std::nullopt;
           frame_pacing_group_frames = 0;
-          status = capture_e::timeout;
         } else {
-          timer->sleep_for(sleep_period);
-          sleep_overshoot_logger.first_point(sleep_target);
-          sleep_overshoot_logger.second_point_now_and_log();
+          const uint32_t seconds = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
+          const uint32_t remainder = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
+          const auto sleep_target = *frame_pacing_group_start +
+                                    std::chrono::nanoseconds(1s) * seconds +
+                                    std::chrono::nanoseconds(1s) * remainder / client_frame_rate_adjusted.Numerator;
+          const auto sleep_period = sleep_target - std::chrono::steady_clock::now();
 
-          status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
-
-          if (status == capture_e::ok && img_out) {
-            frame_pacing_group_frames += 1;
-          } else {
+          if (sleep_period <= 0ns) {
+            // We missed next frame time, invalidating current frame pacing group
             frame_pacing_group_start = std::nullopt;
             frame_pacing_group_frames = 0;
+            status = capture_e::timeout;
+          } else {
+            timer->sleep_for(sleep_period);
+            sleep_overshoot_logger.first_point(sleep_target);
+            sleep_overshoot_logger.second_point_now_and_log();
+
+            status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
+
+            if (status == capture_e::ok && img_out) {
+              frame_pacing_group_frames += 1;
+            } else {
+              frame_pacing_group_start = std::nullopt;
+              frame_pacing_group_frames = 0;
+            }
           }
         }
       }
