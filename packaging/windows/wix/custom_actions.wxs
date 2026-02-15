@@ -109,9 +109,6 @@
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
-    <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
-    <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="RemoveConflictingProducts" BinaryKey="RemoveConflictingProductsVbs" VBScriptCall="RemoveConflictingProducts" Execute="deferred" Return="check" />
@@ -140,11 +137,6 @@
     <CustomAction Id="SetInstallSudovda"
                  Property="InstallSudovda"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
-
-    <!-- Immediate setter for pruning installed web assets directory before file copy -->
-    <CustomAction Id="SetPruneWebDir"
-                 Property="PruneWebDir"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$p='[INSTALL_ROOT]assets\web'; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }&quot;"/>
 
 
     <!-- Guard NV prefs restore on uninstall: only run if sunshine.exe still exists -->

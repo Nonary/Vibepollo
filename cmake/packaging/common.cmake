@@ -33,7 +33,8 @@ endforeach()
 
 # install built vite assets
 install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}")
+        DESTINATION "${SUNSHINE_ASSETS_DIR}"
+        COMPONENT assets)
 
 # platform specific packaging
 if(WIN32)

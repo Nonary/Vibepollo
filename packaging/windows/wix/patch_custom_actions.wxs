@@ -29,10 +29,6 @@
       <!-- Remove conflicting products before installation starts. -->
       <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
-      <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
-      <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
-      <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
-
       <!-- Pre-validate stop/kill when UI can't prompt -->
       <Custom Action="SetKillProcsQuietImmediate" Before="InstallValidate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
       <Custom Action="KillProcsQuietImmediate" After="SetKillProcsQuietImmediate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
