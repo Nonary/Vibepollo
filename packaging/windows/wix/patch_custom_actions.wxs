@@ -14,6 +14,7 @@
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
+    <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
@@ -30,11 +31,7 @@
     </Feature>
     <InstallExecuteSequence>
       <!-- Remove conflicting products before installation starts. -->
-      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE</Custom>
-
-      <!-- Prune web assets folder before installing files to avoid stale hashed assets on upgrade/repair -->
-      <Custom Action="SetPruneWebDir" Before="InstallFiles">NOT REMOVE</Custom>
-      <Custom Action="PruneWebDir" After="SetPruneWebDir">NOT REMOVE</Custom>
+      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
       <!-- Pre-validate stop/kill when UI can't prompt -->
       <Custom Action="SetKillProcsQuietImmediate" Before="InstallValidate">(Installed AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>

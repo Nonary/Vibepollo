@@ -1192,9 +1192,9 @@ namespace VibepolloInstaller {
         : string.Empty;
 
       return "Vibeshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine does not carry over Vibeshine settings.\n"
+        + "Vibepollo does not carry over Vibeshine settings.\n"
         + "If you intend to stay in the Sunshine ecosystem, Vibeshine is recommended instead.\n\n"
-        + "If this is intentional, continue with Vibeshine.\n"
+        + "If this is intentional, continue with Vibepollo.\n"
         + "Continuing will uninstall Vibeshine before installation.";
     }
 
@@ -1204,7 +1204,7 @@ namespace VibepolloInstaller {
         : string.Empty;
 
       return "Apollo" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine replaces Apollo and cannot be installed while Apollo is installed.\n"
+        + "Vibepollo replaces Apollo and cannot be installed while Apollo is installed.\n"
         + "Continuing will uninstall Apollo before installation.\n\n"
         + "Click Uninstall Apollo to proceed.";
     }
@@ -1217,8 +1217,8 @@ namespace VibepolloInstaller {
         versionSuffix = " (v" + _legacySunshineRegistration.DisplayVersion + ")";
       }
 
-      return "Sunshine" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine replaces Sunshine and will automatically uninstall Sunshine first, then install Vibeshine.\n"
+      return "Legacy Sunshine" + versionSuffix + " was detected on this PC.\n\n"
+        + "Vibepollo replaces Sunshine. The bootstrapper will uninstall Sunshine first, then start the installation.\n"
         + "No settings will be lost during this migration.\n\n"
         + "Click Uninstall Sunshine to proceed.";
     }
@@ -1230,7 +1230,7 @@ namespace VibepolloInstaller {
       }
 
       return "Legacy Apollo" + versionSuffix + " was detected on this PC.\n\n"
-        + "Vibeshine replaces legacy Apollo and will automatically uninstall it first, then install Vibeshine.\n"
+        + "Vibepollo replaces legacy Apollo and will automatically uninstall it first, then install Vibepollo.\n"
         + "No settings will be carried over.\n\n"
         + "Click Uninstall Apollo to proceed.";
     }
@@ -2604,6 +2604,24 @@ namespace VibepolloInstaller {
         return RunElevatedBootstrapperInstall(arguments, installDirectory, installVirtualDisplayDriver, saveInstallLogs);
       }
 
+      var uninstallCompetingProductsResult = UninstallInstalledProducts(
+        "install_remove_competing",
+        true,
+        false,
+        false,
+        false,
+        false,
+        new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+      var competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
+      if (!uninstallCompetingProductsResult.Succeeded) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Install,
+          ExitCode = uninstallCompetingProductsResult.ExitCode,
+          Message = BuildCompetingProductUninstallFailureMessage(uninstallCompetingProductsResult.Message),
+          LogPath = uninstallCompetingProductsResult.LogPath
+        };
+      }
+
       var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
       var migrationCleanupResult = RunPreinstallMigrationCleanup("preinstall", true, false);
       if (migrationCleanupResult.ExitCode != 0) {
@@ -2625,6 +2643,7 @@ namespace VibepolloInstaller {
         logPath,
         CreatePropertyArgument("INSTALL_ROOT", installDirectory),
         "INSTALL_SUDOVDA=" + (installVirtualDisplayDriver ? "1" : "0"),
+        "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
       };
@@ -2632,6 +2651,9 @@ namespace VibepolloInstaller {
 
       var exitCode = RunMsiexec(args, true, false);
       exitCode = RetryInstallWithSameProductReinstallIfNeeded(exitCode, args, msiPath, true, false);
+      if (exitCode == 0 && competingProductsRequireRestart) {
+        exitCode = 3010;
+      }
       if (exitCode != 0 && exitCode != 3010) {
         TryRecoverServiceStateAfterFailedInstall();
       }
@@ -3037,6 +3059,31 @@ namespace VibepolloInstaller {
         cliArgs.Add(logPath);
       }
 
+      var uninstallCompetingProducts = ShouldPreUninstallCompetingProducts(cliArgs);
+      var competingProductsRequireRestart = false;
+      if (uninstallCompetingProducts) {
+        var uninstallCompetingProductsResult = UninstallInstalledProducts(
+          "cli_remove_competing",
+          arguments.IsCliQuietMode(),
+          true,
+          false,
+          false,
+          false,
+          new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+        if (!uninstallCompetingProductsResult.Succeeded) {
+          return new InstallerResult {
+            Operation = InstallerOperation.Install,
+            ExitCode = uninstallCompetingProductsResult.ExitCode,
+            Message = BuildCompetingProductUninstallFailureMessage(uninstallCompetingProductsResult.Message),
+            LogPath = uninstallCompetingProductsResult.LogPath
+          };
+        }
+        competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
+      }
+      if (uninstallCompetingProducts && !HasProperty(cliArgs, "SKIP_REMOVE_CONFLICTING_PRODUCTS")) {
+        cliArgs.Add("SKIP_REMOVE_CONFLICTING_PRODUCTS=1");
+      }
+
       var exitCode = RunMsiexec(cliArgs, arguments.IsCliQuietMode(), true);
       exitCode = RetryInstallWithSameProductReinstallIfNeeded(
         exitCode,
@@ -3044,6 +3091,9 @@ namespace VibepolloInstaller {
         installMsiPath,
         arguments.IsCliQuietMode(),
         true);
+      if (exitCode == 0 && competingProductsRequireRestart) {
+        exitCode = 3010;
+      }
       if (exitCode != 0 && exitCode != 3010) {
         TryRecoverServiceStateAfterFailedInstall();
       }
@@ -3334,6 +3384,14 @@ namespace VibepolloInstaller {
       } catch {
         return false;
       }
+    }
+
+    private static string BuildCompetingProductUninstallFailureMessage(string uninstallMessage) {
+      var prefix = "Failed to uninstall Apollo, Vibepollo, or Sunshine before starting Vibepollo installation.";
+      if (string.IsNullOrWhiteSpace(uninstallMessage)) {
+        return prefix;
+      }
+      return prefix + " " + uninstallMessage;
     }
 
     private static InstallerResult UninstallInstalledProducts(
@@ -3643,6 +3701,17 @@ namespace VibepolloInstaller {
       return args.Any(arg =>
         arg.StartsWith("/l", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(arg, "/log", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ShouldPreUninstallCompetingProducts(List<string> args) {
+      var operation = args.FirstOrDefault(IsOperationSwitch);
+      if (string.IsNullOrWhiteSpace(operation)) {
+        return false;
+      }
+
+      return string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/a", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildLogPath(string phase) {

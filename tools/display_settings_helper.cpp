@@ -431,6 +431,14 @@ namespace {
         if (primary) {
           snap.m_primary_device = *primary;
         }
+
+        // Origins (monitor positions)
+        for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+          const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+          if (!id.empty() && d.m_info && device_ids.count(id)) {
+            snap.m_origins[id] = d.m_info->m_origin_point;
+          }
+        }
       } catch (...) {
         // best-effort snapshot
       }
@@ -611,6 +619,16 @@ namespace {
       // Primary
       s += ";P:";
       s += snap.m_primary_device;
+      // Origins
+      s += ";O:";
+      for (const auto &ko : snap.m_origins) {
+        s += ko.first;
+        s += "=";
+        s += std::to_string(ko.second.m_x);
+        s += ",";
+        s += std::to_string(ko.second.m_y);
+        s += ";";
+      }
       return s;
     }
 
@@ -717,6 +735,13 @@ namespace {
             ++it;
           }
         }
+        for (auto it = snap.m_origins.begin(); it != snap.m_origins.end();) {
+          if (!valid_device_ids.count(it->first)) {
+            it = snap.m_origins.erase(it);
+          } else {
+            ++it;
+          }
+        }
 
         // Clear primary if it was filtered out
         if (!valid_device_ids.count(snap.m_primary_device)) {
@@ -767,7 +792,15 @@ namespace {
           out += ",";
         }
       }
-      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\"\n}";
+      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\",\n  \"origins\": {";
+      k = 0;
+      for (const auto &ko : snap.m_origins) {
+        out += "\n    \"" + ko.first + "\": { \"x\": " + std::to_string(ko.second.m_x) + ", \"y\": " + std::to_string(ko.second.m_y) + " }";
+        if (++k < snap.m_origins.size()) {
+          out += ",";
+        }
+      }
+      out += "\n  }\n}";
       const auto written = fwrite(out.data(), 1, out.size(), f);
       return written == out.size();
     }
@@ -818,7 +851,15 @@ namespace {
           out += ",";
         }
       }
-      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\"\n}";
+      out += "\n  },\n  \"primary\": \"" + snap.m_primary_device + "\",\n  \"origins\": {";
+      k = 0;
+      for (const auto &ko : snap.m_origins) {
+        out += "\n    \"" + ko.first + "\": { \"x\": " + std::to_string(ko.second.m_x) + ", \"y\": " + std::to_string(ko.second.m_y) + " }";
+        if (++k < snap.m_origins.size()) {
+          out += ",";
+        }
+      }
+      out += "\n  }\n}";
       const auto written = fwrite(out.data(), 1, out.size(), f);
       return written == out.size();
     }
@@ -849,6 +890,8 @@ namespace {
       parse_topology_field(topo_s, snap);
       parse_modes_field(modes_s, snap);
       parse_hdr_field(hdr_s, snap);
+      const auto origins_s = find_str_section(data, "origins");
+      parse_origins_field(origins_s, snap);
 
       // Filter snapshot using current exclusion list and currently enumerated devices.
       // Note: `m_display_name` is only populated for active displays in libdisplaydevice, so
@@ -949,6 +992,13 @@ namespace {
           ++it;
         }
       }
+      for (auto it = snap.m_origins.begin(); it != snap.m_origins.end();) {
+        if (!is_allowed(it->first)) {
+          it = snap.m_origins.erase(it);
+        } else {
+          ++it;
+        }
+      }
       if (!snap.m_primary_device.empty() && !is_allowed(snap.m_primary_device)) {
         snap.m_primary_device.clear();
       }
@@ -980,6 +1030,9 @@ namespace {
         (void) m_dd->setHdrStates(snap.m_hdr_states);
         if (!snap.m_primary_device.empty()) {
           (void) m_dd->setAsPrimary(snap.m_primary_device);
+        }
+        for (const auto &[device_id, point] : snap.m_origins) {
+          (void) m_dd->setDisplayOrigin(device_id, point);
         }
         return true;
       } catch (...) {
@@ -1314,6 +1367,55 @@ namespace {
         if (i < hdr_s.size() && hdr_s[i] == ',') {
           ++i;
         }
+      }
+    }
+
+    static int parse_signed_num_field(const std::string &obj, const char *key) {
+      auto p = obj.find(key);
+      if (p == std::string::npos) {
+        return 0;
+      }
+      p = obj.find(':', p);
+      if (p == std::string::npos) {
+        return 0;
+      }
+      return std::stoi(obj.substr(p + 1));
+    }
+
+    static void parse_origins_field(const std::string &origins_s, display_device::DisplaySettingsSnapshot &snap) {
+      snap.m_origins.clear();
+      size_t i = origins_s.find('{');
+      if (i == std::string::npos) {
+        return;
+      }
+      ++i;
+      while (i < origins_s.size() && origins_s[i] != '}') {
+        while (i < origins_s.size() && origins_s[i] != '"' && origins_s[i] != '}') {
+          ++i;
+        }
+        if (i >= origins_s.size() || origins_s[i] == '}') {
+          break;
+        }
+        auto q1 = i + 1;
+        auto q2 = origins_s.find('"', q1);
+        if (q2 == std::string::npos) {
+          break;
+        }
+        std::string id = origins_s.substr(q1, q2 - q1);
+        i = origins_s.find('{', q2);
+        if (i == std::string::npos) {
+          break;
+        }
+        auto end = origins_s.find('}', i);
+        if (end == std::string::npos) {
+          break;
+        }
+        auto obj = origins_s.substr(i, end - i);
+        display_device::Point pt;
+        pt.m_x = parse_signed_num_field(obj, "\"x\"");
+        pt.m_y = parse_signed_num_field(obj, "\"y\"");
+        snap.m_origins.emplace(id, pt);
+        i = end + 1;
       }
     }
   };

@@ -1,0 +1,38 @@
+# Generated and tool output.
+build/
+out/
+CMakeFiles/
+cmake-build-*/
+test-results/
+tmp/
+venv/
+node_modules/
+.npm/
+
+# Ignore common nested build output directories.
+**/build/**
+**/out/**
+**/CMakeFiles/**
+**/cmake-build-*/
+**/node_modules/**
+**/venv/**
+**/test-results/**
+
+# Third-party policy:
+# Keep third-party mostly excluded and only allow folders we actively modify.
+third-party/*
+!third-party/libwebrtc/
+!third-party/libwebrtc/**
+!third-party/tray/
+!third-party/tray/**
+!third-party/libdisplaydevice/
+!third-party/libdisplaydevice/**
+
+# Handle underscore variant for compatibility with shared command snippets.
+third_party/*
+!third_party/libwebrtc/
+!third_party/libwebrtc/**
+!third_party/tray/
+!third_party/tray/**
+!third_party/libdisplaydevice/
+!third_party/libdisplaydevice/**

@@ -126,9 +126,6 @@
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UninstallGamepad" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
-    <!-- Prune stale web assets directory prior to installing new files (avoids stale hashed JS/CSS) -->
-    <CustomAction Id="PruneWebDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="RemoveConflictingProducts" BinaryKey="RemoveConflictingProductsVbs" VBScriptCall="RemoveConflictingProducts" Execute="deferred" Return="check" />
@@ -166,11 +163,6 @@
                  Property="UpdatePathAdd"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; add&quot;"/>
 
-    <!-- Immediate setter for pruning installed web assets directory before file copy -->
-    <CustomAction Id="SetPruneWebDir"
-                 Property="PruneWebDir"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$p='[INSTALL_ROOT]assets\web'; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }&quot;"/>
-
 
     <!-- Guard NV prefs restore on uninstall: only run if sunshine.exe still exists -->
     <CustomAction Id="SetRestoreNvPrefsUndo"
@@ -191,10 +183,10 @@
     <!-- Immediate setter for quiet stop service -->
     <CustomAction Id="SetStopSvcQuietImmediate"
                  Property="StopSvcQuietImmediate"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $names=@('ApolloService','SunshineService','sunshinesvc'); foreach($n in $names){ $svc=Get-Service -Name $n -ErrorAction SilentlyContinue; if($svc){ if($svc.Status -ne 'Stopped'){ Stop-Service -Name $n -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { $names=@('ApolloService','SunshineService','VibeshineService','sunshinesvc'); foreach($n in $names){ $svc=Get-Service -Name $n -ErrorAction SilentlyContinue; if($svc){ if($svc.Status -ne 'Stopped'){ Stop-Service -Name $n -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('SunshineService','VibeshineService', 'ApolloService')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('ApolloService','SunshineService','VibeshineService','sunshinesvc')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
     <!-- Immediate setter to prune everything except the config directory -->
     <CustomAction Id="SetPruneButConfig"
                  Property="PruneButConfig"
@@ -207,7 +199,7 @@
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuietImmediate"
                  Property="KillProcsQuietImmediate"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>

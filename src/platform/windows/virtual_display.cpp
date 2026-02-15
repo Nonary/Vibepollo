@@ -1858,7 +1858,7 @@ namespace VDISPLAY {
     constexpr auto RECOVERY_MISSING_GRACE = std::chrono::seconds(1);
     constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(2);
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
-    constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
     constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
@@ -1977,7 +1977,10 @@ namespace VDISPLAY {
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      if (!devices) {
+      if (!devices || devices->empty()) {
+        // Either enumeration failed outright (nullopt) or the CCD subsystem returned no valid
+        // paths (empty vector, e.g. during transient topology churn).  Treat both as "unknown"
+        // rather than letting an empty list fall through to "missing".
         return MonitorTargetPresence::unknown;
       }
 

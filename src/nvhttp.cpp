@@ -546,7 +546,10 @@ namespace nvhttp {
                 }
 
                 // Force the capture thread to reinitialize so it rebinds to the recreated display.
-                mail::man->event<int>(mail::switch_display)->raise(-1);
+                if (mail::man) {
+                  // -1 means "reinit only; keep display selection logic intact".
+                  mail::man->event<int>(mail::switch_display)->raise(-1);
+                }
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display.";
               }
             };
@@ -2104,6 +2107,10 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
 
       bool no_active_sessions = (rtsp_stream::session_count() == 0);
+      // Runtime overrides are global process state. Do not reapply them while
+      // another RTSP session is active, otherwise a second client can mutate
+      // active stream limits (e.g. fps/encoding-related settings) mid-session.
+      const bool update_runtime_overrides = no_active_sessions;
 
       // Apply per-application runtime config overrides before we build session metadata or
       // prepare display/capture so the effective config is used everywhere.
@@ -2124,36 +2131,40 @@ namespace nvhttp {
         }
       });
 
-      try {
-        // Find the target app and apply its config overrides (if any), then layer on client overrides.
-        std::unordered_map<std::string, std::string> overrides;
-        const auto apps = proc::proc.get_apps();
-        const auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
-          if (!appuuid_str.empty()) {
-            return app.uuid == appuuid_str;
+      if (update_runtime_overrides) {
+        try {
+          // Find the target app and apply its config overrides (if any), then layer on client overrides.
+          std::unordered_map<std::string, std::string> overrides;
+          const auto apps = proc::proc.get_apps();
+          const auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
+            if (!appuuid_str.empty()) {
+              return app.uuid == appuuid_str;
+            }
+            return app.id == appid_str;
+          });
+          if (app_iter != apps.end()) {
+            overrides = app_iter->config_overrides;
           }
-          return app.id == appid_str;
-        });
-        if (app_iter != apps.end()) {
-          overrides = app_iter->config_overrides;
-        }
 
-        if (named_cert_p) {
-          for (const auto &[k, v] : named_cert_p->config_overrides) {
-            overrides.insert_or_assign(k, v);
+          if (named_cert_p) {
+            for (const auto &[k, v] : named_cert_p->config_overrides) {
+              overrides.insert_or_assign(k, v);
+            }
           }
+
+          config::set_runtime_config_overrides(std::move(overrides));
+          runtime_overrides_applied = true;
+
+          // Re-apply config so overrides take effect in config::video/config::input/etc.
+          config::apply_config_now();
+        } catch (...) {
+          // If something goes wrong, fall back to global config only.
+          config::clear_runtime_config_overrides();
+          config::apply_config_now();
+          runtime_overrides_applied = true;
         }
-
-        config::set_runtime_config_overrides(std::move(overrides));
-        runtime_overrides_applied = true;
-
-        // Re-apply config so overrides take effect in config::video/config::input/etc.
-        config::apply_config_now();
-      } catch (...) {
-        // If something goes wrong, fall back to global config only.
-        config::clear_runtime_config_overrides();
-        config::apply_config_now();
-        runtime_overrides_applied = true;
+      } else {
+        BOOST_LOG(debug) << "Launch while an RTSP session is already active; preserving current runtime overrides.";
       }
 
       // Prevent interleaving with hot-apply while we prep/start a session
