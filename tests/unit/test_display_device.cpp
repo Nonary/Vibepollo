@@ -175,6 +175,7 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {0, -1}), failed_to_parse_resolution_tag_t {}),
     //---- Resolution string format validation ----
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "0x0"s), resolution_t {0, 0}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "1920×1080"s), resolution_t {1920, 1080}),
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "0x"s), failed_to_parse_resolution_tag_t {}),
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "x0"s), failed_to_parse_resolution_tag_t {}),
     std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "-1x1"s), failed_to_parse_resolution_tag_t {}),

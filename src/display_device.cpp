@@ -56,7 +56,10 @@ namespace display_device {
      * @examples_end
      */
     bool parse_resolution_string(const std::string &input, std::optional<Resolution> &output) {
-      const std::string trimmed_input {boost::algorithm::trim_copy(input)};
+      std::string normalized_input {boost::algorithm::trim_copy(input)};
+      boost::algorithm::replace_all(normalized_input, "×", "x");
+
+      const std::string &trimmed_input = normalized_input;
       const std::regex resolution_regex {R"(^(\d+)x(\d+)$)"};
 
       if (std::smatch match; std::regex_match(trimmed_input, match, resolution_regex)) {
