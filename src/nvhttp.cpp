@@ -534,7 +534,9 @@ namespace nvhttp {
                   if (!request) {
                     BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
                                        << attempt << "/" << kMaxApplyAttempts << ").";
-                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    // Progressive backoff: give the display subsystem more settling time on later attempts.
+                    // Each failed attempt may trigger additional CCD topology churn that needs to resolve.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
                     continue;
                   }
 
@@ -546,7 +548,8 @@ namespace nvhttp {
 
                   BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
                                      << attempt << "/" << kMaxApplyAttempts << ").";
-                  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                  // Progressive backoff: 250ms, 500ms, 750ms, 1000ms, 1250ms
+                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
                 }
 
                 // Force the capture thread to reinitialize so it rebinds to the recreated display.
