@@ -1591,8 +1591,12 @@ namespace nvhttp {
       tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
     }
 
-    const bool hevc_auto_mode_unresolved = config::video.hevc_mode == 0 && video::active_hevc_mode == 0;
-    const bool av1_auto_mode_unresolved = config::video.av1_mode == 0 && video::active_av1_mode == 0;
+    // Treat auto-mode as unresolved both before first probe (active == 0) and after a
+    // transient failure that resolved to "disabled" (active == 1).  The probe cache
+    // skips re-probing when the cached result already satisfies all codec requirements,
+    // so this only triggers actual work when the previous probe failed for a codec.
+    const bool hevc_auto_mode_unresolved = config::video.hevc_mode == 0 && video::active_hevc_mode <= 1;
+    const bool av1_auto_mode_unresolved = config::video.av1_mode == 0 && video::active_av1_mode <= 1;
     const bool should_probe_for_serverinfo = !video::has_attempted_encoder_probe() ||
                                              hevc_auto_mode_unresolved ||
                                              av1_auto_mode_unresolved;
