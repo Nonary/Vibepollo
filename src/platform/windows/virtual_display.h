@@ -119,6 +119,7 @@ namespace VDISPLAY {
   struct ensure_display_result {
     bool success;
     bool created_temporary;
+    bool tracks_temporary_for_probe;
     GUID temporary_guid;
   };
 
@@ -132,6 +133,13 @@ namespace VDISPLAY {
   /**
    * @brief Cleans up temporary display created by ensure_display().
    * @param result The result from ensure_display() call.
+   * @param probe_succeeded True when probe finished successfully.
+   * @param allow_temporary_teardown False keeps the temporary display retained.
    */
-  void cleanup_ensure_display(const ensure_display_result &result);
+  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
+
+  /**
+   * @brief Returns true when ensure_display() is currently retaining a temporary display for probe retries.
+   */
+  bool has_retained_ensure_display();
 }  // namespace VDISPLAY

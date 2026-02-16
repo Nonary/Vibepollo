@@ -75,6 +75,7 @@ namespace VDISPLAY {
     constexpr int DRIVER_RESTART_MAX_ATTEMPTS = 3;
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
+    constexpr int ENSURE_DISPLAY_MAX_RETRY_FAILURES = 8;
     constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
     constexpr std::wstring_view SUDOVDA_FRIENDLY_NAME_W = L"SudoMaker Virtual Display Adapter";
 
@@ -83,6 +84,15 @@ namespace VDISPLAY {
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
+
+    std::mutex g_ensure_display_state_mutex;
+    bool g_ensure_display_retained = false;
+    GUID g_ensure_display_guid {};
+    int g_ensure_display_failure_count = 0;
+
+    bool guid_equal(const GUID &lhs, const GUID &rhs) {
+      return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
+    }
 
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -3614,7 +3624,7 @@ uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
 }
 
 VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
-  ensure_display_result result {false, false, {}};
+  ensure_display_result result {false, false, false, {}};
 
   if (has_active_physical_display()) {
     result.success = true;
@@ -3633,6 +3643,27 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     }
   }
 
+  auto uuid = persistentVirtualDisplayUuid();
+  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
+
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+      if (is_virtual_display_guid_tracked(result.temporary_guid)) {
+        result.success = true;
+        result.tracks_temporary_for_probe = true;
+        BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
+                        << g_ensure_display_failure_count << ").";
+        return result;
+      }
+
+      g_ensure_display_retained = false;
+      g_ensure_display_failure_count = 0;
+      std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+      BOOST_LOG(debug) << "Ensure display retention state was stale; creating a fresh temporary display.";
+    }
+  }
+
   auto virtual_displays = enumerateSudaVDADisplays();
   bool has_active_virtual = std::any_of(
     virtual_displays.begin(),
@@ -3647,9 +3678,6 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     result.success = true;
     return result;
   }
-
-  auto uuid = persistentVirtualDisplayUuid();
-  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
   auto display_info = createVirtualDisplay(
@@ -3669,17 +3697,82 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   }
 
   result.created_temporary = true;
+  result.tracks_temporary_for_probe = true;
   result.success = true;
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    g_ensure_display_retained = true;
+    g_ensure_display_guid = result.temporary_guid;
+    g_ensure_display_failure_count = 0;
+  }
   BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }
 
-void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result) {
-  if (result.created_temporary) {
-    if (!removeVirtualDisplay(result.temporary_guid)) {
-      BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown) {
+  if (!result.tracks_temporary_for_probe) {
+    return;
+  }
+
+  GUID guid_to_remove {};
+  bool should_remove = false;
+  int failure_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+
+    if (!g_ensure_display_retained || !guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+      return;
+    }
+
+    if (probe_succeeded) {
+      g_ensure_display_failure_count = 0;
+      if (allow_temporary_teardown) {
+        guid_to_remove = g_ensure_display_guid;
+        g_ensure_display_retained = false;
+        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+        should_remove = true;
+      }
     } else {
-      BOOST_LOG(info) << "Removed temporary virtual display.";
+      ++g_ensure_display_failure_count;
+      failure_count = g_ensure_display_failure_count;
+      if (allow_temporary_teardown && g_ensure_display_failure_count >= ENSURE_DISPLAY_MAX_RETRY_FAILURES) {
+        guid_to_remove = g_ensure_display_guid;
+        g_ensure_display_retained = false;
+        g_ensure_display_failure_count = 0;
+        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+        should_remove = true;
+      }
     }
   }
+
+  if (!probe_succeeded) {
+    if (should_remove) {
+      BOOST_LOG(warning) << "Encoder probe failed " << ENSURE_DISPLAY_MAX_RETRY_FAILURES
+                         << " times with retained temporary display; resetting it.";
+    } else {
+      BOOST_LOG(info) << "Keeping temporary virtual display for probe retry (failure "
+                      << failure_count << '/' << ENSURE_DISPLAY_MAX_RETRY_FAILURES << ").";
+    }
+  }
+
+  if (!should_remove) {
+    if (probe_succeeded && !allow_temporary_teardown) {
+      BOOST_LOG(debug) << "Temporary virtual display retained because teardown is currently disallowed.";
+    }
+    return;
+  }
+
+  if (!removeVirtualDisplay(guid_to_remove)) {
+    BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+  } else {
+    BOOST_LOG(info) << "Removed temporary virtual display.";
+  }
+}
+
+bool VDISPLAY::has_retained_ensure_display() {
+  std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+  if (!g_ensure_display_retained) {
+    return false;
+  }
+  return is_virtual_display_guid_tracked(g_ensure_display_guid);
 }

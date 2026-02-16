@@ -381,12 +381,16 @@ int main(int argc, char *argv[]) {
       BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
     }
 
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+    bool encoder_probe_succeeded = false;
+    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
+      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
     });
 #endif
 
     bool encoder_probe_failed = video::probe_encoders();
+#ifdef _WIN32
+    encoder_probe_succeeded = !encoder_probe_failed;
+#endif
 
     if (encoder_probe_failed) {
       BOOST_LOG(error) << "Failed to probe encoders during startup.";

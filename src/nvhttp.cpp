@@ -167,6 +167,9 @@ namespace nvhttp {
       if (VDISPLAY::has_active_physical_display()) {
         return true;
       }
+      if (VDISPLAY::has_retained_ensure_display()) {
+        return true;
+      }
       const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
       return std::any_of(
         virtual_displays.begin(),
@@ -1637,8 +1640,10 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
       }
 
-      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+      bool encoder_probe_succeeded = false;
+      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
+        const bool allow_temporary_teardown = (rtsp_stream::session_count() == 0) && !webrtc_stream::has_active_sessions();
+        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, allow_temporary_teardown);
       });
 #endif
 
@@ -1659,6 +1664,9 @@ namespace nvhttp {
       if (encoder_probe_failed) {
         BOOST_LOG(error) << "Failed to probe encoders for serverinfo response.";
       }
+#ifdef _WIN32
+      encoder_probe_succeeded = !encoder_probe_failed;
+#endif
     }
 
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
