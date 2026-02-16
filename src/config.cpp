@@ -3,15 +3,15 @@
  * @brief Definitions for the configuration of Sunshine.
  */
 // standard includes
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
-#include <sstream>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -31,10 +31,10 @@
 #include "display_helper_integration.h"
 #include "entry_handler.h"
 #include "file_handler.h"
+#include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "nvhttp.h"
-#include "globals.h"
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
@@ -42,10 +42,11 @@
 #include "utility.h"
 
 #ifdef _WIN32
-  #include <shellapi.h>
-  #include <Windows.h>
   #include "platform/windows/hotkey_manager.h"
   #include "platform/windows/misc.h"
+
+  #include <shellapi.h>
+  #include <Windows.h>
 #endif
 
 #if !defined(__ANDROID__) && !defined(__APPLE__)
@@ -474,10 +475,15 @@ namespace config {
       std::vector<std::string> out;
       auto add_id = [&out](std::string id) {
         auto ltrim = [](std::string &s) {
-          s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+          s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                  }));
         };
         auto rtrim = [](std::string &s) {
-          s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
+          s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                  }).base(),
+                  s.end());
         };
         ltrim(id);
         rtrim(id);
@@ -2182,14 +2188,14 @@ namespace config {
                                      (prev_dd_hdr_opt != video.dd.hdr_option) ||
                                      (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
                                      (prev_dd_manual_resolution != video.dd.manual_resolution) ||
-                                      (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
-                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
-                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
-                                       (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                       (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
-                                       (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
-                                       (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
+                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                     (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
+                                     (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                     (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
+                                     (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {

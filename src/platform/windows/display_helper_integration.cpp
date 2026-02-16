@@ -8,8 +8,9 @@
   // standard
   #include <algorithm>
   #include <atomic>
-  #include <cmath>
+  #include <boost/algorithm/string/predicate.hpp>
   #include <chrono>
+  #include <cmath>
   #include <cstdint>
   #include <filesystem>
   #include <limits>
@@ -18,8 +19,6 @@
   #include <string>
   #include <thread>
   #include <vector>
-
-  #include <boost/algorithm/string/predicate.hpp>
 
   // libdisplaydevice
   #include <display_device/json.h>
@@ -35,20 +34,21 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
-  #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
+  #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
-  #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/ipc/misc_utils.h"
+  #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+
+  #include <display_device/noop_audio_context.h>
+  #include <display_device/noop_settings_persistence.h>
+  #include <display_device/windows/persistent_state.h>
+  #include <display_device/windows/settings_manager.h>
+  #include <display_device/windows/types.h>
   #include <tlhelp32.h>
-#include <display_device/noop_audio_context.h>
-#include <display_device/noop_settings_persistence.h>
-#include <display_device/windows/persistent_state.h>
-#include <display_device/windows/settings_manager.h>
-#include <display_device/windows/types.h>
 
 namespace {
   // Serialize helper start/inspect to avoid races that could spawn duplicate helpers
@@ -447,6 +447,7 @@ namespace {
 
     return display_device::SettingsManagerInterface::ApplyResult::Ok;
   }
+
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
   bool wait_for_helper_ipc_ready_locked() {
@@ -579,6 +580,7 @@ namespace {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
   }
+
   // Active session display parameters snapshot for re-apply on reconnect.
   // We do NOT cache serialized JSON, only the subset of session fields that
   // affect display configuration. On reconnect, we rebuild the full
@@ -799,16 +801,16 @@ namespace {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
       return false;
     }
-    
+
     HANDLE h = helper_proc().get_process_handle();
     if (!h) {
       BOOST_LOG(error) << "Display helper started but no process handle available";
       return false;
     }
-    
+
     DWORD pid = GetProcessId(h);
     BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
-    
+
     // Give the helper process time to initialize and create its named pipe server
     // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
     for (int check = 0; check < 6; ++check) {
@@ -818,9 +820,9 @@ namespace {
         GetExitCodeProcess(h, &exit_code);
         if (exit_code == 3) {
           BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
-                           << "Retrying after extended cleanup delay...";
+                             << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-          
+
           const bool retry_started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
@@ -839,7 +841,7 @@ namespace {
         }
       }
     }
-    
+
     // Final initialization delay for pipe server creation
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     return wait_for_helper_ipc_ready_locked();
@@ -1586,8 +1588,10 @@ namespace display_helper_integration {
           devices->end(),
           [](const display_device::EnumeratedDevice &device) {
             return !device.m_info.has_value();
-          }),
-        devices->end());
+          }
+        ),
+        devices->end()
+      );
     }
     return display_device::toJson(*devices);
   }

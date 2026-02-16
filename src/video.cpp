@@ -39,12 +39,13 @@ extern "C" {
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
-  #include <dxgi1_2.h>
-  #include <wrl/client.h>
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
+
+  #include <dxgi1_2.h>
+  #include <wrl/client.h>
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -303,12 +304,7 @@ namespace video {
       return oss.str();
     }
 
-    bool probe_cache_matches(const std::string &key,
-                             bool want_hdr,
-                             bool want_hevc,
-                             bool want_hevc_hdr,
-                             bool want_av1,
-                             bool want_av1_hdr) {
+    bool probe_cache_matches(const std::string &key, bool want_hdr, bool want_hevc, bool want_hevc_hdr, bool want_av1, bool want_av1_hdr) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
 
@@ -328,13 +324,7 @@ namespace video {
       return false;
     }
 
-    void update_probe_cache(const std::string &key,
-                            bool success,
-                            bool hdr_supported,
-                            bool hevc_passed,
-                            bool hevc_hdr_supported,
-                            bool av1_passed,
-                            bool av1_hdr_supported) {
+    void update_probe_cache(const std::string &key, bool success, bool hdr_supported, bool hevc_passed, bool hevc_hdr_supported, bool av1_passed, bool av1_hdr_supported) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
       if (success) {
@@ -2815,10 +2805,14 @@ namespace video {
     const int max_attempts = config.videoFormat >= 1 ? 3 : 1;  // HEVC/AV1 can fail transiently during probing
     const auto codec_name = [&]() -> std::string_view {
       switch (config.videoFormat) {
-        case 0: return "H.264"sv;
-        case 1: return "HEVC"sv;
-        case 2: return "AV1"sv;
-        default: return "codec"sv;
+        case 0:
+          return "H.264"sv;
+        case 1:
+          return "HEVC"sv;
+        case 2:
+          return "AV1"sv;
+        default:
+          return "codec"sv;
       }
     }();
 
@@ -3312,13 +3306,7 @@ namespace video {
     const bool av1_passed = encoder.av1[encoder_t::PASSED];
     const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
-    update_probe_cache(cache_key,
-                       true,
-                       cache_hdr_supported,
-                       hevc_passed,
-                       hevc_hdr_supported,
-                       av1_passed,
-                       av1_hdr_supported);
+    update_probe_cache(cache_key, true, cache_hdr_supported, hevc_passed, hevc_hdr_supported, av1_passed, av1_hdr_supported);
     restore_previous_probe_state.disable();
     return 0;
   }

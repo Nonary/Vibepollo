@@ -6,9 +6,9 @@
 #include <stddef.h>  // workaround for type_t error in miniupnpc 2.3.3, see https://github.com/miniupnp/miniupnp/commit/e263ab6f56c382e10fed31347ec68095d691a0e8
 
 // lib includes
+#include <boost/algorithm/string/trim.hpp>
 #include <miniupnpc/miniupnpc.h>
 #include <miniupnpc/upnpcommands.h>
-#include <boost/algorithm/string/trim.hpp>
 
 // local includes
 #include "config.h"

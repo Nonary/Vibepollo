@@ -286,9 +286,7 @@ namespace display_device {
 
       // Client display_mode override takes highest priority
       if (session.client_display_mode_override) {
-        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                                 ? *session.framegen_refresh_rate
-                                 : session.fps;
+        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
         if (target_fps >= 0) {
           config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1};
           BOOST_LOG(debug) << "Using client display mode override for refresh rate: " << target_fps << " Hz";
@@ -302,9 +300,7 @@ namespace display_device {
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
           {
-            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                                     ? *session.framegen_refresh_rate
-                                     : session.fps;
+            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
             if (target_fps >= 0) {
               config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1};
             } else {
@@ -792,9 +788,7 @@ namespace display_device {
       return false;
     }
 
-    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                             ? *session.framegen_refresh_rate
-                             : session.fps;
+    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
     if (target_fps < 0) {
       return false;
     }

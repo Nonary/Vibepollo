@@ -40,15 +40,15 @@ extern "C" {
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
-#include "webrtc_stream.h"
 #include "update.h"
 #include "utility.h"
+#include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
-  #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
+  #include "platform/windows/virtual_display_cleanup.h"
 #endif
 
 #define IDX_START_A 0
@@ -2177,9 +2177,9 @@ namespace stream {
 
         // Restore any Windows-only integrations first
 #ifdef _WIN32
-  VDISPLAY::restorePhysicalHdrProfiles();
-  platf::rtss_set_sync_limiter_override(std::nullopt);
-  platf::frame_limiter_streaming_stop(is_paused);
+        VDISPLAY::restorePhysicalHdrProfiles();
+        platf::rtss_set_sync_limiter_override(std::nullopt);
+        platf::frame_limiter_streaming_stop(is_paused);
 #endif
         platf::streaming_will_stop();
 
@@ -2190,16 +2190,16 @@ namespace stream {
       BOOST_LOG(info) << "Session ended"sv;
     }
 
-  int start(session_t &session, const std::string &addr_string) {
-    session.input = input::alloc(session.mail);
+    int start(session_t &session, const std::string &addr_string) {
+      session.input = input::alloc(session.mail);
 
-    session.broadcast_ref = broadcast.ref();
-    if (!session.broadcast_ref) {
-      return -1;
-    }
+      session.broadcast_ref = broadcast.ref();
+      if (!session.broadcast_ref) {
+        return -1;
+      }
 
-    session.control.expected_peer_address = addr_string;
-    BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
+      session.control.expected_peer_address = addr_string;
+      BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
 
       // Insert this session into the session list
       {

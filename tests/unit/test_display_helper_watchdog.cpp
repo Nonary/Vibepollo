@@ -3,7 +3,6 @@
  * @brief Unit tests for Sunshine display helper watchdog.
  */
 #include "../tests_common.h"
-
 #include "src/platform/windows/display_helper_watchdog.h"
 
 #include <deque>
@@ -21,9 +20,11 @@ namespace {
 
     display_helper_integration::DisplayHelperWatchdog watchdog;
 
-    WatchdogHarness()
-      : watchdog(display_helper_integration::DisplayHelperWatchdog::Hooks {
-          .feature_enabled = [&]() { return feature_enabled; },
+    WatchdogHarness():
+        watchdog(display_helper_integration::DisplayHelperWatchdog::Hooks {
+          .feature_enabled = [&]() {
+            return feature_enabled;
+          },
           .ensure_helper_started = [&]() {
             ensure_calls += 1;
             return ensure_result;
@@ -37,9 +38,15 @@ namespace {
             ping_results.pop_front();
             return result;
           },
-          .reset_connection = [&]() { reset_calls += 1; },
-          .session_count = [&]() { return session_count; },
-          .running_processes = [&]() { return running_processes; },
+          .reset_connection = [&]() {
+            reset_calls += 1;
+          },
+          .session_count = [&]() {
+            return session_count;
+          },
+          .running_processes = [&]() {
+            return running_processes;
+          },
         }) {}
   };
 }  // namespace

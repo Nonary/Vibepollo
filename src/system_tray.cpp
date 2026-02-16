@@ -7,9 +7,9 @@
 
   #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
-    #include <Windows.h>
     #include <accctrl.h>
     #include <aclapi.h>
+    #include <Windows.h>
     #define TRAY_ICON WEB_DIR "images/sunshine.ico"
     #define TRAY_ICON_PLAYING WEB_DIR "images/sunshine-playing.ico"
     #define TRAY_ICON_PAUSING WEB_DIR "images/sunshine-pausing.ico"
@@ -199,12 +199,12 @@ namespace system_tray {
       if (tray_init_result >= 0) {
         break;
       }
-#ifdef _WIN32
+  #ifdef _WIN32
       auto last_error = GetLastError();
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ", error " << last_error << ')';
-#else
+  #else
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
-#endif
+  #endif
       std::this_thread::sleep_for(2s);
       ++attempt;
     }

@@ -4,8 +4,8 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 
 namespace playnite_launcher::lossless {
 

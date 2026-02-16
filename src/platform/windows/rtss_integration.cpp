@@ -11,14 +11,13 @@
   #include <cwchar>
   #include <filesystem>
   #include <fstream>
+  #include <nlohmann/json.hpp>
   #include <optional>
   #include <string>
   #include <system_error>
   #include <type_traits>
   #include <utility>
   #include <vector>
-
-  #include <nlohmann/json.hpp>
 
 // clang-format off
   #include <Windows.h>
@@ -960,7 +959,7 @@ namespace platf {
       if (applied) {
         if (sync_limiter_label) {
           BOOST_LOG(info) << (already_set ? "RTSS SyncLimiter already set ("sv : "RTSS SyncLimiter applied ("sv)
-                            << *sync_limiter_label << ')';
+                          << *sync_limiter_label << ')';
         } else {
           BOOST_LOG(info) << (already_set ? "RTSS SyncLimiter already set"sv : "RTSS SyncLimiter applied"sv);
         }

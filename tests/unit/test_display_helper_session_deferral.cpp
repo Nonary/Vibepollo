@@ -3,7 +3,6 @@
  * @brief Unit tests for Sunshine display helper session deferral.
  */
 #include "../tests_common.h"
-
 #include "src/platform/windows/display_helper_session_deferral.h"
 #include "src/rtsp.h"
 
@@ -33,7 +32,9 @@ namespace {
 
 TEST(DisplayHelperSessionDeferral, DelaysAndRestoresSessionSnapshot) {
   FakeClock clock;
-  display_helper_integration::SessionDeferralManager manager([&clock]() { return clock.now(); });
+  display_helper_integration::SessionDeferralManager manager([&clock]() {
+    return clock.now();
+  });
 
   rtsp_stream::launch_session_t session {};
   session.id = 42;
@@ -81,7 +82,9 @@ TEST(DisplayHelperSessionDeferral, DelaysAndRestoresSessionSnapshot) {
 
 TEST(DisplayHelperSessionDeferral, ReschedulesAndDropsForNewerPending) {
   FakeClock clock;
-  display_helper_integration::SessionDeferralManager manager([&clock]() { return clock.now(); });
+  display_helper_integration::SessionDeferralManager manager([&clock]() {
+    return clock.now();
+  });
 
   rtsp_stream::launch_session_t session {};
   session.id = 1;

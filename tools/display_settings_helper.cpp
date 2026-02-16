@@ -7,17 +7,17 @@
 
   // standard
   #include <algorithm>
+  #include <array>
   #include <atomic>
+  #include <cctype>
   #include <chrono>
+  #include <cmath>
   #include <condition_variable>
   #include <cstdint>
-  #include <cctype>
-  #include <array>
   #include <cstdio>
   #include <cstdlib>
   #include <cstring>
   #include <cwchar>
-  #include <cmath>
   #include <filesystem>
   #include <functional>
   #include <memory>
@@ -1105,9 +1105,16 @@ namespace {
     std::vector<std::string> snapshot_exclude_devices_;
 
     static std::string normalize_device_id(std::string id) {
-      id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) { return !std::isspace(ch); }));
-      id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), id.end());
-      std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) {
+                 return !std::isspace(ch);
+               }));
+      id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) {
+                 return !std::isspace(ch);
+               }).base(),
+               id.end());
+      std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
       return id;
     }
 
@@ -2750,28 +2757,62 @@ namespace {
           self->clear_restore_origin();
           return;
         }
-    } catch (...) {
-      // fall through
-    }
-
-    if (cancelled()) {
-      self->restore_stage_running.store(false, std::memory_order_release);
-      self->restore_poll_active.store(false, std::memory_order_release);
-      return;
-    }
-
-    // Initial one-shot attempt before entering the loop
-    bool initial_attempted = false;
-    bool initial_success = false;
-    try {
-      if (!cancelled() && self->await_restore_backoff(st) && !cancelled()) {
-        initial_attempted = true;
-        initial_success = self->try_restore_once_if_valid(st, guard_generation);
+      } catch (...) {
+        // fall through
       }
-    } catch (...) {}
 
-    if (initial_success) {
       if (cancelled()) {
+        self->restore_stage_running.store(false, std::memory_order_release);
+        self->restore_poll_active.store(false, std::memory_order_release);
+        return;
+      }
+
+      // Initial one-shot attempt before entering the loop
+      bool initial_attempted = false;
+      bool initial_success = false;
+      try {
+        if (!cancelled() && self->await_restore_backoff(st) && !cancelled()) {
+          initial_attempted = true;
+          initial_success = self->try_restore_once_if_valid(st, guard_generation);
+        }
+      } catch (...) {}
+
+      if (initial_success) {
+        if (cancelled()) {
+          self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
+          self->restore_poll_active.store(false, std::memory_order_release);
+          self->restore_active_until_ms.store(0, std::memory_order_release);
+          self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+          self->last_restore_event_ms.store(0, std::memory_order_release);
+          self->restore_requested.store(false, std::memory_order_release);
+          self->clear_restore_origin();
+          return;
+        }
+        self->reset_restore_backoff();
+        self->retry_revert_on_topology.store(false, std::memory_order_release);
+        self->exit_after_revert.store(false, std::memory_order_release);
+        run_restore_cleanup("initial attempt");
+
+        if (cancelled()) {
+          self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
+          self->restore_poll_active.store(false, std::memory_order_release);
+          self->restore_active_until_ms.store(0, std::memory_order_release);
+          self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+          self->last_restore_event_ms.store(0, std::memory_order_release);
+          self->restore_requested.store(false, std::memory_order_release);
+          self->clear_restore_origin();
+          return;
+        }
+
+        const bool exit_helper = self->should_exit_after_restore();
+        if (exit_helper && self->running_flag) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+          self->running_flag->store(false, std::memory_order_release);
+        } else if (!exit_helper) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
+        }
         self->event_pump.stop();
         self->event_pump_running.store(false, std::memory_order_release);
         self->restore_poll_active.store(false, std::memory_order_release);
@@ -2782,40 +2823,6 @@ namespace {
         self->clear_restore_origin();
         return;
       }
-      self->reset_restore_backoff();
-      self->retry_revert_on_topology.store(false, std::memory_order_release);
-      self->exit_after_revert.store(false, std::memory_order_release);
-      run_restore_cleanup("initial attempt");
-
-      if (cancelled()) {
-        self->event_pump.stop();
-        self->event_pump_running.store(false, std::memory_order_release);
-        self->restore_poll_active.store(false, std::memory_order_release);
-        self->restore_active_until_ms.store(0, std::memory_order_release);
-        self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
-        self->last_restore_event_ms.store(0, std::memory_order_release);
-        self->restore_requested.store(false, std::memory_order_release);
-        self->clear_restore_origin();
-        return;
-      }
-
-      const bool exit_helper = self->should_exit_after_restore();
-      if (exit_helper && self->running_flag) {
-        BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-        self->running_flag->store(false, std::memory_order_release);
-      } else if (!exit_helper) {
-        BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
-      }
-      self->event_pump.stop();
-      self->event_pump_running.store(false, std::memory_order_release);
-      self->restore_poll_active.store(false, std::memory_order_release);
-      self->restore_active_until_ms.store(0, std::memory_order_release);
-      self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
-      self->last_restore_event_ms.store(0, std::memory_order_release);
-      self->restore_requested.store(false, std::memory_order_release);
-      self->clear_restore_origin();
-      return;
-    }
 
       if (initial_attempted && !initial_success) {
         self->register_restore_failure();
@@ -2942,7 +2949,6 @@ namespace {
           self->restore_active_until_ms.store(0, std::memory_order_release);
           self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
         }
-
       }
       self->restore_stage_running.store(false, std::memory_order_release);
       self->restore_poll_active.store(false, std::memory_order_release);
@@ -3048,7 +3054,7 @@ namespace {
       return !st.stop_requested();
     }
 
-    template <typename CancelPredicate>
+    template<typename CancelPredicate>
     static bool wait_with_cancel(std::stop_token st, std::chrono::milliseconds duration, CancelPredicate cancelled) {
       using namespace std::chrono_literals;
       constexpr auto step = 50ms;
@@ -3133,13 +3139,12 @@ namespace {
       cancel_post_apply_tasks();
       post_apply_thread = std::jthread(
         [this,
-        enforce_snapshot,
+         enforce_snapshot,
          before_sig = std::move(before_sig),
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
          monitor_position_overrides = std::move(monitor_position_overrides),
-         reapply_delays = std::move(reapply_delays)
-        ](std::stop_token st) mutable {
+         reapply_delays = std::move(reapply_delays)](std::stop_token st) mutable {
           const auto apply_epoch = current_connection_epoch();
           auto cancelled = [&]() {
             return st.stop_requested() || !is_connection_epoch_current(apply_epoch);
@@ -4133,7 +4138,7 @@ namespace {
   }
 }  // namespace
 
-  int main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
   bool restore_mode = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {

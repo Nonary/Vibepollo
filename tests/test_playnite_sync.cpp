@@ -13,11 +13,7 @@ TEST(PlayniteSync_TimeParse, ParsesZuluAndOffset) {
   EXPECT_EQ(t1, t2);  // +02 offset converts to same UTC
 }
 
-static Game make_game(std::string id,
-                      std::string last,
-                      bool installed = true,
-                      std::vector<std::string> cats = {},
-                      std::string plugin = {}) {
+static Game make_game(std::string id, std::string last, bool installed = true, std::vector<std::string> cats = {}, std::string plugin = {}) {
   Game g;
   g.id = id;
   g.name = id;

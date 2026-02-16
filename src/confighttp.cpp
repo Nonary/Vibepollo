@@ -1449,10 +1449,12 @@ namespace confighttp {
 #ifdef _WIN32
     try {
       const auto dir = windows_color_profile_dir();
+
       struct entry_t {
         std::string filename;
         uint64_t added_ms;
       };
+
       std::vector<entry_t> entries;
       for (const auto &entry : std::filesystem::directory_iterator(dir)) {
         std::error_code ec;
@@ -1461,7 +1463,9 @@ namespace confighttp {
         }
 
         auto ext = entry.path().extension().wstring();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) {
+          return static_cast<wchar_t>(std::towlower(ch));
+        });
         if (ext != L".icm" && ext != L".icc") {
           continue;
         }
@@ -2484,12 +2488,7 @@ namespace confighttp {
     std::thread([response, session_id, since]() mutable {
       response->close_connection_after_response = true;
 
-      response->write({
-        {"Content-Type", "text/event-stream"},
-        {"Cache-Control", "no-cache"},
-        {"Connection", "keep-alive"},
-        {"Access-Control-Allow-Origin", get_cors_origin()}
-      });
+      response->write({{"Content-Type", "text/event-stream"}, {"Cache-Control", "no-cache"}, {"Connection", "keep-alive"}, {"Access-Control-Allow-Origin", get_cors_origin()}});
 
       std::promise<bool> header_error;
       response->send([&header_error](const SimpleWeb::error_code &ec) {
@@ -3170,10 +3169,7 @@ namespace confighttp {
     output_tree["routes"] = nlohmann::json::array();
 
     for (const auto &[path, methods] : catalog) {
-      output_tree["routes"].push_back({
-        {"path", path},
-        {"methods", ordered_methods_for_catalog(methods)}
-      });
+      output_tree["routes"].push_back({{"path", path}, {"methods", ordered_methods_for_catalog(methods)}});
     }
 
     send_response(response, output_tree);
@@ -3457,14 +3453,14 @@ namespace confighttp {
       }
       std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
 
-    APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
-    write_api_response(response, api_response);
+      APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
+      write_api_response(response, api_response);
 
-  } catch (const nlohmann::json::exception &e) {
-    BOOST_LOG(warning) << "Login JSON error:"sv << e.what();
-    bad_request(response, request, "Invalid JSON format");
+    } catch (const nlohmann::json::exception &e) {
+      BOOST_LOG(warning) << "Login JSON error:"sv << e.what();
+      bad_request(response, request, "Invalid JSON format");
+    }
   }
-}
 
   void refreshSession(resp_https_t response, req_https_t request) {
     print_req(request);

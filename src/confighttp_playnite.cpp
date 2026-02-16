@@ -8,9 +8,10 @@
   // standard includes
   #include <algorithm>
   #include <array>
-  #include <chrono>
   #include <cctype>
+  #include <chrono>
   #include <cstdint>
+  #include <cwctype>
   #include <filesystem>
   #include <fstream>
   #include <limits>
@@ -22,22 +23,21 @@
   #include <unordered_map>
   #include <unordered_set>
   #include <vector>
-  #include <cwctype>
 
   // third-party includes
+  #include <boost/property_tree/json_parser.hpp>
+  #include <boost/property_tree/ptree.hpp>
   #include <nlohmann/json.hpp>
   #include <Simple-Web-Server/server_https.hpp>
   #include <zlib.h>
-  #include <boost/property_tree/json_parser.hpp>
-  #include <boost/property_tree/ptree.hpp>
 
   // local includes
   #include "config_playnite.h"
   #include "confighttp.h"
   #include "logging.h"
-  #include "state_storage.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
+  #include "state_storage.h"
 
   // Windows headers
   #include <KnownFolders.h>
@@ -430,9 +430,6 @@ namespace confighttp {
     dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
   }
 
-  
-
-
   static bool deflate_buffer(const char *data, std::size_t size, std::string &out) {
     z_stream zs {};
     if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
@@ -562,7 +559,6 @@ namespace confighttp {
     write_le16(out, 0);
     return out;
   }
-
 
   namespace {
     namespace fs = std::filesystem;
@@ -1243,9 +1239,7 @@ namespace confighttp {
     return nullptr;
   }
 
-  static void add_unique_path(std::vector<std::filesystem::path> &paths,
-                              std::unordered_set<std::wstring> &seen,
-                              const std::filesystem::path &path) {
+  static void add_unique_path(std::vector<std::filesystem::path> &paths, std::unordered_set<std::wstring> &seen, const std::filesystem::path &path) {
     if (path.empty()) {
       return;
     }
@@ -1646,8 +1640,7 @@ namespace confighttp {
     return kLocalHeaderSize + kCentralHeaderSize + (static_cast<std::uint64_t>(name_len) * 2) + data_size;
   }
 
-  static std::uint64_t estimate_zip_size(const std::vector<ZipDataEntry> &data_entries,
-                                         const std::vector<ZipFileEntry> &file_entries) {
+  static std::uint64_t estimate_zip_size(const std::vector<ZipDataEntry> &data_entries, const std::vector<ZipFileEntry> &file_entries) {
     constexpr std::uint64_t kEndOfCentralDirectory = 22;
     std::uint64_t total = kEndOfCentralDirectory;
     for (const auto &entry : data_entries) {
@@ -1675,8 +1668,7 @@ namespace confighttp {
     return base + "-part" + std::to_string(part_index) + ".zip";
   }
 
-  static std::vector<CrashBundlePartPlan> build_crash_bundle_plan(const std::vector<ZipDataEntry> &logs,
-                                                                  const std::vector<CrashDumpInfo> &dumps) {
+  static std::vector<CrashBundlePartPlan> build_crash_bundle_plan(const std::vector<ZipDataEntry> &logs, const std::vector<CrashDumpInfo> &dumps) {
     std::vector<CrashBundlePartPlan> parts;
     const auto base = crash_bundle_base_name();
     CrashBundlePartPlan current;
@@ -1722,11 +1714,7 @@ namespace confighttp {
     out.put(static_cast<char>((v >> 24) & 0xFF));
   }
 
-  
-  static bool write_zip_bundle_to_path(const std::filesystem::path &dest,
-                                       const std::vector<ZipDataEntry> &data_entries,
-                                       const std::vector<ZipFileEntry> &file_entries,
-                                       std::string &error) {
+  static bool write_zip_bundle_to_path(const std::filesystem::path &dest, const std::vector<ZipDataEntry> &data_entries, const std::vector<ZipFileEntry> &file_entries, std::string &error) {
     std::ofstream out(dest, std::ios::binary | std::ios::trunc);
     if (!out) {
       error = "Failed to create crash bundle";
@@ -1743,6 +1731,7 @@ namespace confighttp {
       uint16_t dostime;
       uint16_t dosdate;
     };
+
     std::vector<CdEntry> cd;
 
     auto add_entry = [&](const std::string &name, uint16_t method, uint32_t crc, uint32_t comp_size, uint32_t uncomp_size, uint16_t dostime, uint16_t dosdate, const std::string &payload) -> bool {

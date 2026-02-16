@@ -3,21 +3,20 @@
  * @brief Global hotkey registration for Windows.
  */
 #ifdef _WIN32
-#include "hotkey_manager.h"
+  #include "hotkey_manager.h"
 
-#include <winsock2.h>
-#include <Windows.h>
+  #include "display_helper_integration.h"
+  #include "src/logging.h"
+  #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
 
-#include <atomic>
-#include <ios>
-#include <mutex>
-#include <thread>
-
-#include "display_helper_integration.h"
-#include "src/logging.h"
-#include "src/platform/windows/misc.h"
-#include "src/platform/windows/virtual_display.h"
-#include "src/platform/windows/virtual_display_cleanup.h"
+  #include <atomic>
+  #include <ios>
+  #include <mutex>
+  #include <thread>
+  #include <Windows.h>
+  #include <winsock2.h>
 
 using namespace std::literals;
 
@@ -50,11 +49,11 @@ namespace {
       return;
     }
 
-#ifdef MOD_NOREPEAT
+  #ifdef MOD_NOREPEAT
     if (modifiers != 0) {
       modifiers |= MOD_NOREPEAT;
     }
-#endif
+  #endif
     if (!RegisterHotKey(nullptr, kRestoreHotkeyId, modifiers, static_cast<UINT>(vk_code))) {
       BOOST_LOG(warning) << "Failed to register restore hotkey (VK "sv << vk_code
                          << "): "sv << GetLastError();

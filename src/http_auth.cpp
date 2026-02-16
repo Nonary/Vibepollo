@@ -11,7 +11,6 @@
 #include "utility.h"
 
 #include <algorithm>
-#include <utility>
 #include <boost/algorithm/string.hpp>
 #include <boost/function.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -30,6 +29,7 @@
 #include <Simple-Web-Server/crypto.hpp>
 #include <Simple-Web-Server/server_https.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 using namespace std::literals;
 namespace pt = boost::property_tree;

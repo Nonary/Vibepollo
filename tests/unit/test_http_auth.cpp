@@ -376,8 +376,10 @@ TEST(SessionTokenManagerStatefulTest, RefreshTokenRenewsExpiredAccessToken) {
   deps.file_exists = [](const std::string &) {
     return false;
   };
-  deps.read_json = [](const std::string &, pt::ptree &) {};
-  deps.write_json = [](const std::string &, const pt::ptree &) {};
+  deps.read_json = [](const std::string &, pt::ptree &) {
+  };
+  deps.write_json = [](const std::string &, const pt::ptree &) {
+  };
 
   SessionTokenManager manager(deps);
   auto bundle = manager.issue_session_tokens(

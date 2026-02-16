@@ -132,7 +132,7 @@ namespace config {
 
   void apply_playnite(std::unordered_map<std::string, std::string> &vars) {
     // Reset to defaults first so removed keys revert to default values
-    playnite = playnite_t{};
+    playnite = playnite_t {};
 
     // booleans
     std::string tmp;

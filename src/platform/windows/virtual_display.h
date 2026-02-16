@@ -8,15 +8,15 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 
 #ifndef FILE_DEVICE_UNKNOWN
   #define FILE_DEVICE_UNKNOWN 0x00000022
 #endif
 
-#include <ddk/d4iface.h>
 #include <ddk/d4drvif.h>
+#include <ddk/d4iface.h>
 #include <sudovda/sudovda.h>
 
 namespace VDISPLAY {
@@ -40,6 +40,7 @@ namespace VDISPLAY {
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
   void ensureVirtualDisplayRegistryDefaults();
+
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
@@ -66,6 +67,7 @@ namespace VDISPLAY {
     std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
     std::function<bool()> should_abort;
   };
+
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,

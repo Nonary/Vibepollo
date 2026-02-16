@@ -449,14 +449,13 @@ namespace playnite_launcher {
         auto now = std::chrono::steady_clock::now();
         bool active_game_now = active_game_flag.load();
 
-        if(!fullscreen_detected && fs_running) {
+        if (!fullscreen_detected && fs_running) {
           fullscreen_detected = true;
         }
 
         if (fs_running || active_game_now) {
           consecutive_missing = 0;
-        }
-        else {
+        } else {
           consecutive_missing++;
         }
 

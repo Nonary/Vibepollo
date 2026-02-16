@@ -28,8 +28,8 @@
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
-  #include "src/platform/windows/virtual_display_cleanup.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
 #endif
 
 extern "C" {
@@ -352,7 +352,8 @@ int main(int argc, char *argv[]) {
       virtual_displays.end(),
       [](const VDISPLAY::SudaVDADisplayInfo &info) {
         return info.is_active;
-      });
+      }
+    );
     if (has_active_virtual_display) {
       BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
       (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);

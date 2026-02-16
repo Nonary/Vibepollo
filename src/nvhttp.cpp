@@ -12,8 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <future>
 #include <format>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -34,8 +34,8 @@
 
 // local includes
 #include "config.h"
-#include "display_helper_integration.h"
 #include "display_device.h"
+#include "display_helper_integration.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -47,8 +47,8 @@
 #ifdef _WIN32
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
-  #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
+  #include "platform/windows/virtual_display_cleanup.h"
 #endif
 #include "process.h"
 #include "rtsp.h"
@@ -476,11 +476,11 @@ namespace nvhttp {
           launch_session->virtual_display_failed = false;
           if (display_info->device_id && !display_info->device_id->empty()) {
             launch_session->virtual_display_device_id = *display_info->device_id;
-            } else if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(client_label)) {
-              launch_session->virtual_display_device_id = *resolved_device;
-            } else {
-              launch_session->virtual_display_device_id.clear();
-            }
+          } else if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(client_label)) {
+            launch_session->virtual_display_device_id = *resolved_device;
+          } else {
+            launch_session->virtual_display_device_id.clear();
+          }
           launch_session->virtual_display_ready_since = display_info->ready_since;
           if (display_info->display_name && !display_info->display_name->empty()) {
             BOOST_LOG(info) << "Virtual display created at " << platf::to_utf8(*display_info->display_name);
@@ -495,31 +495,31 @@ namespace nvhttp {
           recovery_params.fps = vd_fps;
           recovery_params.base_fps_millihz = base_vd_fps_millihz;
           recovery_params.framegen_refresh_active = framegen_refresh_active;
-           recovery_params.client_uid = display_uuid_source;
-           recovery_params.client_name = client_label;
-           recovery_params.hdr_profile = launch_session->hdr_profile;
-           recovery_params.display_name = display_info->display_name;
-           recovery_params.monitor_device_path = display_info->monitor_device_path;
-           if (display_info->device_id && !display_info->device_id->empty()) {
-             recovery_params.device_id = *display_info->device_id;
-           } else if (!launch_session->virtual_display_device_id.empty()) {
-             recovery_params.device_id = launch_session->virtual_display_device_id;
-           }
+          recovery_params.client_uid = display_uuid_source;
+          recovery_params.client_name = client_label;
+          recovery_params.hdr_profile = launch_session->hdr_profile;
+          recovery_params.display_name = display_info->display_name;
+          recovery_params.monitor_device_path = display_info->monitor_device_path;
+          if (display_info->device_id && !display_info->device_id->empty()) {
+            recovery_params.device_id = *display_info->device_id;
+          } else if (!launch_session->virtual_display_device_id.empty()) {
+            recovery_params.device_id = launch_session->virtual_display_device_id;
+          }
           recovery_params.max_attempts = 3;
 
           GUID recovery_guid = virtual_display_guid;
-           recovery_params.should_abort = [recovery_guid]() {
-             return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
-           };
-           std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
-           recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
-             if (auto session_locked = session_weak.lock()) {
-               if (result.device_id && !result.device_id->empty()) {
-                 session_locked->virtual_display_device_id = *result.device_id;
-                 config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
-               }
-               session_locked->virtual_display_ready_since = result.ready_since;
-               if (session_locked->virtual_display) {
+          recovery_params.should_abort = [recovery_guid]() {
+            return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
+          };
+          std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
+          recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
+            if (auto session_locked = session_weak.lock()) {
+              if (result.device_id && !result.device_id->empty()) {
+                session_locked->virtual_display_device_id = *result.device_id;
+                config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
+              }
+              session_locked->virtual_display_ready_since = result.ready_since;
+              if (session_locked->virtual_display) {
                 // Re-apply display configuration synchronously on the recovery monitor thread.
                 // Running this inline (blocking) prevents the recovery monitor from polling during
                 // topology churn caused by APPLY, which would otherwise cause transient CCD
@@ -563,9 +563,9 @@ namespace nvhttp {
                 }
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
                                 << (applied ? "." : " (apply did not succeed).");
-                }
               }
-            };
+            }
+          };
 
           VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
         } else {
@@ -1979,13 +1979,13 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
       }
 
-        if (request) {
-          if (!display_helper_integration::apply(*request)) {
-            if (helper_session_available) {
-              BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-            }
+      if (request) {
+        if (!display_helper_integration::apply(*request)) {
+          if (helper_session_available) {
+            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
           }
         }
+      }
 
       // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
       if (!launch_session->virtual_display) {
@@ -2073,9 +2073,9 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
-  #ifdef _WIN32
+#ifdef _WIN32
     virtual_display_teardown_guard.disable();
-  #endif
+#endif
     output_override_guard.disable();
     runtime_overrides_guard.disable();
 
@@ -2269,9 +2269,9 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 
     rtsp_stream::launch_session_raise(launch_session);
-  #ifdef _WIN32
+#ifdef _WIN32
     virtual_display_teardown_guard.disable();
-  #endif
+#endif
     output_override_guard.disable();
     revert_display_configuration = false;
   }
@@ -2583,6 +2583,7 @@ namespace nvhttp {
     }
     return std::nullopt;
   }
+
   // (Windows-only) display_helper_integration is included above
 
   bool unpair_client(const std::string_view uuid) {

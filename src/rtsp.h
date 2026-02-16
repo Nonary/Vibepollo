@@ -5,6 +5,8 @@
 #pragma once
 
 // standard includes
+#include "config.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -13,8 +15,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-#include "config.h"
 // local includes
 #include "crypto.h"
 #include "thread_safe.h"
@@ -81,7 +81,6 @@ namespace rtsp_stream {
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
     std::string rtsp_url_scheme;
     uint32_t rtsp_iv_counter;
-
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
