@@ -1085,15 +1085,87 @@ const VIDEO_RENDER_RESET_THRESHOLD_MS = 50;
 const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 50;
 const VIDEO_BUFFER_RESET_SUSTAIN_MS = 3000;
 const VIDEO_BUFFER_RESET_COOLDOWN_MS = 15000;
-const VIDEO_DRAIN_SUSTAIN_MS = 350;
-const VIDEO_DRAIN_RELEASE_SUSTAIN_MS = 800;
-const VIDEO_STARTUP_DRAIN_MS = 20000;
-const VIDEO_STARTUP_RELEASE_SUSTAIN_MS = 1000;
-const VIDEO_MODE_SWITCH_DRAIN_MS = 8000;
-const VIDEO_RISE_GUARD_MS = 6000;
-const VIDEO_PLAYBACK_RATE_MAX = 1.12;
-const VIDEO_PLAYBACK_RATE_BOOST_MAX = 1.2;
-const VIDEO_PLAYBACK_RATE_DECAY_PER_SEC = 0.12;
+type VideoLatencyProfile = {
+  drainSustainMs: number;
+  drainReleaseSustainMs: number;
+  startupDrainMs: number;
+  startupReleaseSustainMs: number;
+  modeSwitchDrainMs: number;
+  riseGuardMs: number;
+  riseLimitMultiplier: number;
+  riseLimitMinMs: number;
+  drainFrameReduction: number;
+  playbackRateMax: number;
+  playbackRateBoostMax: number;
+  playbackRateDecayPerSec: number;
+  targetFallRateMsPerSec: number;
+  targetRiseRateMsPerSec: number;
+  startupTargetMs: number;
+  runawayDrainTriggerMs?: number;
+  runawayDrainSustainMs?: number;
+  runawayDrainWindowMs?: number;
+  runawayResetThresholdMs?: number;
+  runawayResetSustainMs?: number;
+};
+
+function isSafariBrowser(): boolean {
+  try {
+    const ua = navigator.userAgent ?? '';
+    const vendor = navigator.vendor ?? '';
+    if (!/\bsafari\//i.test(ua)) return false;
+    if (!/apple/i.test(vendor)) return false;
+    if (/\b(chrome|chromium|crios|fxios|edgios|edg|opr|opera)\b/i.test(ua)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const DEFAULT_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
+  drainSustainMs: 350,
+  drainReleaseSustainMs: 800,
+  startupDrainMs: 20000,
+  startupReleaseSustainMs: 1000,
+  modeSwitchDrainMs: 8000,
+  riseGuardMs: 6000,
+  riseLimitMultiplier: 1.5,
+  riseLimitMinMs: 8,
+  drainFrameReduction: 0.5,
+  playbackRateMax: 1.12,
+  playbackRateBoostMax: 1.2,
+  playbackRateDecayPerSec: 0.12,
+  targetFallRateMsPerSec: Number.POSITIVE_INFINITY,
+  targetRiseRateMsPerSec: Number.POSITIVE_INFINITY,
+  startupTargetMs: 0,
+};
+
+const SAFARI_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
+  drainSustainMs: 180,
+  drainReleaseSustainMs: 550,
+  startupDrainMs: 25000,
+  startupReleaseSustainMs: 1400,
+  modeSwitchDrainMs: 9000,
+  riseGuardMs: 10000,
+  riseLimitMultiplier: 1.1,
+  riseLimitMinMs: 6,
+  drainFrameReduction: 1.0,
+  playbackRateMax: 1.16,
+  playbackRateBoostMax: 1.24,
+  playbackRateDecayPerSec: 0.15,
+  targetFallRateMsPerSec: 240,
+  targetRiseRateMsPerSec: 80,
+  startupTargetMs: 0,
+  runawayDrainTriggerMs: 80,
+  runawayDrainSustainMs: 250,
+  runawayDrainWindowMs: 12000,
+  runawayResetThresholdMs: 160,
+  runawayResetSustainMs: 1500,
+};
+
+const safariLatencyTuningEnabled = isSafariBrowser();
+const videoLatencyProfile: VideoLatencyProfile = safariLatencyTuningEnabled
+  ? SAFARI_VIDEO_LATENCY_PROFILE
+  : DEFAULT_VIDEO_LATENCY_PROFILE;
 let audioDrainOverloadedSince: number | null = null;
 let audioDrainReleaseSince: number | null = null;
 let audioDrainActive = false;
@@ -1105,11 +1177,17 @@ let videoDrainMode: 'off' | 'adaptive' | 'startup' = 'off';
 let videoBufferOverloadedSince: number | null = null;
 let lastVideoBufferResetAt: number | null = null;
 let lastVideoTargetMs: number | undefined = undefined;
+let desiredVideoTargetMs: number | undefined = undefined;
+let effectiveVideoTargetMs: number | undefined = undefined;
+let lastVideoTargetAdjustAt: number | null = null;
 let videoStartupDrainUntil: number | null = null;
 let videoStartupDrainReleaseSince: number | null = null;
 let lastVideoPlayoutSample: { ts: number; value: number } | null = null;
 let lastPlaybackRateUpdateAt: number | null = null;
 let modeSwitchDrainUntil: number | null = null;
+let safariRunawayDrainSince: number | null = null;
+let safariRunawayDrainLatched = false;
+let safariRunawayResetSince: number | null = null;
 
 function setAudioDrainActive(active: boolean): void {
   if (audioDrainActive === active) return;
@@ -1147,17 +1225,61 @@ function resolveVideoBaseTargetMs(): number {
 function resolveVideoDrainTargetMs(baseTargetMs: number): number {
   const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
   const frameMs = maxFrameAgeMsFromFrames(fps, 1);
-  return Math.max(MIN_FRAME_AGE_MS, baseTargetMs - frameMs * 0.5);
+  return Math.max(
+    MIN_FRAME_AGE_MS,
+    Math.min(MAX_FRAME_AGE_MS, baseTargetMs - frameMs * videoLatencyProfile.drainFrameReduction),
+  );
 }
 
 function resolveVideoStartupTargetMs(): number {
-  return 0;
+  return videoLatencyProfile.startupTargetMs;
 }
 
 function applyVideoTargetMs(targetMs?: number): void {
-  if (lastVideoTargetMs === targetMs) return;
-  lastVideoTargetMs = targetMs;
-  client.setVideoLatencyTarget(targetMs);
+  const now = Date.now();
+  const normalizedTarget =
+    typeof targetMs === 'number' && Number.isFinite(targetMs)
+      ? Math.min(MAX_FRAME_AGE_MS, Math.max(MIN_FRAME_AGE_MS, targetMs))
+      : undefined;
+  desiredVideoTargetMs = normalizedTarget;
+
+  if (desiredVideoTargetMs == null) {
+    effectiveVideoTargetMs = undefined;
+    lastVideoTargetAdjustAt = now;
+    if (lastVideoTargetMs === undefined) return;
+    lastVideoTargetMs = undefined;
+    client.setVideoLatencyTarget(undefined);
+    return;
+  }
+
+  if (effectiveVideoTargetMs == null || !Number.isFinite(effectiveVideoTargetMs)) {
+    effectiveVideoTargetMs = desiredVideoTargetMs;
+  } else if (effectiveVideoTargetMs !== desiredVideoTargetMs) {
+    const lastAt = lastVideoTargetAdjustAt ?? now;
+    const elapsedMs = Math.max(1, now - lastAt);
+    const movingDown = desiredVideoTargetMs < effectiveVideoTargetMs;
+    const slewRate = movingDown
+      ? videoLatencyProfile.targetFallRateMsPerSec
+      : videoLatencyProfile.targetRiseRateMsPerSec;
+    const maxStep = Number.isFinite(slewRate)
+      ? (slewRate * elapsedMs) / 1000
+      : Math.abs(desiredVideoTargetMs - effectiveVideoTargetMs);
+
+    if (maxStep > 0) {
+      const delta = desiredVideoTargetMs - effectiveVideoTargetMs;
+      if (Math.abs(delta) <= maxStep) {
+        effectiveVideoTargetMs = desiredVideoTargetMs;
+      } else {
+        effectiveVideoTargetMs += Math.sign(delta) * maxStep;
+      }
+    }
+  }
+
+  lastVideoTargetAdjustAt = now;
+  const nextTargetMs = Math.round(effectiveVideoTargetMs);
+  if (lastVideoTargetMs === nextTargetMs) return;
+  lastVideoTargetMs = nextTargetMs;
+  client.setVideoLatencyTarget(nextTargetMs);
 }
 
 function setVideoDrainMode(
@@ -1188,6 +1310,9 @@ function resetVideoDrainState(): void {
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
   lastVideoPlayoutSample = null;
+  safariRunawayDrainSince = null;
+  safariRunawayDrainLatched = false;
+  safariRunawayResetSince = null;
   const baseTargetMs = resolveVideoBaseTargetMs();
   setVideoDrainMode('off', baseTargetMs);
 }
@@ -1207,7 +1332,7 @@ function triggerVideoDrainWindow(durationMs: number, reason: string): void {
 function setVideoPlaybackRate(rate: number): void {
   const el = videoEl.value;
   if (!el) return;
-  const clamped = Math.max(1, Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, rate));
+  const clamped = Math.max(1, Math.min(videoLatencyProfile.playbackRateBoostMax, rate));
   if (Math.abs((el.playbackRate ?? 1) - clamped) < 0.001) return;
   try {
     el.playbackRate = clamped;
@@ -1281,14 +1406,70 @@ watch(
     const baseTargetMs = resolveVideoBaseTargetMs();
     const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
     const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+    if (safariLatencyTuningEnabled) {
+      if (
+        typeof videoLatencyProfile.runawayDrainTriggerMs === 'number' &&
+        videoValue >= videoLatencyProfile.runawayDrainTriggerMs
+      ) {
+        if (safariRunawayDrainSince == null) {
+          safariRunawayDrainSince = now;
+        }
+        if (
+          !safariRunawayDrainLatched &&
+          typeof videoLatencyProfile.runawayDrainSustainMs === 'number' &&
+          now - safariRunawayDrainSince >= videoLatencyProfile.runawayDrainSustainMs
+        ) {
+          safariRunawayDrainLatched = true;
+          triggerVideoDrainWindow(
+            videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.startupDrainMs,
+            'runaway',
+          );
+        }
+      } else if (videoValue <= baseTargetMs + frameMs) {
+        safariRunawayDrainSince = null;
+        safariRunawayDrainLatched = false;
+      }
+
+      if (
+        typeof videoLatencyProfile.runawayResetThresholdMs === 'number' &&
+        videoValue >= videoLatencyProfile.runawayResetThresholdMs
+      ) {
+        if (safariRunawayResetSince == null) {
+          safariRunawayResetSince = now;
+        }
+        if (
+          typeof videoLatencyProfile.runawayResetSustainMs === 'number' &&
+          now - safariRunawayResetSince >= videoLatencyProfile.runawayResetSustainMs
+        ) {
+          if (
+            lastVideoBufferResetAt == null ||
+            now - lastVideoBufferResetAt >= VIDEO_BUFFER_RESET_COOLDOWN_MS
+          ) {
+            lastVideoBufferResetAt = now;
+            safariRunawayResetSince = null;
+            pushVideoEvent('video-runaway-reset');
+            resetVideoElement();
+            triggerVideoDrainWindow(
+              videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.startupDrainMs,
+              'runaway-reset',
+            );
+          }
+        }
+      } else {
+        safariRunawayResetSince = null;
+      }
+    }
     if (lastVideoPlayoutSample) {
       const deltaMs = now - lastVideoPlayoutSample.ts;
       const deltaValue = videoValue - lastVideoPlayoutSample.value;
       if (deltaMs > 0 && deltaValue > 0) {
         const riseRate = (deltaValue * 1000) / deltaMs;
-        const riseLimit = Math.max(8, frameMs * 1.5);
+        const riseLimit = Math.max(
+          videoLatencyProfile.riseLimitMinMs,
+          frameMs * videoLatencyProfile.riseLimitMultiplier,
+        );
         if (riseRate > riseLimit && videoValue > baseTargetMs + frameMs) {
-          const until = now + VIDEO_RISE_GUARD_MS;
+          const until = now + videoLatencyProfile.riseGuardMs;
           videoStartupDrainUntil =
             videoStartupDrainUntil != null ? Math.max(videoStartupDrainUntil, until) : until;
           videoStartupDrainReleaseSince = null;
@@ -1305,15 +1486,15 @@ watch(
       const errorMs = Math.max(0, videoValue - (baseTargetMs + frameMs));
       const boostActive = modeSwitchDrainUntil != null && now <= modeSwitchDrainUntil;
       if (boostActive) {
-        const boosted = 1 + Math.min(0.2, errorMs / Math.max(1, frameMs * 6));
-        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_BOOST_MAX, Math.max(1, boosted)));
+        const boosted = 1 + Math.min(videoLatencyProfile.playbackRateBoostMax - 1, errorMs / Math.max(1, frameMs * 6));
+        setVideoPlaybackRate(Math.min(videoLatencyProfile.playbackRateBoostMax, Math.max(1, boosted)));
       } else if (errorMs > 0) {
-        const desired = 1 + Math.min(0.12, errorMs / Math.max(1, frameMs * 10));
-        setVideoPlaybackRate(Math.min(VIDEO_PLAYBACK_RATE_MAX, Math.max(1, desired)));
+        const desired = 1 + Math.min(videoLatencyProfile.playbackRateMax - 1, errorMs / Math.max(1, frameMs * 10));
+        setVideoPlaybackRate(Math.min(videoLatencyProfile.playbackRateMax, Math.max(1, desired)));
       } else {
         const current = videoEl.value.playbackRate ?? 1;
         if (current > 1 && deltaMs > 0) {
-          const decay = (VIDEO_PLAYBACK_RATE_DECAY_PER_SEC * deltaMs) / 1000;
+          const decay = (videoLatencyProfile.playbackRateDecayPerSec * deltaMs) / 1000;
           setVideoPlaybackRate(Math.max(1, current - decay));
         } else {
           setVideoPlaybackRate(1);
@@ -1331,7 +1512,7 @@ watch(
         if (videoValue <= baseTargetMs + frameMs) {
           if (videoStartupDrainReleaseSince == null) {
             videoStartupDrainReleaseSince = now;
-          } else if (now - videoStartupDrainReleaseSince >= VIDEO_STARTUP_RELEASE_SUSTAIN_MS) {
+          } else if (now - videoStartupDrainReleaseSince >= videoLatencyProfile.startupReleaseSustainMs) {
             videoStartupDrainUntil = null;
             videoStartupDrainReleaseSince = null;
             setVideoDrainMode('off', baseTargetMs);
@@ -1350,14 +1531,14 @@ watch(
         videoDrainOverloadedSince = now;
       }
       videoDrainReleaseSince = null;
-      if (videoDrainMode !== 'adaptive' && now - videoDrainOverloadedSince >= VIDEO_DRAIN_SUSTAIN_MS) {
+      if (videoDrainMode !== 'adaptive' && now - videoDrainOverloadedSince >= videoLatencyProfile.drainSustainMs) {
         setVideoDrainMode('adaptive', baseTargetMs);
       }
     } else if (videoDrainMode === 'adaptive' && videoValue <= releaseMs) {
       if (videoDrainReleaseSince == null) {
         videoDrainReleaseSince = now;
       }
-      if (now - videoDrainReleaseSince >= VIDEO_DRAIN_RELEASE_SUSTAIN_MS) {
+      if (now - videoDrainReleaseSince >= videoLatencyProfile.drainReleaseSustainMs) {
         setVideoDrainMode('off', baseTargetMs);
       }
     } else {
@@ -1685,8 +1866,8 @@ const onFullscreenChange = () => {
   if (active) pseudoFullscreen.value = false;
   isFullscreen.value = active || pseudoFullscreen.value;
   if (!isFullscreen.value) { cancelEscHold(); releaseFullscreenKeyboardLock(); }
-  modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
-  triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'fullscreen');
+  modeSwitchDrainUntil = Date.now() + videoLatencyProfile.modeSwitchDrainMs;
+  triggerVideoDrainWindow(videoLatencyProfile.modeSwitchDrainMs, 'fullscreen');
   ensureAudioPlayback('fullscreen');
 };
 
@@ -1702,8 +1883,8 @@ const onPageHide = () => { void client.disconnect({ keepalive: true }); };
 
 const onVisibilityChange = () => {
   if (document.visibilityState === 'visible') {
-    modeSwitchDrainUntil = Date.now() + VIDEO_MODE_SWITCH_DRAIN_MS;
-    triggerVideoDrainWindow(VIDEO_MODE_SWITCH_DRAIN_MS, 'resume');
+    modeSwitchDrainUntil = Date.now() + videoLatencyProfile.modeSwitchDrainMs;
+    triggerVideoDrainWindow(videoLatencyProfile.modeSwitchDrainMs, 'resume');
   }
   ensureAudioPlayback('visibility');
 };
@@ -2002,7 +2183,7 @@ async function startConnect() {
             updateAudioElement(stream);
             ensureAudioPlayback('remote-stream');
             if (hasVideo) {
-              videoStartupDrainUntil = Date.now() + VIDEO_STARTUP_DRAIN_MS;
+              videoStartupDrainUntil = Date.now() + videoLatencyProfile.startupDrainMs;
               videoStartupDrainReleaseSince = null;
               const baseTargetMs = resolveVideoBaseTargetMs();
               setVideoDrainMode('startup', baseTargetMs, resolveVideoStartupTargetMs());
@@ -2102,8 +2283,14 @@ async function disconnect() {
   resetAudioDrainState();
   resetVideoDrainState();
   lastVideoTargetMs = undefined;
+  desiredVideoTargetMs = undefined;
+  effectiveVideoTargetMs = undefined;
+  lastVideoTargetAdjustAt = null;
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
+  safariRunawayDrainSince = null;
+  safariRunawayDrainLatched = false;
+  safariRunawayResetSince = null;
   sessionId.value = null;
   serverSession.value = null;
   resetServerRates();

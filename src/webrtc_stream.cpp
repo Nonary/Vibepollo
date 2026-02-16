@@ -3495,7 +3495,8 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               work.sample_rate,
               work.channels,
-              work.frames
+              work.frames,
+              timestamp_to_us(work.timestamp)
             );
           }
         };
@@ -3984,7 +3985,8 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               latest_audio.sample_rate,
               latest_audio.channels,
-              latest_audio.frames
+              latest_audio.frames,
+              timestamp_to_us(latest_audio.timestamp)
             );
           }
         }
@@ -4562,6 +4564,7 @@ namespace webrtc_stream {
       int sample_rate = 0;
       int channels = 0;
       int frames = 0;
+      std::chrono::steady_clock::time_point timestamp {};
     };
     std::vector<AudioPushWork> direct_audio;
     bool queued_raw_audio = false;
@@ -4581,7 +4584,8 @@ namespace webrtc_stream {
               shared_samples,
               sample_rate,
               output_channels,
-              frames
+              frames,
+              now
             });
           } else
 #endif
@@ -4617,7 +4621,8 @@ namespace webrtc_stream {
         static_cast<int>(sizeof(int16_t) * 8),
         work.sample_rate,
         work.channels,
-        work.frames
+        work.frames,
+        timestamp_to_us(work.timestamp)
       );
     }
     if (queued_raw_audio) {
