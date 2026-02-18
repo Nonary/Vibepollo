@@ -2338,7 +2338,11 @@ namespace stream {
         // If the WebRTC capture thread is still running in its idle grace
         // period, the audio context won't be destroyed by ref-counting alone,
         // so we need to explicitly restore the original audio device here.
-        audio::restore_sink();
+        // Skip when paused (app still running) to avoid crashing games that
+        // depend on the virtual audio device.
+        if (!is_paused) {
+          audio::restore_sink();
+        }
 
         // No active sessions now; apply any deferred config updates
         config::maybe_apply_deferred();

@@ -4378,7 +4378,12 @@ namespace webrtc_stream {
         // Restore audio sink immediately so the user doesn't have to wait
         // for the WebRTC idle grace period before their original audio device
         // becomes the default again.
-        audio::restore_sink();
+        // Skip when paused (app still running) to avoid crashing games that
+        // depend on the virtual audio device.
+        const bool is_paused = proc::proc.running() > 0;
+        if (!is_paused) {
+          audio::restore_sink();
+        }
       }
       schedule_webrtc_idle_shutdown();
     }
