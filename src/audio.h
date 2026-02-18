@@ -107,14 +107,4 @@ namespace audio {
    * @examples_end
    */
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx);
-
-  /**
-   * @brief Immediately restore the audio sink to the original device.
-   * @note This is used to restore audio when a streaming session ends but
-   *       the audio capture thread may still be running (e.g., during the
-   *       WebRTC idle grace period). After calling this, the audio context's
-   *       restore_sink flag is cleared so it won't try to restore again
-   *       when the capture thread eventually stops.
-   */
-  void restore_sink();
 }  // namespace audio

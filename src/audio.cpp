@@ -341,28 +341,6 @@ namespace audio {
     }
   }
 
-  void restore_sink() {
-    auto ref = get_audio_ctx_ref();
-    if (!ref) {
-      return;
-    }
-
-    auto ctx = ref.get();
-    if (!ctx || !ctx->restore_sink || !ctx->control) {
-      return;
-    }
-
-    const std::string &sink = ctx->sink.host.empty() ? config::audio.sink : ctx->sink.host;
-    if (!sink.empty()) {
-      BOOST_LOG(info) << "Restoring audio sink to: "sv << sink;
-      // Best effort, it's allowed to fail
-      ctx->control->set_sink(sink);
-    }
-
-    // Mark as already restored so stop_audio_control doesn't try again
-    ctx->restore_sink = false;
-  }
-
   void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params) {
     stream.channelCount = params.channelCount;
     stream.streams = params.streams;
