@@ -1336,6 +1336,7 @@ namespace webrtc_stream {
     }
 
     void send_gamepad_feedback_payload(const std::string &payload) {
+#ifdef SUNSHINE_ENABLE_WEBRTC
       std::lock_guard lg {session_mutex};
       for (auto &[_, session] : sessions) {
         if (!session.input_channel) {
@@ -1351,6 +1352,7 @@ namespace webrtc_stream {
           0
         );
       }
+#endif
     }
 
     void feedback_thread_main(safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> queue) {
@@ -1784,6 +1786,7 @@ namespace webrtc_stream {
       return result;
     }
 
+#ifdef SUNSHINE_ENABLE_WEBRTC
     const char *lwrtc_codec_name(lwrtc_video_codec_t codec) {
       switch (codec) {
         case LWRTC_VIDEO_CODEC_H264:
@@ -1796,6 +1799,7 @@ namespace webrtc_stream {
           return "Unknown";
       }
     }
+#endif
 
     video::config_t build_video_config(const SessionOptions &options) {
       video::config_t config {};
