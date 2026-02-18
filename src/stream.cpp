@@ -28,6 +28,7 @@ extern "C" {
 }
 
 // local includes
+#include "audio.h"
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
@@ -2332,6 +2333,12 @@ namespace stream {
   platf::frame_limiter_streaming_stop(is_paused);
 #endif
         platf::streaming_will_stop();
+
+        // Restore the audio sink now that all RTSP sessions are done.
+        // If the WebRTC capture thread is still running in its idle grace
+        // period, the audio context won't be destroyed by ref-counting alone,
+        // so we need to explicitly restore the original audio device here.
+        audio::restore_sink();
 
         // No active sessions now; apply any deferred config updates
         config::maybe_apply_deferred();

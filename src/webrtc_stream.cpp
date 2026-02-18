@@ -4374,6 +4374,11 @@ namespace webrtc_stream {
 #endif
       if (!rtsp_sessions_active.load(std::memory_order_relaxed)) {
         platf::streaming_will_stop();
+
+        // Restore audio sink immediately so the user doesn't have to wait
+        // for the WebRTC idle grace period before their original audio device
+        // becomes the default again.
+        audio::restore_sink();
       }
       schedule_webrtc_idle_shutdown();
     }
