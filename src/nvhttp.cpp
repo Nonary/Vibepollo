@@ -1758,8 +1758,9 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
         }
 
-        auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-          VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+        bool encoder_probe_succeeded = false;
+        auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
+          VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
         });
 #endif
 
@@ -1775,6 +1776,7 @@ namespace nvhttp {
             BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying serverinfo encoder probe.";
           }
         }
+        encoder_probe_succeeded = !encoder_probe_failed;
 #endif
 
         if (encoder_probe_failed) {
