@@ -44,8 +44,6 @@ extern "C" {
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
 
-  #include <dxgi1_2.h>
-  #include <wrl/client.h>
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -212,86 +210,27 @@ namespace video {
       return state;
     }
 
-#ifdef _WIN32
-    // Build a stable cache sub-key for the adapter that backs the current output.
-    // Returns empty string if we cannot resolve the adapter, since the full GPU
-    // enumeration in build_probe_cache_key() provides stable adapter identification.
-    // We must NOT fall back to the display name as it can change when virtual
-    // displays are created/destroyed, causing unnecessary cache invalidation.
-    std::string adapter_cache_key_for_output(const std::string &output_name) {
-      const auto mapped_output = display_device::map_output_name(output_name);
-      Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-      if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
-        return "";
-      }
-
-      const auto mapped_output_w = platf::from_utf8(mapped_output);
-      for (UINT adapter_index = 0;; ++adapter_index) {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(adapter_index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-
-        DXGI_ADAPTER_DESC1 adapter_desc {};
-        if (FAILED(adapter->GetDesc1(&adapter_desc))) {
-          continue;
-        }
-
-        for (UINT output_index = 0;; ++output_index) {
-          Microsoft::WRL::ComPtr<IDXGIOutput> output;
-          const auto hr = adapter->EnumOutputs(output_index, output.GetAddressOf());
-          if (hr == DXGI_ERROR_NOT_FOUND) {
-            break;
-          }
-          if (FAILED(hr)) {
-            continue;
-          }
-
-          DXGI_OUTPUT_DESC output_desc {};
-          if (FAILED(output->GetDesc(&output_desc))) {
-            continue;
-          }
-
-          if (_wcsicmp(output_desc.DeviceName, mapped_output_w.c_str()) != 0) {
-            continue;
-          }
-
-          std::ostringstream key;
-          key << adapter_desc.VendorId << ':' << adapter_desc.DeviceId << ':' << platf::to_utf8(adapter_desc.Description);
-          return key.str();
-        }
-      }
-
-      // Return empty string instead of the display name - the display name is
-      // transient and can change when virtual displays are created/destroyed.
-      // The GPU enumeration in build_probe_cache_key() already provides stable
-      // adapter identification for cache invalidation purposes.
-      return "";
-    }
-#else
-    std::string adapter_cache_key_for_output(const std::string &output_name) {
-      (void) output_name;  // Unused on non-Windows platforms
-      return "";
-    }
-#endif
-
     std::string build_probe_cache_key() {
-      const auto active_output = config::get_active_output_name();
-      auto adapter_key = adapter_cache_key_for_output(active_output);
-      if (adapter_key.empty()) {
-        // Per-session output overrides (ex: per-client virtual displays) can be transient and may not
-        // map to a DXGI output name; fall back to the configured output for stable cache behavior.
-        adapter_key = adapter_cache_key_for_output(config::video.output_name);
-      }
-
       std::ostringstream oss;
-      oss << config::video.encoder << '|'
-          << adapter_key << '|'
-          << config::video.adapter_name;
+      // Cache probe results strictly by detected GPU identity.
+      oss << "gpu|";
 #ifdef _WIN32
-      oss << '|';
+      auto gpus = platf::enumerate_gpus();
+      std::sort(gpus.begin(), gpus.end(), [](const auto &lhs, const auto &rhs) {
+        if (lhs.vendor_id != rhs.vendor_id) {
+          return lhs.vendor_id < rhs.vendor_id;
+        }
+        if (lhs.device_id != rhs.device_id) {
+          return lhs.device_id < rhs.device_id;
+        }
+        if (lhs.description != rhs.description) {
+          return lhs.description < rhs.description;
+        }
+        return lhs.dedicated_video_memory < rhs.dedicated_video_memory;
+      });
+
       bool any_gpu = false;
-      for (const auto &gpu : platf::enumerate_gpus()) {
+      for (const auto &gpu : gpus) {
         any_gpu = true;
         oss << gpu.vendor_id << ':' << gpu.device_id << ':' << gpu.description << ':' << gpu.dedicated_video_memory << ';';
       }
@@ -299,7 +238,7 @@ namespace video {
         oss << "nogpu";
       }
 #else
-      oss << "|nogpu";
+      oss << "nogpu";
 #endif
       return oss.str();
     }
