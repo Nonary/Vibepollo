@@ -8,15 +8,15 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 
 #ifndef FILE_DEVICE_UNKNOWN
   #define FILE_DEVICE_UNKNOWN 0x00000022
 #endif
 
-#include <ddk/d4drvif.h>
 #include <ddk/d4iface.h>
+#include <ddk/d4drvif.h>
 #include <sudovda/sudovda.h>
 
 namespace VDISPLAY {

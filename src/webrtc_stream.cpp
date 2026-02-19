@@ -3621,8 +3621,7 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               work.sample_rate,
               work.channels,
-              work.frames,
-              timestamp_to_us(work.timestamp)
+              work.frames
             );
           }
         };
@@ -4111,8 +4110,7 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               latest_audio.sample_rate,
               latest_audio.channels,
-              latest_audio.frames,
-              timestamp_to_us(latest_audio.timestamp)
+              latest_audio.frames
             );
           }
         }
@@ -4755,8 +4753,7 @@ namespace webrtc_stream {
         static_cast<int>(sizeof(int16_t) * 8),
         work.sample_rate,
         work.channels,
-        work.frames,
-        timestamp_to_us(work.timestamp)
+        work.frames
       );
     }
     if (queued_raw_audio) {
