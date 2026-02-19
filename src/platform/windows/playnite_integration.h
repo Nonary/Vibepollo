@@ -113,7 +113,7 @@ namespace platf::playnite {
    * @param[out] out_json Receives the JSON array string on success.
    * @return `true` if category data was available and written to `out_json`, `false` otherwise.
    */
- bool get_categories_list_json(std::string &out_json);
+  bool get_categories_list_json(std::string &out_json);
 
   /**
    * @brief Get a JSON array string of library plugins (id + name).

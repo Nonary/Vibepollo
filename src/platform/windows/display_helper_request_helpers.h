@@ -15,7 +15,7 @@ namespace display_helper_integration::helpers {
    * @brief Configures builder instances with session-derived display settings.
    */
   class SessionDisplayConfigurationHelper {
-   public:
+  public:
     SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
 
     /**
@@ -24,7 +24,7 @@ namespace display_helper_integration::helpers {
      */
     bool configure(DisplayApplyBuilder &builder) const;
 
-   private:
+  private:
     bool configure_virtual_display(
       DisplayApplyBuilder &builder,
       config::video_t::virtual_display_layout_e layout,
@@ -50,11 +50,11 @@ namespace display_helper_integration::helpers {
    * @brief Captures monitor topology/position hints for the helper.
    */
   class SessionMonitorPositionHelper {
-   public:
+  public:
     SessionMonitorPositionHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
     void configure(DisplayApplyBuilder &builder) const;
 
-   private:
+  private:
     const config::video_t &video_config_;
     config::video_t effective_video_config_;
     const rtsp_stream::launch_session_t &session_;

@@ -10,12 +10,12 @@
 
 // standard includes
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <chrono>
 
 // lib includes
 #include "boost_process_shim.h"

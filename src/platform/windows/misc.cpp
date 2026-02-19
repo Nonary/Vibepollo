@@ -44,6 +44,7 @@
 // local includes
 #include "misc.h"
 #include "nvprefs/nvprefs_interface.h"
+#include "src/boost_process_shim.h"
 #include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
@@ -51,7 +52,6 @@
 #include "src/platform/common.h"
 #include "src/process.h"
 #include "src/utility.h"
-#include "src/boost_process_shim.h"
 
 // UDP_SEND_MSG_SIZE was added in the Windows 10 20H1 SDK
 #ifndef UDP_SEND_MSG_SIZE

@@ -5,6 +5,8 @@
 #pragma once
 
 // standard includes
+#include "config.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -14,8 +16,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-#include "config.h"
 // local includes
 #include "crypto.h"
 #include "thread_safe.h"

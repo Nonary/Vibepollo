@@ -23,7 +23,8 @@ namespace platf::virtual_display_cleanup {
         virtual_displays.end(),
         [](const VDISPLAY::SudaVDADisplayInfo &info) {
           return info.is_active;
-        });
+        }
+      );
     }
 
     bool restore_windows_display_database() {

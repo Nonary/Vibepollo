@@ -326,8 +326,8 @@ const ddHdrOptions = computed(() => [
 ]);
 
 // ----- Manual Resolution Validation -----
-// Validate formats like 1920x1080 (optionally allowing spaces around x)
-const manualResolutionPattern = /^(\s*\d{2,5}\s*[xX]\s*\d{2,5}\s*)$/;
+// Validate formats like 1920x1080 (optionally allowing spaces around the separator)
+const manualResolutionPattern = /^(\s*\d{2,5}\s*[xX×]\s*\d{2,5}\s*)$/;
 const manualResolutionValid = computed(() => {
   if (config.dd_resolution_option !== 'manual') return true;
   const v = String(config.dd_manual_resolution || '');
@@ -901,7 +901,7 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080) or leave blank.
+                        Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080, x or ×) or leave blank.
                       </div>
                       <div
                         v-if="
@@ -919,7 +919,7 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440) or leave blank.
+                        Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440, x or ×) or leave blank.
                       </div>
                       <div
                         v-if="
@@ -998,7 +998,7 @@ function clearSnapshotHotkey(): void {
                       v-bind="manualResolutionValid ? {} : { status: 'error' }"
                     />
                     <p v-if="!manualResolutionValid" class="text-[11px] text-red-500">
-                      Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440.
+                      Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440 (x or ×).
                     </p>
                   </div>
                 </div>

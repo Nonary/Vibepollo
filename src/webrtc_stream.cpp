@@ -9,35 +9,35 @@
 #include <bitset>
 #include <cctype>
 #include <charconv>
-#include <condition_variable>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <iomanip>
 #include <deque>
-#include <limits>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string_view>
 #include <thread>
-#include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 // lib includes
+#include <boost/algorithm/string.hpp>
+#include <moonlight-common-c/src/Input.h>
+#include <moonlight-common-c/src/Limelight.h>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
-#include <moonlight-common-c/src/Input.h>
-#include <moonlight-common-c/src/Limelight.h>
-#include <boost/algorithm/string.hpp>
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
-#include <libwebrtc_c.h>
+  #include <libwebrtc_c.h>
 #endif
 
 // local includes
@@ -46,38 +46,40 @@
 #include "crypto.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "httpcommon.h"
 #include "input.h"
 #include "logging.h"
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "utility.h"
-#include "httpcommon.h"
+#include "uuid.h"
 #include "video.h"
 #include "video_colorspace.h"
-#include "uuid.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
-#include <d3d11.h>
-#include <d3dcompiler.h>
-#include <wrl/client.h>
-#include "src/platform/common.h"
-#include "src/platform/windows/misc.h"
-#include "src/platform/windows/frame_limiter.h"
-#include "src/platform/windows/display_helper_integration.h"
-#include "src/platform/windows/display_helper_request_helpers.h"
-#include "src/platform/windows/virtual_display_cleanup.h"
-#include "src/platform/windows/virtual_display.h"
-#include "src/platform/windows/display_vram.h"
-#if !defined(SUNSHINE_SHADERS_DIR)
-  #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
-#endif
+  #include "src/platform/common.h"
+  #include "src/platform/windows/display_helper_integration.h"
+  #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/display_vram.h"
+  #include "src/platform/windows/frame_limiter.h"
+  #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
+
+  #include <d3d11.h>
+  #include <d3dcompiler.h>
+  #include <wrl/client.h>
+  #if !defined(SUNSHINE_SHADERS_DIR)
+    #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
+  #endif
 #endif
 
 #ifdef __APPLE__
-#include "src/platform/macos/av_img_t.h"
-#include <CoreVideo/CoreVideo.h>
+  #include "src/platform/macos/av_img_t.h"
+
+  #include <CoreVideo/CoreVideo.h>
 #endif
 
 namespace webrtc_stream {
@@ -148,8 +150,8 @@ namespace webrtc_stream {
       std::shared_ptr<std::atomic_uint32_t> inflight;
     };
 
-    void release_shared_encoded_payload(void* user) noexcept {
-      auto* context = static_cast<SharedEncodedPayloadReleaseContext*>(user);
+    void release_shared_encoded_payload(void *user) noexcept {
+      auto *context = static_cast<SharedEncodedPayloadReleaseContext *>(user);
       if (!context) {
         return;
       }
@@ -418,7 +420,8 @@ namespace webrtc_stream {
       std::chrono::nanoseconds slack =
         std::chrono::duration_cast<std::chrono::nanoseconds>(kVideoPacingSlackBalanced);
       std::chrono::nanoseconds max_frame_age = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::milliseconds {max_age_ms_from_frames(kDefaultFps, 2)});
+        std::chrono::milliseconds {max_age_ms_from_frames(kDefaultFps, 2)}
+      );
       int max_age_frames = 2;
       bool max_frame_age_override = false;
       bool pace = true;
@@ -664,8 +667,12 @@ namespace webrtc_stream {
           int screen_width = 1920;
           int screen_height = 1080;
 #endif
-          if (screen_width <= 0) screen_width = 1920;
-          if (screen_height <= 0) screen_height = 1080;
+          if (screen_width <= 0) {
+            screen_width = 1920;
+          }
+          if (screen_height <= 0) {
+            screen_height = 1080;
+          }
 
           input::touch_port_t port {};
           port.offset_x = 0;
@@ -724,35 +731,93 @@ namespace webrtc_stream {
           return static_cast<short>(digit);
         }
       }
-      if (code == "Space") return 0x20;
-      if (code == "Enter") return 0x0D;
-      if (code == "Tab") return 0x09;
-      if (code == "Escape") return 0x1B;
-      if (code == "Backspace") return 0x08;
-      if (code == "Delete") return 0x2E;
-      if (code == "Insert") return 0x2D;
-      if (code == "Home") return 0x24;
-      if (code == "End") return 0x23;
-      if (code == "PageUp") return 0x21;
-      if (code == "PageDown") return 0x22;
-      if (code == "ArrowLeft") return 0x25;
-      if (code == "ArrowUp") return 0x26;
-      if (code == "ArrowRight") return 0x27;
-      if (code == "ArrowDown") return 0x28;
-      if (code == "CapsLock") return 0x14;
-      if (code == "ShiftLeft") return 0xA0;
-      if (code == "ShiftRight") return 0xA1;
-      if (code == "ControlLeft") return 0xA2;
-      if (code == "ControlRight") return 0xA3;
-      if (code == "AltLeft") return 0xA4;
-      if (code == "AltRight") return 0xA5;
-      if (code == "MetaLeft") return 0x5B;
-      if (code == "MetaRight") return 0x5C;
-      if (code == "ContextMenu") return 0x5D;
-      if (code == "PrintScreen") return 0x2C;
-      if (code == "ScrollLock") return 0x91;
-      if (code == "Pause") return 0x13;
-      if (code == "NumLock") return 0x90;
+      if (code == "Space") {
+        return 0x20;
+      }
+      if (code == "Enter") {
+        return 0x0D;
+      }
+      if (code == "Tab") {
+        return 0x09;
+      }
+      if (code == "Escape") {
+        return 0x1B;
+      }
+      if (code == "Backspace") {
+        return 0x08;
+      }
+      if (code == "Delete") {
+        return 0x2E;
+      }
+      if (code == "Insert") {
+        return 0x2D;
+      }
+      if (code == "Home") {
+        return 0x24;
+      }
+      if (code == "End") {
+        return 0x23;
+      }
+      if (code == "PageUp") {
+        return 0x21;
+      }
+      if (code == "PageDown") {
+        return 0x22;
+      }
+      if (code == "ArrowLeft") {
+        return 0x25;
+      }
+      if (code == "ArrowUp") {
+        return 0x26;
+      }
+      if (code == "ArrowRight") {
+        return 0x27;
+      }
+      if (code == "ArrowDown") {
+        return 0x28;
+      }
+      if (code == "CapsLock") {
+        return 0x14;
+      }
+      if (code == "ShiftLeft") {
+        return 0xA0;
+      }
+      if (code == "ShiftRight") {
+        return 0xA1;
+      }
+      if (code == "ControlLeft") {
+        return 0xA2;
+      }
+      if (code == "ControlRight") {
+        return 0xA3;
+      }
+      if (code == "AltLeft") {
+        return 0xA4;
+      }
+      if (code == "AltRight") {
+        return 0xA5;
+      }
+      if (code == "MetaLeft") {
+        return 0x5B;
+      }
+      if (code == "MetaRight") {
+        return 0x5C;
+      }
+      if (code == "ContextMenu") {
+        return 0x5D;
+      }
+      if (code == "PrintScreen") {
+        return 0x2C;
+      }
+      if (code == "ScrollLock") {
+        return 0x91;
+      }
+      if (code == "Pause") {
+        return 0x13;
+      }
+      if (code == "NumLock") {
+        return 0x90;
+      }
       if (code.rfind("F", 0) == 0 && code.size() >= 2 && code.size() <= 3) {
         int fn = std::atoi(std::string(code.substr(1)).c_str());
         if (fn >= 1 && fn <= 24) {
@@ -766,24 +831,58 @@ namespace webrtc_stream {
             return static_cast<short>(0x60 + (digit - '0'));
           }
         }
-        if (code == "NumpadAdd") return 0x6B;
-        if (code == "NumpadSubtract") return 0x6D;
-        if (code == "NumpadMultiply") return 0x6A;
-        if (code == "NumpadDivide") return 0x6F;
-        if (code == "NumpadDecimal") return 0x6E;
-        if (code == "NumpadEnter") return 0x0D;
+        if (code == "NumpadAdd") {
+          return 0x6B;
+        }
+        if (code == "NumpadSubtract") {
+          return 0x6D;
+        }
+        if (code == "NumpadMultiply") {
+          return 0x6A;
+        }
+        if (code == "NumpadDivide") {
+          return 0x6F;
+        }
+        if (code == "NumpadDecimal") {
+          return 0x6E;
+        }
+        if (code == "NumpadEnter") {
+          return 0x0D;
+        }
       }
-      if (code == "Minus") return 0xBD;
-      if (code == "Equal") return 0xBB;
-      if (code == "BracketLeft") return 0xDB;
-      if (code == "BracketRight") return 0xDD;
-      if (code == "Backslash") return 0xDC;
-      if (code == "Semicolon") return 0xBA;
-      if (code == "Quote") return 0xDE;
-      if (code == "Backquote") return 0xC0;
-      if (code == "Comma") return 0xBC;
-      if (code == "Period") return 0xBE;
-      if (code == "Slash") return 0xBF;
+      if (code == "Minus") {
+        return 0xBD;
+      }
+      if (code == "Equal") {
+        return 0xBB;
+      }
+      if (code == "BracketLeft") {
+        return 0xDB;
+      }
+      if (code == "BracketRight") {
+        return 0xDD;
+      }
+      if (code == "Backslash") {
+        return 0xDC;
+      }
+      if (code == "Semicolon") {
+        return 0xBA;
+      }
+      if (code == "Quote") {
+        return 0xDE;
+      }
+      if (code == "Backquote") {
+        return 0xC0;
+      }
+      if (code == "Comma") {
+        return 0xBC;
+      }
+      if (code == "Period") {
+        return 0xBE;
+      }
+      if (code == "Slash") {
+        return 0xBF;
+      }
 
       if (key.size() == 1) {
         unsigned char ch = static_cast<unsigned char>(key[0]);
@@ -796,12 +895,18 @@ namespace webrtc_stream {
 
     int map_mouse_button(int button) {
       switch (button) {
-        case 0: return BUTTON_LEFT;
-        case 1: return BUTTON_MIDDLE;
-        case 2: return BUTTON_RIGHT;
-        case 3: return BUTTON_X1;
-        case 4: return BUTTON_X2;
-        default: return -1;
+        case 0:
+          return BUTTON_LEFT;
+        case 1:
+          return BUTTON_MIDDLE;
+        case 2:
+          return BUTTON_RIGHT;
+        case 3:
+          return BUTTON_X1;
+        case 4:
+          return BUTTON_X2;
+        default:
+          return -1;
       }
     }
 
@@ -1208,7 +1313,7 @@ namespace webrtc_stream {
 
     lwrtc_constraints_t *create_constraints();
 
-    template <typename T, void (*Releaser)(T *)>
+    template<typename T, void (*Releaser)(T *)>
     std::shared_ptr<T> make_lwrtc_ptr(T *ptr) {
       return std::shared_ptr<T>(ptr, [](T *value) {
         if (value) {
@@ -1245,9 +1350,9 @@ namespace webrtc_stream {
       lwrtc_data_channel_t *input_channel = nullptr;
       std::shared_ptr<SessionDataChannelContext> data_channel_context;
       std::shared_ptr<SessionKeyframeContext> keyframe_context;
-#ifdef _WIN32
+  #ifdef _WIN32
       std::unique_ptr<D3D11Nv12Converter> d3d_converter;
-#endif
+  #endif
 #endif
 
       struct IceCandidate {
@@ -1255,6 +1360,7 @@ namespace webrtc_stream {
         int mline_index = -1;
         std::string candidate;
       };
+
       std::vector<IceCandidate> candidates;
 
       struct LocalCandidate {
@@ -1263,6 +1369,7 @@ namespace webrtc_stream {
         std::string candidate;
         std::size_t index = 0;
       };
+
       std::vector<LocalCandidate> local_candidates;
       std::size_t local_candidate_counter = 0;
 
@@ -1282,6 +1389,7 @@ namespace webrtc_stream {
         std::optional<std::chrono::steady_clock::time_point> last_drift_reset;
         std::optional<std::chrono::steady_clock::time_point> recovery_prefer_latest_until;
       };
+
       VideoPacingState video_pacing_state;
       VideoPacingConfig video_pacing;
     };
@@ -1295,10 +1403,12 @@ namespace webrtc_stream {
     std::atomic_uint active_peers {0};
 #endif
     std::atomic_bool rtsp_sessions_active {false};
+
     struct RtspCaptureConfig {
       video::config_t video;
       audio::config_t audio;
     };
+
     std::mutex rtsp_config_mutex;
     std::optional<RtspCaptureConfig> rtsp_capture_config;
     std::atomic_uint32_t webrtc_launch_session_id {0};
@@ -1734,17 +1844,23 @@ namespace webrtc_stream {
                   // Skip parameters we're going to set ourselves
                   if (key_lower != "maxaveragebitrate" && key_lower != "stereo" &&
                       key_lower != "sprop-stereo" && key_lower != "cbr" && key_lower != "usedtx") {
-                    if (!first_param) result += ';';
+                    if (!first_param) {
+                      result += ';';
+                    }
                     result += token;
                     first_param = false;
                   }
                 }
-                if (param_end >= existing_params.size()) break;
+                if (param_end >= existing_params.size()) {
+                  break;
+                }
                 param_start = param_end + 1;
               }
 
               // Add our parameters
-              if (!first_param) result += ';';
+              if (!first_param) {
+                result += ';';
+              }
               result += "maxaveragebitrate=";
               result += std::to_string(bitrate);
               if (is_stereo) {
@@ -1752,7 +1868,9 @@ namespace webrtc_stream {
               }
               result += ";cbr=1;usedtx=0";
 
-              if (has_cr) result += '\r';
+              if (has_cr) {
+                result += '\r';
+              }
               result += '\n';
 
               if (line_end < sdp.size()) {
@@ -1769,7 +1887,9 @@ namespace webrtc_stream {
         result += line;
         result += '\n';
 
-        if (line_end >= sdp.size()) break;
+        if (line_end >= sdp.size()) {
+          break;
+        }
         line_start = line_end + 1;
       }
 
@@ -2364,8 +2484,9 @@ namespace webrtc_stream {
       const std::uint16_t y_u16 = static_cast<std::uint16_t>(buffer[5]) |
                                   (static_cast<std::uint16_t>(buffer[6]) << 8);
       const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()
-      ).count();
+                            std::chrono::steady_clock::now().time_since_epoch()
+      )
+                            .count();
 
       const bool initialized = ctx->mouse_move_seq_initialized.load(std::memory_order_acquire);
       if (initialized) {
@@ -2661,7 +2782,8 @@ namespace webrtc_stream {
               webrtc_factory,
               desired_av1_params->profile.c_str(),
               desired_av1_params->level_idx.c_str(),
-              desired_av1_params->tier.c_str())) {
+              desired_av1_params->tier.c_str()
+            )) {
           BOOST_LOG(warning) << "WebRTC: failed to set AV1 fmtp parameters";
         } else {
           BOOST_LOG(debug) << "WebRTC: using AV1 fmtp parameters profile=" << desired_av1_params->profile
@@ -2763,7 +2885,7 @@ namespace webrtc_stream {
       return std::chrono::duration_cast<std::chrono::microseconds>(ts.time_since_epoch()).count();
     }
 
-#ifdef __APPLE__
+  #ifdef __APPLE__
     bool try_push_nv12_frame(
       lwrtc_video_source_t *source,
       const std::shared_ptr<platf::img_t> &image,
@@ -2785,9 +2907,11 @@ namespace webrtc_stream {
       }
 
       auto *y_plane = static_cast<std::uint8_t *>(
-        CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0));
+        CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0)
+      );
       auto *uv_plane = static_cast<std::uint8_t *>(
-        CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1));
+        CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1)
+      );
       if (!y_plane || !uv_plane) {
         return false;
       }
@@ -2798,19 +2922,19 @@ namespace webrtc_stream {
       const int stride_uv = static_cast<int>(CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1));
 
       return lwrtc_video_source_push_nv12(
-        source,
-        y_plane,
-        stride_y,
-        uv_plane,
-        stride_uv,
-        width,
-        height,
-        timestamp_to_us(timestamp)
-      ) != 0;
+               source,
+               y_plane,
+               stride_y,
+               uv_plane,
+               stride_uv,
+               width,
+               height,
+               timestamp_to_us(timestamp)
+             ) != 0;
     }
-#endif
+  #endif
 
-#ifdef _WIN32
+  #ifdef _WIN32
     class D3D11Nv12Converter {
     public:
       bool Convert(
@@ -3059,9 +3183,9 @@ namespace webrtc_stream {
             if (errors) {
               BOOST_LOG(error) << "WebRTC: shader compile failed: "
                                << std::string_view(
-                                 static_cast<const char *>(errors->GetBufferPointer()),
-                                 errors->GetBufferSize()
-                               );
+                                    static_cast<const char *>(errors->GetBufferPointer()),
+                                    errors->GetBufferSize()
+                                  );
             }
             return {};
           }
@@ -3372,37 +3496,24 @@ namespace webrtc_stream {
         colorspace.colorspace = video::colorspace_e::rec709;
         colorspace.bit_depth = 8;
       }
-      if (!(*converter)->Convert(
-            d3d_img->capture_texture.get(),
-            d3d_img->capture_mutex.get(),
-            d3d_img->width,
-            d3d_img->height,
-            colorspace,
-            &out_texture,
-            &out_mutex)) {
+      if (!(*converter)->Convert(d3d_img->capture_texture.get(), d3d_img->capture_mutex.get(), d3d_img->width, d3d_img->height, colorspace, &out_texture, &out_mutex)) {
         return false;
       }
 
-      return (*converter)->ReadbackNv12(
-        out_texture,
-        out_mutex,
-        d3d_img->width,
-        d3d_img->height,
-        [&](const uint8_t *y, int stride_y, const uint8_t *uv, int stride_uv) {
-          return lwrtc_video_source_push_nv12(
-            source,
-            y,
-            stride_y,
-            uv,
-            stride_uv,
-            d3d_img->width,
-            d3d_img->height,
-            timestamp_to_us(timestamp)
-          ) != 0;
-        }
-      );
+      return (*converter)->ReadbackNv12(out_texture, out_mutex, d3d_img->width, d3d_img->height, [&](const uint8_t *y, int stride_y, const uint8_t *uv, int stride_uv) {
+        return lwrtc_video_source_push_nv12(
+                 source,
+                 y,
+                 stride_y,
+                 uv,
+                 stride_uv,
+                 d3d_img->width,
+                 d3d_img->height,
+                 timestamp_to_us(timestamp)
+               ) != 0;
+      });
     }
-#endif
+  #endif
 
     void ensure_media_thread();
     void stop_media_thread();
@@ -3441,6 +3552,7 @@ namespace webrtc_stream {
         }
 
         const auto now = std::chrono::steady_clock::now();
+
         // Encoded video work - for passthrough mode (pre-encoded frames)
         struct EncodedVideoWork {
           std::shared_ptr<lwrtc_encoded_video_source_t> source;
@@ -3455,6 +3567,7 @@ namespace webrtc_stream {
           bool clear_keyframe_on_success = false;
           std::size_t max_inflight_frames = 0;
         };
+
         struct AudioWork {
           std::shared_ptr<lwrtc_audio_source_t> source;
           std::shared_ptr<std::vector<int16_t>> samples;
@@ -3508,7 +3621,8 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               work.sample_rate,
               work.channels,
-              work.frames
+              work.frames,
+              timestamp_to_us(work.timestamp)
             );
           }
         };
@@ -3862,7 +3976,7 @@ namespace webrtc_stream {
           if (work.inflight) {
             work.inflight->fetch_add(1, std::memory_order_relaxed);
           }
-          auto* payload_ref = new SharedEncodedPayloadReleaseContext {work.data, work.inflight};
+          auto *payload_ref = new SharedEncodedPayloadReleaseContext {work.data, work.inflight};
           // Avoid passing a timestamp in the past relative to our actual send time. If encoding
           // throughput dips below the target framerate, the mapped schedule can lag slightly
           // behind real-time (without triggering a full drift reset), which encourages WebRTC to
@@ -3997,7 +4111,8 @@ namespace webrtc_stream {
               static_cast<int>(sizeof(int16_t) * 8),
               latest_audio.sample_rate,
               latest_audio.channels,
-              latest_audio.frames
+              latest_audio.frames,
+              timestamp_to_us(latest_audio.timestamp)
             );
           }
         }
@@ -4025,7 +4140,8 @@ namespace webrtc_stream {
             webrtc_factory,
             codec,
             session.video_config.width,
-            session.video_config.height)
+            session.video_config.height
+          )
         );
         if (!session.encoded_video_source) {
           BOOST_LOG(error) << "WebRTC: failed to create encoded video source for " << session.state.id;
@@ -4034,47 +4150,51 @@ namespace webrtc_stream {
 
         // Set up keyframe request callback to trigger IDR from encoder
         lwrtc_encoded_video_source_set_keyframe_callback(
-            session.encoded_video_source.get(),
-            [](void *user) {
-              auto *ctx = static_cast<SessionKeyframeContext *>(user);
-              if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
+          session.encoded_video_source.get(),
+          [](void *user) {
+            auto *ctx = static_cast<SessionKeyframeContext *>(user);
+            if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
+              return;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            bool should_request = false;
+            {
+              std::lock_guard lg {session_mutex};
+              auto it = sessions.find(ctx->id);
+              if (it == sessions.end()) {
                 return;
               }
 
-              const auto now = std::chrono::steady_clock::now();
-              bool should_request = false;
-              {
-                std::lock_guard lg {session_mutex};
-                auto it = sessions.find(ctx->id);
-                if (it == sessions.end()) {
-                  return;
-                }
+              // When a receiver sends PLI/FIR it typically cannot decode the current delta
+              // frames. Stop sending deltas until we successfully deliver an IDR.
+              it->second.needs_keyframe = true;
 
-                // When a receiver sends PLI/FIR it typically cannot decode the current delta
-                // frames. Stop sending deltas until we successfully deliver an IDR.
-                it->second.needs_keyframe = true;
-
-                // Rate-limit PLI/FIR-triggered requests. Spamming IDR frames can congest the
-                // connection and make initial playout buffering worse.
-                constexpr auto kPliRequestInterval = std::chrono::milliseconds {1000};
-                if (!it->second.last_keyframe_request ||
-                    now - *it->second.last_keyframe_request >= kPliRequestInterval) {
-                  it->second.last_keyframe_request = now;
-                  should_request = true;
-                }
+              // Rate-limit PLI/FIR-triggered requests. Spamming IDR frames can congest the
+              // connection and make initial playout buffering worse.
+              constexpr auto kPliRequestInterval = std::chrono::milliseconds {1000};
+              if (!it->second.last_keyframe_request ||
+                  now - *it->second.last_keyframe_request >= kPliRequestInterval) {
+                it->second.last_keyframe_request = now;
+                should_request = true;
               }
+            }
 
-              if (should_request) {
-                request_keyframe("PLI/FIR");
-              }
-            },
-            session.keyframe_context.get());
+            if (should_request) {
+              request_keyframe("PLI/FIR");
+            }
+          },
+          session.keyframe_context.get()
+        );
       }
 
       if (session.state.video && !session.video_track) {
         const std::string track_id = "video-" + session.state.id;
         session.video_track = lwrtc_encoded_video_track_create(
-            webrtc_factory, session.encoded_video_source.get(), track_id.c_str());
+          webrtc_factory,
+          session.encoded_video_source.get(),
+          track_id.c_str()
+        );
         if (!session.video_track) {
           BOOST_LOG(error) << "WebRTC: failed to create video track for " << session.state.id;
           return false;
@@ -4211,9 +4331,7 @@ namespace webrtc_stream {
 
   SessionState create_session(const SessionOptions &options) {
     BOOST_LOG(debug) << "WebRTC: create_session enter";
-    const auto rtsp_config = rtsp_sessions_active.load(std::memory_order_relaxed)
-      ? snapshot_rtsp_capture_config()
-      : std::nullopt;
+    const auto rtsp_config = rtsp_sessions_active.load(std::memory_order_relaxed) ? snapshot_rtsp_capture_config() : std::nullopt;
     Session session;
     session.state.id = uuid_util::uuid_t::generate().string();
 #ifdef SUNSHINE_ENABLE_WEBRTC
@@ -4363,7 +4481,7 @@ namespace webrtc_stream {
     if (last_session) {
       stop_media_thread();
       reset_input_context();
-#ifdef _WIN32
+  #ifdef _WIN32
       const bool rtsp_active = rtsp_sessions_active.load(std::memory_order_relaxed);
       if (!rtsp_active) {
         VDISPLAY::restorePhysicalHdrProfiles();
@@ -4371,7 +4489,7 @@ namespace webrtc_stream {
         const bool keep_rtss_running = proc::proc.running() > 0;
         platf::frame_limiter_streaming_stop(keep_rtss_running);
       }
-#endif
+  #endif
       if (!rtsp_sessions_active.load(std::memory_order_relaxed)) {
         platf::streaming_will_stop();
       }
@@ -4586,7 +4704,9 @@ namespace webrtc_stream {
       int sample_rate = 0;
       int channels = 0;
       int frames = 0;
+      std::chrono::steady_clock::time_point timestamp {};
     };
+
     std::vector<AudioPushWork> direct_audio;
     bool queued_raw_audio = false;
 #endif
@@ -4600,13 +4720,7 @@ namespace webrtc_stream {
         {
 #ifdef SUNSHINE_ENABLE_WEBRTC
           if (session.audio_source) {
-            direct_audio.push_back(AudioPushWork {
-              session.audio_source,
-              shared_samples,
-              sample_rate,
-              output_channels,
-              frames
-            });
+            direct_audio.push_back(AudioPushWork {session.audio_source, shared_samples, sample_rate, output_channels, frames, now});
           } else
 #endif
           {
@@ -4641,7 +4755,8 @@ namespace webrtc_stream {
         static_cast<int>(sizeof(int16_t) * 8),
         work.sample_rate,
         work.channels,
-        work.frames
+        work.frames,
+        timestamp_to_us(work.timestamp)
       );
     }
     if (queued_raw_audio) {

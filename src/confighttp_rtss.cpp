@@ -5,19 +5,19 @@
 
 #ifdef _WIN32
 
-  // standard includes
-#include <filesystem>
-#include <string>
-#include <unordered_set>
-#include <vector>
-#include <cwctype>
-#include <algorithm>
-#include <array>
-#include <optional>
+// standard includes
+  #include <algorithm>
+  #include <array>
+  #include <cwctype>
+  #include <filesystem>
+  #include <optional>
+  #include <string>
+  #include <unordered_set>
+  #include <vector>
 
   // third-party includes
   #include <nlohmann/json.hpp>
-#include <Simple-Web-Server/server_https.hpp>
+  #include <Simple-Web-Server/server_https.hpp>
 
   // local includes
   #include "confighttp.h"
@@ -25,8 +25,8 @@
   #include "src/logging.h"
   #include "src/platform/windows/frame_limiter.h"
   #include "src/platform/windows/ipc/misc_utils.h"
-  #include "src/platform/windows/misc.h"
   #include "src/platform/windows/lossless_scaling_paths.h"
+  #include "src/platform/windows/misc.h"
 
 namespace confighttp {
 

@@ -18,12 +18,12 @@
 #endif
 
 // local includes
+#include "src/boost_process_shim.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
 #include "src/utility.h"
 #include "src/video_colorspace.h"
-#include "src/boost_process_shim.h"
 
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>

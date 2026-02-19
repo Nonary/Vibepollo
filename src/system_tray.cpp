@@ -15,11 +15,11 @@
     #define TRAY_ICON WEB_DIR "images/apollo.ico"
     #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.ico"
     #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.ico"
-  #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.ico"
-#elif defined(__linux__) || defined(linux) || defined(__linux)
-  #define TRAY_ICON SUNSHINE_TRAY_PREFIX "-tray"
-  #define TRAY_ICON_PLAYING SUNSHINE_TRAY_PREFIX "-playing"
-  #define TRAY_ICON_PAUSING SUNSHINE_TRAY_PREFIX "-pausing"
+    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.ico"
+  #elif defined(__linux__) || defined(linux) || defined(__linux)
+    #define TRAY_ICON SUNSHINE_TRAY_PREFIX "-tray"
+    #define TRAY_ICON_PLAYING SUNSHINE_TRAY_PREFIX "-playing"
+    #define TRAY_ICON_PAUSING SUNSHINE_TRAY_PREFIX "-pausing"
     #define TRAY_ICON_LOCKED SUNSHINE_TRAY_PREFIX "-locked"
   #elif defined(__APPLE__) || defined(__MACH__)
     #define TRAY_ICON WEB_DIR "images/logo-apollo-16.png"
@@ -251,12 +251,12 @@ namespace system_tray {
       if (tray_init_result >= 0) {
         break;
       }
-#ifdef _WIN32
+  #ifdef _WIN32
       auto last_error = GetLastError();
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ", error " << last_error << ')';
-#else
+  #else
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
-#endif
+  #endif
       std::this_thread::sleep_for(2s);
       ++attempt;
     }

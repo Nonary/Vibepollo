@@ -284,8 +284,8 @@ namespace platf::dxgi {
 
       if (pipe) {
         if (retry_count > 0) {
-          BOOST_LOG(debug) << "CreateFileW succeeded after " << retry_count << " retries in " 
-                          << (GetTickCount64() - start_time) << "ms";
+          BOOST_LOG(debug) << "CreateFileW succeeded after " << retry_count << " retries in "
+                           << (GetTickCount64() - start_time) << "ms";
         }
         return pipe;  // success
       }
@@ -293,7 +293,7 @@ namespace platf::dxgi {
       const DWORD err = GetLastError();
       last_error = err;
       retry_count++;
-      
+
       if (err == ERROR_PIPE_BUSY) {
         if (retry_count == 1 || retry_count % 20 == 0) {
           BOOST_LOG(debug) << "Pipe busy, waiting... (retry " << retry_count << ")";
@@ -305,8 +305,8 @@ namespace platf::dxgi {
         if (retry_count == 1) {
           BOOST_LOG(debug) << "Pipe not found, waiting for server to create it...";
         } else if (retry_count % 40 == 0) {
-          BOOST_LOG(warning) << "Still waiting for pipe after " << (GetTickCount64() - start_time) 
-                           << "ms (" << retry_count << " retries)";
+          BOOST_LOG(warning) << "Still waiting for pipe after " << (GetTickCount64() - start_time)
+                             << "ms (" << retry_count << " retries)";
         }
         Sleep(50);
         continue;
@@ -317,9 +317,9 @@ namespace platf::dxgi {
     }
 
     if (last_error == ERROR_FILE_NOT_FOUND) {
-      BOOST_LOG(error) << "CreateFileW timed out after " << (GetTickCount64() - start_time) 
-                      << "ms waiting for pipe server (ERROR_FILE_NOT_FOUND). "
-                      << "The helper process may not be running or failed to create the pipe.";
+      BOOST_LOG(error) << "CreateFileW timed out after " << (GetTickCount64() - start_time)
+                       << "ms waiting for pipe server (ERROR_FILE_NOT_FOUND). "
+                       << "The helper process may not be running or failed to create the pipe.";
     }
 
     return {};  // invalid handle
@@ -342,7 +342,8 @@ namespace platf::dxgi {
 
     std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
       std::unique_ptr<INamedPipe> control_pipe,
-      const NamedPipeFactory &factory);
+      const NamedPipeFactory &factory
+    );
   }  // namespace
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName) {
@@ -436,9 +437,9 @@ namespace platf::dxgi {
     size_t _cursor {0};
   };
 
-  class AnonymousServerPipe final : public INamedPipe {
+  class AnonymousServerPipe final: public INamedPipe {
   public:
-    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory) :
+    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory):
         control_(std::move(control_pipe)),
         pipe_factory_(std::move(factory)) {}
 

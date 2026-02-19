@@ -12,8 +12,8 @@ namespace display_helper_integration {
     constexpr int kMaxDeferredApplyAttempts = 6;
   }  // namespace
 
-  SessionDeferralManager::SessionDeferralManager(NowFn now_fn)
-    : now_fn_(std::move(now_fn)) {}
+  SessionDeferralManager::SessionDeferralManager(NowFn now_fn):
+      now_fn_(std::move(now_fn)) {}
 
   void SessionDeferralManager::set_pending(const DisplayApplyRequest &request) {
     std::lock_guard<std::mutex> lock(mutex_);

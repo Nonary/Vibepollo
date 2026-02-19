@@ -110,8 +110,8 @@ namespace config {
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
 
-      struct dd_t {
-        struct workarounds_t {
+    struct dd_t {
+      struct workarounds_t {
         bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
       };
 

@@ -47,7 +47,7 @@ namespace platf::display_helper_client {
       return shutdown_requested() ? kShutdownIpcTimeoutMs : kSendTimeoutMs;
     }
 
-  }
+  }  // namespace
 
   /**
    * @brief IPC message types used by the display settings helper protocol.
@@ -167,7 +167,8 @@ namespace platf::display_helper_client {
         return connect_timeout_ms;
       }
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - connect_start);
+        std::chrono::steady_clock::now() - connect_start
+      );
       const long long remaining = static_cast<long long>(connect_timeout_ms) - elapsed.count();
       return static_cast<int>(std::max<long long>(0LL, remaining));
     };

@@ -13,10 +13,10 @@
 #include "src/confighttp.h"
 #include "src/file_handler.h"
 #include "src/logging.h"
+#include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/image_convert.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/misc.h"
-#include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/playnite_ipc.h"
 #include "src/platform/windows/playnite_protocol.h"
 #include "src/platform/windows/playnite_sync.h"
@@ -198,9 +198,7 @@ namespace platf::playnite {
   }
 
   // Forward declaration: refresh config id/name fields using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
-                                            const std::vector<platf::playnite::Game> &games,
-                                            const std::vector<platf::playnite::Plugin> &plugins);
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games, const std::vector<platf::playnite::Plugin> &plugins);
 
   class deinit_t_impl;  // forward
   static std::atomic<deinit_t_impl *> g_instance {nullptr};
@@ -237,7 +235,7 @@ namespace platf::playnite {
     ~deinit_t_impl() override {
       // Stop inactivity monitor thread first
       stop_inactivity_monitor();
-      
+
       if (client_) {
         client_->stop();
         client_.reset();
@@ -325,28 +323,28 @@ namespace platf::playnite {
         snapshot_progress_ = {};
       }
     }
-    
+
     // Start client on-demand for API access with inactivity timeout
     void ensure_started_for_api() {
       if (!is_plugin_installed()) {
         return;
       }
-      
+
       // Record activity timestamp
       {
         std::lock_guard lk(inactivity_mutex_);
         last_api_activity_ = std::chrono::steady_clock::now();
       }
-      
+
       ensure_started();
-      
+
       // Mark as API-started (will be subject to inactivity timeout unless a session is active)
       if (!session_active_.load(std::memory_order_acquire)) {
         api_started_.store(true, std::memory_order_release);
         start_inactivity_monitor();
       }
     }
-    
+
     // Called when a Playnite game session starts
     void start_for_session() {
       if (!is_plugin_installed()) {
@@ -355,17 +353,17 @@ namespace platf::playnite {
       BOOST_LOG(debug) << "Playnite: starting IPC client for game session";
       // Ensure stale status ordering from prior sessions cannot leak into this launch.
       playnite_session_tracker().reset();
-      
+
       // Mark session as active - this prevents inactivity timeout
       session_active_.store(true, std::memory_order_release);
       api_started_.store(false, std::memory_order_release);
-      
+
       // Stop inactivity monitor since session keeps client alive
       stop_inactivity_monitor();
-      
+
       ensure_started();
     }
-    
+
     // Called when a session ends
     void stop_for_session() {
       BOOST_LOG(debug) << "Playnite: stopping IPC client after session end";
@@ -403,35 +401,35 @@ namespace platf::playnite {
               return inactivity_stop_flag_.load(std::memory_order_acquire);
             });
           }
-          
+
           if (inactivity_stop_flag_.load(std::memory_order_acquire)) {
             break;
           }
-          
+
           // If a session is active, don't timeout
           if (session_active_.load(std::memory_order_acquire)) {
             continue;
           }
-          
+
           // If not API-started, nothing to monitor
           if (!api_started_.load(std::memory_order_acquire)) {
             break;
           }
-          
+
           // Check for inactivity timeout
           std::chrono::steady_clock::time_point last_activity;
           {
             std::lock_guard lk2(inactivity_mutex_);
             last_activity = last_api_activity_;
           }
-          
+
           auto now = std::chrono::steady_clock::now();
           auto elapsed = now - last_activity;
-          
+
           if (elapsed >= kApiInactivityTimeout) {
-            BOOST_LOG(debug) << "Playnite: IPC client stopping due to " 
-                           << std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() 
-                           << "s of API inactivity";
+            BOOST_LOG(debug) << "Playnite: IPC client stopping due to "
+                             << std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()
+                             << "s of API inactivity";
             api_started_.store(false, std::memory_order_release);
             stop_client();
             break;
@@ -440,7 +438,7 @@ namespace platf::playnite {
         BOOST_LOG(debug) << "Playnite: inactivity monitor stopped";
       });
     }
-    
+
     // Stop the inactivity monitor thread
     void stop_inactivity_monitor() {
       {
@@ -716,21 +714,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root,
-                                                all,
-                                                recentN,
-                                                recent_age_days,
-                                                delete_after_days,
-                                                config::playnite.autosync_require_replacement,
-                                                config::playnite.sync_all_installed,
-                                                config::playnite.sync_categories,
-                                                config::playnite.sync_plugins,
-                                                config::playnite.exclude_categories,
-                                                config::playnite.exclude_games,
-                                                config::playnite.exclude_plugins,
-                                                config::playnite.autosync_remove_uninstalled,
-                                                changed,
-                                                matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -803,20 +787,20 @@ namespace platf::playnite {
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
     SnapshotProgress snapshot_progress_;
     std::mutex progress_mutex_;
-    
+
     // Inactivity timeout support for API-initiated connections
     // When the client is started via web API (not a game session), it will
     // automatically stop after 30 seconds of inactivity to save resources.
     static constexpr auto kApiInactivityTimeout = std::chrono::seconds(30);
     static constexpr auto kInactivityCheckInterval = std::chrono::seconds(5);
-    
-    std::atomic<bool> api_started_ {false};           // True if client was started for API (not session)
-    std::atomic<bool> session_active_ {false};        // True if a game session is active (overrides API timeout)
+
+    std::atomic<bool> api_started_ {false};  // True if client was started for API (not session)
+    std::atomic<bool> session_active_ {false};  // True if a game session is active (overrides API timeout)
     std::chrono::steady_clock::time_point last_api_activity_ {};  // Last API access timestamp
-    std::mutex inactivity_mutex_;                     // Guards last_api_activity_ and inactivity thread state
-    std::thread inactivity_thread_;                   // Background thread that checks for inactivity
+    std::mutex inactivity_mutex_;  // Guards last_api_activity_ and inactivity thread state
+    std::thread inactivity_thread_;  // Background thread that checks for inactivity
     std::atomic<bool> inactivity_stop_flag_ {false};  // Signal to stop the inactivity thread
-    std::condition_variable inactivity_cv_;           // For efficient sleeping with early wake-up
+    std::condition_variable inactivity_cv_;  // For efficient sleeping with early wake-up
   };
 
   std::unique_ptr<::platf::deinit_t> start() {
@@ -1085,9 +1069,7 @@ namespace platf::playnite {
   }
 
   // Reconcile persisted config names for categories/exclusions using latest snapshots
-  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats,
-                                            const std::vector<platf::playnite::Game> &games,
-                                            const std::vector<platf::playnite::Plugin> &plugins) {
+  static void refresh_config_id_name_fields(const std::vector<platf::playnite::Category> &cats, const std::vector<platf::playnite::Game> &games, const std::vector<platf::playnite::Plugin> &plugins) {
     try {
       // Build lookup maps
       std::unordered_map<std::string, std::string> cat_by_id;  // id->name

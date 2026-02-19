@@ -274,21 +274,21 @@
                 </p>
               </div>
               <n-radio-group
-                :value="resolvedVirtualDisplayMode"
-                @update:value="
-                  (v) => (form.virtualDisplayMode = v === globalVirtualDisplayMode ? null : v)
-                "
+                v-model:value="appVirtualDisplayModeSelection"
                 class="grid gap-3 sm:grid-cols-3"
               >
                 <n-radio
                   v-for="option in appVirtualDisplayModeOptions"
-                  :key="option.value"
+                  :key="String(option.value)"
                   :value="option.value"
                   class="app-radio-card cursor-pointer"
                 >
                   <span class="app-radio-card-title">{{ option.label }}</span>
                 </n-radio>
               </n-radio-group>
+              <div v-if="appVirtualDisplayModeSelection === 'global'" class="text-[11px] opacity-70">
+                {{ t('config.app_virtual_display_mode_follow_global') }}
+              </div>
 
               <div class="space-y-2">
                 <div class="flex items-center justify-between gap-3">
@@ -523,6 +523,8 @@ type DisplayDevice = {
   };
 };
 type DisplaySelection = 'global' | 'virtual' | 'physical';
+type AppVirtualDisplayModeSelection = AppVirtualDisplayMode | 'global';
+
 interface AppEditModalProps {
   modelValue: boolean;
   app?: ServerApp | null;
@@ -1525,11 +1527,22 @@ const APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS: Record<AppVirtualDisplayMode, string>
   shared: 'config.virtual_display_mode_shared',
 };
 const appVirtualDisplayModeOptions = computed(() =>
-  APP_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled').map((value) => ({
-    value,
-    label: t(APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
-  })),
+  (['global', ...APP_VIRTUAL_DISPLAY_MODES.filter((value) => value !== 'disabled')] as const).map(
+    (value) => ({
+      value,
+      label:
+        value === 'global'
+          ? t('config.app_virtual_display_mode_follow_global')
+          : t(APP_VIRTUAL_DISPLAY_MODE_LABEL_KEYS[value]),
+    }),
+  ),
 );
+const appVirtualDisplayModeSelection = computed<AppVirtualDisplayModeSelection>({
+  get: () => form.value.virtualDisplayMode ?? 'global',
+  set: (value) => {
+    form.value.virtualDisplayMode = value === 'global' ? null : value;
+  },
+});
 const appVirtualDisplayLayoutOptions = computed(() =>
   APP_VIRTUAL_DISPLAY_LAYOUTS.map((value) => ({
     value,

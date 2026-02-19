@@ -9,15 +9,15 @@
   #include "src/display_device.h"
   #include "src/globals.h"
   #include "src/platform/common.h"
-  #include "src/process.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/process.h"
 
-  #include <display_device/json.h>
-  #include <boost/algorithm/string/predicate.hpp>
   #include <algorithm>
+  #include <boost/algorithm/string/predicate.hpp>
+  #include <display_device/json.h>
   #include <limits>
   #include <type_traits>
 
@@ -147,9 +147,7 @@ namespace display_helper_integration::helpers {
         [](const auto &v) -> double {
           using V = std::decay_t<decltype(v)>;
           if constexpr (std::is_same_v<V, display_device::Rational>) {
-            return v.m_denominator > 0
-                     ? static_cast<double>(v.m_numerator) / v.m_denominator
-                     : static_cast<double>(v.m_numerator);
+            return v.m_denominator > 0 ? static_cast<double>(v.m_numerator) / v.m_denominator : static_cast<double>(v.m_numerator);
           } else {
             return static_cast<double>(v);
           }
@@ -171,8 +169,10 @@ namespace display_helper_integration::helpers {
     }
   }  // namespace
 
-  SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
-      : video_config_ {video_config}, effective_video_config_ {video_config}, session_ {session} {
+  SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session):
+      video_config_ {video_config},
+      effective_video_config_ {video_config},
+      session_ {session} {
     if (session.dd_config_option_override) {
       effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
     }
@@ -411,8 +411,10 @@ namespace display_helper_integration::helpers {
     return false;
   }
 
-  SessionMonitorPositionHelper::SessionMonitorPositionHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session)
-      : video_config_ {video_config}, effective_video_config_ {video_config}, session_ {session} {
+  SessionMonitorPositionHelper::SessionMonitorPositionHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session):
+      video_config_ {video_config},
+      effective_video_config_ {video_config},
+      session_ {session} {
     if (session.dd_config_option_override) {
       effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
     }

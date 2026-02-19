@@ -30,12 +30,12 @@
 // local includes
 #include "graphics.h"
 #include "misc.h"
+#include "src/boost_process_shim.h"
 #include "src/config.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "vaapi.h"
-#include "src/boost_process_shim.h"
 
 #include <linux/rtnetlink.h>
 

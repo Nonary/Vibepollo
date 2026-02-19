@@ -45,11 +45,13 @@ namespace display_helper_integration {
 
   // Enumerate display devices via helper (or return nullopt on failure).
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
-    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal);
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
+  );
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json(
-    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal);
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
+  );
 
   // Capture the currently active topology before applying changes.
   std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
@@ -73,7 +75,8 @@ namespace display_helper_integration {
   // Read EDID for a specific device and evaluate refresh support for requested targets.
   std::optional<FramegenEdidSupportResult> framegen_edid_refresh_support(
     const std::string &device_hint,
-    const std::vector<int> &targets_hz);
+    const std::vector<int> &targets_hz
+  );
 #endif
 
   // Returns milliseconds since the last successful display-helper APPLY completed.

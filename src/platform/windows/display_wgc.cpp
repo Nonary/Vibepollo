@@ -6,8 +6,8 @@
 // standard includes
 #include <algorithm>
 #include <chrono>
-#include <optional>
 #include <dxgi1_2.h>
+#include <optional>
 #include <wrl/client.h>
 
 // local includes
@@ -40,7 +40,7 @@ namespace platf::dxgi {
     private:
       std::optional<LUID> previous_;
     };
-  }
+  }  // namespace
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 

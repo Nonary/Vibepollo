@@ -440,13 +440,19 @@
                       >
                         <n-radio
                           v-for="option in virtualDisplayModeOptions"
-                          :key="option.value"
+                          :key="String(option.value)"
                           :value="option.value"
                           class="app-radio-card cursor-pointer"
                         >
                           <span class="app-radio-card-title">{{ option.label }}</span>
                         </n-radio>
                       </n-radio-group>
+                      <div
+                        v-if="client.editVirtualDisplayMode === 'global'"
+                        class="text-[11px] opacity-70"
+                      >
+                        {{ t('config.app_virtual_display_mode_follow_global') }}
+                      </div>
                     </div>
 
                     <div class="space-y-2">
@@ -649,7 +655,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
 type ClientDisplaySelection = 'physical' | 'virtual';
-type ClientVirtualDisplayMode = 'disabled' | 'per_client' | 'shared' | null;
+type ClientVirtualDisplayMode = 'disabled' | 'per_client' | 'shared' | 'global' | null;
 type ClientVirtualDisplayLayout =
   | 'exclusive'
   | 'extended'
@@ -898,7 +904,7 @@ function parseClientVirtualDisplayMode(value: unknown): ClientVirtualDisplayMode
     .trim()
     .toLowerCase();
   if (!v) return null;
-  if (v === 'disabled' || v === 'per_client' || v === 'shared')
+  if (v === 'disabled' || v === 'per_client' || v === 'shared' || v === 'global')
     return v as ClientVirtualDisplayMode;
   return null;
 }
@@ -1069,13 +1075,10 @@ function removeClientCommand(commands: ClientCommandEntry[], index: number): voi
 }
 
 const virtualDisplayModeOptions = computed(() => [
+  { label: t('config.app_virtual_display_mode_follow_global'), value: 'global' },
   { label: t('config.virtual_display_mode_per_client'), value: 'per_client' },
   { label: t('config.virtual_display_mode_shared'), value: 'shared' },
 ]);
-
-const globalVirtualDisplayMode = computed<ClientVirtualDisplayMode>(() =>
-  parseClientVirtualDisplayMode((configStore.config as any)?.virtual_display_mode),
-);
 
 const globalVirtualDisplayLayout = computed<ClientVirtualDisplayLayout>(() =>
   parseClientVirtualDisplayLayout((configStore.config as any)?.virtual_display_layout),
@@ -1170,10 +1173,8 @@ function applyClientDisplaySelection(
   }
 
   client.editPhysicalOutputOverride = null;
-  const resolvedMode = globalVirtualDisplayMode.value;
   if (client.editVirtualDisplayMode === null || client.editVirtualDisplayMode === 'disabled') {
-    client.editVirtualDisplayMode =
-      resolvedMode && resolvedMode !== 'disabled' ? resolvedMode : 'per_client';
+    client.editVirtualDisplayMode = 'global';
   }
 }
 
@@ -1184,6 +1185,7 @@ const isClientDisplayOverrideValid = computed(() => {
 
     if (client.editDisplaySelection === 'virtual') {
       if (
+        client.editVirtualDisplayMode !== 'global' &&
         client.editVirtualDisplayMode !== 'per_client' &&
         client.editVirtualDisplayMode !== 'shared'
       ) {
@@ -1425,8 +1427,13 @@ async function saveClient(client: ClientViewModel): Promise<void> {
       payload.virtual_display_layout = '';
     } else {
       payload.output_name_override = '';
-      payload.always_use_virtual_display = true;
-      payload.virtual_display_mode = client.editVirtualDisplayMode ?? '';
+      if (client.editVirtualDisplayMode === 'global' || client.editVirtualDisplayMode === null) {
+        payload.always_use_virtual_display = false;
+        payload.virtual_display_mode = 'global';
+      } else {
+        payload.always_use_virtual_display = true;
+        payload.virtual_display_mode = client.editVirtualDisplayMode;
+      }
       payload.virtual_display_layout = client.editVirtualDisplayLayout ?? '';
     }
 

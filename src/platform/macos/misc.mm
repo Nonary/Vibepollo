@@ -28,10 +28,10 @@
 
 // local includes
 #include "misc.h"
+#include "src/boost_process_shim.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
-#include "src/boost_process_shim.h"
 
 using namespace std::literals;
 namespace fs = std::filesystem;

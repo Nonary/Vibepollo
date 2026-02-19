@@ -8,11 +8,7 @@
 using namespace platf::playnite;
 using namespace platf::playnite::sync;
 
-static Game G(std::string id,
-              std::string last,
-              bool installed = true,
-              std::vector<std::string> cats = {},
-              std::string plugin = {}) {
+static Game G(std::string id, std::string last, bool installed = true, std::vector<std::string> cats = {}, std::string plugin = {}) {
   Game g;
   g.id = id;
   g.name = id;

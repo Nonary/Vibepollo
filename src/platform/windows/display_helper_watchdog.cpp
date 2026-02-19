@@ -1,20 +1,20 @@
 #include "src/platform/windows/display_helper_watchdog.h"
 
-#include <utility>
-
 #include "src/logging.h"
+
+#include <utility>
 
 using namespace std::chrono_literals;
 
 namespace display_helper_integration {
-  DisplayHelperWatchdog::DisplayHelperWatchdog(Hooks hooks)
-    : hooks_(std::move(hooks)) {}
+  DisplayHelperWatchdog::DisplayHelperWatchdog(Hooks hooks):
+      hooks_(std::move(hooks)) {}
 
   std::chrono::milliseconds DisplayHelperWatchdog::tick() {
     const auto interval = (hooks_.session_count && hooks_.running_processes &&
-                           hooks_.session_count() == 0 && hooks_.running_processes() > 0)
-                            ? suspended_interval()
-                            : active_interval();
+                           hooks_.session_count() == 0 && hooks_.running_processes() > 0) ?
+                            suspended_interval() :
+                            active_interval();
 
     if (hooks_.feature_enabled && !hooks_.feature_enabled()) {
       if (helper_ready_) {

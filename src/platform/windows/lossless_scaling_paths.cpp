@@ -2,11 +2,11 @@
 
 #ifdef _WIN32
 
-#include <array>
-#include <algorithm>
-#include <cwctype>
-#include <unordered_set>
-#include <windows.h>
+  #include <algorithm>
+  #include <array>
+  #include <cwctype>
+  #include <unordered_set>
+  #include <windows.h>
 
 namespace lossless_paths {
   namespace {
@@ -14,7 +14,9 @@ namespace lossless_paths {
     const std::array<std::wstring, 2> k_lossless_names {L"LosslessScaling.exe", L"Lossless Scaling.exe"};
 
     std::wstring lowercase_wstring(std::wstring value) {
-      std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) { return std::towlower(ch); });
+      std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return std::towlower(ch);
+      });
       return value;
     }
 
@@ -102,9 +104,7 @@ namespace lossless_paths {
     return std::nullopt;
   }
 
-  std::vector<std::filesystem::path> discover_lossless_candidates(const std::optional<std::filesystem::path> &configured,
-                                                                  const std::optional<std::filesystem::path> &override_candidate,
-                                                                  const std::optional<std::filesystem::path> &default_path) {
+  std::vector<std::filesystem::path> discover_lossless_candidates(const std::optional<std::filesystem::path> &configured, const std::optional<std::filesystem::path> &override_candidate, const std::optional<std::filesystem::path> &default_path) {
     std::vector<std::filesystem::path> result;
     std::unordered_set<std::wstring> seen;
 

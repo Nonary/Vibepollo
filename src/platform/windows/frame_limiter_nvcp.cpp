@@ -928,66 +928,66 @@ namespace platf::frame_limiter_nvcp {
             if (set_mask_status != NVAPI_OK) {
               log_nvapi_error(set_mask_status, "DRS_SetSetting(SMOOTH_MOTION_MASK)");
             } else {
-            g_state.smooth_motion_mask_applied = true;
-            dirty = true;
-            BOOST_LOG(info) << "NVIDIA Smooth Motion API mask set to DX12|DX11|Vulkan";
-          }
-        }
-
-        // Align Ultra Low Latency driver state with Smooth Motion requirement.
-        NvU32 ull_cpl_value = 0;
-        NvAPI_Status ull_cpl_status = get_current_setting(ULTRA_LOW_LATENCY_CPL_STATE_ID, g_state.original_ull_cpl_state, &g_state.original_ull_cpl_state_override, &ull_cpl_value);
-        if (ull_cpl_status != NVAPI_OK) {
-          log_nvapi_error(ull_cpl_status, "DRS_GetSetting(ULL_CPL_STATE)");
-          g_state.original_ull_cpl_state_value.reset();
-        } else {
-          g_state.original_ull_cpl_state_value = ull_cpl_value;
-          if (ull_cpl_value != ULTRA_LOW_LATENCY_CPL_STATE_ULTRA) {
-            NVDRS_SETTING setting = {};
-            setting.version = NVDRS_SETTING_VER;
-            setting.settingId = ULTRA_LOW_LATENCY_CPL_STATE_ID;
-            setting.settingType = NVDRS_DWORD_TYPE;
-            setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
-            setting.u32CurrentValue = ULTRA_LOW_LATENCY_CPL_STATE_ULTRA;
-
-            NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
-            if (set_status != NVAPI_OK) {
-              log_nvapi_error(set_status, "DRS_SetSetting(ULL_CPL_STATE)");
-            } else {
-              g_state.ull_cpl_applied = true;
+              g_state.smooth_motion_mask_applied = true;
               dirty = true;
-              BOOST_LOG(info) << "NVIDIA Ultra Low Latency CPL state set to Ultra";
+              BOOST_LOG(info) << "NVIDIA Smooth Motion API mask set to DX12|DX11|Vulkan";
             }
           }
-        }
 
-        NvU32 ull_enabled_value = 0;
-        NvAPI_Status ull_enabled_status = get_current_setting(ULTRA_LOW_LATENCY_ENABLED_ID, g_state.original_ull_enabled, &g_state.original_ull_enabled_override, &ull_enabled_value);
-        if (ull_enabled_status != NVAPI_OK) {
-          log_nvapi_error(ull_enabled_status, "DRS_GetSetting(ULL_ENABLED)");
-          g_state.original_ull_enabled_value.reset();
-        } else {
-          g_state.original_ull_enabled_value = ull_enabled_value;
-          if (ull_enabled_value != ULTRA_LOW_LATENCY_ENABLED_ON) {
-            NVDRS_SETTING setting = {};
-            setting.version = NVDRS_SETTING_VER;
-            setting.settingId = ULTRA_LOW_LATENCY_ENABLED_ID;
-            setting.settingType = NVDRS_DWORD_TYPE;
-            setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
-            setting.u32CurrentValue = ULTRA_LOW_LATENCY_ENABLED_ON;
+          // Align Ultra Low Latency driver state with Smooth Motion requirement.
+          NvU32 ull_cpl_value = 0;
+          NvAPI_Status ull_cpl_status = get_current_setting(ULTRA_LOW_LATENCY_CPL_STATE_ID, g_state.original_ull_cpl_state, &g_state.original_ull_cpl_state_override, &ull_cpl_value);
+          if (ull_cpl_status != NVAPI_OK) {
+            log_nvapi_error(ull_cpl_status, "DRS_GetSetting(ULL_CPL_STATE)");
+            g_state.original_ull_cpl_state_value.reset();
+          } else {
+            g_state.original_ull_cpl_state_value = ull_cpl_value;
+            if (ull_cpl_value != ULTRA_LOW_LATENCY_CPL_STATE_ULTRA) {
+              NVDRS_SETTING setting = {};
+              setting.version = NVDRS_SETTING_VER;
+              setting.settingId = ULTRA_LOW_LATENCY_CPL_STATE_ID;
+              setting.settingType = NVDRS_DWORD_TYPE;
+              setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
+              setting.u32CurrentValue = ULTRA_LOW_LATENCY_CPL_STATE_ULTRA;
 
-            NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
-            if (set_status != NVAPI_OK) {
-              log_nvapi_error(set_status, "DRS_SetSetting(ULL_ENABLED)");
-            } else {
-              g_state.ull_enabled_applied = true;
-              dirty = true;
-              BOOST_LOG(info) << "NVIDIA Ultra Low Latency enabled";
+              NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+              if (set_status != NVAPI_OK) {
+                log_nvapi_error(set_status, "DRS_SetSetting(ULL_CPL_STATE)");
+              } else {
+                g_state.ull_cpl_applied = true;
+                dirty = true;
+                BOOST_LOG(info) << "NVIDIA Ultra Low Latency CPL state set to Ultra";
+              }
+            }
+          }
+
+          NvU32 ull_enabled_value = 0;
+          NvAPI_Status ull_enabled_status = get_current_setting(ULTRA_LOW_LATENCY_ENABLED_ID, g_state.original_ull_enabled, &g_state.original_ull_enabled_override, &ull_enabled_value);
+          if (ull_enabled_status != NVAPI_OK) {
+            log_nvapi_error(ull_enabled_status, "DRS_GetSetting(ULL_ENABLED)");
+            g_state.original_ull_enabled_value.reset();
+          } else {
+            g_state.original_ull_enabled_value = ull_enabled_value;
+            if (ull_enabled_value != ULTRA_LOW_LATENCY_ENABLED_ON) {
+              NVDRS_SETTING setting = {};
+              setting.version = NVDRS_SETTING_VER;
+              setting.settingId = ULTRA_LOW_LATENCY_ENABLED_ID;
+              setting.settingType = NVDRS_DWORD_TYPE;
+              setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
+              setting.u32CurrentValue = ULTRA_LOW_LATENCY_ENABLED_ON;
+
+              NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+              if (set_status != NVAPI_OK) {
+                log_nvapi_error(set_status, "DRS_SetSetting(ULL_ENABLED)");
+              } else {
+                g_state.ull_enabled_applied = true;
+                dirty = true;
+                BOOST_LOG(info) << "NVIDIA Ultra Low Latency enabled";
+              }
             }
           }
         }
       }
-    }
     }
 
     if (dirty) {

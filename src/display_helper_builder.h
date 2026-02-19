@@ -5,7 +5,6 @@
 #pragma once
 
 #include <display_device/types.h>
-
 #include <map>
 #include <optional>
 #include <string>
@@ -26,7 +25,7 @@ namespace display_helper_integration {
    * @brief Describes the action requested from the display helper.
    */
   enum class DisplayApplyAction {
-    Skip,   ///< Do not dispatch anything to the helper.
+    Skip,  ///< Do not dispatch anything to the helper.
     Apply,  ///< Apply the provided configuration.
     Revert  ///< Revert the helper state.
   };
@@ -80,7 +79,7 @@ namespace display_helper_integration {
    * @brief Helper used to assemble DisplayApplyRequest instances.
    */
   class DisplayApplyBuilder {
-   public:
+  public:
     DisplayApplyBuilder &set_session(const rtsp_stream::launch_session_t &session);
     DisplayApplyBuilder &set_action(DisplayApplyAction action);
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);

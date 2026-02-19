@@ -29,8 +29,8 @@
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
-  #include "src/platform/windows/virtual_display_cleanup.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
 #endif
 
 #ifdef _WIN32
@@ -366,7 +366,8 @@ int main(int argc, char *argv[]) {
       virtual_displays.end(),
       [](const VDISPLAY::SudaVDADisplayInfo &info) {
         return info.is_active;
-      });
+      }
+    );
     if (has_active_virtual_display) {
       BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
       (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
@@ -381,7 +382,6 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
-  constexpr auto kStartupEncoderProbeDelay = std::chrono::minutes(2);
   auto startup_probe = []() {
     if (video::has_attempted_encoder_probe()) {
       BOOST_LOG(debug) << "Startup encoder probe skipped; probe already attempted.";
@@ -395,20 +395,23 @@ int main(int argc, char *argv[]) {
       BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
     }
 
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
+    bool encoder_probe_succeeded = false;
+    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
+      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
     });
 #endif
 
     bool encoder_probe_failed = video::probe_encoders();
+#ifdef _WIN32
+    encoder_probe_succeeded = !encoder_probe_failed;
+#endif
 
     if (encoder_probe_failed) {
       BOOST_LOG(error) << "Failed to probe encoders during startup.";
     }
   };
 
-  BOOST_LOG(info) << "Scheduling encoder probe 2 minutes after startup.";
-  task_pool.pushDelayed(startup_probe, kStartupEncoderProbeDelay);
+  startup_probe();
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;

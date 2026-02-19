@@ -11,9 +11,9 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
+#include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
@@ -41,6 +41,7 @@ using namespace std::chrono_literals;
 
 namespace playnite_launcher::lossless {
   lossless_scaling_runtime_state capture_lossless_scaling_state();
+
   namespace {
 
     constexpr std::string_view k_lossless_profile_title = "Vibeshine";
@@ -212,10 +213,12 @@ namespace playnite_launcher::lossless {
         } catch (...) {
         }
       }
+
       struct NamedKey {
         const char *name;
         WORD vk;
       };
+
       static const std::array<NamedKey, 20> k_named_keys {{
         {"SPACE", VK_SPACE},
         {"TAB", VK_TAB},
@@ -829,6 +832,7 @@ namespace playnite_launcher::lossless {
         DWORD keep;
         bool minimized = false;
       } ctx {keep_pid, false};
+
       EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
         auto *ctx = reinterpret_cast<Ctx *>(param);
         if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
@@ -863,6 +867,7 @@ namespace playnite_launcher::lossless {
         DWORD target;
         HWND focused = nullptr;
       } ctx {pid, nullptr};
+
       EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
         auto *ctx = reinterpret_cast<Ctx *>(param);
         DWORD owner = 0;
@@ -1708,9 +1713,7 @@ namespace playnite_launcher::lossless {
       }
       double mem_mb = static_cast<double>(candidate.peak_working_set) / (1024.0 * 1024.0);
       auto normalized_path = normalize_lowercase_path(candidate.path);
-      bool matches = install_dir_norm && !install_dir_norm->empty()
-                       ? path_matches_prefix(normalized_path, *install_dir_norm)
-                       : false;
+      bool matches = install_dir_norm && !install_dir_norm->empty() ? path_matches_prefix(normalized_path, *install_dir_norm) : false;
       bool exe_match = exe_path_norm && !exe_path_norm->empty() && normalized_path == *exe_path_norm;
       scores.push_back({pid, candidate.path, cpu_ratio, mem_mb, matches, exe_match});
       max_cpu_ratio = std::max(max_cpu_ratio, cpu_ratio);
@@ -1824,18 +1827,18 @@ namespace playnite_launcher::lossless {
     state.stopped = true;
   }
 
-    bool focus_and_minimize_existing_instances(const lossless_scaling_runtime_state &state, bool minimize_window) {
-      if (state.stopped || !state.previously_running) {
-        return false;
-      }
-      bool handled = false;
-      for (DWORD pid : state.running_pids) {
-        bool focused = lossless_scaling_focus_window(pid);
-        bool minimized = minimize_window ? lossless_scaling_minimize_window(pid) : false;
-        handled = focused || minimized || handled;
-      }
-      return handled;
+  bool focus_and_minimize_existing_instances(const lossless_scaling_runtime_state &state, bool minimize_window) {
+    if (state.stopped || !state.previously_running) {
+      return false;
     }
+    bool handled = false;
+    for (DWORD pid : state.running_pids) {
+      bool focused = lossless_scaling_focus_window(pid);
+      bool minimized = minimize_window ? lossless_scaling_minimize_window(pid) : false;
+      handled = focused || minimized || handled;
+    }
+    return handled;
+  }
 
   bool should_launch_new_instance(const lossless_scaling_runtime_state &state, bool force_launch) {
     if (force_launch) {
@@ -1865,36 +1868,71 @@ namespace playnite_launcher::lossless {
     return false;
   }
 
-    std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi, DWORD game_pid, bool minimize_window) {
-      bool focused = false;
-      bool minimized = false;
+  std::pair<bool, bool> focus_and_minimize_new_process(PROCESS_INFORMATION &pi, DWORD game_pid, bool minimize_window) {
+    bool focused = false;
+    bool minimized = false;
+    if (pi.hProcess) {
+      WaitForInputIdle(pi.hProcess, 5000);
+      constexpr int kFocusRetries = 4;
+      constexpr auto kRetryDelay = std::chrono::milliseconds(120);
+      if (game_pid) {
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+        std::this_thread::sleep_for(150ms);
+        bool first_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+        focused = focused || first_lossless;
+        std::this_thread::sleep_for(150ms);
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+        std::this_thread::sleep_for(150ms);
+        bool second_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+        focused = focused || second_lossless;
+      } else {
+        focused = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
+      }
+      if (minimize_window) {
+        minimized = lossless_scaling_minimize_window(pi.dwProcessId);
+      }
+      if (!focused) {
+        focused = lossless_scaling_focus_window(pi.dwProcessId);
+      }
+      if (game_pid) {
+        std::this_thread::sleep_for(150ms);
+        focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
+      }
+      CloseHandle(pi.hProcess);
+      pi.hProcess = nullptr;
+    }
+    if (pi.hThread) {
+      CloseHandle(pi.hThread);
+      pi.hThread = nullptr;
+    }
+    return {focused, minimized};
+  }
+
+  bool launch_lossless_executable(const std::wstring &exe, DWORD game_pid, bool minimize_window) {
+    if (exe.empty()) {
+      return false;
+    }
+    STARTUPINFOW si {sizeof(si)};
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOWNORMAL;
+    PROCESS_INFORMATION pi {};
+    std::wstring cmd = L"\"" + exe + L"\"";
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(L'\0');
+
+    auto finalize_launch = [&](PROCESS_INFORMATION &proc_info) {
+      auto [focused, minimized] = focus_and_minimize_new_process(proc_info, game_pid, minimize_window);
+      if (!focused) {
+        BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+      }
+      if (minimize_window && !minimized) {
+        BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
+      }
+      return true;
+    };
+
+    auto close_process_handles = [&]() {
       if (pi.hProcess) {
-        WaitForInputIdle(pi.hProcess, 5000);
-        constexpr int kFocusRetries = 4;
-        constexpr auto kRetryDelay = std::chrono::milliseconds(120);
-        if (game_pid) {
-          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-          std::this_thread::sleep_for(150ms);
-          bool first_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-          focused = focused || first_lossless;
-          std::this_thread::sleep_for(150ms);
-          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-          std::this_thread::sleep_for(150ms);
-          bool second_lossless = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-          focused = focused || second_lossless;
-        } else {
-          focused = focus_with_retry(pi.dwProcessId, kFocusRetries, kRetryDelay);
-        }
-        if (minimize_window) {
-          minimized = lossless_scaling_minimize_window(pi.dwProcessId);
-        }
-        if (!focused) {
-          focused = lossless_scaling_focus_window(pi.dwProcessId);
-        }
-        if (game_pid) {
-          std::this_thread::sleep_for(150ms);
-          focus_with_retry(game_pid, kFocusRetries, kRetryDelay);
-        }
         CloseHandle(pi.hProcess);
         pi.hProcess = nullptr;
       }
@@ -1902,101 +1940,66 @@ namespace playnite_launcher::lossless {
         CloseHandle(pi.hThread);
         pi.hThread = nullptr;
       }
-      return {focused, minimized};
-    }
+    };
 
-    bool launch_lossless_executable(const std::wstring &exe, DWORD game_pid, bool minimize_window) {
-      if (exe.empty()) {
-        return false;
-      }
-      STARTUPINFOW si {sizeof(si)};
-      si.dwFlags = STARTF_USESHOWWINDOW;
-      si.wShowWindow = SW_SHOWNORMAL;
-      PROCESS_INFORMATION pi {};
-      std::wstring cmd = L"\"" + exe + L"\"";
-      std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
-      cmdline.push_back(L'\0');
-
-      auto finalize_launch = [&](PROCESS_INFORMATION &proc_info) {
-        auto [focused, minimized] = focus_and_minimize_new_process(proc_info, game_pid, minimize_window);
-        if (!focused) {
-          BOOST_LOG(debug) << "Lossless Scaling: launched but could not focus window";
+    bool launched = false;
+    if (platf::dxgi::is_running_as_system()) {
+      winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
+      if (user_token) {
+        LPVOID raw_env = nullptr;
+        if (!CreateEnvironmentBlock(&raw_env, user_token.get(), FALSE)) {
+          raw_env = nullptr;
         }
-        if (minimize_window && !minimized) {
-          BOOST_LOG(debug) << "Lossless Scaling: launched but could not minimize window";
-        }
-        return true;
-      };
-
-      auto close_process_handles = [&]() {
-        if (pi.hProcess) {
-          CloseHandle(pi.hProcess);
-          pi.hProcess = nullptr;
-        }
-        if (pi.hThread) {
-          CloseHandle(pi.hThread);
-          pi.hThread = nullptr;
-        }
-      };
-
-      bool launched = false;
-      if (platf::dxgi::is_running_as_system()) {
-        winrt::handle user_token {platf::dxgi::retrieve_users_token(false)};
-        if (user_token) {
-          LPVOID raw_env = nullptr;
-          if (!CreateEnvironmentBlock(&raw_env, user_token.get(), FALSE)) {
-            raw_env = nullptr;
-          }
-          std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)> env_block(raw_env, DestroyEnvironmentBlock);
-          BOOL ok = FALSE;
-          if (ImpersonateLoggedOnUser(user_token.get())) {
-            auto revert_guard = util::fail_guard([&]() {
-              if (!RevertToSelf()) {
-                DWORD err = GetLastError();
-                BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation after launch, error=" << err;
-                DebugBreak();
-              }
-            });
-            ok = CreateProcessAsUserW(
-              user_token.get(),
-              exe.c_str(),
-              cmdline.data(),
-              nullptr,
-              nullptr,
-              FALSE,
-              CREATE_UNICODE_ENVIRONMENT,
-              env_block.get(),
-              nullptr,
-              &si,
-              &pi
-            );
-            if (!ok) {
-              BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
+        std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)> env_block(raw_env, DestroyEnvironmentBlock);
+        BOOL ok = FALSE;
+        if (ImpersonateLoggedOnUser(user_token.get())) {
+          auto revert_guard = util::fail_guard([&]() {
+            if (!RevertToSelf()) {
+              DWORD err = GetLastError();
+              BOOST_LOG(fatal) << "Lossless Scaling: failed to revert impersonation after launch, error=" << err;
+              DebugBreak();
             }
-          } else {
-            BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
-          }
-          if (ok) {
-            launched = true;
-          } else {
-            close_process_handles();
+          });
+          ok = CreateProcessAsUserW(
+            user_token.get(),
+            exe.c_str(),
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CREATE_UNICODE_ENVIRONMENT,
+            env_block.get(),
+            nullptr,
+            &si,
+            &pi
+          );
+          if (!ok) {
+            BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
           }
         } else {
-          BOOST_LOG(debug) << "Lossless Scaling: no user token available for impersonated launch";
+          BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
         }
-      }
-      if (!launched) {
-        if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
-          BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
+        if (ok) {
+          launched = true;
+        } else {
           close_process_handles();
-          return false;
         }
-        launched = true;
+      } else {
+        BOOST_LOG(debug) << "Lossless Scaling: no user token available for impersonated launch";
       }
-      bool result = launched && finalize_launch(pi);
-      close_process_handles();
-      return result;
     }
+    if (!launched) {
+      if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
+        BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
+        close_process_handles();
+        return false;
+      }
+      launched = true;
+    }
+    bool result = launched && finalize_launch(pi);
+    close_process_handles();
+    return result;
+  }
 
   bool lossless_scaling_apply_global_profile(const lossless_scaling_options &options, const std::string &install_dir_utf8, const std::string &exe_path_utf8, lossless_scaling_profile_backup &backup) {
     backup = {};

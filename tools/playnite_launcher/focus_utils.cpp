@@ -177,7 +177,7 @@ namespace playnite_launcher::focus {
       return false;
     }
     auto is_cloaked = [&](HWND hwnd) -> bool {
-      using DwmGetWindowAttribute_t = HRESULT (WINAPI *)(HWND, DWORD, PVOID, DWORD);
+      using DwmGetWindowAttribute_t = HRESULT(WINAPI *)(HWND, DWORD, PVOID, DWORD);
       static HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
       static auto fn = dwm ? reinterpret_cast<DwmGetWindowAttribute_t>(GetProcAddress(dwm, "DwmGetWindowAttribute")) : nullptr;
       if (!fn) {

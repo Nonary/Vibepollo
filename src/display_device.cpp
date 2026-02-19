@@ -57,7 +57,10 @@ namespace display_device {
      * @examples_end
      */
     bool parse_resolution_string(const std::string &input, std::optional<Resolution> &output) {
-      const std::string trimmed_input {boost::algorithm::trim_copy(input)};
+      std::string normalized_input {boost::algorithm::trim_copy(input)};
+      boost::algorithm::replace_all(normalized_input, "×", "x");
+
+      const std::string &trimmed_input = normalized_input;
       const std::regex resolution_regex {R"(^(\d+)x(\d+)$)"};
 
       if (std::smatch match; std::regex_match(trimmed_input, match, resolution_regex)) {
@@ -284,9 +287,7 @@ namespace display_device {
 
       // Client display_mode override takes highest priority
       if (session.client_display_mode_override) {
-        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                                 ? *session.framegen_refresh_rate
-                                 : session.fps;
+        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
         if (target_fps >= 0) {
           config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
           BOOST_LOG(debug) << "Using client display mode override for refresh rate: " << target_fps / 1000.0 << " Hz";
@@ -300,9 +301,7 @@ namespace display_device {
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
           {
-            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                                     ? *session.framegen_refresh_rate
-                                     : session.fps;
+            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
             if (target_fps >= 0) {
               config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
             } else {
@@ -790,9 +789,7 @@ namespace display_device {
       return false;
     }
 
-    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0)
-                             ? *session.framegen_refresh_rate
-                             : session.fps;
+    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
     if (target_fps < 0) {
       return false;
     }

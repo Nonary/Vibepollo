@@ -2,30 +2,30 @@
 
 #include "src/config.h"
 #include "src/logging.h"
+#include "src/platform/common.h"
+#include "src/platform/windows/display_helper_coordinator.h"
+#include "src/platform/windows/misc.h"
 #include "src/process.h"
 #include "src/state_storage.h"
-#include "src/platform/common.h"
-#include "src/platform/windows/misc.h"
-#include "src/platform/windows/display_helper_coordinator.h"
 #include "src/uuid.h"
 
-#include <atomic>
-#include <chrono>
-#include <cctype>
-#include <cstdint>
 #include <algorithm>
+#include <atomic>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <cctype>
+#include <cfgmgr32.h>
+#include <chrono>
 #include <cmath>
 #include <combaseapi.h>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
-#include <cfgmgr32.h>
+#include <devguid.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
-#include <devguid.h>
 #include <filesystem>
 #include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
@@ -39,15 +39,15 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <physicalmonitorenumerationapi.h>
-#include <string_view>
 #include <setupapi.h>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
-#include <winsock2.h>
 #include <windows.h>
 #include <winreg.h>
+#include <winsock2.h>
 #include <wrl/client.h>
 
 #ifndef CPST_EXTENDED_DISPLAY_COLOR_MODE
@@ -75,6 +75,7 @@ namespace VDISPLAY {
     constexpr int DRIVER_RESTART_MAX_ATTEMPTS = 3;
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
+    constexpr int ENSURE_DISPLAY_MAX_RETRY_FAILURES = 8;
     constexpr std::wstring_view SUDOVDA_HARDWARE_ID = L"root\\sudomaker\\sudovda";
     constexpr std::wstring_view SUDOVDA_FRIENDLY_NAME_W = L"SudoMaker Virtual Display Adapter";
 
@@ -83,6 +84,15 @@ namespace VDISPLAY {
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
+
+    std::mutex g_ensure_display_state_mutex;
+    bool g_ensure_display_retained = false;
+    GUID g_ensure_display_guid {};
+    int g_ensure_display_failure_count = 0;
+
+    bool guid_equal(const GUID &lhs, const GUID &rhs) {
+      return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
+    }
 
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -287,13 +297,15 @@ namespace VDISPLAY {
     }
 
     class DevInfoHandle {
-     public:
-      explicit DevInfoHandle(HDEVINFO value) : handle(value) {}
+    public:
+      explicit DevInfoHandle(HDEVINFO value):
+          handle(value) {}
 
       DevInfoHandle(const DevInfoHandle &) = delete;
       DevInfoHandle &operator=(const DevInfoHandle &) = delete;
 
-      DevInfoHandle(DevInfoHandle &&other) noexcept : handle(other.handle) {
+      DevInfoHandle(DevInfoHandle &&other) noexcept:
+          handle(other.handle) {
         other.handle = INVALID_HANDLE_VALUE;
       }
 
@@ -324,7 +336,7 @@ namespace VDISPLAY {
         return handle != INVALID_HANDLE_VALUE;
       }
 
-     private:
+    private:
       HDEVINFO handle;
     };
 
@@ -575,7 +587,7 @@ namespace VDISPLAY {
         });
       }
 
-     private:
+    private:
       std::mutex mutex;
       std::vector<uuid_util::uuid_t> guids;
     };
@@ -720,7 +732,10 @@ namespace VDISPLAY {
       bool close = false;
 
       scoped_reg_key_t() = default;
-      scoped_reg_key_t(HKEY k, bool should_close): key(k), close(should_close) {}
+
+      scoped_reg_key_t(HKEY k, bool should_close):
+          key(k),
+          close(should_close) {}
 
       scoped_reg_key_t(const scoped_reg_key_t &) = delete;
       scoped_reg_key_t &operator=(const scoped_reg_key_t &) = delete;
@@ -731,6 +746,7 @@ namespace VDISPLAY {
         other.key = nullptr;
         other.close = false;
       }
+
       scoped_reg_key_t &operator=(scoped_reg_key_t &&other) noexcept {
         if (this != &other) {
           if (close && key) {
@@ -857,11 +873,17 @@ namespace VDISPLAY {
       // Parse the device path to extract the instance ID
       // Format: \\?\DISPLAY#SMKD1CE#1&28a6823a&2&UID265#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}
       size_t first_hash = device_path.find(L'#');
-      if (first_hash == std::wstring::npos) return std::nullopt;
+      if (first_hash == std::wstring::npos) {
+        return std::nullopt;
+      }
       size_t second_hash = device_path.find(L'#', first_hash + 1);
-      if (second_hash == std::wstring::npos) return std::nullopt;
+      if (second_hash == std::wstring::npos) {
+        return std::nullopt;
+      }
       size_t third_hash = device_path.find(L'#', second_hash + 1);
-      if (third_hash == std::wstring::npos) return std::nullopt;
+      if (third_hash == std::wstring::npos) {
+        return std::nullopt;
+      }
 
       std::wstring device_type = device_path.substr(first_hash + 1, second_hash - first_hash - 1);
       std::wstring instance_id = device_path.substr(second_hash + 1, third_hash - second_hash - 1);
@@ -875,8 +897,7 @@ namespace VDISPLAY {
       wchar_t driver_value[256] = {};
       DWORD driver_size = sizeof(driver_value);
       DWORD driver_type = 0;
-      LSTATUS status = RegQueryValueExW(enum_key, L"Driver", nullptr, &driver_type,
-                                        reinterpret_cast<LPBYTE>(driver_value), &driver_size);
+      LSTATUS status = RegQueryValueExW(enum_key, L"Driver", nullptr, &driver_type, reinterpret_cast<LPBYTE>(driver_value), &driver_size);
       RegCloseKey(enum_key);
 
       if (status != ERROR_SUCCESS || driver_type != REG_SZ) {
@@ -885,7 +906,9 @@ namespace VDISPLAY {
 
       std::wstring driver_str(driver_value);
       size_t backslash = driver_str.rfind(L'\\');
-      if (backslash == std::wstring::npos) return std::nullopt;
+      if (backslash == std::wstring::npos) {
+        return std::nullopt;
+      }
       std::wstring key_number = driver_str.substr(backslash + 1);
 
       return L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\" +
@@ -913,8 +936,7 @@ namespace VDISPLAY {
       wchar_t profile_value[512] = {};
       DWORD profile_size = sizeof(profile_value);
       DWORD profile_type = 0;
-      LSTATUS status = RegQueryValueExW(profile_key, L"ICMProfileAC", nullptr, &profile_type,
-                                        reinterpret_cast<LPBYTE>(profile_value), &profile_size);
+      LSTATUS status = RegQueryValueExW(profile_key, L"ICMProfileAC", nullptr, &profile_type, reinterpret_cast<LPBYTE>(profile_value), &profile_size);
       RegCloseKey(profile_key);
 
       if (status != ERROR_SUCCESS || (profile_type != REG_MULTI_SZ && profile_type != REG_SZ)) {
@@ -985,8 +1007,7 @@ namespace VDISPLAY {
       }
 
       HKEY profile_key = nullptr;
-      LSTATUS status = RegCreateKeyExW(root.key, profile_assoc_path->c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
-                                       &profile_key, nullptr);
+      LSTATUS status = RegCreateKeyExW(root.key, profile_assoc_path->c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &profile_key, nullptr);
       if (status != ERROR_SUCCESS) {
         if (out_status) {
           *out_status = status;
@@ -998,17 +1019,14 @@ namespace VDISPLAY {
 
       // Write UsePerUserProfiles = 1
       DWORD use_per_user = 1;
-      (void) RegSetValueExW(profile_key, L"UsePerUserProfiles", 0, REG_DWORD, reinterpret_cast<const BYTE *>(&use_per_user),
-                            sizeof(use_per_user));
+      (void) RegSetValueExW(profile_key, L"UsePerUserProfiles", 0, REG_DWORD, reinterpret_cast<const BYTE *>(&use_per_user), sizeof(use_per_user));
 
       // Write ICMProfileAC as REG_MULTI_SZ
       std::vector<wchar_t> multi_sz(profile_filename.begin(), profile_filename.end());
       multi_sz.push_back(L'\0');
       multi_sz.push_back(L'\0');
 
-      status = RegSetValueExW(profile_key, L"ICMProfileAC", 0, REG_MULTI_SZ,
-                              reinterpret_cast<const BYTE *>(multi_sz.data()),
-                              static_cast<DWORD>(multi_sz.size() * sizeof(wchar_t)));
+      status = RegSetValueExW(profile_key, L"ICMProfileAC", 0, REG_MULTI_SZ, reinterpret_cast<const BYTE *>(multi_sz.data()), static_cast<DWORD>(multi_sz.size() * sizeof(wchar_t)));
       RegCloseKey(profile_key);
 
       if (out_status) {
@@ -1050,14 +1068,12 @@ namespace VDISPLAY {
       const bool should_clear_mismatched = is_virtual_display;
 
       // Run asynchronously to avoid blocking stream startup
-      std::thread([
-        profile_path,
-        client_name,
-        monitor_path = monitor_device_path,
-        display_name,
-        device_id,
-        should_clear_mismatched
-      ]() {
+      std::thread([profile_path,
+                   client_name,
+                   monitor_path = monitor_device_path,
+                   display_name,
+                   device_id,
+                   should_clear_mismatched]() {
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
@@ -1992,8 +2008,7 @@ namespace VDISPLAY {
 
         bool matches = false;
         bool matched_by_client_name = false;
-        if (!matches && !state.params.client_name.empty() && !device.m_friendly_name.empty()
-            && equals_ci(device.m_friendly_name, state.params.client_name)) {
+        if (!matches && !state.params.client_name.empty() && !device.m_friendly_name.empty() && equals_ci(device.m_friendly_name, state.params.client_name)) {
           matches = true;
           matched_by_client_name = true;
         }
@@ -2027,7 +2042,8 @@ namespace VDISPLAY {
           auto adopted_monitor_device_path = state.current_monitor_device_path;
 
           if (adopted_display_name != state.current_display_name
-              || adopted_device_id != state.current_device_id) {
+              || adopted_device_id != state.current_device_id
+              || adopted_monitor_device_path != state.current_monitor_device_path) {
             const auto before = state.describe_target();
             state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
             BOOST_LOG(debug) << "Virtual display recovery monitor adopted updated identifiers via client_name '"
@@ -2463,7 +2479,7 @@ namespace VDISPLAY {
       }
 
       BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << " (attempt "
-                     << attempt << '/' << DRIVER_RESTART_MAX_ATTEMPTS << ").";
+                      << attempt << '/' << DRIVER_RESTART_MAX_ATTEMPTS << ").";
 
       if (!restart_sudovda_device(*instance_id)) {
         BOOST_LOG(error) << "SudoVDA adapter restart failed; streaming will continue with the active display. A reboot may be required.";
@@ -2505,7 +2521,8 @@ namespace VDISPLAY {
           &ping_handle,
           0,
           FALSE,
-          DUPLICATE_SAME_ACCESS)) {
+          DUPLICATE_SAME_ACCESS
+        )) {
       printf("[SUDOVDA] Watchdog: Failed to duplicate driver handle.\n");
       return false;
     }
@@ -2776,12 +2793,8 @@ namespace VDISPLAY {
             matches = equals_ci(candidate.m_device_id, *device_id);
           }
 
-          const auto candidate_display_name = !candidate.m_display_name.empty()
-                                                ? std::make_optional(normalize_display_name(candidate.m_display_name))
-                                                : std::nullopt;
-          const auto candidate_friendly_name = !candidate.m_friendly_name.empty()
-                                                 ? std::make_optional(normalize_display_name(candidate.m_friendly_name))
-                                                 : std::nullopt;
+          const auto candidate_display_name = !candidate.m_display_name.empty() ? std::make_optional(normalize_display_name(candidate.m_display_name)) : std::nullopt;
+          const auto candidate_friendly_name = !candidate.m_friendly_name.empty() ? std::make_optional(normalize_display_name(candidate.m_friendly_name)) : std::nullopt;
 
           if (!matches && monitor_path_hint && !candidate.m_device_id.empty()) {
             matches = equals_ci(candidate.m_device_id, *monitor_path_hint);
@@ -2877,89 +2890,89 @@ namespace VDISPLAY {
 
   namespace {
 
-  constexpr auto VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY = std::chrono::milliseconds(125);
+    constexpr auto VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY = std::chrono::milliseconds(125);
 
-  bool is_virtual_display_present(
-    const std::optional<std::wstring> &display_name,
-    const std::optional<std::string> &device_id
-  ) {
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-    if (!devices) {
-      return false;
-    }
-
-    std::optional<std::string> normalized_name;
-    if (display_name && !display_name->empty()) {
-      normalized_name = normalize_display_name(platf::to_utf8(*display_name));
-    }
-
-    for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device)) {
-        continue;
+    bool is_virtual_display_present(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id
+    ) {
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return false;
       }
 
-      bool matches = false;
-      if (device_id && !device_id->empty() && !device.m_device_id.empty()) {
-        matches = equals_ci(device.m_device_id, *device_id);
+      std::optional<std::string> normalized_name;
+      if (display_name && !display_name->empty()) {
+        normalized_name = normalize_display_name(platf::to_utf8(*display_name));
       }
 
-      if (!matches && normalized_name) {
-        const auto device_name = normalize_display_name(device.m_display_name);
-        const auto friendly_name = normalize_display_name(device.m_friendly_name);
-        if ((!device_name.empty() && device_name == *normalized_name) ||
-            (!friendly_name.empty() && friendly_name == *normalized_name)) {
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device)) {
+          continue;
+        }
+
+        bool matches = false;
+        if (device_id && !device_id->empty() && !device.m_device_id.empty()) {
+          matches = equals_ci(device.m_device_id, *device_id);
+        }
+
+        if (!matches && normalized_name) {
+          const auto device_name = normalize_display_name(device.m_display_name);
+          const auto friendly_name = normalize_display_name(device.m_friendly_name);
+          if ((!device_name.empty() && device_name == *normalized_name) ||
+              (!friendly_name.empty() && friendly_name == *normalized_name)) {
+            matches = true;
+          }
+        }
+
+        if (!matches && !device_id && !normalized_name) {
           matches = true;
+        }
+
+        if (matches) {
+          return true;
         }
       }
 
-      if (!matches && !device_id && !normalized_name) {
-        matches = true;
-      }
-
-      if (matches) {
-        return true;
-      }
+      return false;
     }
-
-    return false;
-  }
 
     bool confirm_virtual_display_persistence(
       const VirtualDisplayCreationResult &result,
       uint32_t width,
       uint32_t height
     ) {
-    (void) width;
-    (void) height;
+      (void) width;
+      (void) height;
 
-    const auto name_utf8 = result.display_name ? platf::to_utf8(*result.display_name) : std::string("(pending)");
-    const auto device_utf8 = result.device_id ? *result.device_id : std::string("(unknown)");
-    const auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY).count();
+      const auto name_utf8 = result.display_name ? platf::to_utf8(*result.display_name) : std::string("(pending)");
+      const auto device_utf8 = result.device_id ? *result.device_id : std::string("(unknown)");
+      const auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY).count();
 
-    if (!is_virtual_display_present(result.display_name, result.device_id)) {
-      BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
-                         << "' missing immediately after creation.";
-      return false;
+      if (!is_virtual_display_present(result.display_name, result.device_id)) {
+        BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
+                           << "' missing immediately after creation.";
+        return false;
+      }
+
+      std::this_thread::sleep_for(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY);
+
+      if (!is_virtual_display_present(result.display_name, result.device_id)) {
+        BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
+                           << "' disappeared within " << delay_ms << "ms of confirmation.";
+        return false;
+      }
+
+      BOOST_LOG(debug) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
+                       << "' remained present after " << delay_ms << "ms stability recheck.";
+      return true;
     }
 
-    std::this_thread::sleep_for(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY);
-
-    if (!is_virtual_display_present(result.display_name, result.device_id)) {
-      BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
-                         << "' disappeared within " << delay_ms << "ms of confirmation.";
-      return false;
+    bool is_gdi_display_name(const std::wstring &name) {
+      return name.size() >= 4 && name[0] == L'\\' && name[1] == L'\\' && name[2] == L'.' && name[3] == L'\\';
     }
 
-    BOOST_LOG(debug) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
-                     << "' remained present after " << delay_ms << "ms stability recheck.";
-    return true;
-  }
-
-  bool is_gdi_display_name(const std::wstring &name) {
-    return name.size() >= 4 && name[0] == L'\\' && name[1] == L'\\' && name[2] == L'.' && name[3] == L'\\';
-  }
-
-  std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
+    std::optional<VirtualDisplayCreationResult> create_virtual_display_once(
       const char *s_hdr_profile,
       const char *s_client_uid,
       const char *s_client_name,
@@ -2969,216 +2982,216 @@ namespace VDISPLAY {
       const GUID &guid,
       uint32_t base_fps_millihz,
       bool framegen_refresh_active
-  ) {
-    if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
-      return std::nullopt;
-    }
-
-    uuid_util::uuid_t requested_uuid {};
-    std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
-
-    // Log entry and inputs for deeper diagnostics
-    BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
-                     << "' client_name='" << (s_client_name ? s_client_name : "(null)")
-                     << "' hdr_profile='" << (s_hdr_profile ? s_hdr_profile : "(null)")
-                     << "' width=" << width << " height=" << height << " fps=" << fps
-                     << " guid=" << requested_uuid.string();
-
-    teardown_conflicting_virtual_displays(requested_uuid);
-    BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
-    enforce_teardown_cooldown_if_needed();
-
-    const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
-    VIRTUAL_DISPLAY_ADD_OUT output {};
-    BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
-    if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
-      const DWORD error_code = GetLastError();
-      BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
-
-      auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-      if (!reuse_name) {
-        reuse_name = resolve_virtual_display_name_from_devices();
+    ) {
+      if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
       }
+
+      uuid_util::uuid_t requested_uuid {};
+      std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
+
+      // Log entry and inputs for deeper diagnostics
+      BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
+                       << "' client_name='" << (s_client_name ? s_client_name : "(null)")
+                       << "' hdr_profile='" << (s_hdr_profile ? s_hdr_profile : "(null)")
+                       << "' width=" << width << " height=" << height << " fps=" << fps
+                       << " guid=" << requested_uuid.string();
+
+      teardown_conflicting_virtual_displays(requested_uuid);
+      BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
+      enforce_teardown_cooldown_if_needed();
+
+      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
+      VIRTUAL_DISPLAY_ADD_OUT output {};
+      BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
+      if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
+        const DWORD error_code = GetLastError();
+        BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
+
+        auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+        if (!reuse_name) {
+          reuse_name = resolve_virtual_display_name_from_devices();
+        }
+        std::optional<std::string> device_id;
+        if (reuse_name) {
+          device_id = resolveVirtualDisplayDeviceId(*reuse_name);
+          BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*reuse_name) << ") returned '"
+                           << (device_id ? *device_id : std::string("(none)")) << "'";
+        }
+        if (!device_id) {
+          if (s_client_name && std::strlen(s_client_name) > 0) {
+            device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+          }
+        }
+
+        if (auto dpi = read_virtual_display_dpi_value()) {
+          (void) apply_virtual_display_dpi_value(*dpi);
+        }
+
+        if (reuse_name || device_id) {
+          BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='"
+                           << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
+                           << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
+          std::optional<std::wstring> display_name = reuse_name;
+          if (wait_for_virtual_display_ready(display_name, device_id, width, height)) {
+            if (display_name) {
+              wprintf(
+                L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
+                static_cast<unsigned long>(error_code),
+                display_name->c_str()
+              );
+            } else {
+              printf("[SUDOVDA] Reusing existing virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+            }
+
+            BOOST_LOG(info) << "Reused virtual display for guid=" << requested_uuid.string()
+                            << " display_name='"
+                            << (display_name ? platf::to_utf8(*display_name) : std::string("(none)")) << "' device_id='"
+                            << (device_id ? *device_id : std::string("(none)")) << "'";
+
+            const auto ready_since = std::chrono::steady_clock::now();
+            VirtualDisplayCreationResult result;
+            result.display_name = display_name;
+            if (device_id && !device_id->empty()) {
+              result.device_id = *device_id;
+            }
+            if (s_client_name && std::strlen(s_client_name) > 0) {
+              result.client_name = std::string(s_client_name);
+            }
+
+            // Prefer a real GDI display name (\\.\DISPLAYx) over a GUID-like placeholder when available.
+            if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
+              if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
+                if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
+                  BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after reuse.";
+                  result.display_name = gdi_name;
+                }
+              }
+            }
+
+            result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
+            result.reused_existing = true;
+            result.ready_since = ready_since;
+            std::optional<std::string> hdr_profile;
+            if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
+              hdr_profile = std::string(s_hdr_profile);
+            }
+            apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
+            return result;
+          }
+        }
+
+        printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
+        return std::nullopt;
+      }
+
+      const auto display_config_identity = query_display_config_identity(output);
+
+      std::optional<std::wstring> resolved_display_name;
+      if (display_config_identity) {
+        if (display_config_identity->source_gdi_device_name && !display_config_identity->source_gdi_device_name->empty()) {
+          resolved_display_name = *display_config_identity->source_gdi_device_name;
+        } else if (
+          display_config_identity->monitor_friendly_device_name && !display_config_identity->monitor_friendly_device_name->empty()
+        ) {
+          resolved_display_name = *display_config_identity->monitor_friendly_device_name;
+        }
+      }
+
+      constexpr int kGetAddedDisplayNameAttempts = 3;
+      constexpr DWORD kGetAddedDisplayNameDelayMs = 25;
+      wchar_t device_name[CCHDEVICENAME] {};
+      if (!resolved_display_name) {
+        for (int attempt = 0; attempt < kGetAddedDisplayNameAttempts; ++attempt) {
+          if (GetAddedDisplayName(output, device_name)) {
+            resolved_display_name = device_name;
+            break;
+          }
+          if (attempt + 1 < kGetAddedDisplayNameAttempts) {
+            Sleep(kGetAddedDisplayNameDelayMs);
+          }
+        }
+      }
+
+      if (!resolved_display_name && display_config_identity && display_config_identity->monitor_device_path &&
+          !display_config_identity->monitor_device_path->empty()) {
+        resolved_display_name = *display_config_identity->monitor_device_path;
+      }
+
+      if (!resolved_display_name) {
+        resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+        if (!resolved_display_name) {
+          resolved_display_name = resolve_virtual_display_name_from_devices();
+        }
+      }
+
       std::optional<std::string> device_id;
-      if (reuse_name) {
-        device_id = resolveVirtualDisplayDeviceId(*reuse_name);
-        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*reuse_name) << ") returned '"
+      if (resolved_display_name) {
+        device_id = resolveVirtualDisplayDeviceId(*resolved_display_name);
+        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*resolved_display_name) << ") returned '"
                          << (device_id ? *device_id : std::string("(none)")) << "'";
       }
       if (!device_id) {
         if (s_client_name && std::strlen(s_client_name) > 0) {
           device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
         }
-      }
-
-      if (auto dpi = read_virtual_display_dpi_value()) {
-        (void) apply_virtual_display_dpi_value(*dpi);
-      }
-
-      if (reuse_name || device_id) {
-        BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='"
-                         << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
-                         << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
-        std::optional<std::wstring> display_name = reuse_name;
-        if (wait_for_virtual_display_ready(display_name, device_id, width, height)) {
-          if (display_name) {
-            wprintf(
-              L"[SUDOVDA] Reusing existing virtual display (error=%lu): %ls\n",
-              static_cast<unsigned long>(error_code),
-              display_name->c_str()
-            );
-          } else {
-            printf("[SUDOVDA] Reusing existing virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
-          }
-
-          BOOST_LOG(info) << "Reused virtual display for guid=" << requested_uuid.string()
-                          << " display_name='"
-                          << (display_name ? platf::to_utf8(*display_name) : std::string("(none)")) << "' device_id='"
-                          << (device_id ? *device_id : std::string("(none)")) << "'";
-
-          const auto ready_since = std::chrono::steady_clock::now();
-          VirtualDisplayCreationResult result;
-          result.display_name = display_name;
-          if (device_id && !device_id->empty()) {
-            result.device_id = *device_id;
-          }
-          if (s_client_name && std::strlen(s_client_name) > 0) {
-            result.client_name = std::string(s_client_name);
-          }
-
-          // Prefer a real GDI display name (\\.\DISPLAYx) over a GUID-like placeholder when available.
-          if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
-            if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
-              if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
-                BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after reuse.";
-                result.display_name = gdi_name;
-              }
-            }
-          }
-
-          result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
-          result.reused_existing = true;
-          result.ready_since = ready_since;
-          std::optional<std::string> hdr_profile;
-          if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-            hdr_profile = std::string(s_hdr_profile);
-          }
-          apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
-          return result;
+        if (!device_id && (!s_client_name || std::strlen(s_client_name) == 0)) {
+          device_id = resolveAnyVirtualDisplayDeviceId();
         }
       }
 
-      printf("[SUDOVDA] Failed to add virtual display (error=%lu).\n", static_cast<unsigned long>(error_code));
-      return std::nullopt;
-    }
+      const auto display_config_ptr = display_config_identity ? &*display_config_identity : nullptr;
 
-    const auto display_config_identity = query_display_config_identity(output);
-
-    std::optional<std::wstring> resolved_display_name;
-    if (display_config_identity) {
-      if (display_config_identity->source_gdi_device_name && !display_config_identity->source_gdi_device_name->empty()) {
-        resolved_display_name = *display_config_identity->source_gdi_device_name;
-      } else if (
-        display_config_identity->monitor_friendly_device_name && !display_config_identity->monitor_friendly_device_name->empty()
-      ) {
-        resolved_display_name = *display_config_identity->monitor_friendly_device_name;
+      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
+        printf("[SUDOVDA] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
+        (void) removeVirtualDisplay(guid);
+        return std::nullopt;
       }
-    }
 
-    constexpr int kGetAddedDisplayNameAttempts = 3;
-    constexpr DWORD kGetAddedDisplayNameDelayMs = 25;
-    wchar_t device_name[CCHDEVICENAME] {};
-    if (!resolved_display_name) {
-      for (int attempt = 0; attempt < kGetAddedDisplayNameAttempts; ++attempt) {
-        if (GetAddedDisplayName(output, device_name)) {
-          resolved_display_name = device_name;
-          break;
+      // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
+      if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
+        auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+        if (!gdi_name) {
+          gdi_name = resolve_virtual_display_name_from_devices();
         }
-        if (attempt + 1 < kGetAddedDisplayNameAttempts) {
-          Sleep(kGetAddedDisplayNameDelayMs);
+        if (gdi_name && !gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
+          BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
+          resolved_display_name = gdi_name;
         }
       }
-    }
 
-    if (!resolved_display_name && display_config_identity && display_config_identity->monitor_device_path &&
-        !display_config_identity->monitor_device_path->empty()) {
-      resolved_display_name = *display_config_identity->monitor_device_path;
-    }
-
-    if (!resolved_display_name) {
-      resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-      if (!resolved_display_name) {
-        resolved_display_name = resolve_virtual_display_name_from_devices();
+      if (resolved_display_name) {
+        wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", resolved_display_name->c_str());
+      } else {
+        wprintf(L"[SUDOVDA] Virtual display added; device name pending enumeration (target=%u).\n", output.TargetId);
       }
-    }
+      printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, requested_fps);
 
-    std::optional<std::string> device_id;
-    if (resolved_display_name) {
-      device_id = resolveVirtualDisplayDeviceId(*resolved_display_name);
-      BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*resolved_display_name) << ") returned '"
-                       << (device_id ? *device_id : std::string("(none)")) << "'";
-    }
-    if (!device_id) {
+      const auto ready_since = std::chrono::steady_clock::now();
+      VirtualDisplayCreationResult result;
+      result.display_name = resolved_display_name;
+      if (device_id && !device_id->empty()) {
+        result.device_id = *device_id;
+      }
       if (s_client_name && std::strlen(s_client_name) > 0) {
-        device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+        result.client_name = std::string(s_client_name);
       }
-      if (!device_id && (!s_client_name || std::strlen(s_client_name) == 0)) {
-        device_id = resolveAnyVirtualDisplayDeviceId();
+      if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
+        result.monitor_device_path = display_config_identity->monitor_device_path;
+      } else if (auto identity = query_display_config_identity(output)) {
+        if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {
+          result.monitor_device_path = identity->monitor_device_path;
+        }
       }
-    }
-
-    const auto display_config_ptr = display_config_identity ? &*display_config_identity : nullptr;
-
-    if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
-      printf("[SUDOVDA] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
-      (void) removeVirtualDisplay(guid);
-      return std::nullopt;
-    }
-
-    // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
-    if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
-      auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-      if (!gdi_name) {
-        gdi_name = resolve_virtual_display_name_from_devices();
+      result.reused_existing = false;
+      result.ready_since = ready_since;
+      std::optional<std::string> hdr_profile;
+      if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
+        hdr_profile = std::string(s_hdr_profile);
       }
-      if (gdi_name && !gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
-        BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
-        resolved_display_name = gdi_name;
-      }
+      apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
+      return result;
     }
-
-    if (resolved_display_name) {
-      wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", resolved_display_name->c_str());
-    } else {
-      wprintf(L"[SUDOVDA] Virtual display added; device name pending enumeration (target=%u).\n", output.TargetId);
-    }
-    printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, requested_fps);
-
-    const auto ready_since = std::chrono::steady_clock::now();
-    VirtualDisplayCreationResult result;
-    result.display_name = resolved_display_name;
-    if (device_id && !device_id->empty()) {
-      result.device_id = *device_id;
-    }
-    if (s_client_name && std::strlen(s_client_name) > 0) {
-      result.client_name = std::string(s_client_name);
-    }
-    if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
-      result.monitor_device_path = display_config_identity->monitor_device_path;
-    } else if (auto identity = query_display_config_identity(output)) {
-      if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {
-        result.monitor_device_path = identity->monitor_device_path;
-      }
-    }
-    result.reused_existing = false;
-    result.ready_since = ready_since;
-    std::optional<std::string> hdr_profile;
-    if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-      hdr_profile = std::string(s_hdr_profile);
-    }
-    apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
-    return result;
-  }
 
   }  // namespace
 
@@ -3292,14 +3305,13 @@ namespace VDISPLAY {
       }
     }
 
-    if(all_removed){
+    if (all_removed) {
       BOOST_LOG(info) << "Virtual display devices have been removed successfully.";
-    }
-    else {
+    } else {
       BOOST_LOG(warning) << "Virtual display devices failed to be removed.";
     }
 
-   return all_removed;
+    return all_removed;
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
@@ -3364,8 +3376,8 @@ namespace VDISPLAY {
           BOOST_LOG(warning) << "Virtual display '" << platf::to_utf8(*cached_display_name)
                              << "' still reported by Windows after teardown wait.";
         } else {
-         BOOST_LOG(debug) << "Virtual display '" << platf::to_utf8(*cached_display_name)
-                          << "' removed from enumeration after teardown.";
+          BOOST_LOG(debug) << "Virtual display '" << platf::to_utf8(*cached_display_name)
+                           << "' removed from enumeration after teardown.";
         }
       }
       return true;
@@ -3607,7 +3619,7 @@ uuid_util::uuid_t VDISPLAY::persistentVirtualDisplayUuid() {
 }
 
 VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
-  ensure_display_result result {false, false, {}};
+  ensure_display_result result {false, false, false, {}};
 
   if (has_active_physical_display()) {
     result.success = true;
@@ -3626,6 +3638,27 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     }
   }
 
+  auto uuid = persistentVirtualDisplayUuid();
+  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
+
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+      if (is_virtual_display_guid_tracked(result.temporary_guid)) {
+        result.success = true;
+        result.tracks_temporary_for_probe = true;
+        BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
+                        << g_ensure_display_failure_count << ").";
+        return result;
+      }
+
+      g_ensure_display_retained = false;
+      g_ensure_display_failure_count = 0;
+      std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+      BOOST_LOG(debug) << "Ensure display retention state was stale; creating a fresh temporary display.";
+    }
+  }
+
   auto virtual_displays = enumerateSudaVDADisplays();
   bool has_active_virtual = std::any_of(
     virtual_displays.begin(),
@@ -3640,9 +3673,6 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     result.success = true;
     return result;
   }
-
-  auto uuid = persistentVirtualDisplayUuid();
-  std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
   auto display_info = createVirtualDisplay(
@@ -3662,17 +3692,82 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
   }
 
   result.created_temporary = true;
+  result.tracks_temporary_for_probe = true;
   result.success = true;
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    g_ensure_display_retained = true;
+    g_ensure_display_guid = result.temporary_guid;
+    g_ensure_display_failure_count = 0;
+  }
   BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }
 
-void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result) {
-  if (result.created_temporary) {
-    if (!removeVirtualDisplay(result.temporary_guid)) {
-      BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+void VDISPLAY::cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown) {
+  if (!result.tracks_temporary_for_probe) {
+    return;
+  }
+
+  GUID guid_to_remove {};
+  bool should_remove = false;
+  int failure_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+
+    if (!g_ensure_display_retained || !guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+      return;
+    }
+
+    if (probe_succeeded) {
+      g_ensure_display_failure_count = 0;
+      if (allow_temporary_teardown) {
+        guid_to_remove = g_ensure_display_guid;
+        g_ensure_display_retained = false;
+        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+        should_remove = true;
+      }
     } else {
-      BOOST_LOG(info) << "Removed temporary virtual display.";
+      ++g_ensure_display_failure_count;
+      failure_count = g_ensure_display_failure_count;
+      if (allow_temporary_teardown && g_ensure_display_failure_count >= ENSURE_DISPLAY_MAX_RETRY_FAILURES) {
+        guid_to_remove = g_ensure_display_guid;
+        g_ensure_display_retained = false;
+        g_ensure_display_failure_count = 0;
+        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+        should_remove = true;
+      }
     }
   }
+
+  if (!probe_succeeded) {
+    if (should_remove) {
+      BOOST_LOG(warning) << "Encoder probe failed " << ENSURE_DISPLAY_MAX_RETRY_FAILURES
+                         << " times with retained temporary display; resetting it.";
+    } else {
+      BOOST_LOG(info) << "Keeping temporary virtual display for probe retry (failure "
+                      << failure_count << '/' << ENSURE_DISPLAY_MAX_RETRY_FAILURES << ").";
+    }
+  }
+
+  if (!should_remove) {
+    if (probe_succeeded && !allow_temporary_teardown) {
+      BOOST_LOG(debug) << "Temporary virtual display retained because teardown is currently disallowed.";
+    }
+    return;
+  }
+
+  if (!removeVirtualDisplay(guid_to_remove)) {
+    BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
+  } else {
+    BOOST_LOG(info) << "Removed temporary virtual display.";
+  }
+}
+
+bool VDISPLAY::has_retained_ensure_display() {
+  std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+  if (!g_ensure_display_retained) {
+    return false;
+  }
+  return is_virtual_display_guid_tracked(g_ensure_display_guid);
 }

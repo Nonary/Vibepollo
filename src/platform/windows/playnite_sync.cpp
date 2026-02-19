@@ -161,13 +161,7 @@ namespace platf::playnite::sync {
     return oss.str();
   }
 
-  std::vector<Game> select_recent_installed_games(const std::vector<Game> &installed,
-                                                  int recentN,
-                                                  int recentAgeDays,
-                                                  const std::unordered_set<std::string> &exclude_lower,
-                                                  const std::unordered_set<std::string> &exclude_categories_lower,
-                                                  const std::unordered_set<std::string> &exclude_plugins_lower,
-                                                  std::unordered_map<std::string, int> &out_source_flags) {
+  std::vector<Game> select_recent_installed_games(const std::vector<Game> &installed, int recentN, int recentAgeDays, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
     std::vector<Game> v = installed;
     std::sort(v.begin(), v.end(), [](auto &a, auto &b) {
       return a.last_played > b.last_played;
@@ -201,12 +195,7 @@ namespace platf::playnite::sync {
     return out;
   }
 
-  std::vector<Game> select_plugin_games(const std::vector<Game> &installed,
-                                        const std::unordered_set<std::string> &plugins_lower,
-                                        const std::unordered_set<std::string> &exclude_lower,
-                                        const std::unordered_set<std::string> &exclude_categories_lower,
-                                        const std::unordered_set<std::string> &exclude_plugins_lower,
-                                        std::unordered_map<std::string, int> &out_source_flags) {
+  std::vector<Game> select_plugin_games(const std::vector<Game> &installed, const std::unordered_set<std::string> &plugins_lower, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
     if (plugins_lower.empty()) {
       return {};
     }
@@ -235,11 +224,7 @@ namespace platf::playnite::sync {
     return out;
   }
 
-  std::vector<Game> select_all_installed_games(const std::vector<Game> &installed,
-                                               const std::unordered_set<std::string> &exclude_lower,
-                                               const std::unordered_set<std::string> &exclude_categories_lower,
-                                               const std::unordered_set<std::string> &exclude_plugins_lower,
-                                               std::unordered_map<std::string, int> &out_source_flags) {
+  std::vector<Game> select_all_installed_games(const std::vector<Game> &installed, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
     std::vector<Game> out;
     out.reserve(installed.size());
     for (const auto &g : installed) {
@@ -261,12 +246,7 @@ namespace platf::playnite::sync {
     return out;
   }
 
-  std::vector<Game> select_category_games(const std::vector<Game> &installed,
-                                          const std::vector<std::string> &categories,
-                                          const std::unordered_set<std::string> &exclude_lower,
-                                          const std::unordered_set<std::string> &exclude_categories_lower,
-                                          const std::unordered_set<std::string> &exclude_plugins_lower,
-                                          std::unordered_map<std::string, int> &out_source_flags) {
+  std::vector<Game> select_category_games(const std::vector<Game> &installed, const std::vector<std::string> &categories, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
     std::unordered_set<std::string> want;
     for (auto c : categories) {
       want.insert(to_lower_copy(std::move(c)));
@@ -522,17 +502,7 @@ namespace platf::playnite::sync {
     return c;
   }
 
-  void purge_uninstalled_and_ttl(nlohmann::json &root,
-                                 const std::unordered_set<std::string> &uninstalled_lower,
-                                 int delete_after_days,
-                                 std::time_t now_time,
-                                 const std::unordered_map<std::string, std::time_t> &last_played_map,
-                                 bool recent_mode,
-                                 bool require_repl,
-                                 bool remove_uninstalled,
-                                 bool sync_all_installed,
-                                 const std::unordered_set<std::string> &selected_ids,
-                                 bool &changed) {
+  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed) {
     auto cur = current_auto_ids(root);
     auto repl = count_replacements_available(cur, selected_ids);
     nlohmann::json kept = nlohmann::json::array();
@@ -580,21 +550,7 @@ namespace platf::playnite::sync {
 }  // namespace platf::playnite::sync
 
 namespace platf::playnite::sync {
-  void autosync_reconcile(nlohmann::json &root,
-                          const std::vector<Game> &all_games,
-                          int recentN,
-                          int recentAgeDays,
-                          int delete_after_days,
-                          bool require_repl,
-                          bool sync_all_installed,
-                          const std::vector<std::string> &categories,
-                          const std::vector<std::string> &include_plugins,
-                          const std::vector<std::string> &exclude_categories,
-                          const std::vector<std::string> &exclude_ids,
-                          const std::vector<std::string> &exclude_plugins,
-                          bool remove_uninstalled,
-                          bool &changed,
-                          std::size_t &matched_out) {
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out) {
     if (!root.contains("apps") || !root["apps"].is_array()) {
       root["apps"] = nlohmann::json::array();
     }

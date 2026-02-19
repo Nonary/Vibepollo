@@ -15,10 +15,10 @@
 #include <chrono>
 #include <deque>
 #include <filesystem>
-#include <system_error>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -32,11 +32,11 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <inspectable.h>  // For IInspectable
+#include <KnownFolders.h>
 #include <ShellScalingApi.h>  // For DPI awareness
+#include <ShlObj.h>
 #include <Windows.Graphics.Capture.Interop.h>
 #include <Windows.h>
-#include <KnownFolders.h>
-#include <ShlObj.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Metadata.h>  // For ApiInformation

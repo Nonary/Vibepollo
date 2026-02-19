@@ -8,15 +8,15 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 
 #ifndef FILE_DEVICE_UNKNOWN
   #define FILE_DEVICE_UNKNOWN 0x00000022
 #endif
 
-#include <ddk/d4iface.h>
 #include <ddk/d4drvif.h>
+#include <ddk/d4iface.h>
 #include <sudovda/sudovda.h>
 
 namespace VDISPLAY {
@@ -40,6 +40,7 @@ namespace VDISPLAY {
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
   void ensureVirtualDisplayRegistryDefaults();
+
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
@@ -66,6 +67,7 @@ namespace VDISPLAY {
     std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
     std::function<bool()> should_abort;
   };
+
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -119,6 +121,7 @@ namespace VDISPLAY {
   struct ensure_display_result {
     bool success;
     bool created_temporary;
+    bool tracks_temporary_for_probe;
     GUID temporary_guid;
   };
 
@@ -132,6 +135,13 @@ namespace VDISPLAY {
   /**
    * @brief Cleans up temporary display created by ensure_display().
    * @param result The result from ensure_display() call.
+   * @param probe_succeeded True when probe finished successfully.
+   * @param allow_temporary_teardown False keeps the temporary display retained.
    */
-  void cleanup_ensure_display(const ensure_display_result &result);
+  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
+
+  /**
+   * @brief Returns true when ensure_display() is currently retaining a temporary display for probe retries.
+   */
+  bool has_retained_ensure_display();
 }  // namespace VDISPLAY
