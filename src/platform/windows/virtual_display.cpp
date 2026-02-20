@@ -518,6 +518,77 @@ namespace VDISPLAY {
       return true;
     }
 
+    /**
+     * @brief Check if a device is stuck in the disabled state (CM_PROB_DISABLED, code 22).
+     *
+     * This can happen when a previous DICS_DISABLE→DICS_ENABLE cycle fails at the
+     * DICS_ENABLE step, leaving the device disabled with no automatic recovery.
+     */
+    bool is_device_disabled(const std::wstring &instance_id) {
+      DEVINST dev_inst = 0;
+      CONFIGRET cr = CM_Locate_DevNodeW(&dev_inst, const_cast<DEVINSTID_W>(instance_id.c_str()), CM_LOCATE_DEVNODE_NORMAL);
+      if (cr != CR_SUCCESS) {
+        // Device not found via normal lookup — try phantom (device may be disabled and not enumerated)
+        cr = CM_Locate_DevNodeW(&dev_inst, const_cast<DEVINSTID_W>(instance_id.c_str()), CM_LOCATE_DEVNODE_PHANTOM);
+        if (cr != CR_SUCCESS) {
+          return false;
+        }
+      }
+
+      ULONG status = 0, problem = 0;
+      cr = CM_Get_DevNode_Status(&status, &problem, dev_inst, 0);
+      if (cr != CR_SUCCESS) {
+        return false;
+      }
+
+      // DN_HAS_PROBLEM with CM_PROB_DISABLED means the device is disabled
+      if ((status & DN_HAS_PROBLEM) && problem == CM_PROB_DISABLED) {
+        return true;
+      }
+
+      return false;
+    }
+
+    /**
+     * @brief Attempt to re-enable a SudoVDA device that is stuck in the disabled state.
+     *
+     * Unlike restart_sudovda_device(), this only performs DICS_ENABLE (no disable first)
+     * since the device is already disabled.
+     */
+    bool try_reenable_disabled_device(const std::wstring &instance_id) {
+      BOOST_LOG(warning) << "SudoVDA device is stuck disabled (CM_PROB_DISABLED); attempting re-enable.";
+
+      DevInfoHandle dev_set(SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES));
+      if (!dev_set.valid()) {
+        return false;
+      }
+
+      SP_DEVINFO_DATA device_info {};
+      device_info.cbSize = sizeof(device_info);
+      if (!SetupDiOpenDeviceInfoW(dev_set.get(), instance_id.c_str(), nullptr, 0, &device_info)) {
+        return false;
+      }
+
+      if (!apply_device_state_change(dev_set.get(), device_info, DICS_ENABLE)) {
+        BOOST_LOG(error) << "Failed to re-enable disabled SudoVDA device. A reboot may be required.";
+        return false;
+      }
+
+      // Give the device time to initialize after re-enable
+      std::this_thread::sleep_for(DEVICE_RESTART_SETTLE_DELAY * 2);
+
+      // Verify it's no longer disabled
+      if (is_device_disabled(instance_id)) {
+        BOOST_LOG(error) << "SudoVDA device still disabled after re-enable attempt. A reboot may be required.";
+        return false;
+      }
+
+      BOOST_LOG(info) << "SudoVDA device successfully re-enabled from disabled state.";
+      return true;
+    }
+
+    constexpr int ENABLE_RETRY_MAX = 2;
+
     bool restart_sudovda_device(const std::wstring &instance_id) {
       DevInfoHandle info(SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES));
       if (!info.valid()) {
@@ -540,11 +611,20 @@ namespace VDISPLAY {
 
       std::this_thread::sleep_for(DEVICE_RESTART_SETTLE_DELAY);
 
-      if (!apply_device_state_change(info.get(), device_info, DICS_ENABLE)) {
-        return false;
+      // Retry DICS_ENABLE to avoid leaving the device stuck disabled
+      for (int retry = 0; retry <= ENABLE_RETRY_MAX; ++retry) {
+        if (apply_device_state_change(info.get(), device_info, DICS_ENABLE)) {
+          return true;
+        }
+        if (retry < ENABLE_RETRY_MAX) {
+          BOOST_LOG(warning) << "DICS_ENABLE failed (attempt " << (retry + 1) << "/" << (ENABLE_RETRY_MAX + 1)
+                             << "); retrying after settle delay.";
+          std::this_thread::sleep_for(DEVICE_RESTART_SETTLE_DELAY);
+        }
       }
 
-      return true;
+      BOOST_LOG(error) << "All DICS_ENABLE attempts failed after disable; device may be stuck disabled.";
+      return false;
     }
 
     struct ActiveVirtualDisplayTracker {
@@ -2451,6 +2531,21 @@ namespace VDISPLAY {
 
     if (probe_driver_responsive_once()) {
       return true;
+    }
+
+    // Check if the device is stuck in the disabled state (CM_PROB_DISABLED)
+    // before attempting a full restart cycle, which would make things worse.
+    {
+      auto instance_id = find_sudovda_device_instance_id();
+      if (instance_id && is_device_disabled(*instance_id)) {
+        if (try_reenable_disabled_device(*instance_id)) {
+          if (probe_driver_responsive_once()) {
+            BOOST_LOG(info) << "SudoVDA driver responded after re-enabling disabled device.";
+            std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+            return true;
+          }
+        }
+      }
     }
 
     for (int attempt = 1; attempt <= DRIVER_RESTART_MAX_ATTEMPTS; ++attempt) {
