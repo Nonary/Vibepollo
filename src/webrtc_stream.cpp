@@ -2391,7 +2391,17 @@ namespace webrtc_stream {
 #endif
 
         if (video::probe_encoders()) {
+#ifdef _WIN32
+          // If probe failed, try ensuring a display is available for headless systems
+          auto ensure_result = VDISPLAY::ensure_display();
+          bool retry_failed = ensure_result.success ? video::probe_encoders() : true;
+          VDISPLAY::cleanup_ensure_display(ensure_result, !retry_failed);
+          if (retry_failed) {
+            return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+          }
+#else
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+#endif
         }
       }
 

@@ -1421,7 +1421,7 @@ namespace VDISPLAY {
 
       std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
       std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
-      if (QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr) != ERROR_SUCCESS) {
+      if (QueryDisplayConfig(flags, &path_count, path_count ? paths.data() : nullptr, &mode_count, mode_count ? modes.data() : nullptr, nullptr) != ERROR_SUCCESS) {
         return std::nullopt;
       }
 
@@ -1525,7 +1525,7 @@ namespace VDISPLAY {
 
       std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
       std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
-      LONG qdc_result = QueryDisplayConfig(flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+      LONG qdc_result = QueryDisplayConfig(flags, &path_count, path_count ? paths.data() : nullptr, &mode_count, mode_count ? modes.data() : nullptr, nullptr);
       if (qdc_result != ERROR_SUCCESS) {
         return std::nullopt;
       }
@@ -1869,10 +1869,10 @@ namespace VDISPLAY {
     }
 
     constexpr auto RECOVERY_STABLE_REQUIREMENT = std::chrono::seconds(2);
-    constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(200);
+    constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(150);
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
-    constexpr auto RECOVERY_MISSING_GRACE = std::chrono::seconds(1);
-    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(2);
+    constexpr auto RECOVERY_MISSING_GRACE = std::chrono::milliseconds(500);
+    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(1);
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);

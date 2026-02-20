@@ -2285,6 +2285,10 @@ namespace nvhttp {
         // encoder matches the active GPU (which could have changed
         // due to hotplugging, driver crash, primary monitor change,
         // or any number of other factors).
+#ifdef _WIN32
+      // Ensure a display is available for probing (creates a temporary virtual display if headless)
+      auto ensure_result = VDISPLAY::ensure_display();
+#endif
         bool encoder_probe_failed = false;
 
 #ifdef _WIN32
@@ -2301,6 +2305,10 @@ namespace nvhttp {
         if (!encoder_probe_failed) {
           encoder_probe_failed = video::probe_encoders();
         }
+
+#ifdef _WIN32
+        VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
+#endif
 
         if (encoder_probe_failed && !is_input_only) {
           BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
@@ -2581,6 +2589,9 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
+#ifdef _WIN32
+      auto ensure_result = VDISPLAY::ensure_display();
+#endif
       bool encoder_probe_failed = false;
 
 #ifdef _WIN32
@@ -2593,10 +2604,13 @@ namespace nvhttp {
         }
       }
 #endif
-
       if (!encoder_probe_failed) {
         encoder_probe_failed = video::probe_encoders();
       }
+
+#ifdef _WIN32
+      VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
+#endif
 
       // Skip encoder probing failure for input-only mode
       if (encoder_probe_failed && !launch_session->input_only) {
