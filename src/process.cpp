@@ -1010,9 +1010,23 @@ namespace proc {
 
   class deinit_t: public platf::deinit_t {
   public:
+    deinit_t() {
+#ifdef _WIN32
+      playnite_integration_ = platf::playnite::start();
+      if (!playnite_integration_) {
+        BOOST_LOG(error) << "Playnite integration failed to initialize";
+      }
+#endif
+    }
+
     ~deinit_t() {
       proc.terminate();
     }
+
+  private:
+#ifdef _WIN32
+    std::unique_ptr<platf::deinit_t> playnite_integration_;
+#endif
   };
 
   std::unique_ptr<platf::deinit_t> init() {
