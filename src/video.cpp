@@ -2484,7 +2484,12 @@ namespace video {
     std::vector<std::string> &display_names,
     int &display_p
   ) {
-    const auto &encoder = *chosen_encoder;
+    const auto *enc_ptr = chosen_encoder;
+    if (!enc_ptr) {
+      BOOST_LOG(error) << "No encoder available for sync encoding"sv;
+      return encode_e::error;
+    }
+    const auto &encoder = *enc_ptr;
 
     std::shared_ptr<platf::display_t> disp;
 
@@ -2726,7 +2731,12 @@ namespace video {
         display = ref->display_wp->lock();
       }
 
-      auto &encoder = *chosen_encoder;
+      auto *enc_ptr = chosen_encoder;
+      if (!enc_ptr) {
+        BOOST_LOG(error) << "No encoder available for async capture"sv;
+        return;
+      }
+      auto &encoder = *enc_ptr;
 
       auto encode_device = make_encode_device(*display, encoder, config);
       if (!encode_device) {
@@ -2766,10 +2776,17 @@ namespace video {
     config_t config,
     void *channel_data
   ) {
+    // Snapshot the encoder pointer to avoid races with concurrent probe_encoders() calls
+    auto *encoder = chosen_encoder;
+    if (!encoder) {
+      BOOST_LOG(error) << "No encoder available for capture"sv;
+      return;
+    }
+
     auto idr_events = mail->event<bool>(mail::idr);
 
     idr_events->raise(true);
-    if (chosen_encoder->flags & PARALLEL_ENCODING) {
+    if (encoder->flags & PARALLEL_ENCODING) {
       capture_async(std::move(mail), config, channel_data);
     } else {
       safe::signal_t join_event;
@@ -3106,6 +3123,7 @@ namespace video {
     const auto previous_active_av1_mode = active_av1_mode;
     const auto previous_last_ref_frames_invalidation = last_encoder_probe_supported_ref_frames_invalidation;
     const auto previous_last_yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec;
+    auto previous_encoder = chosen_encoder;
 
     auto restore_previous_probe_state = util::fail_guard([&]() {
       active_hevc_mode = previous_active_hevc_mode;
@@ -3116,9 +3134,9 @@ namespace video {
 
     auto encoder_list = encoders;
 
-    // Restart encoder selection
-    auto previous_encoder = chosen_encoder;
-    chosen_encoder = nullptr;
+    // Use a local variable for encoder selection during probing so that
+    // chosen_encoder is never null while concurrent capture threads may read it.
+    encoder_t *new_encoder = nullptr;
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
@@ -3161,14 +3179,14 @@ namespace video {
           // We will return an encoder here even if it fails one of the codec requirements specified by the user
           adjust_encoder_constraints(encoder);
 
-          chosen_encoder = encoder;
+          new_encoder = encoder;
           break;
         }
 
         pos++;
       });
 
-      if (chosen_encoder == nullptr) {
+      if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
       }
     }
@@ -3176,7 +3194,7 @@ namespace video {
     BOOST_LOG(info) << "// Testing for available encoders, this may generate errors. You can safely ignore those errors. //"sv;
 
     // If we haven't found an encoder yet, but we want one with specific codec support, search for that now.
-    if (chosen_encoder == nullptr && (active_hevc_mode >= 2 || active_av1_mode >= 2)) {
+    if (new_encoder == nullptr && (active_hevc_mode >= 2 || active_av1_mode >= 2)) {
       KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
@@ -3200,18 +3218,18 @@ namespace video {
           continue;
         }
 
-        chosen_encoder = encoder;
+        new_encoder = encoder;
         break;
       });
 
-      if (chosen_encoder == nullptr) {
+      if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder that meets HEVC/AV1 requirements"sv;
       }
     }
 
     // If no encoder was specified or the specified encoder was unusable, keep trying
     // the remaining encoders until we find one that passes validation.
-    if (chosen_encoder == nullptr) {
+    if (new_encoder == nullptr) {
       KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
@@ -3226,12 +3244,12 @@ namespace video {
         // We will return an encoder here even if it fails one of the codec requirements specified by the user
         adjust_encoder_constraints(encoder);
 
-        chosen_encoder = encoder;
+        new_encoder = encoder;
         break;
       });
     }
 
-    if (chosen_encoder == nullptr) {
+    if (new_encoder == nullptr) {
       const auto output_name = display_device::map_output_name(config::get_active_output_name());
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
       if (!config::video.adapter_name.empty() || !output_name.empty()) {
@@ -3247,7 +3265,7 @@ namespace video {
     BOOST_LOG(info) << "// Ignore any errors mentioned above, they are not relevant. //"sv;
     BOOST_LOG(info);
 
-    auto &encoder = *chosen_encoder;
+    auto &encoder = *new_encoder;
 
     last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
     last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&
@@ -3307,6 +3325,9 @@ namespace video {
                        hevc_hdr_supported,
                        av1_passed,
                        av1_hdr_supported);
+    // Publish the new encoder only after the probe has fully succeeded,
+    // so concurrent capture threads never observe a null chosen_encoder.
+    chosen_encoder = new_encoder;
     restore_previous_probe_state.disable();
     return 0;
   }
