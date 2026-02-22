@@ -83,7 +83,7 @@ function Install-Certificate {
         [string]$StoreLocation = 'LocalMachine'
     )
 
-    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certPath)
+    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($certPath))
     $location = [System.Enum]::Parse([System.Security.Cryptography.X509Certificates.StoreLocation], $StoreLocation, $true)
     $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($StoreName, $location)
 
@@ -125,32 +125,34 @@ function Get-TargetDriverVersion {
 
 function Get-InstalledDriverInfo {
     try {
+        # The device InstanceId is assigned by Windows (e.g. ROOT\DISPLAY\0001), not the hardware ID.
+        # Detect by manufacturer or device name instead.
         $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
-            Where-Object { 
-                $_.DeviceID -like "$hardwarePrefix*" -or 
-                $_.DeviceID -like "*SUDOVDA*" -or
-                $_.HardwareID -like "*SUDOVDA*"
+            Where-Object {
+                $_.Manufacturer -like "*SudoMaker*" -or
+                $_.DeviceName   -like "*SudoMaker*" -or
+                $_.DeviceName   -like "*SudoVDA*"
             } |
             Select-Object -First 1
-        
+
         if ($driver) {
             return $driver
         }
-        
-        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop | 
-            Where-Object { $_.InstanceId -like "$hardwarePrefix*" -or $_.InstanceId -like "*SUDOVDA*" }
-        
+
+        $devices = Get-PnpDevice -ErrorAction Stop |
+            Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
+
         if ($devices) {
             $device = $devices | Select-Object -First 1
             $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
                 Where-Object { $_.DeviceID -eq $device.InstanceId } |
                 Select-Object -First 1
-            
+
             if ($driver) {
                 return $driver
             }
         }
-        
+
         return $null
     } catch {
         return $null
@@ -172,10 +174,9 @@ function Convert-Version {
 }
 
 function Test-DriverPresent {
-    $searchPrefix = "$hardwarePrefix*"
-
     try {
-        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like $searchPrefix }
+        $devices = Get-PnpDevice -ErrorAction Stop |
+            Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
         if ($devices) {
             return $true
         }
@@ -184,8 +185,8 @@ function Test-DriverPresent {
     }
 
     try {
-        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', "/instanceid $hardwarePrefix")
-        if ($result.ExitCode -eq 0 -and $result.StdOut -and $result.StdOut -match [regex]::Escape($hardwarePrefix)) {
+        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', '/class', 'Display')
+        if ($result.ExitCode -eq 0 -and $result.StdOut -and $result.StdOut -match 'SudoMaker') {
             return $true
         }
     } catch {
@@ -218,14 +219,18 @@ if ($installedInfo -and $installedVersionObj -and $targetVersionObj -and $instal
     exit 0
 }
 
-if ($installedInfo -and $installedVersion) {
-    if ($targetVersion) {
-        Write-Host "[SudoVDA] Upgrading driver from version $installedVersion to $targetVersion."
-    } else {
-        Write-Host "[SudoVDA] Reinstalling driver; unable to determine target version."
-    }
-} elseif (Test-DriverPresent) {
-    Write-Host '[SudoVDA] Driver detected but version information unavailable; reinstalling.'
+if ($installedInfo -and (-not $installedVersionObj -or -not $targetVersionObj)) {
+    Write-Host "[SudoVDA] Driver present but version info incomplete (installed=$installedVersion, target=$targetVersion); skipping to avoid disrupting a working driver."
+    exit 0
+}
+
+if (-not $installedInfo -and (Test-DriverPresent)) {
+    Write-Host '[SudoVDA] Driver detected via PnP but driver info unavailable; skipping to avoid disrupting a working driver.'
+    exit 0
+}
+
+if ($installedInfo -and $installedVersion -and $targetVersion) {
+    Write-Host "[SudoVDA] Upgrading driver from version $installedVersion to $targetVersion."
 }
 
 Install-Certificate -StoreName 'Root'
