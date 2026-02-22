@@ -3795,6 +3795,26 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     g_ensure_display_guid = result.temporary_guid;
     g_ensure_display_failure_count = 0;
   }
+
+  // Wait for DXGI to enumerate the new virtual display.
+  // CCD (used by wait_for_virtual_display_ready) and DXGI are different enumeration
+  // paths; DXGI may lag behind CCD by hundreds of milliseconds.
+  {
+    const auto dxgi_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    bool dxgi_ready = false;
+    while (std::chrono::steady_clock::now() < dxgi_deadline) {
+      auto names = platf::display_names(platf::mem_type_e::dxgi);
+      if (!names.empty()) {
+        dxgi_ready = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!dxgi_ready) {
+      BOOST_LOG(warning) << "Temporary virtual display created but DXGI has not enumerated it yet; probe may fail.";
+    }
+  }
+
   BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }

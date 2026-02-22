@@ -168,7 +168,7 @@ namespace platf::dxgi {
 
   class display_base_t: public display_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test = false);
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
 

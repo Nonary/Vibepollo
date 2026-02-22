@@ -1736,54 +1736,6 @@ namespace nvhttp {
         tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
       }
 
-      // Treat auto-mode as unresolved both before first probe (active == 0) and after a
-      // transient failure that resolved to "disabled" (active == 1).  The probe cache
-      // skips re-probing when the cached result already satisfies all codec requirements,
-      // so this only triggers actual work when the previous probe failed for a codec.
-      const bool hevc_auto_mode_unresolved = config::video.hevc_mode == 0 && video::active_hevc_mode <= 1;
-      const bool av1_auto_mode_unresolved = config::video.av1_mode == 0 && video::active_av1_mode <= 1;
-      const bool should_probe_for_serverinfo = !video::has_attempted_encoder_probe() ||
-                                               hevc_auto_mode_unresolved ||
-                                               av1_auto_mode_unresolved;
-
-      if (should_probe_for_serverinfo) {
-        if (!video::has_attempted_encoder_probe()) {
-          BOOST_LOG(info) << "Serverinfo requested before initial encoder probe; probing encoders now.";
-        } else {
-          BOOST_LOG(info) << "Serverinfo requested with unresolved codec probe state; retrying encoder probe.";
-        }
-#ifdef _WIN32
-        auto encoder_probe_display_result = VDISPLAY::ensure_display();
-        if (!encoder_probe_display_result.success) {
-          BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
-        }
-
-        bool encoder_probe_succeeded = false;
-        auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
-          VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
-        });
-#endif
-
-        bool encoder_probe_failed = video::probe_encoders();
-#ifdef _WIN32
-        if (encoder_probe_failed && !has_any_active_display()) {
-          BOOST_LOG(info) << "Serverinfo encoder probe failed with no active display; waiting for activation before retry.";
-          constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-          if (wait_for_display_activation(kDisplayActivationTimeout)) {
-            BOOST_LOG(info) << "Display became active; retrying serverinfo encoder probe.";
-            encoder_probe_failed = video::probe_encoders();
-          } else {
-            BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying serverinfo encoder probe.";
-          }
-        }
-        encoder_probe_succeeded = !encoder_probe_failed;
-#endif
-
-        if (encoder_probe_failed) {
-          BOOST_LOG(error) << "Failed to probe encoders for serverinfo response.";
-        }
-      }
-
       tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
       uint32_t codec_mode_flags = SCM_H264;
@@ -2289,24 +2241,19 @@ namespace nvhttp {
       // Ensure a display is available for probing (creates a temporary virtual display if headless)
       auto ensure_result = VDISPLAY::ensure_display();
 #endif
-        bool encoder_probe_failed = false;
+        bool encoder_probe_failed = video::probe_encoders();
 
 #ifdef _WIN32
-        if (!is_input_only && !has_any_active_display()) {
-          BOOST_LOG(info) << "No active display before encoder probe; waiting for activation.";
+        if (encoder_probe_failed && !has_any_active_display()) {
+          BOOST_LOG(info) << "Encoder probe failed with no active display; waiting for activation before retry.";
           constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-          if (!wait_for_display_activation(kDisplayActivationTimeout)) {
-            BOOST_LOG(warning) << "Timed out waiting for a display to become active before encoder probe.";
-            encoder_probe_failed = true;
+          if (wait_for_display_activation(kDisplayActivationTimeout)) {
+            BOOST_LOG(info) << "Display became active; retrying encoder probe.";
+            encoder_probe_failed = video::probe_encoders();
+          } else {
+            BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying encoder probe.";
           }
         }
-#endif
-
-        if (!encoder_probe_failed) {
-          encoder_probe_failed = video::probe_encoders();
-        }
-
-#ifdef _WIN32
         VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
 #endif
 
@@ -2592,23 +2539,19 @@ namespace nvhttp {
 #ifdef _WIN32
       auto ensure_result = VDISPLAY::ensure_display();
 #endif
-      bool encoder_probe_failed = false;
+      bool encoder_probe_failed = video::probe_encoders();
 
 #ifdef _WIN32
-      if (!launch_session->input_only && !has_any_active_display()) {
-        BOOST_LOG(info) << "No active display before resume encoder probe; waiting for activation.";
+      if (encoder_probe_failed && !has_any_active_display()) {
+        BOOST_LOG(info) << "Resume encoder probe failed with no active display; waiting for activation before retry.";
         constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-        if (!wait_for_display_activation(kDisplayActivationTimeout)) {
-          BOOST_LOG(warning) << "Timed out waiting for a display to become active before resume encoder probe.";
-          encoder_probe_failed = true;
+        if (wait_for_display_activation(kDisplayActivationTimeout)) {
+          BOOST_LOG(info) << "Display became active; retrying resume encoder probe.";
+          encoder_probe_failed = video::probe_encoders();
+        } else {
+          BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying resume encoder probe.";
         }
       }
-#endif
-      if (!encoder_probe_failed) {
-        encoder_probe_failed = video::probe_encoders();
-      }
-
-#ifdef _WIN32
       VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
 #endif
 

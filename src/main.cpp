@@ -402,7 +402,29 @@ int main(int argc, char *argv[]) {
 #endif
 
     bool encoder_probe_failed = video::probe_encoders();
+
 #ifdef _WIN32
+    // If the probe failed and there's no active display (headless with VDD),
+    // wait for the display to become available via DXGI and retry.
+    if (encoder_probe_failed) {
+      BOOST_LOG(info) << "Startup encoder probe failed; waiting for display activation before retry.";
+      constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
+      const auto deadline = std::chrono::steady_clock::now() + kDisplayActivationTimeout;
+      bool display_activated = false;
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (VDISPLAY::has_active_physical_display() ||
+            !VDISPLAY::enumerateSudaVDADisplays().empty()) {
+          display_activated = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      }
+      if (display_activated) {
+        BOOST_LOG(info) << "Display became active; retrying startup encoder probe.";
+        encoder_probe_failed = video::probe_encoders();
+      }
+    }
+
     encoder_probe_succeeded = !encoder_probe_failed;
 #endif
 

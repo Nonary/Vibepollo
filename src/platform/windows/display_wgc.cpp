@@ -55,7 +55,7 @@ namespace platf::dxgi {
     _config = config;
     _display_name = display_name;
 
-    if (display_base_t::init(config, display_name)) {
+    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
       return -1;
     }
 
@@ -232,14 +232,9 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ipc_vram_t::dummy_img(platf::img_t *img_base) {
-    auto temp_dxgi = std::make_unique<display_ddup_vram_t>();
-    adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
-    if (temp_dxgi->init(_config, _display_name) == 0) {
-      return temp_dxgi->dummy_img(img_base);
-    } else {
-      BOOST_LOG(error) << "Failed to initialize DXGI fallback for dummy_img";
-      return -1;
-    }
+    // Use the base class implementation which creates a blank GPU texture directly,
+    // avoiding Desktop Duplication which may fail on headless/disconnected sessions.
+    return complete_img(img_base, true);
   }
 
   std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(const ::video::config_t &config, const std::string &display_name) {
@@ -275,7 +270,7 @@ namespace platf::dxgi {
     _display_name = display_name;
 
     // Initialize the base display class
-    if (display_base_t::init(config, display_name)) {
+    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
       return -1;
     }
 
@@ -452,14 +447,9 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ipc_ram_t::dummy_img(platf::img_t *img_base) {
-    auto temp_dxgi = std::make_unique<display_ddup_ram_t>();
-    adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
-    if (temp_dxgi->init(_config, _display_name) == 0) {
-      return temp_dxgi->dummy_img(img_base);
-    } else {
-      BOOST_LOG(error) << "Failed to initialize DXGI fallback for dummy image check there may be no displays available.";
-      return -1;
-    }
+    // Use the base class implementation directly,
+    // avoiding Desktop Duplication which may fail on headless/disconnected sessions.
+    return display_ram_t::dummy_img(img_base);
   }
 
   std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(const ::video::config_t &config, const std::string &display_name) {
