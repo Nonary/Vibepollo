@@ -1141,6 +1141,21 @@ namespace rtsp_stream {
 
       config.monitor.input_only = session.input_only;
 
+      // Validate that clientRefreshRateX100 is consistent with maxFPS.
+      // Some clients send a stale or incorrect clientRefreshRateX100 (e.g. 6000 = 60fps)
+      // while requesting a higher maxFPS (e.g. 120). Since framerateX100 unconditionally
+      // overrides capture pacing, an inconsistent value caps the stream to the wrong fps.
+      if (config.monitor.framerateX100 > 0 && config.monitor.framerate > 0) {
+        int fps_from_x100 = (int) std::lround(config.monitor.framerateX100 / 100.0);
+        if (fps_from_x100 != config.monitor.framerate) {
+          BOOST_LOG(warning) << "clientRefreshRateX100 ("
+                             << config.monitor.framerateX100 << " = " << fps_from_x100
+                             << "fps) disagrees with maxFPS (" << config.monitor.framerate
+                             << "); ignoring clientRefreshRateX100";
+          config.monitor.framerateX100 = 0;
+        }
+      }
+
       configuredBitrateKbps = util::from_view(args.at("x-ml-video.configuredBitrateKbps"sv));
 
       if (!configuredBitrateKbps) {
