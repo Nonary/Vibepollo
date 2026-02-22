@@ -2110,6 +2110,7 @@ namespace VibepolloInstaller {
       "/f",
       "/update"
     };
+    private static readonly Version UpgradeSourcePreUninstallVersion = new Version(1, 14, 8);
 
     internal sealed class InstalledProductInfo {
       public string ProductCode { get; set; }
@@ -2622,6 +2623,18 @@ namespace VibepolloInstaller {
         };
       }
 
+      var uninstallUpgradeSourceResult = TryPreUninstallProblematicUpgradeSourceVersion("install_remove_vibepollo_1148", true, false);
+      if (uninstallUpgradeSourceResult != null) {
+        if (!uninstallUpgradeSourceResult.Succeeded) {
+          return new InstallerResult {
+            Operation = InstallerOperation.Install,
+            ExitCode = uninstallUpgradeSourceResult.ExitCode,
+            Message = BuildUpgradeSourcePreUninstallFailureMessage(uninstallUpgradeSourceResult.Message),
+            LogPath = uninstallUpgradeSourceResult.LogPath
+          };
+        }
+      }
+
       var msiPath = ResolveMsiPath(arguments.MsiPathOverride);
       var migrationCleanupResult = RunPreinstallMigrationCleanup("preinstall", true, false);
       if (migrationCleanupResult.ExitCode != 0) {
@@ -3080,6 +3093,23 @@ namespace VibepolloInstaller {
         }
         competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
       }
+
+      if (ShouldPreUninstallProblematicUpgradeSource(cliArgs)) {
+        var uninstallUpgradeSourceResult = TryPreUninstallProblematicUpgradeSourceVersion(
+          "cli_remove_vibepollo_1148",
+          arguments.IsCliQuietMode(),
+          true);
+        if (uninstallUpgradeSourceResult != null) {
+          if (!uninstallUpgradeSourceResult.Succeeded) {
+            return new InstallerResult {
+              Operation = InstallerOperation.Install,
+              ExitCode = uninstallUpgradeSourceResult.ExitCode,
+              Message = BuildUpgradeSourcePreUninstallFailureMessage(uninstallUpgradeSourceResult.Message),
+              LogPath = uninstallUpgradeSourceResult.LogPath
+            };
+          }
+        }
+      }
       if (uninstallCompetingProducts && !HasProperty(cliArgs, "SKIP_REMOVE_CONFLICTING_PRODUCTS")) {
         cliArgs.Add("SKIP_REMOVE_CONFLICTING_PRODUCTS=1");
       }
@@ -3394,6 +3424,44 @@ namespace VibepolloInstaller {
       return prefix + " " + uninstallMessage;
     }
 
+    private static string BuildUpgradeSourcePreUninstallFailureMessage(string uninstallMessage) {
+      var prefix = "Failed to uninstall Vibepollo 1.14.8 before starting installation."
+        + " This version requires uninstall/reinstall to avoid web UI files being removed during upgrade.";
+      if (string.IsNullOrWhiteSpace(uninstallMessage)) {
+        return prefix;
+      }
+      return prefix + " " + uninstallMessage;
+    }
+
+    private static InstallerResult TryPreUninstallProblematicUpgradeSourceVersion(
+      string logPhase,
+      bool hiddenWindow,
+      bool requestElevationIfNeeded) {
+      var installedVibepollo = GetInstalledVibepolloProduct();
+      if (!RequiresPreUninstallUpgradeWorkaround(installedVibepollo)) {
+        return null;
+      }
+
+      return UninstallInstalledProducts(
+        logPhase,
+        hiddenWindow,
+        requestElevationIfNeeded,
+        false,
+        false,
+        false,
+        new[] { InstalledProductKind.Vibepollo });
+    }
+
+    private static bool RequiresPreUninstallUpgradeWorkaround(InstalledProductInfo installedProduct) {
+      if (installedProduct == null || installedProduct.Kind != InstalledProductKind.Vibepollo || installedProduct.Version == null) {
+        return false;
+      }
+
+      return installedProduct.Version.Major == UpgradeSourcePreUninstallVersion.Major
+        && installedProduct.Version.Minor == UpgradeSourcePreUninstallVersion.Minor
+        && installedProduct.Version.Build == UpgradeSourcePreUninstallVersion.Build;
+    }
+
     private static InstallerResult UninstallInstalledProducts(
       string logPhase,
       bool hiddenWindow,
@@ -3704,6 +3772,17 @@ namespace VibepolloInstaller {
     }
 
     private static bool ShouldPreUninstallCompetingProducts(List<string> args) {
+      var operation = args.FirstOrDefault(IsOperationSwitch);
+      if (string.IsNullOrWhiteSpace(operation)) {
+        return false;
+      }
+
+      return string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/a", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldPreUninstallProblematicUpgradeSource(List<string> args) {
       var operation = args.FirstOrDefault(IsOperationSwitch);
       if (string.IsNullOrWhiteSpace(operation)) {
         return false;
