@@ -232,6 +232,16 @@ static const bool PingDriver(HANDLE hDevice) {
                 return false;
         }
 
+        // Validate the handle is still alive before calling DeviceIoControl.
+        // This narrows the race window where the driver may be mid-transition
+        // (e.g. after an HDR toggle causes the virtual display to reset).
+        DWORD handleFlags = 0;
+        if (!GetHandleInformation(hDevice, &handleFlags)) {
+                fprintf(stderr, "[SUDOVDA] PingDriver: handle no longer valid (err=%lu)\n",
+                        (unsigned long)GetLastError());
+                return false;
+        }
+
         DWORD bytesReturned = 0;
         BOOL success = DeviceIoControl(
                 hDevice,
