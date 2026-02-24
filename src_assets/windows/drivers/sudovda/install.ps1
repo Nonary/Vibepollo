@@ -10,6 +10,8 @@ $classGuid = '{4D36E968-E325-11CE-BFC1-08002BE10318}'
 $nefConc = Join-Path $scriptDir 'nefconc.exe'
 $infPath = Join-Path $scriptDir 'SudoVDA.inf'
 $certPath = Join-Path $scriptDir 'sudovda.cer'
+$catPath = Join-Path $scriptDir 'sudovda.cat'
+$dllPath = Join-Path $scriptDir 'SudoVDA.dll'
 $script:rebootRequired = $false
 
 Import-Module PnpDevice -ErrorAction SilentlyContinue | Out-Null
@@ -112,13 +114,50 @@ function Write-ProcessOutput {
     }
 }
 
+function Assert-RequiredDriverArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$DisplayName
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "[SudoVDA] Required driver artifact missing: $DisplayName ($Path)"
+    }
+
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($item.Length -le 0) {
+        throw "[SudoVDA] Required driver artifact is empty (0 bytes): $DisplayName ($Path)"
+    }
+}
+
+function Assert-RequiredInstallArtifacts {
+    Assert-RequiredDriverArtifact -Path $nefConc -DisplayName 'nefconc.exe'
+    Assert-RequiredDriverArtifact -Path $infPath -DisplayName 'SudoVDA.inf'
+    Assert-RequiredDriverArtifact -Path $dllPath -DisplayName 'SudoVDA.dll'
+    Assert-RequiredDriverArtifact -Path $catPath -DisplayName 'sudovda.cat'
+    Assert-RequiredDriverArtifact -Path $certPath -DisplayName 'sudovda.cer'
+}
+
 function Install-Certificate {
     param(
         [Parameter(Mandatory = $true)][string]$StoreName,
         [string]$StoreLocation = 'LocalMachine'
     )
 
-    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($certPath))
+    Assert-RequiredDriverArtifact -Path $certPath -DisplayName 'sudovda.cer'
+
+    try {
+        $certBytes = [System.IO.File]::ReadAllBytes($certPath)
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certBytes)
+    }
+    catch {
+        throw "[SudoVDA] Failed to load certificate from $certPath. $($_.Exception.Message)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cert.Thumbprint)) {
+        throw "[SudoVDA] Certificate at $certPath is invalid (missing thumbprint)."
+    }
+
     $location = [System.Enum]::Parse([System.Security.Cryptography.X509Certificates.StoreLocation], $StoreLocation, $true)
     $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($StoreName, $location)
 
@@ -336,13 +375,7 @@ if ($Uninstall) {
     exit 0
 }
 
-if (-not (Test-Path -Path $nefConc -PathType Leaf)) {
-    throw '[SudoVDA] Unable to locate nefconc.exe.'
-}
-
-if (-not (Test-Path -Path $infPath -PathType Leaf)) {
-    throw '[SudoVDA] Unable to locate SudoVDA.inf.'
-}
+Assert-RequiredInstallArtifacts
 
 $targetVersion = Get-TargetDriverVersion
 $installedInfo = Get-InstalledDriverInfo
