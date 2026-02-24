@@ -1,3 +1,7 @@
+param(
+    [switch]$Uninstall
+)
+
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $PSCommandPath
 $hardwarePrefix = 'ROOT\SUDOMAKER\SUDOVDA'
@@ -6,10 +10,30 @@ $classGuid = '{4D36E968-E325-11CE-BFC1-08002BE10318}'
 $nefConc = Join-Path $scriptDir 'nefconc.exe'
 $infPath = Join-Path $scriptDir 'SudoVDA.inf'
 $certPath = Join-Path $scriptDir 'sudovda.cer'
-$pnputil = Join-Path $env:SystemRoot 'System32\pnputil.exe'
 $script:rebootRequired = $false
 
 Import-Module PnpDevice -ErrorAction SilentlyContinue | Out-Null
+
+function Resolve-SystemToolPath {
+    param([Parameter(Mandatory = $true)][string]$ToolName)
+
+    $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
+    $candidates = @(
+        (Join-Path -Path $systemRoot -ChildPath ("Sysnative\" + $ToolName))
+        (Join-Path -Path $systemRoot -ChildPath ("System32\" + $ToolName))
+        (Join-Path -Path $systemRoot -ChildPath ("SysWOW64\" + $ToolName))
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -Path $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    return $candidates[1]
+}
+
+$pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
 
 function Invoke-Process {
     param(
@@ -74,6 +98,17 @@ function Invoke-DriverStep {
         default {
             throw "[SudoVDA] $Description failed with exit code $($result.ExitCode)."
         }
+    }
+}
+
+function Write-ProcessOutput {
+    param([Parameter(Mandatory = $true)]$Result)
+
+    if ($Result.StdOut) {
+        Write-Host $Result.StdOut.TrimEnd()
+    }
+    if ($Result.StdErr) {
+        Write-Host $Result.StdErr.TrimEnd()
     }
 }
 
@@ -197,6 +232,108 @@ function Test-DriverPresent {
     }
 
     return $false
+}
+
+function Get-InstalledDriverPackages {
+    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-drivers')
+    Write-ProcessOutput -Result $result
+
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StdOut)) {
+        return @()
+    }
+
+    $entries = @()
+    $current = @{}
+    foreach ($line in ($result.StdOut -split "`r?`n")) {
+        if ($line -match '^\s*Published Name\s*:\s*(\S+)') {
+            $current['PublishedName'] = $matches[1]
+        }
+        elseif ($line -match '^\s*Original Name\s*:\s*(.+)$') {
+            $current['OriginalName'] = $matches[1].Trim()
+        }
+        elseif ($line -match '^\s*Provider Name\s*:\s*(.+)$') {
+            $current['ProviderName'] = $matches[1].Trim()
+        }
+        elseif ($line -match '^\s*$') {
+            if ($current.ContainsKey('PublishedName')) {
+                $entries += [pscustomobject]$current
+            }
+            $current = @{}
+        }
+    }
+
+    if ($current.ContainsKey('PublishedName')) {
+        $entries += [pscustomobject]$current
+    }
+
+    return $entries | Where-Object {
+        $_.OriginalName -match '^SudoVDA\.inf$' -or $_.ProviderName -match 'SudoMaker'
+    }
+}
+
+function Remove-DriverPackage {
+    param([Parameter(Mandatory = $true)][string]$PublishedName)
+
+    Write-Host "[SudoVDA] Removing driver package $PublishedName."
+    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', $PublishedName, '/uninstall', '/force')
+    Write-ProcessOutput -Result $result
+
+    switch ($result.ExitCode) {
+        0     { return }
+        3010  { $script:rebootRequired = $true; return }
+        default { throw "[SudoVDA] Failed to remove driver package $PublishedName (exit code $($result.ExitCode))." }
+    }
+}
+
+function Invoke-SudoVdaUninstall {
+    if (-not (Test-Path -Path $pnputil -PathType Leaf)) {
+        throw '[SudoVDA] Unable to locate pnputil.exe.'
+    }
+
+    if (Test-Path -Path $nefConc -PathType Leaf) {
+        Write-Host '[SudoVDA] Removing existing SudoVDA device node.'
+        $removeResult = Invoke-Process -FilePath $nefConc -ArgumentList @('--remove-device-node', '--hardware-id', $hardwareId, '--class-guid', $classGuid)
+        Write-ProcessOutput -Result $removeResult
+        switch ($removeResult.ExitCode) {
+            0     { }
+            3010  { $script:rebootRequired = $true }
+            default { Write-Warning "[SudoVDA] Remove-device-node returned exit code $($removeResult.ExitCode). Continuing." }
+        }
+    } else {
+        Write-Warning '[SudoVDA] nefconc.exe not found; skipping device-node removal.'
+    }
+
+    $driverPackages = @(Get-InstalledDriverPackages)
+    if ($driverPackages.Count -eq 0) {
+        Write-Host '[SudoVDA] No matching installed driver package found; trying direct INF removal.'
+        $fallback = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', 'SudoVDA.inf', '/uninstall', '/force')
+        Write-ProcessOutput -Result $fallback
+        switch ($fallback.ExitCode) {
+            0     { return }
+            3010  { $script:rebootRequired = $true; return }
+            default {
+                if (Test-DriverPresent) {
+                    throw "[SudoVDA] Direct INF removal failed (exit code $($fallback.ExitCode)) and the driver is still present."
+                }
+                Write-Host '[SudoVDA] Driver package was already absent.'
+                return
+            }
+        }
+    }
+
+    foreach ($driverPackage in $driverPackages) {
+        Remove-DriverPackage -PublishedName $driverPackage.PublishedName
+    }
+}
+
+if ($Uninstall) {
+    Invoke-SudoVdaUninstall
+    Write-Host '[SudoVDA] Driver uninstall complete.'
+    if ($script:rebootRequired) {
+        Write-Host '[SudoVDA] A reboot is required to finalize driver removal.'
+    }
+    $global:LastExitCode = 0
+    exit 0
 }
 
 if (-not (Test-Path -Path $nefConc -PathType Leaf)) {

@@ -171,7 +171,7 @@
 
     <CustomAction Id="SetUninstallSudovda"
                  Property="UninstallSudovda"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]drivers\sudovda\uninstall.bat&quot;&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot; -Uninstall"/>
 
     <CustomAction Id="SetUninstallGamepad"
                  Property="UninstallGamepad"
