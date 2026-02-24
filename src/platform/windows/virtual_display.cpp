@@ -84,6 +84,7 @@ namespace VDISPLAY {
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
+    std::atomic<bool> g_reinstall_attempted {false};
 
     std::mutex g_ensure_display_state_mutex;
     bool g_ensure_display_retained = false;
@@ -485,6 +486,67 @@ namespace VDISPLAY {
       }
 
       return std::nullopt;
+    }
+
+    /**
+     * @brief Attempt to reinstall the SudoVDA driver by running the installer script.
+     *
+     * This is a last-resort recovery for when the device node is completely missing
+     * (e.g., removed during an upgrade and not recreated due to installer guard conditions).
+     * Only attempted once per process lifetime.
+     */
+    bool try_reinstall_sudovda_driver() {
+      if (g_reinstall_attempted.exchange(true, std::memory_order_acq_rel)) {
+        return false;
+      }
+
+      wchar_t module_path[MAX_PATH] = {};
+      if (!GetModuleFileNameW(nullptr, module_path, _countof(module_path))) {
+        BOOST_LOG(warning) << "SudoVDA reinstall: cannot resolve module path.";
+        return false;
+      }
+
+      fs::path exe_dir(module_path);
+      exe_dir = exe_dir.parent_path();
+      fs::path install_script = exe_dir / L"drivers" / L"sudovda" / L"install.ps1";
+
+      if (!fs::exists(install_script)) {
+        BOOST_LOG(warning) << "SudoVDA reinstall: installer script not found at " << platf::to_utf8(install_script.wstring());
+        return false;
+      }
+
+      BOOST_LOG(info) << "SudoVDA device node missing; attempting driver reinstall via " << platf::to_utf8(install_script.wstring());
+
+      std::wstring cmd = L"powershell.exe -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" +
+                         install_script.wstring() + L"\"";
+
+      STARTUPINFOW si {};
+      si.cb = sizeof(si);
+      si.dwFlags = STARTF_USESHOWWINDOW;
+      si.wShowWindow = SW_HIDE;
+      PROCESS_INFORMATION pi {};
+
+      if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, exe_dir.wstring().c_str(), &si, &pi)) {
+        BOOST_LOG(warning) << "SudoVDA reinstall: failed to launch installer (error=" << GetLastError() << ").";
+        return false;
+      }
+
+      DWORD wait_result = WaitForSingleObject(pi.hProcess, 30000);
+      DWORD exit_code = 1;
+      if (wait_result == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+      }
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+
+      if (wait_result != WAIT_OBJECT_0 || exit_code != 0) {
+        BOOST_LOG(warning) << "SudoVDA reinstall: installer exited with code " << exit_code;
+        return false;
+      }
+
+      BOOST_LOG(info) << "SudoVDA reinstall: installer completed successfully; waiting for device enumeration.";
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      return find_sudovda_device_instance_id().has_value();
     }
 
     bool apply_device_state_change(HDEVINFO info_set, SP_DEVINFO_DATA &data, DWORD state_change) {
@@ -2568,9 +2630,17 @@ namespace VDISPLAY {
 
       auto instance_id = find_sudovda_device_instance_id();
       if (!instance_id) {
-        BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
-        note_restart_failure(std::chrono::steady_clock::now());
-        return false;
+        // Device node is completely missing. Attempt to reinstall the driver
+        // as a last resort before giving up (once per process lifetime).
+        if (try_reinstall_sudovda_driver()) {
+          BOOST_LOG(info) << "SudoVDA device node restored via reinstall; retrying recovery.";
+          instance_id = find_sudovda_device_instance_id();
+        }
+        if (!instance_id) {
+          BOOST_LOG(error) << "Unable to locate SudoVDA adapter for recovery; streaming will continue with the active display. A reboot may be required.";
+          note_restart_failure(std::chrono::steady_clock::now());
+          return false;
+        }
       }
 
       BOOST_LOG(info) << "Attempting to restart SudoVDA adapter " << platf::to_utf8(*instance_id) << " (attempt "
