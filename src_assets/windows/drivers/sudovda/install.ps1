@@ -139,7 +139,8 @@ function Get-InstalledDriverInfo {
             return $driver
         }
 
-        $devices = Get-PnpDevice -ErrorAction Stop |
+        # Only consider devices that are currently present to avoid ghost entries.
+        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop |
             Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
 
         if ($devices) {
@@ -174,8 +175,10 @@ function Convert-Version {
 }
 
 function Test-DriverPresent {
+    # Only check present devices to avoid detecting ghost/phantom entries
+    # from previous installations that are no longer functional.
     try {
-        $devices = Get-PnpDevice -ErrorAction Stop |
+        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop |
             Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
         if ($devices) {
             return $true
@@ -185,7 +188,7 @@ function Test-DriverPresent {
     }
 
     try {
-        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', '/class', 'Display')
+        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', '/class', 'Display', '/connected')
         if ($result.ExitCode -eq 0 -and $result.StdOut -and $result.StdOut -match 'SudoMaker') {
             return $true
         }
@@ -220,8 +223,11 @@ if ($installedInfo -and $installedVersionObj -and $targetVersionObj -and $instal
 }
 
 if ($installedInfo -and (-not $installedVersionObj -or -not $targetVersionObj)) {
-    Write-Host "[SudoVDA] Driver present but version info incomplete (installed=$installedVersion, target=$targetVersion); skipping to avoid disrupting a working driver."
-    exit 0
+    if (Test-DriverPresent) {
+        Write-Host "[SudoVDA] Driver present but version info incomplete (installed=$installedVersion, target=$targetVersion); skipping to avoid disrupting a working driver."
+        exit 0
+    }
+    Write-Host "[SudoVDA] Driver info found but device not present (installed=$installedVersion, target=$targetVersion); reinstalling."
 }
 
 if (-not $installedInfo -and (Test-DriverPresent)) {
