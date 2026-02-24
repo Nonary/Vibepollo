@@ -54,7 +54,12 @@ foreach(_sudovda_file IN LISTS SUDOVDA_DRIVER_FILES)
     if (NOT EXISTS "${_sudovda_file}")
         message(FATAL_ERROR "Required SudoVDA driver artifact missing: ${_sudovda_file}")
     endif()
+    file(SIZE "${_sudovda_file}" _sudovda_file_size)
+    if (_sudovda_file_size EQUAL 0)
+        message(FATAL_ERROR "Required SudoVDA driver artifact is empty (0 bytes): ${_sudovda_file}")
+    endif()
 endforeach()
+unset(_sudovda_file_size)
 
 install(FILES ${SUDOVDA_DRIVER_FILES}
         DESTINATION "drivers/sudovda"

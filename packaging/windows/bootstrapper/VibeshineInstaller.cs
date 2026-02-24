@@ -2670,7 +2670,7 @@ namespace VibepolloInstaller {
       if (exitCode != 0 && exitCode != 3010) {
         TryRecoverServiceStateAfterFailedInstall();
       }
-      var componentFailures = new List<string>();
+      var componentFailures = CollectInstallComponentFailures(logPath, installVirtualDisplayDriver);
       var savedLogPath = string.Empty;
       var saveLogsWarning = string.Empty;
       var saveLogsDetail = string.Empty;
@@ -3796,6 +3796,73 @@ namespace VibepolloInstaller {
     private static string BuildLogPath(string phase) {
       var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
       return Path.Combine(Path.GetTempPath(), "vibeshine_" + phase + "_" + timestamp + ".log");
+    }
+
+    private static List<string> CollectInstallComponentFailures(string installLogPath, bool installVirtualDisplayDriver) {
+      var failures = new List<string>();
+      if (!installVirtualDisplayDriver || string.IsNullOrWhiteSpace(installLogPath) || !File.Exists(installLogPath)) {
+        return failures;
+      }
+
+      try {
+        var lines = File.ReadAllLines(installLogPath);
+        var sudovdaFailed = lines.Any(line =>
+          !string.IsNullOrWhiteSpace(line)
+          && line.IndexOf("CustomAction InstallSudovda returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (!sudovdaFailed) {
+          return failures;
+        }
+
+        failures.Add("SudoVDA driver setup failed. Virtual display may be unavailable.");
+        var detail = ExtractSudovdaFailureDetail(lines);
+        if (!string.IsNullOrWhiteSpace(detail)) {
+          failures.Add("SudoVDA detail: " + detail);
+        }
+      } catch {
+        // Keep install success semantics even if warning extraction fails.
+      }
+
+      return failures;
+    }
+
+    private static string ExtractSudovdaFailureDetail(string[] lines) {
+      if (lines == null || lines.Length == 0) {
+        return string.Empty;
+      }
+
+      for (var index = lines.Length - 1; index >= 0; index--) {
+        var line = lines[index];
+        if (string.IsNullOrWhiteSpace(line)) {
+          continue;
+        }
+
+        var isWixOutput = line.IndexOf("WixQuietExec:", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (!isWixOutput) {
+          continue;
+        }
+
+        var isErrorMarker =
+          line.IndexOf("Error 0x", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("QuietExec Failed", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("ExecCommon method", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (isErrorMarker) {
+          continue;
+        }
+
+        var looksRelevant =
+          line.IndexOf("[SudoVDA]", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("Failed to", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("Unable to", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("Required driver artifact", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("invalid", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (!looksRelevant) {
+          continue;
+        }
+
+        return line.Replace("WixQuietExec:", string.Empty).Trim();
+      }
+
+      return string.Empty;
     }
 
     private static string PersistInstallLog(string sourceLogPath, string installDirectory, string phase) {
