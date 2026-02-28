@@ -3683,38 +3683,73 @@ namespace {
             return;
           }
           if (!monitor_position_overrides.empty()) {
-            bool reposition_result = true;
             constexpr int kMinDisplayOrigin = -32768;
             constexpr int kMaxDisplayOrigin = 32767;
-            for (const auto &[device_id, origin] : monitor_position_overrides) {
+            constexpr auto kRepositionRetryInterval = 200ms;
+            constexpr auto kRepositionRetryWindow = 3s;
+            auto pending_overrides = monitor_position_overrides;
+            const auto retry_deadline = std::chrono::steady_clock::now() + kRepositionRetryWindow;
+            int retry_attempt = 0;
+
+            while (!pending_overrides.empty()) {
               if (cancelled()) {
+                return;
+              }
+              ++retry_attempt;
+              std::vector<std::pair<std::string, display_device::Point>> next_pending;
+              next_pending.reserve(pending_overrides.size());
+
+              for (const auto &[device_id, origin] : pending_overrides) {
+                if (cancelled()) {
+                  return;
+                }
+                if (device_id.empty()) {
+                  continue;
+                }
+                if (!controller.can_reposition_device(device_id)) {
+                  next_pending.emplace_back(device_id, origin);
+                  continue;
+                }
+                const auto clamped_origin = display_device::Point {
+                  std::clamp(origin.m_x, kMinDisplayOrigin, kMaxDisplayOrigin),
+                  std::clamp(origin.m_y, kMinDisplayOrigin, kMaxDisplayOrigin)
+                };
+                if (clamped_origin.m_x != origin.m_x || clamped_origin.m_y != origin.m_y) {
+                  BOOST_LOG(warning) << "Display helper: clamped monitor position override for device_id=" << device_id
+                                     << " from (" << origin.m_x << "," << origin.m_y << ") to ("
+                                     << clamped_origin.m_x << "," << clamped_origin.m_y << ")";
+                }
+                const bool ok_origin = controller.set_display_origin(device_id, clamped_origin);
+                if (!ok_origin) {
+                  next_pending.emplace_back(device_id, origin);
+                }
+              }
+
+              pending_overrides = std::move(next_pending);
+              if (pending_overrides.empty()) {
                 break;
               }
-              if (device_id.empty()) {
-                continue;
+              if (std::chrono::steady_clock::now() >= retry_deadline) {
+                break;
               }
-              if (!controller.can_reposition_device(device_id)) {
-                BOOST_LOG(warning) << "Display helper: skipping monitor position override for unavailable device_id="
-                                   << device_id;
-                reposition_result = false;
-                continue;
+              if (!wait_with_stop(st, kRepositionRetryInterval)) {
+                return;
               }
-              const auto clamped_origin = display_device::Point {
-                std::clamp(origin.m_x, kMinDisplayOrigin, kMaxDisplayOrigin),
-                std::clamp(origin.m_y, kMinDisplayOrigin, kMaxDisplayOrigin)
-              };
-              if (clamped_origin.m_x != origin.m_x || clamped_origin.m_y != origin.m_y) {
-                BOOST_LOG(warning) << "Display helper: clamped monitor position override for device_id=" << device_id
-                                   << " from (" << origin.m_x << "," << origin.m_y << ") to ("
-                                   << clamped_origin.m_x << "," << clamped_origin.m_y << ")";
-              }
-              const bool ok_origin = controller.set_display_origin(device_id, clamped_origin);
-              reposition_result = reposition_result && ok_origin;
             }
-            if (cancelled()) {
-              return;
+
+            if (!pending_overrides.empty()) {
+              std::string pending_ids;
+              for (size_t i = 0; i < pending_overrides.size(); ++i) {
+                if (i > 0) {
+                  pending_ids += ", ";
+                }
+                pending_ids += pending_overrides[i].first;
+              }
+              BOOST_LOG(warning) << "Display helper: monitor position overrides not fully applied after "
+                                 << retry_attempt << " attempt(s); pending device_id(s)=" << pending_ids;
             }
-            BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+            BOOST_LOG(info) << "Display helper: monitor position overrides applied result="
+                            << (pending_overrides.empty() ? "true" : "false");
           }
 
           // Restore physical monitor refresh rates from pre-VD-creation snapshot.
