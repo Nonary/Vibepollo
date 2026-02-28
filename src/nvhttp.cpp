@@ -498,10 +498,6 @@ namespace nvhttp {
               launch_session->pre_virtual_display_refresh_rates = std::move(rates);
             }
           }
-        } else {
-          launch_session->virtual_display_topology_snapshot.reset();
-        }
-
           VDISPLAY::setWatchdogFeedingEnabled(true);
           const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
           auto display_info = VDISPLAY::createVirtualDisplay(
