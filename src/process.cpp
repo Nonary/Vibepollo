@@ -2214,6 +2214,10 @@ namespace proc {
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
 
+    const bool has_run = had_active_app;
+    const bool should_dispatch_revert = has_run && !proc::proc.get_last_run_app_name().empty();
+    const auto undo_timeout = std::max(_app.exit_timeout, std::chrono::seconds(15));
+
     for (; _app_prep_it != _app_prep_begin; --_app_prep_it) {
       auto &cmd = *(_app_prep_it - 1);
 
@@ -2229,9 +2233,31 @@ namespace proc {
 
       if (ec) {
         BOOST_LOG(warning) << "System: "sv << ec.message();
+        ec.clear();
+        continue;
       }
 
-      child.wait();
+      const auto deadline = std::chrono::steady_clock::now() + undo_timeout;
+      while (child.running() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(100ms);
+      }
+
+      if (child.running()) {
+        BOOST_LOG(warning) << "Undo command timed out after " << undo_timeout.count()
+                           << " seconds; continuing teardown without waiting for completion.";
+        try {
+          child.detach();
+        } catch (...) {
+        }
+        continue;
+      }
+
+      child.wait(ec);
+      if (ec) {
+        BOOST_LOG(warning) << '[' << cmd.undo_cmd << "] wait failed with error code ["sv << ec << ']';
+        ec.clear();
+        continue;
+      }
       auto ret = child.exit_code();
 
       if (ret != 0) {
@@ -2253,11 +2279,9 @@ namespace proc {
     }
 #endif
 
-    bool has_run = had_active_app;
-
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
-    if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
+    if (should_dispatch_revert) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
 #endif
@@ -2270,7 +2294,9 @@ namespace proc {
     } else {
       // Restore output name to its original value
       config::video.output_name = initial_display;
+    }
 
+    if (should_dispatch_revert) {
       const bool reverted = display_helper_integration::revert();
 #ifdef _WIN32
       if (reverted && rtsp_stream::session_count() == 0) {
