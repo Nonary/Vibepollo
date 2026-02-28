@@ -291,6 +291,25 @@ namespace webrtc_stream {
         } else {
           session->virtual_display_topology_snapshot.reset();
         }
+
+        // Capture physical monitor refresh rates before VD creation so they can be
+        // restored after the virtual display is configured (VD creation at (0,0) can
+        // cause Windows to reset other monitors' refresh rates).
+        if (auto pre_vd_devices = display_helper_integration::enumerate_devices()) {
+          std::map<std::string, std::pair<unsigned int, unsigned int>> rates;
+          for (const auto &device : *pre_vd_devices) {
+            if (device.m_device_id.empty() || !device.m_info) continue;
+            if (const auto *rat = std::get_if<display_device::Rational>(&device.m_info->m_refresh_rate)) {
+              rates[device.m_device_id] = {rat->m_numerator, rat->m_denominator};
+            } else if (const auto *dbl = std::get_if<double>(&device.m_info->m_refresh_rate)) {
+              auto num = static_cast<unsigned int>(std::round(*dbl * 1000));
+              rates[device.m_device_id] = {num, 1000u};
+            }
+          }
+          if (!rates.empty()) {
+            session->pre_virtual_display_refresh_rates = std::move(rates);
+          }
+        }
       } else {
         session->virtual_display_topology_snapshot.reset();
       }

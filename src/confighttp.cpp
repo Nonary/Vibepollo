@@ -3352,10 +3352,62 @@ namespace confighttp {
       };
       add_csidl(CSIDL_APPDATA);
       add_csidl(CSIDL_LOCAL_APPDATA);
+      add_csidl(CSIDL_COMMON_APPDATA);
     } catch (...) {
       // best-effort
     }
     return out;
+  }
+
+  constexpr int kGoldenSnapshotLatestVersion = 2;
+
+  static std::optional<nlohmann::json> read_json_file_nofail(const std::filesystem::path &path) {
+    try {
+      std::ifstream file(path, std::ios::binary);
+      if (!file.is_open()) {
+        return std::nullopt;
+      }
+      auto parsed = nlohmann::json::parse(file, nullptr, false);
+      if (parsed.is_discarded() || !parsed.is_object()) {
+        return std::nullopt;
+      }
+      return parsed;
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  static std::optional<int> parse_snapshot_version(const nlohmann::json &root) {
+    auto it = root.find("snapshot_version");
+    if (it == root.end() || !it->is_number_integer()) {
+      return std::nullopt;
+    }
+    int version = it->get<int>();
+    if (version < 1) {
+      return std::nullopt;
+    }
+    return version;
+  }
+
+  static bool snapshot_has_layout_data(const nlohmann::json &root) {
+    auto it = root.find("layouts");
+    if (it == root.end() || !it->is_object()) {
+      return false;
+    }
+    for (auto entry = it->begin(); entry != it->end(); ++entry) {
+      if (!entry.key().empty()) {
+        if (entry->is_number_integer()) {
+          return true;
+        }
+        if (entry->is_object()) {
+          auto rotation = entry->find("rotation");
+          if (rotation != entry->end() && (rotation->is_number_integer() || rotation->is_string())) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   void getGoldenStatus(resp_https_t response, req_https_t request) {
@@ -3365,16 +3417,31 @@ namespace confighttp {
     print_req(request);
     nlohmann::json out;
     bool exists = false;
+    std::optional<int> snapshot_version;
+    bool has_layout = false;
+    bool needs_layout_upgrade = false;
     try {
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
           exists = true;
+          if (auto root = read_json_file_nofail(p)) {
+            snapshot_version = parse_snapshot_version(*root);
+            has_layout = snapshot_has_layout_data(*root);
+            const bool latest_schema = snapshot_version && *snapshot_version >= kGoldenSnapshotLatestVersion;
+            needs_layout_upgrade = !latest_schema || !has_layout;
+          } else {
+            needs_layout_upgrade = true;
+          }
           break;
         }
       }
     } catch (...) {
     }
     out["exists"] = exists;
+    out["snapshot_version"] = snapshot_version ? nlohmann::json(*snapshot_version) : nlohmann::json(nullptr);
+    out["latest_snapshot_version"] = kGoldenSnapshotLatestVersion;
+    out["has_layout"] = has_layout;
+    out["needs_layout_upgrade"] = needs_layout_upgrade;
     send_response(response, out);
   }
 

@@ -175,6 +175,57 @@
                 </div>
               </div>
             </n-alert>
+            <n-alert
+              v-if="showGoldenLayoutUpgradeBanner"
+              type="warning"
+              :show-icon="true"
+              class="rounded-xl"
+            >
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
+                <div class="min-w-0">
+                  <p class="text-sm m-0 font-medium">
+                    {{
+                      translate(
+                        'config.golden_layout_upgrade_title',
+                        'Golden display snapshot needs an update',
+                      )
+                    }}
+                  </p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{
+                      translate(
+                        'config.golden_layout_upgrade_desc',
+                        'Your saved snapshot predates display layout support. Recreate it to restore portrait and landscape monitor layouts correctly.',
+                      )
+                    }}
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <RouterLink
+                    :to="{
+                      path: '/settings',
+                      query: { sec: 'av', jump: 'dd_always_restore_from_golden' },
+                    }"
+                    custom
+                    v-slot="{ navigate, href }"
+                  >
+                    <a :href="href" @click="navigate">
+                      <n-button tag="span" type="primary" strong size="small">
+                        <i class="fas fa-rotate-right" />
+                        <span>{{
+                          translate(
+                            'config.golden_layout_upgrade_action',
+                            'Open Display Settings',
+                          )
+                        }}</span>
+                      </n-button>
+                    </a>
+                  </RouterLink>
+                </div>
+              </div>
+            </n-alert>
             <!-- Fatal Errors (embedded) -->
             <n-alert
               v-if="fancyLogs.some((l) => l.level === 'Fatal')"
@@ -408,11 +459,19 @@ type PlayniteStatus = {
   packaged_version?: string;
   update_available?: boolean;
 };
+type GoldenStatus = {
+  exists?: boolean;
+  snapshot_version?: number | null;
+  latest_snapshot_version?: number;
+  has_layout?: boolean;
+  needs_layout_upgrade?: boolean;
+};
 const playnite = ref<PlayniteStatus | null>(null);
 const updatingPlaynite = ref(false);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
 const exportCrashPending = ref(false);
+const goldenStatus = ref<GoldenStatus | null>(null);
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
@@ -515,6 +574,7 @@ async function runVersionChecks() {
       vigemInstalled.value = null;
     }
     await refreshCrashDumpStatus(plat);
+    await refreshGoldenStatus(plat);
     // Playnite status for extension version/update check
     try {
       const r = await http.get('/api/playnite/status', { validateStatus: () => true });
@@ -636,6 +696,24 @@ async function refreshCrashDumpStatus(platformOverride?: string) {
     }
   } catch {
     crashDump.value = null;
+  }
+}
+
+async function refreshGoldenStatus(platformOverride?: string) {
+  const platform = ((platformOverride ?? configStore.metadata?.platform) || '').toLowerCase();
+  if (platform !== 'windows') {
+    goldenStatus.value = null;
+    return;
+  }
+  try {
+    const r = await http.get('/api/display/golden_status', { validateStatus: () => true });
+    if (r.status === 200 && r.data) {
+      goldenStatus.value = r.data as GoldenStatus;
+    } else {
+      goldenStatus.value = null;
+    }
+  } catch {
+    goldenStatus.value = null;
   }
 }
 
@@ -812,6 +890,15 @@ const showVigemBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   const controllerEnabled = (configStore.config as any)?.controller === 'enabled';
   return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
+});
+
+const showGoldenLayoutUpgradeBanner = computed(() => {
+  const plat = (configStore.metadata?.platform || '').toLowerCase();
+  if (plat !== 'windows') return false;
+  return (
+    goldenStatus.value?.exists === true &&
+    goldenStatus.value?.needs_layout_upgrade === true
+  );
 });
 
 const playniteUpdateAvailable = computed(() => {

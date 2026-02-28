@@ -286,6 +286,23 @@ let suppressRouteScroll = false;
 const route = useRoute();
 const router = useRouter();
 
+async function runRouteJump(rawJump: unknown) {
+  if (typeof rawJump !== 'string') return;
+  const query = rawJump.trim();
+  if (!query) return;
+
+  queueBuildIndex();
+  await nextTick();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+
+  searchQuery.value = query;
+  await nextTick();
+
+  if (searchResults.value.length) {
+    await goTo(searchResults.value[0]);
+  }
+}
+
 onMounted(async () => {
   try {
     if (auth && typeof auth.init === 'function') await auth.init();
@@ -311,6 +328,23 @@ onMounted(async () => {
             stop();
             await nextTick();
             setTimeout(() => scrollToOpen(route.query.sec as string), 0);
+          }
+        },
+        { immediate: false },
+      );
+    }
+  }
+
+  if (typeof route.query.jump === 'string') {
+    if (isReady.value) {
+      await runRouteJump(route.query.jump);
+    } else {
+      const stop = watch(
+        () => isReady.value,
+        async (ready) => {
+          if (ready) {
+            stop();
+            await runRouteJump(route.query.jump);
           }
         },
         { immediate: false },
@@ -422,6 +456,14 @@ watch(
         { immediate: false },
       );
     }
+  },
+);
+
+watch(
+  () => route.query.jump,
+  async (jump) => {
+    if (!isReady.value) return;
+    await runRouteJump(jump);
   },
 );
 
@@ -631,12 +673,15 @@ watch(searchQuery, (q) => {
     const pv = it.path.toLowerCase();
     const dv = (it.desc || '').toLowerCase();
     const ov = (it.optionsText || '').toLowerCase();
+    const kv = (it.key || '').toLowerCase();
     let total = 0;
     for (const term of terms) {
       let s = 0;
       if (lv.includes(term)) {
         s += 100 - lv.indexOf(term);
         if (lv.startsWith(term)) s += 50;
+      } else if (kv.includes(term)) {
+        s += 90 - kv.indexOf(term);
       } else if (ov.includes(term)) {
         s += 60 - ov.indexOf(term) / 10;
       } else if (pv.includes(term)) {

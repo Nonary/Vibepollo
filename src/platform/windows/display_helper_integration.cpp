@@ -979,6 +979,14 @@ namespace {
       j["sunshine_monitor_positions"] = std::move(positions);
     }
 
+    if (!request.topology.device_refresh_rate_overrides.empty()) {
+      nlohmann::json overrides = nlohmann::json::object();
+      for (const auto &[device_id, rate] : request.topology.device_refresh_rate_overrides) {
+        overrides[device_id] = {{"num", rate.first}, {"den", rate.second}};
+      }
+      j["sunshine_device_refresh_rate_overrides"] = std::move(overrides);
+    }
+
     // Pass golden-first restore preference to helper
     if (config::video.dd.always_restore_from_golden) {
       j["sunshine_always_restore_from_golden"] = true;

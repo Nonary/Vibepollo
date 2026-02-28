@@ -21,6 +21,7 @@
   #include <filesystem>
   #include <functional>
   #include <memory>
+  #include <map>
   #include <mutex>
   #include <optional>
   #include <set>
@@ -185,6 +186,16 @@ namespace {
   class DisplayController {
   public:
     DisplayController() = default;
+    using layout_rotation_map_t = std::map<std::string, int>;
+
+    struct LoadedSnapshot {
+      display_device::DisplaySettingsSnapshot snapshot;
+      int snapshot_version {1};
+      bool has_layout_data {false};
+      layout_rotation_map_t layout_rotations;
+    };
+
+    static constexpr int snapshot_layout_version_latest = 2;
 
     static std::string ascii_lower(std::string s) {
       for (char &ch : s) {
@@ -240,6 +251,126 @@ namespace {
         }
       }
       return ids;
+    }
+
+    layout_rotation_map_t snapshot_layout_rotations(const std::set<std::string> &device_ids = {}) const {
+      layout_rotation_map_t out;
+      if (!ensure_initialized()) {
+        return out;
+      }
+
+      auto names = active_display_names_by_device_id(device_ids);
+      for (const auto &[device_id, display_name] : names) {
+        if (auto rotation = read_display_rotation_degrees(display_name)) {
+          out.emplace(device_id, *rotation);
+        }
+      }
+      return out;
+    }
+
+    bool apply_layout_rotations(const layout_rotation_map_t &layout_rotations) const {
+      if (layout_rotations.empty()) {
+        return true;
+      }
+      if (!ensure_initialized()) {
+        return false;
+      }
+
+      auto names = active_display_names_by_device_id();
+
+      // --- Phase 1: Prepare all rotation changes without applying them ---
+      std::vector<PreparedRotation> pending;
+      bool all_ok = true;
+
+      for (const auto &[device_id, rotation] : layout_rotations) {
+        auto it = names.find(device_id);
+        if (it == names.end()) {
+          BOOST_LOG(warning) << "Layout restore: device missing while applying rotation: " << device_id;
+          all_ok = false;
+          continue;
+        }
+
+        auto prepared = prepare_display_rotation(it->second, rotation);
+        if (!prepared) {
+          BOOST_LOG(warning) << "Layout restore: failed to prepare rotation for " << device_id
+                             << " (" << rotation << " degrees)";
+          all_ok = false;
+          continue;
+        }
+
+        if (!prepared->already_correct) {
+          pending.push_back(std::move(*prepared));
+        }
+      }
+
+      if (pending.empty()) {
+        return all_ok;  // All displays already at correct rotation
+      }
+
+      // Fast path: single display doesn't need batching
+      if (pending.size() == 1) {
+        auto *request = reinterpret_cast<DEVMODEW *>(pending[0].devmode_buffer.data());
+        LONG result = ChangeDisplaySettingsExW(pending[0].display_name.c_str(), request, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        if (result != DISP_CHANGE_SUCCESSFUL) {
+          result = ChangeDisplaySettingsExW(pending[0].display_name.c_str(), request, nullptr, 0, nullptr);
+        }
+        if (result != DISP_CHANGE_SUCCESSFUL) {
+          BOOST_LOG(warning) << "Layout restore: ChangeDisplaySettingsEx failed for display "
+                             << std::string(pending[0].display_name.begin(), pending[0].display_name.end())
+                             << " (error=" << result << ")";
+          all_ok = false;
+        }
+        return all_ok;
+      }
+
+      // --- Phase 2: Batch all changes to registry with CDS_NORESET ---
+      // Each call writes to the registry but does NOT trigger a mode change.
+      // This prevents the OS from validating intermediate topological states.
+      for (auto &prep : pending) {
+        auto *request = reinterpret_cast<DEVMODEW *>(prep.devmode_buffer.data());
+        LONG result = ChangeDisplaySettingsExW(
+          prep.display_name.c_str(), request, nullptr,
+          CDS_UPDATEREGISTRY | CDS_NORESET, nullptr
+        );
+        if (result != DISP_CHANGE_SUCCESSFUL) {
+          BOOST_LOG(warning) << "Layout restore: CDS_NORESET batch failed for display "
+                             << std::string(prep.display_name.begin(), prep.display_name.end())
+                             << " (error=" << result << ")";
+          all_ok = false;
+        }
+      }
+
+      // --- Phase 3: Atomic commit — apply all batched registry changes at once ---
+      // A single null-call triggers one WM_DISPLAYCHANGE and one topology validation.
+      LONG commit_result = ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
+      if (commit_result != DISP_CHANGE_SUCCESSFUL) {
+        BOOST_LOG(warning) << "Layout restore: atomic commit of batched rotations failed (error=" << commit_result << ")";
+        all_ok = false;
+      }
+
+      return all_ok;
+    }
+
+    bool current_layout_matches(const layout_rotation_map_t &expected_layout_rotations) const {
+      if (expected_layout_rotations.empty()) {
+        return true;
+      }
+      if (!ensure_initialized()) {
+        return false;
+      }
+
+      auto names = active_display_names_by_device_id();
+      for (const auto &[device_id, expected_rotation] : expected_layout_rotations) {
+        auto it = names.find(device_id);
+        if (it == names.end()) {
+          return false;
+        }
+        auto current_rotation = read_display_rotation_degrees(it->second);
+        if (!current_rotation || *current_rotation != expected_rotation) {
+          return false;
+        }
+      }
+      return true;
     }
 
     // Validate whether a snapshot's topology is currently applicable.
@@ -340,6 +471,27 @@ namespace {
           }
           // Only attempt reposition for currently active displays.
           return static_cast<bool>(device.m_info);
+        }
+      } catch (...) {
+      }
+      return false;
+    }
+
+    /**
+     * @brief Restore a device's refresh rate to the given rational value.
+     * @return True if the mode was successfully applied.
+     */
+    bool set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) {
+      if (device_id.empty() || !ensure_initialized()) {
+        return false;
+      }
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      try {
+        std::set<std::string> device_set {device_id};
+        auto current_modes = m_dd->getCurrentDisplayModes(device_set);
+        if (current_modes.count(device_id)) {
+          current_modes[device_id].m_refresh_rate = display_device::Rational {num, den};
+          return m_dd->setDisplayModes(current_modes);
         }
       } catch (...) {
       }
@@ -748,6 +900,10 @@ namespace {
           snap.m_primary_device.clear();
         }
       }
+
+      const auto layout_ids_vec = flatten_topology_device_ids(snap.m_topology);
+      const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
+      const auto layout_rotations = snapshot_layout_rotations(layout_ids);
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       FILE *f = _wfopen(path.wstring().c_str(), L"wb");
@@ -756,7 +912,7 @@ namespace {
       }
       auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
       std::string out;
-      out += "{\n  \"topology\": [";
+      out += "{\n  \"snapshot_version\": " + std::to_string(snapshot_layout_version_latest) + ",\n  \"topology\": [";
       for (size_t i = 0; i < snap.m_topology.size(); ++i) {
         const auto &grp = snap.m_topology[i];
         out += "[";
@@ -797,6 +953,14 @@ namespace {
       for (const auto &ko : snap.m_origins) {
         out += "\n    \"" + ko.first + "\": { \"x\": " + std::to_string(ko.second.m_x) + ", \"y\": " + std::to_string(ko.second.m_y) + " }";
         if (++k < snap.m_origins.size()) {
+          out += ",";
+        }
+      }
+      out += "\n  },\n  \"layouts\": {";
+      k = 0;
+      for (const auto &layout : layout_rotations) {
+        out += "\n    \"" + layout.first + "\": { \"rotation\": " + std::to_string(layout.second) + " }";
+        if (++k < layout_rotations.size()) {
           out += ",";
         }
       }
@@ -807,6 +971,9 @@ namespace {
 
     // Save a provided snapshot to file (without validation/filtering).
     bool save_snapshot_to_file(const display_device::DisplaySettingsSnapshot &snap, const std::filesystem::path &path) const {
+      const auto layout_ids_vec = flatten_topology_device_ids(snap.m_topology);
+      const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
+      const auto layout_rotations = snapshot_layout_rotations(layout_ids);
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       FILE *f = _wfopen(path.wstring().c_str(), L"wb");
@@ -815,7 +982,7 @@ namespace {
       }
       auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
       std::string out;
-      out += "{\n  \"topology\": [";
+      out += "{\n  \"snapshot_version\": " + std::to_string(snapshot_layout_version_latest) + ",\n  \"topology\": [";
       for (size_t i = 0; i < snap.m_topology.size(); ++i) {
         const auto &grp = snap.m_topology[i];
         out += "[";
@@ -859,13 +1026,21 @@ namespace {
           out += ",";
         }
       }
+      out += "\n  },\n  \"layouts\": {";
+      k = 0;
+      for (const auto &layout : layout_rotations) {
+        out += "\n    \"" + layout.first + "\": { \"rotation\": " + std::to_string(layout.second) + " }";
+        if (++k < layout_rotations.size()) {
+          out += ",";
+        }
+      }
       out += "\n  }\n}";
       const auto written = fwrite(out.data(), 1, out.size(), f);
       return written == out.size();
     }
 
-    // Load snapshot from file.
-    std::optional<display_device::DisplaySettingsSnapshot> load_display_settings_snapshot(const std::filesystem::path &path) const {
+    // Load snapshot from file with compatibility metadata.
+    std::optional<LoadedSnapshot> load_display_settings_snapshot_with_metadata(const std::filesystem::path &path) const {
       std::error_code ec;
       if (!std::filesystem::exists(path, ec)) {
         return std::nullopt;
@@ -882,6 +1057,21 @@ namespace {
       }
 
       display_device::DisplaySettingsSnapshot snap;
+      int snapshot_version = 1;
+      layout_rotation_map_t layout_rotations;
+      bool has_layout_data = false;
+
+      try {
+        auto j = nlohmann::json::parse(data, nullptr, false);
+        if (j.is_object()) {
+          if (j.contains("snapshot_version") && j["snapshot_version"].is_number_integer()) {
+            snapshot_version = std::max(1, j["snapshot_version"].get<int>());
+          }
+          parse_layouts_field(j, layout_rotations, has_layout_data);
+        }
+      } catch (...) {
+      }
+
       const auto prim = find_str_section(data, "primary");
       const auto topo_s = find_str_section(data, "topology");
       const auto modes_s = find_str_section(data, "modes");
@@ -999,6 +1189,16 @@ namespace {
           ++it;
         }
       }
+      for (auto it = layout_rotations.begin(); it != layout_rotations.end();) {
+        if (!is_allowed(it->first)) {
+          it = layout_rotations.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (layout_rotations.empty()) {
+        has_layout_data = false;
+      }
       if (!snap.m_primary_device.empty() && !is_allowed(snap.m_primary_device)) {
         snap.m_primary_device.clear();
       }
@@ -1016,11 +1216,28 @@ namespace {
         BOOST_LOG(info) << "Snapshot load: excluded devices filtered from " << path.string() << ": [" << joined << "]";
       }
 
-      return snap;
+      LoadedSnapshot loaded;
+      loaded.snapshot = std::move(snap);
+      loaded.snapshot_version = snapshot_version;
+      loaded.has_layout_data = has_layout_data;
+      loaded.layout_rotations = std::move(layout_rotations);
+      return loaded;
+    }
+
+    // Load snapshot from file.
+    std::optional<display_device::DisplaySettingsSnapshot> load_display_settings_snapshot(const std::filesystem::path &path) const {
+      auto loaded = load_display_settings_snapshot_with_metadata(path);
+      if (!loaded) {
+        return std::nullopt;
+      }
+      return loaded->snapshot;
     }
 
     // Apply snapshot best-effort.
-    bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snap) {
+    bool apply_snapshot(
+      const display_device::DisplaySettingsSnapshot &snap,
+      const layout_rotation_map_t *layout_rotations = nullptr
+    ) {
       if (!ensure_initialized()) {
         return false;
       }
@@ -1033,6 +1250,9 @@ namespace {
         }
         for (const auto &[device_id, point] : snap.m_origins) {
           (void) m_dd->setDisplayOrigin(device_id, point);
+        }
+        if (layout_rotations && !layout_rotations->empty()) {
+          return apply_layout_rotations(*layout_rotations);
         }
         return true;
       } catch (...) {
@@ -1130,6 +1350,200 @@ namespace {
           out.insert(id);
         }
       }
+    }
+
+    static std::optional<int> normalize_rotation_degrees(int degrees) {
+      int normalized = degrees % 360;
+      if (normalized < 0) {
+        normalized += 360;
+      }
+      switch (normalized) {
+        case 0:
+        case 90:
+        case 180:
+        case 270:
+          return normalized;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    static std::optional<int> dmdo_to_degrees(DWORD orientation) {
+      switch (orientation) {
+        case DMDO_DEFAULT:
+          return 0;
+        case DMDO_90:
+          return 90;
+        case DMDO_180:
+          return 180;
+        case DMDO_270:
+          return 270;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    static std::optional<DWORD> degrees_to_dmdo(int degrees) {
+      auto normalized = normalize_rotation_degrees(degrees);
+      if (!normalized) {
+        return std::nullopt;
+      }
+      switch (*normalized) {
+        case 0:
+          return DMDO_DEFAULT;
+        case 90:
+          return DMDO_90;
+        case 180:
+          return DMDO_180;
+        case 270:
+          return DMDO_270;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    std::unordered_map<std::string, std::wstring> active_display_names_by_device_id(const std::set<std::string> &device_ids = {}) const {
+      std::unordered_map<std::string, std::wstring> out;
+      const bool filter = !device_ids.empty();
+      for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (id.empty() || d.m_display_name.empty()) {
+          continue;
+        }
+        if (filter && !device_ids.contains(id)) {
+          continue;
+        }
+        const std::wstring display_name(d.m_display_name.begin(), d.m_display_name.end());
+        out.emplace(id, display_name);
+        const auto id_lower = ascii_lower(id);
+        if (id_lower != id) {
+          out.emplace(id_lower, display_name);
+        }
+      }
+      return out;
+    }
+
+    /**
+     * @brief Dynamically allocate and populate a full DEVMODEW (including dmDriverExtra)
+     *        for the given display. This avoids truncating driver-specific data that some
+     *        GPU drivers attach beyond the standard DEVMODEW structure.
+     * @return Heap-allocated buffer containing the fully populated DEVMODEW, or nullptr on failure.
+     */
+    static std::vector<uint8_t> alloc_full_devmode(const std::wstring &display_name) {
+      // Step 1: Probe to discover the required dmDriverExtra size.
+      DEVMODEW probe {};
+      probe.dmSize = sizeof(DEVMODEW);
+      probe.dmDriverExtra = 0;
+      if (!EnumDisplaySettingsExW(display_name.c_str(), ENUM_CURRENT_SETTINGS, &probe, 0)) {
+        return {};
+      }
+
+      // Step 2: Allocate a buffer large enough for the base struct + driver payload.
+      const size_t total = static_cast<size_t>(probe.dmSize) + probe.dmDriverExtra;
+      std::vector<uint8_t> buffer(total, 0);
+      auto *mode = reinterpret_cast<DEVMODEW *>(buffer.data());
+      mode->dmSize = probe.dmSize;
+      mode->dmDriverExtra = probe.dmDriverExtra;
+
+      // Step 3: Re-enumerate to fully populate the buffer.
+      if (!EnumDisplaySettingsExW(display_name.c_str(), ENUM_CURRENT_SETTINGS, mode, 0)) {
+        return {};
+      }
+      return buffer;
+    }
+
+    std::optional<int> read_display_rotation_degrees(const std::wstring &display_name) const {
+      if (display_name.empty()) {
+        return std::nullopt;
+      }
+      auto buf = alloc_full_devmode(display_name);
+      if (buf.empty()) {
+        return std::nullopt;
+      }
+      const auto *mode = reinterpret_cast<const DEVMODEW *>(buf.data());
+      return dmdo_to_degrees(mode->dmDisplayOrientation);
+    }
+
+    /**
+     * @brief A prepared rotation change ready for batched application.
+     */
+    struct PreparedRotation {
+      std::wstring display_name;
+      std::vector<uint8_t> devmode_buffer;  ///< Heap buffer holding the full DEVMODEW + dmDriverExtra
+      bool already_correct = false;         ///< True if the display is already at the target rotation
+    };
+
+    /**
+     * @brief Prepare (but do NOT apply) a rotation change for a single display.
+     *        The returned PreparedRotation can be batched with CDS_NORESET.
+     */
+    std::optional<PreparedRotation> prepare_display_rotation(const std::wstring &display_name, int degrees) const {
+      if (display_name.empty()) {
+        return std::nullopt;
+      }
+      auto target = degrees_to_dmdo(degrees);
+      if (!target) {
+        return std::nullopt;
+      }
+
+      auto buf = alloc_full_devmode(display_name);
+      if (buf.empty()) {
+        return std::nullopt;
+      }
+      auto *mode = reinterpret_cast<DEVMODEW *>(buf.data());
+
+      if (mode->dmDisplayOrientation == *target) {
+        return PreparedRotation {display_name, {}, true};
+      }
+
+      const bool swap_axes = ((mode->dmDisplayOrientation + *target) % 2) == 1;
+      mode->dmFields = DM_DISPLAYORIENTATION | DM_POSITION;
+      mode->dmDisplayOrientation = *target;
+      if (swap_axes) {
+        std::swap(mode->dmPelsWidth, mode->dmPelsHeight);
+        mode->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+      }
+
+      return PreparedRotation {display_name, std::move(buf), false};
+    }
+
+    /**
+     * @brief Apply a single rotation immediately (non-batched). Used when only one display
+     *        needs rotation, so batching overhead is unnecessary.
+     */
+    bool apply_display_rotation_degrees(const std::wstring &display_name, int degrees) const {
+      auto prepared = prepare_display_rotation(display_name, degrees);
+      if (!prepared) {
+        return false;
+      }
+      if (prepared->already_correct) {
+        return true;
+      }
+
+      auto *request = reinterpret_cast<DEVMODEW *>(prepared->devmode_buffer.data());
+
+      LONG test_result = ChangeDisplaySettingsExW(display_name.c_str(), request, nullptr, CDS_TEST, nullptr);
+      if (test_result != DISP_CHANGE_SUCCESSFUL) {
+        BOOST_LOG(warning) << "Layout restore: CDS_TEST failed for display "
+                           << std::string(display_name.begin(), display_name.end())
+                           << " (error=" << test_result << ")";
+        return false;
+      }
+
+      LONG apply_result = ChangeDisplaySettingsExW(display_name.c_str(), request, nullptr, CDS_UPDATEREGISTRY, nullptr);
+      if (apply_result == DISP_CHANGE_SUCCESSFUL) {
+        return true;
+      }
+
+      apply_result = ChangeDisplaySettingsExW(display_name.c_str(), request, nullptr, 0, nullptr);
+      if (apply_result == DISP_CHANGE_SUCCESSFUL) {
+        return true;
+      }
+
+      BOOST_LOG(warning) << "Layout restore: ChangeDisplaySettingsEx failed for display "
+                         << std::string(display_name.begin(), display_name.end())
+                         << " (error=" << apply_result << ")";
+      return false;
     }
 
   public:
@@ -1373,6 +1787,54 @@ namespace {
         }
         if (i < hdr_s.size() && hdr_s[i] == ',') {
           ++i;
+        }
+      }
+    }
+
+    static std::optional<int> parse_layout_rotation_value(const nlohmann::json &value) {
+      if (value.is_number_integer()) {
+        return normalize_rotation_degrees(value.get<int>());
+      }
+      if (value.is_string()) {
+        const auto rotation_name = ascii_lower(value.get<std::string>());
+        if (rotation_name == "landscape") {
+          return 0;
+        }
+        if (rotation_name == "portrait") {
+          return 90;
+        }
+        if (rotation_name == "landscape_flipped" || rotation_name == "landscape_inverted") {
+          return 180;
+        }
+        if (rotation_name == "portrait_flipped" || rotation_name == "portrait_inverted") {
+          return 270;
+        }
+      }
+      if (value.is_object()) {
+        if (auto it = value.find("rotation"); it != value.end()) {
+          return parse_layout_rotation_value(*it);
+        }
+      }
+      return std::nullopt;
+    }
+
+    static void parse_layouts_field(
+      const nlohmann::json &root,
+      layout_rotation_map_t &layout_rotations,
+      bool &has_layout_data
+    ) {
+      layout_rotations.clear();
+      has_layout_data = false;
+      auto it_layouts = root.find("layouts");
+      if (it_layouts == root.end() || !it_layouts->is_object()) {
+        return;
+      }
+      has_layout_data = true;
+      for (auto it = it_layouts->begin(); it != it_layouts->end(); ++it) {
+        if (!it.key().empty()) {
+          if (auto rotation = parse_layout_rotation_value(it.value())) {
+            layout_rotations[it.key()] = *rotation;
+          }
         }
       }
     }
@@ -2285,12 +2747,20 @@ namespace {
     // Windows to settle. Returns true only if the post-apply signature exactly
     // matches the golden snapshot signature.
     bool apply_golden_and_confirm(std::stop_token st, uint64_t guard_generation) {
-      auto golden = controller.load_display_settings_snapshot(golden_path);
-      if (!golden) {
+      auto golden_loaded = controller.load_display_settings_snapshot_with_metadata(golden_path);
+      if (!golden_loaded) {
         BOOST_LOG(warning) << "Golden restore snapshot not found; cannot perform revert.";
         return false;
       }
-      if (should_skip_golden(*golden)) {
+      const auto &golden = golden_loaded->snapshot;
+      const auto &golden_layouts = golden_loaded->layout_rotations;
+      const bool require_layout_match = golden_loaded->has_layout_data;
+      if (!require_layout_match && golden_loaded->snapshot_version < DisplayController::snapshot_layout_version_latest) {
+        BOOST_LOG(info) << "Golden restore snapshot uses legacy schema (version "
+                        << golden_loaded->snapshot_version << "): no display layout metadata.";
+      }
+
+      if (should_skip_golden(golden)) {
         return false;
       }
 
@@ -2306,20 +2776,44 @@ namespace {
         return st.stop_possible() && st.stop_requested();
       };
 
+      auto confirm_current_matches_golden = [&]() -> bool {
+        display_device::DisplaySettingsSnapshot cur;
+        const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+        if (should_cancel()) {
+          return false;
+        }
+        const bool layout_ok = !require_layout_match || controller.current_layout_matches(golden_layouts);
+        const bool ok = got_stable && equal_snapshots_strict(cur, golden) && layout_ok && quiet_period(750ms, 150ms, st);
+        if (ok) {
+          BOOST_LOG(info) << "Golden restore: current state already matches golden snapshot; skipping apply.";
+        }
+        return ok;
+      };
+
+      if (should_cancel()) {
+        return false;
+      }
+      if (confirm_current_matches_golden()) {
+        BOOST_LOG(info) << "Golden restore confirmed without apply; clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
+        return true;
+      }
       // Attempt 1
       if (should_cancel()) {
         return false;
       }
-      (void) controller.apply_snapshot(*golden);
+      (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
         return false;
       }
-      bool ok = got_stable && equal_snapshots_strict(cur, *golden) && quiet_period(750ms, 150ms, st);
+      const bool layout_ok_1 = !require_layout_match || controller.current_layout_matches(golden_layouts);
+      bool ok = got_stable && equal_snapshots_strict(cur, golden) && layout_ok_1 && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Golden restore attempt #1: before_sig=" << before_sig
                       << ", current_sig=" << controller.signature(cur)
-                      << ", golden_sig=" << controller.signature(*golden)
+                      << ", golden_sig=" << controller.signature(golden)
+                      << ", layout_match=" << (layout_ok_1 ? "true" : "false")
                       << ", match=" << (ok ? "true" : "false");
       if (ok) {
         BOOST_LOG(info) << "Golden restore confirmed; clearing session restore snapshots.";
@@ -2337,15 +2831,22 @@ namespace {
       if (should_cancel()) {
         return false;
       }
-      (void) controller.apply_snapshot(*golden);
+      if (confirm_current_matches_golden()) {
+        BOOST_LOG(info) << "Golden restore confirmed before retry apply; clearing session restore snapshots.";
+        clear_session_restore_snapshots_after_golden();
+        return true;
+      }
+      (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
       display_device::DisplaySettingsSnapshot cur2;
       const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
       if (should_cancel()) {
         return false;
       }
-      ok = got_stable2 && equal_snapshots_strict(cur2, *golden) && quiet_period(750ms, 150ms, st);
+      const bool layout_ok_2 = !require_layout_match || controller.current_layout_matches(golden_layouts);
+      ok = got_stable2 && equal_snapshots_strict(cur2, golden) && layout_ok_2 && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Golden restore attempt #2: current_sig=" << controller.signature(cur2)
-                      << ", golden_sig=" << controller.signature(*golden)
+                      << ", golden_sig=" << controller.signature(golden)
+                      << ", layout_match=" << (layout_ok_2 ? "true" : "false")
                       << ", match=" << (ok ? "true" : "false");
       if (ok) {
         BOOST_LOG(info) << "Golden restore confirmed (retry); clearing session restore snapshots.";
@@ -2363,13 +2864,20 @@ namespace {
       bool &attempted
     ) {
       attempted = false;
-      auto base = controller.load_display_settings_snapshot(path);
-      if (!base) {
+      auto base_loaded = controller.load_display_settings_snapshot_with_metadata(path);
+      if (!base_loaded) {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot not available.";
         return false;
       }
+      const auto &base = base_loaded->snapshot;
+      const auto &base_layouts = base_loaded->layout_rotations;
+      const bool require_layout_match = base_loaded->has_layout_data;
+      if (!require_layout_match && base_loaded->snapshot_version < DisplayController::snapshot_layout_version_latest) {
+        BOOST_LOG(info) << (label ? label : "session") << " snapshot uses legacy schema (version "
+                        << base_loaded->snapshot_version << "): no display layout metadata.";
+      }
       attempted = true;
-      if (auto missing = controller.missing_devices_for_topology(base->m_topology); !missing.empty()) {
+      if (auto missing = controller.missing_devices_for_topology(base.m_topology); !missing.empty()) {
         std::string joined;
         for (size_t i = 0; i < missing.size(); ++i) {
           if (i > 0) {
@@ -2380,7 +2888,7 @@ namespace {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot skipped (missing devices): [" << joined << "]";
         return false;
       }
-      if (!controller.is_topology_valid(*base)) {
+      if (!controller.is_topology_valid(base)) {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot rejected due to invalid topology.";
         return false;
       }
@@ -2397,19 +2905,47 @@ namespace {
         return st.stop_possible() && st.stop_requested();
       };
 
+      auto confirm_current_matches_session = [&]() -> bool {
+        display_device::DisplaySettingsSnapshot cur;
+        const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
+        if (should_cancel()) {
+          return false;
+        }
+        const bool layout_ok = !require_layout_match || controller.current_layout_matches(base_layouts);
+        const bool ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok && quiet_period(750ms, 150ms, st);
+        if (ok) {
+          BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
+                          << "): current state already matches baseline; skipping apply.";
+        }
+        return ok;
+      };
+
       if (should_cancel()) {
         return false;
       }
-      (void) controller.apply_snapshot(*base);
+      if (confirm_current_matches_session()) {
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()
+        )
+                              .count();
+        last_session_restore_success_ms.store(now_ms, std::memory_order_release);
+        return true;
+      }
+      if (should_cancel()) {
+        return false;
+      }
+      (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
         return false;
       }
-      bool ok = got_stable && equal_snapshots_strict(cur, *base) && quiet_period(750ms, 150ms, st);
+      const bool layout_ok_1 = !require_layout_match || controller.current_layout_matches(base_layouts);
+      bool ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok_1 && quiet_period(750ms, 150ms, st);
       BOOST_LOG(info) << "Session restore (" << (label ? label : "session") << ") attempt #1: before_sig="
                       << before_sig << ", current_sig=" << controller.signature(cur)
-                      << ", baseline_sig=" << controller.signature(*base)
+                      << ", baseline_sig=" << controller.signature(base)
+                      << ", layout_match=" << (layout_ok_1 ? "true" : "false")
                       << ", match=" << (ok ? "true" : "false");
       if (!ok) {
         if (should_cancel()) {
@@ -2421,16 +2957,27 @@ namespace {
         if (should_cancel()) {
           return false;
         }
-        (void) controller.apply_snapshot(*base);
+        if (confirm_current_matches_session()) {
+          const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()
+          )
+                                .count();
+          last_session_restore_success_ms.store(now_ms, std::memory_order_release);
+          return true;
+        }
+        (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
         display_device::DisplaySettingsSnapshot cur2;
         const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
         if (should_cancel()) {
           return false;
         }
-        ok = got_stable2 && equal_snapshots_strict(cur2, *base) && quiet_period(750ms, 150ms, st);
+        const bool layout_ok_2 = !require_layout_match || controller.current_layout_matches(base_layouts);
+        ok = got_stable2 && equal_snapshots_strict(cur2, base) && layout_ok_2 && quiet_period(750ms, 150ms, st);
         BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
                         << ") attempt #2: current_sig=" << controller.signature(cur2)
-                        << ", baseline_sig=" << controller.signature(*base) << ", match=" << (ok ? "true" : "false");
+                        << ", baseline_sig=" << controller.signature(base)
+                        << ", layout_match=" << (layout_ok_2 ? "true" : "false")
+                        << ", match=" << (ok ? "true" : "false");
       }
 
       if (ok) {
@@ -3074,6 +3621,7 @@ namespace {
       bool wa_hdr_toggle,
       std::optional<std::string> requested_virtual_layout,
       std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides,
+      std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides,
       std::vector<std::chrono::milliseconds> reapply_delays
     ) {
       cancel_post_apply_tasks();
@@ -3084,6 +3632,7 @@ namespace {
          wa_hdr_toggle,
          requested_virtual_layout = std::move(requested_virtual_layout),
          monitor_position_overrides = std::move(monitor_position_overrides),
+         refresh_rate_overrides = std::move(refresh_rate_overrides),
          reapply_delays = std::move(reapply_delays)](std::stop_token st) mutable {
           const auto apply_epoch = current_connection_epoch();
           auto cancelled = [&]() {
@@ -3166,6 +3715,37 @@ namespace {
               return;
             }
             BOOST_LOG(info) << "Display helper: monitor position overrides applied result=" << (reposition_result ? "true" : "false");
+          }
+
+          // Restore physical monitor refresh rates from pre-VD-creation snapshot.
+          // When a virtual display is created at (0,0), Windows may reset other monitors'
+          // refresh rates (e.g. 240Hz → 60Hz). This restores the original rates.
+          if (!refresh_rate_overrides.empty()) {
+            if (cancelled()) {
+              return;
+            }
+            bool rate_result = true;
+            for (const auto &[device_id, rate] : refresh_rate_overrides) {
+              if (cancelled()) {
+                break;
+              }
+              if (device_id.empty() || rate.first == 0 || rate.second == 0) {
+                continue;
+              }
+              // Skip the virtual display device
+              if (last_cfg && device_id == last_cfg->m_device_id) {
+                continue;
+              }
+              const bool ok = controller.set_device_refresh_rate(device_id, rate.first, rate.second);
+              if (ok) {
+                BOOST_LOG(info) << "Display helper: restored refresh rate for device=" << device_id
+                                << " to " << rate.first << "/" << rate.second;
+              } else {
+                BOOST_LOG(warning) << "Display helper: failed to restore refresh rate for device=" << device_id;
+              }
+              rate_result = rate_result && ok;
+            }
+            BOOST_LOG(info) << "Display helper: refresh rate overrides applied result=" << (rate_result ? "true" : "false");
           }
         }
       );
@@ -3789,6 +4369,7 @@ namespace {
     bool wa_hdr_toggle = false;
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
+    std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
     std::optional<display_device::ActiveTopology> sunshine_topology;
     std::optional<std::vector<std::string>> snapshot_exclude_devices;
     std::string sanitized_json = json;
@@ -3850,6 +4431,20 @@ namespace {
         if (j.contains("sunshine_always_restore_from_golden") && j["sunshine_always_restore_from_golden"].is_boolean()) {
           state.always_restore_from_golden.store(j["sunshine_always_restore_from_golden"].get<bool>(), std::memory_order_release);
           j.erase("sunshine_always_restore_from_golden");
+        }
+        if (j.contains("sunshine_device_refresh_rate_overrides") && j["sunshine_device_refresh_rate_overrides"].is_object()) {
+          for (auto it = j["sunshine_device_refresh_rate_overrides"].begin(); it != j["sunshine_device_refresh_rate_overrides"].end(); ++it) {
+            const auto &node = it.value();
+            if (!node.is_object()) continue;
+            auto num_it = node.find("num");
+            auto den_it = node.find("den");
+            if (num_it == node.end() || den_it == node.end() || !num_it->is_number_unsigned() || !den_it->is_number_unsigned()) continue;
+            refresh_rate_overrides.emplace_back(
+              it.key(),
+              std::make_pair(num_it->get<unsigned int>(), den_it->get<unsigned int>())
+            );
+          }
+          j.erase("sunshine_device_refresh_rate_overrides");
         }
         sanitized_json = j.dump();
       }
@@ -3935,6 +4530,7 @@ namespace {
         wa_hdr_toggle,
         requested_virtual_layout,
         std::move(monitor_position_overrides),
+        std::move(refresh_rate_overrides),
         std::move(reapply_delays)
       );
     } else {

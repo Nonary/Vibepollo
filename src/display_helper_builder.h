@@ -59,6 +59,8 @@ namespace display_helper_integration {
   struct DisplayTopologyDefinition {
     std::vector<std::vector<std::string>> topology;
     std::map<std::string, display_device::Point> monitor_positions;
+    /// Pre-VD-creation refresh rates for physical monitors: device_id → {numerator, denominator}.
+    std::map<std::string, std::pair<unsigned int, unsigned int>> device_refresh_rate_overrides;
   };
 
   /**

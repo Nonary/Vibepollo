@@ -487,6 +487,59 @@ namespace display_helper_integration::helpers {
     }
 
     if (!layout_flags.isolated) {
+      // For non-primary Extended mode, ensure the physical monitor retains primary
+      // status by explicitly preserving monitor positions. When the virtual display
+      // is created by the SUDOVDA driver it may land at (0,0), inadvertently stealing
+      // primary from the physical monitor.
+      if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Extended) {
+        const std::string virtual_device_id =
+          (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
+        if (!virtual_device_id.empty()) {
+          auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+          if (devices) {
+            bool virtual_is_primary = false;
+            for (const auto &device : *devices) {
+              if (device.m_device_id.empty() || !device.m_info) continue;
+              if (boost::iequals(device.m_device_id, virtual_device_id)) {
+                virtual_is_primary = device.m_info->m_primary;
+                break;
+              }
+            }
+
+            if (virtual_is_primary) {
+              // The virtual display stole primary. Find the first physical monitor
+              // and restore it as primary at (0,0); place the virtual display to its right.
+              for (const auto &device : *devices) {
+                if (device.m_device_id.empty() || !device.m_info) continue;
+                if (boost::iequals(device.m_device_id, virtual_device_id)) continue;
+
+                // Restore this physical monitor at (0,0) to reclaim primary
+                topology.monitor_positions[device.m_device_id] = display_device::Point {0, 0};
+                // Place virtual display to the right
+                topology.monitor_positions[virtual_device_id] = display_device::Point {
+                  static_cast<int>(device.m_info->m_resolution.m_width), 0
+                };
+                BOOST_LOG(info) << "Display helper: Extended layout — repositioning virtual display to the right of "
+                                << device.m_device_id << " to restore physical primary.";
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Populate physical monitor refresh rate overrides from pre-VD snapshot
+      // so the display helper can restore them after applying the configuration.
+      if (session_.pre_virtual_display_refresh_rates) {
+        const std::string virtual_device_id =
+          (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
+        for (const auto &[device_id, rate] : *session_.pre_virtual_display_refresh_rates) {
+          // Only include non-virtual devices
+          if (!virtual_device_id.empty() && boost::iequals(device_id, virtual_device_id)) continue;
+          topology.device_refresh_rate_overrides[device_id] = rate;
+        }
+      }
+
       return;
     }
 
