@@ -3394,6 +3394,7 @@ namespace {
           }
           self->reset_restore_backoff();
           self->retry_revert_on_topology.store(false, std::memory_order_release);
+          self->exit_after_revert.store(false, std::memory_order_release);
           run_restore_cleanup("polling attempt");
 
           if (cancelled()) {

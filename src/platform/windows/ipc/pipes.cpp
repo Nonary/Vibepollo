@@ -271,7 +271,7 @@ namespace platf::dxgi {
   }
 
   winrt::file_handle NamedPipeFactory::create_client_pipe(const std::wstring &fullPipeName) const {
-    constexpr ULONGLONG kClientConnectDeadlineMs = 2000;  // 2 seconds to match Sunshine helper watchdog expectations
+    constexpr ULONGLONG kClientConnectDeadlineMs = 500;  // 500ms per attempt; callers retry externally
     const ULONGLONG deadline = GetTickCount64() + kClientConnectDeadlineMs;
     const ULONGLONG start_time = GetTickCount64();
     int retry_count = 0;
@@ -968,6 +968,7 @@ namespace platf::dxgi {
       return handle_pending_send_operation(ctx, timeout_ms, bytesWritten);
     } else if (err == ERROR_BROKEN_PIPE) {
       BOOST_LOG(warning) << "Pipe broken during WriteFile (ERROR_BROKEN_PIPE)";
+      _connected.store(false, std::memory_order_release);
       return false;
     } else {
       BOOST_LOG(error) << "WriteFile failed (" << err << ") in WinPipe::send";
@@ -981,7 +982,10 @@ namespace platf::dxgi {
     if (waitResult == WAIT_OBJECT_0) {
       if (!GetOverlappedResult(_pipe.get(), ctx.get(), &bytesWritten, FALSE)) {
         DWORD err = GetLastError();
-        if (err != ERROR_OPERATION_ABORTED) {
+        if (err == ERROR_BROKEN_PIPE) {
+          BOOST_LOG(warning) << "Pipe broken during overlapped send (ERROR_BROKEN_PIPE)";
+          _connected.store(false, std::memory_order_release);
+        } else if (err != ERROR_OPERATION_ABORTED) {
           BOOST_LOG(error) << "GetOverlappedResult failed in send, error=" << err;
         }
         return false;
@@ -1565,11 +1569,7 @@ namespace platf::dxgi {
     if (!ensure_connected()) {
       return false;
     }
-    if (_inner->send(bytes, timeout_ms)) {
-      return true;
-    }
-    reconnect();
-    return _inner && _inner->send(bytes, timeout_ms);
+    return _inner->send(bytes, timeout_ms);
   }
 
   PipeResult SelfHealingPipe::receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
@@ -1577,15 +1577,7 @@ namespace platf::dxgi {
     if (!ensure_connected()) {
       return PipeResult::Disconnected;
     }
-    auto r = _inner->receive(dst, bytesRead, timeout_ms);
-    if (r == PipeResult::BrokenPipe || r == PipeResult::Disconnected || r == PipeResult::Error) {
-      reconnect();
-      if (!_inner) {
-        return r;
-      }
-      return _inner->receive(dst, bytesRead, timeout_ms);
-    }
-    return r;
+    return _inner->receive(dst, bytesRead, timeout_ms);
   }
 
   PipeResult SelfHealingPipe::receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
@@ -1593,15 +1585,7 @@ namespace platf::dxgi {
     if (!ensure_connected()) {
       return PipeResult::Disconnected;
     }
-    auto r = _inner->receive_latest(dst, bytesRead, timeout_ms);
-    if (r == PipeResult::BrokenPipe || r == PipeResult::Disconnected || r == PipeResult::Error) {
-      reconnect();
-      if (!_inner) {
-        return r;
-      }
-      return _inner->receive_latest(dst, bytesRead, timeout_ms);
-    }
-    return r;
+    return _inner->receive_latest(dst, bytesRead, timeout_ms);
   }
 
   void SelfHealingPipe::wait_for_client_connection(int milliseconds) {

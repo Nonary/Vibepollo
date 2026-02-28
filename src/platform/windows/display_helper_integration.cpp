@@ -199,8 +199,8 @@ namespace {
   }
 
   constexpr std::chrono::seconds kTopologyWaitTimeout {6};
-  constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {2000};
-  constexpr std::chrono::milliseconds kHelperIpcReadyPoll {150};
+  constexpr std::chrono::milliseconds kHelperIpcReadyTimeout {5000};
+  constexpr std::chrono::milliseconds kHelperIpcReadyPoll {100};
 
   // Stream-start requirement: stop any helper restore activity immediately.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
@@ -210,6 +210,7 @@ namespace {
   constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
   constexpr int kMaxDeferredApplyAttempts = 6;
 
+  bool shutdown_requested();
   bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
 
@@ -456,6 +457,9 @@ namespace {
 
     platf::display_helper_client::reset_connection();
     while (std::chrono::steady_clock::now() < deadline) {
+      if (shutdown_requested()) {
+        return false;
+      }
       if (platf::display_helper_client::send_ping()) {
         if (attempts > 0) {
           BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";

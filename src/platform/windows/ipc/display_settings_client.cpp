@@ -155,6 +155,9 @@ namespace platf::display_helper_client {
 
   // Ensure connected while holding the pipe mutex. Returns true on success.
   static bool ensure_connected_locked(std::optional<int> connect_timeout_override_ms = std::nullopt) {
+    if (shutdown_requested()) {
+      return false;
+    }
     auto &pipe = pipe_singleton();
     if (pipe && pipe->is_connected()) {
       return true;
@@ -162,27 +165,39 @@ namespace platf::display_helper_client {
     BOOST_LOG(debug) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
     const int connect_timeout_ms = connect_timeout_override_ms.value_or(effective_connect_timeout());
     const auto connect_start = std::chrono::steady_clock::now();
-    auto remaining_connect_timeout_ms = [&]() -> int {
-      if (!connect_timeout_override_ms) {
-        return connect_timeout_ms;
-      }
+    auto remaining_ms = [&]() -> int {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - connect_start
       );
       const long long remaining = static_cast<long long>(connect_timeout_ms) - elapsed.count();
       return static_cast<int>(std::max<long long>(0LL, remaining));
     };
-    auto creator_anon = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
-      platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
-      return ff.create_client("sunshine_display_helper");
-    };
-    pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_anon);
-    bool ok = false;
+
+    // If we still have a pipe object (just disconnected), try reconnecting it
+    // instead of recreating - avoids unnecessary factory/timeout overhead
     if (pipe) {
-      pipe->wait_for_client_connection(remaining_connect_timeout_ms());
-      ok = pipe->is_connected();
+      pipe->wait_for_client_connection(remaining_ms());
+      if (pipe->is_connected()) {
+        return true;
+      }
+      pipe.reset();
     }
-    if (!ok) {
+
+    // Create fresh pipe - try anonymous first, then named fallback
+    if (remaining_ms() > 0) {
+      auto creator_anon = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+        platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
+        return ff.create_client("sunshine_display_helper");
+      };
+      pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_anon);
+      if (pipe) {
+        pipe->wait_for_client_connection(remaining_ms());
+        if (pipe->is_connected()) {
+          return true;
+        }
+      }
+    }
+    if (remaining_ms() > 0) {
       BOOST_LOG(debug) << "Display helper IPC: anonymous connect failed; trying named fallback";
       auto creator_named = []() -> std::unique_ptr<platf::dxgi::INamedPipe> {
         platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::NamedPipeFactory>());
@@ -190,14 +205,14 @@ namespace platf::display_helper_client {
       };
       pipe = std::make_unique<platf::dxgi::SelfHealingPipe>(creator_named);
       if (pipe) {
-        pipe->wait_for_client_connection(remaining_connect_timeout_ms());
-        ok = pipe->is_connected();
-      } else {
-        ok = false;
+        pipe->wait_for_client_connection(remaining_ms());
+        if (pipe->is_connected()) {
+          return true;
+        }
       }
     }
-    BOOST_LOG(ok ? debug : warning) << "Display helper IPC: connection " << (ok ? "succeeded" : "failed");
-    return ok;
+    BOOST_LOG(warning) << "Display helper IPC: connection failed";
+    return false;
   }
 
   void reset_connection() {
@@ -205,6 +220,7 @@ namespace platf::display_helper_client {
     auto &pipe = pipe_singleton();
     if (pipe) {
       BOOST_LOG(debug) << "Display helper IPC: resetting cached connection";
+      pipe->disconnect();
     }
     pipe.reset();
   }
