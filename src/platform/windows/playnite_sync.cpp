@@ -3,6 +3,7 @@
  */
 
 #include "playnite_sync.h"
+#include "src/uuid.h"
 
 #include <iomanip>
 #include <sstream>
@@ -13,6 +14,23 @@ namespace platf::playnite::sync {
   constexpr int kSourceCategory = 1 << 1;
   constexpr int kSourcePlugin = 1 << 2;
   constexpr int kSourceInstalled = 1 << 3;
+  void ensure_app_uuid(nlohmann::json &app, bool &changed) {
+    try {
+      const bool missing_uuid =
+        !app.contains("uuid") ||
+        app["uuid"].is_null() ||
+        (app["uuid"].is_string() && app["uuid"].get<std::string>().empty());
+      if (missing_uuid) {
+        app["uuid"] = uuid_util::uuid_t::generate().string();
+        changed = true;
+      }
+    } catch (...) {
+      try {
+        app["uuid"] = uuid_util::uuid_t::generate().string();
+        changed = true;
+      } catch (...) {}
+    }
+  }
 
   static std::string compose_source_label(int flags) {
     if (flags == 0) {
@@ -433,6 +451,7 @@ namespace platf::playnite::sync {
 
   void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed) {
     for (auto &app : root["apps"]) {
+      ensure_app_uuid(app, changed);
       auto g = match_app_against_indexes(app, by_id, by_exe, by_dir);
       if (!g) {
         continue;
@@ -456,6 +475,7 @@ namespace platf::playnite::sync {
       }
       nlohmann::json app = nlohmann::json::object();
       apply_game_metadata_to_app(g, app);
+      ensure_app_uuid(app, changed);
       int flags = 0;
       if (auto it = source_flags.find(g.id); it != source_flags.end()) {
         flags = it->second;
@@ -556,6 +576,9 @@ namespace platf::playnite::sync {
     }
     changed = false;
     matched_out = 0;
+    for (auto &app : root["apps"]) {
+      ensure_app_uuid(app, changed);
+    }
     // Build installed and uninstalled sets
     std::vector<Game> installed;
     std::unordered_set<std::string> uninstalled_lower;
