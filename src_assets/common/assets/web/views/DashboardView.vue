@@ -78,6 +78,48 @@
                 </div>
               </div>
             </n-alert>
+            <n-alert
+              v-if="showPlayniteMissingPluginBanner"
+              type="warning"
+              :show-icon="true"
+              class="rounded-xl"
+            >
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
+                <div class="min-w-0">
+                  <p class="text-sm m-0 font-medium">Playnite Extension missing</p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{ playniteMissingPluginBannerText }}
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    strong
+                    :loading="resolvingPlaynitePluginIssue"
+                    :disabled="resolvingPlaynitePluginIssue || purgingPlayniteApps"
+                    @click="resolvePlaynitePluginIssue"
+                  >
+                    <i class="fas fa-plug" />
+                    <span>Resolve Issue</span>
+                  </n-button>
+                  <n-button
+                    size="small"
+                    type="error"
+                    strong
+                    secondary
+                    :loading="purgingPlayniteApps"
+                    :disabled="purgingPlayniteApps || resolvingPlaynitePluginIssue"
+                    @click="openPurgePlayniteGamesConfirm"
+                  >
+                    <i class="fas fa-trash" />
+                    <span>Purge Playnite Games</span>
+                  </n-button>
+                </div>
+              </div>
+            </n-alert>
             <!-- Crash dump detected banner -->
             <n-alert v-if="showCrashDumpBanner" type="error" :show-icon="true" class="rounded-xl">
               <div
@@ -415,12 +457,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NCard, NAlert, NGrid, NGi, useMessage } from 'naive-ui';
+import { NCard, NAlert, NGrid, NGi, useMessage, useDialog } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
+import { useAppsStore } from '@/stores/apps';
 import { http } from '@/http';
 import type { CrashDumpStatus } from '@/utils/crashDump';
 import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
@@ -467,22 +510,91 @@ type GoldenStatus = {
   needs_layout_upgrade?: boolean;
 };
 const playnite = ref<PlayniteStatus | null>(null);
-const updatingPlaynite = ref(false);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
 const exportCrashPending = ref(false);
 const goldenStatus = ref<GoldenStatus | null>(null);
+const resolvingPlaynitePluginIssue = ref(false);
+const purgingPlayniteApps = ref(false);
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
+const appsStore = useAppsStore();
 let started = false; // prevent duplicate concurrent checks
 const message = useMessage();
+const dialog = useDialog();
 const { t: $t } = useI18n();
 
 const translate = (key: string, fallback: string) => {
   const value = $t(key);
   return value === key ? fallback : value;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
+}
+
+function isPlayniteFullscreenEntry(app: Record<string, unknown>): boolean {
+  if (app['playnite-fullscreen'] === true) {
+    return true;
+  }
+  if (typeof app.name === 'string' && app.name === 'Playnite (Fullscreen)') {
+    return true;
+  }
+  const cmdValue = app.cmd;
+  const cmdText = Array.isArray(cmdValue)
+    ? cmdValue.filter((v): v is string => typeof v === 'string').join(' ')
+    : typeof cmdValue === 'string'
+      ? cmdValue
+      : '';
+  const cmdLower = cmdText.toLowerCase();
+  return cmdLower.includes('playnite-launcher') && cmdLower.includes('--fullscreen');
+}
+
+function isPlayniteApp(app: Record<string, unknown>): boolean {
+  if (typeof app['playnite-id'] === 'string' && app['playnite-id'].length > 0) {
+    return true;
+  }
+  return isPlayniteFullscreenEntry(app);
+}
+
+function getAppsSnapshot(): Record<string, unknown>[] {
+  return (appsStore.apps || []).filter((app): app is Record<string, unknown> => isRecord(app));
+}
+
+async function refreshAppsSnapshot() {
+  try {
+    await appsStore.loadApps(true);
+  } catch {
+    appsStore.setApps([]);
+  }
+}
+
+async function refreshAppsSnapshotStrict() {
+  const r = await http.get('/api/apps', { validateStatus: () => true });
+  const apps = Array.isArray((r.data as any)?.apps) ? (r.data as any).apps : null;
+  if (r.status !== 200 || !apps) {
+    throw new Error(`HTTP ${r.status}`);
+  }
+  appsStore.setApps(apps);
+}
+
+async function refreshPlayniteStatus() {
+  try {
+    const r = await http.get('/api/playnite/status', { validateStatus: () => true });
+    if (r.status === 200 && r.data) {
+      playnite.value = r.data as PlayniteStatus;
+    } else {
+      playnite.value = null;
+    }
+  } catch {
+    playnite.value = null;
+  }
+}
+
+async function refreshPlayniteAndApps() {
+  await Promise.all([refreshPlayniteStatus(), refreshAppsSnapshot()]);
+}
 
 async function runVersionChecks() {
   if (started) return; // guard
@@ -576,15 +688,11 @@ async function runVersionChecks() {
     await refreshCrashDumpStatus(plat);
     await refreshGoldenStatus(plat);
     // Playnite status for extension version/update check
-    try {
-      const r = await http.get('/api/playnite/status', { validateStatus: () => true });
-      if (r.status === 200 && r.data) {
-        playnite.value = r.data as PlayniteStatus;
-      } else {
-        playnite.value = null;
-      }
-    } catch (e) {
-      playnite.value = null;
+    await refreshPlayniteStatus();
+    if (plat === 'windows') {
+      await refreshAppsSnapshot();
+    } else {
+      appsStore.setApps([]);
     }
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -905,16 +1013,113 @@ const playniteUpdateAvailable = computed(() => {
   return !!(playnite.value && playnite.value.installed && playnite.value.update_available);
 });
 
+const playniteApps = computed(() => getAppsSnapshot().filter((app) => isPlayniteApp(app)));
+const playniteAutoSyncedAppsCount = computed(() => {
+  return playniteApps.value.filter((app) => app['playnite-managed'] === 'auto').length;
+});
+const hasPlayniteFullscreenApp = computed(() => {
+  return getAppsSnapshot().some((app) => isPlayniteFullscreenEntry(app));
+});
+const showPlayniteMissingPluginBanner = computed(() => {
+  const plat = (configStore.metadata?.platform || '').toLowerCase();
+  if (plat !== 'windows') return false;
+  if (!playnite.value || playnite.value.installed !== false) return false;
+  return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
+});
+const playniteMissingPluginBannerText = computed(() => {
+  const details: string[] = [];
+  if (playniteAutoSyncedAppsCount.value > 0) {
+    const count = playniteAutoSyncedAppsCount.value;
+    details.push(`${count} auto-synced app${count === 1 ? '' : 's'}`);
+  }
+  if (hasPlayniteFullscreenApp.value) {
+    details.push('a Playnite (Fullscreen) launcher entry');
+  }
+  const detected =
+    details.length > 1 ? `${details[0]} and ${details[1]}` : (details[0] ?? 'Playnite entries');
+  return `Detected ${detected}, but the Playnite plugin is no longer installed. Reinstall the plugin to restore integration, or purge Playnite games to remove all Playnite entries from Vibeshine.`;
+});
+
+async function resolvePlaynitePluginIssue() {
+  if (resolvingPlaynitePluginIssue.value || purgingPlayniteApps.value) return;
+  resolvingPlaynitePluginIssue.value = true;
+  try {
+    const r = await http.post('/api/playnite/install', { restart: true }, { validateStatus: () => true });
+    const body = r.data as any;
+    const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
+    if (ok) {
+      message.success('Playnite plugin reinstalled.');
+      await refreshPlayniteAndApps();
+    } else {
+      const err = (body && (body.error || body.message)) || `HTTP ${r.status}`;
+      message.error(`Failed to reinstall Playnite plugin: ${err}`);
+    }
+  } catch (e: any) {
+    message.error(`Failed to reinstall Playnite plugin: ${e?.message || 'Request failed'}`);
+  } finally {
+    resolvingPlaynitePluginIssue.value = false;
+  }
+}
+
+async function purgePlayniteGames() {
+  if (purgingPlayniteApps.value || resolvingPlaynitePluginIssue.value) return;
+  purgingPlayniteApps.value = true;
+  try {
+    await refreshAppsSnapshotStrict();
+    const snapshot = getAppsSnapshot();
+    const indexes = snapshot
+      .map((app, index) => ({ app, index }))
+      .filter((item) => isPlayniteApp(item.app))
+      .map((item) => item.index)
+      .sort((a, b) => b - a);
+    if (!indexes.length) {
+      message.info('No Playnite apps found to purge.');
+      await refreshPlayniteAndApps();
+      return;
+    }
+    for (const index of indexes) {
+      const r = await http.delete(`./api/apps/${index}`, { validateStatus: () => true });
+      const body = r.data as any;
+      const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
+      if (!ok) {
+        const err = (body && (body.error || body.message)) || `HTTP ${r.status}`;
+        throw new Error(err);
+      }
+    }
+    try {
+      await configStore.fetchConfig(true);
+    } catch {}
+    await refreshPlayniteAndApps();
+    const removed = indexes.length;
+    message.success(`Removed ${removed} Playnite app${removed === 1 ? '' : 's'}.`);
+  } catch (e: any) {
+    message.error(`Failed to purge Playnite apps: ${e?.message || 'Request failed'}`);
+    await refreshPlayniteAndApps();
+  } finally {
+    purgingPlayniteApps.value = false;
+  }
+}
+
+function openPurgePlayniteGamesConfirm() {
+  dialog.warning({
+    title: 'Purge Playnite games?',
+    content:
+      'This removes all Playnite entries from Vibeshine, including auto-synced games and the Playnite (Fullscreen) launcher.',
+    positiveText: 'Purge',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await purgePlayniteGames();
+    },
+  });
+}
+
 async function onPlayniteReinstallDone(res: { ok: boolean; error?: string }) {
   if (res.ok) {
     message.success('Playnite Extension updated');
   } else {
     message.error('Update failed' + (res.error ? `: ${res.error}` : ''));
   }
-  try {
-    const s = await http.get('/api/playnite/status', { validateStatus: () => true });
-    if (s.status === 200 && s.data) playnite.value = s.data as PlayniteStatus;
-  } catch {}
+  await refreshPlayniteAndApps();
 }
 </script>
 
