@@ -105,7 +105,7 @@ namespace platf {
     const bool provider_explicit = configured_provider != frame_limiter_provider::auto_detect;
     const bool allow_gen1_rtss_override = !(provider_overridden && provider_explicit);
 
-    // Gen1 fix: Force RTSS with front-edge sync (for DLSS3, FSR3, Lossless Scaling)
+    // Gen1 fix: Force RTSS with NVIDIA Reflex SyncLimiter (for DLSS3, FSR3, Lossless Scaling)
     // Respect explicit provider overrides so users can force NVCP.
     if (gen1_framegen_fix) {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
@@ -119,7 +119,7 @@ namespace platf {
         if (!rtss_sync_overridden) {
           g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
           g_prev_rtss_frame_limit_type_set = true;
-          config::rtss.frame_limit_type = "front edge sync";
+          config::rtss.frame_limit_type = "nvidia reflex";
         } else {
           g_prev_rtss_frame_limit_type_set = false;
         }
