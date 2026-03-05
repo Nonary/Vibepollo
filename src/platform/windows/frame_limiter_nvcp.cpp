@@ -15,6 +15,7 @@
   #include <filesystem>
   #include <fstream>
   #include <iomanip>
+  #include <mutex>
   #include <nlohmann/json.hpp>
   #include <optional>
   #include <sstream>
@@ -58,6 +59,7 @@ namespace platf::frame_limiter_nvcp {
     };
 
     state_t g_state;
+    std::mutex g_mutex;
     bool g_recovery_file_owned = false;
 
     constexpr NvU32 SMOOTH_MOTION_ENABLE_ID = 0xB0D384C0;
@@ -315,6 +317,37 @@ namespace platf::frame_limiter_nvcp {
       return profile;
     }
 
+    NvDRSProfileHandle resolve_profile_for_restore(NvDRSSessionHandle session, bool profile_is_global) {
+      if (profile_is_global) {
+        NVDRS_SETTING probe = {};
+        probe.version = NVDRS_SETTING_VER;
+        NvDRSProfileHandle profile = nullptr;
+        NvAPI_Status status = get_current_global_profile(session, &profile);
+        if (status == NVAPI_OK && profile) {
+          NvAPI_Status probe_status = NvAPI_DRS_GetSetting(session, profile, FRL_FPS_ID, &probe);
+          if (probe_status == NVAPI_OK || probe_status == NVAPI_SETTING_NOT_FOUND) {
+            return profile;
+          }
+          log_nvapi_error(probe_status, "DRS_GetSetting(FRL_FPS global restore)");
+        } else {
+          if (status != NVAPI_OK) {
+            log_nvapi_error(status, "DRS_GetCurrentGlobalProfile(restore)");
+          } else {
+            BOOST_LOG(warning) << "NvAPI DRS_GetCurrentGlobalProfile(restore) returned null profile";
+          }
+        }
+        return nullptr;
+      }
+
+      NvDRSProfileHandle profile = nullptr;
+      NvAPI_Status status = NvAPI_DRS_GetBaseProfile(session, &profile);
+      if (status != NVAPI_OK) {
+        log_nvapi_error(status, "DRS_GetBaseProfile(restore)");
+        return nullptr;
+      }
+      return profile;
+    }
+
     struct restore_info_t {
       bool frame_limit_applied = false;
       std::optional<NvU32> frame_limit_value;
@@ -338,6 +371,7 @@ namespace platf::frame_limiter_nvcp {
       std::optional<NvU32> smooth_motion_mask_value;
       std::optional<NvU32> smooth_motion_mask_fallback_value;
       bool smooth_motion_mask_override = false;
+      std::optional<bool> profile_is_global;
     };
 
     bool restore_with_fresh_session(const restore_info_t &restore_data);
@@ -417,6 +451,11 @@ namespace platf::frame_limiter_nvcp {
       encode_section("ultra_low_latency_enabled", info.ull_enabled_applied, info.ull_enabled_override, info.ull_enabled_value, info.ull_enabled_fallback_value);
       encode_section("smooth_motion", info.smooth_motion_applied, info.smooth_motion_override, info.smooth_motion_value, info.smooth_motion_fallback_value);
       encode_section("smooth_motion_mask", info.smooth_motion_mask_applied, info.smooth_motion_mask_override, info.smooth_motion_mask_value, info.smooth_motion_mask_fallback_value);
+      if (info.profile_is_global.has_value()) {
+        j["profile_scope"] = *info.profile_is_global ? "global" : "base";
+      } else {
+        j["profile_scope"] = nullptr;
+      }
 
       std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
       if (!out.is_open()) {
@@ -514,6 +553,16 @@ namespace platf::frame_limiter_nvcp {
       decode_section("ultra_low_latency_enabled", info.ull_enabled_applied, info.ull_enabled_override, info.ull_enabled_value, info.ull_enabled_fallback_value);
       decode_section("smooth_motion", info.smooth_motion_applied, info.smooth_motion_override, info.smooth_motion_value, info.smooth_motion_fallback_value);
       decode_section("smooth_motion_mask", info.smooth_motion_mask_applied, info.smooth_motion_mask_override, info.smooth_motion_mask_value, info.smooth_motion_mask_fallback_value);
+      if (j.contains("profile_scope") && j["profile_scope"].is_string()) {
+        const auto scope = j["profile_scope"].get<std::string>();
+        if (scope == "global") {
+          info.profile_is_global = true;
+        } else if (scope == "base") {
+          info.profile_is_global = false;
+        }
+      } else if (j.contains("profile_is_global") && j["profile_is_global"].is_boolean()) {
+        info.profile_is_global = j["profile_is_global"].get<bool>();
+      }
 
       if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied && !info.ull_cpl_applied && !info.ull_enabled_applied && !info.smooth_motion_applied && !info.smooth_motion_mask_applied) {
         return std::nullopt;
@@ -578,11 +627,24 @@ namespace platf::frame_limiter_nvcp {
         }
 
         bool profile_is_global = false;
-        NvDRSProfileHandle profile = resolve_profile(session, &profile_is_global);
+        NvDRSProfileHandle profile = nullptr;
+        if (restore_data.profile_is_global.has_value()) {
+          profile_is_global = *restore_data.profile_is_global;
+          profile = resolve_profile_for_restore(session, profile_is_global);
+          if (!profile) {
+            BOOST_LOG(warning) << "NVIDIA Control Panel overrides: unable to resolve original "
+                               << (profile_is_global ? "global" : "base") << " profile for restore";
+            result = NVAPI_ERROR;
+            break;
+          }
+        } else {
+          profile = resolve_profile(session, &profile_is_global);
+        }
         if (!profile) {
           result = NVAPI_ERROR;
           break;
         }
+        BOOST_LOG(debug) << "NVIDIA Control Panel overrides: restoring " << (profile_is_global ? "global" : "base") << " profile settings";
 
         auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *label, bool skip_delete = false) -> bool {
           NVDRS_SETTING setting = {};
@@ -699,10 +761,12 @@ namespace platf::frame_limiter_nvcp {
   }  // namespace
 
   void restore_pending_overrides() {
+    std::scoped_lock lock(g_mutex);
     maybe_restore_from_overrides_file();
   }
 
   bool is_available() {
+    std::scoped_lock lock(g_mutex);
     maybe_restore_from_overrides_file();
 
     if (g_state.initialized) {
@@ -729,6 +793,7 @@ namespace platf::frame_limiter_nvcp {
   }
 
   bool streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
+    std::scoped_lock lock(g_mutex);
     maybe_restore_from_overrides_file();
 
     g_state.frame_limit_applied = false;
@@ -1018,6 +1083,7 @@ namespace platf::frame_limiter_nvcp {
           g_state.original_smooth_motion_mask,
           g_state.original_smooth_motion_mask_value,
           g_state.original_smooth_motion_mask_override,
+          g_state.profile_is_global,
         };
         if (write_overrides_file(info)) {
           g_recovery_file_owned = true;
@@ -1029,6 +1095,7 @@ namespace platf::frame_limiter_nvcp {
   }
 
   void streaming_stop() {
+    std::scoped_lock lock(g_mutex);
     if (!g_state.initialized || !g_state.session || !g_state.profile) {
       cleanup();
       return;
@@ -1057,6 +1124,7 @@ namespace platf::frame_limiter_nvcp {
       g_state.original_smooth_motion_mask,
       g_state.original_smooth_motion_mask_value,
       g_state.original_smooth_motion_mask_override,
+      g_state.profile_is_global,
     };
 
     cleanup();

@@ -25,6 +25,7 @@ namespace platf {
   namespace {
 
     frame_limiter_provider g_active_provider = frame_limiter_provider::none;
+    unsigned int g_stream_owner_count = 0;
     bool g_nvcp_started = false;
     bool g_gen1_framegen_fix_active = false;
     bool g_gen2_framegen_fix_active = false;
@@ -89,6 +90,12 @@ namespace platf {
   }
 
   void frame_limiter_streaming_start(int fps, int fps_scaled, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, bool smooth_motion) {
+    if (g_stream_owner_count > 0) {
+      ++g_stream_owner_count;
+      BOOST_LOG(debug) << "Frame limiter start requested while already active; reusing existing overrides (owners=" << g_stream_owner_count << ")";
+      return;
+    }
+    g_stream_owner_count = 1;
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
     g_gen1_framegen_fix_active = gen1_framegen_fix;
@@ -312,6 +319,14 @@ namespace platf {
   }
 
   void frame_limiter_streaming_stop(bool keep_rtss_running) {
+    if (g_stream_owner_count == 0) {
+      return;
+    }
+    if (--g_stream_owner_count > 0) {
+      BOOST_LOG(debug) << "Frame limiter stop deferred; remaining stream owners=" << g_stream_owner_count;
+      return;
+    }
+
     if (g_gen1_framegen_fix_active || g_gen2_framegen_fix_active) {
       config::frame_limiter.enable = g_prev_frame_limiter_enabled;
       if (g_prev_frame_limiter_provider_set) {
