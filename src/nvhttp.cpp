@@ -306,6 +306,7 @@ namespace nvhttp {
       const bool has_app_output_override = app_output_override.has_value();
       if (has_app_output_override && !client_requests_virtual) {
         request_virtual_display = false;
+        disable_virtual_display_request();
       }
 
       if (!allow_display_changes) {
