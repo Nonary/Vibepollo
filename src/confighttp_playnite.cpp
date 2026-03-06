@@ -60,18 +60,32 @@ namespace confighttp {
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message = "Bad Request");
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType);
 
-  // Helper: check if the Sunshine Playnite plugin is installed (by presence of files)
-  static bool is_plugin_installed() {
+  struct playnite_install_state_t {
+    std::optional<bool> installed;
+    std::filesystem::path extensions_dir;
+  };
+
+  // Helper: determine whether the Playnite plugin is installed.
+  // An active IPC connection is authoritative proof that the plugin is loaded,
+  // even if the current service context cannot resolve the user's extension path.
+  static playnite_install_state_t query_plugin_install_state(bool active) {
+    playnite_install_state_t state;
     try {
       std::string destPath;
-      if (!platf::playnite::get_extension_target_dir(destPath)) {
-        return false;
+      if (platf::playnite::get_extension_target_dir(destPath)) {
+        state.extensions_dir = destPath;
+        state.installed =
+          std::filesystem::exists(state.extensions_dir / "extension.yaml") &&
+          std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.psm1");
+      } else if (active) {
+        state.installed = true;
       }
-      std::filesystem::path dest = destPath;
-      return std::filesystem::exists(dest / "extension.yaml") && std::filesystem::exists(dest / "SunshinePlaynite.psm1");
     } catch (...) {
-      return false;
+      if (active) {
+        state.installed = true;
+      }
     }
+    return state;
   }
 
   // Enhance app JSON with a Playnite-derived cover path when applicable.
@@ -101,22 +115,19 @@ namespace confighttp {
     platf::playnite::ensure_client_for_api();
     nlohmann::json out;
     // Active reflects current pipe/server connection only
-    out["active"] = platf::playnite::is_active();
+    const bool active = platf::playnite::is_active();
+    out["active"] = active;
     // Deprecated fields removed: playnite_running, installed_unknown
-    std::string destPath;
-    std::filesystem::path dest;
-    // Session requirement removed: IPC is available during RDP/lock; rely on Playnite process presence instead.
-    // Resolve the user's Playnite extensions directory via URL association.
-    // Requires user impersonation when running as SYSTEM.
-    if (platf::playnite::get_extension_target_dir(destPath)) {
-      dest = destPath;
-      bool installed = std::filesystem::exists(dest / "extension.yaml") && std::filesystem::exists(dest / "SunshinePlaynite.psm1");
-      out["installed"] = installed;
-      out["extensions_dir"] = dest.string();
+    // Session requirement removed: IPC is available during RDP/lock; rely on
+    // active IPC first, then fall back to per-user extension path resolution.
+    const auto install_state = query_plugin_install_state(active);
+    const auto &dest = install_state.extensions_dir;
+    if (install_state.installed.has_value()) {
+      out["installed"] = *install_state.installed;
     } else {
-      out["installed"] = false;
-      out["extensions_dir"] = std::string();
+      out["installed"] = nullptr;
     }
+    out["extensions_dir"] = dest.string();
     // Version info and update flag
     auto normalize_ver = [](std::string s) {
       // strip leading 'v' and whitespace
@@ -176,7 +187,7 @@ namespace confighttp {
       out["packaged_version"] = packaged_ver;
     }
     bool update_available = false;
-    if (out["installed"].get<bool>() && have_installed && have_packaged) {
+    if (out["installed"].is_boolean() && out["installed"].get<bool>() && have_installed && have_packaged) {
       update_available = semver_cmp(installed_ver, packaged_ver) < 0;
     }
     out["update_available"] = update_available;
@@ -198,7 +209,7 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      if (!is_plugin_installed()) {
+      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
         SimpleWeb::CaseInsensitiveMultimap headers;
         headers.emplace("Content-Type", "application/json");
         headers.emplace("X-Frame-Options", "DENY");
@@ -228,7 +239,7 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      if (!is_plugin_installed()) {
+      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
         SimpleWeb::CaseInsensitiveMultimap headers;
         headers.emplace("Content-Type", "application/json");
         headers.emplace("X-Frame-Options", "DENY");
@@ -258,7 +269,7 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      if (!is_plugin_installed()) {
+      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
         SimpleWeb::CaseInsensitiveMultimap headers;
         headers.emplace("Content-Type", "application/json");
         headers.emplace("X-Frame-Options", "DENY");

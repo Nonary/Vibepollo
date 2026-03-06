@@ -256,7 +256,8 @@ async function fetchPlayniteStatus(): Promise<void> {
       'installed' in (r.data as Record<string, unknown>)
     ) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      playniteInstalled.value = !!(r.data as any).installed;
+      const data = r.data as any;
+      playniteInstalled.value = data.installed === true || data.active === true;
     }
   } catch {
     // ignore; will retry on next auth change

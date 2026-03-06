@@ -2466,7 +2466,8 @@ async function refreshPlayniteStatus() {
     const r = await http.get('/api/playnite/status', { validateStatus: () => true });
     if (r.status === 200 && r.data && typeof r.data === 'object' && r.data !== null) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      playniteInstalled.value = !!(r.data as any).installed;
+      const data = r.data as any;
+      playniteInstalled.value = data.installed === true || data.active === true;
     }
   } catch (_) {}
 }

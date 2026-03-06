@@ -719,7 +719,7 @@ const platform = computed(() =>
 const { t } = useI18n();
 
 const status = reactive<{
-  installed: boolean;
+  installed: boolean | null;
   installed_unknown?: boolean;
   active: boolean;
   enabled?: boolean;
@@ -727,7 +727,7 @@ const status = reactive<{
   extensions_dir: string;
   plugin_version?: string;
   plugin_latest?: string;
-}>({ installed: false, active: false, extensions_dir: '' });
+}>({ installed: null, active: false, extensions_dir: '' });
 const launching = ref(false);
 const uninstalling = ref(false);
 const deletingAutosync = ref(false);
@@ -872,7 +872,7 @@ async function refreshStatus() {
     const r = await http.get('/api/playnite/status');
     if (r.status === 200 && r.data) {
       const d = r.data as any;
-      status.installed = !!d.installed;
+      status.installed = typeof d.installed === 'boolean' ? d.installed : null;
       status.active = !!d.active;
       // 'enabled' is no longer a config; presence is indicated by 'installed'
       if (typeof d.playnite_running === 'boolean') status.playnite_running = !!d.playnite_running;
@@ -1246,9 +1246,11 @@ onUnmounted(() => {
 });
 
 const statusKind = computed<'active' | 'waiting' | 'uninstalled' | 'unknown'>(() => {
+  if (status.active) return 'active';
   if (!status.extensions_dir) return 'unknown';
-  if (!status.installed) return 'uninstalled';
-  return status.active ? 'active' : 'waiting';
+  if (status.installed === false) return 'uninstalled';
+  if (status.installed === true) return 'waiting';
+  return 'unknown';
 });
 const statusType = computed<'success' | 'warning' | 'error' | 'default'>(() => {
   switch (statusKind.value) {
@@ -1300,12 +1302,12 @@ function cmpSemver(a?: string, b?: string): number {
 }
 
 const pluginOutdated = computed(() => {
-  if (!status.installed) return false;
+  if (status.installed !== true) return false;
   if (!status.plugin_version || !status.plugin_latest) return false;
   return cmpSemver(status.plugin_version, status.plugin_latest) < 0;
 });
 const canLaunch = computed(() => {
-  return !!(status.extensions_dir && status.installed && !status.active);
+  return !!(status.extensions_dir && status.installed === true && !status.active);
 });
 
 const statusTimer = ref<number | undefined>();

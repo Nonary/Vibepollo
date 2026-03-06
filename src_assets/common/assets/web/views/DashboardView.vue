@@ -495,7 +495,7 @@ const vigemInstalled = ref<boolean | null>(null);
 const vigemVersion = ref('');
 // Playnite extension status
 type PlayniteStatus = {
-  installed: boolean;
+  installed: boolean | null;
   active: boolean;
   extensions_dir?: string;
   installed_version?: string;
@@ -1023,7 +1023,7 @@ const hasPlayniteFullscreenApp = computed(() => {
 const showPlayniteMissingPluginBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!playnite.value || playnite.value.installed !== false) return false;
+  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false) return false;
   return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
 });
 const playniteMissingPluginBannerText = computed(() => {
