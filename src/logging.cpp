@@ -405,9 +405,16 @@ namespace logging {
     constexpr const char *message = "Message";
     constexpr const char *severity = "Severity";
 
-    auto log_level = view.attribute_values()[severity].extract<int>().get();
+    const auto &attributes = view.attribute_values();
 
-    std::string_view log_type;
+    int log_level = 4;
+    if (const auto severity_it = attributes.find(severity); severity_it != attributes.end()) {
+      if (const auto severity_value = severity_it->second.extract<int>(); severity_value) {
+        log_level = severity_value.get();
+      }
+    }
+
+    std::string_view log_type = "Log: "sv;
     switch (log_level) {
       case 0:
         log_type = "Verbose: "sv;
@@ -442,8 +449,15 @@ namespace logging {
     auto t = std::chrono::system_clock::to_time_t(now);
     auto lt = *std::localtime(&t);
 
+    std::string rendered_message = "<missing log message>";
+    if (const auto message_it = attributes.find(message); message_it != attributes.end()) {
+      if (const auto message_value = message_it->second.extract<std::string>(); message_value) {
+        rendered_message = message_value.get();
+      }
+    }
+
     os << "["sv << std::put_time(&lt, "%Y-%m-%d %H:%M:%S.") << boost::format("%03u") % ms.count() << "]: "sv
-       << log_type << view.attribute_values()[message].extract<std::string>();
+       << log_type << rendered_message;
   }
 #ifdef __ANDROID__
   namespace sinks = boost::log::sinks;
