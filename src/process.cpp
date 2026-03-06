@@ -2012,7 +2012,7 @@ namespace proc {
         const bool provider_auto = config::frame_limiter.provider.empty() ||
                                    boost::iequals(config::frame_limiter.provider, "auto");
         const bool provider_rtss = boost::iequals(config::frame_limiter.provider, "rtss");
-        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.gen1_framegen_fix);
+        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.gen1_framegen_fix || _app.gen2_framegen_fix);
         if (should_wait_rtss) {
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
           bool running = false;
@@ -2932,8 +2932,11 @@ namespace proc {
         ctx.allow_client_commands = util::get_non_string_json_value<bool>(app_node, "allow-client-commands", true);
         ctx.terminate_on_pause = util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false);
         ctx.gamepad = app_node.value("gamepad", "");
-        ctx.gen1_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false));
-        ctx.gen2_framegen_fix = util::get_non_string_json_value<bool>(app_node, "gen2-framegen-fix", false);
+        const bool frame_generation_capture_fix_enabled =
+          util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false)) ||
+          util::get_non_string_json_value<bool>(app_node, "gen2-framegen-fix", false);
+        ctx.gen1_framegen_fix = frame_generation_capture_fix_enabled;
+        ctx.gen2_framegen_fix = false;
         auto virtual_display_mode = util::get_non_string_json_value<std::string>(app_node, "virtual-display-mode", "");
         auto virtual_display_layout = util::get_non_string_json_value<std::string>(app_node, "virtual-display-layout", "");
 

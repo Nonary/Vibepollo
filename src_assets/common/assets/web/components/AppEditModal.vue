@@ -740,6 +740,11 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       ddConfigValue = normalized as AppForm['ddConfigurationOption'];
     }
   }
+  const captureFixEnabled = !!(
+    src['gen1-framegen-fix'] ||
+    src['dlss-framegen-capture-fix'] ||
+    src['gen2-framegen-fix']
+  );
   return {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
@@ -781,8 +786,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
-    gen1FramegenFix: !!(src['gen1-framegen-fix'] ?? src['dlss-framegen-capture-fix']),
-    gen2FramegenFix: !!src['gen2-framegen-fix'],
+    gen1FramegenFix: captureFixEnabled,
+    gen2FramegenFix: false,
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
     frameGenerationProvider,
@@ -802,6 +807,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 
 function toServerPayload(f: AppForm): Record<string, any> {
   const selection = displaySelection.value;
+  const captureFixEnabled = !!(f.gen1FramegenFix || f.gen2FramegenFix);
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
@@ -834,8 +840,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'scale-factor': clampScaleFactor(
       typeof f.scaleFactor === 'number' && Number.isFinite(f.scaleFactor) ? f.scaleFactor : null,
     ),
-    'gen1-framegen-fix': !!f.gen1FramegenFix,
-    'gen2-framegen-fix': !!f.gen2FramegenFix,
+    'gen1-framegen-fix': captureFixEnabled,
+    'gen2-framegen-fix': false,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
       do: p.do,
@@ -2490,8 +2496,8 @@ watch(newAppSource, (v) => {
     selectedPlayniteId.value = '';
   }
 });
-// Track if Gen1 is being auto-enabled by Lossless Scaling to prevent alert spam
-let autoEnablingGen1 = false;
+// Track if the unified capture fix is being auto-enabled to prevent alert spam
+let autoEnablingCaptureFix = false;
 
 watch(
   () => form.value.gen1FramegenFix,
@@ -2499,16 +2505,15 @@ watch(
     if (!enabled) {
       return;
     }
-    // Disable Gen2 when Gen1 is enabled (mutually exclusive)
+    // Collapse any Gen2 state into the unified capture fix.
     if (form.value.gen2FramegenFix) {
       form.value.gen2FramegenFix = false;
     }
-    // Skip alerts if this was triggered by lossless scaling auto-enable
-    if (autoEnablingGen1) {
+    if (autoEnablingCaptureFix) {
       return;
     }
     message?.info(
-      "1st Gen Frame Generation Capture Fix requires Windows Graphics Capture (WGC), RTSS, and a display capable of 240 Hz or higher. Vibepollo's virtual screen or any display that satisfies the doubled refresh requirement will work.",
+      "Frame Generation Capture Fix requires Windows Graphics Capture (WGC), RTSS, and a display capable of 240 Hz or higher. Vibepollo's virtual screen or any display that satisfies the doubled refresh requirement will work.",
       { duration: 8000 },
     );
     if (!skipDisplayWarnings.value) {
@@ -2531,33 +2536,12 @@ watch(
 
 watch(
   () => form.value.gen2FramegenFix,
-  async (enabled) => {
+  (enabled) => {
     if (!enabled) {
       return;
     }
-    // Disable Gen1 when Gen2 is enabled (mutually exclusive)
-    if (form.value.gen1FramegenFix) {
-      form.value.gen1FramegenFix = false;
-    }
-    message?.info(
-      "2nd Gen Frame Generation Capture Fix (for DLSS 4) forces the NVIDIA Control Panel frame limiter and needs Windows Graphics Capture (WGC) plus an NVIDIA GPU. Vibepollo's virtual screen guarantees support, but any display that satisfies the doubled refresh requirement also works.",
-      { duration: 8000 },
-    );
-    if (!skipDisplayWarnings.value) {
-      if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
-        message?.warning(
-          'Configure Step 1 for Vibepollo\'s virtual screen or enable Display Device and set it to "Deactivate all other displays" so the doubled refresh requirement is met during the stream.',
-          { duration: 8000 },
-        );
-      } else if (ddConfigOption.value !== 'ensure_only_display') {
-        message?.warning(
-          'Set Step 1 to use Vibepollo\'s virtual screen or adjust Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active.',
-          { duration: 8000 },
-        );
-      }
-    }
-    await refreshFrameGenHealth({ reason: 'gen2' });
-    warnIfHealthIssues('gen2');
+    form.value.gen1FramegenFix = true;
+    form.value.gen2FramegenFix = false;
   },
 );
 
@@ -2608,33 +2592,33 @@ watch(
     const anyFrameGenEnabled = mode !== 'off';
     const wasFrameGenEnabled = prevMode !== 'off';
     if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
-      autoEnablingGen1 = true;
+      autoEnablingCaptureFix = true;
       form.value.gen1FramegenFix = true;
       if (mode === 'nvidia-smooth-motion') {
         message?.info(
-          '1st Gen Frame Generation Capture Fix has been automatically enabled for optimal NVIDIA Smooth Motion performance.',
+          'Frame Generation Capture Fix has been automatically enabled. NVIDIA Smooth Motion uses RTSS Front Edge Sync during streams.',
           { duration: 8000 },
         );
       } else if (mode === 'lossless-scaling') {
         message?.info(
-          '1st Gen Frame Generation Capture Fix has been automatically enabled because it is required for Lossless Scaling frame generation.',
+          'Frame Generation Capture Fix has been automatically enabled because Lossless Scaling frame generation uses RTSS Front Edge Sync.',
           { duration: 8000 },
         );
       } else if (mode === 'game-provided') {
         message?.info(
-          '1st Gen Frame Generation Capture Fix has been automatically enabled to keep in-game frame generation tear-free.',
+          'Frame Generation Capture Fix has been automatically enabled. Game-provided frame generation uses NVIDIA Reflex on NVIDIA systems and Front Edge Sync on AMD systems.',
           { duration: 8000 },
         );
       }
       refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
       setTimeout(() => {
-        autoEnablingGen1 = false;
+        autoEnablingCaptureFix = false;
       }, 100);
     } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
-      autoEnablingGen1 = true;
+      autoEnablingCaptureFix = true;
       form.value.gen1FramegenFix = false;
       setTimeout(() => {
-        autoEnablingGen1 = false;
+        autoEnablingCaptureFix = false;
       }, 100);
     }
   },

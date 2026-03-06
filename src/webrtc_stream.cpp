@@ -503,6 +503,7 @@ namespace webrtc_stream {
       bool gen1_framegen_fix = false;
       bool gen2_framegen_fix = false;
       std::optional<int> lossless_rtss_limit;
+      std::string frame_generation_provider = "lossless-scaling";
       bool smooth_motion = false;
     };
 
@@ -2021,6 +2022,7 @@ namespace webrtc_stream {
 
       const bool using_lossless_provider = lossless_scaling_framegen &&
                                            boost::iequals(frame_generation_provider, "lossless-scaling");
+      params.frame_generation_provider = frame_generation_provider;
       params.smooth_motion = boost::iequals(frame_generation_provider, "nvidia-smooth-motion");
 
       if (using_lossless_provider) {
@@ -4438,6 +4440,7 @@ namespace webrtc_stream {
         start_params.gen1_framegen_fix,
         start_params.gen2_framegen_fix,
         start_params.lossless_rtss_limit,
+        start_params.frame_generation_provider,
         start_params.smooth_motion
       );
 #endif
