@@ -40,11 +40,11 @@
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
-#include "display_helper_integration.h"
 #include "file_handler.h"
 #include "logging.h"
 #include "platform/common.h"
 #ifdef _WIN32
+  #include "display_helper_integration.h"
   #include "config_playnite.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
@@ -2178,8 +2178,8 @@ namespace proc {
     stop_lossless_scaling_support();
 #endif
     // For Playnite-managed apps, request a graceful stop via Playnite first
-#ifdef _WIN32
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
+#ifdef _WIN32
     if (had_active_app && !_app.playnite_id.empty()) {
       bool should_request_playnite_stop = true;
       try {
@@ -2297,8 +2297,8 @@ namespace proc {
     }
 
     if (should_dispatch_revert) {
-      const bool reverted = display_helper_integration::revert();
 #ifdef _WIN32
+      const bool reverted = display_helper_integration::revert();
       if (reverted && rtsp_stream::session_count() == 0) {
         BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
         display_helper_integration::stop_watchdog();

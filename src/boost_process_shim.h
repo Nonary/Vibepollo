@@ -17,6 +17,8 @@
 #include <boost/process/v2/process.hpp>
 #ifndef _WIN32
   #include <boost/process/v2/posix/default_launcher.hpp>
+  #include <boost/process/v2/start_dir.hpp>
+  #include <boost/process/v2/stdio.hpp>
 #endif
 #include <algorithm>
 #include <boost/filesystem/path.hpp>
@@ -241,7 +243,7 @@ namespace boost_process_shim {
         for (const auto &entry : _entries) {
           env_buffer.push_back(entry.get_name() + "=" + entry.to_string());
         }
-        return v2::environment::process_environment(env_buffer);
+        return v2::process_environment(env_buffer);
 #endif
       }
     }

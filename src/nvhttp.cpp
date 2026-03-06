@@ -2390,7 +2390,11 @@ namespace nvhttp {
       );
       keep_runtime_overrides = true;
       tree.put("root.gamesession", 1);
+#ifdef _WIN32
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
+#else
+      tree.put("root.VirtualDisplayDriverReady", false);
+#endif
 
       rtsp_stream::launch_session_raise(launch_session);
 #ifdef _WIN32
@@ -2613,7 +2617,11 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+#ifdef _WIN32
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
+#else
+    tree.put("root.VirtualDisplayDriverReady", false);
+#endif
 
     rtsp_stream::launch_session_raise(launch_session);
 #ifdef _WIN32
