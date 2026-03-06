@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo non può catturare i programmi OpenGL e Vulkan a schermo intero al massimo frame rate a meno che non presentino sopra DXGI. Questa è una impostazione a livello di sistema che viene ripristinata all'uscita del programma sunshine.",
     "nvenc_preset": "Preimpostazione prestazioni",
     "nvenc_preset_1": "(più veloce, predefinito)",
+    "nvenc_preset_4": "(qualità bilanciata)",
     "nvenc_preset_7": "(più lento)",
     "nvenc_preset_desc": "Numeri più alti migliorano la compressione (qualità a un dato bitrate) a costo di una maggiore latenza di codifica. È consigliata la modifica solo quando c'è un limite di rete o del decoder, altrimenti un effetto simile può essere raggiunto aumentando il bitrate.",
     "nvenc_realtime_hags": "Usa la priorità in tempo reale nello scheduling hardware dell'accelerazione GPU",

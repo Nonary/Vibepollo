@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo은 DXGI 위에 표시되지 않는 한 전체 화면 OpenGL 및 Vulkan 프로그램을 풀 프레임 속도로 캡처할 수 없습니다. 이는 시스템 전체 설정으로, Vibepollo 프로그램 종료 시 되돌려집니다.",
     "nvenc_preset": "성능 프리셋",
     "nvenc_preset_1": "(가장 빠름, 기본값)",
+    "nvenc_preset_4": "(균형 잡힌 품질)",
     "nvenc_preset_7": "(가장 느림)",
     "nvenc_preset_desc": "수치가 높을수록 인코딩 지연 시간이 증가하는 대신 압축(주어진 비트 전송률에서의 품질)이 향상됩니다. 네트워크 또는 디코더에 의해 제한되는 경우에만 변경하는 것이 좋으며, 그렇지 않은 경우 비트 전송률을 높여도 비슷한 효과를 얻을 수 있습니다.",
     "nvenc_realtime_hags": "하드웨어 가속 GPU 스케줄링에서 실시간 우선순위 사용",

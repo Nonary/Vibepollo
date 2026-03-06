@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo ne peut pas capturer les programmes plein écran OpenGL et Vulkan à un rythme plein d'images à moins qu'ils ne soient présents sur DXGI. Il s'agit d'un réglage de l'ensemble du système qui est rétabli à la sortie du programme de soleil.",
     "nvenc_preset": "Préréglage des performances",
     "nvenc_preset_1": "(plus rapide, par défaut)",
+    "nvenc_preset_4": "(qualité équilibrée)",
     "nvenc_preset_7": "(plus lent)",
     "nvenc_preset_desc": "Des nombres plus élevés améliorent la compression (qualité à un débit donné) au prix d'une latence d'encodage accrue. Il est recommandé de modifier uniquement lorsque limité par le réseau ou le décodage, sinon l'effet similaire peut être atteint en augmentant le débit.",
     "nvenc_realtime_hags": "Utiliser la priorité en temps réel dans la planification matérielle du gpu accéléré",

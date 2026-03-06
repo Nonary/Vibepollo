@@ -292,6 +292,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo nie może przechwytywać pełnoekranowych programów OpenGL i Vulkan z pełną liczbą klatek na sekundę, chyba że są one wyświetlane na DXGI. Jest to ustawienie ogólnosystemowe, które jest przywracane po wyjściu z programu Vibepollo.",
     "nvenc_preset": "Wstępne ustawienia wydajności",
     "nvenc_preset_1": "(najszybszy, domyślny)",
+    "nvenc_preset_4": "(zrównoważona jakość)",
     "nvenc_preset_7": "(najwolniejszy)",
     "nvenc_preset_desc": "Wyższe liczby poprawiają kompresję (jakość przy danym bitrate) kosztem zwiększonego opóźnienia kodowania. Zaleca się zmianę tylko wtedy, gdy jest to ograniczone przez sieć lub dekoder, w przeciwnym razie podobny efekt można osiągnąć poprzez zwiększenie bitrate.",
     "nvenc_realtime_hags": "Użycie priorytetu czasu rzeczywistego w harmonogramie sprzętowej akceleracji procesora graficznego",

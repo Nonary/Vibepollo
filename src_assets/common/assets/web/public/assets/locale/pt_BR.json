@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "O Vibepollo não pode capturar programas OpenGL e Vulkan em tela cheia com taxa de quadros total, a menos que eles sejam apresentados na parte superior do DXGI. Essa é uma configuração de todo o sistema que é revertida ao sair do programa Vibepollo.",
     "nvenc_preset": "Predefinição de desempenho",
     "nvenc_preset_1": "(mais rápido, padrão)",
+    "nvenc_preset_4": "(qualidade equilibrada)",
     "nvenc_preset_7": "(mais lento)",
     "nvenc_preset_desc": "Números mais altos melhoram a compactação (qualidade em uma determinada taxa de bits) ao custo de uma maior latência de codificação. Recomenda-se alterar somente quando limitado pela rede ou pelo decodificador; caso contrário, é possível obter um efeito semelhante aumentando a taxa de bits.",
     "nvenc_realtime_hags": "Usar prioridade em tempo real no agendamento de gpu acelerado por hardware",

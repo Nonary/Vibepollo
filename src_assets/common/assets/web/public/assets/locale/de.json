@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo kann OpenGL und Vulkan Programme nicht mit voller Bildwiederholrate erfassen, es sei denn, sie sind auf DXGI vorhanden. Dies ist eine systemweite Einstellung, die beim Beenden des Sonnenscheinprogramms rückgängig gemacht wird.",
     "nvenc_preset": "Leistungsvorgabe",
     "nvenc_preset_1": "(schnellste, Standard)",
+    "nvenc_preset_4": "(ausgewogene Qualität)",
     "nvenc_preset_7": "(langsamste)",
     "nvenc_preset_desc": "Höhere Zahlen verbessern die Komprimierung (Qualität bei der angegebenen Bitrate) auf Kosten einer erhöhten Kodierungslatenz. Wird empfohlen, nur zu ändern, wenn durch Netzwerk oder Decoder begrenzt, sonst kann ein ähnlicher Effekt durch Erhöhung der Bitrate erreicht werden.",
     "nvenc_realtime_hags": "Echtzeit-Priorität in der Hardware-beschleunigten gpu Planung verwenden",

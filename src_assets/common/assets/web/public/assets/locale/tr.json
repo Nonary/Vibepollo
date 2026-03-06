@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo, DXGI'nin üstünde bulunmadıkları sürece tam ekran OpenGL ve Vulkan programlarını tam kare hızında yakalayamaz. Bu, sunshine programından çıkıldığında geri döndürülen sistem genelinde bir ayardır.",
     "nvenc_preset": "Performans ön ayarı",
     "nvenc_preset_1": "(en hızlı, varsayılan)",
+    "nvenc_preset_4": "(dengeli kalite)",
     "nvenc_preset_7": "(en yavaş)",
     "nvenc_preset_desc": "Daha yüksek sayılar, artan kodlama gecikmesi pahasına sıkıştırmayı (verilen bit hızında kalite) iyileştirir. Yalnızca ağ veya kod çözücü tarafından sınırlandırıldığında değiştirilmesi önerilir, aksi takdirde benzer etki bit hızını artırarak elde edilebilir.",
     "nvenc_realtime_hags": "Donanım hızlandırmalı gpu zamanlamasında gerçek zamanlı önceliği kullanma",

@@ -226,7 +226,7 @@ const defaultGroups = [
     id: 'nv',
     name: 'NVIDIA NVENC Encoder',
     options: {
-      nvenc_preset: 4,
+      nvenc_preset: 1,
       nvenc_twopass: 'quarter_res',
       nvenc_spatial_aq: 'disabled',
       nvenc_vbv_increase: 0,

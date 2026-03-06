@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo 無法以完整幀率捕捉全螢幕的 OpenGL 和 Vulkan 程式，除非它們顯示在 DXGI 之上。這是系統範圍的設定，會在Vibepollo程式退出時還原。",
     "nvenc_preset": "性能預設參數",
     "nvenc_preset_1": "（最快，預設值）",
+    "nvenc_preset_4": "（均衡品質）",
     "nvenc_preset_7": "（最慢）",
     "nvenc_preset_desc": "數值越高，在增加編碼延遲的情況下，可提高壓縮率（在指定位元率下的品質）。建議僅在受限於網路或解碼器時才進行調整，否則可以透過增加位元率來達成類似的效果。",
     "nvenc_realtime_hags": "在硬體加速 GPU 排程中使用即時優先順序",

@@ -272,6 +272,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Vibepollo kan inte fånga fullskärm OpenGL och Vulkan program med full bildhastighet såvida de inte presenterar ovanpå DXGI. Detta är hela systemet inställning som återförs på solsken program utgången.",
     "nvenc_preset": "Prestanda förinställning",
     "nvenc_preset_1": "(snabb, standard)",
+    "nvenc_preset_4": "(balanserad kvalitet)",
     "nvenc_preset_7": "(långsammare)",
     "nvenc_preset_desc": "Högre tal förbättrar kompression (kvalitet vid given bitrate) på bekostnad av ökad kodning latens. Rekommenderas att ändras endast när begränsad av nätverk eller avkodare, annars liknande effekt kan åstadkommas genom att öka bithastigheten.",
     "nvenc_realtime_hags": "Använd realtid prioritet i hårdvaruaccelererad gpu-schemaläggning",

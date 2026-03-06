@@ -436,7 +436,7 @@
     "nvenc_opengl_vulkan_on_dxgi_desc": "Sluneční neschopný zachytit programy OpenGL a Vulkan při plném snímku, pokud nejsou přítomny na vrcholu DXGI. Toto je systémové nastavení, které je vráceno při ukončení slunečního programu.",
     "nvenc_preset": "Předvolba výkonu",
     "nvenc_preset_1": "(nejrychlejší, výchozí)",
-    "nvenc_preset_4": "(vyvážená kvalita, výchozí)",
+    "nvenc_preset_4": "(vyvážená kvalita)",
     "nvenc_preset_7": "(nejmenší)",
     "nvenc_preset_desc": "Vyšší čísla zlepšují kompresi (kvalita při dané bitové rychlosti) za cenu zvýšeného zpoždění kódování. Změnu doporučujeme pouze v případě, že je omezena sítí nebo dekodérem, jinak lze dosáhnout podobného efektu zvýšením bitrate.",
     "nvenc_section_title": "Kodér NVIDIA NVENC",

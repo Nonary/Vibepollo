@@ -144,10 +144,15 @@ export function getOverrideSelectOptions(
       return ensureIncludesCurrentValue(opts, ctx.currentValue);
     }
     case 'nvenc_preset': {
+      const fallbackExtra: Record<1 | 4 | 7, string> = {
+        1: '(fastest, default)',
+        4: '(balanced quality)',
+        7: '(slowest)',
+      };
       const extra = (id: 1 | 4 | 7) => {
         const key = `config.nvenc_preset_${id}`;
         const v = t(key);
-        return v && v !== key ? v : '';
+        return v && v !== key ? v : fallbackExtra[id];
       };
       const options: OverrideSelectOption[] = [
         { label: `P1 ${extra(1)}`.trim(), value: 1 },
