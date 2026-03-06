@@ -181,7 +181,8 @@ namespace webrtc_stream {
 
 #ifdef _WIN32
     void prepare_virtual_display_for_webrtc_session(
-      const std::shared_ptr<rtsp_stream::launch_session_t> &session
+      const std::shared_ptr<rtsp_stream::launch_session_t> &session,
+      bool allow_display_changes
     ) {
       if (!session) {
         return;
@@ -211,6 +212,29 @@ namespace webrtc_stream {
       const bool has_app_output_override = app_output_override.has_value();
       if (has_app_output_override) {
         request_virtual_display = false;
+      }
+
+      if (!allow_display_changes) {
+        if (request_virtual_display) {
+          if (auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+            session->virtual_display = true;
+            session->virtual_display_failed = false;
+            session->virtual_display_device_id = *existing_device;
+            session->virtual_display_ready_since = std::chrono::steady_clock::now();
+            config::set_runtime_output_name_override(session->virtual_display_device_id);
+            BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
+                            << *existing_device << ").";
+            return;
+          }
+
+          BOOST_LOG(debug) << "Display helper: WebRTC resume requested virtual display capture but no active virtual display was found to preserve.";
+        }
+
+        if (app_output_override) {
+          config::set_runtime_output_name_override(*app_output_override);
+          BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: " << *app_output_override;
+        }
+        return;
       }
 
       if (!request_virtual_display) {
@@ -2402,8 +2426,8 @@ namespace webrtc_stream {
         auto _hot_apply_gate = config::acquire_apply_read_gate();
 
 #ifdef _WIN32
+        prepare_virtual_display_for_webrtc_session(launch_session, allow_display_changes);
         if (allow_display_changes) {
-          prepare_virtual_display_for_webrtc_session(launch_session);
           if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
             config::set_runtime_output_name_override(*launch_session->output_name_override);
           }
