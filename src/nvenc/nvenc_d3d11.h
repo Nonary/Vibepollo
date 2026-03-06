@@ -6,6 +6,7 @@
 #ifdef _WIN32
 
   // standard includes
+  #include <winsock2.h>
   #include <comdef.h>
   #include <d3d11.h>
 

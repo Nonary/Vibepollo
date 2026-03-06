@@ -60,10 +60,14 @@ set(WEB_UI_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/web")
 #WebUI build
 find_program(NPM npm REQUIRED)
 
+set(NPM_INSTALL_FLAGS
+    --ignore-scripts
+    --no-audit
+    --no-fund
+    --loglevel=error
+)
 if (NPM_OFFLINE)
-    set(NPM_INSTALL_FLAGS "--offline")
-else()
-    set(NPM_INSTALL_FLAGS "")
+    list(APPEND NPM_INSTALL_FLAGS --offline)
 endif()
 
 # Choose web UI build mode based on active CMake configuration.

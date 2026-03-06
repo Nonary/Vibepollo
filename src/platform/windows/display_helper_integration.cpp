@@ -865,7 +865,7 @@ namespace {
     return (std::chrono::steady_clock::now() - g_last_vd_reenable) < kVirtualDisplayReenableCooldown;
   }
 
-  void explicit_virtual_display_reset_and_apply(
+  [[maybe_unused]] void explicit_virtual_display_reset_and_apply(
     display_helper_integration::DisplayApplyBuilder &builder,
     const rtsp_stream::launch_session_t &session,
     std::function<bool(const display_helper_integration::DisplayApplyRequest &)> apply_fn
@@ -926,7 +926,7 @@ namespace {
     };
   }
 
-  static std::optional<session_dd_fields_t> get_active_session_copy() {
+  [[maybe_unused]] static std::optional<session_dd_fields_t> get_active_session_copy() {
     std::lock_guard<std::mutex> lg(g_session_mutex);
     return g_active_session_dd;
   }

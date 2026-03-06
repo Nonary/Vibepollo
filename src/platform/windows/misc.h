@@ -15,6 +15,7 @@
 #include <vector>
 
 // platform includes
+#include <WinSock2.h>
 #include <Windows.h>
 #include <winnt.h>
 

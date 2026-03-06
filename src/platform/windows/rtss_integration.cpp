@@ -20,6 +20,7 @@
   #include <vector>
 
 // clang-format off
+  #include <winsock2.h>
   #include <Windows.h>
   #include <tlhelp32.h>
 // clang-format on

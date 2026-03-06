@@ -8,6 +8,7 @@
 #include <format>
 
 // platform includes
+#include <winsock2.h>
 #include <Audioclient.h>
 #include <avrt.h>
 #include <mmdeviceapi.h>

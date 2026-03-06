@@ -1,6 +1,10 @@
 # common macros
 # this file will also load platform specific macros
 
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
 # platform specific macros
 if(WIN32)
     include(${CMAKE_MODULE_PATH}/macros/windows.cmake)

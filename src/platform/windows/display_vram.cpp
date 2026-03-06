@@ -6,6 +6,7 @@
 #include <cmath>
 
 // platform includes
+#include <winsock2.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 

@@ -6,6 +6,7 @@
 
 // plafform includes
 #ifdef _WIN32
+  #include <winsock2.h>
   #include <dxgiformat.h>
 #endif
 

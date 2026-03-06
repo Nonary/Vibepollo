@@ -123,7 +123,12 @@ namespace proc {
       } catch (...) {
       }
       try {
-        return std::filesystem::u8path(utf8);
+        std::u8string utf8_bytes;
+        utf8_bytes.reserve(utf8.size());
+        for (unsigned char ch : utf8) {
+          utf8_bytes.push_back(static_cast<char8_t>(ch));
+        }
+        return std::filesystem::path(utf8_bytes);
       } catch (...) {
         return std::nullopt;
       }
@@ -348,7 +353,7 @@ namespace proc {
       return std::nullopt;
     }
 
-  void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
+  [[maybe_unused]] void populate_lossless_overrides(const pt::ptree &node, lossless_scaling_profile_overrides_t &target) {
     if (auto perf = pt_get_optional_bool(node, "performance-mode")) {
       target.performance_mode = *perf;
     }
@@ -823,6 +828,10 @@ namespace proc {
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
+#ifdef _WIN32
+      _virtual_display_guid(other._virtual_display_guid),
+      _virtual_display_active(other._virtual_display_active),
+#endif
       _pipe(std::move(other._pipe)),
       _app_prep_it(other._app_prep_it),
       _app_prep_begin(other._app_prep_begin)
@@ -832,9 +841,7 @@ namespace proc {
       _lossless_profile_applied(other._lossless_profile_applied),
       _lossless_backup(other._lossless_backup),
       _lossless_last_install_dir(std::move(other._lossless_last_install_dir)),
-      _lossless_last_exe_path(std::move(other._lossless_last_exe_path)),
-      _virtual_display_guid(other._virtual_display_guid),
-      _virtual_display_active(other._virtual_display_active)
+      _lossless_last_exe_path(std::move(other._lossless_last_exe_path))
 #endif
   {
 #ifdef _WIN32
@@ -1529,8 +1536,8 @@ namespace proc {
         }
         if (resolved_lossless_exe_path) {
           _lossless_metadata.configured_path = *resolved_lossless_exe_path;
-        } else if (!config::lossless_scaling.exe_path.empty()) {
-          _lossless_metadata.configured_path = std::filesystem::u8path(config::lossless_scaling.exe_path);
+        } else if (auto configured_path = lossless_to_path(config::lossless_scaling.exe_path)) {
+          _lossless_metadata.configured_path = *configured_path;
         }
         _lossless_metadata.active_profile = runtime.profile;
         _lossless_metadata.capture_api = runtime.capture_api;

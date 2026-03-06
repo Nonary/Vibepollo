@@ -28,6 +28,10 @@
 #include <unordered_set>
 #include <utility>
 
+#ifdef _WIN32
+  #include <winsock2.h>
+#endif
+
 // lib includes
 #include <boost/algorithm/string.hpp>
 #include <moonlight-common-c/src/Input.h>
@@ -3530,7 +3534,7 @@ namespace webrtc_stream {
       video::sunshine_colorspace_t colorspace_ {};
     };
 
-    bool try_push_d3d11_frame(
+    [[maybe_unused]] bool try_push_d3d11_frame(
       lwrtc_video_source_t *source,
       const std::shared_ptr<platf::img_t> &image,
       const std::optional<std::chrono::steady_clock::time_point> &timestamp,

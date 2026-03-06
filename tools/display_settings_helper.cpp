@@ -175,10 +175,9 @@ namespace {
   };
 
   inline void send_framed_content(platf::dxgi::AsyncNamedPipe &pipe, MsgType type, std::span<const uint8_t> payload = {}) {
-    std::vector<uint8_t> out;
-    out.reserve(1 + payload.size());
-    out.push_back(static_cast<uint8_t>(type));
-    out.insert(out.end(), payload.begin(), payload.end());
+    std::vector<uint8_t> out(1 + payload.size());
+    out.front() = static_cast<uint8_t>(type);
+    std::copy(payload.begin(), payload.end(), out.begin() + 1);
     pipe.send(out);
   }
 

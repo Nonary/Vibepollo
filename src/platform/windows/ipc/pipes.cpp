@@ -35,9 +35,9 @@
 #include <AclAPI.h>
 #include <combaseapi.h>
 #include <sddl.h>
+#include <winsock2.h>
 #include <Windows.h>
 #include <winrt/base.h>
-#include <winsock2.h>
 
 // local includes
 #include "misc_utils.h"

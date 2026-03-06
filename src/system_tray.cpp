@@ -34,6 +34,7 @@
   // standard includes
   #include <atomic>
   #include <csignal>
+  #include <cstring>
   #include <cwchar>
   #include <string>
   #include <thread>
@@ -320,7 +321,7 @@ namespace system_tray {
       return;
     }
 
-    if (!app_name.empty() && app_name == s_last_playing_app && tray.icon == TRAY_ICON_PLAYING) {
+    if (!app_name.empty() && app_name == s_last_playing_app && tray.icon && std::strcmp(tray.icon, TRAY_ICON_PLAYING) == 0) {
       return;
     }
 

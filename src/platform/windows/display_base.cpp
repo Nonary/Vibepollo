@@ -12,6 +12,7 @@
 #include <thread>
 
 // platform includes
+#include <winsock2.h>
 #include <initguid.h>
 
 // lib includes

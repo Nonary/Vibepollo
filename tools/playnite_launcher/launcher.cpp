@@ -411,7 +411,6 @@ namespace playnite_launcher {
       bool fullscreen_detected = false;
 
       int consecutive_missing = 0;
-      auto connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
 
       auto send_stop_command_if_needed = [&]() {
         if (!client.is_active()) {
@@ -446,7 +445,6 @@ namespace playnite_launcher {
         } catch (...) {
         }
 
-        auto now = std::chrono::steady_clock::now();
         bool active_game_now = active_game_flag.load();
 
         if (!fullscreen_detected && fs_running) {
@@ -607,7 +605,7 @@ namespace playnite_launcher {
         if (!runtime.running_pids.empty()) {
           lossless::lossless_scaling_stop_processes(runtime);
         }
-        bool restored = lossless::lossless_scaling_restore_global_profile(fullscreen_lossless_backup);
+        (void) lossless::lossless_scaling_restore_global_profile(fullscreen_lossless_backup);
       }
       return 0;
     }
@@ -797,7 +795,7 @@ namespace playnite_launcher {
               if (!runtime.running_pids.empty()) {
                 lossless::lossless_scaling_stop_processes(runtime);
               }
-              bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
+              (void) lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
               active_lossless_backup = {};
               lossless_profiles_applied = false;
             }
@@ -1072,7 +1070,7 @@ namespace playnite_launcher {
         if (!runtime.running_pids.empty()) {
           lossless::lossless_scaling_stop_processes(runtime);
         }
-        bool restored = lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
+        (void) lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
       }
       int exit_code = should_exit.load() ? 0 : 4;
       client.stop();

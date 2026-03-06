@@ -45,9 +45,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <winsock2.h>
 #include <windows.h>
 #include <winreg.h>
-#include <winsock2.h>
 #include <wrl/client.h>
 
 #ifndef CPST_EXTENDED_DISPLAY_COLOR_MODE

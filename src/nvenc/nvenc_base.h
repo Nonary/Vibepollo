@@ -5,6 +5,9 @@
 #pragma once
 
 // lib includes
+#ifdef _WIN32
+  #include <winsock2.h>
+#endif
 #include <ffnvcodec/nvEncodeAPI.h>
 
 // local includes

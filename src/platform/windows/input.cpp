@@ -5,6 +5,7 @@
 #define WINVER 0x0A00
 
 // platform includes
+#include <WinSock2.h>
 #include <Windows.h>
 
 // standard includes

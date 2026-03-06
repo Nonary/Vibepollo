@@ -827,7 +827,7 @@ namespace playnite_launcher::lossless {
       return minimize_main_lossless_window(pid) || minimize_any_visible_window(pid);
     }
 
-    bool minimize_visible_windows_except(DWORD keep_pid) {
+    [[maybe_unused]] bool minimize_visible_windows_except(DWORD keep_pid) {
       struct Ctx {
         DWORD keep;
         bool minimized = false;

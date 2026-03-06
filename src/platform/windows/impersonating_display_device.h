@@ -6,6 +6,8 @@
 
 #ifdef _WIN32
 
+  #include <winsock2.h>
+
   // third-party interfaces
   #include <display_device/windows/win_display_device_interface.h>
 

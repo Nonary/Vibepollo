@@ -5,6 +5,9 @@
 #ifdef _WIN32
   #include "hotkey_manager.h"
 
+  #include <winsock2.h>
+  #include <Windows.h>
+
   #include "display_helper_integration.h"
   #include "src/logging.h"
   #include "src/platform/windows/misc.h"
@@ -15,8 +18,6 @@
   #include <ios>
   #include <mutex>
   #include <thread>
-  #include <Windows.h>
-  #include <winsock2.h>
 
 using namespace std::literals;
 

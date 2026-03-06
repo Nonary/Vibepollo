@@ -64,6 +64,48 @@ const assetsDstPath = resolveAssetsDstPath();
 
 const header = fs.readFileSync(resolve(assetsSrcPath, 'template_header.html'), 'utf-8');
 
+function getManualChunk(id: string): string | undefined {
+  const normalized = id.replace(/\\/g, '/');
+  const nodeModulesMarker = '/node_modules/';
+  const markerIndex = normalized.indexOf(nodeModulesMarker);
+  if (markerIndex === -1) {
+    return undefined;
+  }
+
+  const packagePath = normalized.slice(markerIndex + nodeModulesMarker.length);
+  const packageName = packagePath.startsWith('@')
+    ? packagePath.split('/').slice(0, 2).join('/')
+    : packagePath.split('/')[0];
+
+  if (
+    packageName === 'vue' ||
+    packageName === 'pinia' ||
+    packageName === 'vue-router' ||
+    packageName === 'vue-i18n' ||
+    packageName.startsWith('@vue/') ||
+    packageName.startsWith('@intlify/')
+  ) {
+    return 'vue-core';
+  }
+
+  if (
+    packageName === 'naive-ui' ||
+    packageName === 'vueuc' ||
+    packageName === 'vooks' ||
+    packageName === 'css-render' ||
+    packageName === 'seemly' ||
+    packageName === 'evtd'
+  ) {
+    return 'naive-ui';
+  }
+
+  if (packageName.startsWith('@fortawesome/')) {
+    return 'fontawesome';
+  }
+
+  return 'vendor';
+}
+
 export default defineConfig(({ mode }) => {
   const isDebug = mode === 'debug';
 
@@ -97,9 +139,13 @@ export default defineConfig(({ mode }) => {
       outDir: resolve(assetsDstPath),
       sourcemap: isDebug ? 'inline' : false,
       emptyOutDir: true,
+      chunkSizeWarningLimit: 600,
       minify: isDebug ? false : 'esbuild',
       rollupOptions: {
         input: { index: resolve(assetsSrcPath, 'index.html') },
+        output: {
+          manualChunks: getManualChunk,
+        },
       },
     },
   };
