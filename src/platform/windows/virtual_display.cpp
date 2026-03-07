@@ -3646,8 +3646,11 @@ namespace VDISPLAY {
     const std::string &preferred_output_identifier,
     const std::string &client_name
   ) {
+    BOOST_LOG(debug) << "Resolving active virtual display device_id from preferred_output='"
+                     << preferred_output_identifier << "' client_name='" << client_name << "'.";
     auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
+      BOOST_LOG(debug) << "Resolving active virtual display device_id failed: device enumeration unavailable.";
       return std::nullopt;
     }
 
@@ -3700,6 +3703,7 @@ namespace VDISPLAY {
 
       if (matches_output) {
         if (device.m_info) {
+          BOOST_LOG(debug) << "Resolved active virtual display by preferred output: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
         if (!output_match) {
@@ -3714,6 +3718,7 @@ namespace VDISPLAY {
 
       if (matches_client_name) {
         if (device.m_info) {
+          BOOST_LOG(debug) << "Resolved active virtual display by client name: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
         if (!client_match) {
@@ -3723,17 +3728,23 @@ namespace VDISPLAY {
     }
 
     if (output_match) {
+      BOOST_LOG(debug) << "Resolved inactive virtual display fallback by preferred output: device_id='" << *output_match << "'.";
       return output_match;
     }
     if (client_match) {
+      BOOST_LOG(debug) << "Resolved inactive virtual display fallback by client name: device_id='" << *client_match << "'.";
       return client_match;
     }
     if (active_any_match) {
+      BOOST_LOG(debug) << "Resolved active virtual display fallback: device_id='" << *active_any_match << "'.";
       return active_any_match;
     }
     if (any_match) {
+      BOOST_LOG(debug) << "Resolved inactive virtual display fallback: device_id='" << *any_match << "'.";
       return any_match;
     }
+    BOOST_LOG(debug) << "No virtual display device_id could be resolved for preferred_output='"
+                     << preferred_output_identifier << "' client_name='" << client_name << "'.";
     return std::nullopt;
   }
 

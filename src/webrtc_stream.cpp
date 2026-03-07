@@ -203,6 +203,7 @@ namespace webrtc_stream {
         app_output_override.reset();
         session->output_name_override.reset();
       }
+      session->virtual_display_recreated_on_demand = false;
 
       bool config_requests_virtual =
         config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
@@ -214,6 +215,13 @@ namespace webrtc_stream {
       bool request_virtual_display =
         session->virtual_display || config_requests_virtual || metadata_requests_virtual;
       const bool has_app_output_override = app_output_override.has_value();
+      BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
+                       << "' allow_display_changes=" << allow_display_changes
+                       << " request_virtual_display=" << request_virtual_display
+                       << " previous_virtual_device_id='" << session->virtual_display_device_id
+                       << "' active_output='" << config::get_active_output_name()
+                       << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
+                       << "'.";
       if (has_app_output_override) {
         request_virtual_display = false;
       }
@@ -232,14 +240,14 @@ namespace webrtc_stream {
             return;
           }
 
-          BOOST_LOG(debug) << "Display helper: WebRTC resume requested virtual display capture but no active virtual display was found to preserve.";
-        }
-
-        if (app_output_override) {
+          BOOST_LOG(info) << "Display helper: WebRTC resume requested virtual display capture but no active virtual display was found;"
+                          << " recreating one on demand.";
+          session->virtual_display_recreated_on_demand = true;
+        } else if (app_output_override) {
           config::set_runtime_output_name_override(*app_output_override);
           BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: " << *app_output_override;
+          return;
         }
-        return;
       }
 
       if (!request_virtual_display) {
@@ -402,6 +410,74 @@ namespace webrtc_stream {
         if (!session->virtual_display_device_id.empty()) {
           config::set_runtime_output_name_override(session->virtual_display_device_id);
         }
+
+        VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
+        recovery_params.guid = virtual_display_guid;
+        recovery_params.width = vd_width;
+        recovery_params.height = vd_height;
+        recovery_params.fps = vd_fps;
+        recovery_params.base_fps_millihz = base_vd_fps_millihz;
+        recovery_params.framegen_refresh_active = framegen_refresh_active;
+        recovery_params.client_uid = session->unique_id;
+        recovery_params.client_name = client_label;
+        recovery_params.hdr_profile = session->hdr_profile;
+        recovery_params.display_name = display_info->display_name;
+        recovery_params.monitor_device_path = display_info->monitor_device_path;
+        if (display_info->device_id && !display_info->device_id->empty()) {
+          recovery_params.device_id = *display_info->device_id;
+        } else if (!session->virtual_display_device_id.empty()) {
+          recovery_params.device_id = session->virtual_display_device_id;
+        }
+        recovery_params.max_attempts = 3;
+
+        GUID recovery_guid = virtual_display_guid;
+        recovery_params.should_abort = [recovery_guid]() {
+          return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
+        };
+        std::weak_ptr<rtsp_stream::launch_session_t> session_weak = session;
+        recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
+          if (auto session_locked = session_weak.lock()) {
+            if (result.device_id && !result.device_id->empty()) {
+              session_locked->virtual_display_device_id = *result.device_id;
+              config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
+            }
+            session_locked->virtual_display_ready_since = result.ready_since;
+            if (session_locked->virtual_display) {
+              constexpr int kMaxApplyAttempts = 5;
+              bool applied = false;
+
+              for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
+                (void) display_helper_integration::disarm_pending_restore();
+
+                auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
+                if (!request) {
+                  BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild WebRTC display request after recreation (attempt "
+                                     << attempt << "/" << kMaxApplyAttempts << ").";
+                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                  continue;
+                }
+
+                if (display_helper_integration::apply(*request)) {
+                  BOOST_LOG(info) << "Virtual display recovery: re-applied WebRTC display configuration after recreation.";
+                  applied = true;
+                  break;
+                }
+
+                BOOST_LOG(warning) << "Virtual display recovery: WebRTC display helper apply failed after recreation (attempt "
+                                   << attempt << "/" << kMaxApplyAttempts << ").";
+                std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+              }
+
+              if (mail::man) {
+                mail::man->event<int>(mail::switch_display)->raise(-1);
+              }
+              BOOST_LOG(info) << "Virtual display recovery: requested WebRTC capture reinit to pick up recreated display"
+                              << (applied ? "." : " (apply did not succeed).");
+            }
+          }
+        };
+
+        VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
         return;
       }
 
@@ -542,6 +618,7 @@ namespace webrtc_stream {
       std::atomic_bool active {false};
       std::atomic_bool idle_shutdown_pending {false};
       std::shared_ptr<safe::mail_raw_t> mail;
+      std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
       std::thread video_thread;
       std::thread audio_thread;
       std::thread feedback_thread;
@@ -2179,6 +2256,7 @@ namespace webrtc_stream {
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
       launch_session->virtual_display_ready_since.reset();
+      launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
@@ -2305,6 +2383,7 @@ namespace webrtc_stream {
       }
       webrtc_capture.feedback_queue.reset();
       webrtc_capture.mail.reset();
+      webrtc_capture.launch_session.reset();
       webrtc_capture.app_id.reset();
       webrtc_capture.config_key.reset();
       webrtc_capture.stream_start_params.reset();
@@ -2433,7 +2512,10 @@ namespace webrtc_stream {
 
 #ifdef _WIN32
         prepare_virtual_display_for_webrtc_session(launch_session, allow_display_changes);
-        if (allow_display_changes) {
+        if (allow_display_changes || launch_session->virtual_display_recreated_on_demand) {
+          BOOST_LOG(debug) << "Display helper: applying WebRTC display request on "
+                           << (allow_display_changes ? "normal start" : "resume virtual-display recreation")
+                           << " for client '" << launch_session->client_name << "'.";
           if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
             config::set_runtime_output_name_override(*launch_session->output_name_override);
           }
@@ -2467,6 +2549,7 @@ namespace webrtc_stream {
 
       auto mail = std::make_shared<safe::mail_raw_t>();
       webrtc_capture.mail = mail;
+      webrtc_capture.launch_session = launch_session;
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
       webrtc_capture.config_key = desired_key;
       webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);

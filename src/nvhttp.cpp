@@ -293,6 +293,7 @@ namespace nvhttp {
         launch_session->virtual_display = true;
         app_output_override.reset();
       }
+      launch_session->virtual_display_recreated_on_demand = false;
 
       bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
       if (launch_session->virtual_display_mode_override) {
@@ -304,6 +305,14 @@ namespace nvhttp {
       bool request_virtual_display =
         launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual;
       const bool has_app_output_override = app_output_override.has_value();
+      BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
+                       << "' allow_display_changes=" << allow_display_changes
+                       << " no_active_sessions=" << no_active_sessions
+                       << " request_virtual_display=" << request_virtual_display
+                       << " previous_virtual_device_id='" << launch_session->virtual_display_device_id
+                       << "' active_output='" << config::get_active_output_name()
+                       << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
+                       << "'.";
       if (has_app_output_override && !client_requests_virtual) {
         request_virtual_display = false;
         disable_virtual_display_request();
@@ -325,17 +334,19 @@ namespace nvhttp {
             return;
           }
 
-          BOOST_LOG(debug) << "Display helper: resume requested virtual display capture but no active virtual display was found to preserve.";
-        }
-
-        if (app_output_override) {
-          config::set_runtime_output_name_override(*app_output_override);
-          pending_output_override = *app_output_override;
-          BOOST_LOG(info) << "Display helper: preserving output override for resume: " << *app_output_override;
+          BOOST_LOG(info) << "Display helper: resume requested virtual display capture but no active virtual display was found;"
+                          << " recreating one on demand.";
+          launch_session->virtual_display_recreated_on_demand = true;
         } else {
-          BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
+          if (app_output_override) {
+            config::set_runtime_output_name_override(*app_output_override);
+            pending_output_override = *app_output_override;
+            BOOST_LOG(info) << "Display helper: preserving output override for resume: " << *app_output_override;
+          } else {
+            BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
+          }
+          return;
         }
-        return;
       }
 
       // Snapshot current display state BEFORE any display enumeration.
@@ -2549,8 +2560,13 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      if (allow_display_changes) {
-        revert_display_configuration = true;
+      const bool should_apply_display_request =
+        allow_display_changes || launch_session->virtual_display_recreated_on_demand;
+      if (should_apply_display_request) {
+        BOOST_LOG(debug) << "Display helper: applying session display request on "
+                         << (allow_display_changes ? "normal start/resume" : "resume virtual-display recreation")
+                         << " for client '" << launch_session->client_name << "'.";
+        revert_display_configuration = allow_display_changes;
 
 #ifdef _WIN32
         const bool helper_session_available = display_helper_session_available();

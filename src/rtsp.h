@@ -85,6 +85,7 @@ namespace rtsp_stream {
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    bool virtual_display_recreated_on_demand = false;
     std::optional<std::vector<std::vector<std::string>>> virtual_display_topology_snapshot;
 
     /// @brief Pre-virtual-display device refresh rates captured before VD creation.

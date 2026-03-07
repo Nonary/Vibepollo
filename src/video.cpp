@@ -149,10 +149,12 @@ namespace video {
     bool ensure_virtual_display_ready(std::vector<std::string> &display_names, int &display_index) {
 #ifdef _WIN32
       static thread_local std::chrono::steady_clock::time_point wait_start {};
+      static thread_local std::string pending_virtual_name;
 
       if (display_names.empty()) {
         display_index = 0;
         wait_start = {};
+        pending_virtual_name.clear();
         return false;
       }
 
@@ -160,6 +162,7 @@ namespace video {
 
       if (!should_prefer_virtual_display()) {
         wait_start = {};
+        pending_virtual_name.clear();
         return true;
       }
 
@@ -168,19 +171,39 @@ namespace video {
           if (boost::iequals(display_names[i], *desired_name)) {
             display_index = i;
             wait_start = {};
+            pending_virtual_name.clear();
             return true;
           }
         }
+        pending_virtual_name = *desired_name;
+      } else {
+        pending_virtual_name.clear();
       }
 
       const auto now = std::chrono::steady_clock::now();
       if (wait_start == std::chrono::steady_clock::time_point {}) {
         wait_start = now;
+        std::ostringstream available;
+        for (size_t i = 0; i < display_names.size(); ++i) {
+          if (i) {
+            available << ", ";
+          }
+          available << display_names[i];
+        }
+        BOOST_LOG(debug) << "Capture waiting for virtual display to become ready. desired='"
+                         << (pending_virtual_name.empty() ? std::string("(unresolved)") : pending_virtual_name)
+                         << "' active_output='" << config::get_active_output_name()
+                         << "' available=[" << available.str() << "]";
       }
 
       constexpr auto max_wait = std::chrono::seconds(3);
       if (now - wait_start >= max_wait) {
+        BOOST_LOG(debug) << "Capture virtual display wait timed out after "
+                         << std::chrono::duration_cast<std::chrono::milliseconds>(max_wait).count()
+                         << "ms. desired='" << (pending_virtual_name.empty() ? std::string("(unresolved)") : pending_virtual_name)
+                         << "' active_output='" << config::get_active_output_name() << "'.";
         wait_start = {};
+        pending_virtual_name.clear();
         return true;
       }
 
