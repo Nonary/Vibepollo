@@ -31,13 +31,37 @@ function Find-LatestMsi([string]$Directory) {
 }
 
 function Get-GitTagVersion([string]$RepoRoot) {
+    $tagPatterns = @(
+        '[0-9]*.[0-9]*.[0-9]*',
+        'v[0-9]*.[0-9]*.[0-9]*'
+    )
+
+    try {
+        foreach ($tagPattern in $tagPatterns) {
+            $rawCandidates = git -C $RepoRoot tag --merged HEAD --sort=-version:refname --list $tagPattern 2>$null
+            foreach ($candidate in $rawCandidates) {
+                $rawTag = [string]$candidate
+                if ([string]::IsNullOrWhiteSpace($rawTag)) {
+                    continue
+                }
+
+                $rawTag = $rawTag.Trim()
+                if ($rawTag -match '^v?(\d+)\.(\d+)\.(\d+)(?:([.-][0-9A-Za-z.-]+))?$') {
+                    return @{
+                        Tag = $rawTag
+                        Major = [int]$matches[1]
+                        Minor = [int]$matches[2]
+                        Patch = [int]$matches[3]
+                    }
+                }
+            }
+        }
+    } catch {
+    }
+
     try {
         $rawTag = (git -C $RepoRoot describe --tags --abbrev=0 2>$null).Trim()
-        if ([string]::IsNullOrWhiteSpace($rawTag)) {
-            return $null
-        }
-
-        if ($rawTag -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+        if ($rawTag -match '^v?(\d+)\.(\d+)\.(\d+)(?:([.-][0-9A-Za-z.-]+))?$') {
             return @{
                 Tag = $rawTag
                 Major = [int]$matches[1]

@@ -53,6 +53,37 @@ if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))  # cmake-lint: disabl
 else()
     # Resolve version from environment tag or git tags
     find_package(Git)
+
+    function(_sunshine_select_latest_git_tag out_var)
+        if(NOT GIT_EXECUTABLE)
+            set(${out_var} "" PARENT_SCOPE)
+            return()
+        endif()
+
+        set(_tag_patterns "[0-9]*.[0-9]*.[0-9]*" "v[0-9]*.[0-9]*.[0-9]*")
+        foreach(_tag_pattern IN LISTS _tag_patterns)
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} tag --merged HEAD --sort=-version:refname --list "${_tag_pattern}"
+                OUTPUT_VARIABLE _git_tag_candidates_raw
+                RESULT_VARIABLE _git_tag_candidates_error
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+            if(_git_tag_candidates_error)
+                continue()
+            endif()
+
+            string(REPLACE "\n" ";" _git_tag_candidates "${_git_tag_candidates_raw}")
+            foreach(_git_tag_candidate IN LISTS _git_tag_candidates)
+                if(_git_tag_candidate MATCHES "^v?[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")
+                    set(${out_var} "${_git_tag_candidate}" PARENT_SCOPE)
+                    return()
+                endif()
+            endforeach()
+        endforeach()
+
+        set(${out_var} "" PARENT_SCOPE)
+    endfunction()
+
     set(_VER_FROM_ENV "${GITHUB_TAG}")
     if(DEFINED ENV{TAG} AND NOT $ENV{TAG} STREQUAL "")
         set(_VER_FROM_ENV "$ENV{TAG}")
@@ -70,12 +101,8 @@ else()
             OUTPUT_VARIABLE GIT_DESCRIBE_BRANCH
             RESULT_VARIABLE GIT_BRANCH_ERROR
             OUTPUT_STRIP_TRAILING_WHITESPACE)
-        # Nearest tag (annotated or lightweight)
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=0
-            OUTPUT_VARIABLE GIT_NEAREST_TAG_RAW
-            RESULT_VARIABLE GIT_TAG_ERROR
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # Highest merged semver tag from the active release-tag family.
+        _sunshine_select_latest_git_tag(GIT_NEAREST_TAG_RAW)
         # Short commit for logging
         execute_process(
             COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
@@ -88,14 +115,26 @@ else()
             RESULT_VARIABLE GIT_IS_DIRTY
             OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-        if(NOT GIT_TAG_ERROR)
+        if(NOT GIT_NEAREST_TAG_RAW STREQUAL "")
             set(PROJECT_VERSION "${GIT_NEAREST_TAG_RAW}")
             string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")
             set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
             message(STATUS "Detected git tag version: ${PROJECT_VERSION}")
         else()
-            # Fallback when no tags: leave PROJECT_VERSION as-is (from project())
-            message(WARNING "No git tags found; using default PROJECT_VERSION=${PROJECT_VERSION}")
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=0
+                OUTPUT_VARIABLE GIT_NEAREST_TAG_RAW
+                RESULT_VARIABLE GIT_TAG_ERROR
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(NOT GIT_TAG_ERROR)
+                set(PROJECT_VERSION "${GIT_NEAREST_TAG_RAW}")
+                string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")
+                set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})
+                message(STATUS "Detected fallback git tag version: ${PROJECT_VERSION}")
+            else()
+                # Fallback when no tags: leave PROJECT_VERSION as-is (from project())
+                message(WARNING "No git tags found; using default PROJECT_VERSION=${PROJECT_VERSION}")
+            endif()
         endif()
 
         if(NOT GIT_BRANCH_ERROR)
