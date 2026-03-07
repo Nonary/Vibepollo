@@ -96,7 +96,10 @@ function getManualChunk(id: string): string | undefined {
     packageName === 'seemly' ||
     packageName === 'evtd'
   ) {
-    return 'naive-ui';
+    // Keep the Naive UI stack in the general vendor chunk. Splitting it into its
+    // own manual chunk can create a circular import with the remaining vendor
+    // bundle in release builds, which prevents the app from mounting at all.
+    return 'vendor';
   }
 
   if (packageName.startsWith('@fortawesome/')) {
