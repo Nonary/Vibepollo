@@ -79,11 +79,15 @@ namespace display_helper_integration::helpers {
     }
 
     std::optional<std::string> resolve_virtual_device_id(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-      if (!session.virtual_display_device_id.empty()) {
-        return session.virtual_display_device_id;
+      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session.virtual_display_device_id, session.client_name)) {
+        return resolved;
       }
 
       if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
+        return resolved;
+      }
+
+      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(video_config.output_name, session.client_name)) {
         return resolved;
       }
 

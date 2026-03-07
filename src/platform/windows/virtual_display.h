@@ -98,6 +98,10 @@ namespace VDISPLAY {
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceId(
+    const std::string &preferred_output_identifier,
+    const std::string &client_name
+  );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
 

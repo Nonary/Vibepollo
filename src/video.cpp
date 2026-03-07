@@ -80,6 +80,15 @@ namespace video {
         return false;
       }
 
+      const auto active_output_name = config::get_active_output_name();
+      const bool runtime_targets_virtual =
+        !active_output_name.empty() &&
+        (active_output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION ||
+         VDISPLAY::is_virtual_display_output(active_output_name));
+      if (runtime_targets_virtual) {
+        return true;
+      }
+
       const bool explicit_virtual = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::per_client || config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
       const bool auto_activate = config::video.dd.activate_virtual_display;
       if (explicit_virtual || auto_activate) {

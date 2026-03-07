@@ -220,7 +220,8 @@ namespace webrtc_stream {
 
       if (!allow_display_changes) {
         if (request_virtual_display) {
-          if (auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+          if (auto existing_device =
+                VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name)) {
             session->virtual_display = true;
             session->virtual_display_failed = false;
             session->virtual_display_device_id = *existing_device;
@@ -260,7 +261,8 @@ namespace webrtc_stream {
         (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
       }
 
-      if (auto existing_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+      if (auto existing_device =
+            VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name)) {
         session->virtual_display = true;
         session->virtual_display_failed = false;
         session->virtual_display_device_id = *existing_device;
@@ -391,7 +393,7 @@ namespace webrtc_stream {
         session->virtual_display_failed = false;
         if (display_info->device_id && !display_info->device_id->empty()) {
           session->virtual_display_device_id = *display_info->device_id;
-        } else if (auto resolved_device = VDISPLAY::resolveAnyVirtualDisplayDeviceId()) {
+        } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, client_label)) {
           session->virtual_display_device_id = *resolved_device;
         } else {
           session->virtual_display_device_id.clear();

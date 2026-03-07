@@ -3642,6 +3642,101 @@ namespace VDISPLAY {
     return std::nullopt;
   }
 
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceId(
+    const std::string &preferred_output_identifier,
+    const std::string &client_name
+  ) {
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      return std::nullopt;
+    }
+
+    std::optional<std::string> normalized_output;
+    if (!preferred_output_identifier.empty() &&
+        !equals_ci(preferred_output_identifier, SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      const auto normalized = normalize_display_name(preferred_output_identifier);
+      if (!normalized.empty()) {
+        normalized_output = normalized;
+      }
+    }
+
+    std::optional<std::string> normalized_client_name;
+    if (!client_name.empty()) {
+      const auto normalized = normalize_display_name(client_name);
+      if (!normalized.empty()) {
+        normalized_client_name = normalized;
+      }
+    }
+
+    std::optional<std::string> output_match;
+    std::optional<std::string> client_match;
+    std::optional<std::string> active_any_match;
+    std::optional<std::string> any_match;
+
+    for (const auto &device : *devices) {
+      if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
+        continue;
+      }
+
+      if (!any_match) {
+        any_match = device.m_device_id;
+      }
+      if (!active_any_match && device.m_info) {
+        active_any_match = device.m_device_id;
+      }
+
+      const auto candidate_display_name =
+        !device.m_display_name.empty() ? std::make_optional(normalize_display_name(device.m_display_name)) : std::nullopt;
+      const auto candidate_friendly_name =
+        !device.m_friendly_name.empty() ? std::make_optional(normalize_display_name(device.m_friendly_name)) : std::nullopt;
+
+      bool matches_output = false;
+      if (normalized_output) {
+        matches_output =
+          equals_ci(device.m_device_id, preferred_output_identifier) ||
+          (candidate_display_name && *candidate_display_name == *normalized_output) ||
+          (candidate_friendly_name && *candidate_friendly_name == *normalized_output);
+      }
+
+      if (matches_output) {
+        if (device.m_info) {
+          return device.m_device_id;
+        }
+        if (!output_match) {
+          output_match = device.m_device_id;
+        }
+      }
+
+      bool matches_client_name = false;
+      if (normalized_client_name) {
+        matches_client_name = candidate_friendly_name && *candidate_friendly_name == *normalized_client_name;
+      }
+
+      if (matches_client_name) {
+        if (device.m_info) {
+          return device.m_device_id;
+        }
+        if (!client_match) {
+          client_match = device.m_device_id;
+        }
+      }
+    }
+
+    if (output_match) {
+      return output_match;
+    }
+    if (client_match) {
+      return client_match;
+    }
+    if (active_any_match) {
+      return active_any_match;
+    }
+    if (any_match) {
+      return any_match;
+    }
+    return std::nullopt;
+  }
+
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
     auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     std::optional<std::string> active_match;
