@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import { useConfigStore } from '@/stores/config';
-import { NSwitch, NSelect, NInput, NInputNumber, NButton, NTable } from 'naive-ui';
+import { NButton, NTable } from 'naive-ui';
 import { http } from '@/http';
 import { useI18n } from 'vue-i18n';
 
@@ -292,75 +293,54 @@ onMounted(() => {
       </div>
 
       <div class="grid gap-4 md:grid-cols-2">
-        <div class="space-y-2">
-          <label class="form-label" for="frame_limiter_enable">{{
-            t('frameLimiter.enable')
-          }}</label>
-          <n-switch id="frame_limiter_enable" v-model:value="frameLimiterEnabled" />
-          <p class="form-text">{{ t('frameLimiter.enableHint') }}</p>
-        </div>
-
-        <div class="space-y-2">
-          <label class="form-label" for="frame_limiter_provider">{{
-            t('frameLimiter.providerLabel')
-          }}</label>
-          <n-select
-            id="frame_limiter_provider"
-            v-model:value="frameLimiterProvider"
-            :options="providerOptions"
-            :data-search-options="providerOptions.map((o) => `${o.label}::${o.value}`).join('|')"
-            @update:show="handleProviderDropdown"
-          />
-          <p class="form-text">{{ t('frameLimiter.providerHint') }}</p>
-        </div>
-      </div>
-
-      <div class="space-y-2">
-        <label class="form-label" for="frame_limiter_fps_limit">{{
-          t('frameLimiter.limitLabel')
-        }}</label>
-        <n-input-number
-          id="frame_limiter_fps_limit"
-          v-model:value="config.frame_limiter_fps_limit"
-          :min="0"
-          :max="1000"
-          :step="1"
-          :precision="0"
-          :placeholder="t('frameLimiter.limitPlaceholder')"
+        <ConfigFieldRenderer
+          setting-key="frame_limiter_enable"
+          v-model="frameLimiterEnabled"
+          :label="t('frameLimiter.enable')"
+          :desc="t('frameLimiter.enableHint')"
         />
-        <p class="form-text">{{ t('frameLimiter.limitHint') }}</p>
+
+        <ConfigFieldRenderer
+          setting-key="frame_limiter_provider"
+          v-model="frameLimiterProvider"
+          :label="t('frameLimiter.providerLabel')"
+          :desc="t('frameLimiter.providerHint')"
+          :options="providerOptions"
+          @update:show="handleProviderDropdown"
+        />
       </div>
 
-      <div class="space-y-2">
-        <label class="form-label" for="frame_limiter_disable_vsync">{{
-          t('frameLimiter.vsyncUllmLabel')
-        }}</label>
-        <n-switch
-          id="frame_limiter_disable_vsync"
-          v-model:value="config.frame_limiter_disable_vsync"
-          :disabled="dummyPlugHdrActive"
-        />
-        <p class="form-text">
-          {{
-            dummyPlugHdrActive
-              ? t('frameLimiter.vsyncUllmForcedByDummyPlug')
-              : nvidiaDetected && nvcpReady
-                ? t('frameLimiter.vsyncUllmHintNv')
-                : t('frameLimiter.vsyncUllmHintGeneric')
-          }}
-        </p>
-      </div>
+      <ConfigFieldRenderer
+        setting-key="frame_limiter_fps_limit"
+        v-model="config.frame_limiter_fps_limit"
+        :label="t('frameLimiter.limitLabel')"
+        :desc="t('frameLimiter.limitHint')"
+        :placeholder="t('frameLimiter.limitPlaceholder')"
+      />
+
+      <ConfigFieldRenderer
+        setting-key="frame_limiter_disable_vsync"
+        v-model="config.frame_limiter_disable_vsync"
+        :label="t('frameLimiter.vsyncUllmLabel')"
+        :desc="
+          dummyPlugHdrActive
+            ? t('frameLimiter.vsyncUllmForcedByDummyPlug')
+            : nvidiaDetected && nvcpReady
+              ? t('frameLimiter.vsyncUllmHintNv')
+              : t('frameLimiter.vsyncUllmHintGeneric')
+        "
+        :disabled="dummyPlugHdrActive"
+      />
 
       <div v-if="shouldShowRtssConfig" class="space-y-4">
-        <div v-if="showRtssInstallInput" class="space-y-2">
-          <label class="form-label" for="rtss_install_path">{{ t('frameLimiter.rtssPath') }}</label>
-          <n-input
-            id="rtss_install_path"
-            v-model:value="config.rtss_install_path"
-            :placeholder="t('frameLimiter.rtssPathPlaceholder')"
-          />
-          <p class="form-text">{{ t('frameLimiter.rtssPathHint') }}</p>
-        </div>
+        <ConfigFieldRenderer
+          v-if="showRtssInstallInput"
+          setting-key="rtss_install_path"
+          v-model="config.rtss_install_path"
+          :label="t('frameLimiter.rtssPath')"
+          :desc="t('frameLimiter.rtssPathHint')"
+          :placeholder="t('frameLimiter.rtssPathPlaceholder')"
+        />
         <p v-if="showRtssInstallHint" class="text-[11px] text-warning">
           {{ t('frameLimiter.rtssMissing') }}
         </p>
@@ -464,17 +444,14 @@ onMounted(() => {
             </dl>
           </div>
         </div>
-        <div v-if="showSyncLimiterSelect" class="mt-4 space-y-2">
-          <label class="form-label" for="rtss_frame_limit_type">{{
-            t('frameLimiter.syncLimiterLabel')
-          }}</label>
-          <n-select
-            id="rtss_frame_limit_type"
-            v-model:value="config.rtss_frame_limit_type"
-            :options="syncLimiterOptions"
-          />
-          <p class="form-text">{{ t('frameLimiter.syncLimiterHint') }}</p>
-        </div>
+        <ConfigFieldRenderer
+          v-if="showSyncLimiterSelect"
+          setting-key="rtss_frame_limit_type"
+          v-model="config.rtss_frame_limit_type"
+          :label="t('frameLimiter.syncLimiterLabel')"
+          :desc="t('frameLimiter.syncLimiterHint')"
+          :options="syncLimiterOptions"
+        />
       </div>
     </div>
   </fieldset>

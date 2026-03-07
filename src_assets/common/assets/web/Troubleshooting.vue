@@ -205,7 +205,11 @@
             class="m-0 bg-light dark:bg-dark font-mono text-[13px] leading-5 text-dark dark:text-light p-4 whitespace-pre-wrap break-words"
             @mousedown="pauseAutoScroll"
           >
-            <div v-if="!searchActive" class="log-lines" :style="{ '--log-line-number-width': lineNumberWidth }">
+            <div
+              v-if="!searchActive"
+              class="log-lines"
+              :style="{ '--log-line-number-width': lineNumberWidth }"
+            >
               <div
                 v-for="(line, index) in logLines"
                 :key="index"
@@ -217,7 +221,9 @@
               </div>
             </div>
             <div v-else class="space-y-2">
-              <div class="flex items-center justify-between text-xs font-semibold text-dark/80 dark:text-light/80">
+              <div
+                class="flex items-center justify-between text-xs font-semibold text-dark/80 dark:text-light/80"
+              >
                 <span>{{ translate('troubleshooting.search_results', 'Results') }}</span>
                 <span class="text-[11px] opacity-60">
                   {{ searchContextLabel }}
@@ -255,13 +261,20 @@
                   class="mt-1 font-mono text-[12px] leading-4 text-dark dark:text-light whitespace-pre-wrap break-words"
                   :style="{ '--log-line-number-width': lineNumberWidth }"
                 >
-                  <div v-for="snippetLine in result.snippet" :key="snippetLine.lineIndex" class="log-line">
+                  <div
+                    v-for="snippetLine in result.snippet"
+                    :key="snippetLine.lineIndex"
+                    class="log-line"
+                  >
                     <span class="log-line-number">
                       {{ snippetLine.lineIndex + 1 }}
                     </span>
                     <span class="log-line-text">
                       <template
-                        v-for="(segment, sIndex) in getLineSegments(snippetLine.text, snippetLine.lineIndex)"
+                        v-for="(segment, sIndex) in getLineSegments(
+                          snippetLine.text,
+                          snippetLine.lineIndex,
+                        )"
                         :key="sIndex"
                       >
                         <span
@@ -404,13 +417,11 @@ const lineNumberWidth = computed(() => {
 const contextLines = 5;
 const activeMatchIndex = ref(-1);
 const activeLineIndex = computed(() =>
-  activeMatchIndex.value >= 0 ? matchLines.value[activeMatchIndex.value] ?? null : null,
+  activeMatchIndex.value >= 0 ? (matchLines.value[activeMatchIndex.value] ?? null) : null,
 );
 
 const searchPending = computed(
-  () =>
-    rawSearchActive.value &&
-    (rawSearch.value !== searchTerm.value || searchInProgress.value),
+  () => rawSearchActive.value && (rawSearch.value !== searchTerm.value || searchInProgress.value),
 );
 const matchCountLabel = computed(() => {
   if (!rawSearchActive.value) return '';
@@ -473,7 +484,6 @@ const searchResults = computed(() => {
   });
 });
 
-
 function getLineSegments(line: string, lineIndex: number) {
   const term = searchTerm.value.trim();
   if (!term) {
@@ -508,9 +518,7 @@ function getLineSegments(line: string, lineIndex: number) {
   segmentCache.set(lineIndex, { term, text: line, segments });
   return segments;
 }
-const unseenLines = computed(() =>
-  Math.max(0, latestLineCount.value - displayedLineCount.value),
-);
+const unseenLines = computed(() => Math.max(0, latestLineCount.value - displayedLineCount.value));
 const newLogsAvailable = computed(() => unseenLines.value > 0);
 const showJumpToLatest = computed(
   () => !newLogsAvailable.value && !isAtBottom.value && !autoScrollEnabled.value,
@@ -886,8 +894,7 @@ async function downloadCrashBundlePart(partIndex: number, filenameHint?: string)
     throw new Error('crash bundle download failed');
   }
   const headerName = parseContentDispositionFilename(r.headers?.['content-disposition']);
-  const filename =
-    filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
+  const filename = filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
   triggerDownload(r.data as Blob, filename);
 }
 
@@ -1041,7 +1048,6 @@ watch(logSource, () => {
   void refreshLogs();
   nextTick(() => scrollToBottom());
 });
-
 </script>
 
 <style scoped>

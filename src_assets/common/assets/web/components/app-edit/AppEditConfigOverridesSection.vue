@@ -1,195 +1,596 @@
 <template>
-  <section class="space-y-3">
-    <div class="flex items-center justify-between gap-3">
-      <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">Setting Overrides</h3>
-      <n-button
-        v-if="overrideKeys.length"
-        size="small"
-        tertiary
-        aria-label="Clear all overrides"
-        @click="clearAll"
-      >
-        Reset All
-      </n-button>
+  <section
+    class="rounded-2xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-surface/40 p-4 space-y-4"
+  >
+    <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div class="space-y-1">
+        <h3 class="text-base font-semibold text-dark dark:text-light">Setting Overrides</h3>
+        <p class="text-[12px] leading-relaxed opacity-70">{{ descriptionText }}</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <n-tag size="small" type="primary">{{ activeOverrideCount }} active</n-tag>
+        <n-button size="small" type="primary" @click="openAddSettings">Add Setting</n-button>
+        <n-button v-if="showResetAll" size="small" tertiary @click="clearAll">Delete All</n-button>
+      </div>
     </div>
 
-    <p class="text-[11px] opacity-70">{{ descriptionText }}</p>
-
-    <div class="relative">
-      <n-input
-        v-model:value="searchQuery"
-        type="text"
-        placeholder="Search settings to override..."
-        @focus="onSearchFocus"
-        @blur="onSearchBlur"
-        @keydown.enter.prevent="addFirstResult"
-      >
-        <template #suffix>
-          <i class="fas fa-magnifying-glass text-[12px] opacity-60" />
-        </template>
-      </n-input>
-
-      <transition name="fade">
+    <div class="min-w-0 space-y-3">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="space-y-1">
+          <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">Active Overrides</h4>
+          <p class="text-[12px] opacity-60 leading-relaxed">
+            Adjust the values below to override the current global setting only for this
+            {{ scopeSummaryLabel }}.
+          </p>
+        </div>
         <div
-          v-if="searchOpen"
-          class="absolute mt-2 w-full max-w-full z-30 bg-light/95 dark:bg-surface/95 backdrop-blur rounded-md shadow-lg border border-dark/10 dark:border-light/10 max-h-80 overflow-auto overflow-x-hidden overscroll-contain scroll-stable pr-2 py-1"
+          class="rounded-full bg-dark/5 dark:bg-light/10 px-3 py-1 text-[11px] font-medium opacity-70"
         >
-          <div v-if="searchResults.length === 0" class="px-3 py-2 text-[12px] opacity-60">
-            No results
-          </div>
-          <n-button
-            v-for="r in searchResults"
-            :key="r.key"
-            type="default"
-            strong
-            block
-            class="justify-start !px-3 !py-2.5 !h-auto text-left leading-5 text-[13px] whitespace-normal"
-            @click="addOverride(r.key)"
-          >
-            <div class="w-full max-w-full text-left flex items-start gap-2 py-0.5">
-              <span class="shrink-0 mt-0.5">
-                <i class="fas fa-sliders text-primary text-[11px]" />
-              </span>
-              <span class="min-w-0">
-                <span class="block font-medium break-words whitespace-normal">
-                  {{ r.label }}
-                </span>
-                <span class="block text-[11px] opacity-60 leading-5 break-words whitespace-normal">
-                  {{ r.path }} · <span class="font-mono">{{ r.key }}</span>
-                </span>
-                <span
-                  v-if="r.desc"
-                  class="block text-[11px] opacity-70 break-words whitespace-normal leading-5"
-                >
-                  {{ r.desc }}
-                </span>
-              </span>
-            </div>
-          </n-button>
+          {{ activeOverrideCount }} configured
         </div>
-      </transition>
-    </div>
+      </div>
 
-    <div v-if="overrideEntries.length === 0" class="text-[12px] opacity-60">No overrides.</div>
-
-    <div v-else class="space-y-2">
       <div
-        v-for="entry in overrideEntries"
-        :key="entry.key"
-        class="rounded-md border border-dark/10 dark:border-light/10 p-3"
+        v-if="overrideEntries.length === 0"
+        class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-8 text-center space-y-3"
       >
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <div class="text-sm font-medium flex items-center gap-2 min-w-0">
-              <span class="truncate">{{ entry.label }}</span>
-              <n-tag size="small" class="font-mono">{{ entry.key }}</n-tag>
-            </div>
-            <div class="text-[11px] opacity-60 truncate">{{ entry.path }}</div>
-            <div v-if="entry.desc" class="text-[11px] opacity-70 mt-1">{{ entry.desc }}</div>
-            <div v-if="!entry.synthetic" class="text-[11px] opacity-50 mt-1">
-              Global:
-              <span class="font-mono">{{ formatValueForKey(entry.key, entry.globalValue) }}</span>
-            </div>
-          </div>
-          <div class="shrink-0 flex items-center gap-2">
-            <n-button size="small" tertiary @click="removeOverride(entry.key)">Reset</n-button>
-          </div>
-        </div>
+        <div class="text-sm font-medium">No {{ scopeSummaryLabel }}-specific overrides yet.</div>
+        <p class="mx-auto max-w-xl text-[12px] leading-relaxed opacity-60">
+          Add settings from the picker, then tune them here using the same controls as the main
+          configuration tabs.
+        </p>
+        <n-button size="small" type="primary" @click="openAddSettings">Add Setting</n-button>
+      </div>
 
-        <div class="mt-3">
-          <template v-if="isSyntheticKey(entry.key)">
-            <n-input
-              v-if="entry.key === SYN_KEYS.configureDisplayResolution"
-              :value="forcedResolution"
-              placeholder="e.g. 1920x1080"
-              class="font-mono"
-              @update:value="(v) => setForcedResolution(String(v || ''))"
-            />
-            <n-input
-              v-else-if="entry.key === SYN_KEYS.configureDisplayRefreshRate"
-              :value="forcedRefreshRate"
-              placeholder="e.g. 60"
-              class="font-mono"
-              @update:value="(v) => setForcedRefreshRate(String(v || ''))"
-            />
-            <n-select
-              v-else-if="entry.key === SYN_KEYS.configureDisplayHdr"
-              :value="forcedHdr"
-              :options="forcedHdrOptions"
-              @update:value="(v) => setForcedHdr(String(v || ''))"
-            />
-          </template>
+      <div
+        v-else
+        class="rounded-xl border border-dark/10 dark:border-light/10 bg-white/40 dark:bg-white/5 divide-y divide-dark/10 dark:divide-light/10"
+      >
+        <div v-for="entry in overrideEntries" :key="entry.key" class="px-4 py-4">
+          <ConfigInputField
+            v-if="isSyntheticKey(entry.key) && entry.key === SYN_KEYS.configureDisplayResolution"
+            :id="entry.key"
+            :label="entry.label"
+            :desc="entry.desc"
+            size="small"
+            monospace
+            placeholder="e.g. 1920x1080"
+            :model-value="forcedResolution"
+            @update:model-value="(v) => setForcedResolution(String(v || ''))"
+          >
+            <template #actions>
+              <n-button size="tiny" tertiary @click="removeOverride(entry.key)">Delete</n-button>
+            </template>
+            <template #meta>
+              <span class="hidden sm:inline">
+                <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+              </span>
+            </template>
+          </ConfigInputField>
 
-          <template v-else-if="editorKind(entry.key) === 'boolean'">
-            <n-checkbox
-              :checked="boolChecked(entry.key)"
-              @update:checked="(v) => setBool(entry.key, !!v)"
-            >
-              Enabled
-            </n-checkbox>
-          </template>
+          <ConfigInputField
+            v-else-if="
+              isSyntheticKey(entry.key) && entry.key === SYN_KEYS.configureDisplayRefreshRate
+            "
+            :id="entry.key"
+            :label="entry.label"
+            :desc="entry.desc"
+            size="small"
+            monospace
+            inputmode="numeric"
+            placeholder="e.g. 60"
+            :model-value="forcedRefreshRate"
+            @update:model-value="(v) => setForcedRefreshRate(String(v || ''))"
+          >
+            <template #actions>
+              <n-button size="tiny" tertiary @click="removeOverride(entry.key)">Delete</n-button>
+            </template>
+            <template #meta>
+              <span class="hidden sm:inline">
+                <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+              </span>
+            </template>
+          </ConfigInputField>
 
-          <template v-else-if="editorKind(entry.key) === 'select'">
-            <n-select
-              :value="selectValue(entry.key)"
-              :options="selectOptions(entry.key)"
-              filterable
-              @update:value="(v) => setSelect(entry.key, v)"
-            />
-          </template>
+          <ConfigSelectField
+            v-else-if="isSyntheticKey(entry.key) && entry.key === SYN_KEYS.configureDisplayHdr"
+            :id="entry.key"
+            :label="entry.label"
+            :desc="entry.desc"
+            size="small"
+            :options="forcedHdrOptions"
+            :model-value="forcedHdr"
+            @update:model-value="(v) => setForcedHdr(String(v || ''))"
+          >
+            <template #actions>
+              <n-button size="tiny" tertiary @click="removeOverride(entry.key)">Delete</n-button>
+            </template>
+            <template #meta>
+              <span class="hidden sm:inline">
+                <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+              </span>
+            </template>
+          </ConfigSelectField>
 
-          <template v-else-if="editorKind(entry.key) === 'number'">
-            <n-input
-              v-if="NUMERIC_TEXT_OVERRIDE_KEYS.has(entry.key)"
-              :value="numericTextDraft(entry.key)"
-              placeholder="(number)"
-              class="font-mono"
-              inputmode="numeric"
-              @update:value="(v) => updateNumericTextDraft(entry.key, v)"
-              @blur="() => commitNumericText(entry.key)"
-              @keydown.enter.prevent="() => commitNumericText(entry.key)"
-            />
-            <n-input-number
-              v-else
-              :value="numberValue(entry.key)"
-              placeholder="(number)"
-              @update:value="(v) => setNumber(entry.key, v)"
-            />
-          </template>
+          <ConfigFieldRenderer
+            v-else-if="editorKind(entry.key) !== 'json'"
+            :setting-key="entry.key"
+            :label="entry.label"
+            :desc="entry.desc"
+            :default-value="entry.globalValue"
+            :size="'small'"
+            :model-value="rawOverrideValue(entry.key)"
+            :placeholder="overridePlaceholder(entry.key)"
+            :filterable="editorKind(entry.key) === 'select'"
+            :monospace="editorKind(entry.key) === 'string'"
+            @update:model-value="(v) => setRenderedOverrideValue(entry.key, v)"
+          >
+            <template #actions>
+              <n-button size="tiny" tertiary @click="removeOverride(entry.key)">Delete</n-button>
+            </template>
+            <template #meta>
+              <span class="hidden sm:inline">
+                <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }} ·
+              </span>
+              <span>
+                Inherited:
+                <span class="font-mono">{{ formatValueForKey(entry.key, entry.globalValue) }}</span>
+              </span>
+            </template>
+          </ConfigFieldRenderer>
 
-          <template v-else-if="editorKind(entry.key) === 'string'">
-            <n-input
-              :value="stringValue(entry.key)"
-              placeholder="(value)"
-              class="font-mono"
-              @update:value="(v) => setString(entry.key, v)"
-            />
-          </template>
-
-          <template v-else>
-            <n-input
-              :value="jsonDraft(entry.key)"
-              type="textarea"
-              :autosize="{ minRows: 2, maxRows: 10 }"
-              class="font-mono"
-              placeholder="JSON value"
-              @update:value="(v) => updateJsonDraft(entry.key, v)"
-              @blur="() => commitJson(entry.key)"
-            />
-            <div v-if="jsonError(entry.key)" class="text-[11px] text-danger mt-1">
+          <ConfigInputField
+            v-else
+            :id="entry.key"
+            :label="entry.label"
+            :desc="entry.desc"
+            type="textarea"
+            size="small"
+            monospace
+            :autosize="{ minRows: 2, maxRows: 10 }"
+            placeholder="JSON value"
+            :model-value="jsonDraft(entry.key)"
+            @update:model-value="(v) => updateJsonDraft(entry.key, v)"
+            @blur="() => commitJson(entry.key)"
+          >
+            <template #actions>
+              <n-button size="tiny" tertiary @click="removeOverride(entry.key)">Delete</n-button>
+            </template>
+            <template #meta>
+              <span class="hidden sm:inline">
+                <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }} ·
+              </span>
+              <span>
+                Inherited:
+                <span class="font-mono">{{ formatValueForKey(entry.key, entry.globalValue) }}</span>
+              </span>
+            </template>
+            <div v-if="jsonError(entry.key)" class="text-[11px] text-danger">
               {{ jsonError(entry.key) }}
             </div>
-          </template>
+          </ConfigInputField>
         </div>
       </div>
     </div>
   </section>
+
+  <div
+    v-if="browseModalOpen"
+    class="fixed inset-0 z-[1100] px-2 py-2 md:px-3 md:py-3 xl:px-5 xl:py-4"
+  >
+    <div class="absolute inset-0 bg-dark/50 dark:bg-black/70" />
+    <div
+      class="relative mx-auto flex h-full max-w-[112rem] flex-col overflow-hidden rounded-[1.75rem] border border-dark/10 dark:border-light/10 bg-white/95 shadow-2xl dark:bg-surface/95"
+    >
+      <div
+        class="sticky top-0 z-20 border-b border-dark/10 dark:border-light/10 bg-white/95 px-4 py-4 backdrop-blur dark:bg-surface/95"
+      >
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div class="flex min-w-0 items-start gap-2">
+            <n-button size="small" quaternary @click="cancelAddSettings">
+              <i class="fas fa-arrow-left text-[12px]" />
+              <span class="ml-1">Back</span>
+            </n-button>
+            <div class="min-w-0 space-y-1">
+              <div class="text-base font-semibold text-dark dark:text-light">
+                Add Setting Overrides
+              </div>
+              <p class="text-[12px] leading-relaxed opacity-70">
+                Browse all supported settings, stage the ones you want, then save to add them to
+                this {{ scopeSummaryLabel }}.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 self-start sm:self-start">
+            <n-tag size="small" :bordered="false">
+              {{ modalOverrideEntries.length }} in editor
+            </n-tag>
+          </div>
+        </div>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-hidden px-4 py-4">
+        <div
+          class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(29rem,0.92fr)_minmax(40rem,1.08fr)] 2xl:grid-cols-[minmax(31rem,0.94fr)_minmax(48rem,1.12fr)]"
+        >
+          <aside
+            class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
+          >
+            <div class="border-b border-dark/10 px-4 py-4 dark:border-light/10">
+              <div class="flex items-center justify-between gap-3">
+                <div class="space-y-1">
+                  <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                    Override Editor
+                  </h4>
+                  <p class="text-[12px] leading-relaxed opacity-60">
+                    Added settings appear here immediately so you can refine them before saving.
+                  </p>
+                </div>
+                <div
+                  class="rounded-full bg-primary/10 px-3 py-1 text-[11px] font-medium text-primary"
+                >
+                  {{ modalOverrideEntries.length }}
+                </div>
+              </div>
+            </div>
+
+            <div class="app-scrollbar app-scrollbar-edge min-h-0 flex-1 overflow-y-scroll">
+              <div v-if="modalOverrideEntries.length === 0" class="px-4 py-4">
+                <div
+                  class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-8 text-center space-y-3"
+                >
+                  <div class="text-sm font-medium">No override fields in the editor yet.</div>
+                  <p class="mx-auto max-w-xl text-[12px] leading-relaxed opacity-60">
+                    Pick a setting from the browser on the right to add it here, then edit it before
+                    saving.
+                  </p>
+                </div>
+              </div>
+
+              <div
+                v-else
+                class="m-4 rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-surface/40 divide-y divide-dark/10 dark:divide-light/10"
+              >
+                <div v-for="entry in modalOverrideEntries" :key="entry.key" class="px-4 py-4">
+                  <ConfigInputField
+                    v-if="
+                      isSyntheticKey(entry.key) && entry.key === SYN_KEYS.configureDisplayResolution
+                    "
+                    :id="`modal-${entry.key}`"
+                    :label="entry.label"
+                    :desc="entry.desc"
+                    size="small"
+                    monospace
+                    placeholder="e.g. 1920x1080"
+                    :model-value="draftForcedResolution"
+                    @update:model-value="(v) => setDraftForcedResolution(String(v || ''))"
+                  >
+                    <template #actions>
+                      <n-button size="tiny" tertiary @click="removeDraftOverride(entry.key)">
+                        Delete
+                      </n-button>
+                    </template>
+                    <template #meta>
+                      <span class="hidden sm:inline">
+                        <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+                      </span>
+                    </template>
+                  </ConfigInputField>
+
+                  <ConfigInputField
+                    v-else-if="
+                      isSyntheticKey(entry.key) &&
+                      entry.key === SYN_KEYS.configureDisplayRefreshRate
+                    "
+                    :id="`modal-${entry.key}`"
+                    :label="entry.label"
+                    :desc="entry.desc"
+                    size="small"
+                    monospace
+                    inputmode="numeric"
+                    placeholder="e.g. 60"
+                    :model-value="draftForcedRefreshRate"
+                    @update:model-value="(v) => setDraftForcedRefreshRate(String(v || ''))"
+                  >
+                    <template #actions>
+                      <n-button size="tiny" tertiary @click="removeDraftOverride(entry.key)">
+                        Delete
+                      </n-button>
+                    </template>
+                    <template #meta>
+                      <span class="hidden sm:inline">
+                        <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+                      </span>
+                    </template>
+                  </ConfigInputField>
+
+                  <ConfigSelectField
+                    v-else-if="
+                      isSyntheticKey(entry.key) && entry.key === SYN_KEYS.configureDisplayHdr
+                    "
+                    :id="`modal-${entry.key}`"
+                    :label="entry.label"
+                    :desc="entry.desc"
+                    size="small"
+                    :options="forcedHdrOptions"
+                    :model-value="draftForcedHdr"
+                    @update:model-value="(v) => setDraftForcedHdr(String(v || ''))"
+                  >
+                    <template #actions>
+                      <n-button size="tiny" tertiary @click="removeDraftOverride(entry.key)">
+                        Delete
+                      </n-button>
+                    </template>
+                    <template #meta>
+                      <span class="hidden sm:inline">
+                        <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }}
+                      </span>
+                    </template>
+                  </ConfigSelectField>
+
+                  <ConfigFieldRenderer
+                    v-else-if="editorKind(entry.key, 'draft') !== 'json'"
+                    :setting-key="entry.key"
+                    :label="entry.label"
+                    :desc="entry.desc"
+                    :default-value="entry.globalValue"
+                    :size="'small'"
+                    :model-value="rawOverrideValueFor('draft', entry.key)"
+                    :placeholder="overridePlaceholder(entry.key, 'draft')"
+                    :filterable="editorKind(entry.key, 'draft') === 'select'"
+                    :monospace="editorKind(entry.key, 'draft') === 'string'"
+                    @update:model-value="(v) => setRenderedOverrideValueFor('draft', entry.key, v)"
+                  >
+                    <template #actions>
+                      <n-button size="tiny" tertiary @click="removeDraftOverride(entry.key)">
+                        Delete
+                      </n-button>
+                    </template>
+                    <template #meta>
+                      <span class="hidden sm:inline">
+                        <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }} ·
+                      </span>
+                      <span>
+                        Inherited:
+                        <span class="font-mono">{{
+                          formatValueForKey(entry.key, entry.globalValue)
+                        }}</span>
+                      </span>
+                    </template>
+                  </ConfigFieldRenderer>
+
+                  <ConfigInputField
+                    v-else
+                    :id="`modal-${entry.key}`"
+                    :label="entry.label"
+                    :desc="entry.desc"
+                    type="textarea"
+                    size="small"
+                    monospace
+                    :autosize="{ minRows: 2, maxRows: 10 }"
+                    placeholder="JSON value"
+                    :model-value="jsonDraftFor('draft', entry.key)"
+                    @update:model-value="(v) => updateJsonDraftFor('draft', entry.key, v)"
+                    @blur="() => commitJsonFor('draft', entry.key)"
+                  >
+                    <template #actions>
+                      <n-button size="tiny" tertiary @click="removeDraftOverride(entry.key)">
+                        Delete
+                      </n-button>
+                    </template>
+                    <template #meta>
+                      <span class="hidden sm:inline">
+                        <span class="font-mono">{{ entry.key }}</span> · {{ entry.groupName }} ·
+                      </span>
+                      <span>
+                        Inherited:
+                        <span class="font-mono">{{
+                          formatValueForKey(entry.key, entry.globalValue)
+                        }}</span>
+                      </span>
+                    </template>
+                    <div v-if="jsonErrorFor('draft', entry.key)" class="text-[11px] text-danger">
+                      {{ jsonErrorFor('draft', entry.key) }}
+                    </div>
+                  </ConfigInputField>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <div
+            class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
+          >
+            <div class="border-b border-dark/10 px-4 py-4 dark:border-light/10">
+              <div class="space-y-3">
+                <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                  <div class="space-y-1">
+                    <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                      Browse Available Settings
+                    </h4>
+                    <p class="text-[12px] opacity-70 leading-relaxed">
+                      Explore every supported override by section. Search is optional and only
+                      narrows the list.
+                    </p>
+                  </div>
+                  <div class="self-start text-[11px] opacity-60">
+                    {{ filteredAvailableCount }} showing
+                    <span v-if="filteredAvailableCount !== availableEntries.length">
+                      of {{ availableEntries.length }}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="flex flex-col gap-3">
+                  <n-input
+                    v-model:value="searchQuery"
+                    type="text"
+                    clearable
+                    placeholder="Filter by setting name, key, description, or option value"
+                    @keydown.enter.prevent="addFirstFilteredEntry"
+                  >
+                    <template #suffix>
+                      <i class="fas fa-magnifying-glass text-[12px] opacity-60" />
+                    </template>
+                  </n-input>
+                  <n-button
+                    v-if="hasFilterControls"
+                    size="small"
+                    tertiary
+                    class="self-start"
+                    @click="resetFilters"
+                  >
+                    Clear Filters
+                  </n-button>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    :class="filterChipClass(selectedGroupId === ALL_GROUPS_ID)"
+                    @click="selectedGroupId = ALL_GROUPS_ID"
+                  >
+                    <span>All sections</span>
+                    <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
+                      {{ availableEntries.length }}
+                    </span>
+                  </button>
+                  <button
+                    v-for="group in availableGroups"
+                    :key="group.id"
+                    type="button"
+                    :class="filterChipClass(selectedGroupId === group.id)"
+                    @click="selectedGroupId = group.id"
+                  >
+                    <span>{{ group.name }}</span>
+                    <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
+                      {{ group.count }}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="app-scrollbar app-scrollbar-edge min-h-0 flex-1 overflow-y-scroll">
+              <div class="space-y-4 p-4">
+                <template v-if="filteredAvailableGroups.length">
+                  <section
+                    v-for="group in filteredAvailableGroups"
+                    :key="group.id"
+                    class="space-y-2"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        {{ group.name }}
+                      </h4>
+                      <span class="text-[11px] opacity-50">{{ group.entries.length }}</span>
+                    </div>
+
+                    <div class="grid gap-2 xl:grid-cols-2">
+                      <button
+                        v-for="entry in group.entries"
+                        :key="entry.key"
+                        type="button"
+                        class="group rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-surface/40 p-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/5"
+                        @click="queueOverrideAddition(entry.key)"
+                      >
+                        <div class="flex items-start justify-between gap-3">
+                          <div class="min-w-0 space-y-1">
+                            <div class="text-sm font-semibold leading-snug">{{ entry.label }}</div>
+                            <div class="text-[11px] opacity-60">{{ entry.groupName }}</div>
+                            <div class="hidden break-all text-[11px] font-mono opacity-60 md:block">
+                              {{ entry.key }}
+                            </div>
+                          </div>
+                          <div class="flex shrink-0 items-center gap-2">
+                            <span
+                              class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide opacity-70"
+                            >
+                              {{ entryTypeLabel(entry.key) }}
+                            </span>
+                            <span
+                              class="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
+                            >
+                              <i class="fas fa-plus text-[10px]" />
+                              Add
+                            </span>
+                          </div>
+                        </div>
+
+                        <p v-if="entry.desc" class="mt-2 text-[12px] opacity-70 leading-relaxed">
+                          {{ entry.desc }}
+                        </p>
+
+                        <div class="mt-3 space-y-1 text-[11px] opacity-60">
+                          <div v-if="!entry.synthetic">
+                            Inherited:
+                            <span class="font-mono">
+                              {{ formatValueForKey(entry.key, entry.globalValue) }}
+                            </span>
+                          </div>
+                          <div v-if="availableOptionsPreview(entry)" class="hidden sm:block">
+                            Choices:
+                            <span class="font-medium">{{ availableOptionsPreview(entry) }}</span>
+                          </div>
+                          <div class="hidden break-words lg:block">{{ entry.path }}</div>
+                        </div>
+                      </button>
+                    </div>
+                  </section>
+                </template>
+
+                <div
+                  v-else
+                  class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-6 text-center space-y-2"
+                >
+                  <div class="text-sm font-medium">
+                    {{
+                      availableEntries.length === 0
+                        ? 'All supported settings are already added.'
+                        : 'No settings match the current filters.'
+                    }}
+                  </div>
+                  <p class="text-[12px] opacity-60 leading-relaxed">
+                    {{
+                      availableEntries.length === 0
+                        ? 'Delete an existing override to free up its setting slot.'
+                        : 'Try a broader term or switch back to all sections.'
+                    }}
+                  </p>
+                  <n-button v-if="hasFilterControls" size="small" tertiary @click="resetFilters">
+                    Reset Filters
+                  </n-button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="sticky bottom-0 z-20 border-t border-dark/10 dark:border-light/10 bg-white/95 px-4 py-3 backdrop-blur dark:bg-surface/95"
+      >
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="text-[12px] leading-relaxed opacity-70">
+            Review the override fields on the left, then save when you are done.
+          </div>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <n-button size="small" tertiary @click="cancelAddSettings">Cancel</n-button>
+            <n-button size="small" type="primary" @click="savePendingAdditions">Save</n-button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
+import ConfigInputField from '@/ConfigInputField.vue';
+import ConfigSelectField from '@/ConfigSelectField.vue';
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NButton, NCheckbox, NInput, NInputNumber, NSelect, NTag } from 'naive-ui';
+import { NButton, NInput, NTag } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import {
   buildOverrideOptionsText,
@@ -210,7 +611,26 @@ type Entry = {
   optionsText: string;
 };
 
+type AvailableGroup = {
+  id: string;
+  name: string;
+  count: number;
+};
+
+type ScoredEntry = Entry & {
+  matchScore: number;
+};
+
+type FilteredGroup = {
+  id: string;
+  name: string;
+  entries: ScoredEntry[];
+};
+
+type EditTarget = 'live' | 'draft';
+
 const overrides = defineModel<Record<string, unknown>>('overrides', { required: true });
+const draftOverrides = ref<Record<string, unknown>>({});
 const { t } = useI18n();
 
 const props = withDefaults(
@@ -235,14 +655,18 @@ const descriptionText = computed(() => {
   return 'Override global settings for this application only. Network, security, and file-path settings are intentionally excluded.';
 });
 
+const scopeSummaryLabel = computed(() =>
+  String(props.scopeLabel || 'application')
+    .toLowerCase()
+    .trim() === 'client'
+    ? 'client'
+    : 'application',
+);
+
 const configStore = useConfigStore();
 const configRef = (configStore as any).config;
 const tabsRef = (configStore as any).tabs;
 const metadataRef = (configStore as any).metadata;
-
-// Allow a small set of display-device (dd_) keys to be overridden even though
-// most dd_ keys are hidden to avoid confusion with the dedicated Display UI.
-const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
 
 const DD_KEYS = {
   configurationOption: 'dd_configuration_option',
@@ -253,6 +677,8 @@ const DD_KEYS = {
   hdrOption: 'dd_hdr_option',
   hdrRequestOverride: 'dd_hdr_request_override',
 } as const;
+
+const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
 
 function isHiddenOverrideKey(key: string): boolean {
   if (!key.startsWith('dd_')) return false;
@@ -295,8 +721,6 @@ const DISALLOWED_KEYS = new Set<string>([
   'lan_encryption_mode',
   'wan_encryption_mode',
   'ping_timeout',
-  'enable_pairing',
-  'enable_discovery',
   'fec_percentage',
   'pkey',
   'cert',
@@ -387,51 +811,76 @@ function getGlobalValue(key: string): unknown {
   }
 }
 
-function ensureOverridesObject(): void {
+function getOverridesSource(target: EditTarget): Record<string, unknown> {
+  const source = target === 'draft' ? draftOverrides.value : overrides.value;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return {};
+  }
+  return source as Record<string, unknown>;
+}
+
+function ensureOverridesObjectFor(target: EditTarget): void {
+  if (target === 'draft') {
+    if (
+      !draftOverrides.value ||
+      typeof draftOverrides.value !== 'object' ||
+      Array.isArray(draftOverrides.value)
+    ) {
+      draftOverrides.value = {};
+    }
+    return;
+  }
+
   if (!overrides.value || typeof overrides.value !== 'object' || Array.isArray(overrides.value)) {
     overrides.value = {};
   }
 }
 
-function normalizeLegacyOverrideKeys(): void {
-  ensureOverridesObject();
-  const o = overrides.value as any;
-  // Vibepollo legacy key -> Vibepollo key
-  if (o.double_refreshrate !== undefined && o.dd_wa_virtual_double_refresh === undefined) {
-    o.dd_wa_virtual_double_refresh = o.double_refreshrate;
-    delete o.double_refreshrate;
+function setOverrideKeyFor(target: EditTarget, key: string, value: unknown): void {
+  ensureOverridesObjectFor(target);
+  if (target === 'draft') {
+    (draftOverrides.value as any)[key] = value;
+    return;
   }
-}
-
-normalizeLegacyOverrideKeys();
-watch(
-  () => overrides.value,
-  () => normalizeLegacyOverrideKeys(),
-  { deep: false },
-);
-
-function setOverrideKey(key: string, value: unknown): void {
-  ensureOverridesObject();
   (overrides.value as any)[key] = value;
 }
 
-function clearOverrideKey(key: string): void {
-  ensureOverridesObject();
+function clearOverrideKeyFor(target: EditTarget, key: string): void {
+  ensureOverridesObjectFor(target);
   try {
-    delete (overrides.value as any)[key];
+    if (target === 'draft') {
+      delete (draftOverrides.value as any)[key];
+    } else {
+      delete (overrides.value as any)[key];
+    }
   } catch {}
-  clearJsonState(key);
-  clearNumericTextState(key);
+  clearJsonStateFor(target, key);
+}
+
+function setOverrideKey(key: string, value: unknown): void {
+  setOverrideKeyFor('live', key, value);
+}
+
+function clearOverrideKey(key: string): void {
+  clearOverrideKeyFor('live', key);
 }
 
 const overrideKeys = computed<string[]>(() => {
-  const o = overrides.value;
-  if (!o || typeof o !== 'object' || Array.isArray(o)) return [];
-  return Object.keys(o).filter((k) => typeof k === 'string' && k.length > 0);
+  return Object.keys(getOverridesSource('live')).filter(
+    (k) => typeof k === 'string' && k.length > 0,
+  );
 });
 
 const visibleOverrideKeys = computed<string[]>(() =>
   overrideKeys.value.filter((k) => !isHiddenOverrideKey(k)),
+);
+
+const draftOverrideKeys = computed<string[]>(() =>
+  Object.keys(getOverridesSource('draft')).filter((k) => typeof k === 'string' && k.length > 0),
+);
+
+const visibleDraftOverrideKeys = computed<string[]>(() =>
+  draftOverrideKeys.value.filter((k) => !isHiddenOverrideKey(k)),
 );
 
 const SYN_KEYS = {
@@ -450,8 +899,8 @@ function isWindowsPlatform(): boolean {
   return platformKey() === 'windows';
 }
 
-function getOverrideString(key: string): string | null {
-  const o = overrides.value as any;
+function getOverrideStringFor(target: EditTarget, key: string): string | null {
+  const o = getOverridesSource(target) as any;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
   const v = o[key];
   if (v === undefined || v === null) return null;
@@ -463,56 +912,64 @@ function globalDdConfigDisabled(): boolean {
   return String(gv ?? 'disabled') === 'disabled';
 }
 
-function ensureDdEnabledForDisplayOverrides(): void {
+function ensureDdEnabledForDisplayOverrides(target: EditTarget): void {
   if (!globalDdConfigDisabled()) return;
-  const cur = getOverrideString(DD_KEYS.configurationOption);
+  const cur = getOverrideStringFor(target, DD_KEYS.configurationOption);
   if (!cur || cur === 'disabled') {
-    setOverrideKey(DD_KEYS.configurationOption, 'verify_only');
+    setOverrideKeyFor(target, DD_KEYS.configurationOption, 'verify_only');
   }
 }
 
-function cleanupDdConfigurationOptionIfUnused(): void {
+function cleanupDdConfigurationOptionIfUnused(target: EditTarget): void {
   if (!globalDdConfigDisabled()) return;
-  const o = overrides.value as any;
+  const o = getOverridesSource(target) as any;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return;
   const ddKeys = Object.keys(o).filter(
     (k) => k.startsWith('dd_') && !ALLOWED_DD_OVERRIDE_KEYS.has(k),
   );
   const hasOtherDdKeys = ddKeys.some((k) => k !== DD_KEYS.configurationOption);
   if (!hasOtherDdKeys && o[DD_KEYS.configurationOption] === 'verify_only') {
-    clearOverrideKey(DD_KEYS.configurationOption);
+    clearOverrideKeyFor(target, DD_KEYS.configurationOption);
   }
 }
 
-function isForcedResolutionActive(): boolean {
+function isForcedResolutionActiveFor(target: EditTarget): boolean {
   if (!isWindowsPlatform()) return false;
-  const opt = getOverrideString(DD_KEYS.resolutionOption);
+  const opt = getOverrideStringFor(target, DD_KEYS.resolutionOption);
   if (opt === 'manual') return true;
-  const o = overrides.value as any;
+  const o = getOverridesSource(target) as any;
   return (
     !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualResolution] !== undefined
   );
 }
 
-function isForcedRefreshRateActive(): boolean {
+function isForcedRefreshRateActiveFor(target: EditTarget): boolean {
   if (!isWindowsPlatform()) return false;
-  const opt = getOverrideString(DD_KEYS.refreshRateOption);
+  const opt = getOverrideStringFor(target, DD_KEYS.refreshRateOption);
   if (opt === 'manual') return true;
-  const o = overrides.value as any;
+  const o = getOverridesSource(target) as any;
   return (
     !!o && typeof o === 'object' && !Array.isArray(o) && o[DD_KEYS.manualRefreshRate] !== undefined
   );
 }
 
-function isForcedHdrActive(): boolean {
+function isForcedHdrActiveFor(target: EditTarget): boolean {
   if (!isWindowsPlatform()) return false;
-  const req = getOverrideString(DD_KEYS.hdrRequestOverride);
+  const req = getOverrideStringFor(target, DD_KEYS.hdrRequestOverride);
   return req === 'force_on' || req === 'force_off';
 }
 
-const forcedResolution = computed<string>(() => getOverrideString(DD_KEYS.manualResolution) ?? '');
+const forcedResolution = computed<string>(
+  () => getOverrideStringFor('live', DD_KEYS.manualResolution) ?? '',
+);
 const forcedRefreshRate = computed<string>(
-  () => getOverrideString(DD_KEYS.manualRefreshRate) ?? '',
+  () => getOverrideStringFor('live', DD_KEYS.manualRefreshRate) ?? '',
+);
+const draftForcedResolution = computed<string>(
+  () => getOverrideStringFor('draft', DD_KEYS.manualResolution) ?? '',
+);
+const draftForcedRefreshRate = computed<string>(
+  () => getOverrideStringFor('draft', DD_KEYS.manualRefreshRate) ?? '',
 );
 
 const forcedHdrOptions = [
@@ -521,76 +978,122 @@ const forcedHdrOptions = [
 ];
 
 const forcedHdr = computed<'on' | 'off'>(() => {
-  const req = getOverrideString(DD_KEYS.hdrRequestOverride);
+  const req = getOverrideStringFor('live', DD_KEYS.hdrRequestOverride);
+  return req === 'force_off' ? 'off' : 'on';
+});
+const draftForcedHdr = computed<'on' | 'off'>(() => {
+  const req = getOverrideStringFor('draft', DD_KEYS.hdrRequestOverride);
   return req === 'force_off' ? 'off' : 'on';
 });
 
-function setForcedResolution(value: string): void {
+function setForcedResolutionFor(target: EditTarget, value: string): void {
   if (!isWindowsPlatform()) return;
-  ensureDdEnabledForDisplayOverrides();
-  setOverrideKey(DD_KEYS.resolutionOption, 'manual');
-  setOverrideKey(DD_KEYS.manualResolution, String(value ?? ''));
+  ensureDdEnabledForDisplayOverrides(target);
+  setOverrideKeyFor(target, DD_KEYS.resolutionOption, 'manual');
+  setOverrideKeyFor(target, DD_KEYS.manualResolution, String(value ?? ''));
 }
 
-function clearForcedResolution(): void {
-  clearOverrideKey(DD_KEYS.resolutionOption);
-  clearOverrideKey(DD_KEYS.manualResolution);
-  cleanupDdConfigurationOptionIfUnused();
+function clearForcedResolutionFor(target: EditTarget): void {
+  clearOverrideKeyFor(target, DD_KEYS.resolutionOption);
+  clearOverrideKeyFor(target, DD_KEYS.manualResolution);
+  cleanupDdConfigurationOptionIfUnused(target);
 }
 
-function setForcedRefreshRate(value: string): void {
+function setForcedRefreshRateFor(target: EditTarget, value: string): void {
   if (!isWindowsPlatform()) return;
-  ensureDdEnabledForDisplayOverrides();
-  setOverrideKey(DD_KEYS.refreshRateOption, 'manual');
-  setOverrideKey(DD_KEYS.manualRefreshRate, String(value ?? ''));
+  ensureDdEnabledForDisplayOverrides(target);
+  setOverrideKeyFor(target, DD_KEYS.refreshRateOption, 'manual');
+  setOverrideKeyFor(target, DD_KEYS.manualRefreshRate, String(value ?? ''));
 }
 
-function clearForcedRefreshRate(): void {
-  clearOverrideKey(DD_KEYS.refreshRateOption);
-  clearOverrideKey(DD_KEYS.manualRefreshRate);
-  cleanupDdConfigurationOptionIfUnused();
+function clearForcedRefreshRateFor(target: EditTarget): void {
+  clearOverrideKeyFor(target, DD_KEYS.refreshRateOption);
+  clearOverrideKeyFor(target, DD_KEYS.manualRefreshRate);
+  cleanupDdConfigurationOptionIfUnused(target);
 }
 
-function setForcedHdr(value: string): void {
+function setForcedHdrFor(target: EditTarget, value: string): void {
   if (!isWindowsPlatform()) return;
-  ensureDdEnabledForDisplayOverrides();
-  setOverrideKey(DD_KEYS.hdrOption, 'auto');
-  setOverrideKey(DD_KEYS.hdrRequestOverride, value === 'off' ? 'force_off' : 'force_on');
+  ensureDdEnabledForDisplayOverrides(target);
+  setOverrideKeyFor(target, DD_KEYS.hdrOption, 'auto');
+  setOverrideKeyFor(target, DD_KEYS.hdrRequestOverride, value === 'off' ? 'force_off' : 'force_on');
 }
 
-function clearForcedHdr(): void {
-  clearOverrideKey(DD_KEYS.hdrRequestOverride);
-  clearOverrideKey(DD_KEYS.hdrOption);
-  cleanupDdConfigurationOptionIfUnused();
+function clearForcedHdrFor(target: EditTarget): void {
+  clearOverrideKeyFor(target, DD_KEYS.hdrRequestOverride);
+  clearOverrideKeyFor(target, DD_KEYS.hdrOption);
+  cleanupDdConfigurationOptionIfUnused(target);
 }
 
 const activeSyntheticKeys = computed<string[]>(() => {
   const keys: string[] = [];
-  if (isForcedResolutionActive()) keys.push(SYN_KEYS.configureDisplayResolution);
-  if (isForcedRefreshRateActive()) keys.push(SYN_KEYS.configureDisplayRefreshRate);
-  if (isForcedHdrActive()) keys.push(SYN_KEYS.configureDisplayHdr);
+  if (isForcedResolutionActiveFor('live')) keys.push(SYN_KEYS.configureDisplayResolution);
+  if (isForcedRefreshRateActiveFor('live')) keys.push(SYN_KEYS.configureDisplayRefreshRate);
+  if (isForcedHdrActiveFor('live')) keys.push(SYN_KEYS.configureDisplayHdr);
   return keys;
 });
 
-function addSyntheticOverride(key: string): void {
+const draftSyntheticKeys = computed<string[]>(() => {
+  const keys: string[] = [];
+  if (isForcedResolutionActiveFor('draft')) keys.push(SYN_KEYS.configureDisplayResolution);
+  if (isForcedRefreshRateActiveFor('draft')) keys.push(SYN_KEYS.configureDisplayRefreshRate);
+  if (isForcedHdrActiveFor('draft')) keys.push(SYN_KEYS.configureDisplayHdr);
+  return keys;
+});
+
+const showResetAll = computed(
+  () => overrideKeys.value.length > 0 || activeSyntheticKeys.value.length > 0,
+);
+
+function addSyntheticOverrideFor(target: EditTarget, key: string): void {
   if (!isWindowsPlatform()) return;
   if (key === SYN_KEYS.configureDisplayResolution) {
-    setForcedResolution(forcedResolution.value);
+    setForcedResolutionFor(
+      target,
+      target === 'draft' ? draftForcedResolution.value : forcedResolution.value,
+    );
   } else if (key === SYN_KEYS.configureDisplayRefreshRate) {
-    setForcedRefreshRate(forcedRefreshRate.value);
+    setForcedRefreshRateFor(
+      target,
+      target === 'draft' ? draftForcedRefreshRate.value : forcedRefreshRate.value,
+    );
   } else if (key === SYN_KEYS.configureDisplayHdr) {
-    setForcedHdr(forcedHdr.value);
+    setForcedHdrFor(target, target === 'draft' ? draftForcedHdr.value : forcedHdr.value);
   }
 }
 
-function removeSyntheticOverride(key: string): void {
+function removeSyntheticOverrideFor(target: EditTarget, key: string): void {
   if (key === SYN_KEYS.configureDisplayResolution) {
-    clearForcedResolution();
+    clearForcedResolutionFor(target);
   } else if (key === SYN_KEYS.configureDisplayRefreshRate) {
-    clearForcedRefreshRate();
+    clearForcedRefreshRateFor(target);
   } else if (key === SYN_KEYS.configureDisplayHdr) {
-    clearForcedHdr();
+    clearForcedHdrFor(target);
   }
+}
+
+function setForcedResolution(value: string): void {
+  setForcedResolutionFor('live', value);
+}
+
+function setDraftForcedResolution(value: string): void {
+  setForcedResolutionFor('draft', value);
+}
+
+function setForcedRefreshRate(value: string): void {
+  setForcedRefreshRateFor('live', value);
+}
+
+function setDraftForcedRefreshRate(value: string): void {
+  setForcedRefreshRateFor('draft', value);
+}
+
+function setForcedHdr(value: string): void {
+  setForcedHdrFor('live', value);
+}
+
+function setDraftForcedHdr(value: string): void {
+  setForcedHdrFor('draft', value);
 }
 
 const allEntries = computed<Entry[]>(() => {
@@ -671,112 +1174,243 @@ const allEntries = computed<Entry[]>(() => {
 });
 
 const searchQuery = ref('');
-const searchOpen = ref(false);
+const ALL_GROUPS_ID = 'all';
+const selectedGroupId = ref<string>(ALL_GROUPS_ID);
 
-const searchResults = computed<Entry[]>(() => {
-  const v = (searchQuery.value || '').trim().toLowerCase();
-  const terms = v.split(/\s+/).filter(Boolean);
-  if (!terms.length) return [];
+function normalizedSearchTerms(query: string): string[] {
+  return String(query || '')
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
 
-  const used = new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]);
-  const scoreFor = (it: Entry): number => {
-    const lv = it.label.toLowerCase();
-    const kv = it.key.toLowerCase();
-    const pv = it.path.toLowerCase();
-    const dv = (it.desc || '').toLowerCase();
-    const ov = (it.optionsText || '').toLowerCase();
-    let total = 0;
-    for (const term of terms) {
-      let s = 0;
-      if (lv.includes(term)) {
-        s += 100 - lv.indexOf(term);
-        if (lv.startsWith(term)) s += 40;
-      } else if (kv.includes(term)) {
-        s += 80 - kv.indexOf(term);
-        if (kv.startsWith(term)) s += 30;
-      } else if (ov.includes(term)) {
-        s += 60 - ov.indexOf(term) / 10;
-      } else if (pv.includes(term)) {
-        s += 50 - pv.indexOf(term) / 50;
-      } else if (dv.includes(term)) {
-        s += 20 - dv.indexOf(term) / 200;
-      } else {
-        return 0;
-      }
-      total += s;
+function scoreEntryMatch(entry: Entry, terms: string[]): number {
+  if (!terms.length) return 0;
+  const lv = entry.label.toLowerCase();
+  const kv = entry.key.toLowerCase();
+  const pv = entry.path.toLowerCase();
+  const dv = (entry.desc || '').toLowerCase();
+  const ov = (entry.optionsText || '').toLowerCase();
+  let total = 0;
+  for (const term of terms) {
+    let score = 0;
+    if (lv.includes(term)) {
+      score += 100 - lv.indexOf(term);
+      if (lv.startsWith(term)) score += 40;
+    } else if (kv.includes(term)) {
+      score += 85 - kv.indexOf(term);
+      if (kv.startsWith(term)) score += 30;
+    } else if (ov.includes(term)) {
+      score += 55 - ov.indexOf(term) / 10;
+    } else if (pv.includes(term)) {
+      score += 40 - pv.indexOf(term) / 50;
+    } else if (dv.includes(term)) {
+      score += 20 - dv.indexOf(term) / 200;
+    } else {
+      return 0;
     }
-    total -= (pv.length + dv.length + ov.length) / 1500;
-    return total;
-  };
-
-  return allEntries.value
-    .filter((e) => !used.has(e.key) && !isHiddenOverrideKey(e.key))
-    .map((it) => ({ it, s: scoreFor(it) }))
-    .filter((x) => x.s > 0)
-    .sort((a, b) => b.s - a.s)
-    .slice(0, 15)
-    .map((x) => x.it);
-});
-
-function onSearchFocus() {
-  searchOpen.value = (searchQuery.value || '').trim().length > 0;
-}
-function onSearchBlur() {
-  setTimeout(() => {
-    searchOpen.value = false;
-  }, 120);
+    total += score;
+  }
+  total -= (pv.length + dv.length + ov.length) / 1500;
+  return total;
 }
 
-watch(searchQuery, (q) => {
-  searchOpen.value = (q || '').trim().length > 0;
+const searchTerms = computed(() => normalizedSearchTerms(searchQuery.value));
+
+const usedOverrideKeys = computed(
+  () => new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]),
+);
+const browseModalOpen = ref(false);
+const pendingAddKeys = ref<string[]>([]);
+const modalUsedOverrideKeys = computed(
+  () => new Set([...visibleDraftOverrideKeys.value, ...draftSyntheticKeys.value]),
+);
+const pickerReservedKeys = computed(() =>
+  browseModalOpen.value ? modalUsedOverrideKeys.value : usedOverrideKeys.value,
+);
+
+const availableEntries = computed<Entry[]>(() =>
+  allEntries.value.filter(
+    (entry) => !pickerReservedKeys.value.has(entry.key) && !isHiddenOverrideKey(entry.key),
+  ),
+);
+
+const groupOrder = computed(() => {
+  const order = new Map<string, number>();
+  for (const entry of allEntries.value) {
+    if (!order.has(entry.groupId)) {
+      order.set(entry.groupId, order.size);
+    }
+  }
+  return order;
 });
 
-function addFirstResult() {
-  if (searchResults.value.length) {
-    addOverride(searchResults.value[0].key);
+const availableGroups = computed<AvailableGroup[]>(() => {
+  const groups = new Map<string, AvailableGroup>();
+  for (const entry of availableEntries.value) {
+    const existing = groups.get(entry.groupId);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      groups.set(entry.groupId, {
+        id: entry.groupId,
+        name: entry.groupName,
+        count: 1,
+      });
+    }
+  }
+  return Array.from(groups.values()).sort(
+    (a, b) =>
+      (groupOrder.value.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+        (groupOrder.value.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name),
+  );
+});
+
+watch(
+  availableGroups,
+  (groups) => {
+    if (selectedGroupId.value === ALL_GROUPS_ID) return;
+    if (!groups.some((group) => group.id === selectedGroupId.value)) {
+      selectedGroupId.value = ALL_GROUPS_ID;
+    }
+  },
+  { immediate: true },
+);
+
+const filteredAvailableGroups = computed<FilteredGroup[]>(() => {
+  const grouped = new Map<string, ScoredEntry[]>();
+  for (const entry of availableEntries.value) {
+    if (selectedGroupId.value !== ALL_GROUPS_ID && entry.groupId !== selectedGroupId.value) {
+      continue;
+    }
+    const matchScore = searchTerms.value.length ? scoreEntryMatch(entry, searchTerms.value) : 1;
+    if (searchTerms.value.length && matchScore <= 0) {
+      continue;
+    }
+    const bucket = grouped.get(entry.groupId) ?? [];
+    bucket.push({
+      ...entry,
+      matchScore,
+    });
+    grouped.set(entry.groupId, bucket);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([groupId, entries]) => ({
+      id: groupId,
+      name: entries[0]?.groupName ?? groupId,
+      entries: entries.sort((a, b) =>
+        searchTerms.value.length
+          ? b.matchScore - a.matchScore || a.label.localeCompare(b.label)
+          : a.label.localeCompare(b.label),
+      ),
+    }))
+    .sort(
+      (a, b) =>
+        (groupOrder.value.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (groupOrder.value.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name),
+    );
+});
+
+const filteredAvailableCount = computed(() =>
+  filteredAvailableGroups.value.reduce((total, group) => total + group.entries.length, 0),
+);
+
+const hasFilterControls = computed(
+  () => searchTerms.value.length > 0 || selectedGroupId.value !== ALL_GROUPS_ID,
+);
+
+function resetFilters() {
+  searchQuery.value = '';
+  selectedGroupId.value = ALL_GROUPS_ID;
+}
+
+function resetAddSettingsState() {
+  pendingAddKeys.value = [];
+  draftOverrides.value = {};
+  draftJsonDrafts.value = {};
+  draftJsonErrors.value = {};
+  resetFilters();
+}
+
+function openAddSettings() {
+  draftOverrides.value = cloneValue(overrides.value ?? {}) as Record<string, unknown>;
+  pendingAddKeys.value = [];
+  draftJsonDrafts.value = {};
+  draftJsonErrors.value = {};
+  resetFilters();
+  browseModalOpen.value = true;
+}
+
+function cancelAddSettings() {
+  browseModalOpen.value = false;
+  resetAddSettingsState();
+}
+
+function addFirstFilteredEntry() {
+  const first = filteredAvailableGroups.value[0]?.entries[0];
+  if (first) {
+    queueOverrideAddition(first.key);
   }
 }
 
-function addOverride(key: string) {
+function addOverrideToDraft(key: string) {
   if (!isAllowedKey(key)) return;
   if (isHiddenOverrideKey(key)) return;
   if (isSyntheticKey(key)) {
-    addSyntheticOverride(key);
-    searchQuery.value = '';
-    searchOpen.value = false;
+    addSyntheticOverrideFor('draft', key);
     return;
   }
-  ensureOverridesObject();
-  if ((overrides.value as any)[key] !== undefined) return;
+  ensureOverridesObjectFor('draft');
+  if ((draftOverrides.value as any)[key] !== undefined) return;
   const current = getGlobalValue(key);
-  (overrides.value as any)[key] = cloneValue(current);
-  searchQuery.value = '';
-  searchOpen.value = false;
+  (draftOverrides.value as any)[key] = cloneValue(current);
+}
+
+function queueOverrideAddition(key: string) {
+  if (!isAllowedKey(key)) return;
+  if (isHiddenOverrideKey(key)) return;
+  if (modalUsedOverrideKeys.value.has(key)) return;
+  addOverrideToDraft(key);
+  if (!usedOverrideKeys.value.has(key) && !pendingAddKeys.value.includes(key)) {
+    pendingAddKeys.value = [...pendingAddKeys.value, key];
+  }
+}
+
+function savePendingAdditions() {
+  commitAllJsonFor('draft');
+  overrides.value = cloneValue(draftOverrides.value ?? {}) as Record<string, unknown>;
+  browseModalOpen.value = false;
+  resetAddSettingsState();
 }
 
 function removeOverride(key: string) {
   if (isSyntheticKey(key)) {
-    removeSyntheticOverride(key);
+    removeSyntheticOverrideFor('live', key);
     return;
   }
-  ensureOverridesObject();
-  try {
-    delete (overrides.value as any)[key];
-  } catch {}
-  clearJsonState(key);
+  clearOverrideKey(key);
+}
+
+function removeDraftOverride(key: string) {
+  if (isSyntheticKey(key)) {
+    removeSyntheticOverrideFor('draft', key);
+  } else {
+    clearOverrideKeyFor('draft', key);
+  }
+  pendingAddKeys.value = pendingAddKeys.value.filter((value) => value !== key);
 }
 
 function clearAll() {
   overrides.value = {};
   jsonDrafts.value = {};
   jsonErrors.value = {};
-  numericTextDrafts.value = {};
 }
 
-const overrideEntries = computed<Entry[]>(() => {
-  const keys = Array.from(new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]));
+function mapEntries(keys: string[]): Entry[] {
   const byKey = new Map(allEntries.value.map((e) => [e.key, e] as const));
-  return keys
+  return Array.from(new Set(keys))
     .map((k) => {
       const base = byKey.get(k);
       return {
@@ -793,7 +1427,17 @@ const overrideEntries = computed<Entry[]>(() => {
       } as Entry;
     })
     .sort((a, b) => a.path.localeCompare(b.path));
-});
+}
+
+const overrideEntries = computed<Entry[]>(() =>
+  mapEntries([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]),
+);
+
+const modalOverrideEntries = computed<Entry[]>(() =>
+  mapEntries([...visibleDraftOverrideKeys.value, ...draftSyntheticKeys.value]),
+);
+
+const activeOverrideCount = computed(() => overrideEntries.value.length);
 
 function formatValue(v: unknown): string {
   if (v === null) return 'null';
@@ -826,6 +1470,52 @@ function formatValueForKey(key: string, value: unknown): string {
   return formatValue(value);
 }
 
+function rawOverrideValueFor(target: EditTarget, key: string): unknown {
+  return (getOverridesSource(target) as any)?.[key];
+}
+
+function rawOverrideValue(key: string): unknown {
+  return rawOverrideValueFor('live', key);
+}
+
+function entryTypeLabel(key: string): string {
+  if (isSyntheticKey(key)) return 'Shortcut';
+  switch (editorKind(key, browseModalOpen.value ? 'draft' : 'live')) {
+    case 'boolean':
+      return 'Toggle';
+    case 'select':
+      return 'Choice';
+    case 'number':
+      return 'Number';
+    case 'json':
+      return 'JSON';
+    default:
+      return 'Text';
+  }
+}
+
+function availableOptionsPreview(entry: Entry): string {
+  if (!entry.options.length) return '';
+  const preview = entry.options
+    .slice(0, 4)
+    .map((option) => String(option.label || option.value || '').trim())
+    .filter(Boolean);
+  if (!preview.length) return '';
+  if (entry.options.length > preview.length) {
+    return `${preview.join(', ')} +${entry.options.length - preview.length} more`;
+  }
+  return preview.join(', ');
+}
+
+function filterChipClass(active: boolean): string[] {
+  return [
+    'inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors',
+    active
+      ? 'border-primary/35 bg-primary/10 text-primary shadow-sm'
+      : 'border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/60 hover:border-primary/25 hover:text-primary',
+  ];
+}
+
 // --- Editors ---------------------------------------------------------------
 
 type BoolPair = { truthy: any; falsy: any; truthyNorm?: string; falsyNorm?: string };
@@ -839,7 +1529,6 @@ const BOOL_STRING_PAIRS = [
 ] as const;
 
 const NUMERIC_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
-const NUMERIC_TEXT_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
 
 function boolPairFromValue(value: unknown): BoolPair | null {
   if (value === true || value === false) return { truthy: true, falsy: false };
@@ -854,8 +1543,8 @@ function boolPairFromValue(value: unknown): BoolPair | null {
   return null;
 }
 
-function selectOptions(key: string): OverrideSelectOption[] {
-  const cur = (overrides.value as any)?.[key];
+function selectOptions(key: string, target: EditTarget = 'live'): OverrideSelectOption[] {
+  const cur = rawOverrideValueFor(target, key);
   const global = getGlobalValue(key);
   const currentValue = cur !== undefined ? cur : global;
   return getOverrideSelectOptions(key, {
@@ -866,24 +1555,11 @@ function selectOptions(key: string): OverrideSelectOption[] {
   });
 }
 
-function selectValue(key: string): string | number {
-  const cur = (overrides.value as any)?.[key];
-  if (typeof cur === 'string' || (typeof cur === 'number' && Number.isFinite(cur))) return cur;
-  const gv = getGlobalValue(key);
-  if (typeof gv === 'string' || (typeof gv === 'number' && Number.isFinite(gv))) return gv;
-  const opts = selectOptions(key);
-  return opts.length ? opts[0].value : '';
-}
-
-function setSelect(key: string, value: unknown): void {
-  ensureOverridesObject();
-  if (typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))) {
-    (overrides.value as any)[key] = value;
-  }
-}
-
-function editorKind(key: string): 'boolean' | 'select' | 'number' | 'string' | 'json' {
-  const opts = selectOptions(key);
+function editorKind(
+  key: string,
+  target: EditTarget = 'live',
+): 'boolean' | 'select' | 'number' | 'string' | 'json' {
+  const opts = selectOptions(key, target);
   if (opts && opts.length) return 'select';
 
   const gv = getGlobalValue(key);
@@ -893,7 +1569,7 @@ function editorKind(key: string): 'boolean' | 'select' | 'number' | 'string' | '
   if (typeof gv === 'string') return 'string';
   if (gv && typeof gv === 'object') return 'json';
 
-  const ov = (overrides.value as any)?.[key];
+  const ov = rawOverrideValueFor(target, key);
   if (boolPairFromValue(ov)) return 'boolean';
   if (typeof ov === 'number') return 'number';
   if (typeof ov === 'string') return 'string';
@@ -901,180 +1577,149 @@ function editorKind(key: string): 'boolean' | 'select' | 'number' | 'string' | '
   return 'string';
 }
 
-function boolChecked(key: string): boolean {
-  const pair =
-    boolPairFromValue(getGlobalValue(key)) ?? boolPairFromValue((overrides.value as any)?.[key]);
-  const cur = (overrides.value as any)?.[key];
-  if (!pair) return !!cur;
-  if (cur === pair.truthy) return true;
-  if (cur === pair.falsy) return false;
-  if (typeof cur === 'boolean') return cur;
-  if (typeof cur === 'number') return cur !== 0;
-  if (typeof cur === 'string') {
-    const norm = cur.toLowerCase().trim();
-    if (pair.truthyNorm && norm === pair.truthyNorm) return true;
-    if (pair.falsyNorm && norm === pair.falsyNorm) return false;
-    if (norm === String(pair.truthy)) return true;
-    if (norm === String(pair.falsy)) return false;
+function overridePlaceholder(key: string, target: EditTarget = 'live'): string {
+  switch (editorKind(key, target)) {
+    case 'number':
+      return '(number)';
+    case 'string':
+      return '(value)';
+    default:
+      return '';
   }
-  return false;
 }
 
-function setBool(key: string, checked: boolean): void {
-  ensureOverridesObject();
-  const pair = boolPairFromValue(getGlobalValue(key)) ??
-    boolPairFromValue((overrides.value as any)?.[key]) ?? {
-      truthy: true,
-      falsy: false,
-    };
-  (overrides.value as any)[key] = checked ? pair.truthy : pair.falsy;
-}
-
-function numberValue(key: string): number | null {
-  const cur = (overrides.value as any)?.[key];
-  if (typeof cur === 'number' && Number.isFinite(cur)) return cur;
-  if (typeof cur === 'string') {
-    const n = Number(cur);
-    if (Number.isFinite(n)) return n;
-  }
-  const gv = getGlobalValue(key);
-  if (typeof gv === 'number' && Number.isFinite(gv)) return gv;
-  return null;
-}
-
-function setNumber(key: string, value: number | null): void {
+function setRenderedOverrideValueFor(target: EditTarget, key: string, value: unknown): void {
+  const kind = editorKind(key, target);
   if (value === null || value === undefined) {
-    removeOverride(key);
+    if (kind === 'number' || kind === 'select') {
+      if (target === 'draft') {
+        removeDraftOverride(key);
+      } else {
+        removeOverride(key);
+      }
+      return;
+    }
+    setOverrideKeyFor(target, key, value);
     return;
   }
-  ensureOverridesObject();
-  (overrides.value as any)[key] = value;
-}
 
-function stringValue(key: string): string {
-  const cur = (overrides.value as any)?.[key];
-  if (cur === null || cur === undefined) return '';
-  if (typeof cur === 'string') return cur;
-  try {
-    return JSON.stringify(cur);
-  } catch {
-    return String(cur);
+  if (kind === 'number') {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      setOverrideKeyFor(target, key, value);
+      return;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        setOverrideKeyFor(target, key, parsed);
+      }
+    }
+    return;
   }
+
+  if (kind === 'string') {
+    setOverrideKeyFor(target, key, String(value));
+    return;
+  }
+
+  setOverrideKeyFor(target, key, value);
 }
 
-function setString(key: string, value: string): void {
-  ensureOverridesObject();
-  (overrides.value as any)[key] = String(value ?? '');
+function setRenderedOverrideValue(key: string, value: unknown): void {
+  setRenderedOverrideValueFor('live', key, value);
 }
 
 const jsonDrafts = ref<Record<string, string>>({});
 const jsonErrors = ref<Record<string, string>>({});
-const numericTextDrafts = ref<Record<string, string>>({});
+const draftJsonDrafts = ref<Record<string, string>>({});
+const draftJsonErrors = ref<Record<string, string>>({});
 
-function clearJsonState(key: string) {
-  const d = { ...jsonDrafts.value };
-  const e = { ...jsonErrors.value };
+function clearJsonStateFor(target: EditTarget, key: string) {
+  const drafts = target === 'draft' ? draftJsonDrafts : jsonDrafts;
+  const errors = target === 'draft' ? draftJsonErrors : jsonErrors;
+  const d = { ...drafts.value };
+  const e = { ...errors.value };
   delete d[key];
   delete e[key];
-  jsonDrafts.value = d;
-  jsonErrors.value = e;
+  drafts.value = d;
+  errors.value = e;
 }
 
-function clearNumericTextState(key: string) {
-  const next = { ...numericTextDrafts.value };
-  delete next[key];
-  numericTextDrafts.value = next;
+function clearJsonState(key: string) {
+  clearJsonStateFor('live', key);
 }
 
-function numericTextDraft(key: string): string {
-  if (Object.prototype.hasOwnProperty.call(numericTextDrafts.value, key)) {
-    return numericTextDrafts.value[key] ?? '';
+function jsonDraftFor(target: EditTarget, key: string): string {
+  const drafts = target === 'draft' ? draftJsonDrafts : jsonDrafts;
+  if (Object.prototype.hasOwnProperty.call(drafts.value, key)) {
+    return drafts.value[key] ?? '';
   }
-  const cur = (overrides.value as any)?.[key];
-  const base =
-    typeof cur === 'number' && Number.isFinite(cur)
-      ? String(cur)
-      : typeof cur === 'string'
-        ? cur
-        : '';
-  numericTextDrafts.value = { ...numericTextDrafts.value, [key]: base };
-  return base;
-}
-
-function updateNumericTextDraft(key: string, value: string) {
-  numericTextDrafts.value = { ...numericTextDrafts.value, [key]: String(value ?? '') };
-}
-
-function commitNumericText(key: string) {
-  const raw = (numericTextDrafts.value[key] ?? '').trim();
-  if (!raw) {
-    setOverrideKey(key, 0);
-    updateNumericTextDraft(key, '0');
-    return;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    return;
-  }
-  let next = Math.trunc(parsed);
-  if (next < 0) next = 0;
-  if (next > 1000) next = 1000;
-  setOverrideKey(key, next);
-  updateNumericTextDraft(key, String(next));
-}
-
-function jsonDraft(key: string): string {
-  if (Object.prototype.hasOwnProperty.call(jsonDrafts.value, key)) {
-    return jsonDrafts.value[key] ?? '';
-  }
-  const cur = (overrides.value as any)?.[key];
+  const cur = rawOverrideValueFor(target, key);
   let text = '';
   try {
     text = JSON.stringify(cur, null, 2);
   } catch {
     text = String(cur ?? '');
   }
-  jsonDrafts.value = { ...jsonDrafts.value, [key]: text };
+  drafts.value = { ...drafts.value, [key]: text };
   return text;
 }
 
+function jsonDraft(key: string): string {
+  return jsonDraftFor('live', key);
+}
+
+function updateJsonDraftFor(target: EditTarget, key: string, value: string) {
+  const drafts = target === 'draft' ? draftJsonDrafts : jsonDrafts;
+  drafts.value = { ...drafts.value, [key]: String(value ?? '') };
+}
+
 function updateJsonDraft(key: string, value: string) {
-  jsonDrafts.value = { ...jsonDrafts.value, [key]: String(value ?? '') };
+  updateJsonDraftFor('live', key, value);
+}
+
+function jsonErrorFor(target: EditTarget, key: string): string {
+  const errors = target === 'draft' ? draftJsonErrors : jsonErrors;
+  return errors.value[key] || '';
 }
 
 function jsonError(key: string): string {
-  return jsonErrors.value[key] || '';
+  return jsonErrorFor('live', key);
 }
 
-function commitJson(key: string) {
-  const raw = (jsonDrafts.value[key] ?? '').trim();
+function commitJsonFor(target: EditTarget, key: string) {
+  const drafts = target === 'draft' ? draftJsonDrafts : jsonDrafts;
+  const errors = target === 'draft' ? draftJsonErrors : jsonErrors;
+  const raw = (drafts.value[key] ?? '').trim();
   if (!raw) {
-    removeOverride(key);
-    jsonErrors.value = { ...jsonErrors.value, [key]: '' };
+    if (target === 'draft') {
+      removeDraftOverride(key);
+    } else {
+      removeOverride(key);
+    }
+    errors.value = { ...errors.value, [key]: '' };
     return;
   }
   try {
     const parsed = JSON.parse(raw);
-    ensureOverridesObject();
-    (overrides.value as any)[key] = parsed;
-    jsonErrors.value = { ...jsonErrors.value, [key]: '' };
+    setOverrideKeyFor(target, key, parsed);
+    errors.value = { ...errors.value, [key]: '' };
   } catch (e: any) {
-    jsonErrors.value = {
-      ...jsonErrors.value,
+    errors.value = {
+      ...errors.value,
       [key]: e?.message ? String(e.message) : 'Invalid JSON',
     };
   }
 }
+
+function commitJson(key: string) {
+  commitJsonFor('live', key);
+}
+
+function commitAllJsonFor(target: EditTarget) {
+  const drafts = target === 'draft' ? draftJsonDrafts.value : jsonDrafts.value;
+  for (const key of Object.keys(drafts)) {
+    commitJsonFor(target, key);
+  }
+}
 </script>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.25s;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>

@@ -21,7 +21,11 @@
         </div>
 
         <div class="header-right">
-          <button class="settings-btn" @click="showSettings = !showSettings" :class="{ active: showSettings }">
+          <button
+            class="settings-btn"
+            @click="showSettings = !showSettings"
+            :class="{ active: showSettings }"
+          >
             <i class="fas fa-sliders-h"></i>
             <span>Settings</span>
           </button>
@@ -138,7 +142,10 @@
       </section>
 
       <!-- Floating Stream Preview -->
-      <div class="stream-preview" :class="{ expanded: isFullscreen, minimized: streamMinimized && !isFullscreen }">
+      <div
+        class="stream-preview"
+        :class="{ expanded: isFullscreen, minimized: streamMinimized && !isFullscreen }"
+      >
         <div class="preview-header" v-if="!isFullscreen">
           <div class="preview-title">
             <i class="fas fa-tv"></i>
@@ -149,7 +156,11 @@
             </span>
           </div>
           <div class="preview-controls">
-            <button @click="streamMinimized = !streamMinimized" class="control-btn" v-if="!isFullscreen">
+            <button
+              @click="streamMinimized = !streamMinimized"
+              class="control-btn"
+              v-if="!isFullscreen"
+            >
               <i :class="streamMinimized ? 'fas fa-chevron-up' : 'fas fa-chevron-down'"></i>
             </button>
             <button @click="toggleFullscreen" class="control-btn">
@@ -179,7 +190,11 @@
           <div v-if="!isConnected && !isConnecting" class="idle-state">
             <div class="idle-content">
               <i :class="selectedAppId ? 'fas fa-play-circle' : 'fas fa-desktop'"></i>
-              <p>{{ selectedAppId ? $t('webrtc.idle_game_selected') : $t('webrtc.idle_no_selection') }}</p>
+              <p>
+                {{
+                  selectedAppId ? $t('webrtc.idle_game_selected') : $t('webrtc.idle_no_selection')
+                }}
+              </p>
             </div>
           </div>
 
@@ -196,7 +211,11 @@
 
           <!-- Notification -->
           <Transition name="notification-fade">
-            <div v-if="activeNotification" class="notification-toast" :class="activeNotification.type">
+            <div
+              v-if="activeNotification"
+              class="notification-toast"
+              :class="activeNotification.type"
+            >
               <i :class="notificationIcon"></i>
               <div class="notification-text">
                 <strong>{{ activeNotification.title }}</strong>
@@ -215,7 +234,15 @@
             :class="{ connected: isConnected, connecting: isConnecting }"
             :disabled="isConnecting"
           >
-            <i :class="isConnected ? 'fas fa-stop' : isConnecting ? 'fas fa-circle-notch fa-spin' : 'fas fa-play'"></i>
+            <i
+              :class="
+                isConnected
+                  ? 'fas fa-stop'
+                  : isConnecting
+                    ? 'fas fa-circle-notch fa-spin'
+                    : 'fas fa-play'
+              "
+            ></i>
             <span>{{ $t(connectLabelKey) }}</span>
           </button>
 
@@ -242,10 +269,22 @@
 
         <!-- Compact Metrics -->
         <div class="compact-metrics" v-if="isConnected && !isFullscreen && !streamMinimized">
-          <div class="metric"><span class="label">Bitrate</span><span class="value">{{ formatKbps(stats.videoBitrateKbps) }}</span></div>
-          <div class="metric"><span class="label">Latency</span><span class="value">{{ formatMs(smoothedLatencyMs) }}</span></div>
-          <div class="metric"><span class="label">FPS</span><span class="value">{{ displayVideoFps ? displayVideoFps.toFixed(0) : '--' }}</span></div>
-          <div class="metric"><span class="label">Dropped</span><span class="value">{{ stats.videoFramesDropped ?? '--' }}</span></div>
+          <div class="metric">
+            <span class="label">Bitrate</span
+            ><span class="value">{{ formatKbps(stats.videoBitrateKbps) }}</span>
+          </div>
+          <div class="metric">
+            <span class="label">Latency</span
+            ><span class="value">{{ formatMs(smoothedLatencyMs) }}</span>
+          </div>
+          <div class="metric">
+            <span class="label">FPS</span
+            ><span class="value">{{ displayVideoFps ? displayVideoFps.toFixed(0) : '--' }}</span>
+          </div>
+          <div class="metric">
+            <span class="label">Dropped</span
+            ><span class="value">{{ stats.videoFramesDropped ?? '--' }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -270,9 +309,27 @@
               <n-input-number v-model:value="config.height" :min="180" :max="4320" size="small" />
             </div>
             <div class="preset-chips">
-              <button @click="setResolution(1920, 1080)" class="chip" :class="{ active: config.width === 1920 && config.height === 1080 }">1080p</button>
-              <button @click="setResolution(2560, 1440)" class="chip" :class="{ active: config.width === 2560 && config.height === 1440 }">1440p</button>
-              <button @click="setResolution(3840, 2160)" class="chip" :class="{ active: config.width === 3840 && config.height === 2160 }">4K</button>
+              <button
+                @click="setResolution(1920, 1080)"
+                class="chip"
+                :class="{ active: config.width === 1920 && config.height === 1080 }"
+              >
+                1080p
+              </button>
+              <button
+                @click="setResolution(2560, 1440)"
+                class="chip"
+                :class="{ active: config.width === 2560 && config.height === 1440 }"
+              >
+                1440p
+              </button>
+              <button
+                @click="setResolution(3840, 2160)"
+                class="chip"
+                :class="{ active: config.width === 3840 && config.height === 2160 }"
+              >
+                4K
+              </button>
             </div>
           </div>
 
@@ -280,10 +337,26 @@
           <div class="setting-group">
             <label class="group-label">{{ $t('webrtc.framerate') }}</label>
             <div class="preset-chips">
-              <button @click="config.fps = 30" class="chip" :class="{ active: config.fps === 30 }">30</button>
-              <button @click="config.fps = 60" class="chip" :class="{ active: config.fps === 60 }">60</button>
-              <button @click="config.fps = 120" class="chip" :class="{ active: config.fps === 120 }">120</button>
-              <button @click="config.fps = 144" class="chip" :class="{ active: config.fps === 144 }">144</button>
+              <button @click="config.fps = 30" class="chip" :class="{ active: config.fps === 30 }">
+                30
+              </button>
+              <button @click="config.fps = 60" class="chip" :class="{ active: config.fps === 60 }">
+                60
+              </button>
+              <button
+                @click="config.fps = 120"
+                class="chip"
+                :class="{ active: config.fps === 120 }"
+              >
+                120
+              </button>
+              <button
+                @click="config.fps = 144"
+                class="chip"
+                :class="{ active: config.fps === 144 }"
+              >
+                144
+              </button>
             </div>
           </div>
 
@@ -307,11 +380,35 @@
           <!-- Bitrate -->
           <div class="setting-group">
             <label class="group-label">{{ $t('webrtc.bitrate') }}</label>
-            <n-input-number v-model:value="config.bitrateKbps" :min="500" :max="200000" size="small" class="full-width" />
+            <n-input-number
+              v-model:value="config.bitrateKbps"
+              :min="500"
+              :max="200000"
+              size="small"
+              class="full-width"
+            />
             <div class="preset-chips">
-              <button @click="config.bitrateKbps = 10000" class="chip" :class="{ active: config.bitrateKbps === 10000 }">10 Mbps</button>
-              <button @click="config.bitrateKbps = 30000" class="chip" :class="{ active: config.bitrateKbps === 30000 }">30 Mbps</button>
-              <button @click="config.bitrateKbps = 60000" class="chip" :class="{ active: config.bitrateKbps === 60000 }">60 Mbps</button>
+              <button
+                @click="config.bitrateKbps = 10000"
+                class="chip"
+                :class="{ active: config.bitrateKbps === 10000 }"
+              >
+                10 Mbps
+              </button>
+              <button
+                @click="config.bitrateKbps = 30000"
+                class="chip"
+                :class="{ active: config.bitrateKbps === 30000 }"
+              >
+                30 Mbps
+              </button>
+              <button
+                @click="config.bitrateKbps = 60000"
+                class="chip"
+                :class="{ active: config.bitrateKbps === 60000 }"
+              >
+                60 Mbps
+              </button>
             </div>
           </div>
 
@@ -460,10 +557,14 @@ let notificationTimeout: number | null = null;
 const notificationIcon = computed(() => {
   if (!activeNotification.value) return 'fas fa-info-circle';
   switch (activeNotification.value.type) {
-    case 'error': return 'fas fa-circle-exclamation';
-    case 'warning': return 'fas fa-triangle-exclamation';
-    case 'success': return 'fas fa-circle-check';
-    default: return 'fas fa-circle-info';
+    case 'error':
+      return 'fas fa-circle-exclamation';
+    case 'warning':
+      return 'fas fa-triangle-exclamation';
+    case 'success':
+      return 'fas fa-circle-check';
+    default:
+      return 'fas fa-circle-info';
   }
 });
 
@@ -487,10 +588,18 @@ function dismissNotification() {
   }
 }
 
-function notifyError(title: string, msg?: string) { showNotification('error', title, msg, 8000); }
-function notifyWarning(title: string, msg?: string) { showNotification('warning', title, msg, 6000); }
-function notifySuccess(title: string, msg?: string) { showNotification('success', title, msg, 4000); }
-function notifyInfo(title: string, msg?: string) { showNotification('info', title, msg, 5000); }
+function notifyError(title: string, msg?: string) {
+  showNotification('error', title, msg, 8000);
+}
+function notifyWarning(title: string, msg?: string) {
+  showNotification('warning', title, msg, 6000);
+}
+function notifySuccess(title: string, msg?: string) {
+  showNotification('success', title, msg, 4000);
+}
+function notifyInfo(title: string, msg?: string) {
+  showNotification('info', title, msg, 5000);
+}
 
 // Helper function for resolution presets
 function setResolution(width: number, height: number) {
@@ -527,7 +636,8 @@ const encodingMimes: Record<EncodingType, string[]> = {
 
 function detectEncodingSupport(): Record<EncodingType, boolean> {
   const support: Record<EncodingType, boolean> = { h264: true, hevc: true, av1: true };
-  const caps = (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null) ??
+  const caps =
+    (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null) ??
     (typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null);
   if (!caps?.codecs) return support;
   const mimeTypes = caps.codecs.map((codec) => codec.mimeType.toLowerCase());
@@ -634,9 +744,14 @@ const CLIENT_CONFIG_STORAGE_KEY = 'sunshine.webrtc.session_config';
 
 function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
   const normalized = { ...profileConfig };
-  const fps = typeof normalized.fps === 'number' && Number.isFinite(normalized.fps) ? normalized.fps : 60;
+  const fps =
+    typeof normalized.fps === 'number' && Number.isFinite(normalized.fps) ? normalized.fps : 60;
   if (typeof normalized.hdr !== 'boolean') normalized.hdr = false;
-  if (normalized.encoding !== 'h264' && normalized.encoding !== 'hevc' && normalized.encoding !== 'av1') {
+  if (
+    normalized.encoding !== 'h264' &&
+    normalized.encoding !== 'hevc' &&
+    normalized.encoding !== 'av1'
+  ) {
     normalized.encoding = 'h264';
   }
   if (normalized.hdr && normalized.encoding === 'h264') normalized.encoding = 'hevc';
@@ -653,12 +768,16 @@ function normalizeProfileConfig(profileConfig: StreamConfig): StreamConfig {
 
   const modeRaw = normalized.videoPacingMode;
   const mode: PacingMode =
-    modeRaw === 'latency' || modeRaw === 'balanced' || modeRaw === 'smoothness' ? modeRaw : 'balanced';
+    modeRaw === 'latency' || modeRaw === 'balanced' || modeRaw === 'smoothness'
+      ? modeRaw
+      : 'balanced';
   normalized.videoPacingMode = mode;
 
   const slackRaw = normalized.videoPacingSlackMs;
   const slack =
-    typeof slackRaw === 'number' && Number.isFinite(slackRaw) ? Math.round(slackRaw) : pacingPresets[mode].slackMs;
+    typeof slackRaw === 'number' && Number.isFinite(slackRaw)
+      ? Math.round(slackRaw)
+      : pacingPresets[mode].slackMs;
   normalized.videoPacingSlackMs = Math.max(0, Math.min(10, slack));
 
   normalized.videoMaxFrameAgeFrames = clampMaxAgeFrames(
@@ -676,14 +795,18 @@ function loadCachedConfig(): void {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return;
     Object.assign(config, normalizeProfileConfig(parsed as StreamConfig));
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 function persistCachedConfig(): void {
   try {
     const snapshot = normalizeProfileConfig({ ...config });
     window.localStorage.setItem(CLIENT_CONFIG_STORAGE_KEY, JSON.stringify(snapshot));
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 const maxFrameAgeFrames = computed({
@@ -704,11 +827,37 @@ const maxFrameAgeFrames = computed({
   },
 });
 
-watch(() => config.hdr, (enabled) => { if (enabled) ensureHdrEncoding(); });
-watch(() => config.encoding, () => { if (config.hdr) ensureHdrEncoding(); });
-watch(() => config.hdr, (enabled) => { if (!enabled) hdrRuntimeWarning.value = null; });
-watch(() => config.encoding, () => { hdrRuntimeWarning.value = null; });
-watch(() => ({ ...config }), () => { persistCachedConfig(); }, { deep: true });
+watch(
+  () => config.hdr,
+  (enabled) => {
+    if (enabled) ensureHdrEncoding();
+  },
+);
+watch(
+  () => config.encoding,
+  () => {
+    if (config.hdr) ensureHdrEncoding();
+  },
+);
+watch(
+  () => config.hdr,
+  (enabled) => {
+    if (!enabled) hdrRuntimeWarning.value = null;
+  },
+);
+watch(
+  () => config.encoding,
+  () => {
+    hdrRuntimeWarning.value = null;
+  },
+);
+watch(
+  () => ({ ...config }),
+  () => {
+    persistCachedConfig();
+  },
+  { deep: true },
+);
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
@@ -740,22 +889,26 @@ function appHasCover(app: App): boolean {
 const filteredApps = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
   if (!query) return appsList.value;
-  return appsList.value.filter(app => {
+  return appsList.value.filter((app) => {
     const name = (app.name || '').toLowerCase();
     return name.includes(query);
   });
 });
 
-const appsWithCovers = computed(() => filteredApps.value.filter(app => appHasCover(app)));
-const appsWithoutCovers = computed(() => filteredApps.value.filter(app => !appHasCover(app)));
+const appsWithCovers = computed(() => filteredApps.value.filter((app) => appHasCover(app)));
+const appsWithoutCovers = computed(() => filteredApps.value.filter((app) => !appHasCover(app)));
 
 const selectedAppId = ref<number | null>(null);
 const resumeOnConnect = ref(true);
 const terminatePending = ref(false);
-const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(null);
+const sessionStatus = ref<{ activeSessions: number; appRunning: boolean; paused: boolean } | null>(
+  null,
+);
 let sessionStatusTimer: number | null = null;
 
-function appKey(app: App): string { return `${app.uuid || ''}-${app.name || 'app'}`; }
+function appKey(app: App): string {
+  return `${app.uuid || ''}-${app.name || 'app'}`;
+}
 
 function coverUrl(app: App): string {
   if (!app.uuid) return '';
@@ -822,12 +975,20 @@ const isConnecting = ref(false);
 const isConnected = ref(false);
 
 function setWebRtcActive(active: boolean): void {
-  try { (window as any).__sunshine_webrtc_active = active; } catch { /* ignore */ }
+  try {
+    (window as any).__sunshine_webrtc_active = active;
+  } catch {
+    /* ignore */
+  }
 }
 
-watch(() => [isConnecting.value, isConnected.value] as const, ([connecting, connected]) => {
-  setWebRtcActive(connecting || connected);
-}, { immediate: true });
+watch(
+  () => [isConnecting.value, isConnected.value] as const,
+  ([connecting, connected]) => {
+    setWebRtcActive(connecting || connected);
+  },
+  { immediate: true },
+);
 
 const connectLabelKey = computed(() => {
   if (isConnecting.value) return 'webrtc.connecting';
@@ -954,25 +1115,35 @@ const diagnosticsSamples = ref<DiagnosticsSample[]>([]);
 let diagnosticsSampleTimer: number | null = null;
 
 const renderFps = computed(() => {
-  const intervalMs = videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs;
-  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const intervalMs =
+    videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0)
+    return undefined;
   return 1000 / intervalMs;
 });
 
 const renderFps98 = computed(() => {
-  const intervalMs = videoFrameMetrics.value.avg98IntervalMs ?? videoFrameMetrics.value.p98IntervalMs;
-  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const intervalMs =
+    videoFrameMetrics.value.avg98IntervalMs ?? videoFrameMetrics.value.p98IntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0)
+    return undefined;
   return 1000 / intervalMs;
 });
 
 const renderFps99 = computed(() => {
-  const intervalMs = videoFrameMetrics.value.avg99IntervalMs ?? videoFrameMetrics.value.p99IntervalMs;
-  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+  const intervalMs =
+    videoFrameMetrics.value.avg99IntervalMs ?? videoFrameMetrics.value.p99IntervalMs;
+  if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0)
+    return undefined;
   return 1000 / intervalMs;
 });
 
-const renderDelayMs = computed(() => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs);
-const renderIntervalMs = computed(() => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs);
+const renderDelayMs = computed(
+  () => videoFrameMetrics.value.lastDelayMs ?? videoFrameMetrics.value.avgDelayMs,
+);
+const renderIntervalMs = computed(
+  () => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs,
+);
 
 const LATENCY_SAMPLE_WINDOW_MS = 30000;
 const LATENCY_SMOOTH_TAU_MS = 2000;
@@ -984,13 +1155,22 @@ const latencySamples = ref<{ ts: number; value: number }[]>([]);
 const smoothedLatencyMs = ref<number | undefined>(undefined);
 let lastLatencySampleAt: number | null = null;
 const videoJitterBufferMs = computed(() => stats.value.videoJitterBufferMs);
-const oneWayRttMs = computed(() => stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined);
-const videoPlayoutDelayMs = computed(() => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs);
+const oneWayRttMs = computed(() =>
+  stats.value.roundTripTimeMs ? stats.value.roundTripTimeMs / 2 : undefined,
+);
+const videoPlayoutDelayMs = computed(
+  () => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs,
+);
 const smoothedVideoFps = ref<number | undefined>(undefined);
 let lastVideoFpsSampleAt: number | null = null;
 
-const displayVideoFps = computed(() =>
-  renderFps99.value ?? renderFps98.value ?? renderFps.value ?? smoothedVideoFps.value ?? stats.value.videoFps
+const displayVideoFps = computed(
+  () =>
+    renderFps99.value ??
+    renderFps98.value ??
+    renderFps.value ??
+    smoothedVideoFps.value ??
+    stats.value.videoFps,
 );
 
 const estimatedLatencyMs = computed(() => {
@@ -1001,43 +1181,56 @@ const estimatedLatencyMs = computed(() => {
   return parts.reduce((total, value) => total + value, 0);
 });
 
-watch(() => estimatedLatencyMs.value, (value) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) return;
-  const now = Date.now();
-  const lastAt = lastLatencySampleAt ?? now;
-  const deltaMs = Math.max(0, now - lastAt);
-  const current = smoothedLatencyMs.value;
-  const jumpMs = typeof current === 'number' && Number.isFinite(current) ? value - current : undefined;
-  const jumpRatio = typeof current === 'number' && Number.isFinite(current) && current > 0 ? value / current : undefined;
-  const useFastTau = jumpMs != null && (jumpMs >= LATENCY_FAST_TRIGGER_MS || (jumpRatio != null && jumpRatio >= LATENCY_FAST_TRIGGER_RATIO));
-  const tauMs = useFastTau ? LATENCY_FAST_TAU_MS : LATENCY_SMOOTH_TAU_MS;
-  const alpha = 1 - Math.exp(-deltaMs / tauMs);
-  if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
-    smoothedLatencyMs.value = value;
-  } else {
-    smoothedLatencyMs.value = smoothedLatencyMs.value + alpha * (value - smoothedLatencyMs.value);
-  }
-  lastLatencySampleAt = now;
-  latencySamples.value.push({ ts: now, value });
-  const cutoff = now - LATENCY_SAMPLE_WINDOW_MS;
-  while (latencySamples.value.length && latencySamples.value[0].ts < cutoff) {
-    latencySamples.value.shift();
-  }
-});
+watch(
+  () => estimatedLatencyMs.value,
+  (value) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) return;
+    const now = Date.now();
+    const lastAt = lastLatencySampleAt ?? now;
+    const deltaMs = Math.max(0, now - lastAt);
+    const current = smoothedLatencyMs.value;
+    const jumpMs =
+      typeof current === 'number' && Number.isFinite(current) ? value - current : undefined;
+    const jumpRatio =
+      typeof current === 'number' && Number.isFinite(current) && current > 0
+        ? value / current
+        : undefined;
+    const useFastTau =
+      jumpMs != null &&
+      (jumpMs >= LATENCY_FAST_TRIGGER_MS ||
+        (jumpRatio != null && jumpRatio >= LATENCY_FAST_TRIGGER_RATIO));
+    const tauMs = useFastTau ? LATENCY_FAST_TAU_MS : LATENCY_SMOOTH_TAU_MS;
+    const alpha = 1 - Math.exp(-deltaMs / tauMs);
+    if (smoothedLatencyMs.value == null || !Number.isFinite(smoothedLatencyMs.value)) {
+      smoothedLatencyMs.value = value;
+    } else {
+      smoothedLatencyMs.value = smoothedLatencyMs.value + alpha * (value - smoothedLatencyMs.value);
+    }
+    lastLatencySampleAt = now;
+    latencySamples.value.push({ ts: now, value });
+    const cutoff = now - LATENCY_SAMPLE_WINDOW_MS;
+    while (latencySamples.value.length && latencySamples.value[0].ts < cutoff) {
+      latencySamples.value.shift();
+    }
+  },
+);
 
-watch(() => stats.value.videoFps, (value) => {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return;
-  const now = Date.now();
-  const lastAt = lastVideoFpsSampleAt ?? now;
-  const deltaMs = Math.max(0, now - lastAt);
-  const alpha = 1 - Math.exp(-deltaMs / VIDEO_FPS_SMOOTH_TAU_MS);
-  if (smoothedVideoFps.value == null || !Number.isFinite(smoothedVideoFps.value)) {
-    smoothedVideoFps.value = value;
-  } else {
-    smoothedVideoFps.value = smoothedVideoFps.value + alpha * (value - smoothedVideoFps.value);
-  }
-  lastVideoFpsSampleAt = now;
-});
+watch(
+  () => stats.value.videoFps,
+  (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return;
+    const now = Date.now();
+    const lastAt = lastVideoFpsSampleAt ?? now;
+    const deltaMs = Math.max(0, now - lastAt);
+    const alpha = 1 - Math.exp(-deltaMs / VIDEO_FPS_SMOOTH_TAU_MS);
+    if (smoothedVideoFps.value == null || !Number.isFinite(smoothedVideoFps.value)) {
+      smoothedVideoFps.value = value;
+    } else {
+      smoothedVideoFps.value = smoothedVideoFps.value + alpha * (value - smoothedVideoFps.value);
+    }
+    lastVideoFpsSampleAt = now;
+  },
+);
 
 const overlayLines = computed(() => {
   const fps = displayVideoFps.value ? displayVideoFps.value.toFixed(0) : '--';
@@ -1486,10 +1679,19 @@ watch(
       const errorMs = Math.max(0, videoValue - (baseTargetMs + frameMs));
       const boostActive = modeSwitchDrainUntil != null && now <= modeSwitchDrainUntil;
       if (boostActive) {
-        const boosted = 1 + Math.min(videoLatencyProfile.playbackRateBoostMax - 1, errorMs / Math.max(1, frameMs * 6));
-        setVideoPlaybackRate(Math.min(videoLatencyProfile.playbackRateBoostMax, Math.max(1, boosted)));
+        const boosted =
+          1 +
+          Math.min(
+            videoLatencyProfile.playbackRateBoostMax - 1,
+            errorMs / Math.max(1, frameMs * 6),
+          );
+        setVideoPlaybackRate(
+          Math.min(videoLatencyProfile.playbackRateBoostMax, Math.max(1, boosted)),
+        );
       } else if (errorMs > 0) {
-        const desired = 1 + Math.min(videoLatencyProfile.playbackRateMax - 1, errorMs / Math.max(1, frameMs * 10));
+        const desired =
+          1 +
+          Math.min(videoLatencyProfile.playbackRateMax - 1, errorMs / Math.max(1, frameMs * 10));
         setVideoPlaybackRate(Math.min(videoLatencyProfile.playbackRateMax, Math.max(1, desired)));
       } else {
         const current = videoEl.value.playbackRate ?? 1;
@@ -1512,7 +1714,10 @@ watch(
         if (videoValue <= baseTargetMs + frameMs) {
           if (videoStartupDrainReleaseSince == null) {
             videoStartupDrainReleaseSince = now;
-          } else if (now - videoStartupDrainReleaseSince >= videoLatencyProfile.startupReleaseSustainMs) {
+          } else if (
+            now - videoStartupDrainReleaseSince >=
+            videoLatencyProfile.startupReleaseSustainMs
+          ) {
             videoStartupDrainUntil = null;
             videoStartupDrainReleaseSince = null;
             setVideoDrainMode('off', baseTargetMs);
@@ -1531,7 +1736,10 @@ watch(
         videoDrainOverloadedSince = now;
       }
       videoDrainReleaseSince = null;
-      if (videoDrainMode !== 'adaptive' && now - videoDrainOverloadedSince >= videoLatencyProfile.drainSustainMs) {
+      if (
+        videoDrainMode !== 'adaptive' &&
+        now - videoDrainOverloadedSince >= videoLatencyProfile.drainSustainMs
+      ) {
         setVideoDrainMode('adaptive', baseTargetMs);
       }
     } else if (videoDrainMode === 'adaptive' && videoValue <= releaseMs) {
@@ -1593,12 +1801,18 @@ watch(
     resetVideoElement();
   },
 );
-function resetServerRates(): void { lastServerSample = null; serverVideoFps.value = undefined; }
+function resetServerRates(): void {
+  lastServerSample = null;
+  serverVideoFps.value = undefined;
+}
 
 let serverSessionTimer: number | null = null;
 
 function stopServerSessionPolling(): void {
-  if (serverSessionTimer) { window.clearInterval(serverSessionTimer); serverSessionTimer = null; }
+  if (serverSessionTimer) {
+    window.clearInterval(serverSessionTimer);
+    serverSessionTimer = null;
+  }
 }
 
 function startServerSessionPolling(): void {
@@ -1618,7 +1832,9 @@ function startServerSessionPolling(): void {
         }
         lastServerSample = { ts: now, videoPackets: result.session.video_packets };
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
   void poll();
   serverSessionTimer = window.setInterval(poll, 1000);
@@ -1636,11 +1852,17 @@ function startWebrtcDiagnostics(): void {
 }
 
 function stopWebrtcDiagnostics(): void {
-  if (webrtcDiagTimer != null) { window.clearInterval(webrtcDiagTimer); webrtcDiagTimer = null; }
+  if (webrtcDiagTimer != null) {
+    window.clearInterval(webrtcDiagTimer);
+    webrtcDiagTimer = null;
+  }
 }
 
 function stopDiagnosticsSampling(): void {
-  if (diagnosticsSampleTimer != null) { window.clearInterval(diagnosticsSampleTimer); diagnosticsSampleTimer = null; }
+  if (diagnosticsSampleTimer != null) {
+    window.clearInterval(diagnosticsSampleTimer);
+    diagnosticsSampleTimer = null;
+  }
 }
 
 function startDiagnosticsSampling(): void {
@@ -1675,7 +1897,10 @@ function startDiagnosticsSampling(): void {
 }
 
 function stopAudioPlayRetry(): void {
-  if (audioPlayRetryTimer != null) { window.clearInterval(audioPlayRetryTimer); audioPlayRetryTimer = null; }
+  if (audioPlayRetryTimer != null) {
+    window.clearInterval(audioPlayRetryTimer);
+    audioPlayRetryTimer = null;
+  }
   audioPlayRetryUntilMs = null;
 }
 
@@ -1691,8 +1916,9 @@ function ensureAudioPlayback(reason: string): void {
   if (now - lastAudioPlayAttemptAtMs < 250) return;
   lastAudioPlayAttemptAtMs = now;
   const playPromise = (() => {
-    try { return audioEl.value.play(); }
-    catch (error) {
+    try {
+      return audioEl.value.play();
+    } catch (error) {
       const name = error && typeof error === 'object' ? (error as any).name : '';
       if (now - lastAudioPlayErrorAtMs > 1500) {
         lastAudioPlayErrorAtMs = now;
@@ -1702,19 +1928,21 @@ function ensureAudioPlayback(reason: string): void {
     }
   })();
   if (!playPromise || typeof (playPromise as any).then !== 'function') return;
-  playPromise.then(() => {
-    if (!audioEl.value) return;
-    if (!audioEl.value.paused) {
-      audioPlaybackUnlocked = true;
-      if (hasTrack) stopAudioPlayRetry();
-    }
-  }).catch((error) => {
-    const name = error && typeof error === 'object' ? (error as any).name : '';
-    if (now - lastAudioPlayErrorAtMs > 1500) {
-      lastAudioPlayErrorAtMs = now;
-      pushVideoEvent(`audio-play-error${name ? `:${name}` : ''}:${reason}`);
-    }
-  });
+  playPromise
+    .then(() => {
+      if (!audioEl.value) return;
+      if (!audioEl.value.paused) {
+        audioPlaybackUnlocked = true;
+        if (hasTrack) stopAudioPlayRetry();
+      }
+    })
+    .catch((error) => {
+      const name = error && typeof error === 'object' ? (error as any).name : '';
+      if (now - lastAudioPlayErrorAtMs > 1500) {
+        lastAudioPlayErrorAtMs = now;
+        pushVideoEvent(`audio-play-error${name ? `:${name}` : ''}:${reason}`);
+      }
+    });
 }
 
 function primeAudioAutoplay(): void {
@@ -1727,15 +1955,24 @@ function primeAudioAutoplay(): void {
   stopAudioPlayRetry();
   audioPlayRetryUntilMs = Date.now() + 8000;
   audioPlayRetryTimer = window.setInterval(() => {
-    if (!audioAutoplayRequested) { stopAudioPlayRetry(); return; }
-    if (audioPlayRetryUntilMs != null && Date.now() > audioPlayRetryUntilMs) { stopAudioPlayRetry(); return; }
+    if (!audioAutoplayRequested) {
+      stopAudioPlayRetry();
+      return;
+    }
+    if (audioPlayRetryUntilMs != null && Date.now() > audioPlayRetryUntilMs) {
+      stopAudioPlayRetry();
+      return;
+    }
     ensureAudioPlayback('retry');
   }, 500);
   ensureAudioPlayback('prime');
 }
 
 function stopSessionStatusPolling(): void {
-  if (sessionStatusTimer) { window.clearInterval(sessionStatusTimer); sessionStatusTimer = null; }
+  if (sessionStatusTimer) {
+    window.clearInterval(sessionStatusTimer);
+    sessionStatusTimer = null;
+  }
 }
 
 async function fetchSessionStatus(): Promise<void> {
@@ -1750,7 +1987,9 @@ async function fetchSessionStatus(): Promise<void> {
       };
       return;
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   sessionStatus.value = null;
 }
 
@@ -1794,14 +2033,18 @@ async function requestFullscreen(target: HTMLElement): Promise<boolean> {
     try {
       await target.requestFullscreen();
       return true;
-    } catch { /* try fallback */ }
+    } catch {
+      /* try fallback */
+    }
   }
   if (typeof anyTarget.webkitRequestFullscreen === 'function') {
     try {
       const result = anyTarget.webkitRequestFullscreen();
       if (result && typeof result.then === 'function') await result;
       return true;
-    } catch { /* try fallback */ }
+    } catch {
+      /* try fallback */
+    }
   }
   return false;
 }
@@ -1840,7 +2083,10 @@ async function tryEnterFullscreen(target: HTMLElement): Promise<boolean> {
 
 async function exitFullscreen(): Promise<void> {
   const anyDoc = document as any;
-  if (typeof document.exitFullscreen === 'function') { await document.exitFullscreen(); return; }
+  if (typeof document.exitFullscreen === 'function') {
+    await document.exitFullscreen();
+    return;
+  }
   if (typeof anyDoc.webkitExitFullscreen === 'function') {
     const result = anyDoc.webkitExitFullscreen();
     if (result && typeof result.then === 'function') await result;
@@ -1858,14 +2104,19 @@ function isTabActive(): boolean {
     const visible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
     const focus = typeof document !== 'undefined' && document.hasFocus ? document.hasFocus() : true;
     return visible && focus;
-  } catch { return true; }
+  } catch {
+    return true;
+  }
 }
 
 const onFullscreenChange = () => {
   const active = isFullscreenActive();
   if (active) pseudoFullscreen.value = false;
   isFullscreen.value = active || pseudoFullscreen.value;
-  if (!isFullscreen.value) { cancelEscHold(); releaseFullscreenKeyboardLock(); }
+  if (!isFullscreen.value) {
+    cancelEscHold();
+    releaseFullscreenKeyboardLock();
+  }
   modeSwitchDrainUntil = Date.now() + videoLatencyProfile.modeSwitchDrainMs;
   triggerVideoDrainWindow(videoLatencyProfile.modeSwitchDrainMs, 'fullscreen');
   ensureAudioPlayback('fullscreen');
@@ -1879,7 +2130,9 @@ const onOverlayHotkey = (event: KeyboardEvent) => {
   showOverlay.value = !showOverlay.value;
 };
 
-const onPageHide = () => { void client.disconnect({ keepalive: true }); };
+const onPageHide = () => {
+  void client.disconnect({ keepalive: true });
+};
 
 const onVisibilityChange = () => {
   if (document.visibilityState === 'visible') {
@@ -1891,19 +2144,32 @@ const onVisibilityChange = () => {
 
 const onAudioUserGesture = () => {
   if (!audioAutoplayRequested) return;
-  if (audioPlayRetryUntilMs != null && Date.now() <= audioPlayRetryUntilMs) { ensureAudioPlayback('gesture'); return; }
+  if (audioPlayRetryUntilMs != null && Date.now() <= audioPlayRetryUntilMs) {
+    ensureAudioPlayback('gesture');
+    return;
+  }
   if (!audioPlaybackUnlocked && isConnected.value) ensureAudioPlayback('gesture');
 };
 
 const onFullscreenEscapeDown = (event: KeyboardEvent) => {
   if (event.code !== 'Escape') return;
   if (!isFullscreen.value) return;
-  if (escHoldTimer) { event.preventDefault(); event.stopPropagation(); return; }
+  if (escHoldTimer) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   escHoldTimer = window.setTimeout(async () => {
     escHoldTimer = null;
-    if (getFullscreenElement()) { try { await exitFullscreen(); } catch { /* ignore */ } }
+    if (getFullscreenElement()) {
+      try {
+        await exitFullscreen();
+      } catch {
+        /* ignore */
+      }
+    }
   }, ESC_HOLD_MS);
 };
 
@@ -1915,12 +2181,19 @@ const onFullscreenEscapeUp = (event: KeyboardEvent) => {
   cancelEscHold();
 };
 
-function cancelEscHold() { if (escHoldTimer) { window.clearTimeout(escHoldTimer); escHoldTimer = null; } }
+function cancelEscHold() {
+  if (escHoldTimer) {
+    window.clearTimeout(escHoldTimer);
+    escHoldTimer = null;
+  }
+}
 
 function requestFullscreenKeyboardLock(): void {
   if (fullscreenKeyboardLockRequested) return;
   fullscreenKeyboardLockRequested = true;
-  void requestKeyboardLock().then((locked) => { if (!locked) fullscreenKeyboardLockRequested = false; });
+  void requestKeyboardLock().then((locked) => {
+    if (!locked) fullscreenKeyboardLockRequested = false;
+  });
 }
 
 function releaseFullscreenKeyboardLock(): void {
@@ -1929,9 +2202,15 @@ function releaseFullscreenKeyboardLock(): void {
   releaseKeyboardLock();
 }
 
-function formatKbps(value?: number): string { return value ? `${value.toFixed(0)} kbps` : '--'; }
-function formatMs(value?: number): string { return value != null ? `${value.toFixed(1)} ms` : '--'; }
-function displayValue(value: unknown): string { return value === null || value === undefined || value === '' ? '--' : String(value); }
+function formatKbps(value?: number): string {
+  return value ? `${value.toFixed(0)} kbps` : '--';
+}
+function formatMs(value?: number): string {
+  return value != null ? `${value.toFixed(1)} ms` : '--';
+}
+function displayValue(value: unknown): string {
+  return value === null || value === undefined || value === '' ? '--' : String(value);
+}
 
 function pushVideoEvent(label: string): void {
   const stamp = new Date().toLocaleTimeString();
@@ -1970,13 +2249,27 @@ function updateAudioElement(stream: MediaStream): void {
 }
 
 function attachVideoDebug(el: HTMLVideoElement): () => void {
-  const events = ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'suspend', 'error', 'ended'];
+  const events = [
+    'loadedmetadata',
+    'canplay',
+    'playing',
+    'waiting',
+    'stalled',
+    'suspend',
+    'error',
+    'ended',
+  ];
   const handlers = events.map((event) => {
-    const handler = () => { pushVideoEvent(event); videoStateTick.value++; };
+    const handler = () => {
+      pushVideoEvent(event);
+      videoStateTick.value++;
+    };
     el.addEventListener(event, handler);
     return { event, handler };
   });
-  return () => { handlers.forEach(({ event, handler }) => el.removeEventListener(event, handler)); };
+  return () => {
+    handlers.forEach(({ event, handler }) => el.removeEventListener(event, handler));
+  };
 }
 
 function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
@@ -2009,7 +2302,9 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
       handle = el.requestVideoFrameCallback(cb);
     };
     handle = el.requestVideoFrameCallback(cb);
-    return () => { if (handle) el.cancelVideoFrameCallback(handle); };
+    return () => {
+      if (handle) el.cancelVideoFrameCallback(handle);
+    };
   }
 
   let rafId = 0;
@@ -2036,7 +2331,12 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
 
 function attachVideoPacingProbe(
   el: HTMLVideoElement,
-  onSample: (sample: { dtMs?: number | null; presentedDelta?: number | null; now?: number; mediaTime?: number }) => void
+  onSample: (sample: {
+    dtMs?: number | null;
+    presentedDelta?: number | null;
+    now?: number;
+    mediaTime?: number;
+  }) => void,
 ): () => void {
   if ('requestVideoFrameCallback' in el) {
     let handle = 0;
@@ -2045,14 +2345,19 @@ function attachVideoPacingProbe(
     const cb = (now: number, meta: VideoFrameCallbackMetadata) => {
       const dtMs = lastNow != null ? now - lastNow : null;
       const presentedFrames = (meta as any).presentedFrames;
-      const presentedDelta = lastPresented != null && typeof presentedFrames === 'number' ? presentedFrames - lastPresented : null;
+      const presentedDelta =
+        lastPresented != null && typeof presentedFrames === 'number'
+          ? presentedFrames - lastPresented
+          : null;
       onSample({ dtMs, presentedDelta, now, mediaTime: meta.mediaTime });
       lastPresented = presentedFrames ?? lastPresented;
       lastNow = now;
       handle = el.requestVideoFrameCallback(cb);
     };
     handle = el.requestVideoFrameCallback(cb);
-    return () => { if (handle) el.cancelVideoFrameCallback(handle); };
+    return () => {
+      if (handle) el.cancelVideoFrameCallback(handle);
+    };
   }
 
   let rafId = 0;
@@ -2070,10 +2375,28 @@ function attachVideoPacingProbe(
 
 function startInboundVideoStats(
   pc: RTCPeerConnection,
-  onStats: (stats: { fpsReceived?: number; fpsDecoded?: number; framesDropped?: number; avgJitterBufferMs?: number | null; avgDecodeMsPerFrame?: number | null; packetsLostDelta?: number; jitter?: number }) => void,
-  intervalMs = 1000
+  onStats: (stats: {
+    fpsReceived?: number;
+    fpsDecoded?: number;
+    framesDropped?: number;
+    avgJitterBufferMs?: number | null;
+    avgDecodeMsPerFrame?: number | null;
+    packetsLostDelta?: number;
+    jitter?: number;
+  }) => void,
+  intervalMs = 1000,
 ): () => void {
-  let prev: { now: number; framesReceived?: number; framesDecoded?: number; framesDropped?: number; packetsLost?: number; jitter?: number; jitterBufferDelay?: number; jitterBufferEmittedCount?: number; totalDecodeTime?: number } | null = null;
+  let prev: {
+    now: number;
+    framesReceived?: number;
+    framesDecoded?: number;
+    framesDropped?: number;
+    packetsLost?: number;
+    jitter?: number;
+    jitterBufferDelay?: number;
+    jitterBufferEmittedCount?: number;
+    totalDecodeTime?: number;
+  } | null = null;
   const id = window.setInterval(async () => {
     try {
       const report = await pc.getStats();
@@ -2099,31 +2422,59 @@ function startInboundVideoStats(
       };
       if (prev) {
         const dt = (cur.now - prev.now) / 1000;
-        const dRecv = typeof cur.framesReceived === 'number' && typeof prev.framesReceived === 'number' ? cur.framesReceived - prev.framesReceived : undefined;
-        const dDec = typeof cur.framesDecoded === 'number' && typeof prev.framesDecoded === 'number' ? cur.framesDecoded - prev.framesDecoded : undefined;
-        const dDrop = typeof cur.framesDropped === 'number' && typeof prev.framesDropped === 'number' ? cur.framesDropped - prev.framesDropped : undefined;
-        const avgJbMs = typeof cur.jitterBufferDelay === 'number' && typeof cur.jitterBufferEmittedCount === 'number' && cur.jitterBufferEmittedCount > 0 ? (cur.jitterBufferDelay / cur.jitterBufferEmittedCount) * 1000 : null;
-        const avgDecodeMs = typeof cur.totalDecodeTime === 'number' && typeof cur.framesDecoded === 'number' && cur.framesDecoded > 0 ? (cur.totalDecodeTime / cur.framesDecoded) * 1000 : null;
+        const dRecv =
+          typeof cur.framesReceived === 'number' && typeof prev.framesReceived === 'number'
+            ? cur.framesReceived - prev.framesReceived
+            : undefined;
+        const dDec =
+          typeof cur.framesDecoded === 'number' && typeof prev.framesDecoded === 'number'
+            ? cur.framesDecoded - prev.framesDecoded
+            : undefined;
+        const dDrop =
+          typeof cur.framesDropped === 'number' && typeof prev.framesDropped === 'number'
+            ? cur.framesDropped - prev.framesDropped
+            : undefined;
+        const avgJbMs =
+          typeof cur.jitterBufferDelay === 'number' &&
+          typeof cur.jitterBufferEmittedCount === 'number' &&
+          cur.jitterBufferEmittedCount > 0
+            ? (cur.jitterBufferDelay / cur.jitterBufferEmittedCount) * 1000
+            : null;
+        const avgDecodeMs =
+          typeof cur.totalDecodeTime === 'number' &&
+          typeof cur.framesDecoded === 'number' &&
+          cur.framesDecoded > 0
+            ? (cur.totalDecodeTime / cur.framesDecoded) * 1000
+            : null;
         onStats({
           fpsReceived: typeof dRecv === 'number' ? dRecv / dt : undefined,
           fpsDecoded: typeof dDec === 'number' ? dDec / dt : undefined,
           framesDropped: typeof dDrop === 'number' ? dDrop : undefined,
           avgJitterBufferMs: avgJbMs,
           avgDecodeMsPerFrame: avgDecodeMs,
-          packetsLostDelta: typeof cur.packetsLost === 'number' && typeof prev.packetsLost === 'number' ? cur.packetsLost - prev.packetsLost : undefined,
+          packetsLostDelta:
+            typeof cur.packetsLost === 'number' && typeof prev.packetsLost === 'number'
+              ? cur.packetsLost - prev.packetsLost
+              : undefined,
           jitter: cur.jitter,
         });
       }
       prev = cur;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, intervalMs);
-  return () => { window.clearInterval(id); };
+  return () => {
+    window.clearInterval(id);
+  };
 }
 
 async function confirmTerminateAndConnect(): Promise<void> {
   dialog.warning({
     title: t('webrtc.terminate_confirm_title'),
-    content: t('webrtc.terminate_confirm_message', { app: selectedAppName.value ?? t('webrtc.terminate_confirm_app_fallback') }),
+    content: t('webrtc.terminate_confirm_message', {
+      app: selectedAppName.value ?? t('webrtc.terminate_confirm_app_fallback'),
+    }),
     positiveText: t('webrtc.terminate_confirm_action'),
     negativeText: t('_common.cancel'),
     onPositiveClick: async () => {
@@ -2155,9 +2506,15 @@ async function startConnect() {
       const entered = await tryEnterFullscreen(target);
       if (!entered) pseudoFullscreen.value = true;
       onFullscreenChange();
-      try { target.focus(); } catch { /* ignore */ }
+      try {
+        target.focus();
+      } catch {
+        /* ignore */
+      }
       requestFullscreenKeyboardLock();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   ensureAudioPlayback('connect');
   stopServerSessionPolling();
@@ -2204,29 +2561,44 @@ async function startConnect() {
             applyVideoTargetMs(resolveVideoBaseTargetMs());
             if (!stopInboundVideoStatsTimer) {
               const pc = client.peerConnection;
-              if (pc) stopInboundVideoStatsTimer = startInboundVideoStats(pc, (sample) => { inboundVideoStats.value = sample; });
+              if (pc)
+                stopInboundVideoStatsTimer = startInboundVideoStats(pc, (sample) => {
+                  inboundVideoStats.value = sample;
+                });
             }
             if (!diagnosticsSampleTimer) startDiagnosticsSampling();
           } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-            if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
+            if (stopInboundVideoStatsTimer) {
+              stopInboundVideoStatsTimer();
+              stopInboundVideoStatsTimer = null;
+            }
             inboundVideoStats.value = {};
             stopDiagnosticsSampling();
             diagnosticsSamples.value = [];
           }
         },
-        onIceState: (state) => { iceState.value = state; },
-        onInputChannelState: (state) => { inputChannelState.value = state; },
-        onInputMessage: (message) => { applyGamepadFeedback(message); },
-        onStats: (snapshot) => { stats.value = snapshot; },
+        onIceState: (state) => {
+          iceState.value = state;
+        },
+        onInputChannelState: (state) => {
+          inputChannelState.value = state;
+        },
+        onInputMessage: (message) => {
+          applyGamepadFeedback(message);
+        },
+        onStats: (snapshot) => {
+          stats.value = snapshot;
+        },
         onNegotiatedEncoding: (encoding) => {
-          if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1') negotiatedEncoding.value = encoding;
+          if (encoding === 'h264' || encoding === 'hevc' || encoding === 'av1')
+            negotiatedEncoding.value = encoding;
         },
         onWarning: (warning) => {
           notifyWarning('Configuration Warning', warning);
           if (config.hdr && /^hdr\b/i.test(warning)) hdrRuntimeWarning.value = warning;
         },
       },
-      { inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low' }
+      { inputPriority: isFullscreenActive() || isTabActive() ? 'high' : 'low' },
     );
     sessionId.value = id;
     startServerSessionPolling();
@@ -2246,7 +2618,10 @@ async function connect() {
   if (isConnecting.value) return;
   // Always fetch session status to know if we can resume
   if (!sessionStatus.value) await fetchSessionStatus();
-  if (selectedAppId.value && hasRunningSession.value) { await confirmTerminateAndConnect(); return; }
+  if (selectedAppId.value && hasRunningSession.value) {
+    await confirmTerminateAndConnect();
+    return;
+  }
   await startConnect();
 }
 
@@ -2265,14 +2640,21 @@ async function disconnect() {
   inboundVideoStats.value = {};
   diagnosticsSamples.value = [];
   stopDiagnosticsSampling();
-  if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
+  if (stopInboundVideoStatsTimer) {
+    stopInboundVideoStatsTimer();
+    stopInboundVideoStatsTimer = null;
+  }
   smoothedVideoFps.value = undefined;
   lastVideoFpsSampleAt = null;
   lastPlaybackRateUpdateAt = null;
   modeSwitchDrainUntil = null;
   detachInputCapture();
   if (videoEl.value) {
-    try { videoEl.value.playbackRate = 1; } catch { /* ignore */ }
+    try {
+      videoEl.value.playbackRate = 1;
+    } catch {
+      /* ignore */
+    }
     videoEl.value.srcObject = null;
   }
   if (audioEl.value) audioEl.value.srcObject = null;
@@ -2334,9 +2716,15 @@ async function toggleFullscreen() {
     if (!entered) pseudoFullscreen.value = true;
     onFullscreenChange();
     requestFullscreenKeyboardLock();
-    try { target.focus(); } catch { /* ignore */ }
+    try {
+      target.focus();
+    } catch {
+      /* ignore */
+    }
     requestFullscreenKeyboardLock();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 async function onFullscreenDblClick() {
@@ -2345,30 +2733,47 @@ async function onFullscreenDblClick() {
 }
 
 function detachInputCapture() {
-  if (detachInput) { detachInput(); detachInput = null; }
+  if (detachInput) {
+    detachInput();
+    detachInput = null;
+  }
 }
 
-watch(() => [inputEnabled.value, isConnected.value], ([enabled, connected]) => {
-  detachInputCapture();
-  if (!enabled || !connected || !inputTarget.value) { releaseFullscreenKeyboardLock(); return; }
-  detachInput = attachInputCapture(
-    inputTarget.value,
-    (payload) => {
-      client.sendInput(payload);
-      inputBufferedAmount.value = client.inputChannelBufferedAmount ?? null;
-    },
-    {
-      video: videoEl.value,
-      onMetrics: (metrics) => { inputMetrics.value = metrics; },
-      shouldDrop: shouldDropInput,
+watch(
+  () => [inputEnabled.value, isConnected.value],
+  ([enabled, connected]) => {
+    detachInputCapture();
+    if (!enabled || !connected || !inputTarget.value) {
+      releaseFullscreenKeyboardLock();
+      return;
     }
-  );
-  if (isFullscreenActive()) requestFullscreenKeyboardLock();
-});
+    detachInput = attachInputCapture(
+      inputTarget.value,
+      (payload) => {
+        client.sendInput(payload);
+        inputBufferedAmount.value = client.inputChannelBufferedAmount ?? null;
+      },
+      {
+        video: videoEl.value,
+        onMetrics: (metrics) => {
+          inputMetrics.value = metrics;
+        },
+        shouldDrop: shouldDropInput,
+      },
+    );
+    if (isFullscreenActive()) requestFullscreenKeyboardLock();
+  },
+);
 
 function attachVideoFullscreenEvents(el: HTMLVideoElement): () => void {
-  const onBegin = () => { nativeVideoFullscreen.value = true; onFullscreenChange(); };
-  const onEnd = () => { nativeVideoFullscreen.value = false; onFullscreenChange(); };
+  const onBegin = () => {
+    nativeVideoFullscreen.value = true;
+    onFullscreenChange();
+  };
+  const onEnd = () => {
+    nativeVideoFullscreen.value = false;
+    onFullscreenChange();
+  };
   el.addEventListener('webkitbeginfullscreen', onBegin as EventListener);
   el.addEventListener('webkitendfullscreen', onEnd as EventListener);
   return () => {
@@ -2378,14 +2783,28 @@ function attachVideoFullscreenEvents(el: HTMLVideoElement): () => void {
 }
 
 watch(videoEl, (el) => {
-  if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
-  if (detachVideoFrames) { detachVideoFrames(); detachVideoFrames = null; }
-  if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
-  if (detachVideoFullscreenEvents) { detachVideoFullscreenEvents(); detachVideoFullscreenEvents = null; }
+  if (detachVideoEvents) {
+    detachVideoEvents();
+    detachVideoEvents = null;
+  }
+  if (detachVideoFrames) {
+    detachVideoFrames();
+    detachVideoFrames = null;
+  }
+  if (detachVideoPacing) {
+    detachVideoPacing();
+    detachVideoPacing = null;
+  }
+  if (detachVideoFullscreenEvents) {
+    detachVideoFullscreenEvents();
+    detachVideoFullscreenEvents = null;
+  }
   if (!el) return;
   detachVideoEvents = attachVideoDebug(el);
   detachVideoFrames = attachVideoFrameMetrics(el);
-  detachVideoPacing = attachVideoPacingProbe(el, (sample) => { videoPacingMetrics.value = sample; });
+  detachVideoPacing = attachVideoPacingProbe(el, (sample) => {
+    videoPacingMetrics.value = sample;
+  });
   detachVideoFullscreenEvents = attachVideoFullscreenEvents(el);
 });
 
@@ -2401,11 +2820,26 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', onFullscreenEscapeUp, true);
   window.removeEventListener('pagehide', onPageHide);
   cancelEscHold();
-  if (detachVideoEvents) { detachVideoEvents(); detachVideoEvents = null; }
-  if (detachVideoFrames) { detachVideoFrames(); detachVideoFrames = null; }
-  if (detachVideoPacing) { detachVideoPacing(); detachVideoPacing = null; }
-  if (detachVideoFullscreenEvents) { detachVideoFullscreenEvents(); detachVideoFullscreenEvents = null; }
-  if (stopInboundVideoStatsTimer) { stopInboundVideoStatsTimer(); stopInboundVideoStatsTimer = null; }
+  if (detachVideoEvents) {
+    detachVideoEvents();
+    detachVideoEvents = null;
+  }
+  if (detachVideoFrames) {
+    detachVideoFrames();
+    detachVideoFrames = null;
+  }
+  if (detachVideoPacing) {
+    detachVideoPacing();
+    detachVideoPacing = null;
+  }
+  if (detachVideoFullscreenEvents) {
+    detachVideoFullscreenEvents();
+    detachVideoFullscreenEvents = null;
+  }
+  if (stopInboundVideoStatsTimer) {
+    stopInboundVideoStatsTimer();
+    stopInboundVideoStatsTimer = null;
+  }
   stopDiagnosticsSampling();
   stopWebrtcDiagnostics();
   stopSessionStatusPolling();
@@ -2425,17 +2859,28 @@ onMounted(async () => {
   window.addEventListener('keydown', onFullscreenEscapeDown, true);
   window.addEventListener('keyup', onFullscreenEscapeUp, true);
   window.addEventListener('pagehide', onPageHide);
-  try { await appsStore.loadApps(true); } catch { /* ignore */ }
+  try {
+    await appsStore.loadApps(true);
+  } catch {
+    /* ignore */
+  }
   encodingSupport.value = detectEncodingSupport();
   if (config.hdr) ensureHdrEncoding();
   startSessionStatusPolling();
 });
 
-watch(() => isConnected.value, (connected) => {
-  if (connected) { stopSessionStatusPolling(); startWebrtcDiagnostics(); return; }
-  stopWebrtcDiagnostics();
-  startSessionStatusPolling();
-});
+watch(
+  () => isConnected.value,
+  (connected) => {
+    if (connected) {
+      stopSessionStatusPolling();
+      startWebrtcDiagnostics();
+      return;
+    }
+    stopWebrtcDiagnostics();
+    startSessionStatusPolling();
+  },
+);
 </script>
 
 <style scoped>
@@ -2495,7 +2940,8 @@ watch(() => isConnected.value, (connected) => {
   flex-wrap: wrap;
 }
 
-.header-left, .header-right {
+.header-left,
+.header-right {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -2569,8 +3015,13 @@ watch(() => isConnected.value, (connected) => {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .settings-btn {
@@ -2757,7 +3208,9 @@ watch(() => isConnected.value, (connected) => {
 
 .game-card.selected {
   border-color: rgb(var(--color-primary));
-  box-shadow: 0 0 0 2px rgb(var(--color-primary) / 0.2), 0 8px 24px rgb(0 0 0 / 0.15);
+  box-shadow:
+    0 0 0 2px rgb(var(--color-primary) / 0.2),
+    0 8px 24px rgb(0 0 0 / 0.15);
 }
 
 .game-cover {
@@ -3082,8 +3535,13 @@ watch(() => isConnected.value, (connected) => {
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 .preview-controls {
@@ -3152,7 +3610,11 @@ watch(() => isConnected.value, (connected) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, rgb(var(--color-surface)) 0%, rgb(var(--color-dark) / 0.8) 100%);
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-surface)) 0%,
+    rgb(var(--color-dark) / 0.8) 100%
+  );
 }
 
 .idle-content {
@@ -3198,7 +3660,9 @@ watch(() => isConnected.value, (connected) => {
 }
 
 @keyframes spin {
-  to { transform: translateZ(0) rotate(360deg); }
+  to {
+    transform: translateZ(0) rotate(360deg);
+  }
 }
 
 .connecting-state span {
@@ -3256,10 +3720,18 @@ watch(() => isConnected.value, (connected) => {
   margin-top: 0.125rem;
 }
 
-.notification-toast.error i { color: rgb(var(--color-danger)); }
-.notification-toast.warning i { color: rgb(var(--color-warning)); }
-.notification-toast.success i { color: rgb(var(--color-success)); }
-.notification-toast.info i { color: rgb(var(--color-info)); }
+.notification-toast.error i {
+  color: rgb(var(--color-danger));
+}
+.notification-toast.warning i {
+  color: rgb(var(--color-warning));
+}
+.notification-toast.success i {
+  color: rgb(var(--color-success));
+}
+.notification-toast.info i {
+  color: rgb(var(--color-info));
+}
 
 .notification-text {
   flex: 1;

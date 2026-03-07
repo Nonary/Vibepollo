@@ -11,8 +11,6 @@ type DisplayDevice = {
   device_id?: string;
   display_name?: string; // e.g. \\ \\.\\DISPLAY1
   friendly_name?: string; // e.g. ROG PG279Q
-  is_virtual?: boolean; // True if this is a SudaVDA virtual display
-  is_isolated?: boolean; // True if this is intended as an isolated monitor
   // Present when device is currently active; shape mirrors libdisplaydevice types but we only check presence
   info?: unknown;
 };
@@ -97,9 +95,6 @@ function toOptions() {
     value: string;
     displayName?: string;
     id?: string;
-    isVirtual?: boolean;
-    isIsolated?: boolean;
-    hideIdentifier?: boolean;
   }> = [
     {
       label: outputNameDefaultLabel.value,
@@ -110,30 +105,30 @@ function toOptions() {
   ];
 
   for (const d of devices.value) {
+    // Prefer a human-friendly name for the first line, fall back to display_name
     const displayName = d.friendly_name || d.display_name || 'Display';
+    // For the ID line prefer device_id, fall back to the raw display_name
     const guid = d.device_id || '';
     const dispName = d.display_name || '';
-    const hideIdentifier = Boolean(d.is_virtual);
-    const composedId = hideIdentifier ? '' : (guid && dispName ? `${guid} - ${dispName}` : guid || dispName);
+    const id = guid || dispName;
+    // Compose label to include identifying info even if slots are not applied
     const parts: string[] = [displayName];
-    if (!hideIdentifier && guid) parts.push(guid);
-    if (!hideIdentifier && dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
-    const label = parts.join(' - ');
+    if (guid) parts.push(guid);
+    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    const label = parts.join(' — ');
+    // Only include entries that can be selected by config: prefer device_id, else display_name
     const value = d.device_id || d.display_name || '';
     if (value)
       opts.push({
         label,
         value,
         displayName,
-        id: composedId || undefined,
-        isVirtual: d.is_virtual ?? undefined,
-        isIsolated: d.is_isolated ?? undefined,
-        hideIdentifier: hideIdentifier || undefined,
+        id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
       });
   }
+
   return opts;
 }
-
 </script>
 
 <template>
@@ -160,22 +155,8 @@ function toOptions() {
           <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
           <template #option="{ option }">
             <div class="leading-tight">
-              <div class="flex items-center gap-2">
-                <span>{{ option?.displayName || option?.label }}</span>
-                <span
-                  v-if="option?.isVirtual"
-                  class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                >
-                  Virtual
-                </span>
-                <span
-                  v-if="option?.isIsolated"
-                  class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                >
-                  Isolated
-                </span>
-              </div>
-              <div v-if="!option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
+              <div class="">{{ option?.displayName || option?.label }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
                 {{ option?.id || option?.value }}
               </div>
             </div>
@@ -184,27 +165,21 @@ function toOptions() {
           <!-- Show the selected value similarly: name then id -->
           <template #value="{ option }">
             <div class="leading-tight">
-              <div class="flex items-center gap-2">
-                <span>{{ option?.displayName || option?.label }}</span>
-                <span
-                  v-if="option?.isVirtual"
-                  class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                >
-                  Virtual
-                </span>
-                <span
-                  v-if="option?.isIsolated"
-                  class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                >
-                  Isolated
-                </span>
-              </div>
-              <div v-if="!option?.hideIdentifier" class="text-[12px] opacity-60 font-mono">
+              <div class="">{{ option?.displayName || option?.label }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
                 {{ option?.id || option?.value }}
               </div>
             </div>
           </template>
         </n-select>
+      </template>
+      <template #freebsd>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
       </template>
       <template #linux>
         <n-input
@@ -238,6 +213,16 @@ function toOptions() {
             <b>&nbsp;&nbsp;&nbsp;&nbsp;"friendly_name": "ROG PG279Q"</b>
             <b>&nbsp;&nbsp;&nbsp;&nbsp;...</b>
             <b>&nbsp;&nbsp;}</b>
+          </pre>
+        </template>
+        <template #freebsd>
+          <pre style="white-space: pre-line">
+            Info: Detecting displays
+            Info: Detected display: DVI-D-0 (id: 0) connected: false
+            Info: Detected display: HDMI-0 (id: 1) connected: true
+            Info: Detected display: DP-0 (id: 2) connected: true
+            Info: Detected display: DP-1 (id: 3) connected: false
+            Info: Detected display: DVI-D-1 (id: 4) connected: false
           </pre>
         </template>
         <template #linux>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import { useConfigStore } from '@/stores/config';
-import { NInput } from 'naive-ui';
 
 const store = useConfigStore();
 const config = store.config;
@@ -8,79 +8,47 @@ const config = store.config;
 
 <template>
   <div id="files" class="config-page">
-    <!-- Apps File -->
-    <div class="mb-6">
-      <label for="file_apps" class="form-label">{{ $t('config.file_apps') }}</label>
-      <n-input
-        id="file_apps"
-        v-model:value="config.file_apps"
-        type="text"
-        placeholder="apps.json"
-      />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.file_apps_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="file_apps"
+      v-model="config.file_apps"
+      class="mb-6"
+      placeholder="apps.json"
+    />
 
-    <!-- Credentials File -->
-    <div class="mb-6">
-      <label for="credentials_file" class="form-label">{{ $t('config.credentials_file') }}</label>
-      <n-input
-        id="credentials_file"
-        v-model:value="config.credentials_file"
-        type="text"
-        placeholder="sunshine_state.json"
-      />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.credentials_file_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="credentials_file"
+      v-model="config.credentials_file"
+      class="mb-6"
+      placeholder="sunshine_state.json"
+    />
 
-    <!-- Log Path -->
-    <div class="mb-6">
-      <label for="log_path" class="form-label">{{ $t('config.log_path') }}</label>
-      <n-input
-        id="log_path"
-        v-model:value="config.log_path"
-        type="text"
-        placeholder="sunshine.log"
-      />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.log_path_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="log_path"
+      v-model="config.log_path"
+      class="mb-6"
+      placeholder="sunshine.log"
+    />
 
-    <!-- Private Key -->
-    <div class="mb-6">
-      <label for="pkey" class="form-label">{{ $t('config.pkey') }}</label>
-      <n-input id="pkey" v-model:value="config.pkey" type="text" placeholder="/dir/pkey.pem" />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.pkey_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="pkey"
+      v-model="config.pkey"
+      class="mb-6"
+      placeholder="/dir/pkey.pem"
+    />
 
-    <!-- Certificate -->
-    <div class="mb-6">
-      <label for="cert" class="form-label">{{ $t('config.cert') }}</label>
-      <n-input id="cert" v-model:value="config.cert" type="text" placeholder="/dir/cert.pem" />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.cert_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="cert"
+      v-model="config.cert"
+      class="mb-6"
+      placeholder="/dir/cert.pem"
+    />
 
-    <!-- State File -->
-    <div class="mb-6">
-      <label for="file_state" class="form-label">{{ $t('config.file_state') }}</label>
-      <n-input
-        id="file_state"
-        v-model:value="config.file_state"
-        type="text"
-        placeholder="sunshine_state.json"
-      />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $t('config.file_state_desc') }}
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="file_state"
+      v-model="config.file_state"
+      class="mb-6"
+      placeholder="sunshine_state.json"
+    />
   </div>
 </template>
 

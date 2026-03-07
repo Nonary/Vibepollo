@@ -27,7 +27,9 @@ const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', 
 const losslessTargetModel = defineModel<number | null>('losslessTargetFps', { default: null });
 const losslessRtssModel = defineModel<number | null>('losslessRtssLimit', { default: null });
 const losslessFlowModel = defineModel<number | null>('losslessFlowScale', { default: null });
-const losslessLaunchDelayModel = defineModel<number | null>('losslessLaunchDelay', { default: null });
+const losslessLaunchDelayModel = defineModel<number | null>('losslessLaunchDelay', {
+  default: null,
+});
 
 const props = defineProps<{
   health: FrameGenHealth | null;

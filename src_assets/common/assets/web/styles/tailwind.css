@@ -30,6 +30,96 @@
   .scroll-stable {
     scrollbar-gutter: stable;
   }
+
+  /*
+   * Reusable app scrollbar styling for native scroll containers.
+   * Apply to any overflow container that should feel integrated with our glassy surfaces.
+   */
+  .app-scrollbar {
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--color-primary) / 0.5) rgb(var(--color-dark) / 0.06);
+  }
+
+  .app-scrollbar::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-track {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-dark) / 0.03),
+      rgb(var(--color-dark) / 0.07)
+    );
+    border-radius: 999px;
+    margin: 0.35rem;
+    box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.05);
+  }
+
+  .app-scrollbar-edge::-webkit-scrollbar-track {
+    margin: 0.35rem 0 0.35rem 0.25rem;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.44),
+      rgb(var(--color-secondary) / 0.34)
+    );
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.18),
+      0 8px 18px rgb(var(--color-dark) / 0.08);
+    min-height: 2.75rem;
+  }
+
+  .app-scrollbar:hover::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.58),
+      rgb(var(--color-secondary) / 0.46)
+    );
+    border-width: 2px;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .dark .app-scrollbar {
+    scrollbar-color: rgb(var(--color-primary) / 0.62) rgb(var(--color-light) / 0.08);
+  }
+
+  .dark .app-scrollbar::-webkit-scrollbar-track {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-light) / 0.05),
+      rgb(var(--color-light) / 0.1)
+    );
+    box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.06);
+  }
+
+  .dark .app-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.56),
+      rgb(var(--color-light) / 0.22)
+    );
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.12),
+      0 10px 22px rgb(0 0 0 / 0.24);
+  }
+
+  .dark .app-scrollbar:hover::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.72),
+      rgb(var(--color-light) / 0.3)
+    );
+  }
   :root .n-button--primary-type {
     @apply bg-primary text-onPrimary hover:bg-primary/90;
   }

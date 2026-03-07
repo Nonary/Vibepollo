@@ -2,14 +2,14 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import AdapterNameSelector from '@/configs/tabs/audiovideo/AdapterNameSelector.vue';
 import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelector.vue';
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
-import Checkbox from '@/Checkbox.vue';
-import { NCheckbox, NInput, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
+import { NSwitch, NRadioGroup, NRadio } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 
@@ -24,7 +24,7 @@ const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
 
-// SudoVDA status mapping (Vibepollo-specific)
+// SudoVDA status mapping (Apollo-specific)
 const sudovdaStatus = computed(() => ({
   '1': t('config.sudovda_status_unknown'),
   '0': t('config.sudovda_status_ready'),
@@ -40,17 +40,6 @@ const currentDriverStatus = computed(
 );
 
 const lastAutomationOption = ref('verify_only');
-
-
-// Fallback mode validation
-const validateFallbackMode = (event: Event) => {
-  const target = event.target as HTMLInputElement | null;
-  if (!target) return;
-  const value = target.value;
-  const valid = /^\d+x\d+x\d+(\.\d+)?$/.test(value);
-  target.setCustomValidity(valid ? '' : t('config.fallback_mode_error'));
-  window.requestAnimationFrame(() => target.reportValidity());
-};
 watch(
   () => config.value?.dd_configuration_option,
   (next) => {
@@ -100,61 +89,6 @@ const displayAutomationEnabled = computed<boolean>({
     }
   },
 });
-
-// Replace custom Checkbox with Naive UI using compatibility mapping
-function mapToBoolRepresentation(value: any) {
-  if (value === true || value === false) return { possibleValues: [true, false], value };
-  if (value === 1 || value === 0) return { possibleValues: [1, 0], value };
-  const stringPairs = [
-    ['true', 'false'],
-    ['1', '0'],
-    ['enabled', 'disabled'],
-    ['enable', 'disable'],
-    ['yes', 'no'],
-    ['on', 'off'],
-  ];
-  const v = String(value ?? '')
-    .toLowerCase()
-    .trim();
-  for (const pair of stringPairs) {
-    if (v === pair[0] || v === pair[1]) return { possibleValues: pair, value: v };
-  }
-  return null as null | {
-    possibleValues: readonly [string, string] | readonly [true, false] | readonly [1, 0];
-    value: any;
-  };
-}
-
-function boolProxy(key: string, defaultValue: string = 'true') {
-  return computed<boolean>({
-    get() {
-      const raw = config.value?.[key];
-      const parsed = mapToBoolRepresentation(raw);
-      if (parsed) return parsed.value === parsed.possibleValues[0];
-      // fallback to default
-      const defParsed = mapToBoolRepresentation(defaultValue);
-      return defParsed ? defParsed.value === defParsed.possibleValues[0] : !!raw;
-    },
-    set(v: boolean) {
-      const raw = config.value?.[key];
-      const parsed = mapToBoolRepresentation(raw);
-      const pv = parsed ? parsed.possibleValues : ['true', 'false'];
-      const next = v ? pv[0] : pv[1];
-      // assign preserving original type if boolean/numeric pair
-      if (!config.value) return;
-      if (typeof store.updateOption === 'function') {
-        store.updateOption(key, next as any);
-      } else {
-        (config.value as any)[key] = next as any;
-      }
-    },
-  });
-}
-
-const installSteamDrivers = boolProxy('install_steam_audio_drivers', 'true');
-const streamAudio = boolProxy('stream_audio', 'true');
-const keepSinkDefault = boolProxy('keep_sink_default', 'true');
-const autoCaptureSink = boolProxy('auto_capture_sink', 'true');
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
@@ -232,70 +166,53 @@ function selectVirtualDisplayLayout(v: unknown) {
 
 <template>
   <div id="av" class="config-page">
-    <!-- Audio Sink -->
-    <div class="mb-6">
-      <label for="audio_sink" class="form-label">{{ t('config.audio_sink') }}</label>
-      <n-input
-        id="audio_sink"
-        v-model:value="config.audio_sink"
-        type="text"
-        :placeholder="
-          $tp('config.audio_sink_placeholder', 'alsa_output.pci-0000_09_00.3.analog-stereo')
-        "
-      />
-      <div class="text-[11px] opacity-60 mt-1">
-        {{ $tp('config.audio_sink_desc') }}<br />
-        <PlatformLayout>
-          <template #windows>
-            <pre>tools\audio-info.exe</pre>
-          </template>
-          <template #linux>
-            <pre>pacmd list-sinks | grep "name:"</pre>
-            <pre>pactl info | grep Source</pre>
-          </template>
-          <template #macos>
-            <a href="https://github.com/mattingalls/Soundflower" target="_blank">Soundflower</a
-            ><br />
-            <a href="https://github.com/ExistentialAudio/BlackHole" target="_blank">BlackHole</a>.
-          </template>
-        </PlatformLayout>
-      </div>
-    </div>
+    <ConfigFieldRenderer
+      setting-key="audio_sink"
+      v-model="config.audio_sink"
+      class="mb-6"
+      :desc="$tp('config.audio_sink_desc')"
+      :placeholder="
+        $tp('config.audio_sink_placeholder', 'alsa_output.pci-0000_09_00.3.analog-stereo')
+      "
+    >
+      <br />
+      <PlatformLayout>
+        <template #windows>
+          <pre>tools\audio-info.exe</pre>
+        </template>
+        <template #freebsd>
+          <pre>pacmd list-sinks | grep "name:"</pre>
+          <pre>pactl info | grep Source</pre>
+        </template>
+        <template #linux>
+          <pre>pacmd list-sinks | grep "name:"</pre>
+          <pre>pactl info | grep Source</pre>
+        </template>
+        <template #macos>
+          <a href="https://github.com/mattingalls/Soundflower" target="_blank">Soundflower</a><br />
+          <a href="https://github.com/ExistentialAudio/BlackHole" target="_blank">BlackHole</a>.
+        </template>
+      </PlatformLayout>
+    </ConfigFieldRenderer>
 
     <PlatformLayout>
       <template #windows>
-        <!-- Virtual Sink -->
-        <div class="mb-6">
-          <label for="virtual_sink" class="form-label">{{ t('config.virtual_sink') }}</label>
-          <n-input
-            id="virtual_sink"
-            v-model:value="config.virtual_sink"
-            type="text"
-            :placeholder="t('config.virtual_sink_placeholder')"
-          />
-          <div class="text-[11px] opacity-60 mt-1">
-            {{ t('config.virtual_sink_desc') }}
-          </div>
-        </div>
-        <!-- Install Steam Audio Drivers -->
-        <n-checkbox v-model:checked="installSteamDrivers" class="mb-3">
-          {{ t('config.install_steam_audio_drivers') }}
-        </n-checkbox>
+        <ConfigFieldRenderer
+          setting-key="virtual_sink"
+          v-model="config.virtual_sink"
+          class="mb-6"
+          :placeholder="$t('config.virtual_sink_placeholder')"
+        />
 
-        <n-checkbox v-model:checked="keepSinkDefault" class="mb-3">
-          {{ t('config.keep_sink_default') }}
-        </n-checkbox>
-
-        <n-checkbox v-model:checked="autoCaptureSink" class="mb-3">
-          {{ t('config.auto_capture_sink') }}
-        </n-checkbox>
+        <ConfigFieldRenderer
+          setting-key="install_steam_audio_drivers"
+          v-model="config.install_steam_audio_drivers"
+          class="mb-3"
+        />
       </template>
     </PlatformLayout>
 
-    <!-- Disable Audio -->
-    <n-checkbox v-model:checked="streamAudio" class="mb-3">
-      {{ $t('config.stream_audio') }}
-    </n-checkbox>
+    <ConfigFieldRenderer setting-key="stream_audio" v-model="config.stream_audio" class="mb-3" />
 
     <AdapterNameSelector />
 
@@ -342,26 +259,13 @@ function selectVirtualDisplayLayout(v: unknown) {
                 {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>
               <n-radio value="per_client">
-                {{ $t('config.virtual_display_mode_per_client') }}        
+                {{ $t('config.virtual_display_mode_per_client') }}
               </n-radio>
               <n-radio value="shared">
                 {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
-            <PlatformLayout>
-              <template #windows>
-                <div class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3">
-                  <Checkbox
-                    id="dd_wa_virtual_double_refresh"
-                    v-model="config.dd_wa_virtual_double_refresh"
-                    locale-prefix="config"
-                    :default="true"
-                    :disabled="virtualDisplayMode === 'disabled'"
-                  />
-                </div>
-              </template>
-            </PlatformLayout>
-            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">   
+            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
             <div v-else class="mt-3 space-y-2">
@@ -474,20 +378,6 @@ function selectVirtualDisplayLayout(v: unknown) {
 
     <!-- Display Modes -->
     <DisplayModesSettings />
-
-    <!-- Fallback Display Mode -->
-    <div class="mb-3">
-      <label for="fallback_mode" class="form-label">{{ t('config.fallback_mode') }}</label>
-      <n-input
-        id="fallback_mode"
-        v-model:value="config.fallback_mode"
-        type="text"
-        placeholder="1920x1080x60"
-        @blur="validateFallbackMode"
-      />
-      <div class="text-[11px] opacity-60 mt-1">{{ t('config.fallback_mode_desc') }}</div>
-    </div>
-
   </div>
 </template>
 

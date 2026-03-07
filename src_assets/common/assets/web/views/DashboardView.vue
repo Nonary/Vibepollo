@@ -257,10 +257,7 @@
                       <n-button tag="span" type="primary" strong size="small">
                         <i class="fas fa-rotate-right" />
                         <span>{{
-                          translate(
-                            'config.golden_layout_upgrade_action',
-                            'Open Display Settings',
-                          )
+                          translate('config.golden_layout_upgrade_action', 'Open Display Settings')
                         }}</span>
                       </n-button>
                     </a>
@@ -755,8 +752,7 @@ async function downloadCrashBundlePart(partIndex: number, filenameHint?: string)
     throw new Error('crash bundle download failed');
   }
   const headerName = parseContentDispositionFilename(r.headers?.['content-disposition']);
-  const filename =
-    filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
+  const filename = filenameHint || headerName || `sunshine_crashbundle-part${partIndex}.zip`;
   triggerDownload(r.data as Blob, filename);
 }
 
@@ -780,9 +776,7 @@ async function exportCrashBundleAsync() {
       await downloadCrashBundlePart(1);
     }
   } catch {
-    message.error(
-      translate('config.crash_dump_export_error', 'Failed to export crash bundle.'),
-    );
+    message.error(translate('config.crash_dump_export_error', 'Failed to export crash bundle.'));
   } finally {
     exportCrashPending.value = false;
   }
@@ -1003,10 +997,7 @@ const showVigemBanner = computed(() => {
 const showGoldenLayoutUpgradeBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  return (
-    goldenStatus.value?.exists === true &&
-    goldenStatus.value?.needs_layout_upgrade === true
-  );
+  return goldenStatus.value?.exists === true && goldenStatus.value?.needs_layout_upgrade === true;
 });
 
 const playniteUpdateAvailable = computed(() => {
@@ -1023,7 +1014,8 @@ const hasPlayniteFullscreenApp = computed(() => {
 const showPlayniteMissingPluginBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false) return false;
+  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false)
+    return false;
   return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
 });
 const playniteMissingPluginBannerText = computed(() => {
@@ -1044,7 +1036,11 @@ async function resolvePlaynitePluginIssue() {
   if (resolvingPlaynitePluginIssue.value || purgingPlayniteApps.value) return;
   resolvingPlaynitePluginIssue.value = true;
   try {
-    const r = await http.post('/api/playnite/install', { restart: true }, { validateStatus: () => true });
+    const r = await http.post(
+      '/api/playnite/install',
+      { restart: true },
+      { validateStatus: () => true },
+    );
     const body = r.data as any;
     const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
     if (ok) {

@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { NAlert, NButton, NCheckbox, NInput, NModal, NRadio, NRadioGroup, NSelect } from 'naive-ui';
+import { NAlert, NButton, NModal, NRadio, NRadioGroup } from 'naive-ui';
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
+import ConfigSwitchField from '@/ConfigSwitchField.vue';
 import NvidiaNvencEncoder from '@/configs/tabs/encoders/NvidiaNvencEncoder.vue';
 import IntelQuickSyncEncoder from '@/configs/tabs/encoders/IntelQuickSyncEncoder.vue';
 import AmdAmfEncoder from '@/configs/tabs/encoders/AmdAmfEncoder.vue';
@@ -102,30 +104,6 @@ const hasAmd = computed(() => {
   return true;
 });
 
-const captureOptions = computed(() => {
-  const opts = [{ label: t('_common.autodetect'), value: '' }];
-  switch (platform.value) {
-    case 'windows':
-      opts.push(
-        { label: 'Windows Graphics Capture (variable)', value: 'wgc' },
-        { label: 'Windows Graphics Capture (constant)', value: 'wgcc' },
-        { label: 'Desktop Duplication API', value: 'ddx' },
-      );
-      break;
-    case 'linux':
-      opts.push(
-        { label: 'NvFBC', value: 'nvfbc' },
-        { label: 'wlroots', value: 'wlr' },
-        { label: 'KMS', value: 'kms' },
-        { label: 'X11', value: 'x11' },
-      );
-      break;
-    default:
-      break;
-  }
-  return opts;
-});
-
 const losslessConfiguredPath = computed(() => (config.value as any)?.lossless_scaling_path ?? '');
 const losslessLegacyAutoDetect = computed<boolean>({
   get: () => !!(config.value as any)?.lossless_scaling_legacy_auto_detect,
@@ -146,6 +124,7 @@ const losslessCandidates = computed(() => {
     .filter((item) => !!item);
 });
 const losslessCheckedIsDirectory = computed(() => !!losslessStatus.value?.checked_is_directory);
+const losslessPathExists = computed(() => !!losslessStatus.value?.checked_exists);
 const losslessDetected = computed(() => {
   if (!losslessStatus.value) return false;
   if (losslessError.value) return false;
@@ -225,7 +204,7 @@ const losslessStatusHint = computed(() => {
   if (losslessDetected.value) {
     return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
   }
-  return 'Vibepollo could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
+  return 'Vibeshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
 });
 
 async function refreshLosslessStatus() {
@@ -356,21 +335,6 @@ watch(
   },
 );
 
-const encoderOptions = computed(() => {
-  const opts = [{ label: t('_common.autodetect'), value: '' }];
-  if (platform.value === 'windows') {
-    if (hasNvidia.value) opts.push({ label: 'NVIDIA NVENC', value: 'nvenc' });
-    if (hasIntel.value) opts.push({ label: 'Intel QuickSync', value: 'quicksync' });
-    if (hasAmd.value) opts.push({ label: 'AMD AMF/VCE', value: 'amdvce' });
-  } else if (platform.value === 'linux') {
-    opts.push({ label: 'NVIDIA NVENC', value: 'nvenc' }, { label: 'VA-API', value: 'vaapi' });
-  } else if (platform.value === 'macos') {
-    opts.push({ label: 'VideoToolbox', value: 'videotoolbox' });
-  }
-  opts.push({ label: t('config.encoder_software'), value: 'software' });
-  return opts;
-});
-
 const shouldShowNvenc = computed(() => (showAll() || props.currentTab === 'nv') && hasNvidia.value);
 const shouldShowQsv = computed(
   () => (showAll() || props.currentTab === 'qsv') && hasIntel.value && platform.value === 'windows',
@@ -385,55 +349,14 @@ const shouldShowVaapi = computed(
   () => (showAll() || props.currentTab === 'vaapi') && platform.value === 'linux',
 );
 const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw');
-
-const prefer10BitSdr = computed<boolean>({
-  get() {
-    const raw = (config.value as any)?.prefer_10bit_sdr;
-    if (raw === true || raw === false) return raw;
-    const normalized = String(raw ?? '')
-      .toLowerCase()
-      .trim();
-    if (['1', 'true', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
-    if (['0', 'false', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
-    return false; // default is disabled
-  },
-  set(v: boolean) {
-    (config.value as any).prefer_10bit_sdr = v;
-  },
-});
 </script>
 
 <template>
   <div class="config-page space-y-6">
     <div class="space-y-4">
-      <div>
-        <label for="capture" class="form-label">{{ $t('config.capture') }}</label>
-        <n-select
-          id="capture"
-          v-model:value="config.capture"
-          :options="captureOptions"
-          :data-search-options="captureOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
-        />
-        <n-text depth="3" class="text-[11px] block mt-1">{{ $t('config.capture_desc') }}</n-text>
-      </div>
-      <div>
-        <label for="encoder" class="form-label">{{ $t('config.encoder') }}</label>
-        <n-select
-          id="encoder"
-          v-model:value="config.encoder"
-          :options="encoderOptions"
-          :data-search-options="encoderOptions.map((o) => `${o.label}::${o.value ?? ''}`).join('|')"
-        />
-        <n-text depth="3" class="text-[11px] block mt-1">{{ $t('config.encoder_desc') }}</n-text>
-      </div>
-      <div class="space-y-1">
-        <n-checkbox id="prefer_10bit_sdr" v-model:checked="prefer10BitSdr">
-          {{ $t('config.prefer_10bit_sdr') }}
-        </n-checkbox>
-        <n-text depth="3" class="text-[11px] block">{{
-          $t('config.prefer_10bit_sdr_desc')
-        }}</n-text>
-      </div>
+      <ConfigFieldRenderer setting-key="capture" v-model="config.capture" />
+      <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
+      <ConfigFieldRenderer setting-key="prefer_10bit_sdr" v-model="config.prefer_10bit_sdr" />
       <fieldset
         v-if="platform === 'windows'"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
@@ -490,45 +413,40 @@ const prefer10BitSdr = computed<boolean>({
         <div
           class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
         >
-          <div class="flex items-start justify-between gap-3">
-            <div class="flex items-start gap-2">
-              <i
-                class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
-              />
-              <div class="space-y-1">
-                <div class="text-xs font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
-                  {{ $t('config.lossless_scaling_legacy_auto_detect_label') }}
-                </div>
-                <p class="text-[11px] text-amber-900/80 dark:text-amber-100/80">
-                  {{ $t('config.lossless_scaling_legacy_auto_detect_desc') }}
-                </p>
-              </div>
-            </div>
-            <n-switch v-model:value="losslessLegacyAutoDetect" size="small" class="mt-0.5" />
+          <div class="flex items-start gap-2">
+            <i
+              class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+            />
+            <ConfigSwitchField
+              id="lossless_scaling_legacy_auto_detect"
+              v-model="losslessLegacyAutoDetect"
+              :label="$t('config.lossless_scaling_legacy_auto_detect_label')"
+              :desc="$t('config.lossless_scaling_legacy_auto_detect_desc')"
+              class="flex-1"
+              size="small"
+            />
           </div>
         </div>
 
         <div v-if="showLosslessAdvanced" class="space-y-2">
-          <div class="flex items-center justify-between">
-            <label for="lossless_scaling_path" class="form-label">
-              Lossless Scaling executable
-            </label>
-            <div class="flex items-center gap-2 text-xs">
-              <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
-                Use Suggested
-              </n-button>
-              <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
-            </div>
-          </div>
-          <n-input
-            id="lossless_scaling_path"
-            v-model:value="config.lossless_scaling_path"
+          <ConfigFieldRenderer
+            setting-key="lossless_scaling_path"
+            v-model="config.lossless_scaling_path"
+            label="Lossless Scaling executable"
+            desc=""
             :placeholder="LOSSLESS_DEFAULT_PATH"
             clearable
-          />
-          <div class="text-[11px] opacity-60">
+          >
+            <template #actions>
+              <div class="flex items-center gap-2 text-xs">
+                <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
+                  Use Suggested
+                </n-button>
+                <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
+              </div>
+            </template>
             Default installation: {{ LOSSLESS_DEFAULT_PATH }}
-          </div>
+          </ConfigFieldRenderer>
         </div>
       </fieldset>
     </div>
@@ -557,7 +475,7 @@ const prefer10BitSdr = computed<boolean>({
     >
       <div class="space-y-4">
         <n-alert type="info" size="small" v-if="!losslessCandidates.length">
-          Vibepollo searched common Steam and program directories but could not locate
+          Vibeshine searched common Steam and program directories but could not locate
           LosslessScaling.exe. Install Lossless Scaling from Steam or set the full path manually.
         </n-alert>
         <div v-else class="space-y-2">
