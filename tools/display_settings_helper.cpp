@@ -2989,10 +2989,12 @@ namespace {
       return ok;
     }
 
-    // Attempt a restore once if a valid topology is present. Returns true on
-    // confirmed success, false otherwise.
-    // When always_restore_from_golden is true, golden snapshot is preferred with session
-    // snapshots as fallback. Otherwise, prefers session baseline chain, then golden.
+    // Attempt a restore once if a valid topology is present. Returns true only
+    // when restore is fully complete, false otherwise.
+    // When always_restore_from_golden is true, golden snapshot is preferred. A
+    // session snapshot may be applied as a temporary fallback, but the helper
+    // keeps polling until golden restore succeeds or the restore window ends.
+    // Otherwise, prefers session baseline chain, then golden.
     bool try_restore_once_if_valid(std::stop_token st, uint64_t guard_generation) {
       const auto cancelled = [&]() {
         if (restore_cancel_generation.load(std::memory_order_acquire) != guard_generation) {
@@ -3079,8 +3081,20 @@ namespace {
         if (try_golden()) {
           return true;
         }
-        // Golden failed, try session snapshots as fallback
-        return try_session_snapshots();
+        // Golden failed. Session snapshots can keep the machine usable, but
+        // should not terminate restore polling while a golden snapshot is still
+        // available to retry.
+        if (!try_session_snapshots()) {
+          return false;
+        }
+
+        if (controller.load_display_settings_snapshot(golden_path)) {
+          last_session_restore_success_ms.store(0, std::memory_order_release);
+          BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling.";
+          return false;
+        }
+
+        return true;
       } else {
         // Default: prefer session snapshots, fallback to golden
         if (try_session_snapshots()) {
@@ -3890,6 +3904,25 @@ namespace {
     };
   }
 
+  std::vector<std::filesystem::path> executable_config_search_roots() {
+    std::vector<std::filesystem::path> roots;
+    wchar_t exe_path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, exe_path, MAX_PATH)) {
+      return roots;
+    }
+
+    const auto module_path = std::filesystem::path(exe_path);
+    const auto module_dir = module_path.parent_path();
+    if (module_dir.empty()) {
+      return roots;
+    }
+
+    roots.push_back(module_dir / L"config");
+    roots.push_back(module_dir.parent_path() / L"config");
+    roots.push_back(module_dir.parent_path());
+    return roots;
+  }
+
   std::vector<std::filesystem::path> snapshot_search_roots() {
     std::vector<std::filesystem::path> roots;
     const auto user_root = compute_log_dir();
@@ -3902,6 +3935,11 @@ namespace {
       if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, programDataW.data()))) {
         programDataW.resize(wcslen(programDataW.c_str()));
         roots.push_back(std::filesystem::path(programDataW) / L"Sunshine");
+      }
+    }
+    for (const auto &root : executable_config_search_roots()) {
+      if (!root.empty()) {
+        roots.push_back(root);
       }
     }
     // De-duplicate while preserving order.
@@ -4249,48 +4287,26 @@ namespace {
   }
 
   bool validate_session_snapshot(ServiceState &state, const std::filesystem::path &path) {
-    (void) state;
-
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || ec) {
       return false;
     }
 
-    FILE *f = _wfopen(path.wstring().c_str(), L"rb");
-    if (!f) {
-      BOOST_LOG(warning) << "Existing session snapshot could not be opened; removing path=" << path.string();
+    if (auto loaded = state.controller.load_display_settings_snapshot_with_metadata(path)) {
+      if (!loaded->snapshot.m_topology.empty() && !loaded->snapshot.m_modes.empty()) {
+        return true;
+      }
+      BOOST_LOG(warning) << "Existing session snapshot collapsed after applying current exclusion/device filters; removing path="
+                         << path.string();
+    } else {
+      BOOST_LOG(warning) << "Existing session snapshot is invalid or filtered out; removing path=" << path.string();
+    }
+
+    {
       std::error_code ec_rm;
       std::filesystem::remove(path, ec_rm);
-      return false;
+      (void) ec_rm;
     }
-
-    auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
-    std::string data;
-    char buf[4096];
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-      data.append(buf, n);
-    }
-
-    bool valid = false;
-    try {
-      auto j = nlohmann::json::parse(data, nullptr, false);
-      if (!j.is_discarded() && j.is_object()) {
-        const bool has_topology = j.contains("topology") && j["topology"].is_array() && !j["topology"].empty();
-        const bool has_modes = j.contains("modes") && j["modes"].is_object() && !j["modes"].empty();
-        valid = has_topology && has_modes;
-      }
-    } catch (...) {
-      valid = false;
-    }
-
-    if (valid) {
-      return true;
-    }
-
-    BOOST_LOG(warning) << "Existing session snapshot is invalid (missing/empty topology or modes); removing path="
-                       << path.string();
-    std::error_code ec_rm;
-    std::filesystem::remove(path, ec_rm);
     return false;
   }
 
