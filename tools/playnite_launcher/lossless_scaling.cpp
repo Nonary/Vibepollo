@@ -1559,6 +1559,8 @@ namespace playnite_launcher::lossless {
     return loader.load();
   }
 
+  bool should_accept_focus_candidate(bool has_filter, bool path_matches, bool has_main_window);
+
   std::optional<DWORD> lossless_scaling_select_focus_pid(const std::string &install_dir_utf8, const std::string &exe_path_utf8, std::optional<DWORD> preferred_pid) {
     auto install_dir_norm = normalize_utf8_path(install_dir_utf8);
     auto exe_path_norm = normalize_utf8_path(exe_path_utf8);
@@ -1586,14 +1588,10 @@ namespace playnite_launcher::lossless {
       if (is_ignored_process_path(*path)) {
         continue;
       }
-      if (has_filter) {
-        if (path_matches_filter(*path, install_dir_norm, exe_path_norm)) {
-          initial_candidates.push_back(pid);
-        }
-      } else {
-        if (focus::find_main_window_for_pid(pid)) {
-          initial_candidates.push_back(pid);
-        }
+      bool has_main_window = focus::find_main_window_for_pid(pid) != nullptr;
+      bool path_matches = has_filter && path_matches_filter(*path, install_dir_norm, exe_path_norm);
+      if (should_accept_focus_candidate(has_filter, path_matches, has_main_window)) {
+        initial_candidates.push_back(pid);
       }
     }
     if (initial_candidates.empty()) {
@@ -1849,7 +1847,18 @@ namespace playnite_launcher::lossless {
     }
     return state.stopped;
   }
+
+  bool should_accept_focus_candidate(bool has_filter, bool path_matches, bool has_main_window) {
+    if (!has_main_window) {
+      return false;
+    }
+    return !has_filter || path_matches;
+  }
 #ifdef SUNSHINE_TESTS
+  bool should_accept_focus_candidate_for_tests(bool has_filter, bool path_matches, bool has_main_window) {
+    return should_accept_focus_candidate(has_filter, path_matches, has_main_window);
+  }
+
   bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch) {
     return should_launch_new_instance(state, force_launch);
   }

@@ -38,5 +38,22 @@ namespace {
     EXPECT_TRUE(playnite_launcher::lossless::should_launch_new_instance_for_tests(state, true));
   }
 
+  TEST(LosslessScalingFocusCandidate, FilteredCandidateRequiresWindow) {
+    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, true, false));
+  }
+
+  TEST(LosslessScalingFocusCandidate, FilteredCandidateAcceptsMatchingWindowedProcess) {
+    EXPECT_TRUE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, true, true));
+  }
+
+  TEST(LosslessScalingFocusCandidate, FilteredCandidateRejectsPathMismatch) {
+    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, false, true));
+  }
+
+  TEST(LosslessScalingFocusCandidate, UnfilteredCandidateStillRequiresWindow) {
+    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, false));
+    EXPECT_TRUE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, true));
+  }
+
 }  // namespace
 #endif
