@@ -135,13 +135,6 @@ export function getConfigFieldDefinition(
     };
   }
 
-  if (isBooleanLike(ctx.currentValue) || isBooleanLike(ctx.defaultValue)) {
-    return {
-      kind: 'checkbox',
-      localePrefix: 'config',
-    };
-  }
-
   if (
     Object.prototype.hasOwnProperty.call(NUMBER_FIELD_OVERRIDES, key) ||
     isFiniteNumber(ctx.currentValue) ||
@@ -150,6 +143,13 @@ export function getConfigFieldDefinition(
     return {
       kind: 'number',
       ...(NUMBER_FIELD_OVERRIDES[key] ?? {}),
+    };
+  }
+
+  if (isBooleanLike(ctx.currentValue) || isBooleanLike(ctx.defaultValue)) {
+    return {
+      kind: 'checkbox',
+      localePrefix: 'config',
     };
   }
 

@@ -678,11 +678,18 @@ const DD_KEYS = {
   hdrRequestOverride: 'dd_hdr_request_override',
 } as const;
 
-const ALLOWED_DD_OVERRIDE_KEYS = new Set<string>(['dd_wa_virtual_double_refresh']);
+const HIDDEN_OVERRIDE_KEYS = new Set<string>([
+  DD_KEYS.configurationOption,
+  DD_KEYS.resolutionOption,
+  DD_KEYS.manualResolution,
+  DD_KEYS.refreshRateOption,
+  DD_KEYS.manualRefreshRate,
+  DD_KEYS.hdrOption,
+  DD_KEYS.hdrRequestOverride,
+]);
 
 function isHiddenOverrideKey(key: string): boolean {
-  if (!key.startsWith('dd_')) return false;
-  return !ALLOWED_DD_OVERRIDE_KEYS.has(key);
+  return HIDDEN_OVERRIDE_KEYS.has(key);
 }
 
 function getConfigState(): any {
@@ -924,9 +931,7 @@ function cleanupDdConfigurationOptionIfUnused(target: EditTarget): void {
   if (!globalDdConfigDisabled()) return;
   const o = getOverridesSource(target) as any;
   if (!o || typeof o !== 'object' || Array.isArray(o)) return;
-  const ddKeys = Object.keys(o).filter(
-    (k) => k.startsWith('dd_') && !ALLOWED_DD_OVERRIDE_KEYS.has(k),
-  );
+  const ddKeys = Object.keys(o).filter((k) => k.startsWith('dd_'));
   const hasOtherDdKeys = ddKeys.some((k) => k !== DD_KEYS.configurationOption);
   if (!hasOtherDdKeys && o[DD_KEYS.configurationOption] === 'verify_only') {
     clearOverrideKeyFor(target, DD_KEYS.configurationOption);
@@ -1564,14 +1569,14 @@ function editorKind(
 
   const gv = getGlobalValue(key);
   if (NUMERIC_OVERRIDE_KEYS.has(key)) return 'number';
-  if (boolPairFromValue(gv)) return 'boolean';
   if (typeof gv === 'number') return 'number';
+  if (boolPairFromValue(gv)) return 'boolean';
   if (typeof gv === 'string') return 'string';
   if (gv && typeof gv === 'object') return 'json';
 
   const ov = rawOverrideValueFor(target, key);
-  if (boolPairFromValue(ov)) return 'boolean';
   if (typeof ov === 'number') return 'number';
+  if (boolPairFromValue(ov)) return 'boolean';
   if (typeof ov === 'string') return 'string';
   if (ov && typeof ov === 'object') return 'json';
   return 'string';

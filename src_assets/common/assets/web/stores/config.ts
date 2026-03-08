@@ -149,6 +149,7 @@ const defaultGroups = [
     options: {
       upnp: 'disabled',
       address_family: 'ipv4',
+      bind_address: '',
       port: 47989,
       origin_web_ui_allowed: 'lan',
       external_ip: '',
