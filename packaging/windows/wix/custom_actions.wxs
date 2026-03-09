@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <!--
-    Custom actions to mimic the NSIS behavior defined in cmake/packaging/windows_nsis.cmake:
+    Custom actions to implement the Windows installer behavior:
     - Reset ACLs on install dir
     - Update PATH (add/remove)
     - Migrate config files
