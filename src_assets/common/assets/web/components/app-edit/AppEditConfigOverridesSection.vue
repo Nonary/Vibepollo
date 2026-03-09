@@ -174,43 +174,44 @@
     </div>
   </section>
 
-  <div
-    v-if="browseModalOpen"
-    class="fixed inset-0 z-[1100] px-2 py-2 md:px-3 md:py-3 xl:px-5 xl:py-4"
-  >
-    <div class="absolute inset-0 bg-dark/50 dark:bg-black/70" />
+  <Teleport to="body">
     <div
-      class="relative mx-auto flex h-full max-w-[112rem] flex-col overflow-hidden rounded-[1.75rem] border border-dark/10 dark:border-light/10 bg-white/95 shadow-2xl dark:bg-surface/95"
+      v-if="browseModalOpen"
+      class="fixed inset-0 z-[1100] px-2 py-2 md:px-3 md:py-3 xl:px-5 xl:py-4"
     >
+      <div class="absolute inset-0 bg-dark/50 dark:bg-black/70" />
       <div
-        class="sticky top-0 z-20 border-b border-dark/10 dark:border-light/10 bg-white/95 px-4 py-4 backdrop-blur dark:bg-surface/95"
+        class="relative mx-auto flex h-full max-w-[112rem] flex-col overflow-hidden rounded-[1.75rem] border border-dark/10 dark:border-light/10 bg-white/95 shadow-2xl dark:bg-surface/95"
       >
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div class="flex min-w-0 items-start gap-2">
-            <n-button size="small" quaternary @click="cancelAddSettings">
-              <i class="fas fa-arrow-left text-[12px]" />
-              <span class="ml-1">Back</span>
-            </n-button>
-            <div class="min-w-0 space-y-1">
-              <div class="text-base font-semibold text-dark dark:text-light">
-                Add Setting Overrides
+        <div
+          class="sticky top-0 z-20 border-b border-dark/10 dark:border-light/10 bg-white/95 px-4 py-4 backdrop-blur dark:bg-surface/95"
+        >
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div class="flex min-w-0 items-start gap-2">
+              <n-button size="small" quaternary @click="cancelAddSettings">
+                <i class="fas fa-arrow-left text-[12px]" />
+                <span class="ml-1">Back</span>
+              </n-button>
+              <div class="min-w-0 space-y-1">
+                <div class="text-base font-semibold text-dark dark:text-light">
+                  Add Setting Overrides
+                </div>
+                <p class="text-[12px] leading-relaxed opacity-70">
+                  Browse all supported settings, stage the ones you want, then save to add them to
+                  this {{ scopeSummaryLabel }}.
+                </p>
               </div>
-              <p class="text-[12px] leading-relaxed opacity-70">
-                Browse all supported settings, stage the ones you want, then save to add them to
-                this {{ scopeSummaryLabel }}.
-              </p>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="min-h-0 flex-1 overflow-hidden px-4 py-4">
-        <div
-          class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(27rem,0.84fr)_minmax(42rem,1.16fr)] 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(50rem,1.2fr)]"
-        >
-          <aside
-            class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
+        <div class="min-h-0 flex-1 overflow-hidden px-4 py-4">
+          <div
+            class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(27rem,0.84fr)_minmax(42rem,1.16fr)] 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(50rem,1.2fr)]"
           >
+            <aside
+              class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
+            >
             <div class="border-b border-dark/10 px-4 py-4 dark:border-light/10">
               <div class="flex items-center justify-between gap-3">
                 <div class="space-y-1">
@@ -408,11 +409,11 @@
                 </div>
               </div>
             </div>
-          </aside>
+            </aside>
 
-          <div
-            class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
-          >
+            <div
+              class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
+            >
             <div class="border-b border-dark/10 px-4 py-3 dark:border-light/10">
               <div class="space-y-2.5">
                 <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -654,11 +655,12 @@
                 {{ modalOverrideEntries.length }}
               </span>
             </n-button>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
