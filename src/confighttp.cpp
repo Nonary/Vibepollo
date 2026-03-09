@@ -1017,6 +1017,7 @@ namespace confighttp {
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
+        "lossless-scaling-enabled",
         "lossless-scaling-framegen",
         "lossless-scaling-legacy-auto-detect"
       };

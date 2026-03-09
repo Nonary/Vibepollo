@@ -37,6 +37,7 @@ export interface App {
   detached?: string[];
   'scale-factor'?: number;
   gamepad?: string;
+  'lossless-scaling-enabled'?: boolean;
   'lossless-scaling-framegen'?: boolean;
   'lossless-scaling-target-fps'?: number;
   'lossless-scaling-rtss-limit'?: number;

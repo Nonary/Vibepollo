@@ -1502,13 +1502,14 @@ namespace proc {
       _env[ENV_LOSSLESS_LEGACY_AUTO_DETECT] = "";
     };
 
-    const bool lossless_scaling_enabled = _app.lossless_scaling_framegen;
-    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] = lossless_scaling_enabled ? _app.frame_generation_provider : "";
+    const bool lossless_scaling_enabled = _app.lossless_scaling_enabled || _app.lossless_scaling_framegen;
+    _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] =
+      _app.lossless_scaling_framegen ? _app.frame_generation_provider : "";
 
-    const bool using_lossless_provider = lossless_scaling_enabled &&
+    const bool using_lossless_provider = _app.lossless_scaling_framegen &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
     if (lossless_scaling_enabled) {
-      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "1";
+      _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = _app.lossless_scaling_framegen ? "1" : "";
       if (using_lossless_provider && effective_lossless_target) {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*effective_lossless_target);
       } else {
@@ -2713,8 +2714,8 @@ namespace proc {
                   _key = true;
                 } else if (first == "off" || first == "false" || first == "no") {
                   _key = false;
-                } else {
-                  _key = false;  // Default for unknown values
+              } else {
+                _key = false;  // Default for unknown values
                 }
               } else {
                 _key = false;  // Treat empty arrays or non-string first elements as false
@@ -3034,7 +3035,13 @@ namespace proc {
           }
         }
 
+        const bool has_lossless_scaling_enabled = app_node.contains("lossless-scaling-enabled");
+        ctx.lossless_scaling_enabled =
+          util::get_non_string_json_value<bool>(app_node, "lossless-scaling-enabled", false);
         ctx.lossless_scaling_framegen = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-framegen", false);
+        if (!has_lossless_scaling_enabled) {
+          ctx.lossless_scaling_enabled = ctx.lossless_scaling_framegen;
+        }
         ctx.frame_generation_provider = "lossless-scaling";
         if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
           ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());

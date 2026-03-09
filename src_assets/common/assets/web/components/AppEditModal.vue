@@ -686,7 +686,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       : isPlayniteLinked
         ? 10
         : base.exitTimeout;
-  const lsEnabled = !!src['lossless-scaling-framegen'];
+  const legacyLosslessFlag = !!src['lossless-scaling-framegen'];
   const lsTarget = parseNumeric(src['lossless-scaling-target-fps']);
   const lsLimit = parseNumeric(src['lossless-scaling-rtss-limit']);
   const lsLaunchDelayRaw = parseNumeric(src['lossless-scaling-launch-delay']);
@@ -706,12 +706,22 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     if (normalizedProvider === 'nvidia-smooth-motion') {
       frameGenerationMode = 'nvidia-smooth-motion';
     } else if (normalizedProvider === 'lossless-scaling') {
-      const hasLosslessFrameGen = lsEnabled || lsTarget !== null || lsLimit !== null;
+      const hasLosslessFrameGen = legacyLosslessFlag || lsTarget !== null || lsLimit !== null;
       frameGenerationMode = hasLosslessFrameGen ? 'lossless-scaling' : 'off';
     } else if (normalizedProvider === 'game-provided') {
       frameGenerationMode = 'game-provided';
     }
   }
+  const hasExplicitLosslessEnabled = Object.prototype.hasOwnProperty.call(
+    src,
+    'lossless-scaling-enabled',
+  );
+  const lsEnabled =
+    typeof src['lossless-scaling-enabled'] === 'boolean'
+      ? src['lossless-scaling-enabled']
+      : !hasExplicitLosslessEnabled &&
+          frameGenerationMode !== 'lossless-scaling' &&
+          legacyLosslessFlag;
   const frameGenerationProvider =
     frameGenerationModeFromConfig && frameGenerationModeFromConfig !== 'off'
       ? (frameGenerationModeFromConfig as FrameGenerationProvider)
@@ -894,12 +904,14 @@ function toServerPayload(f: AppForm): Record<string, any> {
   payload['frame-generation-mode'] = mode;
   const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
   const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
-  const losslessRuntimeActive = !!f.losslessScalingEnabled || mode === 'lossless-scaling';
-  payload['lossless-scaling-framegen'] = losslessRuntimeActive;
+  const losslessFramegenActive = mode === 'lossless-scaling';
+  const losslessRuntimeActive = !!f.losslessScalingEnabled || losslessFramegenActive;
+  payload['lossless-scaling-enabled'] = !!f.losslessScalingEnabled;
+  payload['lossless-scaling-framegen'] = losslessFramegenActive;
   payload['lossless-scaling-target-fps'] =
-    mode === 'lossless-scaling' ? payloadLosslessTarget : null;
+    losslessFramegenActive ? payloadLosslessTarget : null;
   payload['lossless-scaling-rtss-limit'] =
-    mode === 'lossless-scaling' ? payloadLosslessLimit : null;
+    losslessFramegenActive ? payloadLosslessLimit : null;
   const payloadLosslessDelayRaw = parseNumeric(f.losslessScalingLaunchDelay);
   const payloadLosslessDelay =
     payloadLosslessDelayRaw && payloadLosslessDelayRaw > 0
