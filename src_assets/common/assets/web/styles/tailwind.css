@@ -41,9 +41,20 @@
     scrollbar-color: rgb(var(--color-primary) / 0.5) rgb(var(--color-dark) / 0.06);
   }
 
+  .app-scrollbar-prominent {
+    scrollbar-gutter: stable both-edges;
+    scrollbar-width: auto;
+    scrollbar-color: rgb(var(--color-primary) / 0.58) rgb(var(--color-dark) / 0.1);
+  }
+
   .app-scrollbar::-webkit-scrollbar {
     width: 12px;
     height: 12px;
+  }
+
+  .app-scrollbar-prominent::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
   }
 
   .app-scrollbar::-webkit-scrollbar-track {
@@ -55,6 +66,15 @@
     border-radius: 999px;
     margin: 0.35rem;
     box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.05);
+  }
+
+  .app-scrollbar-prominent::-webkit-scrollbar-track {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-dark) / 0.045),
+      rgb(var(--color-dark) / 0.11)
+    );
+    box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.07);
   }
 
   .app-scrollbar-edge::-webkit-scrollbar-track {
@@ -76,6 +96,19 @@
     min-height: 2.75rem;
   }
 
+  .app-scrollbar-prominent::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.52),
+      rgb(var(--color-secondary) / 0.4)
+    );
+    border-width: 3px;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.24),
+      0 10px 22px rgb(var(--color-dark) / 0.12);
+    min-height: 3.25rem;
+  }
+
   .app-scrollbar:hover::-webkit-scrollbar-thumb {
     background: linear-gradient(
       180deg,
@@ -83,6 +116,14 @@
       rgb(var(--color-secondary) / 0.46)
     );
     border-width: 2px;
+  }
+
+  .app-scrollbar-prominent:hover::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.68),
+      rgb(var(--color-secondary) / 0.5)
+    );
   }
 
   .app-scrollbar::-webkit-scrollbar-corner {
@@ -93,6 +134,10 @@
     scrollbar-color: rgb(var(--color-primary) / 0.62) rgb(var(--color-light) / 0.08);
   }
 
+  .dark .app-scrollbar-prominent {
+    scrollbar-color: rgb(var(--color-primary) / 0.72) rgb(var(--color-light) / 0.12);
+  }
+
   .dark .app-scrollbar::-webkit-scrollbar-track {
     background: linear-gradient(
       180deg,
@@ -100,6 +145,15 @@
       rgb(var(--color-light) / 0.1)
     );
     box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.06);
+  }
+
+  .dark .app-scrollbar-prominent::-webkit-scrollbar-track {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-light) / 0.07),
+      rgb(var(--color-light) / 0.14)
+    );
+    box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.08);
   }
 
   .dark .app-scrollbar::-webkit-scrollbar-thumb {
@@ -113,11 +167,30 @@
       0 10px 22px rgb(0 0 0 / 0.24);
   }
 
+  .dark .app-scrollbar-prominent::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.66),
+      rgb(var(--color-light) / 0.28)
+    );
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.16),
+      0 12px 24px rgb(0 0 0 / 0.28);
+  }
+
   .dark .app-scrollbar:hover::-webkit-scrollbar-thumb {
     background: linear-gradient(
       180deg,
       rgb(var(--color-primary) / 0.72),
       rgb(var(--color-light) / 0.3)
+    );
+  }
+
+  .dark .app-scrollbar-prominent:hover::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-primary) / 0.78),
+      rgb(var(--color-light) / 0.36)
     );
   }
   :root .n-button--primary-type {

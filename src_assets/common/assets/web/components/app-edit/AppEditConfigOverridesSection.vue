@@ -201,17 +201,12 @@
               </p>
             </div>
           </div>
-          <div class="flex items-center gap-2 self-start sm:self-start">
-            <n-tag size="small" :bordered="false">
-              {{ modalOverrideEntries.length }} in editor
-            </n-tag>
-          </div>
         </div>
       </div>
 
       <div class="min-h-0 flex-1 overflow-hidden px-4 py-4">
         <div
-          class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(29rem,0.92fr)_minmax(40rem,1.08fr)] 2xl:grid-cols-[minmax(31rem,0.94fr)_minmax(48rem,1.12fr)]"
+          class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(27rem,0.84fr)_minmax(42rem,1.16fr)] 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(50rem,1.2fr)]"
         >
           <aside
             class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
@@ -234,16 +229,33 @@
               </div>
             </div>
 
-            <div class="app-scrollbar app-scrollbar-edge min-h-0 flex-1 overflow-y-scroll">
+            <div class="vb-scroll min-h-0 flex-1">
               <div v-if="modalOverrideEntries.length === 0" class="px-4 py-4">
                 <div
-                  class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-8 text-center space-y-3"
+                  class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 bg-white/40 px-4 py-6 text-center dark:bg-surface/30"
                 >
-                  <div class="text-sm font-medium">No override fields in the editor yet.</div>
-                  <p class="mx-auto max-w-xl text-[12px] leading-relaxed opacity-60">
-                    Pick a setting from the browser on the right to add it here, then edit it before
-                    saving.
+                  <div
+                    class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary"
+                  >
+                    <i class="fas fa-hand-point-right text-sm" />
+                  </div>
+                  <div class="mt-3 text-sm font-medium">Start by picking settings from the browser.</div>
+                  <p class="mx-auto mt-2 max-w-xl text-[12px] leading-relaxed opacity-60">
+                    Select a section or search on the right, click Add on the settings you want,
+                    then refine them here before saving.
                   </p>
+                  <div
+                    class="mx-auto mt-4 max-w-sm rounded-xl border border-dark/10 bg-dark/5 p-3 text-left dark:border-light/10 dark:bg-light/5"
+                  >
+                    <div class="text-[11px] font-semibold uppercase tracking-wide opacity-60">
+                      Getting started
+                    </div>
+                    <ol class="mt-2 space-y-1 text-[12px] leading-relaxed opacity-70">
+                      <li>1. Search or pick a section on the right.</li>
+                      <li>2. Click Add on each setting you want to override.</li>
+                      <li>3. Review the selected list here, then save.</li>
+                    </ol>
+                  </div>
                 </div>
               </div>
 
@@ -401,8 +413,8 @@
           <div
             class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
           >
-            <div class="border-b border-dark/10 px-4 py-4 dark:border-light/10">
-              <div class="space-y-3">
+            <div class="border-b border-dark/10 px-4 py-3 dark:border-light/10">
+              <div class="space-y-2.5">
                 <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                   <div class="space-y-1">
                     <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -421,11 +433,12 @@
                   </div>
                 </div>
 
-                <div class="flex flex-col gap-3">
+                <div class="flex flex-col gap-2 md:flex-row md:items-center">
                   <n-input
                     v-model:value="searchQuery"
                     type="text"
                     clearable
+                    class="min-w-0 flex-1"
                     placeholder="Filter by setting name, key, description, or option value"
                     @keydown.enter.prevent="addFirstFilteredEntry"
                   >
@@ -437,129 +450,186 @@
                     v-if="hasFilterControls"
                     size="small"
                     tertiary
-                    class="self-start"
+                    class="self-start md:shrink-0"
                     @click="resetFilters"
                   >
                     Clear Filters
                   </n-button>
                 </div>
-
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    :class="filterChipClass(selectedGroupId === ALL_GROUPS_ID)"
-                    @click="selectedGroupId = ALL_GROUPS_ID"
-                  >
-                    <span>All sections</span>
-                    <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
-                      {{ availableEntries.length }}
-                    </span>
-                  </button>
-                  <button
-                    v-for="group in availableGroups"
-                    :key="group.id"
-                    type="button"
-                    :class="filterChipClass(selectedGroupId === group.id)"
-                    @click="selectedGroupId = group.id"
-                  >
-                    <span>{{ group.name }}</span>
-                    <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
-                      {{ group.count }}
-                    </span>
-                  </button>
-                </div>
               </div>
             </div>
 
-            <div class="app-scrollbar app-scrollbar-edge min-h-0 flex-1 overflow-y-scroll">
-              <div class="space-y-4 p-4">
-                <template v-if="filteredAvailableGroups.length">
-                  <section
-                    v-for="group in filteredAvailableGroups"
-                    :key="group.id"
-                    class="space-y-2"
-                  >
-                    <div class="flex items-center justify-between gap-3">
-                      <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        {{ group.name }}
-                      </h4>
-                      <span class="text-[11px] opacity-50">{{ group.entries.length }}</span>
-                    </div>
-
-                    <div class="grid gap-2 xl:grid-cols-2">
-                      <button
-                        v-for="entry in group.entries"
-                        :key="entry.key"
-                        type="button"
-                        class="group rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-surface/40 p-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/5"
-                        @click="queueOverrideAddition(entry.key)"
-                      >
-                        <div class="flex items-start justify-between gap-3">
-                          <div class="min-w-0 space-y-1">
-                            <div class="text-sm font-semibold leading-snug">{{ entry.label }}</div>
-                            <div class="text-[11px] opacity-60">{{ entry.groupName }}</div>
-                            <div class="hidden break-all text-[11px] font-mono opacity-60 md:block">
-                              {{ entry.key }}
-                            </div>
-                          </div>
-                          <div class="flex shrink-0 items-center gap-2">
-                            <span
-                              class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide opacity-70"
-                            >
-                              {{ entryTypeLabel(entry.key) }}
-                            </span>
-                            <span
-                              class="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
-                            >
-                              <i class="fas fa-plus text-[10px]" />
-                              Add
-                            </span>
-                          </div>
-                        </div>
-
-                        <p v-if="entry.desc" class="mt-2 text-[12px] opacity-70 leading-relaxed">
-                          {{ entry.desc }}
-                        </p>
-
-                        <div class="mt-3 space-y-1 text-[11px] opacity-60">
-                          <div v-if="!entry.synthetic">
-                            Inherited:
-                            <span class="font-mono">
-                              {{ formatValueForKey(entry.key, entry.globalValue) }}
-                            </span>
-                          </div>
-                          <div v-if="availableOptionsPreview(entry)" class="hidden sm:block">
-                            Choices:
-                            <span class="font-medium">{{ availableOptionsPreview(entry) }}</span>
-                          </div>
-                          <div class="hidden break-words lg:block">{{ entry.path }}</div>
-                        </div>
-                      </button>
-                    </div>
-                  </section>
-                </template>
-
-                <div
-                  v-else
-                  class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-6 text-center space-y-2"
+            <div class="min-h-0 flex-1 p-3">
+              <div class="grid h-full min-h-0 gap-3 lg:grid-cols-[13.5rem_minmax(0,1fr)]">
+                <aside
+                  v-if="browseHasMultipleGroups"
+                  class="hidden min-h-0 lg:flex lg:flex-col"
                 >
-                  <div class="text-sm font-medium">
-                    {{
-                      availableEntries.length === 0
-                        ? 'All supported settings are already added.'
-                        : 'No settings match the current filters.'
-                    }}
+                  <div
+                    class="vb-scroll flex-1 min-h-0 rounded-xl border border-dark/10 bg-light/70 dark:border-light/10 dark:bg-surface/40"
+                  >
+                    <div class="p-2">
+                      <div class="px-2 pb-2 text-[11px] font-semibold uppercase tracking-wide opacity-60">
+                        Sections
+                      </div>
+                      <div class="space-y-1">
+                        <button
+                          type="button"
+                          :class="filterNavClass(selectedGroupId === ALL_GROUPS_ID)"
+                          @click="selectAvailableGroup(ALL_GROUPS_ID)"
+                        >
+                          <span class="truncate">All sections</span>
+                          <span
+                            class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px] opacity-70"
+                          >
+                            {{ availableEntries.length }}
+                          </span>
+                        </button>
+                        <button
+                          v-for="group in availableGroups"
+                          :key="group.id"
+                          type="button"
+                          :class="filterNavClass(selectedGroupId === group.id)"
+                          @click="selectAvailableGroup(group.id)"
+                        >
+                          <span class="truncate">{{ group.name }}</span>
+                          <span
+                            class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px] opacity-70"
+                          >
+                            {{ group.count }}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <p class="text-[12px] opacity-60 leading-relaxed">
-                    {{
-                      availableEntries.length === 0
-                        ? 'Delete an existing override to free up its setting slot.'
-                        : 'Try a broader term or switch back to all sections.'
-                    }}
-                  </p>
-                  <n-button v-if="hasFilterControls" size="small" tertiary @click="resetFilters">
-                    Reset Filters
-                  </n-button>
+                </aside>
+
+                <div class="min-h-0 min-w-0 flex flex-col">
+                  <div
+                    ref="browseResultsScrollRef"
+                    class="vb-scroll flex-1 min-h-0"
+                  >
+                    <div class="space-y-3 pr-1">
+                      <div
+                        v-if="browseHasMultipleGroups"
+                        class="grid grid-cols-2 gap-1.5 lg:hidden"
+                      >
+                        <button
+                          type="button"
+                          :class="filterNavClass(selectedGroupId === ALL_GROUPS_ID)"
+                          @click="selectAvailableGroup(ALL_GROUPS_ID)"
+                        >
+                          <span class="truncate">All sections</span>
+                          <span
+                            class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px] opacity-70"
+                          >
+                            {{ availableEntries.length }}
+                          </span>
+                        </button>
+                        <button
+                          v-for="group in availableGroups"
+                          :key="group.id"
+                          type="button"
+                          :class="filterNavClass(selectedGroupId === group.id)"
+                          @click="selectAvailableGroup(group.id)"
+                        >
+                          <span class="truncate">{{ group.name }}</span>
+                          <span
+                            class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px] opacity-70"
+                          >
+                            {{ group.count }}
+                          </span>
+                        </button>
+                      </div>
+
+                      <template v-if="filteredAvailableGroups.length">
+                        <section
+                          v-for="group in filteredAvailableGroups"
+                          :key="group.id"
+                          class="space-y-1.5"
+                        >
+                          <div class="flex items-center justify-between gap-3">
+                            <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
+                              {{ group.name }}
+                            </h4>
+                            <span class="text-[11px] opacity-50">{{ group.entries.length }}</span>
+                          </div>
+
+                          <div class="grid gap-2 xl:grid-cols-2">
+                            <button
+                              v-for="entry in group.entries"
+                              :key="entry.key"
+                              type="button"
+                              class="group flex h-full min-h-[8.75rem] flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 px-3 py-2.5 text-left transition-colors hover:border-primary/35 hover:bg-primary/5 dark:bg-surface/40"
+                              @click="queueOverrideAddition(entry.key)"
+                            >
+                              <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0 space-y-0.5">
+                                  <div class="text-sm font-semibold leading-snug">
+                                    {{ entry.label }}
+                                  </div>
+                                  <div
+                                    class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] opacity-60"
+                                  >
+                                    <span>{{ entry.groupName }}</span>
+                                    <span class="hidden text-[10px] opacity-40 md:inline"
+                                      >&bull;</span
+                                    >
+                                    <span class="hidden break-all font-mono md:block">
+                                      {{ entry.key }}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div class="flex shrink-0 items-center gap-2">
+                                  <span
+                                    class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide opacity-70"
+                                  >
+                                    {{ entryTypeLabel(entry.key) }}
+                                  </span>
+                                  <span
+                                    class="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
+                                  >
+                                    <i class="fas fa-plus text-[10px]" />
+                                    Add
+                                  </span>
+                                </div>
+                              </div>
+
+                              <p
+                                v-if="entry.desc"
+                                class="mt-2 text-[12px] leading-relaxed opacity-70"
+                              >
+                                {{ entry.desc }}
+                              </p>
+                            </button>
+                          </div>
+                        </section>
+                      </template>
+
+                      <div
+                        v-else
+                        class="rounded-xl border border-dashed border-dark/15 dark:border-light/15 px-4 py-6 text-center space-y-2"
+                      >
+                        <div class="text-sm font-medium">
+                          {{
+                            availableEntries.length === 0
+                              ? 'All supported settings are already added.'
+                              : 'No settings match the current filters.'
+                          }}
+                        </div>
+                        <p class="text-[12px] opacity-60 leading-relaxed">
+                          {{
+                            availableEntries.length === 0
+                              ? 'Delete an existing override to free up its setting slot.'
+                              : 'Try a broader term or switch back to all sections.'
+                          }}
+                        </p>
+                        <n-button v-if="hasFilterControls" size="small" tertiary @click="resetFilters">
+                          Reset Filters
+                        </n-button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -576,7 +646,14 @@
           </div>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <n-button size="small" tertiary @click="cancelAddSettings">Cancel</n-button>
-            <n-button size="small" type="primary" @click="savePendingAdditions">Save</n-button>
+            <n-button size="small" type="primary" @click="savePendingAdditions">
+              <span>Save</span>
+              <span
+                class="ml-2 inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-semibold"
+              >
+                {{ modalOverrideEntries.length }}
+              </span>
+            </n-button>
           </div>
         </div>
       </div>
@@ -588,9 +665,9 @@
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import ConfigInputField from '@/ConfigInputField.vue';
 import ConfigSelectField from '@/ConfigSelectField.vue';
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NButton, NInput, NTag } from 'naive-ui';
+import { NButton, NInput } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import {
   buildOverrideOptionsText,
@@ -1322,13 +1399,27 @@ const filteredAvailableCount = computed(() =>
   filteredAvailableGroups.value.reduce((total, group) => total + group.entries.length, 0),
 );
 
+const browseHasMultipleGroups = computed(() => availableGroups.value.length > 1);
+const browseResultsScrollRef = ref<HTMLElement | null>(null);
+
 const hasFilterControls = computed(
   () => searchTerms.value.length > 0 || selectedGroupId.value !== ALL_GROUPS_ID,
 );
 
+async function scrollBrowseResultsToTop() {
+  await nextTick();
+  if (browseResultsScrollRef.value) browseResultsScrollRef.value.scrollTop = 0;
+}
+
+function selectAvailableGroup(groupId: string) {
+  selectedGroupId.value = groupId;
+  void scrollBrowseResultsToTop();
+}
+
 function resetFilters() {
   searchQuery.value = '';
   selectedGroupId.value = ALL_GROUPS_ID;
+  void scrollBrowseResultsToTop();
 }
 
 function resetAddSettingsState() {
@@ -1499,22 +1590,9 @@ function entryTypeLabel(key: string): string {
   }
 }
 
-function availableOptionsPreview(entry: Entry): string {
-  if (!entry.options.length) return '';
-  const preview = entry.options
-    .slice(0, 4)
-    .map((option) => String(option.label || option.value || '').trim())
-    .filter(Boolean);
-  if (!preview.length) return '';
-  if (entry.options.length > preview.length) {
-    return `${preview.join(', ')} +${entry.options.length - preview.length} more`;
-  }
-  return preview.join(', ');
-}
-
-function filterChipClass(active: boolean): string[] {
+function filterNavClass(active: boolean): string[] {
   return [
-    'inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors',
+    'flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-[11px] font-medium transition-colors',
     active
       ? 'border-primary/35 bg-primary/10 text-primary shadow-sm'
       : 'border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/60 hover:border-primary/25 hover:text-primary',
@@ -1728,3 +1806,86 @@ function commitAllJsonFor(target: EditTarget) {
   }
 }
 </script>
+
+<style scoped>
+.vb-scroll {
+  overflow-y: scroll;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .vb-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--color-primary) / 0.42) rgb(var(--color-dark) / 0.07);
+  }
+
+  .dark .vb-scroll {
+    scrollbar-color: rgb(var(--color-primary) / 0.52) rgb(var(--color-light) / 0.09);
+  }
+}
+
+.vb-scroll::-webkit-scrollbar {
+  width: 12px;
+  -webkit-appearance: none;
+  background-color: rgb(var(--color-dark) / 0.06);
+}
+
+.vb-scroll::-webkit-scrollbar-track {
+  margin: 0.35rem 0.2rem 0.35rem 0.1rem;
+  border-radius: 999px;
+  background: rgb(var(--color-dark) / 0.06);
+}
+
+.vb-scroll::-webkit-scrollbar-thumb {
+  min-height: 2.75rem;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--color-primary) / 0.5),
+    rgb(var(--color-secondary) / 0.36)
+  );
+  background-clip: padding-box;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.18),
+    0 8px 18px rgb(var(--color-dark) / 0.08);
+}
+
+.vb-scroll:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--color-primary) / 0.62),
+    rgb(var(--color-secondary) / 0.48)
+  );
+}
+
+.vb-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.dark .vb-scroll::-webkit-scrollbar {
+  background-color: rgb(var(--color-light) / 0.08);
+}
+
+.dark .vb-scroll::-webkit-scrollbar-track {
+  background: rgb(var(--color-light) / 0.08);
+}
+
+.dark .vb-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--color-primary) / 0.62),
+    rgb(var(--color-light) / 0.24)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.14),
+    0 10px 22px rgb(0 0 0 / 0.24);
+}
+
+.dark .vb-scroll:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--color-primary) / 0.74),
+    rgb(var(--color-light) / 0.32)
+  );
+}
+</style>
