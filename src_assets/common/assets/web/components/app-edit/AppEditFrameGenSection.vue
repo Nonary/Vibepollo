@@ -364,19 +364,20 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
               Lossless Launch Delay (seconds)
             </label>
-            <n-input-number
-              v-model:value="losslessLaunchDelayModel"
-              :min="0"
-              :max="600"
-              :step="1"
-              :precision="0"
-              placeholder="0"
-              size="small"
-            />
-            <p class="text-[12px] opacity-60 leading-relaxed">
-              Wait additional seconds after the game starts before opening Lossless Scaling.
-            </p>
-          </div>
+             <n-input-number
+               v-model:value="losslessLaunchDelayModel"
+               :min="0"
+               :max="600"
+               :step="1"
+               :precision="0"
+               placeholder="8"
+               size="small"
+             />
+             <p class="text-[12px] opacity-60 leading-relaxed">
+               Wait additional seconds after the game starts before opening Lossless Scaling.
+               Leave blank to use the default 8-second delay.
+             </p>
+           </div>
         </div>
       </div>
 

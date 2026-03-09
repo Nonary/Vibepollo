@@ -53,7 +53,7 @@ namespace proc {
 
   typedef config::prep_cmd_t cmd_t;
 
-  inline constexpr int kLosslessScalingDefaultLaunchDelaySeconds = 5;
+  inline constexpr int kLosslessScalingDefaultLaunchDelaySeconds = 8;
 
   struct active_session_guard_t {
     bool has_active_app {false};
