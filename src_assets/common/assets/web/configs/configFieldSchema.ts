@@ -9,6 +9,7 @@ export type ConfigFieldKind = 'checkbox' | 'switch' | 'select' | 'number' | 'inp
 export type ConfigFieldDefinition = {
   kind: ConfigFieldKind;
   options?: ConfigSelectOption[];
+  durationUnit?: 'seconds';
   placeholder?: string;
   clearable?: boolean;
   filterable?: boolean;
@@ -52,6 +53,12 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function inferDurationUnit(key: string): ConfigFieldDefinition['durationUnit'] | undefined {
+  if (key === 'update_check_interval') return 'seconds';
+  if (key.endsWith('_seconds') || key.endsWith('_secs')) return 'seconds';
+  return undefined;
 }
 
 function isBooleanLike(value: unknown): boolean {
@@ -107,7 +114,12 @@ export function getConfigFieldDefinition(
         : ctx.kind === 'select'
           ? { filterable: true }
           : {}),
-      ...(ctx.kind === 'number' ? (NUMBER_FIELD_OVERRIDES[key] ?? {}) : {}),
+      ...(ctx.kind === 'number'
+        ? {
+            ...(NUMBER_FIELD_OVERRIDES[key] ?? {}),
+            ...(inferDurationUnit(key) ? { durationUnit: inferDurationUnit(key) } : {}),
+          }
+        : {}),
       localePrefix: 'config',
     };
   }
@@ -143,6 +155,7 @@ export function getConfigFieldDefinition(
     return {
       kind: 'number',
       ...(NUMBER_FIELD_OVERRIDES[key] ?? {}),
+      ...(inferDurationUnit(key) ? { durationUnit: inferDurationUnit(key) } : {}),
     };
   }
 

@@ -4,6 +4,7 @@ defineOptions({ inheritAttrs: false });
 import { computed, useAttrs } from 'vue';
 import { useI18n } from 'vue-i18n';
 import Checkbox from '@/Checkbox.vue';
+import ConfigDurationField from '@/ConfigDurationField.vue';
 import ConfigInputField from '@/ConfigInputField.vue';
 import ConfigNumberField from '@/ConfigNumberField.vue';
 import ConfigSelectField from '@/ConfigSelectField.vue';
@@ -221,6 +222,22 @@ const switchModel = computed<boolean>({
     <template #meta><slot name="meta" /></template>
     <slot />
   </ConfigSelectField>
+
+  <ConfigDurationField
+    v-else-if="field.kind === 'number' && field.durationUnit === 'seconds'"
+    :id="props.settingKey"
+    v-model="numberModel"
+    :label="resolvedLabel"
+    :desc="resolvedDesc"
+    :size="resolvedSize"
+    :min="resolvedMin"
+    :max="resolvedMax"
+    v-bind="attrs"
+  >
+    <template #actions><slot name="actions" /></template>
+    <template #meta><slot name="meta" /></template>
+    <slot />
+  </ConfigDurationField>
 
   <ConfigNumberField
     v-else-if="field.kind === 'number'"

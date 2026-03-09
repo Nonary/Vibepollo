@@ -378,23 +378,22 @@
               </div>
             </div>
             <div>
-              <label for="playnite_focus_timeout_secs" class="form-label">{{
-                $t('playnite.focus_timeout_secs') || 'Auto-focus timeout window (seconds)'
-              }}</label>
-              <n-input-number
+              <ConfigDurationField
                 id="playnite_focus_timeout_secs"
-                v-model:value="config.playnite_focus_timeout_secs"
+                v-model="config.playnite_focus_timeout_secs"
+                :label="
+                  String($t('playnite.focus_timeout_secs') || 'Auto-focus timeout window (seconds)')
+                "
+                :desc="
+                  String(
+                    $t('playnite.focus_timeout_secs_help') ||
+                      'How long auto-focus runs while re-applying focus (0 to disable).',
+                  )
+                "
                 :min="0"
                 :max="120"
-                :show-button="true"
-                class="w-32"
+                size="small"
               />
-              <div class="form-text">
-                {{
-                  $t('playnite.focus_timeout_secs_help') ||
-                  'How long auto-focus runs while re-applying focus (0 to disable).'
-                }}
-              </div>
             </div>
             <div class="md:col-span-2">
               <Checkbox
@@ -706,6 +705,7 @@ import {
 } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import Checkbox from '@/Checkbox.vue';
+import ConfigDurationField from '@/ConfigDurationField.vue';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { http } from '@/http';
