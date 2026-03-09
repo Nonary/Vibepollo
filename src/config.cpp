@@ -2041,59 +2041,99 @@ namespace config {
     }
 
     bool is_allowed_override_key(const std::string_view key) {
-      // Allow only specific Playnite behavior settings to vary per-app.
-      // All Playnite sync/catalog settings are global and may mutate apps.json.
-      if (key.rfind("playnite_", 0) == 0) {
-        static const std::unordered_set<std::string_view> kPlayniteAllowed = {
-          "playnite_focus_attempts",
-          "playnite_focus_timeout_secs",
-          "playnite_focus_exit_on_first",
-        };
-        return kPlayniteAllowed.contains(key);
-      }
+      // Per-app and per-client overrides are intentionally limited to stream/session behavior.
+      // Global identity, network, filesystem, updater, launcher-sync, and install-path settings
+      // are excluded to avoid softlocks and other surprising side effects.
+      static const std::unordered_set<std::string_view> kAllowed = {
+        // Input behavior
+        "controller",
+        "gamepad",
+        "ds4_back_as_touchpad_click",
+        "motion_as_ds4",
+        "touchpad_as_ds4",
+        "back_button_timeout",
+        "keyboard",
+        "key_repeat_delay",
+        "key_repeat_frequency",
+        "always_send_scancodes",
+        "key_rightalt_to_key_win",
+        "mouse",
+        "high_resolution_scrolling",
+        "native_pen_touch",
+        "keybindings",
+        "ds5_inputtino_randomize_mac",
 
-      // Disallow keys that are global/system/network scoped and not intended to vary per application.
-      static const std::unordered_set<std::string_view> kBlocked = {
-        // Network / identity / credentials
-        "flags",
-        "port",
-        "address_family",
-        "upnp",
-        "origin_web_ui_allowed",
-        "external_ip",
-        "lan_encryption_mode",
-        "wan_encryption_mode",
-        "ping_timeout",
+        // Stream audio/video and display automation
+        "audio_sink",
+        "virtual_sink",
+        "stream_audio",
+        "adapter_name",
+        "dd_configuration_option",
+        "dd_resolution_option",
+        "dd_manual_resolution",
+        "dd_refresh_rate_option",
+        "dd_manual_refresh_rate",
+        "dd_hdr_option",
+        "dd_hdr_request_override",
+        "dd_config_revert_delay",
+        "dd_config_revert_on_disconnect",
+        "dd_paused_virtual_display_timeout_secs",
+        "dd_always_restore_from_golden",
+        "dd_snapshot_exclude_devices",
+        "dd_snapshot_restore_hotkey",
+        "dd_snapshot_restore_hotkey_modifiers",
+        "dd_activate_virtual_display",
+        "dd_mode_remapping",
+        "dd_wa_virtual_double_refresh",
+        "dd_wa_dummy_plug_hdr10",
+        "max_bitrate",
+        "minimum_fps_target",
+
+        // Codec / capture negotiation
         "fec_percentage",
-        "pkey",
-        "cert",
+        "qp",
+        "min_threads",
+        "hevc_mode",
+        "av1_mode",
+        "prefer_10bit_sdr",
+        "capture",
+        "encoder",
 
-        // Per-app display selection is handled via apps.json metadata (output/virtual-screen/virtual-display-*).
-        "virtual_display_mode",
-        "virtual_display_layout",
+        // Frame limiter behavior
+        "frame_limiter_enable",
+        "frame_limiter_provider",
+        "frame_limiter_fps_limit",
+        "rtss_frame_limit_type",
+        "frame_limiter_disable_vsync",
 
-        // File paths / state
-        "file_apps",
-        "credentials_file",
-        "log_path",
-        "file_state",
-        "vibeshine_file_state",
-
-        // Global UX / program settings
-        "sunshine_name",
-        "locale",
-        "min_log_level",
-        "notify_pre_releases",
-        "system_tray",
-        "update_check_interval",
-        "session_token_ttl_seconds",
-        "remember_me_refresh_token_ttl_seconds",
-
-        // Global command list (apps already have per-app prep-cmd + exclude-global-prep-cmd)
-        "global_prep_cmd",
+        // Encoder tuning
+        "nvenc_preset",
+        "nvenc_twopass",
+        "nvenc_spatial_aq",
+        "nvenc_vbv_increase",
+        "nvenc_realtime_hags",
+        "nvenc_latency_over_power",
+        "nvenc_opengl_vulkan_on_dxgi",
+        "nvenc_h264_cavlc",
+        "qsv_preset",
+        "qsv_coder",
+        "qsv_slow_hevc",
+        "amd_usage",
+        "amd_rc",
+        "amd_enforce_hrd",
+        "amd_quality",
+        "amd_preanalysis",
+        "amd_vbaq",
+        "amd_coder",
+        "vt_coder",
+        "vt_software",
+        "vt_realtime",
+        "vaapi_strict_rc_buffer",
+        "sw_preset",
+        "sw_tune",
       };
 
-      return !kBlocked.contains(key);
+      return kAllowed.contains(key);
     }
 
     std::unordered_map<std::string, std::string> runtime_overrides_snapshot() {
