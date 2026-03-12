@@ -13,8 +13,8 @@ namespace platf::display_helper_client {
   // Send APPLY with JSON payload (SingleDisplayConfiguration)
   bool send_apply_json(const std::string &json);
 
-  // Send REVERT (no payload)
-  bool send_revert();
+  // Send REVERT with optional JSON payload.
+  bool send_revert(const std::string &json_payload = {});
 
   // Export current OS display settings as a golden restore snapshot
   bool send_export_golden(const std::string &json_payload = {});

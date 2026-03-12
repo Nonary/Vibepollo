@@ -788,6 +788,49 @@ namespace {
       return signature(snapshot());
     }
 
+    bool write_snapshot_text_atomically(const std::string &out, const std::filesystem::path &path) const {
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+
+      auto temp_path = path;
+      temp_path += L".tmp";
+
+      {
+        FILE *f = _wfopen(temp_path.wstring().c_str(), L"wb");
+        if (!f) {
+          return false;
+        }
+        auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
+        const auto written = fwrite(out.data(), 1, out.size(), f);
+        if (written != out.size()) {
+          guard.reset();
+          std::error_code ec_rm_tmp;
+          std::filesystem::remove(temp_path, ec_rm_tmp);
+          return false;
+        }
+      }
+
+      std::error_code ec_exist;
+      const bool target_exists = std::filesystem::exists(path, ec_exist) && !ec_exist;
+      if (!target_exists) {
+        std::error_code ec_move;
+        std::filesystem::rename(temp_path, path, ec_move);
+        if (!ec_move) {
+          return true;
+        }
+      }
+
+      std::error_code ec_copy;
+      std::filesystem::copy_file(temp_path, path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+      if (ec_copy) {
+        return false;
+      }
+
+      std::error_code ec_rm_tmp;
+      std::filesystem::remove(temp_path, ec_rm_tmp);
+      return true;
+    }
+
     // Save snapshot to file as JSON-like format.
     bool save_display_settings_snapshot_to_file(const std::filesystem::path &path) const {
       auto snap = snapshot();
@@ -808,15 +851,25 @@ namespace {
         BOOST_LOG(warning) << "Skipping display snapshot save; mode set is empty for path=" << path.string();
         return false;
       }
-      // Filter out devices without display_name (e.g., dummy plugs not properly attached to Windows).
-      // These should not be saved as restore targets.
+      // Filter out devices without display_name. These are not safe restore
+      // targets and are intentionally excluded from persisted snapshots.
       {
         auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
         std::set<std::string> valid_device_ids;
+        std::vector<std::string> enumerated_devices;
         for (const auto &d : devices) {
+          const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+          if (!id.empty()) {
+            std::string detail = id;
+            detail += "(display_name=";
+            detail += d.m_display_name.empty() ? "<empty>" : d.m_display_name;
+            detail += ")";
+            enumerated_devices.push_back(std::move(detail));
+          }
           if (!d.m_display_name.empty()) {
-            const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
-            valid_device_ids.insert(id);
+            if (!id.empty()) {
+              valid_device_ids.insert(id);
+            }
           }
         }
 
@@ -848,7 +901,7 @@ namespace {
           }
         }
 
-        // Filter topology groups, removing devices without valid display_name
+        // Filter topology groups to devices with a restore-capable display_name.
         display_device::ActiveTopology filtered_topology;
         for (const auto &grp : snap.m_topology) {
           std::vector<std::string> filtered_grp;
@@ -865,6 +918,16 @@ namespace {
         if (filtered_topology.empty()) {
           BOOST_LOG(warning) << "Skipping display snapshot save; no devices with valid display_name for path="
                              << path.string();
+          if (!enumerated_devices.empty()) {
+            std::string joined;
+            for (size_t i = 0; i < enumerated_devices.size(); ++i) {
+              if (i > 0) {
+                joined += ", ";
+              }
+              joined += enumerated_devices[i];
+            }
+            BOOST_LOG(debug) << "Display snapshot save rejected details: enumerated_devices=[" << joined << "]";
+          }
           return false;
         }
 
@@ -903,13 +966,6 @@ namespace {
       const auto layout_ids_vec = flatten_topology_device_ids(snap.m_topology);
       const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
       const auto layout_rotations = snapshot_layout_rotations(layout_ids);
-      std::error_code ec;
-      std::filesystem::create_directories(path.parent_path(), ec);
-      FILE *f = _wfopen(path.wstring().c_str(), L"wb");
-      if (!f) {
-        return false;
-      }
-      auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
       std::string out;
       out += "{\n  \"snapshot_version\": " + std::to_string(snapshot_layout_version_latest) + ",\n  \"topology\": [";
       for (size_t i = 0; i < snap.m_topology.size(); ++i) {
@@ -964,8 +1020,7 @@ namespace {
         }
       }
       out += "\n  }\n}";
-      const auto written = fwrite(out.data(), 1, out.size(), f);
-      return written == out.size();
+      return write_snapshot_text_atomically(out, path);
     }
 
     // Save a provided snapshot to file (without validation/filtering).
@@ -973,13 +1028,6 @@ namespace {
       const auto layout_ids_vec = flatten_topology_device_ids(snap.m_topology);
       const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
       const auto layout_rotations = snapshot_layout_rotations(layout_ids);
-      std::error_code ec;
-      std::filesystem::create_directories(path.parent_path(), ec);
-      FILE *f = _wfopen(path.wstring().c_str(), L"wb");
-      if (!f) {
-        return false;
-      }
-      auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
       std::string out;
       out += "{\n  \"snapshot_version\": " + std::to_string(snapshot_layout_version_latest) + ",\n  \"topology\": [";
       for (size_t i = 0; i < snap.m_topology.size(); ++i) {
@@ -1034,8 +1082,7 @@ namespace {
         }
       }
       out += "\n  }\n}";
-      const auto written = fwrite(out.data(), 1, out.size(), f);
-      return written == out.size();
+      return write_snapshot_text_atomically(out, path);
     }
 
     // Load snapshot from file with compatibility metadata.
@@ -1406,17 +1453,22 @@ namespace {
       const bool filter = !device_ids.empty();
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
         const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
-        if (id.empty() || d.m_display_name.empty()) {
+        if (id.empty()) {
           continue;
         }
         if (filter && !device_ids.contains(id)) {
           continue;
         }
-        const std::wstring display_name(d.m_display_name.begin(), d.m_display_name.end());
-        out.emplace(id, display_name);
+
+        if (d.m_display_name.empty()) {
+          continue;
+        }
+
+        const std::wstring display_name_w(d.m_display_name.begin(), d.m_display_name.end());
+        out.emplace(id, display_name_w);
         const auto id_lower = ascii_lower(id);
         if (id_lower != id) {
-          out.emplace(id_lower, display_name);
+          out.emplace(id_lower, display_name_w);
         }
       }
       return out;
@@ -2160,6 +2212,8 @@ namespace {
     std::atomic<long long> last_session_restore_success_ms {0};
     // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
     std::atomic<bool> always_restore_from_golden {false};
+    // When true, prefer golden over previous only when current is unavailable.
+    std::atomic<bool> prefer_golden_if_current_missing {false};
 
     // Polling-based restore loop state (replaces topology-change-triggered retries)
     std::jthread restore_poll_thread;
@@ -2379,13 +2433,96 @@ namespace {
       return ok;
     }
 
+    static bool path_exists(const std::filesystem::path &path) {
+      std::error_code ec;
+      return std::filesystem::exists(path, ec) && !ec;
+    }
+
+    static bool copy_file_overwrite(const std::filesystem::path &from, const std::filesystem::path &to) {
+      std::error_code ec_dir;
+      std::filesystem::create_directories(to.parent_path(), ec_dir);
+
+      std::error_code ec_copy;
+      std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec_copy);
+      return !ec_copy;
+    }
+
+    bool save_snapshot_with_retry(
+      const std::filesystem::path &path,
+      const char *reason = nullptr,
+      int max_attempts = 3,
+      std::chrono::milliseconds retry_delay = 50ms
+    ) {
+      const char *why = reason ? reason : "snapshot";
+      for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        if (controller.save_display_settings_snapshot_to_file(path)) {
+          if (attempt > 1) {
+            BOOST_LOG(info) << "Display snapshot save succeeded on retry #" << attempt << " (" << why << ").";
+          }
+          return true;
+        }
+        if (attempt < max_attempts) {
+          BOOST_LOG(info) << "Display snapshot save retry #" << (attempt + 1) << " scheduled (" << why << ").";
+          std::this_thread::sleep_for(retry_delay);
+        }
+      }
+      return false;
+    }
+
     // Capture the current display state to the "current" snapshot slot.
     bool capture_current_snapshot(const char *reason = nullptr) {
-      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
-      session_saved.store(saved, std::memory_order_release);
+      const bool saved = save_snapshot_with_retry(session_current_path, reason);
+      session_saved.store(saved || path_exists(session_current_path), std::memory_order_release);
       const char *why = reason ? reason : "apply";
       BOOST_LOG(info) << "Saved current session snapshot (" << why << "): " << (saved ? "true" : "false");
       return saved;
+    }
+
+    void invalidate_current_session_snapshot(const char *reason = nullptr) {
+      const char *why = reason ? reason : "snapshot-only";
+      std::error_code ec_rm_current;
+      const bool removed = std::filesystem::remove(session_current_path, ec_rm_current);
+      session_saved.store(false, std::memory_order_release);
+
+      BOOST_LOG(warning) << "Invalidated current session snapshot (" << why
+                         << "): removed_current=" << ((removed && !ec_rm_current) ? "true" : "false");
+      if (ec_rm_current) {
+        BOOST_LOG(warning) << "Failed to remove stale current session snapshot '" << session_current_path.string()
+                           << "' (ec=" << ec_rm_current.value() << ")";
+      }
+    }
+
+    bool refresh_current_snapshot_preserving_previous(const char *reason = nullptr) {
+      auto staged_path = session_current_path;
+      staged_path += L".candidate";
+      std::error_code ec_rm;
+      std::filesystem::remove(staged_path, ec_rm);
+
+      const bool staged_saved = save_snapshot_with_retry(staged_path, reason);
+      const char *why = reason ? reason : "snapshot-only";
+      if (!staged_saved) {
+        invalidate_current_session_snapshot(why);
+        BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): false";
+        return false;
+      }
+
+      if (path_exists(session_current_path) && !copy_file_overwrite(session_current_path, session_previous_path)) {
+        BOOST_LOG(warning) << "Failed to refresh session snapshot history (" << why << "): current->previous copy failed.";
+      }
+
+      const bool replaced = copy_file_overwrite(staged_path, session_current_path);
+      std::error_code ec_rm_stage;
+      std::filesystem::remove(staged_path, ec_rm_stage);
+
+      if (!replaced) {
+        invalidate_current_session_snapshot(why);
+        BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): false";
+        return false;
+      }
+
+      session_saved.store(true, std::memory_order_release);
+      BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): true";
+      return true;
     }
 
     void prepare_session_topology() {
@@ -2400,7 +2537,7 @@ namespace {
                         << session_current_path.string();
         return;
       }
-      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
+      const bool saved = save_snapshot_with_retry(session_current_path, "session-baseline");
       session_saved.store(saved, std::memory_order_release);
       BOOST_LOG(info) << "Saved session baseline snapshot to file: "
                       << (saved ? "true" : "false");
@@ -2435,7 +2572,7 @@ namespace {
         }
       }
 
-      const bool saved = controller.save_display_settings_snapshot_to_file(session_current_path);
+      const bool saved = save_snapshot_with_retry(session_current_path, "session-baseline-fresh");
       session_saved.store(saved, std::memory_order_release);
       BOOST_LOG(info) << "Saved session baseline snapshot (fresh) to file: " << (saved ? "true" : "false");
     }
@@ -3042,6 +3179,7 @@ namespace {
       };
 
       // Lambda to try session snapshots (current then previous)
+      bool tried_golden_before_previous = false;
       auto try_session_snapshots = [&]() -> bool {
         bool attempted_current = false;
         const bool restored_current = apply_session_snapshot_from_path(
@@ -3054,6 +3192,22 @@ namespace {
         if (restored_current) {
           (void) promote_current_snapshot_to_previous("restore success");
           return true;
+        }
+
+        const bool current_snapshot_missing = !path_exists(session_current_path);
+        const bool prefer_golden_before_previous =
+          prefer_golden_if_current_missing.load(std::memory_order_acquire) && current_snapshot_missing;
+        if (prefer_golden_before_previous) {
+          std::error_code ec_prev, ec_golden;
+          const bool has_previous = std::filesystem::exists(session_previous_path, ec_prev) && !ec_prev;
+          const bool has_golden = std::filesystem::exists(golden_path, ec_golden) && !ec_golden;
+          if (has_previous && has_golden) {
+            tried_golden_before_previous = true;
+            BOOST_LOG(info) << "Restore: current snapshot unavailable; preferring golden snapshot over previous session snapshot.";
+            if (try_golden()) {
+              return true;
+            }
+          }
         }
 
         bool attempted_previous = false;
@@ -3099,6 +3253,9 @@ namespace {
         // Default: prefer session snapshots, fallback to golden
         if (try_session_snapshots()) {
           return true;
+        }
+        if (tried_golden_before_previous) {
+          return false;
         }
         return try_golden();
       }
@@ -3158,6 +3315,7 @@ namespace {
       stop_and_join(restore_poll_thread, "restore-poll");
       restore_requested.store(false, std::memory_order_release);
       restore_origin_epoch.store(0, std::memory_order_release);
+      prefer_golden_if_current_missing.store(false, std::memory_order_release);
     }
 
     void disarm_restore_requests(const char *reason = nullptr) {
@@ -3193,6 +3351,7 @@ namespace {
 
     void clear_restore_origin() {
       restore_origin_epoch.store(0, std::memory_order_release);
+      prefer_golden_if_current_missing.store(false, std::memory_order_release);
     }
 
     bool should_exit_after_restore() const {
@@ -4359,6 +4518,25 @@ namespace {
     }
   }
 
+  bool parse_revert_prefer_golden_payload(std::span<const uint8_t> payload) {
+    if (payload.empty()) {
+      return false;
+    }
+
+    try {
+      std::string raw(reinterpret_cast<const char *>(payload.data()), payload.size());
+      auto j = nlohmann::json::parse(raw, nullptr, false);
+      if (!j.is_object()) {
+        return false;
+      }
+
+      auto it = j.find("sunshine_prefer_golden_if_current_missing");
+      return it != j.end() && it->is_boolean() && it->get<bool>();
+    } catch (...) {
+      return false;
+    }
+  }
+
   /**
    * @brief Load snapshot exclusion devices from vibeshine_state.json.
    *
@@ -4593,14 +4771,17 @@ namespace {
     return true;
   }
 
-  void handle_revert(ServiceState &state, std::atomic<bool> &running) {
-    BOOST_LOG(info) << "REVERT command received - initiating display settings restoration";
+  void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload) {
+    const bool prefer_golden_if_current_missing = parse_revert_prefer_golden_payload(payload);
+    BOOST_LOG(info) << "REVERT command received - initiating display settings restoration"
+                    << (prefer_golden_if_current_missing ? " (prefer golden if current missing)." : ".");
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.cancel_delayed_reapply();
     state.cancel_post_apply_tasks();
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
     state.restore_requested.store(true, std::memory_order_release);
+    state.prefer_golden_if_current_missing.store(prefer_golden_if_current_missing, std::memory_order_release);
     state.restore_origin_epoch.store(state.current_connection_epoch(), std::memory_order_release);
 
     // Give Sunshine a short window to immediately start a new session and DISARM,
@@ -4614,7 +4795,7 @@ namespace {
       state.controller.set_snapshot_exclusions(*exclusions);
     }
     if (type == MsgType::ExportGolden) {
-      const bool saved = state.controller.save_display_settings_snapshot_to_file(state.golden_path);
+      const bool saved = state.save_snapshot_with_retry(state.golden_path, "export-golden");
       BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");
     } else if (type == MsgType::Reset) {
       (void) state.controller.reset_persistence();
@@ -4623,8 +4804,7 @@ namespace {
     } else if (type == MsgType::Disarm) {
       state.disarm_restore_requests("DISARM command received");
     } else if (type == MsgType::SnapshotCurrent) {
-      (void) state.promote_current_snapshot_to_previous("snapshot-only");
-      (void) state.capture_current_snapshot("snapshot-only");
+      (void) state.refresh_current_snapshot_preserving_previous("snapshot-only");
     } else if (type == MsgType::Ping) {
       state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);
@@ -4645,7 +4825,7 @@ namespace {
       }
       send_framed_content(async_pipe, MsgType::ApplyResult, result_payload);
     } else if (type == MsgType::Revert) {
-      handle_revert(state, running);
+      handle_revert(state, running, payload);
     } else if (type == MsgType::Stop) {
       running.store(false, std::memory_order_release);
     } else {

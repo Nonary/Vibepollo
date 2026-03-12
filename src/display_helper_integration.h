@@ -34,7 +34,7 @@ namespace display_helper_integration {
     return false;
   }
 
-  inline bool revert() {
+  inline bool revert(bool = false) {
     return false;
   }
 

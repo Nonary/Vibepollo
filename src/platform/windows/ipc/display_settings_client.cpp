@@ -250,14 +250,14 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  bool send_revert() {
+  bool send_revert(const std::string &json_payload) {
     BOOST_LOG(debug) << "Display helper IPC: REVERT request queued";
     std::unique_lock<std::mutex> lk(pipe_mutex());
     if (!ensure_connected_locked()) {
       BOOST_LOG(warning) << "Display helper IPC: REVERT aborted - no connection";
       return false;
     }
-    std::vector<uint8_t> payload;
+    std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
     auto &pipe = pipe_singleton();
     if (pipe && send_message(*pipe, MsgType::Revert, payload)) {
       return true;

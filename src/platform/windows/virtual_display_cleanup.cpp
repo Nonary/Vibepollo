@@ -42,22 +42,47 @@ namespace platf::virtual_display_cleanup {
     }
   }  // namespace
 
-  cleanup_result_t run(const std::string_view reason, const bool enforce_db_restore) {
+  cleanup_result_t run(
+    const std::string_view reason,
+    const bool enforce_db_restore,
+    const revert_order_t revert_order,
+    const bool prefer_golden_if_current_missing
+  ) {
     cleanup_result_t result;
 
     const std::string reason_text = reason.empty() ? "unspecified" : std::string(reason);
     BOOST_LOG(info) << "Virtual display cleanup: begin (reason=" << reason_text
-                    << ", enforce_db_restore=" << (enforce_db_restore ? "true" : "false") << ")";
+                    << ", enforce_db_restore=" << (enforce_db_restore ? "true" : "false")
+                    << ", revert_order="
+                    << (revert_order == revert_order_t::restore_before_remove ? "restore_before_remove" : "remove_before_restore")
+                    << ")";
 
     const bool had_active_virtual_display = has_active_virtual_display();
     VDISPLAY::setWatchdogFeedingEnabled(false);
+
+    const auto try_helper_revert = [&]() {
+      if (!enforce_db_restore || result.helper_revert_dispatched) {
+        return;
+      }
+
+      result.helper_revert_dispatched = display_helper_integration::revert(prefer_golden_if_current_missing);
+      if (result.helper_revert_dispatched) {
+        result.database_restore_applied = true;
+      }
+    };
+
+    if (enforce_db_restore && revert_order == revert_order_t::restore_before_remove) {
+      try_helper_revert();
+    }
+
     result.virtual_displays_removed = VDISPLAY::removeAllVirtualDisplays();
 
     if (enforce_db_restore) {
-      result.helper_revert_dispatched = display_helper_integration::revert();
-      if (result.helper_revert_dispatched) {
-        result.database_restore_applied = true;
-      } else {
+      if (revert_order == revert_order_t::remove_before_restore) {
+        try_helper_revert();
+      }
+
+      if (!result.helper_revert_dispatched) {
         result.database_restore_applied = restore_windows_display_database();
       }
     }

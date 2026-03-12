@@ -999,6 +999,16 @@ namespace {
     return j.dump();
   }
 
+  std::string build_revert_payload(bool prefer_golden_if_current_missing) {
+    if (!prefer_golden_if_current_missing) {
+      return {};
+    }
+
+    nlohmann::json j = nlohmann::json::object();
+    j["sunshine_prefer_golden_if_current_missing"] = true;
+    return j.dump();
+  }
+
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
     constexpr auto kActiveInterval = 5s;
@@ -1182,14 +1192,15 @@ namespace display_helper_integration {
     return apply_internal(request, true);
   }
 
-  bool revert() {
+  bool revert(bool prefer_golden_if_current_missing) {
     clear_pending_apply();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
     }
-    BOOST_LOG(info) << "Display helper: sending REVERT request.";
-    const bool ok = platf::display_helper_client::send_revert();
+    BOOST_LOG(info) << "Display helper: sending REVERT request"
+                    << (prefer_golden_if_current_missing ? " (prefer golden if current missing)." : ".");
+    const bool ok = platf::display_helper_client::send_revert(build_revert_payload(prefer_golden_if_current_missing));
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     if (ok) {
       g_restore_expected.store(true, std::memory_order_relaxed);

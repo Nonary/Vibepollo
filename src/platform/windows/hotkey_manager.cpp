@@ -68,7 +68,12 @@ namespace {
 
   void trigger_restore() {
     BOOST_LOG(info) << "Restore hotkey triggered; reverting display configuration.";
-    const auto cleanup = platf::virtual_display_cleanup::run("restore_hotkey", true);
+    const auto cleanup = platf::virtual_display_cleanup::run(
+      "restore_hotkey",
+      true,
+      platf::virtual_display_cleanup::revert_order_t::restore_before_remove,
+      true
+    );
     if (!cleanup.virtual_displays_removed) {
       BOOST_LOG(warning) << "Restore hotkey cleanup: no virtual display was removed.";
     }

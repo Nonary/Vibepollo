@@ -28,7 +28,7 @@ namespace display_helper_integration {
 
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
-  bool revert();
+  bool revert(bool prefer_golden_if_current_missing = false);
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.
