@@ -1460,11 +1460,18 @@ namespace {
           continue;
         }
 
-        if (d.m_display_name.empty()) {
+        std::string display_name = d.m_display_name;
+        if (display_name.empty()) {
+          try {
+            display_name = m_dd->getDisplayName(id);
+          } catch (...) {
+          }
+        }
+        if (display_name.empty()) {
           continue;
         }
 
-        const std::wstring display_name_w(d.m_display_name.begin(), d.m_display_name.end());
+        const std::wstring display_name_w(display_name.begin(), display_name.end());
         out.emplace(id, display_name_w);
         const auto id_lower = ascii_lower(id);
         if (id_lower != id) {
@@ -2478,20 +2485,6 @@ namespace {
       return saved;
     }
 
-    void invalidate_current_session_snapshot(const char *reason = nullptr) {
-      const char *why = reason ? reason : "snapshot-only";
-      std::error_code ec_rm_current;
-      const bool removed = std::filesystem::remove(session_current_path, ec_rm_current);
-      session_saved.store(false, std::memory_order_release);
-
-      BOOST_LOG(warning) << "Invalidated current session snapshot (" << why
-                         << "): removed_current=" << ((removed && !ec_rm_current) ? "true" : "false");
-      if (ec_rm_current) {
-        BOOST_LOG(warning) << "Failed to remove stale current session snapshot '" << session_current_path.string()
-                           << "' (ec=" << ec_rm_current.value() << ")";
-      }
-    }
-
     bool refresh_current_snapshot_preserving_previous(const char *reason = nullptr) {
       auto staged_path = session_current_path;
       staged_path += L".candidate";
@@ -2501,7 +2494,7 @@ namespace {
       const bool staged_saved = save_snapshot_with_retry(staged_path, reason);
       const char *why = reason ? reason : "snapshot-only";
       if (!staged_saved) {
-        invalidate_current_session_snapshot(why);
+        session_saved.store(path_exists(session_current_path), std::memory_order_release);
         BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): false";
         return false;
       }
@@ -2514,15 +2507,9 @@ namespace {
       std::error_code ec_rm_stage;
       std::filesystem::remove(staged_path, ec_rm_stage);
 
-      if (!replaced) {
-        invalidate_current_session_snapshot(why);
-        BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): false";
-        return false;
-      }
-
-      session_saved.store(true, std::memory_order_release);
-      BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): true";
-      return true;
+      session_saved.store(replaced || path_exists(session_current_path), std::memory_order_release);
+      BOOST_LOG(info) << "Refreshed current session snapshot (" << why << "): " << (replaced ? "true" : "false");
+      return replaced;
     }
 
     void prepare_session_topology() {
