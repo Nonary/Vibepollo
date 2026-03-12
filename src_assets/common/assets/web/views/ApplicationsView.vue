@@ -1,25 +1,33 @@
 <template>
-  <div class="max-w-3xl mx-auto px-6 py-8 space-y-4">
-    <!-- Toolbar aligned to card -->
-    <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-wider">Applications</h2>
-      <!-- Toolbar: one Primary + one secondary, 8-pt spacing -->
-      <n-space align="center" :size="16" class="items-center">
+  <div class="max-w-3xl mx-auto px-4 py-6 space-y-4 sm:px-6 sm:py-8 sm:space-y-5">
+    <div
+      class="flex flex-col gap-3 rounded-2xl border border-dark/10 bg-white/75 p-4 shadow-sm backdrop-blur dark:border-light/10 dark:bg-surface/70 sm:flex-row sm:items-center sm:justify-between sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-none"
+    >
+      <div class="min-w-0 space-y-1">
+        <h2 class="text-base font-semibold text-dark dark:text-light sm:text-sm sm:uppercase sm:tracking-wider">
+          Applications
+        </h2>
+        <p class="text-[12px] leading-relaxed opacity-65 sm:hidden">
+          Add manual apps or connect Playnite to keep your library ready for streaming.
+        </p>
+      </div>
+
+      <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:gap-4">
         <!-- Windows + Playnite secondary action -->
         <template v-if="isWindows">
           <n-button
             v-if="playniteEnabled"
-            size="small"
+            size="medium"
             type="default"
             strong
-            class="h-10 px-3 rounded-md"
+            class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-3"
             :loading="syncBusy"
             :disabled="syncBusy"
             @click="forceSync"
             aria-label="Force sync now"
           >
             <svg
-              class="w-4 h-4 mr-2 inline-block"
+              class="mr-2 inline-block h-4 w-4 shrink-0"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -31,20 +39,23 @@
                 d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6"
               />
             </svg>
-            {{ $t('playnite.force_sync') || 'Force Sync' }}
+            <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
+              <span>{{ $t('playnite.force_sync') || 'Force Sync' }}</span>
+              <span class="text-[11px] opacity-60 sm:hidden">Refresh imported titles</span>
+            </span>
           </n-button>
 
           <!-- Setup Playnite when disabled -->
           <n-button
             v-else
-            size="small"
+            size="medium"
             type="default"
             strong
             @click="gotoPlaynite"
-            class="h-10 px-3"
+            class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-3"
           >
             <svg
-              class="w-4 h-4 mr-2 inline-block"
+              class="mr-2 inline-block h-4 w-4 shrink-0"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -56,14 +67,26 @@
                 d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95"
               />
             </svg>
-            {{ $t('playnite.setup_integration') || 'Setup Playnite' }}
+            <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
+              <span class="sm:hidden">Connect Playnite</span>
+              <span class="hidden sm:inline">{{
+                $t('playnite.setup_integration') || 'Setup Playnite'
+              }}</span>
+              <span class="text-[11px] opacity-60 sm:hidden">Import and manage your library</span>
+            </span>
           </n-button>
         </template>
 
         <!-- Primary: Add -->
-        <n-button type="primary" size="small" strong class="h-10 px-4 rounded-md" @click="openAdd">
+        <n-button
+          type="primary"
+          size="medium"
+          strong
+          class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-4"
+          @click="openAdd"
+        >
           <svg
-            class="w-4 h-4 mr-2 inline-block"
+            class="mr-2 inline-block h-4 w-4 shrink-0"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -75,9 +98,13 @@
               d="M12 5v14M5 12h14"
             />
           </svg>
-          Add
+          <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
+            <span class="sm:hidden">Add Application</span>
+            <span class="hidden sm:inline">Add</span>
+            <span class="text-[11px] opacity-80 sm:hidden">Create a manual entry</span>
+          </span>
         </n-button>
-      </n-space>
+      </div>
     </div>
 
     <!-- Redesigned list view -->
@@ -174,7 +201,7 @@ import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue';
 const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
-import { NButton, NSpace, NTag } from 'naive-ui';
+import { NButton, NTag } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
 import { useRouter } from 'vue-router';

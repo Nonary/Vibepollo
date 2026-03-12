@@ -20,10 +20,10 @@ const hasDescription = computed(() => Boolean(props.desc) || Boolean(slots['defa
 
 <template>
   <div class="space-y-1">
-    <div class="flex items-start justify-between gap-3">
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
       <label v-if="props.id" :for="props.id" class="form-label">{{ props.label }}</label>
       <div v-else class="form-label">{{ props.label }}</div>
-      <div v-if="$slots['actions']" class="shrink-0 pt-0.5">
+      <div v-if="$slots['actions']" class="self-start shrink-0 sm:pt-0.5">
         <slot name="actions" />
       </div>
     </div>

@@ -1,76 +1,72 @@
 <template>
-  <n-space vertical size="large">
-    <n-grid cols="24" x-gap="16" y-gap="20" responsive="screen">
-      <n-gi :span="12" :s="24">
-        <n-space vertical size="medium">
-          <n-h3>{{ $t('resource_card.resources') || 'Resources' }}</n-h3>
-          <n-space vertical size="small">
-            <n-card
-              v-for="item in resources"
-              :key="item.href"
-              hoverable
-              tag="a"
-              size="small"
-              :href="item.href"
-              target="_blank"
-              rel="noopener noreferrer"
+  <div class="grid min-w-0 gap-5 md:grid-cols-2">
+    <section class="min-w-0 space-y-3">
+      <h3 class="text-lg font-semibold">{{ $t('resource_card.resources') || 'Resources' }}</h3>
+      <div class="space-y-2.5">
+        <n-card
+          v-for="item in resources"
+          :key="item.href"
+          hoverable
+          tag="a"
+          size="small"
+          class="resource-link-card"
+          :href="item.href"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <div class="flex min-w-0 items-center gap-3">
+            <span
+              class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+              :style="item.avatarStyle"
             >
-              <n-space align="center" size="large">
-                <span
-                  class="shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full"
-                  :style="item.avatarStyle"
-                >
-                  <i :class="[item.icon, 'text-[18px]']" />
-                </span>
-                <n-space vertical size="small">
-                  <n-text strong>{{ item.title }}</n-text>
-                  <n-text depth="3">{{ item.description }}</n-text>
-                </n-space>
-              </n-space>
-            </n-card>
-          </n-space>
-        </n-space>
-      </n-gi>
+              <i :class="[item.icon, 'text-[18px]']" />
+            </span>
+            <div class="min-w-0 flex-1 space-y-0.5">
+              <n-text strong class="block break-words">{{ item.title }}</n-text>
+              <n-text depth="3" class="block break-words">{{ item.description }}</n-text>
+            </div>
+          </div>
+        </n-card>
+      </div>
+    </section>
 
-      <n-gi :span="12" :s="24">
-        <n-space vertical size="medium">
-          <n-h3>{{ $t('resource_card.legal') }}</n-h3>
-          <n-text depth="3">{{ $t('resource_card.legal_desc') }}</n-text>
-          <n-space vertical size="small">
-            <n-card
-              v-for="item in legalLinks"
-              :key="item.href"
-              hoverable
-              tag="a"
-              size="small"
-              :href="item.href"
-              target="_blank"
-              rel="noopener noreferrer"
+    <section class="min-w-0 space-y-3">
+      <h3 class="text-lg font-semibold">{{ $t('resource_card.legal') }}</h3>
+      <n-text depth="3" class="block leading-relaxed">{{ $t('resource_card.legal_desc') }}</n-text>
+      <div class="space-y-2.5">
+        <n-card
+          v-for="item in legalLinks"
+          :key="item.href"
+          hoverable
+          tag="a"
+          size="small"
+          class="resource-link-card"
+          :href="item.href"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <div class="flex min-w-0 items-center gap-3">
+            <span
+              class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+              :style="item.avatarStyle"
             >
-              <n-space align="center" size="large">
-                <span
-                  class="shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full"
-                  :style="item.avatarStyle"
-                >
-                  <i :class="[item.icon, 'text-[18px]']" />
-                </span>
-                <n-space vertical size="small">
-                  <n-text strong>{{ item.title }}</n-text>
-                  <n-text depth="3">{{ item.description }}</n-text>
-                </n-space>
-              </n-space>
-            </n-card>
-          </n-space>
-        </n-space>
-      </n-gi>
-    </n-grid>
-  </n-space>
+              <i :class="[item.icon, 'text-[18px]']" />
+            </span>
+            <div class="min-w-0 flex-1 space-y-0.5">
+              <n-text strong class="block break-words">{{ item.title }}</n-text>
+              <n-text depth="3" class="block break-words">{{ item.description }}</n-text>
+            </div>
+          </div>
+        </n-card>
+      </div>
+    </section>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NGrid, NGi, NCard, NSpace, NH3, NText } from 'naive-ui';
+import { NCard, NText } from 'naive-ui';
 
 const { t } = useI18n();
 
@@ -120,3 +116,11 @@ const legalLinks = computed(() => [
   },
 ]);
 </script>
+
+<style scoped>
+.resource-link-card {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+</style>

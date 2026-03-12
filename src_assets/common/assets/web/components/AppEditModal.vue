@@ -1,5 +1,10 @@
 <template>
-  <n-modal :show="open" :mask-closable="true" @update:show="(v) => emit('update:modelValue', v)">
+  <n-modal
+    :show="open"
+    :mask-closable="true"
+    :trap-focus="!overridesPickerOpen"
+    @update:show="(v) => emit('update:modelValue', v)"
+  >
     <n-card
       :bordered="false"
       :content-style="{
@@ -337,7 +342,10 @@
             </div>
           </div>
 
-          <AppEditConfigOverridesSection v-model:overrides="form.configOverrides" />
+          <AppEditConfigOverridesSection
+            v-model:overrides="form.configOverrides"
+            v-model:picker-open="overridesPickerOpen"
+          />
 
           <AppEditFrameGenSection
             v-if="isWindows"
@@ -590,6 +598,7 @@ function fresh(): AppForm {
   };
 }
 const form = ref<AppForm>(fresh());
+const overridesPickerOpen = ref(false);
 
 const APP_VIRTUAL_DISPLAY_MODES: AppVirtualDisplayMode[] = ['disabled', 'per_client', 'shared'];
 const APP_VIRTUAL_DISPLAY_LAYOUTS: AppVirtualDisplayLayout[] = [
@@ -1878,6 +1887,7 @@ watch(open, (o) => {
       }
     }
   } else {
+    overridesPickerOpen.value = false;
     frameGenHealth.value = null;
     frameGenHealthError.value = null;
   }

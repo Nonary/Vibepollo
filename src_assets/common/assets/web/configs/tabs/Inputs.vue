@@ -142,9 +142,7 @@ const platform = computed(() =>
       class="mb-3"
     />
 
-    <hr />
-
-    <ConfigFieldRenderer setting-key="mouse" v-model="config.mouse" class="mb-3" />
+    <ConfigFieldRenderer setting-key="mouse" v-model="config.mouse" class="mt-5 mb-3" />
 
     <ConfigFieldRenderer
       v-if="config.mouse === 'enabled'"

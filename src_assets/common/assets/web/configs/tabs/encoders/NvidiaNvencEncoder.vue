@@ -37,9 +37,17 @@ const platform = computed(() => config.platform || '');
       v-model="config.nvenc_vbv_increase"
       class="mb-4"
     >
-      <br />
-      <br />
-      <a href="https://en.wikipedia.org/wiki/Video_buffering_verifier">VBV/HRD</a>
+      <span class="mt-2 inline-flex flex-wrap items-center gap-1 text-[11px] opacity-80">
+        <span>Learn more:</span>
+        <a
+          class="text-primary underline decoration-primary/40 underline-offset-2"
+          href="https://en.wikipedia.org/wiki/Video_buffering_verifier"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          VBV/HRD
+        </a>
+      </span>
     </ConfigFieldRenderer>
 
     <div class="mb-4 rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
@@ -55,11 +63,17 @@ const platform = computed(() => config.platform || '');
           v-model="config.nvenc_realtime_hags"
           class="mb-3"
         >
-          <br />
-          <br />
-          <a href="https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/">
-            HAGS
-          </a>
+          <span class="mt-2 inline-flex flex-wrap items-center gap-1 text-[11px] opacity-80">
+            <span>Learn more:</span>
+            <a
+              class="text-primary underline decoration-primary/40 underline-offset-2"
+              href="https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              HAGS
+            </a>
+          </span>
         </ConfigFieldRenderer>
 
         <ConfigFieldRenderer

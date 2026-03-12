@@ -1,8 +1,8 @@
 <template>
-  <div class="dashboard-page space-y-8 px-2 md:px-4">
+  <div class="dashboard-page space-y-6 px-2 sm:space-y-8 md:px-4">
     <!-- Hero / Intro -->
     <section
-      class="rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-surface/70 backdrop-blur p-5 md:p-6 shadow-sm"
+      class="rounded-xl border border-dark/10 bg-light/70 p-4 shadow-sm backdrop-blur dark:border-light/10 dark:bg-surface/70 sm:p-5 md:p-6"
     >
       <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div class="min-w-0">
@@ -13,10 +13,10 @@
             {{ $t('index.description') }}
           </p>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
+        <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
           <RouterLink to="/settings" custom v-slot="{ navigate, href }">
             <a :href="href" @click="navigate">
-              <n-button tag="span" type="primary" strong>
+              <n-button tag="span" type="primary" strong class="w-full justify-center sm:w-auto">
                 <i class="fas fa-sliders" />
                 <span>Settings</span>
               </n-button>
@@ -24,7 +24,7 @@
           </RouterLink>
           <RouterLink to="/applications" custom v-slot="{ navigate, href }">
             <a :href="href" @click="navigate">
-              <n-button tag="span" type="default" strong>
+              <n-button tag="span" type="default" strong class="w-full justify-center sm:w-auto">
                 <i class="fas fa-th" />
                 <span>Applications</span>
               </n-button>
@@ -37,12 +37,12 @@
     <!-- Fatal startup errors moved into Version card to avoid layout shift -->
 
     <!-- Main Grid -->
-    <n-grid cols="24" x-gap="16" y-gap="16" responsive="screen">
+    <div class="grid min-w-0 gap-4 sm:gap-5">
       <!-- Version Card -->
-      <n-gi :span="24" :xl="16">
+      <div class="min-w-0">
         <n-card v-if="installedVersion" :segmented="{ content: true, footer: true }">
           <template #header>
-            <h2 class="text-2xl font-semibold tracking-tight mx-auto text-center">
+            <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mx-auto text-center break-words">
               {{ 'Version ' + displayVersion }}
             </h2>
           </template>
@@ -67,7 +67,7 @@
                     }}
                   </p>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                   <PlayniteReinstallButton
                     size="small"
                     :strong="true"
@@ -93,11 +93,12 @@
                     {{ playniteMissingPluginBannerText }}
                   </p>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                   <n-button
                     size="small"
                     type="primary"
                     strong
+                    class="w-full justify-center sm:w-auto"
                     :loading="resolvingPlaynitePluginIssue"
                     :disabled="resolvingPlaynitePluginIssue || purgingPlayniteApps"
                     @click="resolvePlaynitePluginIssue"
@@ -110,6 +111,7 @@
                     type="error"
                     strong
                     secondary
+                    class="w-full justify-center sm:w-auto"
                     :loading="purgingPlayniteApps"
                     :disabled="purgingPlayniteApps || resolvingPlaynitePluginIssue"
                     @click="openPurgePlayniteGamesConfirm"
@@ -140,12 +142,13 @@
                     {{ crashDumpDetails }}
                   </p>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                   <n-button
                     tag="a"
                     type="default"
                     strong
                     size="small"
+                    class="w-full justify-center sm:w-auto"
                     href="https://github.com/Nonary/vibeshine/issues/new?template=bug_report.yml"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -157,6 +160,7 @@
                     type="primary"
                     strong
                     size="small"
+                    class="w-full justify-center sm:w-auto"
                     :loading="exportCrashPending"
                     :disabled="exportCrashPending"
                     @click="exportCrashBundle"
@@ -173,7 +177,7 @@
                       }}
                     </span>
                   </n-button>
-                  <n-button tertiary size="small" @click="dismissCrashBundle">
+                  <n-button tertiary size="small" class="w-full justify-center sm:w-auto" @click="dismissCrashBundle">
                     <i class="fas fa-xmark" />
                     <span>{{ $t('config.crash_dump_dismiss') || 'Dismiss' }}</span>
                   </n-button>
@@ -202,11 +206,12 @@
                     </span>
                   </p>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                   <n-button
                     tag="a"
                     type="primary"
                     strong
+                    class="w-full justify-center sm:w-auto"
                     href="https://github.com/nefarius/ViGEmBus/releases/latest"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -244,7 +249,7 @@
                     }}
                   </p>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                   <RouterLink
                     :to="{
                       path: '/settings',
@@ -254,7 +259,13 @@
                     v-slot="{ navigate, href }"
                   >
                     <a :href="href" @click="navigate">
-                      <n-button tag="span" type="primary" strong size="small">
+                      <n-button
+                        tag="span"
+                        type="primary"
+                        strong
+                        size="small"
+                        class="w-full justify-center sm:w-auto"
+                      >
                         <i class="fas fa-rotate-right" />
                         <span>{{
                           translate('config.golden_layout_upgrade_action', 'Open Display Settings')
@@ -319,14 +330,14 @@
             <n-alert
               v-if="notifyPreReleases && preReleaseBuildAvailable"
               type="warning"
-              :show-icon="true"
-              class="rounded-xl"
+              :show-icon="false"
+              class="rounded-xl dashboard-release-alert"
             >
               <div class="flex flex-col gap-3 w-full">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <div class="flex items-center gap-3">
+                  <div class="flex items-center gap-4 min-w-0">
                     <span
-                      class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-warning/20 text-warning"
+                      class="dashboard-release-alert__icon inline-flex items-center justify-center rounded-full bg-warning/20 text-warning"
                     >
                       <i class="fas fa-flask" />
                     </span>
@@ -337,11 +348,12 @@
                       </p>
                     </div>
                   </div>
-                  <div class="flex items-center gap-2 shrink-0">
+                  <div class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                     <n-button
                       type="default"
                       strong
                       size="small"
+                      class="w-full justify-center sm:w-auto"
                       @click="showPreNotes = !showPreNotes"
                     >
                       <i class="fas fa-bars-staggered" />
@@ -356,6 +368,7 @@
                       size="small"
                       type="primary"
                       strong
+                      class="w-full justify-center sm:w-auto"
                       :href="preReleaseRelease?.html_url"
                       target="_blank"
                     >
@@ -378,14 +391,14 @@
             <n-alert
               v-if="stableBuildAvailable"
               type="warning"
-              :show-icon="true"
-              class="rounded-xl"
+              :show-icon="false"
+              class="rounded-xl dashboard-release-alert"
             >
               <div class="flex flex-col gap-3 w-full">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <div class="flex items-center gap-3">
+                  <div class="flex items-center gap-4 min-w-0">
                     <span
-                      class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-warning/20 text-warning"
+                      class="dashboard-release-alert__icon inline-flex items-center justify-center rounded-full bg-warning/20 text-warning"
                     >
                       <i class="fas fa-bolt" />
                     </span>
@@ -396,11 +409,12 @@
                       </p>
                     </div>
                   </div>
-                  <div class="flex items-center gap-2 shrink-0">
+                  <div class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
                     <n-button
                       type="default"
                       strong
                       size="small"
+                      class="w-full justify-center sm:w-auto"
                       @click="showStableNotes = !showStableNotes"
                     >
                       <i class="fas fa-bars-staggered" />
@@ -415,6 +429,7 @@
                       size="small"
                       type="primary"
                       strong
+                      class="w-full justify-center sm:w-auto"
                       :href="githubRelease?.html_url"
                       target="_blank"
                     >
@@ -434,27 +449,29 @@
             </n-alert>
           </div>
         </n-card>
-      </n-gi>
+      </div>
 
       <!-- Resources -->
-      <n-gi :span="24" :xl="8">
+      <div class="min-w-0">
         <n-card>
           <template #header>
-            <h2 class="text-2xl font-semibold tracking-tight mx-auto text-center">Web Links</h2>
+            <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mx-auto text-center">
+              Web Links
+            </h2>
           </template>
           <div class="text-xs space-y-2">
             <ResourceCard />
           </div>
         </n-card>
-      </n-gi>
-    </n-grid>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NCard, NAlert, NGrid, NGi, useMessage, useDialog } from 'naive-ui';
+import { NCard, NAlert, useMessage, useDialog } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';
@@ -1148,5 +1165,25 @@ async function onPlayniteReinstallDone(res: { ok: boolean; error?: string }) {
 .dashboard-page :deep(.n-data-table-wrapper),
 .dashboard-page :deep(.n-table-wrapper) {
   border-radius: 0.8rem !important;
+}
+
+.dashboard-page :deep(.dashboard-release-alert .n-alert-body__content) {
+  min-width: 0;
+  width: 100%;
+}
+
+.dashboard-page :deep(.dashboard-release-alert__icon) {
+  width: 2rem;
+  height: 2rem;
+  font-size: 0.95rem;
+}
+
+@media (min-width: 768px) {
+  .dashboard-page :deep(.dashboard-release-alert__actions) {
+    margin-left: auto;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    transform: translateY(-8px);
+  }
 }
 </style>

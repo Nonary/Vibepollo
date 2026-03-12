@@ -119,27 +119,30 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
 
 <template>
   <div class="form-check" :id="props.id">
-    <!-- Hidden label for search indexing -->
-    <label :for="`${props.id}_cb`" style="display: none">{{ $t(labelField) }}</label>
     <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <n-checkbox :id="`${props.id}_cb`" v-model:checked="isChecked" :disabled="props.disabled">
-          {{ $t(labelField) }}
-        </n-checkbox>
+      <div class="flex min-w-0 flex-1 items-start gap-3">
+        <div class="pt-0.5">
+          <n-checkbox :id="`${props.id}_cb`" v-model:checked="isChecked" :disabled="props.disabled" />
+        </div>
+        <div class="min-w-0 flex-1 space-y-1">
+          <label :for="`${props.id}_cb`" class="form-label cursor-pointer leading-snug">
+            {{ $t(labelField) }}
+          </label>
+          <div v-if="showDesc" class="form-text mt-0">
+            {{ $t(descField) }}
+            <slot />
+          </div>
+          <div v-if="showDefValue" class="form-text mt-0">
+            {{ $t(defValue) }}
+          </div>
+          <div v-if="showMeta" class="mt-1 text-[11px] opacity-60">
+            <slot name="meta" />
+          </div>
+        </div>
       </div>
       <div v-if="showActions" class="shrink-0 pt-0.5">
         <slot name="actions" />
       </div>
-    </div>
-    <div v-if="showDefValue" class="mt-0 form-text">
-      {{ $t(defValue) }}
-    </div>
-    <div v-if="showDesc" class="form-text">
-      {{ $t(descField) }}
-      <slot />
-    </div>
-    <div v-if="showMeta" class="text-[11px] opacity-60 mt-1">
-      <slot name="meta" />
     </div>
   </div>
 </template>
