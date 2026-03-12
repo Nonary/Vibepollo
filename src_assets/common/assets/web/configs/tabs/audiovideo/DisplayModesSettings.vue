@@ -7,6 +7,8 @@ const config = store.config;
 </script>
 
 <template>
+  <ConfigFieldRenderer setting-key="fallback_mode" v-model="config.fallback_mode" class="mb-4" />
+
   <ConfigFieldRenderer setting-key="max_bitrate" v-model="config.max_bitrate" class="mb-4" />
 
   <ConfigFieldRenderer

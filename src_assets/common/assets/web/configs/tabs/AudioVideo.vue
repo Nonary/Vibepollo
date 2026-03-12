@@ -214,6 +214,20 @@ function selectVirtualDisplayLayout(v: unknown) {
 
     <ConfigFieldRenderer setting-key="stream_audio" v-model="config.stream_audio" class="mb-3" />
 
+    <ConfigFieldRenderer
+      v-if="config.stream_audio === 'enabled'"
+      setting-key="keep_sink_default"
+      v-model="config.keep_sink_default"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      v-if="config.stream_audio === 'enabled'"
+      setting-key="auto_capture_sink"
+      v-model="config.auto_capture_sink"
+      class="mb-6"
+    />
+
     <AdapterNameSelector />
 
     <!-- Display configuration: clear, guided, pre-stream focused -->

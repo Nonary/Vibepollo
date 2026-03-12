@@ -106,6 +106,13 @@ const platform = computed(() =>
       <ConfigFieldRenderer setting-key="back_button_timeout" v-model="config.back_button_timeout" />
     </div>
 
+    <ConfigFieldRenderer
+      v-if="config.controller === 'enabled'"
+      setting-key="forward_rumble"
+      v-model="config.forward_rumble"
+      class="mb-3"
+    />
+
     <hr />
 
     <ConfigFieldRenderer setting-key="keyboard" v-model="config.keyboard" class="mb-3" />
@@ -150,6 +157,14 @@ const platform = computed(() =>
       v-if="config.mouse === 'enabled'"
       setting-key="native_pen_touch"
       v-model="config.native_pen_touch"
+      class="mb-3"
+    />
+
+    <hr />
+
+    <ConfigFieldRenderer
+      setting-key="enable_input_only_mode"
+      v-model="config.enable_input_only_mode"
       class="mb-3"
     />
   </div>

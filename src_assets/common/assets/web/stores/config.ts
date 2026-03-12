@@ -66,6 +66,8 @@ const defaultGroups = [
       enable_pairing: 'enabled',
       enable_discovery: 'enabled',
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
+      global_state_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
+      server_cmd: [] as Array<{ name: string; cmd: string; elevated?: boolean }>,
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
@@ -329,6 +331,8 @@ export const useConfigStore = defineStore('config', () => {
   // Track keys that should require manual save (no autosave)
   const manualSaveKeys = new Set<string>([
     'global_prep_cmd',
+    'global_state_cmd',
+    'server_cmd',
     'dd_resolution_option',
     'dd_manual_resolution',
     'dd_mode_remapping',
@@ -437,7 +441,12 @@ export const useConfigStore = defineStore('config', () => {
     const data = _data.value;
 
     // decode known JSON string fields
-    const specialOptions: Array<keyof ConfigDefaults> = ['dd_mode_remapping', 'global_prep_cmd'];
+    const specialOptions: Array<keyof ConfigDefaults> = [
+      'dd_mode_remapping',
+      'global_prep_cmd',
+      'global_state_cmd',
+      'server_cmd',
+    ];
     for (const key of specialOptions) {
       if (
         data &&

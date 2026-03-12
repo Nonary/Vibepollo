@@ -49,6 +49,13 @@ const config = store.config;
       class="mb-6"
       placeholder="sunshine_state.json"
     />
+
+    <ConfigFieldRenderer
+      setting-key="vibeshine_file_state"
+      v-model="config.vibeshine_file_state"
+      class="mb-6"
+      placeholder="vibeshine_state.json"
+    />
   </div>
 </template>
 
