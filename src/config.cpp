@@ -2099,6 +2099,11 @@ namespace config {
         "capture",
         "encoder",
 
+        // Playnite per-app focus behavior
+        "playnite_focus_attempts",
+        "playnite_focus_timeout_secs",
+        "playnite_focus_exit_on_first",
+
         // Frame limiter behavior
         "frame_limiter_enable",
         "frame_limiter_provider",
