@@ -26,6 +26,8 @@
 #include "video.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
+  #include <shobjidl.h>
+
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
@@ -116,6 +118,10 @@ int main(int argc, char *argv[]) {
   // Avoid searching the PATH in case a user has configured their system insecurely
   // by placing a user-writable directory in the system-wide PATH variable.
   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+
+  // Set the AUMID so Windows toast notifications show "Vibepollo" as the sender
+  // instead of "Microsoft.Explorer.Notification.{GUID}".
+  SetCurrentProcessExplicitAppUserModelID(L"Nonary.Vibepollo");
 
   setlocale(LC_ALL, "C");
 #endif
