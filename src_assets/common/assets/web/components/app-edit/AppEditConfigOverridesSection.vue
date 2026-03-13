@@ -177,7 +177,7 @@
   <Teleport to="body">
     <div
       v-if="browseModalOpen"
-      class="fixed inset-0 z-[1100] px-2 py-2 md:px-3 md:py-3 xl:px-5 xl:py-4"
+      class="fixed inset-0 z-[2100] px-2 py-2 md:px-3 md:py-3 xl:px-5 xl:py-4"
     >
       <div class="absolute inset-0 bg-dark/50 dark:bg-black/70" />
       <div
@@ -186,7 +186,7 @@
         <div
           class="sticky top-0 z-20 border-b border-dark/10 dark:border-light/10 bg-white/95 px-4 py-4 backdrop-blur dark:bg-surface/95"
         >
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div class="flex flex-col gap-3">
             <div class="flex min-w-0 items-start gap-2">
               <n-button size="small" quaternary @click="cancelAddSettings">
                 <i class="fas fa-arrow-left text-[12px]" />
@@ -202,15 +202,44 @@
                 </p>
               </div>
             </div>
+
+            <div class="grid grid-cols-2 gap-2 xl:hidden">
+              <button
+                type="button"
+                :class="pickerPaneToggleClass('browse')"
+                @click="setPickerPane('browse')"
+              >
+                <span>Browse Settings</span>
+                <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
+                  {{ filteredAvailableCount }}
+                </span>
+              </button>
+              <button
+                type="button"
+                :class="pickerPaneToggleClass('editor')"
+                @click="setPickerPane('editor')"
+              >
+                <span>Configure Picks</span>
+                <span class="rounded-full bg-dark/5 dark:bg-light/10 px-2 py-0.5 text-[10px]">
+                  {{ modalOverrideEntries.length }}
+                </span>
+              </button>
+            </div>
+
+            <div class="text-[12px] leading-relaxed opacity-60 xl:hidden">
+              Browse supported settings first, then switch to Configure Picks when you want to
+              review or fine-tune what you selected.
+            </div>
           </div>
         </div>
 
-        <div class="min-h-0 flex-1 overflow-hidden px-4 py-4">
+        <div class="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-4 sm:py-4">
           <div
-            class="grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(27rem,0.84fr)_minmax(42rem,1.16fr)] 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(50rem,1.2fr)]"
+            class="grid h-full min-h-0 gap-3 sm:gap-4 xl:grid-cols-[minmax(27rem,0.84fr)_minmax(42rem,1.16fr)] 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(50rem,1.2fr)]"
           >
             <aside
-              class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
+              :class="pickerPaneClass('editor')"
+              class="min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-light/70 dark:bg-white/5"
             >
             <div class="border-b border-dark/10 px-4 py-4 dark:border-light/10">
               <div class="flex items-center justify-between gap-3">
@@ -412,11 +441,12 @@
             </aside>
 
             <div
-              class="flex min-h-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
+              :class="pickerPaneClass('browse')"
+              class="min-h-0 min-w-0 flex-col rounded-xl border border-dark/10 dark:border-light/10 bg-white/60 dark:bg-white/5"
             >
             <div class="border-b border-dark/10 px-4 py-3 dark:border-light/10">
               <div class="space-y-2.5">
-                <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div class="space-y-1">
                     <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">
                       Browse Available Settings
@@ -461,10 +491,12 @@
             </div>
 
             <div class="min-h-0 flex-1 p-3">
-              <div class="grid h-full min-h-0 gap-3 lg:grid-cols-[13.5rem_minmax(0,1fr)]">
+              <div
+                class="grid h-full min-h-0 gap-3 xl:grid-cols-[12.5rem_minmax(0,1fr)] 2xl:grid-cols-[13.5rem_minmax(0,1fr)]"
+              >
                 <aside
                   v-if="browseHasMultipleGroups"
-                  class="hidden min-h-0 lg:flex lg:flex-col"
+                  class="hidden min-h-0 xl:flex xl:flex-col"
                 >
                   <div
                     class="vb-scroll flex-1 min-h-0 rounded-xl border border-dark/10 bg-light/70 dark:border-light/10 dark:bg-surface/40"
@@ -513,7 +545,7 @@
                     <div class="space-y-3 pr-1">
                       <div
                         v-if="browseHasMultipleGroups"
-                        class="grid grid-cols-2 gap-1.5 lg:hidden"
+                        class="grid grid-cols-2 gap-1.5 xl:hidden"
                       >
                         <button
                           type="button"
@@ -556,7 +588,7 @@
                             <span class="text-[11px] opacity-50">{{ group.entries.length }}</span>
                           </div>
 
-                          <div class="grid gap-2 xl:grid-cols-2">
+                          <div class="grid gap-2 2xl:grid-cols-2">
                             <button
                               v-for="entry in group.entries"
                               :key="entry.key"
@@ -643,7 +675,10 @@
       >
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="text-[12px] leading-relaxed opacity-70">
-            Review the override fields on the left, then save when you are done.
+            <span class="xl:hidden">{{ compactPickerFooterText }}</span>
+            <span class="hidden xl:inline">
+              Review the override fields, then save when you are done.
+            </span>
           </div>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <n-button size="small" tertiary @click="cancelAddSettings">Cancel</n-button>
@@ -709,6 +744,7 @@ type FilteredGroup = {
 type EditTarget = 'live' | 'draft';
 
 const overrides = defineModel<Record<string, unknown>>('overrides', { required: true });
+const browseModalOpen = defineModel<boolean>('pickerOpen', { default: false });
 const draftOverrides = ref<Record<string, unknown>>({});
 const { t } = useI18n();
 
@@ -1341,8 +1377,8 @@ const searchTerms = computed(() => normalizedSearchTerms(searchQuery.value));
 const usedOverrideKeys = computed(
   () => new Set([...visibleOverrideKeys.value, ...activeSyntheticKeys.value]),
 );
-const browseModalOpen = ref(false);
 const pendingAddKeys = ref<string[]>([]);
+const pickerPane = ref<'browse' | 'editor'>('browse');
 const modalUsedOverrideKeys = computed(
   () => new Set([...visibleDraftOverrideKeys.value, ...draftSyntheticKeys.value]),
 );
@@ -1443,10 +1479,32 @@ const browseResultsScrollRef = ref<HTMLElement | null>(null);
 const hasFilterControls = computed(
   () => searchTerms.value.length > 0 || selectedGroupId.value !== ALL_GROUPS_ID,
 );
+const compactPickerFooterText = computed(() =>
+  pickerPane.value === 'editor'
+    ? 'Review and fine-tune the picked settings, then save when you are done.'
+    : 'Browse supported settings and add what you need. Open Configure Picks when you are ready to review them.',
+);
 
 async function scrollBrowseResultsToTop() {
   await nextTick();
   if (browseResultsScrollRef.value) browseResultsScrollRef.value.scrollTop = 0;
+}
+
+function setPickerPane(pane: 'browse' | 'editor') {
+  pickerPane.value = pane;
+}
+
+function pickerPaneClass(pane: 'browse' | 'editor'): string[] {
+  return [pickerPane.value === pane ? 'flex' : 'hidden', 'xl:flex'];
+}
+
+function pickerPaneToggleClass(pane: 'browse' | 'editor'): string[] {
+  return [
+    'inline-flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors',
+    pickerPane.value === pane
+      ? 'border-primary/35 bg-primary/10 text-primary shadow-sm'
+      : 'border-dark/10 bg-light/70 text-dark/75 hover:border-primary/25 hover:text-primary dark:border-light/10 dark:bg-surface/60 dark:text-light/80',
+  ];
 }
 
 function selectAvailableGroup(groupId: string) {
@@ -1465,6 +1523,7 @@ function resetAddSettingsState() {
   draftOverrides.value = {};
   draftJsonDrafts.value = {};
   draftJsonErrors.value = {};
+  pickerPane.value = 'browse';
   resetFilters();
 }
 
@@ -1473,6 +1532,7 @@ function openAddSettings() {
   pendingAddKeys.value = [];
   draftJsonDrafts.value = {};
   draftJsonErrors.value = {};
+  pickerPane.value = 'browse';
   resetFilters();
   browseModalOpen.value = true;
 }
