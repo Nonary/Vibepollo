@@ -39,6 +39,8 @@ if(NOT DEFINED PROJECT_ICON_PATH)
     set(PROJECT_ICON_PATH "${CMAKE_SOURCE_DIR}/apollo.ico")
 endif()
 
+list(APPEND SUNSHINE_DEFINITIONS PROJECT_APP_USER_MODEL_ID="${WINDOWS_APP_USER_MODEL_ID}")
+
 # Create a separate object library for the RC file with minimal includes
 add_library(sunshine_rc_object OBJECT "${CMAKE_SOURCE_DIR}/src/platform/windows/windows.rc")
 

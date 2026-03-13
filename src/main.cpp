@@ -51,6 +51,11 @@ using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;
 
+#ifdef _WIN32
+  #define WIDEN_STRING_LITERAL_IMPL(value) L##value
+  #define WIDEN_STRING_LITERAL(value) WIDEN_STRING_LITERAL_IMPL(value)
+#endif
+
 void on_signal_forwarder(int sig) {
   signal_handlers.at(sig)();
 }
@@ -118,11 +123,6 @@ int main(int argc, char *argv[]) {
   // Avoid searching the PATH in case a user has configured their system insecurely
   // by placing a user-writable directory in the system-wide PATH variable.
   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-
-  // Set the AUMID so Windows toast notifications show "Vibepollo" as the sender
-  // instead of "Microsoft.Explorer.Notification.{GUID}".
-  SetCurrentProcessExplicitAppUserModelID(L"Nonary.Vibepollo");
-
   setlocale(LC_ALL, "C");
 #endif
 
@@ -145,6 +145,14 @@ int main(int argc, char *argv[]) {
   if (!log_deinit_guard) {
     BOOST_LOG(error) << "Logging failed to initialize"sv;
   }
+
+#ifdef _WIN32
+  const auto app_user_model_id_status =
+    SetCurrentProcessExplicitAppUserModelID(WIDEN_STRING_LITERAL(PROJECT_APP_USER_MODEL_ID));
+  if (FAILED(app_user_model_id_status)) {
+    BOOST_LOG(warning) << "Failed to set explicit AppUserModelID; Windows may reuse legacy notification branding"sv;
+  }
+#endif
 
 #ifndef SUNSHINE_EXTERNAL_PROCESS
   // Setup third-party library logging

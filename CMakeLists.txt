@@ -11,6 +11,7 @@ project(Vibepollo VERSION 0.0.0
 set(PROJECT_LICENSE "GPL-3.0-only")
 
 set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
+set(WINDOWS_APP_USER_MODEL_ID "Nonary.Vibepollo")
 
 set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Artemis")  # must be <= 35 characters
 

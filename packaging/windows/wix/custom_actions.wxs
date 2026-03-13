@@ -49,9 +49,10 @@
                       Name="Vibepollo"
                       Description="Launch Vibepollo Web UI"
                       Target="[INSTALL_ROOT]sunshine.exe"
+                      Icon="ProductIcon.ico"
                       Arguments="--shortcut"
                       WorkingDirectory="INSTALL_ROOT">
-              <ShortcutProperty Key="System.AppUserModel.ID" Value="Nonary.Vibepollo" />
+              <ShortcutProperty Key="System.AppUserModel.ID" Value="$(var.VibepolloAppId)" />
             </Shortcut>
             <RegistryValue Root="HKCU" Key="Software\Vibepollo\Shortcuts" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
             <RemoveFolder Id="RemoveVibepolloMenuFolder" Directory="VIBEPOLLO_PROGRAM_MENU_FOLDER" On="uninstall" />
