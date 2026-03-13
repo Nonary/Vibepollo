@@ -26,6 +26,7 @@
 #include "rtsp.h"  // for session_count
 #include "system_tray.h"
 #include "utility.h"
+#include "version_compare.h"
 
 using namespace std::literals;
 
@@ -136,115 +137,6 @@ namespace update {
         state.latest_release = release_info_t {};
         state.latest_prerelease = release_info_t {};
 
-        // SemVer (with prerelease) parsing and comparison
-        struct semver_t {
-          int major {0};
-          int minor {0};
-          int patch {0};
-          std::vector<std::variant<int, std::string>> pre;
-        };
-
-        auto parse_semver_full = [](const std::string &ver) -> semver_t {
-          semver_t out;
-          if (ver.empty()) {
-            return out;
-          }
-          std::string v = ver;
-          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
-            v.erase(0, 1);
-          }
-          if (auto p = v.find('+'); p != std::string::npos) {
-            v = v.substr(0, p);
-          }
-          std::string core = v;
-          if (auto d = v.find('-'); d != std::string::npos) {
-            core = v.substr(0, d);
-            auto pre = v.substr(d + 1);
-            std::stringstream pss(pre);
-            std::string pid;
-            while (std::getline(pss, pid, '.')) {
-              if (pid.empty()) {
-                continue;
-              }
-              if (std::all_of(pid.begin(), pid.end(), ::isdigit)) {
-                try {
-                  out.pre.emplace_back(std::stoi(pid));
-                } catch (...) {
-                  out.pre.emplace_back(pid);
-                }
-              } else {
-                out.pre.emplace_back(pid);
-              }
-            }
-          }
-          try {
-            std::stringstream ss(core);
-            std::string part;
-            if (std::getline(ss, part, '.')) {
-              out.major = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.minor = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.patch = std::stoi(part);
-            }
-          } catch (...) {
-            out.major = out.minor = out.patch = 0;
-          }
-          return out;
-        };
-        auto cmp_semver_full = [&](const std::string &lhs, const std::string &rhs) -> int {
-          auto a = parse_semver_full(lhs);
-          auto b = parse_semver_full(rhs);
-          if (a.major != b.major) {
-            return (a.major < b.major) ? -1 : 1;
-          }
-          if (a.minor != b.minor) {
-            return (a.minor < b.minor) ? -1 : 1;
-          }
-          if (a.patch != b.patch) {
-            return (a.patch < b.patch) ? -1 : 1;
-          }
-          if (a.pre.empty() && b.pre.empty()) {
-            return 0;
-          }
-          if (a.pre.empty()) {
-            return 1;
-          }
-          if (b.pre.empty()) {
-            return -1;
-          }
-          const size_t len = std::max(a.pre.size(), b.pre.size());
-          for (size_t i = 0; i < len; ++i) {
-            if (i >= a.pre.size()) {
-              return -1;
-            }
-            if (i >= b.pre.size()) {
-              return 1;
-            }
-            const auto &ai = a.pre[i];
-            const auto &bi = b.pre[i];
-            const bool a_num = std::holds_alternative<int>(ai);
-            const bool b_num = std::holds_alternative<int>(bi);
-            if (a_num && b_num) {
-              int av = std::get<int>(ai), bv = std::get<int>(bi);
-              if (av != bv) {
-                return (av < bv) ? -1 : 1;
-              }
-            } else if (a_num != b_num) {
-              return a_num ? -1 : 1;  // numeric < non-numeric
-            } else {
-              const auto &as = std::get<std::string>(ai);
-              const auto &bs = std::get<std::string>(bi);
-              if (as != bs) {
-                return (as < bs) ? -1 : 1;
-              }
-            }
-          }
-          return 0;
-        };
-
         // Track best by semver
         release_info_t best_stable;
         release_info_t best_pre;
@@ -277,7 +169,7 @@ namespace update {
 
           const std::string tag = rel.value("tag_name", "");
           if (!is_prerelease) {
-            if (best_stable.version.empty() || cmp_semver_full(best_stable.version, tag) < 0) {
+            if (best_stable.version.empty() || version_compare::compare_semver(best_stable.version, tag) < 0) {
               best_stable.version = tag;
               best_stable.url = rel.value("html_url", "");
               best_stable.name = rel.value("name", "");
@@ -287,7 +179,7 @@ namespace update {
               best_stable.assets = assets;
             }
           } else if (allow_prerelease_updates) {
-            if (best_pre.version.empty() || cmp_semver_full(best_pre.version, tag) < 0) {
+            if (best_pre.version.empty() || version_compare::compare_semver(best_pre.version, tag) < 0) {
               best_pre.version = tag;
               best_pre.url = rel.value("html_url", "");
               best_pre.name = rel.value("name", "");
@@ -310,119 +202,17 @@ namespace update {
       }
       state.last_check_time = std::chrono::steady_clock::now();
 
-      // --- Tag-based (semver with prerelease) comparison -----------------
-      auto cmp_semver = [&](const std::string &lhs, const std::string &rhs) -> int {
-        struct semver_t2 {
-          int major {0}, minor {0}, patch {0};
-          std::vector<std::variant<int, std::string>> pre;
-        };
-        auto parse = [](const std::string &ver) -> semver_t2 {
-          semver_t2 out;
-          if (ver.empty()) {
-            return out;
-          }
-          std::string v = ver;
-          if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) {
-            v.erase(0, 1);
-          }
-          if (auto p = v.find('+'); p != std::string::npos) {
-            v = v.substr(0, p);
-          }
-          std::string core = v;
-          if (auto d = v.find('-'); d != std::string::npos) {
-            core = v.substr(0, d);
-            auto pre = v.substr(d + 1);
-            std::stringstream ss(pre);
-            std::string pid;
-            while (std::getline(ss, pid, '.')) {
-              if (pid.empty()) {
-                continue;
-              }
-              if (std::all_of(pid.begin(), pid.end(), ::isdigit)) {
-                try {
-                  out.pre.emplace_back(std::stoi(pid));
-                } catch (...) {
-                  out.pre.emplace_back(pid);
-                }
-              } else {
-                out.pre.emplace_back(pid);
-              }
-            }
-          }
-          try {
-            std::stringstream ss(core);
-            std::string part;
-            if (std::getline(ss, part, '.')) {
-              out.major = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.minor = std::stoi(part);
-            }
-            if (std::getline(ss, part, '.')) {
-              out.patch = std::stoi(part);
-            }
-          } catch (...) {
-            out.major = out.minor = out.patch = 0;
-          }
-          return out;
-        };
-        auto a = parse(lhs), b = parse(rhs);
-        if (a.major != b.major) {
-          return (a.major < b.major) ? -1 : 1;
-        }
-        if (a.minor != b.minor) {
-          return (a.minor < b.minor) ? -1 : 1;
-        }
-        if (a.patch != b.patch) {
-          return (a.patch < b.patch) ? -1 : 1;
-        }
-        if (a.pre.empty() && b.pre.empty()) {
-          return 0;
-        }
-        if (a.pre.empty()) {
-          return 1;
-        }
-        if (b.pre.empty()) {
-          return -1;
-        }
-        const size_t len = std::max(a.pre.size(), b.pre.size());
-        for (size_t i = 0; i < len; ++i) {
-          if (i >= a.pre.size()) {
-            return -1;
-          }
-          if (i >= b.pre.size()) {
-            return 1;
-          }
-          const auto &ai = a.pre[i];
-          const auto &bi = b.pre[i];
-          const bool a_num = std::holds_alternative<int>(ai);
-          const bool b_num = std::holds_alternative<int>(bi);
-          if (a_num && b_num) {
-            int av = std::get<int>(ai), bv = std::get<int>(bi);
-            if (av != bv) {
-              return (av < bv) ? -1 : 1;
-            }
-          } else if (a_num != b_num) {
-            return a_num ? -1 : 1;
-          } else {
-            const auto &as = std::get<std::string>(ai);
-            const auto &bs = std::get<std::string>(bi);
-            if (as != bs) {
-              return (as < bs) ? -1 : 1;
-            }
-          }
-        }
-        return 0;
-      };
-
       const std::string installed_version_tag = PROJECT_VERSION;
       const std::string latest_stable_tag = state.latest_release.version;
       const std::string latest_pre_tag = state.latest_prerelease.version;
-      bool stable_available = !latest_stable_tag.empty() && (cmp_semver(installed_version_tag, latest_stable_tag) < 0);
+      bool stable_available = !latest_stable_tag.empty() &&
+                              (version_compare::compare_semver(installed_version_tag, latest_stable_tag) < 0);
       bool prerelease_available = allow_prerelease_updates &&
                                   !latest_pre_tag.empty() &&
-                                  (cmp_semver(installed_version_tag, latest_pre_tag) < 0) &&
-                                  (!latest_stable_tag.empty() ? (cmp_semver(latest_stable_tag, latest_pre_tag) < 0) : true);
+                                  (version_compare::compare_semver(installed_version_tag, latest_pre_tag) < 0) &&
+                                  (!latest_stable_tag.empty() ?
+                                     (version_compare::compare_semver(latest_stable_tag, latest_pre_tag) < 0) :
+                                     true);
 
       if (prerelease_available) {
         BOOST_LOG(info) << "Update check: prerelease available tag="sv << state.latest_prerelease.version

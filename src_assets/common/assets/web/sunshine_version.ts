@@ -9,6 +9,11 @@ export interface GitHubRelease {
   [key: string]: any;
 }
 
+function hasStableChannel(preRelease: (string | number)[]): boolean {
+  const first = preRelease[0];
+  return typeof first === 'string' && first.toLowerCase() === 'stable';
+}
+
 export default class SunshineVersion {
   public version: string;
   public versionParts: [number, number, number];
@@ -102,21 +107,15 @@ export default class SunshineVersion {
    * Return true if this version is greater than the other.
    */
   isGreater(otherVersion: SunshineVersion | string): boolean {
-    const cmp = (a: SunshineVersion, b: SunshineVersion): number => {
-      const [a0, a1, a2] = a.versionParts;
-      const [b0, b1, b2] = b.versionParts;
-      if (a0 !== b0) return a0 > b0 ? 1 : -1;
-      if (a1 !== b1) return a1 > b1 ? 1 : -1;
-      if (a2 !== b2) return a2 > b2 ? 1 : -1;
-      const aPre = a.preRelease;
-      const bPre = b.preRelease;
-      if (aPre.length === 0 && bPre.length === 0) return 0; // equal
-      if (aPre.length === 0) return 1; // release > prerelease
-      if (bPre.length === 0) return -1; // prerelease < release
-      const len = Math.max(aPre.length, bPre.length);
-      for (let i = 0; i < len; i++) {
-        const ai = aPre[i];
-        const bi = bPre[i];
+    const compareIdentifiers = (
+      aIdentifiers: (string | number)[],
+      bIdentifiers: (string | number)[],
+      startIndex = 0,
+    ): number => {
+      const len = Math.max(aIdentifiers.length, bIdentifiers.length);
+      for (let i = startIndex; i < len; i++) {
+        const ai = aIdentifiers[i];
+        const bi = bIdentifiers[i];
         if (ai === undefined) return -1; // shorter set has lower precedence
         if (bi === undefined) return 1;
         const aNum = typeof ai === 'number';
@@ -133,6 +132,30 @@ export default class SunshineVersion {
         }
       }
       return 0;
+    };
+
+    const cmp = (a: SunshineVersion, b: SunshineVersion): number => {
+      const [a0, a1, a2] = a.versionParts;
+      const [b0, b1, b2] = b.versionParts;
+      if (a0 !== b0) return a0 > b0 ? 1 : -1;
+      if (a1 !== b1) return a1 > b1 ? 1 : -1;
+      if (a2 !== b2) return a2 > b2 ? 1 : -1;
+
+      const aStable = hasStableChannel(a.preRelease);
+      const bStable = hasStableChannel(b.preRelease);
+      if (aStable && bStable) {
+        return compareIdentifiers(a.preRelease, b.preRelease, 1);
+      }
+      if (aStable !== bStable) {
+        return aStable ? 1 : -1;
+      }
+
+      const aPre = a.preRelease;
+      const bPre = b.preRelease;
+      if (aPre.length === 0 && bPre.length === 0) return 0; // equal
+      if (aPre.length === 0) return 1; // release > prerelease
+      if (bPre.length === 0) return -1; // prerelease < release
+      return compareIdentifiers(aPre, bPre);
     };
 
     const other =
