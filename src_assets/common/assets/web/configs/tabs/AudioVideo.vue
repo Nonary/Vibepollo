@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
+import Checkbox from '@/Checkbox.vue';
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import PlatformLayout from '@/PlatformLayout.vue';
 import AdapterNameSelector from '@/configs/tabs/audiovideo/AdapterNameSelector.vue';
@@ -279,6 +280,19 @@ function selectVirtualDisplayLayout(v: unknown) {
                 {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3">
+                  <Checkbox
+                    id="dd_wa_virtual_double_refresh"
+                    v-model="config.dd_wa_virtual_double_refresh"
+                    locale-prefix="config"
+                    :default="true"
+                    :disabled="virtualDisplayMode === 'disabled'"
+                  />
+                </div>
+              </template>
+            </PlatformLayout>
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
             </div>
