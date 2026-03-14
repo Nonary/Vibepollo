@@ -1763,11 +1763,15 @@ namespace stream {
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
                 x + 1 == shards.size()) {
+              size_t current_batch_size = x - next_shard_to_send + 1;
+
               // Do pacing within the frame.
               // Also trigger pacing before the first send_batch() of the frame
               // to account for the last send_batch() of the previous frame.
-              if (ratecontrol_group_packets_sent >= ratecontrol_packets_in_1ms ||
-                  ratecontrol_frame_packets_sent == 0) {
+              // Pause before a batch that would exceed the current pacing group
+              // budget so we don't emit two full batches back-to-back.
+              if (ratecontrol_frame_packets_sent == 0 ||
+                  ratecontrol_group_packets_sent + current_batch_size > ratecontrol_packets_in_1ms) {
                 auto due = ratecontrol_frame_start +
                            std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
                              ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
@@ -1780,7 +1784,6 @@ namespace stream {
                 ratecontrol_group_packets_sent = 0;
               }
 
-              size_t current_batch_size = x - next_shard_to_send + 1;
               batch_info.block_offset = next_shard_to_send;
               batch_info.block_count = current_batch_size;
 
