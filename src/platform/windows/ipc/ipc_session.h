@@ -28,6 +28,11 @@
 namespace platf::dxgi {
 
   /**
+   * @brief Return whether the recent WGC desktop-switch grace window is still active.
+   * @return `true` while DXGI should still be preferred after a helper desktop-switch notification.
+   */
+  bool recent_wgc_desktop_switch_grace_active();
+  /**
    * @brief Shared WGC IPC session encapsulating helper process, pipes, shared texture and sync primitives.
    * Manages lifecycle & communication with the helper process, duplication of shared textures, keyed mutex
    * coordination and frame availability signaling for both RAM & VRAM capture paths.
@@ -119,10 +124,10 @@ namespace platf::dxgi {
     bool setup_shared_texture_from_shared_handle(HANDLE shared_handle, UINT width, UINT height);
 
     /**
-     * @brief Handle a secure desktop notification from the helper process.
+     * @brief Handle a desktop-switch notification from the helper process.
      * @param msg The message data received from the helper process.
      */
-    void handle_secure_desktop_message(std::span<const uint8_t> msg);
+    void handle_desktop_switch_message(std::span<const uint8_t> msg);
 
     /**
      * @brief Wait for a new frame to become available or until timeout expires.

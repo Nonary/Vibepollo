@@ -25,6 +25,11 @@
 
 namespace platf::dxgi {
   namespace {
+    struct wgc_dxgi_fallback_state_t {
+      bool secure_desktop_active;
+      bool recent_desktop_switch;
+    };
+
     class adapter_luid_override_guard {
     public:
       explicit adapter_luid_override_guard(const std::optional<LUID> &luid) {
@@ -41,6 +46,31 @@ namespace platf::dxgi {
     private:
       std::optional<LUID> previous_;
     };
+
+    std::optional<wgc_dxgi_fallback_state_t> get_wgc_dxgi_fallback_state() {
+      wgc_dxgi_fallback_state_t state {
+        .secure_desktop_active = platf::dxgi::is_secure_desktop_active(),
+        .recent_desktop_switch = recent_wgc_desktop_switch_grace_active()
+      };
+
+      if (!state.secure_desktop_active && !state.recent_desktop_switch) {
+        return std::nullopt;
+      }
+
+      return state;
+    }
+
+    void log_wgc_dxgi_fallback_reason(const char *path_name, const wgc_dxgi_fallback_state_t &state) {
+      if (state.secure_desktop_active && state.recent_desktop_switch) {
+        BOOST_LOG(debug) << "Secure desktop detected and the desktop-switch grace window is active; "
+                         << "using DXGI fallback for WGC capture (" << path_name << ")";
+      } else if (state.secure_desktop_active) {
+        BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (" << path_name << ")";
+      } else {
+        BOOST_LOG(debug) << "Recent desktop switch grace window active, using DXGI fallback for WGC capture ("
+                         << path_name << ")";
+      }
+    }
   }  // namespace
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
@@ -239,11 +269,8 @@ namespace platf::dxgi {
   }
 
   std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(const ::video::config_t &config, const std::string &display_name) {
-    // Check if secure desktop is currently active
-
-    if (platf::dxgi::is_secure_desktop_active()) {
-      // Secure desktop is active, use DXGI fallback
-      BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (VRAM)";
+    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+      log_wgc_dxgi_fallback_reason("VRAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_vram_t>();
       if (!disp->init(config, display_name)) {
@@ -454,11 +481,8 @@ namespace platf::dxgi {
   }
 
   std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(const ::video::config_t &config, const std::string &display_name) {
-    // Check if secure desktop is currently active
-
-    if (platf::dxgi::is_secure_desktop_active()) {
-      // Secure desktop is active, use DXGI fallback
-      BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (RAM)";
+    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+      log_wgc_dxgi_fallback_reason("RAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_ram_t>();
       if (!disp->init(config, display_name)) {
@@ -480,7 +504,8 @@ namespace platf::dxgi {
     // Check periodically if secure desktop is still active
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      if (!platf::dxgi::is_secure_desktop_active()) {
+      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
+      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
@@ -494,7 +519,8 @@ namespace platf::dxgi {
     // Check periodically if secure desktop is still active
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      if (!platf::dxgi::is_secure_desktop_active()) {
+      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
+      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }

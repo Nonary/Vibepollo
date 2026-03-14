@@ -34,7 +34,7 @@
 
 namespace platf::dxgi {
 
-  constexpr uint8_t SECURE_DESKTOP_MSG = 0x01;  ///< Message type for secure desktop notifications
+  constexpr uint8_t SECURE_DESKTOP_MSG = 0x01;  ///< Message type for WGC desktop-switch reinit notifications
   constexpr uint8_t ACK_MSG = 0x02;  ///< Message type for acknowledgment responses
   constexpr uint8_t FRAME_READY_MSG = 0x03;  ///< Message type for frame ready notifications
 

@@ -142,11 +142,6 @@ static std::weak_ptr<AsyncNamedPipe> g_communication_pipe_weak;
 static safe_winevent_hook g_desktop_switch_hook = nullptr;
 
 /**
- * @brief Flag indicating if a secure desktop has been detected.
- */
-static bool g_secure_desktop_detected = false;
-
-/**
  * @brief System initialization class to handle DPI, threading, and MMCSS setup.
  *
  * This class manages critical system-level initialization for optimal capture performance:
@@ -1339,8 +1334,9 @@ private:
  * @brief Callback procedure for desktop switch events.
  *
  * This function handles EVENT_SYSTEM_DESKTOPSWITCH events to detect when the system
- * transitions to or from secure desktop mode (such as UAC prompts or lock screens).
- * When a secure desktop is detected, it notifies the main process via the communication pipe.
+ * transitions between desktop states that can disrupt WGC capture (such as UAC prompts
+ * or lock screens). Every transition sends a reinit notification so the main process
+ * can reevaluate whether DXGI fallback is required.
  *
  * @param h_win_event_hook Handle to the event hook (unused).
  * @param event The event type that occurred.
@@ -1354,24 +1350,15 @@ void CALLBACK desktop_switch_hook_proc(HWINEVENTHOOK /*h_win_event_hook*/, DWORD
   if (event == EVENT_SYSTEM_DESKTOPSWITCH) {
     BOOST_LOG(info) << "Desktop switch detected!";
 
-    bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
+    const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
     BOOST_LOG(info) << "Desktop switch - Secure desktop: " << (secure_desktop_active ? "YES" : "NO");
 
-    if (secure_desktop_active && !g_secure_desktop_detected) {
-      BOOST_LOG(info) << "Secure desktop detected - sending notification to main process";
-      g_secure_desktop_detected = true;
-
-      // Send notification to main process
-      if (auto pipe = g_communication_pipe_weak.lock()) {
-        if (pipe->is_connected()) {
-          uint8_t msg = SECURE_DESKTOP_MSG;
-          pipe->send(std::span<const uint8_t>(&msg, 1));
-          BOOST_LOG(info) << "Sent secure desktop notification to main process (0x02)";
-        }
-      }
-    } else if (!secure_desktop_active && g_secure_desktop_detected) {
-      BOOST_LOG(info) << "Returned to normal desktop";
-      g_secure_desktop_detected = false;
+    if (auto pipe = g_communication_pipe_weak.lock(); pipe && pipe->is_connected()) {
+      uint8_t msg = SECURE_DESKTOP_MSG;
+      pipe->send(std::span<const uint8_t>(&msg, 1));
+      BOOST_LOG(info) << "Queued desktop switch reinit notification to main process";
+    } else {
+      BOOST_LOG(warning) << "Desktop switch detected, but the main process pipe is not connected";
     }
   }
 }

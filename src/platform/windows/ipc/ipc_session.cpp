@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string_view>
@@ -30,6 +31,29 @@
 #include <winrt/base.h>
 
 namespace platf::dxgi {
+  namespace {
+    constexpr auto kRecentDesktopSwitchGrace = std::chrono::seconds(3);
+    std::atomic<std::int64_t> g_last_wgc_desktop_switch_us {0};
+
+    std::int64_t now_steady_us() {
+      using namespace std::chrono;
+      return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+    }
+
+    void record_recent_wgc_desktop_switch() {
+      g_last_wgc_desktop_switch_us.store(now_steady_us(), std::memory_order_relaxed);
+    }
+  }  // namespace
+
+  bool recent_wgc_desktop_switch_grace_active() {
+    const auto last_switch_us = g_last_wgc_desktop_switch_us.load(std::memory_order_relaxed);
+    if (last_switch_us == 0) {
+      return false;
+    }
+
+    return (now_steady_us() - last_switch_us) <
+           std::chrono::duration_cast<std::chrono::microseconds>(kRecentDesktopSwitchGrace).count();
+  }
 
   ipc_session_t::~ipc_session_t() {
     // Best-effort shutdown. Avoid throwing from a destructor.
@@ -65,10 +89,10 @@ namespace platf::dxgi {
     }
   }
 
-  void ipc_session_t::handle_secure_desktop_message(std::span<const uint8_t> msg) {
+  void ipc_session_t::handle_desktop_switch_message(std::span<const uint8_t> msg) {
     if (msg.size() == 1 && msg[0] == SECURE_DESKTOP_MSG) {
-      // secure desktop detected
-      BOOST_LOG(info) << "WGC can no longer capture the screen due to Secured Desktop, swapping to DXGI";
+      record_recent_wgc_desktop_switch();
+      BOOST_LOG(info) << "WGC helper reported a desktop switch; forcing capture reinit and preferring DXGI fallback";
       _should_swap_to_dxgi = true;
     }
   }
@@ -166,7 +190,7 @@ namespace platf::dxgi {
 
     auto on_message = [this](std::span<const uint8_t> msg) {
       if (msg.size() == 1) {
-        handle_secure_desktop_message(msg);
+        handle_desktop_switch_message(msg);
       }
     };
 
@@ -263,7 +287,7 @@ namespace platf::dxgi {
             break;
           }
         } else if (bytes_read == 1) {
-          handle_secure_desktop_message(std::span<const uint8_t>(control_buffer.data(), 1));
+          handle_desktop_switch_message(std::span<const uint8_t>(control_buffer.data(), 1));
         } else if (bytes_read > 0) {
           BOOST_LOG(warning) << "Ignoring unexpected control payload (" << bytes_read << " bytes) while waiting for shared handle";
         }
@@ -341,8 +365,8 @@ namespace platf::dxgi {
           }
 
           if (bytesRead == 1) {
-            // Allow secure-desktop notifications to flow over either pipe.
-            handle_secure_desktop_message(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&frame_msg), 1));
+            // Allow desktop-switch reinit notifications to flow over either pipe.
+            handle_desktop_switch_message(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&frame_msg), 1));
             return capture_e::reinit;
           }
 
