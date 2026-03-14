@@ -2019,6 +2019,7 @@ namespace VDISPLAY {
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
     constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
+    constexpr unsigned int MAX_NEVER_ACTIVE_BACKOFF_CYCLES = 5;
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
     std::mutex g_virtual_display_recovery_abort_mutex;
@@ -2248,6 +2249,7 @@ namespace VDISPLAY {
       unsigned int attempts = 0;
       unsigned int backoff_cycles = 0;
       bool observed_active = false;
+      bool ever_observed_active = false;
       std::optional<std::chrono::steady_clock::time_point> active_since;
       std::optional<std::chrono::steady_clock::time_point> inactive_since;
       std::optional<std::chrono::steady_clock::time_point> missing_since;
@@ -2269,6 +2271,7 @@ namespace VDISPLAY {
 
         if (presence == MonitorTargetPresence::present_active) {
           observed_active = true;
+          ever_observed_active = true;
           backoff_cycles = 0;
           missing_since.reset();
           inactive_since.reset();
@@ -2330,6 +2333,14 @@ namespace VDISPLAY {
             backoff = RECOVERY_MAX_BACKOFF;
           }
           backoff_cycles += 1;
+
+          if (!ever_observed_active && backoff_cycles >= MAX_NEVER_ACTIVE_BACKOFF_CYCLES) {
+            BOOST_LOG(warning) << "Virtual display recovery monitor permanently stopped for "
+                               << state.describe_target() << ": display was never observed as active after "
+                               << backoff_cycles << " backoff cycles (" << (backoff_cycles * state.params.max_attempts)
+                               << " total recovery attempts).";
+            return;
+          }
 
           const auto backoff_ms = std::chrono::duration_cast<std::chrono::milliseconds>(backoff).count();
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
