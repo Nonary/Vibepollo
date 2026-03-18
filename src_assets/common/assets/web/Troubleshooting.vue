@@ -461,26 +461,26 @@ const micStages = computed(() => {
   let renderState: 'idle' | 'success' | 'warning' | 'danger' = 'idle';
   let renderDetail = translate(
     'troubleshooting.remote_mic_stage_render_idle',
-    'VB-CABLE rendering has not started.',
+    'Steam Streaming Microphone rendering has not started.',
   );
   if (debug.sessionActive) {
     if ((debug.renderErrors ?? 0) > 0 && !debug.renderActive) {
       renderState = 'danger';
       renderDetail = translate(
         'troubleshooting.remote_mic_stage_render_error',
-        'Vibepollo decoded microphone audio, but writing it into VB-CABLE failed.',
+        'Vibepollo decoded microphone audio, but writing it into Steam Streaming Microphone failed.',
       );
     } else if (debug.renderActive && isFreshMicAge(debug.lastRenderAgeMs)) {
       renderState = 'success';
       renderDetail = translate(
         'troubleshooting.remote_mic_stage_render_ok',
-        `Vibepollo is rendering microphone audio into ${debug.targetDeviceName || 'CABLE Input'} (${debug.lastRenderAgeMs} ms ago).`,
+        `Vibepollo is rendering microphone audio into ${debug.targetDeviceName || 'Speakers (Steam Streaming Microphone)'} (${debug.lastRenderAgeMs} ms ago).`,
       );
     } else if (debug.decodeActive) {
       renderState = 'warning';
       renderDetail = translate(
         'troubleshooting.remote_mic_stage_render_waiting',
-        'Vibepollo decoded microphone audio, but the VB-CABLE render stage has not completed yet.',
+        'Vibepollo decoded microphone audio, but the Steam Streaming Microphone render stage has not completed yet.',
       );
     }
   }
@@ -533,7 +533,7 @@ const micStages = computed(() => {
     },
     {
       key: 'render',
-      label: translate('troubleshooting.remote_mic_stage_render', 'Rendered into VB-CABLE'),
+      label: translate('troubleshooting.remote_mic_stage_render', 'Rendered into Steam Streaming Microphone'),
       state: renderState,
       detail: renderDetail,
     },

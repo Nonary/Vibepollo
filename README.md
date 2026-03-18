@@ -34,7 +34,7 @@ Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming appl
   Vibepollo can automatically apply optimal Lossless Scaling settings to generate frames for any application. On RTX 40‑series and newer GPUs, you can optionally enable **NVIDIA Smooth Motion** for better performance and image quality (while Lossless Scaling remains more customizable).
 
 * **Remote Microphone Passthrough**
-  Accept redirected client microphone audio from compatible Moonlight or Artemis builds, decode it on the host, and render it into VB-CABLE on Windows so host apps can use `CABLE Output` as their microphone source. Setup and debugging notes are in [docs/remote_microphone.md](docs/remote_microphone.md).
+  Accept redirected client microphone audio from compatible Moonlight or Artemis builds, decode it on the host, and render it into Steam Streaming Microphone on Windows so host apps can use `Microphone (Steam Streaming Microphone)` as their microphone source. Setup and debugging notes are in [docs/remote_microphone.md](docs/remote_microphone.md).
 
 * **API Token Management**
   Access tokens can be tightly scoped—down to specific methods—so external scripts don’t need full administrative rights. This improves security while keeping automation flexible.
