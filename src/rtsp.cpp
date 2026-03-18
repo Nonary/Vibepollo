@@ -1344,10 +1344,11 @@ namespace rtsp_stream {
     config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
     config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
 
-    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
-        session.enable_mic &&
+    if (session.enable_mic &&
         !(config.encryptionFlagsEnabled & SS_ENC_MICROPHONE)) {
-      BOOST_LOG(warning) << "Disabling microphone redirection for ["sv << session.device_name << "] because the client did not negotiate microphone encryption";
+      BOOST_LOG(warning) << "Disabling microphone redirection for ["sv << session.device_name
+                         << "] because the client did not negotiate microphone encryption";
+      audio::mic_debug_on_session_stop("Microphone redirection requires encrypted transport. This client negotiated plaintext microphone packets, so mic passthrough was disabled for the session.");
       session.enable_mic = false;
     }
 

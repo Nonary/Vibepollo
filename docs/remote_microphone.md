@@ -39,7 +39,7 @@ The working implementation includes:
 - Ensure the playback endpoint `Speakers (Steam Streaming Microphone)` exists and is enabled.
 - In host applications, select `Microphone (Steam Streaming Microphone)` as the microphone/recording source.
 - Enable `stream_mic` in Vibepollo.
-- Use a client build that supports microphone redirection.
+- Use a client build that supports microphone redirection and encrypted microphone transport.
 
 ## Compatible Client Builds
 
@@ -55,6 +55,7 @@ Microphone passthrough requires matching client support:
 - `mic_backend` defaults to `steam_streaming_microphone` on Windows in this fork.
 - On Windows, Vibepollo auto-detects the Steam Streaming Microphone pair and normalizes only those microphone endpoints to `2ch, 32-bit, 48000 Hz` automatically instead of requiring a manual device-properties change.
 - `mic_device` is mainly relevant on non-Windows platforms. The Windows path currently targets Steam Streaming Microphone automatically.
+- Redirected microphone transport is always required to negotiate encrypted microphone packets. If the client falls back to plaintext microphone transport, Apollo disables microphone passthrough for that session instead of accepting unencrypted microphone packets.
 
 ## Debugging
 
