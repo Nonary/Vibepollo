@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { $tp } from '@/platform-i18n';
@@ -214,6 +214,15 @@ function selectVirtualDisplayLayout(v: unknown) {
     </PlatformLayout>
 
     <ConfigFieldRenderer setting-key="stream_audio" v-model="config.stream_audio" class="mb-3" />
+
+    <ConfigFieldRenderer setting-key="stream_mic" v-model="config.stream_mic" class="mb-3" />
+
+    <ConfigFieldRenderer
+      v-if="config.stream_mic === 'enabled' && platform !== 'windows'"
+      setting-key="mic_device"
+      v-model="config.mic_device"
+      class="mb-6"
+    />
 
     <ConfigFieldRenderer
       v-if="config.stream_audio === 'enabled'"

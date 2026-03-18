@@ -22,6 +22,7 @@ endif()
 # Adding tools
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
+install(TARGETS apollovmicctl RUNTIME DESTINATION "tools" COMPONENT application)
 
 # Helpers and tools
 # - Playnite launcher helper used for Playnite-managed app launches
@@ -64,6 +65,9 @@ unset(_sudovda_file_size)
 install(FILES ${SUDOVDA_DRIVER_FILES}
         DESTINATION "drivers/sudovda"
         COMPONENT sudovda)
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vbcable"
+        DESTINATION "drivers"
+        COMPONENT vbcable)
 
 # Mandatory scripts
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/service/"
@@ -148,6 +152,10 @@ set(CPACK_COMPONENT_SUDOVDA_DISPLAY_NAME "SudoVDA")
 set(CPACK_COMPONENT_SUDOVDA_DESCRIPTION "Driver required for Virtual Display to function.")
 set(CPACK_COMPONENT_SUDOVDA_GROUP "Drivers")
 set(CPACK_COMPONENT_SUDOVDA_REQUIRED true)
+
+set(CPACK_COMPONENT_VBCABLE_DISPLAY_NAME "VB-CABLE")
+set(CPACK_COMPONENT_VBCABLE_DESCRIPTION "Official VB-CABLE dependency for Apollo microphone passthrough on Windows.")
+set(CPACK_COMPONENT_VBCABLE_GROUP "Drivers")
 
 # audio tool
 set(CPACK_COMPONENT_AUDIO_DISPLAY_NAME "audio-info")

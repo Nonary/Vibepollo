@@ -96,6 +96,46 @@
           </n-button>
         </div>
       </section>
+
+      <section v-if="platform === 'windows'" class="troubleshoot-card space-y-4">
+        <div>
+          <h2 class="text-base font-semibold text-dark dark:text-light">
+            {{ translate('troubleshooting.remote_mic_title', 'Remote Microphone') }}
+          </h2>
+          <p class="text-xs opacity-70 leading-snug">
+            {{
+              translate(
+                'troubleshooting.remote_mic_desc',
+                'Use Moonlight microphone preview first, then follow the host-side validation stages below.',
+              )
+            }}
+          </p>
+        </div>
+
+        <n-alert :type="micStatusType">
+          {{ micDebug?.state || translate('troubleshooting.remote_mic_idle', 'No active remote microphone session') }}
+        </n-alert>
+
+        <div class="space-y-2">
+          <div
+            v-for="stage in micStages"
+            :key="stage.key"
+            class="rounded-lg border px-3 py-2"
+            :class="micStageClass(stage.state)"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-sm font-medium">{{ stage.label }}</div>
+              <span class="text-xs font-semibold uppercase tracking-wide">
+                {{ micStageStateLabel(stage.state) }}
+              </span>
+            </div>
+            <p class="text-xs opacity-80 mt-1 leading-snug">{{ stage.detail }}</p>
+          </div>
+          <p v-if="micStages.length === 0" class="text-xs opacity-70">
+            {{ translate('troubleshooting.remote_mic_loading', 'Loading microphone status...') }}
+          </p>
+        </div>
+      </section>
     </div>
 
     <section class="troubleshoot-card space-y-4">
@@ -322,6 +362,217 @@ const exportCrashPending = ref(false);
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
 const restartPressed = ref(false);
+
+type MicDebugSnapshot = {
+  sessionActive?: boolean;
+  firstPacketReceived?: boolean;
+  decodeActive?: boolean;
+  renderActive?: boolean;
+  signalDetected?: boolean;
+  packetsReceived?: number;
+  decodeErrors?: number;
+  renderErrors?: number;
+  lastPacketAgeMs?: number;
+  lastDecodeAgeMs?: number;
+  lastRenderAgeMs?: number;
+  targetDeviceName?: string;
+  state?: string;
+};
+
+const micDebug = ref<MicDebugSnapshot | null>(null);
+let micDebugInterval: number | null = null;
+
+const isFreshMicAge = (ageMs?: number) => typeof ageMs === 'number' && ageMs >= 0 && ageMs < 3000;
+
+const micStages = computed(() => {
+  const debug = micDebug.value;
+  if (!debug) return [];
+
+  const captureState = !debug.sessionActive ? 'idle' : debug.firstPacketReceived ? 'success' : 'warning';
+  const captureDetail = !debug.sessionActive
+    ? translate(
+        'troubleshooting.remote_mic_stage_capture_idle',
+        'Start a remote session with microphone passthrough enabled.',
+      )
+    : debug.firstPacketReceived
+      ? translate(
+          'troubleshooting.remote_mic_stage_capture_ok',
+          'Moonlight is sending microphone audio to Vibepollo. Confirm the local source with the Moonlight preview.',
+        )
+      : translate(
+          'troubleshooting.remote_mic_stage_capture_waiting',
+          'Vibepollo negotiated microphone passthrough, but Moonlight has not sent microphone audio yet.',
+        );
+
+  let packetState: 'idle' | 'success' | 'warning' | 'danger' = 'idle';
+  let packetDetail = translate(
+    'troubleshooting.remote_mic_stage_packets_idle',
+    'No active microphone session.',
+  );
+  if (debug.sessionActive) {
+    if (!debug.firstPacketReceived) {
+      packetState = 'warning';
+      packetDetail = translate(
+        'troubleshooting.remote_mic_stage_packets_waiting',
+        'Waiting for the first microphone packet from Moonlight.',
+      );
+    } else if (isFreshMicAge(debug.lastPacketAgeMs)) {
+      packetState = 'success';
+      packetDetail = translate(
+        'troubleshooting.remote_mic_stage_packets_ok',
+        `Packets are arriving from Moonlight (${debug.lastPacketAgeMs} ms ago).`,
+      );
+    } else {
+      packetState = 'warning';
+      packetDetail = translate(
+        'troubleshooting.remote_mic_stage_packets_stale',
+        'Packets arrived earlier, but Vibepollo has not seen a fresh microphone packet recently.',
+      );
+    }
+  }
+
+  let decodeState: 'idle' | 'success' | 'warning' | 'danger' = 'idle';
+  let decodeDetail = translate(
+    'troubleshooting.remote_mic_stage_decode_idle',
+    'No decoded microphone audio on the host yet.',
+  );
+  if (debug.sessionActive) {
+    if ((debug.decodeErrors ?? 0) > 0 && !debug.decodeActive) {
+      decodeState = 'danger';
+      decodeDetail = translate(
+        'troubleshooting.remote_mic_stage_decode_error',
+        'Vibepollo received microphone packets but could not decode them.',
+      );
+    } else if (debug.decodeActive && isFreshMicAge(debug.lastDecodeAgeMs)) {
+      decodeState = 'success';
+      decodeDetail = translate(
+        'troubleshooting.remote_mic_stage_decode_ok',
+        `Vibepollo decoded microphone audio successfully (${debug.lastDecodeAgeMs} ms ago).`,
+      );
+    } else if ((debug.packetsReceived ?? 0) > 0) {
+      decodeState = 'warning';
+      decodeDetail = translate(
+        'troubleshooting.remote_mic_stage_decode_waiting',
+        'Vibepollo is receiving packets, but decoded microphone audio has not been confirmed yet.',
+      );
+    }
+  }
+
+  let renderState: 'idle' | 'success' | 'warning' | 'danger' = 'idle';
+  let renderDetail = translate(
+    'troubleshooting.remote_mic_stage_render_idle',
+    'VB-CABLE rendering has not started.',
+  );
+  if (debug.sessionActive) {
+    if ((debug.renderErrors ?? 0) > 0 && !debug.renderActive) {
+      renderState = 'danger';
+      renderDetail = translate(
+        'troubleshooting.remote_mic_stage_render_error',
+        'Vibepollo decoded microphone audio, but writing it into VB-CABLE failed.',
+      );
+    } else if (debug.renderActive && isFreshMicAge(debug.lastRenderAgeMs)) {
+      renderState = 'success';
+      renderDetail = translate(
+        'troubleshooting.remote_mic_stage_render_ok',
+        `Vibepollo is rendering microphone audio into ${debug.targetDeviceName || 'CABLE Input'} (${debug.lastRenderAgeMs} ms ago).`,
+      );
+    } else if (debug.decodeActive) {
+      renderState = 'warning';
+      renderDetail = translate(
+        'troubleshooting.remote_mic_stage_render_waiting',
+        'Vibepollo decoded microphone audio, but the VB-CABLE render stage has not completed yet.',
+      );
+    }
+  }
+
+  let signalState: 'idle' | 'success' | 'warning' | 'danger' = 'idle';
+  let signalDetail = translate(
+    'troubleshooting.remote_mic_stage_signal_idle',
+    'No decoded microphone signal is available yet.',
+  );
+  if (debug.sessionActive) {
+    if (debug.signalDetected) {
+      signalState = 'success';
+      signalDetail = translate(
+        'troubleshooting.remote_mic_stage_signal_ok',
+        'Vibepollo is detecting non-silent microphone audio from Moonlight.',
+      );
+    } else if (debug.decodeActive) {
+      signalState = 'warning';
+      signalDetail = translate(
+        'troubleshooting.remote_mic_stage_signal_silent',
+        'Decoded microphone audio is currently silent or below the signal threshold.',
+      );
+    } else if (debug.firstPacketReceived) {
+      signalState = 'warning';
+      signalDetail = translate(
+        'troubleshooting.remote_mic_stage_signal_waiting',
+        'Packets are arriving, but Vibepollo has not decoded usable microphone audio yet.',
+      );
+    }
+  }
+
+  return [
+    {
+      key: 'capture',
+      label: translate('troubleshooting.remote_mic_stage_capture', 'Moonlight capture/send'),
+      state: captureState,
+      detail: captureDetail,
+    },
+    {
+      key: 'packets',
+      label: translate('troubleshooting.remote_mic_stage_packets', 'Packets arriving'),
+      state: packetState,
+      detail: packetDetail,
+    },
+    {
+      key: 'decode',
+      label: translate('troubleshooting.remote_mic_stage_decode', 'Decoded on host'),
+      state: decodeState,
+      detail: decodeDetail,
+    },
+    {
+      key: 'render',
+      label: translate('troubleshooting.remote_mic_stage_render', 'Rendered into VB-CABLE'),
+      state: renderState,
+      detail: renderDetail,
+    },
+    {
+      key: 'signal',
+      label: translate('troubleshooting.remote_mic_stage_signal', 'Live signal detected'),
+      state: signalState,
+      detail: signalDetail,
+    },
+  ];
+});
+
+const micStatusType = computed(() => {
+  if (micDebug.value?.renderActive) return 'success';
+  if (micDebug.value?.sessionActive) return 'warning';
+  return 'default';
+});
+
+function micStageClass(state: string) {
+  return (
+    {
+      success: 'border-success/40 bg-success/10 text-success',
+      warning: 'border-warning/40 bg-warning/10 text-warning',
+      danger: 'border-error/40 bg-error/10 text-error',
+      idle: 'border-dark/10 dark:border-light/10 bg-surface/20',
+    }[state] || 'border-dark/10 dark:border-light/10 bg-surface/20'
+  );
+}
+
+function micStageStateLabel(state: string) {
+  return (
+    {
+      success: translate('troubleshooting.remote_mic_state_ok', 'OK'),
+      warning: translate('troubleshooting.remote_mic_state_waiting', 'Waiting'),
+      danger: translate('troubleshooting.remote_mic_state_error', 'Error'),
+      idle: translate('troubleshooting.remote_mic_state_idle', 'Idle'),
+    }[state] || translate('troubleshooting.remote_mic_state_idle', 'Idle')
+  );
+}
 
 const latestLogs = ref('Loading...');
 const displayedLogs = ref('Loading...');
@@ -952,6 +1203,18 @@ function restart() {
   http.post('./api/restart', {}, { validateStatus: () => true });
 }
 
+async function refreshMicDebug() {
+  if (platform.value !== 'windows') return;
+  try {
+    const response = await http.get('./api/audio-debug', { validateStatus: () => true });
+    if (response.status >= 200 && response.status < 300) {
+      micDebug.value = response.data;
+    }
+  } catch (error) {
+    console.error('Error fetching microphone debug status:', error);
+  }
+}
+
 onMounted(async () => {
   loginDisposer = authStore.onLogin(() => {
     void refreshLogs();
@@ -968,10 +1231,16 @@ onMounted(async () => {
 
   logInterval = window.setInterval(refreshLogs, 5000);
   refreshLogs();
+
+  if (platform.value === 'windows') {
+    await refreshMicDebug();
+    micDebugInterval = window.setInterval(refreshMicDebug, 1000);
+  }
 });
 
 onBeforeUnmount(() => {
   if (logInterval) window.clearInterval(logInterval);
+  if (micDebugInterval) window.clearInterval(micDebugInterval);
   if (loginDisposer) loginDisposer();
   if (searchDebounce !== null && typeof window !== 'undefined') {
     window.clearTimeout(searchDebounce);
