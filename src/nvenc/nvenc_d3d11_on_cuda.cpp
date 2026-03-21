@@ -5,6 +5,7 @@
 #ifdef _WIN32
   // this include
   #include "nvenc_d3d11_on_cuda.h"
+  #include "nvenc_api.h"
 
   // local includes
   #include "nvenc_utils.h"
@@ -56,14 +57,22 @@ namespace nvenc {
     return d3d_input_texture.GetInterfacePtr();
   }
 
-  bool nvenc_d3d11_on_cuda::init_library() {
-    if (!nvenc_d3d11::init_library()) {
+  bool nvenc_d3d11_on_cuda::init_library(uint32_t api_version) {
+    if (!nvenc_d3d11::init_library(api_version)) {
       return false;
+    }
+
+    if (device != nullptr) {
+      return true;
     }
 
     constexpr auto dll_name = "nvcuda.dll";
 
-    if ((cuda_functions.dll = LoadLibraryEx(dll_name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))) {
+    if (!cuda_functions.dll) {
+      cuda_functions.dll = LoadLibraryEx(dll_name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+
+    if (cuda_functions.dll) {
       auto load_function = [&]<typename T>(T &location, auto symbol) -> bool {
         location = (T) GetProcAddress(cuda_functions.dll, symbol);
         return location != nullptr;
@@ -169,7 +178,7 @@ namespace nvenc {
     }
 
     if (!registered_input_buffer) {
-      NV_ENC_REGISTER_RESOURCE register_resource = {min_struct_version(NV_ENC_REGISTER_RESOURCE_VER, 3, 4)};
+      NV_ENC_REGISTER_RESOURCE register_resource = {api::register_resource_version(selected_api_version)};
       register_resource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
       register_resource.width = encoder_params.width;
       register_resource.height = encoder_params.height;

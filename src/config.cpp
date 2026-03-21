@@ -1499,6 +1499,7 @@ namespace config {
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
+    bool_f(vars, "nvenc_force_split_encode", video.nv.force_split_encode);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);
@@ -2115,6 +2116,7 @@ namespace config {
         "nvenc_preset",
         "nvenc_twopass",
         "nvenc_spatial_aq",
+        "nvenc_force_split_encode",
         "nvenc_vbv_increase",
         "nvenc_realtime_hags",
         "nvenc_latency_over_power",

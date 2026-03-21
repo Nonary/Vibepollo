@@ -2951,6 +2951,12 @@ namespace video {
     encoder.hevc.capabilities.set();
     encoder.av1.capabilities.set();
 
+    auto clear_capabilities = [&]() {
+      encoder.h264.capabilities.reset();
+      encoder.hevc.capabilities.reset();
+      encoder.av1.capabilities.reset();
+    };
+
     // First, test encoder viability
     config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
     config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
@@ -2966,10 +2972,12 @@ namespace video {
     }
 
     if (!disp) {
+      clear_capabilities();
       return false;
     }
     if (!disp->is_codec_supported(encoder.h264.name, config_autoselect)) {
       fg.disable();
+      clear_capabilities();
       BOOST_LOG(info) << "Encoder ["sv << encoder.name << "] is not supported on this GPU"sv;
       return false;
     }
@@ -2979,6 +2987,9 @@ namespace video {
     auto max_ref_frames_h264 = expect_failure ? -1 : validate_config(disp, encoder, config_max_ref_frames);
     auto autoselect_h264 = max_ref_frames_h264 >= 0 ? max_ref_frames_h264 : validate_config(disp, encoder, config_autoselect);
     if (autoselect_h264 < 0) {
+      clear_capabilities();
+      BOOST_LOG(warning) << "Encoder ["sv << encoder.name
+                         << "] failed H.264 validation before HEVC/AV1 capability probing completed; higher codec support is unknown"sv;
       return false;
     } else if (expect_failure) {
       // We expected failure, but actually succeeded. Do the max_ref_frames probe we skipped.

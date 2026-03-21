@@ -72,6 +72,74 @@ function Resolve-Value {
   return ""
 }
 
+function Prepend-EnvList {
+  param(
+    [string]$Name,
+    [string[]]$Entries
+  )
+
+  $validEntries = @($Entries | Where-Object { $_ -and (Test-Path $_) })
+  if ($validEntries.Count -eq 0) {
+    return
+  }
+
+  $currentEntries = @()
+  $currentValue = [Environment]::GetEnvironmentVariable($Name)
+  if ($currentValue) {
+    $currentEntries = @($currentValue.Split(';') | Where-Object { $_ })
+  }
+
+  $combinedEntries = @()
+  foreach ($entry in $validEntries + $currentEntries) {
+    if (-not $entry) {
+      continue
+    }
+    if ($combinedEntries -notcontains $entry) {
+      $combinedEntries += $entry
+    }
+  }
+
+  Set-Item -Path "Env:$Name" -Value ($combinedEntries -join ';')
+}
+
+function Patch-WebrtcToolchain {
+  param(
+    [string]$ToolchainPath,
+    [string[]]$SdkIncludeDirs,
+    [string[]]$SdkLibDirs
+  )
+
+  if (-not (Test-Path $ToolchainPath)) {
+    throw "Toolchain file not found: $ToolchainPath"
+  }
+
+  $toolchainContent = Get-Content -Path $ToolchainPath -Raw
+  $sdkIncludeFlags = (@($SdkIncludeDirs | Where-Object { $_ -and (Test-Path $_) }) | ForEach-Object {
+      "`"-imsvc$($_ -replace '\\', '/')`""
+    }) -join ' '
+  $sdkLibFlags = (@($SdkLibDirs | Where-Object { $_ -and (Test-Path $_) }) | ForEach-Object {
+      "`"-libpath:$($_ -replace '\\', '/')`""
+    }) -join ' '
+
+  if ($sdkIncludeFlags -and $toolchainContent -notmatch [regex]::Escape($sdkIncludeFlags)) {
+    $toolchainContent = [regex]::Replace(
+      $toolchainContent,
+      '("-imsvc[^"]*VC/Auxiliary/VS/include")',
+      ('$1 ' + $sdkIncludeFlags)
+    )
+  }
+
+  if ($sdkLibFlags -and $toolchainContent -notmatch [regex]::Escape($sdkLibFlags)) {
+    $toolchainContent = [regex]::Replace(
+      $toolchainContent,
+      '("-libpath:[^"]*VC/Tools/MSVC/[^"]*/lib/x64")',
+      ('$1 ' + $sdkLibFlags)
+    )
+  }
+
+  Set-Content -Path $ToolchainPath -Value $toolchainContent -Encoding ASCII
+}
+
 $scriptRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $RootDir = Resolve-Value -Value $RootDir -CacheKey "CMAKE_HOME_DIRECTORY" -EnvKey "SUNSHINE_ROOT_DIR"
 if (-not $RootDir) {
@@ -133,17 +201,28 @@ if (-not (Test-Path $gitShimDir)) {
   New-Item -ItemType Directory -Path $gitShimDir | Out-Null
 }
 $gitBat = Join-Path $gitShimDir "git.bat"
-if (-not (Test-Path $gitBat)) {
-  if (-not $GitExe) {
+if (-not $GitExe) {
+  $preferredGitLocations = @(
+    (Join-Path $env:ProgramFiles "Git\cmd\git.exe"),
+    (Join-Path $env:ProgramW6432 "Git\cmd\git.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Git\cmd\git.exe")
+  ) | Where-Object { $_ -and (Test-Path $_) }
+
+  if ($preferredGitLocations.Count -gt 0) {
+    $GitExe = $preferredGitLocations[0]
+  } else {
     $gitCommand = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCommand) {
       $GitExe = $gitCommand.Source
     }
   }
-  if (-not $GitExe -or -not (Test-Path $GitExe)) {
-    throw "GitExe not found; set WEBRTC_GIT_EXE or ensure git is in PATH."
-  }
-  "@echo off`r`n`"$GitExe`" %*`r`n" | Set-Content -Path $gitBat -Encoding ASCII
+}
+if (-not $GitExe -or -not (Test-Path $GitExe)) {
+  throw "GitExe not found; set WEBRTC_GIT_EXE or ensure git is in PATH."
+}
+$gitBatContent = "@echo off`r`n`"$GitExe`" %*`r`n"
+if ((-not (Test-Path $gitBat)) -or ((Get-Content -Path $gitBat -Raw) -ne $gitBatContent)) {
+  $gitBatContent | Set-Content -Path $gitBat -Encoding ASCII
 }
 if (-not $GitBin -and $GitExe) {
   $GitBin = Split-Path -Parent $GitExe
@@ -229,6 +308,21 @@ if (-not $winSdkVersion) {
   throw "Unable to detect Windows SDK version under $winSdkInclude"
 }
 
+$sdkIncludeDirs = @(
+  (Join-Path $sdkRoot "Include\$winSdkVersion\ucrt"),
+  (Join-Path $sdkRoot "Include\$winSdkVersion\shared"),
+  (Join-Path $sdkRoot "Include\$winSdkVersion\um"),
+  (Join-Path $sdkRoot "Include\$winSdkVersion\winrt"),
+  (Join-Path $sdkRoot "Include\$winSdkVersion\cppwinrt")
+)
+$sdkLibDirs = @(
+  (Join-Path $sdkRoot "Lib\$winSdkVersion\ucrt\x64"),
+  (Join-Path $sdkRoot "Lib\$winSdkVersion\um\x64")
+)
+Prepend-EnvList -Name "INCLUDE" -Entries $sdkIncludeDirs
+Prepend-EnvList -Name "LIB" -Entries $sdkLibDirs
+Prepend-EnvList -Name "LIBPATH" -Entries $sdkLibDirs
+
 $vsToolchainPath = Join-Path $BuildDir "src\\build\\vs_toolchain.py"
 $setupToolchainPath = Join-Path $BuildDir "src\\build\\toolchain\\win\\setup_toolchain.py"
 foreach ($path in @($vsToolchainPath, $setupToolchainPath)) {
@@ -287,6 +381,7 @@ $gnArgsString = $gnArgs -join " "
 $gnOutDir = Join-Path $BuildDir "src\out\mingw"
 Write-Step "Generating GN build files"
 gn gen $gnOutDir --root="$($BuildDir)\src" --args="$gnArgsString"
+Patch-WebrtcToolchain -ToolchainPath (Join-Path $gnOutDir "toolchain.ninja") -SdkIncludeDirs $sdkIncludeDirs -SdkLibDirs $sdkLibDirs
 
 Write-Step "Building libwebrtc"
 ninja -C $gnOutDir libwebrtc

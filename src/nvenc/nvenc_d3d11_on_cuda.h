@@ -28,7 +28,7 @@ namespace nvenc {
     ID3D11Texture2D *get_input_texture() override;
 
   private:
-    bool init_library() override;
+    bool init_library(uint32_t api_version) override;
 
     bool create_and_register_input_buffer() override;
 

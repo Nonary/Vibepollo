@@ -78,7 +78,7 @@ namespace nvenc {
      *        Called during `create_encoder()` if `nvenc` variable is not initialized.
      * @return `true` on success, `false` on error
      */
-    virtual bool init_library() = 0;
+    virtual bool init_library(uint32_t api_version) = 0;
 
     /**
      * @brief Required. Used for creating outside-facing input surface,
@@ -109,16 +109,6 @@ namespace nvenc {
 
     bool nvenc_failed(NVENCSTATUS status);
 
-    /**
-     * @brief This function returns the corresponding struct version for the minimum API required by the codec.
-     * @details Reducing the struct versions maximizes driver compatibility by avoiding needless API breaks.
-     * @param version The raw structure version from `NVENCAPI_STRUCT_VERSION()`.
-     * @param v11_struct_version Optionally specifies the struct version to use with v11 SDK major versions.
-     * @param v12_struct_version Optionally specifies the struct version to use with v12 SDK major versions.
-     * @return A suitable struct version for the active codec.
-     */
-    uint32_t min_struct_version(uint32_t version, uint32_t v11_struct_version = 0, uint32_t v12_struct_version = 0);
-
     const NV_ENC_DEVICE_TYPE device_type;
 
     void *encoder = nullptr;
@@ -142,10 +132,11 @@ namespace nvenc {
                                                               ///< Should be set in `create_and_register_input_buffer()`.
     void *async_event_handle = nullptr;  ///< (optional) Platform-specific handle of event object event.
                                          ///< Can be set in constructor or `init_library()`, must override `wait_for_async_event()`.
+    uint32_t selected_api_version = 0;  ///< API version selected after runtime probing.
+    NVENCSTATUS last_nvenc_status = NV_ENC_SUCCESS;
 
   private:
     NV_ENC_OUTPUT_PTR output_bitstream = nullptr;
-    uint32_t minimum_api_version = 0;
 
     struct {
       uint64_t last_encoded_frame_index = 0;

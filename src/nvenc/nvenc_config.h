@@ -46,6 +46,9 @@ namespace nvenc {
     // Use CAVLC entropy coding in H.264 instead of CABAC, not relevant and here for historical reasons
     bool h264_cavlc = false;
 
+    // Force split-frame encoding for supported HEVC/AV1 sessions instead of relying on the driver auto threshold
+    bool force_split_encode = false;
+
     // Add filler data to encoded frames to stay at target bitrate, mainly for testing
     bool insert_filler_data = false;
 

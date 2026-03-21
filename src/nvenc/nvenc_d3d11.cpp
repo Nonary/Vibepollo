@@ -7,6 +7,7 @@
 
 #ifdef _WIN32
   #include "nvenc_d3d11.h"
+  #include "nvenc_api.h"
 
 namespace nvenc {
 
@@ -25,8 +26,8 @@ namespace nvenc {
     }
   }
 
-  bool nvenc_d3d11::init_library() {
-    if (dll) {
+  bool nvenc_d3d11::init_library(uint32_t api_version) {
+    if (dll && nvenc && function_list_api_version == api_version) {
       return true;
     }
 
@@ -36,14 +37,45 @@ namespace nvenc {
     constexpr auto dll_name = "nvEncodeAPI.dll";
   #endif
 
-    if ((dll = LoadLibraryEx(dll_name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))) {
+    if (!dll) {
+      dll = LoadLibraryEx(dll_name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+
+    if (dll) {
+      // Query max supported version on first load (per NVIDIA programming guide)
+      if (!max_driver_api_version) {
+        if (auto get_max_ver = (decltype(NvEncodeAPIGetMaxSupportedVersion) *) GetProcAddress(dll, "NvEncodeAPIGetMaxSupportedVersion")) {
+          uint32_t max_ver = 0;
+          if (get_max_ver(&max_ver) == NV_ENC_SUCCESS) {
+            max_driver_api_version = max_ver;
+            BOOST_LOG(info) << "NvEnc: driver supports up to API "
+                            << api::version_string(max_ver)
+                            << ", compiled SDK " << NVENCAPI_MAJOR_VERSION << "." << NVENCAPI_MINOR_VERSION;
+          } else {
+            BOOST_LOG(warning) << "NvEnc: NvEncodeAPIGetMaxSupportedVersion() failed";
+          }
+        }
+      }
+
+      // Reject API versions the driver can't support
+      if (max_driver_api_version && !api::driver_supports_api_version(max_driver_api_version, api_version)) {
+        last_nvenc_status = NV_ENC_ERR_INVALID_VERSION;
+        last_nvenc_error_string = "driver max API " + api::version_string(max_driver_api_version);
+        return false;
+      }
+
       if (auto create_instance = (decltype(NvEncodeAPICreateInstance) *) GetProcAddress(dll, "NvEncodeAPICreateInstance")) {
         auto new_nvenc = std::make_unique<NV_ENCODE_API_FUNCTION_LIST>();
-        new_nvenc->version = min_struct_version(NV_ENCODE_API_FUNCTION_LIST_VER);
+        new_nvenc->version = api::function_list_version(api_version);
         if (nvenc_failed(create_instance(new_nvenc.get()))) {
-          BOOST_LOG(error) << "NvEnc: NvEncodeAPICreateInstance() failed: " << last_nvenc_error_string;
+          if (last_nvenc_status == NV_ENC_ERR_INVALID_VERSION) {
+            BOOST_LOG(debug) << "NvEnc: NvEncodeAPICreateInstance() rejected API " << api::version_string(api_version);
+          } else {
+            BOOST_LOG(error) << "NvEnc: NvEncodeAPICreateInstance() failed: " << last_nvenc_error_string;
+          }
         } else {
           nvenc = std::move(new_nvenc);
+          function_list_api_version = api_version;
           return true;
         }
       } else {
@@ -57,6 +89,7 @@ namespace nvenc {
       FreeLibrary(dll);
       dll = nullptr;
     }
+    function_list_api_version = 0;
 
     return false;
   }

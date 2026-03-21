@@ -36,11 +36,13 @@ namespace nvenc {
     virtual ID3D11Texture2D *get_input_texture() = 0;
 
   protected:
-    bool init_library() override;
+    bool init_library(uint32_t api_version) override;
     bool wait_for_async_event(uint32_t timeout_ms) override;
 
   private:
     HMODULE dll = nullptr;
+    uint32_t function_list_api_version = 0;
+    uint32_t max_driver_api_version = 0;
   };
 
 }  // namespace nvenc

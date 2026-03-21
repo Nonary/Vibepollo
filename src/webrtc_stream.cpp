@@ -2490,6 +2490,21 @@ namespace webrtc_stream {
 #endif
       }
 
+      if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
+        const auto &apps = proc::proc.get_apps();
+        const auto requested_id_str = std::to_string(requested_app_id);
+        auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
+          return app.id == requested_id_str;
+        });
+        if (app_iter == apps.end()) {
+          return std::string {"Cannot find requested application"};
+        }
+        auto result = proc::proc.execute(*app_iter, launch_session);
+        if (result != 0) {
+          return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
+        }
+      }
+
       if (!rtsp_active) {
         // Ensure the latest config is applied before starting capture.
         config::maybe_apply_deferred();
@@ -2526,21 +2541,6 @@ namespace webrtc_stream {
 #else
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
 #endif
-        }
-      }
-
-      if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
-        const auto &apps = proc::proc.get_apps();
-        const auto requested_id_str = std::to_string(requested_app_id);
-        auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
-          return app.id == requested_id_str;
-        });
-        if (app_iter == apps.end()) {
-          return std::string {"Cannot find requested application"};
-        }
-        auto result = proc::proc.execute(*app_iter, launch_session);
-        if (result != 0) {
-          return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
         }
       }
 
@@ -4475,24 +4475,12 @@ namespace webrtc_stream {
     return active_sessions.load(std::memory_order_relaxed) > 0;
   }
 
-  bool shutdown_requested() {
-    return mail::man && mail::man->event<bool>(mail::shutdown)->peek();
-  }
-
   std::optional<std::string> ensure_capture_started(const SessionOptions &options) {
-    if (shutdown_requested()) {
-      BOOST_LOG(info) << "WebRTC: refusing to start capture because shutdown is in progress.";
-      return std::string {"Shutdown in progress"};
-    }
     return start_webrtc_capture(options);
   }
 
   std::optional<SessionState> create_session(const SessionOptions &options) {
     BOOST_LOG(debug) << "WebRTC: create_session enter";
-    if (shutdown_requested()) {
-      BOOST_LOG(info) << "WebRTC: refusing to create a session because shutdown is in progress.";
-      return std::nullopt;
-    }
     const auto rtsp_config = rtsp_sessions_active.load(std::memory_order_relaxed) ? snapshot_rtsp_capture_config() : std::nullopt;
     Session session;
     session.state.id = uuid_util::uuid_t::generate().string();
@@ -4530,10 +4518,6 @@ namespace webrtc_stream {
     bool first_session = false;
     {
       std::lock_guard lg {session_mutex};
-      if (shutdown_requested()) {
-        BOOST_LOG(info) << "WebRTC: aborting session creation because shutdown started before registration completed.";
-        return std::nullopt;
-      }
       sessions.emplace(snapshot.id, std::move(session));
       first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
     }

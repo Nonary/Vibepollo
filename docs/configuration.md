@@ -2870,6 +2870,33 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### nvenc_force_split_encode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Forces NVENC split-frame encoding for supported HEVC or AV1 sessions instead of relying on NVIDIA's automatic threshold.
+            NVIDIA drivers already enable split-frame encoding automatically for many 4K-and-above workloads.
+            Enable this when you want the same behavior at lower resolutions too, such as 2560x1440 at 120 Hz.
+            @note{Applies to NVENC HEVC or AV1 only. H.264 does not use split-frame encoding.}
+            @note{Requires NVENC API 12.1 or newer.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            nvenc_force_split_encode = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### nvenc_realtime_hags
 
 <table>

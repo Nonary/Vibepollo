@@ -5,6 +5,7 @@
 #ifdef _WIN32
   // this include
   #include "nvenc_d3d11_native.h"
+  #include "nvenc_api.h"
 
   // local includes
   #include "nvenc_utils.h"
@@ -51,7 +52,7 @@ namespace nvenc {
     }
 
     if (!registered_input_buffer) {
-      NV_ENC_REGISTER_RESOURCE register_resource = {min_struct_version(NV_ENC_REGISTER_RESOURCE_VER, 3, 4)};
+      NV_ENC_REGISTER_RESOURCE register_resource = {api::register_resource_version(selected_api_version)};
       register_resource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
       register_resource.width = encoder_params.width;
       register_resource.height = encoder_params.height;
