@@ -117,6 +117,13 @@ set_source_files_properties("${CMAKE_SOURCE_DIR}/src/upnp.cpp"
         DIRECTORY "${CMAKE_SOURCE_DIR}" "${TEST_DIR}"
         PROPERTIES COMPILE_FLAGS -Wno-pedantic)
 
+# GNU/MinGW needs bigobj for confighttp.cpp (exceeds COFF section limit)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
+            DIRECTORY "${CMAKE_SOURCE_DIR}" "${TEST_DIR}"
+            PROPERTIES COMPILE_FLAGS "-Wa,-mbig-obj")
+endif()
+
 # third-party/nanors
 set_source_files_properties("${CMAKE_SOURCE_DIR}/src/rswrapper.c"
         DIRECTORY "${CMAKE_SOURCE_DIR}" "${TEST_DIR}"
