@@ -817,6 +817,16 @@ namespace confighttp {
     response->write(client_error_bad_request, error.dump(), headers);
   }
 
+  void service_unavailable(resp_https_t response, const std::string &error_message) {
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    add_cors_headers(headers);
+    nlohmann::json error = {{"error", error_message}};
+    response->write(SimpleWeb::StatusCode::server_error_service_unavailable, error.dump(), headers);
+  }
+
   /**
    * @brief Validate the request content type and send bad request when mismatch.
    * @param response The HTTP response object.
@@ -2546,10 +2556,15 @@ namespace confighttp {
       return;
     }
     auto session = webrtc_stream::create_session(options);
-    BOOST_LOG(debug) << "WebRTC: session created id=" << session.id;
+    if (!session) {
+      webrtc_stream::shutdown_all_sessions();
+      service_unavailable(response, "Shutdown in progress");
+      return;
+    }
+    BOOST_LOG(debug) << "WebRTC: session created id=" << session->id;
     nlohmann::json output;
     output["status"] = true;
-    output["session"] = webrtc_session_to_json(session);
+    output["session"] = webrtc_session_to_json(*session);
     output["cert_fingerprint"] = webrtc_stream::get_server_cert_fingerprint();
     output["cert_pem"] = webrtc_stream::get_server_cert_pem();
     output["ice_servers"] = load_webrtc_ice_servers();

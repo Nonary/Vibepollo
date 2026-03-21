@@ -28,6 +28,7 @@
 #ifdef _WIN32
   #include <shobjidl.h>
 
+  #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
@@ -377,6 +378,11 @@ int main(int argc, char *argv[]) {
     proc::initVDisplayDriver();
   }
 
+  // A helper restore loop can outlive Sunshine itself because the helper runs in a
+  // separate process. Disarm any orphaned restore activity before we decide whether
+  // additional startup cleanup is needed.
+  (void) display_helper_integration::disarm_pending_restore();
+
   // Crash-recovery janitor: if Sunshine starts and finds active virtual displays before
   // any RTSP/WebRTC sessions exist, force cleanup to prevent stuck fallback issues.
   if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
@@ -502,6 +508,10 @@ int main(int argc, char *argv[]) {
 
   // Wait for shutdown
   shutdown_event->view();
+
+  // Drain any active WebRTC sessions before joining server threads so capture,
+  // media, and input teardown finish while the process is still fully alive.
+  webrtc_stream::shutdown_all_sessions();
 
   httpThread.join();
   configThread.join();

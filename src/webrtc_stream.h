@@ -87,11 +87,12 @@ namespace webrtc_stream {
 
   bool has_active_sessions();
 
-  SessionState create_session(const SessionOptions &options);
+  std::optional<SessionState> create_session(const SessionOptions &options);
   std::optional<std::string> ensure_capture_started(const SessionOptions &options);
   bool close_session(std::string_view id);
   std::optional<SessionState> get_session(std::string_view id);
   std::vector<SessionState> list_sessions();
+  void shutdown_all_sessions();
 
   void submit_video_packet(video::packet_raw_t &packet);
   void submit_audio_packet(const audio::buffer_t &packet);
