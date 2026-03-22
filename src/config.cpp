@@ -103,6 +103,20 @@ namespace config {
       return nvenc::nvenc_two_pass::quarter_resolution;
     }
 
+    nvenc::split_encode_mode split_encode_mode_from_view(const std::string_view &value) {
+      if (value == "auto") {
+        return nvenc::split_encode_mode::auto_mode;
+      }
+      if (value == "enabled") {
+        return nvenc::split_encode_mode::enabled;
+      }
+      if (value == "disabled") {
+        return nvenc::split_encode_mode::disabled;
+      }
+      BOOST_LOG(warning) << "config: unknown nvenc_force_split_encode value: " << value;
+      return nvenc::split_encode_mode::auto_mode;
+    }
+
   }  // namespace nv
 
   namespace amd {
@@ -1499,7 +1513,7 @@ namespace config {
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
-    bool_f(vars, "nvenc_force_split_encode", video.nv.force_split_encode);
+    generic_f(vars, "nvenc_force_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);

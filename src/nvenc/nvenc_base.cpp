@@ -617,12 +617,20 @@ namespace nvenc {
         split_frame_status = "split-frame=disabled(weighted-prediction)";
       } else {
 #if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
-        if (config.force_split_encode) {
-          init_params.splitEncodeMode = NV_ENC_SPLIT_AUTO_FORCED_MODE;
-          split_frame_status = "split-frame=forced";
-        } else {
-          init_params.splitEncodeMode = NV_ENC_SPLIT_AUTO_MODE;
-          split_frame_status = "split-frame=auto";
+        switch (config.split_encode_mode) {
+          case nvenc::split_encode_mode::enabled:
+            init_params.splitEncodeMode = NV_ENC_SPLIT_AUTO_FORCED_MODE;
+            split_frame_status = "split-frame=forced";
+            break;
+          case nvenc::split_encode_mode::disabled:
+            init_params.splitEncodeMode = NV_ENC_SPLIT_DISABLE_MODE;
+            split_frame_status = "split-frame=disabled";
+            break;
+          case nvenc::split_encode_mode::auto_mode:
+          default:
+            init_params.splitEncodeMode = NV_ENC_SPLIT_AUTO_MODE;
+            split_frame_status = "split-frame=auto";
+            break;
         }
 #else
         split_frame_status = "split-frame=disabled(header<12.1)";

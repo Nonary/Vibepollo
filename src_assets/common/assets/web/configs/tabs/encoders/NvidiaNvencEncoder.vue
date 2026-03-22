@@ -33,6 +33,12 @@ const platform = computed(() => config.platform || '');
     />
 
     <ConfigFieldRenderer
+      setting-key="nvenc_force_split_encode"
+      v-model="config.nvenc_force_split_encode"
+      class="mb-4"
+    />
+
+    <ConfigFieldRenderer
       setting-key="nvenc_vbv_increase"
       v-model="config.nvenc_vbv_increase"
       class="mb-4"

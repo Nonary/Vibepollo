@@ -263,6 +263,14 @@ export function getConfigSelectOptions(
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
+    case 'nvenc_force_split_encode': {
+      const options = [
+        { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },
+        { label: translateOr(t, '_common.enabled', 'Enabled'), value: 'enabled' },
+        { label: translateOr(t, '_common.disabled', 'Disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
     case 'qsv_preset': {
       const options = [
         { label: translateOr(t, 'config.qsv_preset_veryfast', 'veryfast'), value: 'veryfast' },

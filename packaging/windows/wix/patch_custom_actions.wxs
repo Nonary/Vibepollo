@@ -60,7 +60,9 @@
       <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
       <Custom Action="SetMigrateConfig" After="InstallSudovda">NOT REMOVE</Custom>
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="SetInstallGamepad" After="MigrateConfig">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
+      <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT REMOVE</Custom>
+      <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT REMOVE</Custom>
+      <Custom Action="SetInstallGamepad" After="RunInstallerMigrations">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
       <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
       <Custom Action="SetUpdatePathAdd" After="InstallGamepad">NOT REMOVE</Custom>
       <Custom Action="UpdatePathAdd" After="SetUpdatePathAdd">NOT REMOVE</Custom>

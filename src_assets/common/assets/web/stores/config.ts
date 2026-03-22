@@ -232,7 +232,7 @@ const defaultGroups = [
       nvenc_preset: 1,
       nvenc_twopass: 'quarter_res',
       nvenc_spatial_aq: 'disabled',
-      nvenc_force_split_encode: false,
+      nvenc_force_split_encode: 'auto',
       nvenc_vbv_increase: 0,
       nvenc_realtime_hags: 'enabled',
       nvenc_latency_over_power: 'enabled',
