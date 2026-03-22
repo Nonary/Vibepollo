@@ -1143,7 +1143,8 @@ namespace proc {
       std::this_thread::sleep_for(1s);
     } else {
       // Ensure starting from a clean slate
-      terminate(false, false);
+      const bool skip_display_revert = launch_session && launch_session->display_config_preapplied;
+      terminate(false, false, skip_display_revert);
     }
 
     _app = app;
@@ -2178,7 +2179,7 @@ namespace proc {
 #endif
   }
 
-  void proc_t::terminate(bool immediate, bool needs_refresh) {
+  void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
     placebo = false;
@@ -2309,7 +2310,11 @@ namespace proc {
     const bool other_streaming_session_active =
       rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
 
-    if (should_dispatch_revert && !other_streaming_session_active) {
+    if (should_dispatch_revert && skip_display_revert) {
+#ifdef _WIN32
+      BOOST_LOG(info) << "Skipping display revert during app replacement because the new session has already applied its display configuration.";
+#endif
+    } else if (should_dispatch_revert && !other_streaming_session_active) {
 #ifdef _WIN32
       const bool reverted = display_helper_integration::revert();
       if (reverted && rtsp_stream::session_count() == 0) {
