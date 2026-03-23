@@ -10,6 +10,7 @@
 #include <iostream>
 
 // local includes
+#include "config.h"
 #include "confighttp.h"
 #include "entry_handler.h"
 #include "globals.h"
@@ -40,6 +41,9 @@
   #include "platform/windows/misc.h"
   #include "platform/windows/display_helper_integration.h"
   #include "platform/windows/virtual_display.h"
+  #include <shellapi.h>
+  #include <mmdeviceapi.h>
+  #include <functiondiscoverykeys_devpkey.h>
 #endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
@@ -177,6 +181,84 @@ int main(int argc, char *argv[]) {
 #endif
   BOOST_LOG(info) << "Effective min_log_level=" << config::sunshine.min_log_level;
 
+  // Log mic passthrough configuration for diagnostics
+  if (!config::audio.mic_sink.empty()) {
+    BOOST_LOG(info) << "[mic] mic_sink = \"" << config::audio.mic_sink << "\"";
+    BOOST_LOG(info) << "[mic] mic_capture_device = \"" << config::audio.mic_capture_device << "\"";
+  } else {
+    BOOST_LOG(info) << "[mic] mic_sink not configured — mic passthrough will be disabled";
+  }
+
+#ifdef _WIN32
+  // Validate mic_capture_device against available WASAPI capture devices at startup.
+  if (!config::audio.mic_capture_device.empty()) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *pEnum = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void **) &pEnum);
+    if (SUCCEEDED(hr) && pEnum) {
+      IMMDeviceCollection *pCollection = nullptr;
+      hr = pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection);
+      if (SUCCEEDED(hr) && pCollection) {
+        UINT count = 0;
+        pCollection->GetCount(&count);
+        bool found = false;
+        std::string device_list;
+        for (UINT i = 0; i < count; ++i) {
+          IMMDevice *pDev = nullptr;
+          if (SUCCEEDED(pCollection->Item(i, &pDev)) && pDev) {
+            IPropertyStore *pProps = nullptr;
+            if (SUCCEEDED(pDev->OpenPropertyStore(STGM_READ, &pProps)) && pProps) {
+              PROPVARIANT varName;
+              PropVariantInit(&varName);
+              if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName)) && varName.pwszVal) {
+                int len = WideCharToMultiByte(CP_UTF8, 0, varName.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+                std::string name(len - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, varName.pwszVal, -1, name.data(), len, nullptr, nullptr);
+                if (!device_list.empty()) device_list += ", ";
+                device_list += "\"" + name + "\"";
+                if (name.find(config::audio.mic_capture_device) != std::string::npos) found = true;
+              }
+              PropVariantClear(&varName);
+              pProps->Release();
+            }
+            pDev->Release();
+          }
+        }
+        if (!found) {
+          BOOST_LOG(warning) << "[mic] WARNING: mic_capture_device '" << config::audio.mic_capture_device
+                             << "' not found. Available devices: [" << device_list << "]";
+        } else {
+          BOOST_LOG(info) << "[mic] mic_capture_device '" << config::audio.mic_capture_device << "' found among capture devices";
+        }
+        pCollection->Release();
+      }
+      pEnum->Release();
+    }
+    CoUninitialize();
+  }
+#endif
+
+  // Log rotation: keep the 10 most recent log files, delete the rest.
+  {
+    namespace fs = std::filesystem;
+    auto log_dir = platf::appdata() / "logs";
+    if (fs::exists(log_dir)) {
+      std::vector<fs::directory_entry> log_files;
+      for (auto &entry : fs::directory_iterator(log_dir)) {
+        if (entry.is_regular_file()) log_files.push_back(entry);
+      }
+      std::sort(log_files.begin(), log_files.end(), [](const fs::directory_entry &a, const fs::directory_entry &b) {
+        return a.last_write_time() > b.last_write_time();
+      });
+      constexpr std::size_t k_max_logs = 10;
+      for (std::size_t i = k_max_logs; i < log_files.size(); ++i) {
+        std::error_code ec;
+        fs::remove(log_files[i].path(), ec);
+        if (!ec) BOOST_LOG(debug) << "Log rotation: removed " << log_files[i].path().filename().string();
+      }
+    }
+  }
+
   // Log publisher metadata
   log_publisher_data();
 
@@ -298,11 +380,29 @@ int main(int argc, char *argv[]) {
 
   task_pool.start(1);
 
+  // Apply any pending auto-downloaded update before normal startup.
+  // If a downloaded installer is ready, launch it silently and exit so the installer
+  // can replace running binaries. Never auto-apply during a stream (session_count > 0
+  // at this point would be unusual, but guard anyway).
+  if (update::apply_pending_update_if_ready()) {
+    return 0;
+  }
+
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
   // create tray thread and detach it if enabled in config
   if (config::sunshine.system_tray) {
     system_tray::run_tray();
   }
+
+#ifdef _WIN32
+  // First-run: open web UI in browser so users can complete initial setup
+  // (set credentials, configure apps, etc.) without manually navigating there.
+  if (!std::filesystem::exists(config::sunshine.credentials_file)) {
+    BOOST_LOG(info) << "First run detected — opening web UI in browser";
+    ShellExecuteW(nullptr, L"open", L"https://localhost:47990", nullptr, nullptr, SW_SHOWNORMAL);
+  }
+#endif
+
   // Schedule periodic update checks if configured
   if (config::sunshine.update_check_interval_seconds > 0) {
     // Trigger an immediate update check on startup so users don't wait
@@ -397,6 +497,19 @@ int main(int argc, char *argv[]) {
     if (has_active_virtual_display) {
       BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
       (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
+    }
+  }
+
+  // Startup safety: if CABLE Output is the Windows default input (from a
+  // crashed session), reset it to the first real microphone now.
+  {
+    auto startup_audio = platf::audio_control();
+    if (startup_audio) {
+      auto def_name = startup_audio->get_current_default_capture_name();
+      if (!def_name.empty() && def_name.find("CABLE") != std::string::npos) {
+        BOOST_LOG(warning) << "Startup: CABLE Output is default input from crashed session — restoring first real capture device";
+        startup_audio->reset_default_capture_to_first_real();
+      }
     }
   }
 #endif

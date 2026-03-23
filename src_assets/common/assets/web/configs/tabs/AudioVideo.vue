@@ -205,6 +205,20 @@ function selectVirtualDisplayLayout(v: unknown) {
           :placeholder="$t('config.virtual_sink_placeholder')"
         />
 
+        <!-- Mic Passthrough Sink -->
+        <ConfigFieldRenderer
+          setting-key="mic_sink"
+          v-model="config.mic_sink"
+          class="mb-4"
+          :placeholder="$t('config.mic_sink_placeholder')"
+        />
+
+        <ConfigFieldRenderer
+          setting-key="install_vbcable"
+          v-model="config.install_vbcable"
+          class="mb-3"
+        />
+
         <ConfigFieldRenderer
           setting-key="install_steam_audio_drivers"
           v-model="config.install_steam_audio_drivers"

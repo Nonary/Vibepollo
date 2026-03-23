@@ -459,6 +459,11 @@ namespace platf {
         return ::platf::microphone(mapping, channels, sample_rate, frame_size, get_monitor_name(sink_name));
       }
 
+      std::unique_ptr<platf::speaker_t> virtual_microphone(const std::string &device_name, int channels, std::uint32_t sample_rate) override {
+        BOOST_LOG(warning) << "virtual_microphone() is not implemented on Linux"sv;
+        return nullptr;
+      }
+
       bool is_sink_available(const std::string &sink) override {
         BOOST_LOG(warning) << "audio_control_t::is_sink_available() unimplemented: "sv << sink;
         return true;

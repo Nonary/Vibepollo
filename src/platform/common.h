@@ -527,11 +527,38 @@ namespace platf {
     virtual ~mic_t() = default;
   };
 
+  /**
+   * @brief Abstract interface for writing PCM audio to an output device.
+   * Used for upstream mic passthrough: decoded client mic audio is pushed
+   * into a virtual audio device (e.g. VB-Audio CABLE Input) on the host.
+   */
+  class speaker_t {
+  public:
+    /**
+     * @brief Write interleaved float PCM samples to the output device.
+     * @param samples Pointer to interleaved float samples (all channels).
+     * @param frame_count Number of frames (samples / channel_count).
+     * @return 0 on success, -1 on unrecoverable error.
+     */
+    virtual int write(const float *samples, std::uint32_t frame_count) = 0;
+
+    virtual ~speaker_t() = default;
+  };
+
   class audio_control_t {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) = 0;
+
+    /**
+     * @brief Open a render client for writing decoded mic audio to a named output device.
+     * @param device_name Friendly name of the target audio device (e.g. "CABLE Input").
+     * @param channels Number of output channels (1 or 2).
+     * @param sample_rate Sample rate in Hz (must match the Opus decoder output, typically 48000).
+     * @return A speaker_t instance, or nullptr on failure.
+     */
+    virtual std::unique_ptr<speaker_t> virtual_microphone(const std::string &device_name, int channels, std::uint32_t sample_rate) = 0;
 
     /**
      * @brief Check if the audio sink is available in the system.
@@ -541,6 +568,57 @@ namespace platf {
     virtual bool is_sink_available(const std::string &sink) = 0;
 
     virtual std::optional<sink_t> sink_info() = 0;
+
+    /**
+     * @brief Switch the default audio capture (input) endpoint to the named device.
+     * Saves the previous default so it can be restored later. No-op on non-Windows.
+     * @param device_name Friendly name of the capture device (e.g. "CABLE Output").
+     * @return Opaque UTF-8 device ID of the previous default, or empty string on failure.
+     */
+    virtual std::string switch_default_capture_device(const std::string &device_name) {
+      return {};
+    }
+
+    /**
+     * @brief Restore the default audio capture device to a previously saved state.
+     * No-op if prev_id is empty or on non-Windows.
+     * @param prev_id The device ID returned by switch_default_capture_device().
+     */
+    virtual void restore_default_capture_device(const std::string &prev_id) {
+      (void) prev_id;
+    }
+
+    /**
+     * @brief Get the friendly name of the current Windows default capture endpoint.
+     * Returns empty string on non-Windows or on failure.
+     */
+    virtual std::string get_current_default_capture_name() {
+      return {};
+    }
+
+    /**
+     * @brief Get the opaque device ID of the current Windows default capture endpoint.
+     * Must be called before activating a render device that may cause Windows to
+     * auto-promote a paired capture device. Returns empty string on non-Windows or on failure.
+     */
+    virtual std::string get_current_default_capture_id() {
+      return {};
+    }
+
+    /**
+     * @brief Reset the default audio capture device to the first real (non-CABLE)
+     * capture device found. Used for crash recovery at startup. No-op on non-Windows.
+     */
+    virtual void reset_default_capture_to_first_real() {}
+
+    /**
+     * @brief Returns true if the Steam Streaming Microphone render device is present
+     * and active. Used to select the correct capture endpoint when Steam mic is in use.
+     * Always returns false on non-Windows.
+     */
+    virtual bool is_steam_mic_available() {
+      return false;
+    }
 
     virtual ~audio_control_t() = default;
   };

@@ -120,8 +120,7 @@
     "refresh_now": "Refresh now",
     "close_hint": "If you stopped Vibepollo intentionally, you may close this tab.",
     "output_name_desc_unix": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
-    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Vibepollo startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab.",
-    "close_hint": "If you stopped Vibepollo intentionally, you may close this tab."
+    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Vibepollo startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab."
   },
   "config": {
     "amf": {
@@ -390,8 +389,8 @@
     "hevc_mode_desc": "Allows the client to request HEVC Main or HEVC Main10 video streams. HEVC is more CPU-intensive to encode, so enabling this may reduce performance when using software encoding.",
     "high_resolution_scrolling": "High Resolution Scrolling Support",
     "high_resolution_scrolling_desc": "When enabled, Vibepollo will pass through high resolution scroll events from Moonlight clients. This can be useful to disable for older applications that scroll too fast with high resolution scroll events.",
-    "install_steam_audio_drivers": "Install Steam Audio Drivers",
-    "install_steam_audio_drivers_desc": "If Steam is installed, this will automatically install the Steam Streaming Speakers driver to support 5.1/7.1 surround sound and muting host audio.",
+    "install_steam_audio_drivers": "Install Steam Audio Drivers (Recommended)",
+    "install_steam_audio_drivers_desc": "If Steam is installed, this installs the Steam Streaming Speakers and Steam Streaming Microphone drivers. Enables 5.1/7.1 surround sound and host audio muting during streams.",
     "key_repeat_delay": "Key Repeat Delay",
     "key_repeat_delay_desc": "Control how fast keys will repeat themselves. The initial delay in milliseconds before repeating keys.",
     "key_repeat_frequency": "Key Repeat Frequency",
@@ -601,7 +600,14 @@
     "ignore_encoder_probe_failure": "Ignore Encoder Probe Failure",
     "ignore_encoder_probe_failure_desc": "Allow streaming to continue even if probing for encoders fails. This may result in streaming failure if no encoder is available.",
     "legacy_ordering": "App ordering for legacy clients",
-    "legacy_ordering_desc": "Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly. Artemis clients support this by default."
+    "legacy_ordering_desc": "Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly. Artemis clients support this by default.",
+    "mic_sink": "Mic Passthrough Sink",
+    "mic_sink_desc": "Render endpoint that receives decoded mic audio. Vibepollo writes to CABLE Input; Windows routes it to CABLE Output automatically. Discord (set to Default) picks up the client mic without any manual configuration.",
+    "mic_sink_placeholder": "CABLE Input",
+    "mic_buffer_packets": "Mic Jitter Buffer Depth",
+    "mic_buffer_packets_desc": "Number of Opus packets to prebuffer before mic playback starts (default: 3). Increase for unstable connections. Lower = less latency, higher = more stability.",
+    "install_vbcable": "Auto-install VB-Audio CABLE",
+    "install_vbcable_desc": "Automatically download and install VB-Audio Virtual Cable. Required for mic passthrough — CABLE Input is the render target and CABLE Output is the capture device switched to at session start."
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",

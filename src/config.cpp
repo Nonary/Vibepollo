@@ -776,7 +776,7 @@ namespace config {
       video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
-      0,  // paused_virtual_display_timeout_secs
+      10,  // paused_virtual_display_timeout_secs — 10s safety net so Desktop "paused" state auto-clears
       false,  // always_restore_from_golden
       0,  // snapshot_restore_hotkey
 #ifdef _WIN32
@@ -800,8 +800,13 @@ namespace config {
   audio_t audio {
     {},  // audio_sink
     {},  // virtual_sink
+    "CABLE Input",  // mic_sink
+    "CABLE Output (VB-Audio Virtual Cable)",  // mic_capture_device
+    50,  // mic_buffer_ms
+    3,   // mic_buffer_packets
     true,  // stream audio
     true,  // install_steam_drivers
+    true,  // install_vbcable
     true,  // keep_sink_default
     true,  // auto_capture
   };
@@ -1659,8 +1664,13 @@ namespace config {
 
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
+    string_f(vars, "mic_sink", audio.mic_sink);
+    string_f(vars, "mic_capture_device", audio.mic_capture_device);
+    int_between_f(vars, "mic_buffer_ms", audio.mic_buffer_ms, {10, 200});
+    int_between_f(vars, "mic_buffer_packets", audio.mic_buffer_packets, {1, 16});
     bool_f(vars, "stream_audio", audio.stream);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
+    bool_f(vars, "install_vbcable", audio.install_vbcable);
     bool_f(vars, "keep_sink_default", audio.keep_default);
     bool_f(vars, "auto_capture_sink", audio.auto_capture);
 

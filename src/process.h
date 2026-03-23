@@ -191,6 +191,12 @@ namespace proc {
     void pause();
     void terminate(bool immediate = false, bool needs_refresh = true);
     bool last_run_app_frame_gen_limiter_fix() const;
+    /**
+     * @brief Returns true when the running app is a status-driven placebo (Desktop / auto-detached
+     *        command) with no real OS process to resume.  Such sessions should NOT block display
+     *        teardown or be treated as "paused" awaiting a /resume.
+     */
+    bool is_placebo_app() const;
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
