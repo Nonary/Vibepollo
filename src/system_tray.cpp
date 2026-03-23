@@ -33,6 +33,7 @@
 
   // standard includes
   #include <atomic>
+  #include <chrono>
   #include <csignal>
   #include <cstring>
   #include <cwchar>
@@ -315,13 +316,28 @@ namespace system_tray {
   static std::string s_tooltip;
   static std::string s_notification_text;
   static std::string s_last_playing_app;
+  static std::chrono::steady_clock::time_point s_last_stopped_notification_time;
+  // Per-app-name toast flags. Both reset only when the app name changes.
+  // Same-app reconnects keep the flags set, preventing repeated toasts during
+  // reconnect cycles. Flags persist until a genuinely different app starts.
+  static bool s_stopped_notification_fired = false;
+  static bool s_started_notification_fired = false;
 
   void update_tray_playing(std::string app_name) {
     if (!tray_initialized) {
       return;
     }
 
-    if (!app_name.empty() && app_name == s_last_playing_app && tray.icon && std::strcmp(tray.icon, TRAY_ICON_PLAYING) == 0) {
+    // Reset per-app toast flags only when the app name changes.
+    // Same-app reconnects keep existing flags → no repeated started/stopped toasts.
+    if (app_name != s_last_playing_app) {
+      s_stopped_notification_fired = false;
+      s_started_notification_fired = false;
+      s_last_playing_app = app_name;
+    }
+
+    // Skip full update if icon is already playing and started toast already fired.
+    if (s_started_notification_fired && tray.icon && std::strcmp(tray.icon, TRAY_ICON_PLAYING) == 0) {
       return;
     }
 
@@ -345,12 +361,17 @@ namespace system_tray {
   #endif
     s_notification_text = msg;
     s_tooltip = "Streaming started for " + app_name;
-    tray.notification_title = "App launched";
-    tray.notification_text = s_notification_text.c_str();
-    tray.notification_icon = TRAY_ICON_PLAYING;
+
+    // Fire started toast exactly once per app (not on same-app reconnects).
+    if (!s_started_notification_fired) {
+      tray.notification_title = "App launched";
+      tray.notification_text = s_notification_text.c_str();
+      tray.notification_icon = TRAY_ICON_PLAYING;
+      s_started_notification_fired = true;
+    }
+
     tray.tooltip = s_tooltip.c_str();
     tray.menu[2].text = force_close_msg;
-    s_last_playing_app = app_name;
     tray_update(&tray);
   }
 
@@ -385,6 +406,16 @@ namespace system_tray {
       return;
     }
 
+    // Per-session guard: fire exactly one Stopped toast per session.
+    // s_stopped_notification_fired is reset to false in update_tray_playing() when a
+    // new session starts, ensuring silence after the first toast regardless of how many
+    // duplicate Stopped events arrive (reconnect cycles, watchdog, etc.).
+    if (s_stopped_notification_fired) {
+      return;
+    }
+    s_stopped_notification_fired = true;
+    s_last_stopped_notification_time = std::chrono::steady_clock::now();
+
     tray.notification_cb = nullptr;
     tray.notification_icon = nullptr;
     tray.notification_text = nullptr;
@@ -404,7 +435,9 @@ namespace system_tray {
     tray.notification_text = s_notification_text.c_str();
     tray.tooltip = PROJECT_NAME;
     tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
-    s_last_playing_app.clear();
+    // Do NOT clear s_last_playing_app here: preserving the app name allows
+    // same-app reconnect detection in update_tray_playing() to suppress
+    // repeated toasts during reconnect cycles without clearing the flag state.
     tray_update(&tray);
   }
 
