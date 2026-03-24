@@ -31,16 +31,9 @@ DEFINE_PROPERTYKEY(PKEY_Device_DeviceDesc, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x2
 DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 14);  // DEVPROP_TYPE_STRING
 DEFINE_PROPERTYKEY(PKEY_DeviceInterface_FriendlyName, 0x026e516e, 0xb814, 0x414b, 0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22, 2);
 
-#if defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || defined(__amd64__) || defined(_M_AMD64)
-  #define STEAM_DRIVER_SUBDIR L"x64"
-#else
-  #warning No known Steam audio driver for this architecture
-#endif
-
 namespace {
 
   constexpr auto SAMPLE_RATE = 48000;
-  constexpr auto STEAM_AUDIO_DRIVER_PATH = L"%CommonProgramFiles(x86)%\\Steam\\drivers\\Windows10\\" STEAM_DRIVER_SUBDIR L"\\SteamStreamingSpeakers.inf";
 
   constexpr auto waveformat_mask_stereo = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
@@ -219,6 +212,7 @@ namespace platf::audio {
   using collection_t = util::safe_ptr<IMMDeviceCollection, Release<IMMDeviceCollection>>;
   using audio_client_t = util::safe_ptr<IAudioClient, Release<IAudioClient>>;
   using audio_capture_t = util::safe_ptr<IAudioCaptureClient, Release<IAudioCaptureClient>>;
+  using audio_render_t = util::safe_ptr<IAudioRenderClient, Release<IAudioRenderClient>>;
   using wave_format_t = util::safe_ptr<WAVEFORMATEX, co_task_free<WAVEFORMATEX>>;
   using wstring_t = util::safe_ptr<WCHAR, co_task_free<WCHAR>>;
   using handle_t = util::safe_ptr_v2<void, BOOL, CloseHandle>;
@@ -683,6 +677,191 @@ namespace platf::audio {
     HANDLE mmcss_task_handle = nullptr;
   };
 
+  /**
+   * @brief WASAPI render endpoint for mic passthrough (writes to VB-Cable Input).
+   *
+   * write() queues mono float32 samples and signals render_loop via event.
+   * render_loop waits for a 4-packet prebuffer then drains into WASAPI stereo.
+   */
+  class speaker_wasapi_t: public platf::speaker_t {
+  public:
+    int write(const float *samples, std::uint32_t frame_count) override {
+      if (!render_event || render_dead.load(std::memory_order_acquire)) return -1;
+      {
+        std::lock_guard<std::mutex> lk(queue_mutex);
+        for (std::uint32_t i = 0; i < frame_count; ++i)
+          pending_frames.push_back(std::clamp(samples[i], -1.0f, 1.0f));
+        // Cap to 1 second to bound latency.
+        if (pending_frames.size() > 48000) {
+          auto trim = pending_frames.size() - 48000;
+          pending_frames.erase(pending_frames.begin(), pending_frames.begin() + (std::ptrdiff_t)trim);
+        }
+      }
+      SetEvent(render_event);
+      return 0;
+    }
+
+    int init(const std::wstring &device_id, std::uint32_t /*sample_rate*/) {
+      // Activate IAudioClient
+      device_enum_t dev_enum;
+      auto status = CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr,
+        CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&dev_enum);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: CoCreateInstance failed 0x"sv << util::hex(status).to_string_view();
+        return -1;
+      }
+      device_t device;
+      status = dev_enum->GetDevice(device_id.c_str(), &device);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: GetDevice failed 0x"sv << util::hex(status).to_string_view();
+        return -1;
+      }
+      status = device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void **)&audio_client);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: Activate failed 0x"sv << util::hex(status).to_string_view();
+        return -1;
+      }
+
+      // Preferred format: float32 stereo 48kHz
+      WAVEFORMATEXTENSIBLE fmt {};
+      fmt.Format.wFormatTag           = WAVE_FORMAT_EXTENSIBLE;
+      fmt.Format.nChannels            = 2;
+      fmt.Format.nSamplesPerSec       = 48000;
+      fmt.Format.wBitsPerSample       = 32;
+      fmt.Format.nBlockAlign          = 8;
+      fmt.Format.nAvgBytesPerSec      = 48000 * 8;
+      fmt.Format.cbSize               = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+      fmt.Samples.wValidBitsPerSample = 32;
+      fmt.dwChannelMask               = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+      fmt.SubFormat                   = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+      // Fix 3: negotiate format instead of hardcoding
+      WAVEFORMATEX *closest_match = nullptr;
+      HRESULT fmt_hr = audio_client->IsFormatSupported(
+        AUDCLNT_SHAREMODE_SHARED, reinterpret_cast<WAVEFORMATEX *>(&fmt), &closest_match);
+
+      const WAVEFORMATEX *use_fmt = reinterpret_cast<WAVEFORMATEX *>(&fmt);
+      wave_format_t mix_fmt_guard;
+      wave_format_t closest_guard;
+
+      if (fmt_hr == S_FALSE && closest_match) {
+        closest_guard.reset(closest_match);
+        use_fmt = closest_match;
+        BOOST_LOG(info) << "[mic] IsFormatSupported S_FALSE — using closest match "sv
+                        << use_fmt->nChannels << "ch "sv << use_fmt->nSamplesPerSec << "Hz"sv;
+      } else if (FAILED(fmt_hr)) {
+        WAVEFORMATEX *mix_fmt = nullptr;
+        if (FAILED(audio_client->GetMixFormat(&mix_fmt)) || !mix_fmt) {
+          BOOST_LOG(error) << "[mic] speaker_wasapi_t: GetMixFormat failed — cannot initialize"sv;
+          return -1;
+        }
+        mix_fmt_guard.reset(mix_fmt);
+        use_fmt = mix_fmt;
+        BOOST_LOG(info) << "[mic] IsFormatSupported failed — falling back to mix format "sv
+                        << use_fmt->nChannels << "ch "sv << use_fmt->nSamplesPerSec << "Hz"sv;
+      }
+
+      status = audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 1000000LL, 0, use_fmt, nullptr);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: Initialize failed 0x"sv << util::hex(status).to_string_view();
+        return -1;
+      }
+
+      status = audio_client->GetBufferSize(&buffer_frames);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: GetBufferSize failed"sv;
+        return -1;
+      }
+      status = audio_client->GetService(IID_IAudioRenderClient, (void **)&audio_render);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: GetService IAudioRenderClient failed"sv;
+        return -1;
+      }
+
+      render_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+      if (!render_event) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: CreateEvent failed"sv;
+        return -1;
+      }
+      audio_client->SetEventHandle(render_event);
+
+      status = audio_client->Start();
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[mic] speaker_wasapi_t: Start failed 0x"sv << util::hex(status).to_string_view();
+        CloseHandle(render_event);
+        render_event = nullptr;
+        return -1;
+      }
+
+      stop_flag = false;
+      render_thread = std::thread(&speaker_wasapi_t::render_loop, this);
+      BOOST_LOG(info) << "[mic] speaker_wasapi_t ready"sv;
+      return 0;
+    }
+
+    ~speaker_wasapi_t() override {
+      stop_flag = true;
+      if (render_event) SetEvent(render_event);
+      if (render_thread.joinable()) render_thread.join();
+      if (audio_client) audio_client->Stop();
+      if (render_event) { CloseHandle(render_event); render_event = nullptr; }
+    }
+
+  private:
+    static constexpr std::size_t kPrebufFrames = 960 * 4;  // 4 Opus packets
+
+    void render_loop() {
+      CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY);
+      bool playout_started = false;
+      while (!stop_flag) {
+        WaitForSingleObject(render_event, 20);
+        if (stop_flag) break;
+        if (!playout_started) {
+          std::size_t qsz;
+          { std::lock_guard<std::mutex> lk(queue_mutex); qsz = pending_frames.size(); }
+          if (qsz < kPrebufFrames) continue;
+          playout_started = true;
+          BOOST_LOG(info) << "[mic] Playout started (prebuffer: "sv << qsz << " frames)"sv;
+        }
+        UINT32 padding = 0;
+        if (FAILED(audio_client->GetCurrentPadding(&padding))) {
+          render_dead.store(true, std::memory_order_release);
+          break;
+        }
+        auto avail = buffer_frames - padding;
+        if (avail == 0) continue;
+        UINT32 to_write;
+        { std::lock_guard<std::mutex> lk(queue_mutex); to_write = std::min(avail, (UINT32)pending_frames.size()); }
+        if (to_write == 0) continue;
+        BYTE *buf = nullptr;
+        if (FAILED(audio_render->GetBuffer(to_write, &buf)) || !buf) continue;
+        auto *dst = reinterpret_cast<float *>(buf);
+        {
+          std::lock_guard<std::mutex> lk(queue_mutex);
+          for (UINT32 f = 0; f < to_write; ++f) {
+            const float s = pending_frames.front();
+            pending_frames.pop_front();
+            dst[f * 2]     = s;
+            dst[f * 2 + 1] = s;
+          }
+        }
+        audio_render->ReleaseBuffer(to_write, 0);
+      }
+      CoUninitialize();
+    }
+
+    audio_client_t    audio_client;
+    audio_render_t    audio_render;
+    HANDLE            render_event { nullptr };
+    UINT32            buffer_frames { 0 };
+    std::atomic<bool> stop_flag { false };
+    std::atomic<bool> render_dead { false };
+    std::thread       render_thread;
+    std::mutex        queue_mutex;
+    std::deque<float> pending_frames;
+  };
+
   class audio_control_t: public ::platf::audio_control_t {
   public:
     std::optional<sink_t> sink_info() override {
@@ -781,6 +960,92 @@ namespace platf::audio {
       }
 
       return mic;
+    }
+
+    std::unique_ptr<platf::speaker_t> virtual_microphone(const std::string &device_name, std::uint32_t sample_rate, std::uint32_t /*frame_size*/) override {
+      auto matched = find_device_id(match_all_fields(from_utf8(device_name)));
+      if (!matched) {
+        BOOST_LOG(warning) << "[mic] virtual_microphone: device not found: " << device_name
+                           << " — mic passthrough disabled for this session"sv;
+        return nullptr;
+      }
+      auto spk = std::make_unique<speaker_wasapi_t>();
+      if (spk->init(matched->second, sample_rate)) {
+        return nullptr;
+      }
+      return spk;
+    }
+
+    platf::capture_snapshot_t snapshot_capture_defaults() override {
+      platf::capture_snapshot_t snap;
+      auto get_id = [&](ERole role) -> std::wstring {
+        device_t dev;
+        if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, role, &dev))) return {};
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) return {};
+        return std::wstring(id.get());
+      };
+      snap.console_id    = get_id(eConsole);
+      snap.comms_id      = get_id(eCommunications);
+      snap.multimedia_id = get_id(eMultimedia);
+      return snap;
+    }
+
+    void switch_capture_to(const std::string &device_name) override {
+      auto target_id = find_capture_device_id(from_utf8(device_name));
+      if (target_id.empty()) {
+        BOOST_LOG(warning) << "[mic] switch_capture_to: device not found: " << device_name;
+        return;
+      }
+      for (int x = 0; x < (int) ERole_enum_count; ++x)
+        policy->SetDefaultEndpoint(target_id.c_str(), (ERole) x);
+      BOOST_LOG(info) << "[mic] default capture switched to: " << device_name;
+    }
+
+    void restore_capture_from(const platf::capture_snapshot_t &snap) override {
+      auto restore_role = [&](const std::wstring &id, ERole role) {
+        if (id.empty()) return;
+        policy->SetDefaultEndpoint(id.c_str(), role);
+      };
+      restore_role(snap.console_id,    eConsole);
+      restore_role(snap.comms_id,      eCommunications);
+      restore_role(snap.multimedia_id, eMultimedia);
+      BOOST_LOG(info) << "[mic] default capture roles restored"sv;
+    }
+
+    std::string get_current_default_capture_name() override {
+      device_t dev;
+      if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) return {};
+      prop_t prop;
+      if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
+      prop_var_t pv;
+      if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
+        return to_utf8(pv.prop.pwszVal);
+      return {};
+    }
+
+    void reset_default_capture_to_first_real() override {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return;
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (FAILED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) || pv.prop.vt != VT_LPWSTR) continue;
+        std::string name = to_utf8(pv.prop.pwszVal);
+        if (name.find("CABLE") != std::string::npos) continue;
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) continue;
+        for (int x = 0; x < (int) ERole_enum_count; ++x)
+          policy->SetDefaultEndpoint(id.get(), (ERole) x);
+        BOOST_LOG(info) << "[mic] reset_default_capture_to_first_real: " << name;
+        return;
+      }
+      BOOST_LOG(warning) << "[mic] reset_default_capture_to_first_real: no non-CABLE capture device found"sv;
     }
 
     /**
@@ -983,6 +1248,31 @@ namespace platf::audio {
     }
 
     /**
+     * @brief Search for a capture (input) device ID by friendly name.
+     */
+    std::wstring find_capture_device_id(const std::wstring &name) {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return {};
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR) {
+          if (std::wcscmp(pv.prop.pwszVal, name.c_str()) == 0) {
+            wstring_t id;
+            if (SUCCEEDED(dev->GetId(&id)))
+              return std::wstring(id.get());
+          }
+        }
+      }
+      return {};
+    }
+
+    /**
      * @brief Resets the default audio device from Steam Streaming Speakers.
      */
     void reset_default_device() {
@@ -1042,77 +1332,6 @@ namespace platf::audio {
       BOOST_LOG(info) << "Successfully reset default audio device"sv;
     }
 
-    /**
-     * @brief Installs the Steam Streaming Speakers driver, if present.
-     * @return `true` if installation was successful.
-     */
-    bool install_steam_audio_drivers() {
-#ifdef STEAM_DRIVER_SUBDIR
-      // MinGW's libnewdev.a is missing DiInstallDriverW() even though the headers have it,
-      // so we have to load it at runtime. It's Vista or later, so it will always be available.
-      auto newdev = LoadLibraryExW(L"newdev.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-      if (!newdev) {
-        BOOST_LOG(error) << "newdev.dll failed to load"sv;
-        return false;
-      }
-      auto fg = util::fail_guard([newdev]() {
-        FreeLibrary(newdev);
-      });
-
-      auto fn_DiInstallDriverW = (decltype(DiInstallDriverW) *) GetProcAddress(newdev, "DiInstallDriverW");
-      if (!fn_DiInstallDriverW) {
-        BOOST_LOG(error) << "DiInstallDriverW() is missing"sv;
-        return false;
-      }
-
-      // Get the current default audio device (if present)
-      auto old_default_dev = default_device(device_enum);
-
-      // Install the Steam Streaming Speakers driver
-      WCHAR driver_path[MAX_PATH] = {};
-      ExpandEnvironmentStringsW(STEAM_AUDIO_DRIVER_PATH, driver_path, ARRAYSIZE(driver_path));
-      if (fn_DiInstallDriverW(nullptr, driver_path, 0, nullptr)) {
-        BOOST_LOG(info) << "Successfully installed Steam Streaming Speakers"sv;
-
-        // Wait for 5 seconds to allow the audio subsystem to reconfigure things before
-        // modifying the default audio device or enumerating devices again.
-        Sleep(5000);
-
-        // If there was a previous default device, restore that original device as the
-        // default output device just in case installing the new one changed it.
-        if (old_default_dev) {
-          audio::wstring_t old_default_id;
-          old_default_dev->GetId(&old_default_id);
-
-          for (int x = 0; x < (int) ERole_enum_count; ++x) {
-            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
-          }
-        }
-
-        return true;
-      } else {
-        auto err = GetLastError();
-        switch (err) {
-          case ERROR_ACCESS_DENIED:
-            BOOST_LOG(warning) << "Administrator privileges are required to install Steam Streaming Speakers"sv;
-            break;
-          case ERROR_FILE_NOT_FOUND:
-          case ERROR_PATH_NOT_FOUND:
-            BOOST_LOG(info) << "Steam audio drivers not found. This is expected if you don't have Steam installed."sv;
-            break;
-          default:
-            BOOST_LOG(warning) << "Failed to install Steam audio drivers: "sv << err;
-            break;
-        }
-
-        return false;
-      }
-#else
-      BOOST_LOG(warning) << "Unable to install Steam Streaming Speakers on unknown architecture"sv;
-      return false;
-#endif
-    }
-
     int init() {
       auto status = CoCreateInstance(
         CLSID_CPolicyConfigClient,
@@ -1165,13 +1384,6 @@ namespace platf {
 
     if (control->init()) {
       return nullptr;
-    }
-
-    // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
-    // the sink information returned includes the new Steam Streaming Speakers device.
-    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
-      // This is best effort. Don't fail if it doesn't work.
-      control->install_steam_audio_drivers();
     }
 
     return control;
