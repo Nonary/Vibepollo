@@ -189,8 +189,11 @@ namespace config {
   struct audio_t {
     std::string sink;
     std::string virtual_sink;
+    std::string mic_sink;             // Render endpoint for mic passthrough (e.g. "CABLE Input")
+    std::string mic_capture_device;   // Capture endpoint to set as default (e.g. "CABLE Output")
+    int mic_buffer_ms;                // Underrun gap threshold in milliseconds
+    int mic_buffer_packets;           // Jitter buffer prebuffer packet count
     bool stream;
-    bool install_steam_drivers;
     bool keep_default;
     bool auto_capture;
   };
