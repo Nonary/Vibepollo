@@ -363,7 +363,9 @@ namespace nvenc {
         init_params.frameRateDen = fps.den;
       }
 
-      preset_config = {api::preset_config_version(selected_api_version), {api::config_version(selected_api_version)}};
+      preset_config = {};
+      preset_config.version = api::preset_config_version(selected_api_version);
+      preset_config.presetCfg.version = api::config_version(selected_api_version);
 
       BOOST_LOG(debug) << "NvEnc: querying preset config for API " << api::version_string(api_version)
                        << " (preset_config_ver=0x" << std::hex << api::preset_config_version(selected_api_version)
@@ -378,7 +380,9 @@ namespace nvenc {
 
         if (client_config.videoFormat != 2 &&
             (preset_config_ex_status == NV_ENC_ERR_INVALID_VERSION || preset_config_ex_status == NV_ENC_ERR_UNSUPPORTED_PARAM)) {
-          preset_config = {api::preset_config_version(selected_api_version), {api::config_version(selected_api_version)}};
+          preset_config = {};
+          preset_config.version = api::preset_config_version(selected_api_version);
+          preset_config.presetCfg.version = api::config_version(selected_api_version);
           if (!nvenc_failed(nvenc->nvEncGetEncodePresetConfig(encoder, init_params.encodeGUID, init_params.presetGUID, &preset_config))) {
             BOOST_LOG(debug) << "NvEnc: falling back to NvEncGetEncodePresetConfig() for API "
                              << api::version_string(api_version);
@@ -541,6 +545,12 @@ namespace nvenc {
           } else {
             format_config.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
           }
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+          if (api::supports_separate_bit_depth_fields(selected_api_version)) {
+            format_config.inputBitDepth = buffer_is_10bit() ? NV_ENC_BIT_DEPTH_10 : NV_ENC_BIT_DEPTH_8;
+            format_config.outputBitDepth = buffer_is_10bit() ? NV_ENC_BIT_DEPTH_10 : NV_ENC_BIT_DEPTH_8;
+          }
+#endif
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
@@ -555,6 +565,12 @@ namespace nvenc {
           if (buffer_is_10bit()) {
             set_hevc_10bit_format(format_config);
           }
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+          else if (api::supports_separate_bit_depth_fields(selected_api_version)) {
+            format_config.inputBitDepth = NV_ENC_BIT_DEPTH_8;
+            format_config.outputBitDepth = NV_ENC_BIT_DEPTH_8;
+          }
+#endif
           set_ref_frames(format_config.maxNumRefFramesInDPB, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_hevc);
           fill_h264_hevc_vui(format_config.hevcVUIParameters);
