@@ -2019,7 +2019,6 @@ namespace VDISPLAY {
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
     constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
-    constexpr unsigned int MAX_NEVER_ACTIVE_BACKOFF_CYCLES = 5;
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
     std::mutex g_virtual_display_recovery_abort_mutex;
@@ -2061,6 +2060,7 @@ namespace VDISPLAY {
     struct RecoveryMonitorState {
       VirtualDisplayRecoveryParams params;
       uuid_util::uuid_t guid_uuid;
+      bool confirmed_active_at_schedule = false;
       std::optional<std::wstring> current_display_name;
       std::optional<std::string> normalized_display_name;
       std::optional<std::string> current_device_id;
@@ -2133,6 +2133,20 @@ namespace VDISPLAY {
       present_active,
       unknown,
     };
+
+    const char *monitor_target_presence_name(const MonitorTargetPresence presence) {
+      switch (presence) {
+        case MonitorTargetPresence::missing:
+          return "missing";
+        case MonitorTargetPresence::present_inactive:
+          return "inactive";
+        case MonitorTargetPresence::present_active:
+          return "active";
+        case MonitorTargetPresence::unknown:
+          return "unknown";
+      }
+      return "unknown";
+    }
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
@@ -2248,9 +2262,9 @@ namespace VDISPLAY {
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
       unsigned int attempts = 0;
       unsigned int backoff_cycles = 0;
-      bool observed_active = false;
-      bool ever_observed_active = false;
-      std::optional<std::chrono::steady_clock::time_point> active_since;
+      bool observed_active = state.confirmed_active_at_schedule;
+      std::optional<std::chrono::steady_clock::time_point> active_since =
+        state.confirmed_active_at_schedule ? std::make_optional(std::chrono::steady_clock::now()) : std::nullopt;
       std::optional<std::chrono::steady_clock::time_point> inactive_since;
       std::optional<std::chrono::steady_clock::time_point> missing_since;
       auto recovery_cooldown_until = std::chrono::steady_clock::now();
@@ -2271,7 +2285,6 @@ namespace VDISPLAY {
 
         if (presence == MonitorTargetPresence::present_active) {
           observed_active = true;
-          ever_observed_active = true;
           backoff_cycles = 0;
           missing_since.reset();
           inactive_since.reset();
@@ -2333,14 +2346,6 @@ namespace VDISPLAY {
             backoff = RECOVERY_MAX_BACKOFF;
           }
           backoff_cycles += 1;
-
-          if (!ever_observed_active && backoff_cycles >= MAX_NEVER_ACTIVE_BACKOFF_CYCLES) {
-            BOOST_LOG(warning) << "Virtual display recovery monitor permanently stopped for "
-                               << state.describe_target() << ": display was never observed as active after "
-                               << backoff_cycles << " backoff cycles (" << (backoff_cycles * state.params.max_attempts)
-                               << " total recovery attempts).";
-            return;
-          }
 
           const auto backoff_ms = std::chrono::duration_cast<std::chrono::milliseconds>(backoff).count();
           BOOST_LOG(warning) << "Virtual display recovery monitor reached max attempts for "
@@ -2473,6 +2478,21 @@ namespace VDISPLAY {
       return;
     }
 
+    RecoveryMonitorState initial_state(params);
+    if (monitor_should_abort(initial_state)) {
+      BOOST_LOG(debug) << "Virtual display recovery monitor skipped for " << initial_state.describe_target()
+                       << ": already aborted before scheduling.";
+      return;
+    }
+
+    const auto initial_presence = monitor_target_presence(initial_state);
+    if (initial_presence != MonitorTargetPresence::present_active) {
+      BOOST_LOG(info) << "Virtual display recovery monitor not armed for " << initial_state.describe_target()
+                      << ": display was not confirmed active at schedule time (presence="
+                      << monitor_target_presence_name(initial_presence) << ").";
+      return;
+    }
+
     const auto abort_flag = reset_recovery_monitor_abort_flag(guid_uuid);
     VirtualDisplayRecoveryParams wrapped = params;
     const auto external_abort = params.should_abort;
@@ -2484,6 +2504,7 @@ namespace VDISPLAY {
     };
 
     RecoveryMonitorState state(wrapped);
+    state.confirmed_active_at_schedule = true;
     BOOST_LOG(debug) << "Virtual display recovery monitor scheduled for " << state.describe_target()
                      << " (max_attempts=" << params.max_attempts << ").";
     std::thread monitor_thread([state = std::move(state)]() mutable {
