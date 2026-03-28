@@ -1576,13 +1576,14 @@ namespace stream {
         frame_header.lastPayloadLen = session->config.packetsize - sizeof(NV_VIDEO_PACKET);
       }
 
-      if (packet->frame_timestamp) {
+      const auto latency_timestamp = packet->capture_timestamp ? packet->capture_timestamp : packet->frame_timestamp;
+      if (latency_timestamp) {
         auto duration_to_latency = [](const std::chrono::steady_clock::duration &duration) {
           const auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
           return (uint16_t) std::clamp<decltype(duration_us)>((duration_us + 50) / 100, 0, std::numeric_limits<uint16_t>::max());
         };
 
-        uint16_t latency = duration_to_latency(std::chrono::steady_clock::now() - *packet->frame_timestamp);
+        uint16_t latency = duration_to_latency(std::chrono::steady_clock::now() - *latency_timestamp);
         frame_header.frame_processing_latency = latency;
         frame_processing_latency_logger.collect_and_log(latency / 10.);
       } else {
@@ -1714,7 +1715,8 @@ namespace stream {
 
           size_t next_shard_to_send = 0;
 
-          // RTP video timestamps use a 90 KHz clock and the frame_timestamp from when the frame was captured
+          // RTP video timestamps use a 90 KHz clock and the paced/scheduled frame timestamp.
+          // Raw capture timing is tracked separately for frame_processing_latency.
           // When a timestamp isn't available (duplicate frames), the timestamp from rate control is used instead.
           bool frame_is_dupe = false;
           if (!packet->frame_timestamp) {

@@ -265,7 +265,10 @@ namespace video {
     std::vector<replace_t> *replacements = nullptr;
     void *channel_data = nullptr;
     bool after_ref_frame_invalidation = false;
+    // Pacing/scheduled timestamp used for transport timing.
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+    // Raw capture/QPC-derived timestamp before pacing adjustments.
+    std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
   };
 
   struct packet_raw_avcodec: packet_raw_t {
