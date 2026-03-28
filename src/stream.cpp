@@ -1309,13 +1309,21 @@ namespace stream {
     // termination when we shut down.
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    constexpr auto pending_peer_termination_grace = std::chrono::seconds(1);
+    std::optional<std::chrono::steady_clock::time_point> process_terminated_since;
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
+      const bool process_running = proc::proc.running() != 0;
       bool has_session_awaiting_peer = false;
 
       {
         auto lg = server->_sessions.lock();
 
         auto now = std::chrono::steady_clock::now();
+        if (process_running) {
+          process_terminated_since.reset();
+        } else if (!process_terminated_since) {
+          process_terminated_since = now;
+        }
 
         KITTY_WHILE_LOOP(auto pos = std::begin(*server->_sessions), pos != std::end(*server->_sessions), {
           // Don't perform additional session processing if we're shutting down
@@ -1351,6 +1359,14 @@ namespace stream {
           // control stream. This ensures the clients are properly notified even when
           // the app terminates before they finish connecting.
           if (!session->control.peer) {
+            if (!process_running && process_terminated_since &&
+                now - *process_terminated_since >= pending_peer_termination_grace) {
+              BOOST_LOG(info) << "Stopping pending control session from ["sv << session->control.expected_peer_address
+                              << "] because the app terminated before the peer connected."sv;
+              session::stop(*session);
+              ++pos;
+              continue;
+            }
             has_session_awaiting_peer = true;
           } else {
             auto &feedback_queue = session->control.feedback_queue;
@@ -1380,7 +1396,7 @@ namespace stream {
 #endif
 
       // Don't break until any pending sessions either expire or connect
-      if (proc::proc.running() == 0 && !has_session_awaiting_peer) {
+      if (!process_running && !has_session_awaiting_peer) {
         BOOST_LOG(info) << "Process terminated"sv;
         break;
       }
