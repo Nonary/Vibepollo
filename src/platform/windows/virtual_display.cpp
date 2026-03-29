@@ -2262,6 +2262,7 @@ namespace VDISPLAY {
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
       unsigned int attempts = 0;
       unsigned int backoff_cycles = 0;
+      constexpr unsigned int MAX_RECOVERY_BACKOFF_CYCLES = 5;
       bool observed_active = state.confirmed_active_at_schedule;
       std::optional<std::chrono::steady_clock::time_point> active_since =
         state.confirmed_active_at_schedule ? std::make_optional(std::chrono::steady_clock::now()) : std::nullopt;
@@ -2339,6 +2340,12 @@ namespace VDISPLAY {
         }
 
         if (attempts >= state.params.max_attempts) {
+          if (backoff_cycles >= MAX_RECOVERY_BACKOFF_CYCLES) {
+            BOOST_LOG(warning) << "Virtual display recovery monitor exhausted retry backoffs for "
+                               << state.describe_target() << "; disabling automatic recovery.";
+            return;
+          }
+
           const auto base_backoff = RECOVERY_MAX_ATTEMPTS_BACKOFF;
           const auto multiplier = std::min<unsigned int>(backoff_cycles, 4U);
           auto backoff = base_backoff * (1U << multiplier);
