@@ -82,6 +82,8 @@ namespace VDISPLAY {
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<bool> g_watchdog_stop_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
+    std::mutex g_watchdog_thread_mutex;
+    std::thread g_watchdog_thread;
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
     std::atomic<bool> g_reinstall_attempted {false};
@@ -130,6 +132,35 @@ namespace VDISPLAY {
         return false;
       }
       return now < time_from_steady_ticks(deadline_ticks);
+    }
+
+    void stop_watchdog_thread(bool wait_for_exit) {
+      g_watchdog_stop_requested.store(true, std::memory_order_release);
+
+      std::thread watchdog_thread;
+      {
+        std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+        if (!g_watchdog_thread.joinable()) {
+          return;
+        }
+        watchdog_thread = std::move(g_watchdog_thread);
+      }
+
+      if (!watchdog_thread.joinable()) {
+        return;
+      }
+
+      if (watchdog_thread.get_id() == std::this_thread::get_id()) {
+        // Failure callbacks can tear down the driver from within the watchdog itself.
+        watchdog_thread.detach();
+        return;
+      }
+
+      if (wait_for_exit) {
+        watchdog_thread.join();
+      } else {
+        watchdog_thread.detach();
+      }
     }
 
     bool should_skip_restart_attempt(std::chrono::steady_clock::time_point now, std::chrono::milliseconds &cooldown_remaining) {
@@ -2527,6 +2558,7 @@ namespace VDISPLAY {
 
   void closeVDisplayDevice() {
     g_watchdog_stop_requested.store(true, std::memory_order_release);
+    stop_watchdog_thread(true);
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       setWatchdogFeedingEnabled(false);
       return;
@@ -2713,6 +2745,8 @@ namespace VDISPLAY {
   }
 
   bool startPingThread(std::function<void()> failCb) {
+    stop_watchdog_thread(true);
+
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return false;
     }
@@ -2781,8 +2815,10 @@ namespace VDISPLAY {
         if (!PingDriver(ping_handle)) {
           fail_count += 1;
           if (fail_count > 3) {
-            failCb();
             close_ping_handle();
+            if (failCb) {
+              failCb();
+            }
             return;
           }
         } else {
@@ -2793,7 +2829,10 @@ namespace VDISPLAY {
       }
     });
 
-    ping_thread.detach();
+    {
+      std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+      g_watchdog_thread = std::move(ping_thread);
+    }
 
     return true;
   }
