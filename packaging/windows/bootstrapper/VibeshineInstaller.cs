@@ -130,6 +130,7 @@ namespace VibepolloInstaller {
     private readonly InstallerRunner.LegacySunshineRegistration _legacyApolloRegistration;
     private readonly InstallerRunner.PayloadMsiInfo _payloadMsiInfo;
     private readonly string _licenseText;
+    private readonly string _preferredInstallDirectory;
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     private const uint SWP_NOMOVE = 0x0002;
@@ -148,6 +149,7 @@ namespace VibepolloInstaller {
       _legacySunshineProduct = InstallerRunner.GetInstalledSunshineProduct();
       _legacySunshineRegistration = InstallerRunner.GetLegacySunshineRegistration();
       _legacyApolloRegistration = InstallerRunner.GetLegacyApolloRegistration();
+      _preferredInstallDirectory = ResolvePreferredInstallDirectory();
       _uninstallUiRequested = BuildFlavor.IsUninstallOnly || arguments.UninstallUiRequested;
       var showInstallOptions = !BuildFlavor.IsUninstallOnly && _installedProduct == null;
       var displayVersion = GetTargetVersionText();
@@ -432,7 +434,7 @@ namespace VibepolloInstaller {
         Height = 36,
         Padding = new Thickness(10, 6, 10, 6),
         VerticalContentAlignment = VerticalAlignment.Center,
-        Text = InstallerRunner.DefaultInstallDirectory,
+        Text = _preferredInstallDirectory,
         Background = new SolidColorBrush(Color.FromRgb(10, 16, 30)),
         Foreground = new SolidColorBrush(Color.FromRgb(245, 249, 255)),
         BorderBrush = new SolidColorBrush(Color.FromRgb(96, 111, 171)),
@@ -892,7 +894,7 @@ namespace VibepolloInstaller {
     private void BrowseClicked(object sender, RoutedEventArgs e) {
       var currentPath = _installPathTextBox.Text;
       if (string.IsNullOrWhiteSpace(currentPath)) {
-        currentPath = InstallerRunner.DefaultInstallDirectory;
+        currentPath = _preferredInstallDirectory;
       }
 
       var selectedPath = ModernFolderPicker.TryPickFolder(this, "Select the Vibepollo install folder", currentPath);
@@ -1298,6 +1300,23 @@ namespace VibepolloInstaller {
         default:
           return "Reinstall Vibepollo";
       }
+    }
+
+    private string ResolvePreferredInstallDirectory() {
+      var candidates = new[] {
+        _installedProduct == null ? null : _installedProduct.InstallLocation,
+        _legacySunshineProduct == null ? null : _legacySunshineProduct.InstallLocation,
+        _legacySunshineRegistration == null ? null : _legacySunshineRegistration.InstallLocation,
+        _legacyApolloRegistration == null ? null : _legacyApolloRegistration.InstallLocation
+      };
+
+      foreach (var candidate in candidates) {
+        if (!string.IsNullOrWhiteSpace(candidate)) {
+          return candidate;
+        }
+      }
+
+      return InstallerRunner.DefaultInstallDirectory;
     }
 
     private async Task ShowLicenseDialogAsync() {
@@ -2112,12 +2131,26 @@ namespace VibepolloInstaller {
       "/update"
     };
     private static readonly Version UpgradeSourcePreUninstallVersion = new Version(1, 14, 8);
+    private static readonly string[] UninstallRegistryRoots = {
+      @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+      @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+    };
+    private static readonly RegistryKey[] UninstallRegistryHives = {
+      Registry.LocalMachine,
+      Registry.CurrentUser
+    };
 
     internal sealed class InstalledProductInfo {
       public string ProductCode { get; set; }
       public string DisplayName { get; set; }
       public Version Version { get; set; }
       public InstalledProductKind Kind { get; set; }
+      public bool IsWindowsInstaller { get; set; }
+      public bool IsPerUser { get; set; }
+      public string InstallLocation { get; set; }
+      public string UninstallString { get; set; }
+      public string QuietUninstallString { get; set; }
+      public string RegistryPath { get; set; }
     }
 
     internal sealed class PayloadMsiInfo {
@@ -2133,6 +2166,7 @@ namespace VibepolloInstaller {
       public string DisplayVersion { get; set; }
       public string UninstallString { get; set; }
       public string QuietUninstallString { get; set; }
+      public string InstallLocation { get; set; }
       public string RegistryPath { get; set; }
     }
 
@@ -2174,150 +2208,77 @@ namespace VibepolloInstaller {
     }
 
     public static List<InstalledProductInfo> GetInstalledApolloFamilyProducts() {
-      var products = GetInstalledProducts(true)
+      return GetInstalledProductRegistrations(true)
         .Where(product => product.Kind == InstalledProductKind.Apollo || product.Kind == InstalledProductKind.Vibepollo)
-        .ToList();
-
-      var existingKinds = new HashSet<InstalledProductKind>(products.Select(product => product.Kind));
-      foreach (var detectedKind in GetApolloFamilyKindsFromUninstallRegistry()) {
-        if (existingKinds.Contains(detectedKind)) {
-          continue;
-        }
-
-        products.Add(new InstalledProductInfo {
-          ProductCode = detectedKind.ToString(),
-          DisplayName = detectedKind == InstalledProductKind.Apollo ? "Apollo" : "Vibepollo",
-          Version = null,
-          Kind = detectedKind
-        });
-      }
-
-      return products
+        .GroupBy(BuildProductRegistrationIdentity, StringComparer.OrdinalIgnoreCase)
+        .Select(MergeInstalledProductGroup)
         .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
         .ToList();
     }
 
     public static InstalledProductInfo GetInstalledSunshineProduct() {
-      return GetInstalledProducts(true)
+      var msiProduct = GetInstalledProducts(true)
         .Where(product => product.Kind == InstalledProductKind.Sunshine)
         .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
         .FirstOrDefault();
+
+      var registration = GetInstalledProductRegistrations(true)
+        .Where(product => product.Kind == InstalledProductKind.Sunshine)
+        .Where(CanUninstallProduct)
+        .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
+        .ThenByDescending(product => string.IsNullOrWhiteSpace(product.InstallLocation) ? 0 : 1)
+        .FirstOrDefault();
+
+      if (msiProduct != null) {
+        MergeProductMetadata(msiProduct, registration);
+        return msiProduct;
+      }
+
+      return registration;
     }
 
     public static LegacySunshineRegistration GetLegacySunshineRegistration() {
-      var roots = new[] {
-        Registry.LocalMachine,
-        Registry.CurrentUser
-      };
+      var registration = GetInstalledProductRegistrations(true)
+        .Where(product => product.Kind == InstalledProductKind.Sunshine)
+        .Where(CanUninstallProduct)
+        .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
+        .ThenByDescending(product => string.IsNullOrWhiteSpace(product.InstallLocation) ? 0 : 1)
+        .FirstOrDefault();
 
-      var uninstallRoots = new[] {
-        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine",
-        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine"
-      };
-
-      foreach (var root in roots) {
-        foreach (var uninstallRoot in uninstallRoots) {
-          using (var key = root.OpenSubKey(uninstallRoot)) {
-            if (key == null) {
-              continue;
-            }
-
-            var displayName = Convert.ToString(key.GetValue("DisplayName"));
-            if (!string.IsNullOrWhiteSpace(displayName) &&
-                !displayName.StartsWith("Sunshine", StringComparison.OrdinalIgnoreCase)) {
-              continue;
-            }
-
-            var uninstallString = Convert.ToString(key.GetValue("UninstallString"));
-            var quietUninstallString = Convert.ToString(key.GetValue("QuietUninstallString"));
-            if (string.IsNullOrWhiteSpace(uninstallString) && string.IsNullOrWhiteSpace(quietUninstallString)) {
-              continue;
-            }
-
-            var commandForValidation = string.IsNullOrWhiteSpace(quietUninstallString)
-              ? uninstallString
-              : quietUninstallString;
-            string executablePath;
-            string uninstallArguments;
-            if (!TrySplitExecutableAndArguments(commandForValidation, out executablePath, out uninstallArguments)) {
-              continue;
-            }
-
-            var looksLikePath = executablePath.IndexOf('\\') >= 0 || executablePath.IndexOf('/') >= 0;
-            if (looksLikePath && !File.Exists(executablePath)) {
-              continue;
-            }
-
-            return new LegacySunshineRegistration {
-              DisplayName = displayName ?? "Sunshine",
-              DisplayVersion = Convert.ToString(key.GetValue("DisplayVersion")) ?? string.Empty,
-              UninstallString = uninstallString ?? string.Empty,
-              QuietUninstallString = quietUninstallString ?? string.Empty,
-              RegistryPath = uninstallRoot
-            };
-          }
-        }
+      if (registration == null) {
+        return null;
       }
 
-      return null;
+      return new LegacySunshineRegistration {
+        DisplayName = string.IsNullOrWhiteSpace(registration.DisplayName) ? "Sunshine" : registration.DisplayName,
+        DisplayVersion = registration.Version == null ? string.Empty : registration.Version.ToString(),
+        UninstallString = registration.UninstallString ?? string.Empty,
+        QuietUninstallString = registration.QuietUninstallString ?? string.Empty,
+        InstallLocation = registration.InstallLocation ?? string.Empty,
+        RegistryPath = registration.RegistryPath ?? string.Empty
+      };
     }
 
     public static LegacySunshineRegistration GetLegacyApolloRegistration() {
-      var roots = new[] {
-        Registry.LocalMachine,
-        Registry.CurrentUser
-      };
+      var registration = GetInstalledProductRegistrations(true)
+        .Where(product => product.Kind == InstalledProductKind.Apollo)
+        .Where(CanUninstallProduct)
+        .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
+        .ThenByDescending(product => string.IsNullOrWhiteSpace(product.InstallLocation) ? 0 : 1)
+        .FirstOrDefault();
 
-      var uninstallRoots = new[] {
-        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Apollo",
-        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Apollo"
-      };
-
-      foreach (var root in roots) {
-        foreach (var uninstallRoot in uninstallRoots) {
-          using (var key = root.OpenSubKey(uninstallRoot)) {
-            if (key == null) {
-              continue;
-            }
-
-            var displayName = Convert.ToString(key.GetValue("DisplayName"));
-            if (!string.IsNullOrWhiteSpace(displayName) &&
-                !displayName.StartsWith("Apollo", StringComparison.OrdinalIgnoreCase)) {
-              continue;
-            }
-
-            var uninstallString = Convert.ToString(key.GetValue("UninstallString"));
-            var quietUninstallString = Convert.ToString(key.GetValue("QuietUninstallString"));
-            if (string.IsNullOrWhiteSpace(uninstallString) && string.IsNullOrWhiteSpace(quietUninstallString)) {
-              continue;
-            }
-
-            var commandForValidation = string.IsNullOrWhiteSpace(quietUninstallString)
-              ? uninstallString
-              : quietUninstallString;
-            string executablePath;
-            string uninstallArguments;
-            if (!TrySplitExecutableAndArguments(commandForValidation, out executablePath, out uninstallArguments)) {
-              continue;
-            }
-
-            var looksLikePath = executablePath.IndexOf('\\') >= 0 || executablePath.IndexOf('/') >= 0;
-            if (looksLikePath && !File.Exists(executablePath)) {
-              continue;
-            }
-
-            return new LegacySunshineRegistration {
-              DisplayName = displayName ?? "Apollo",
-              DisplayVersion = Convert.ToString(key.GetValue("DisplayVersion")) ?? string.Empty,
-              UninstallString = uninstallString ?? string.Empty,
-              QuietUninstallString = quietUninstallString ?? string.Empty,
-              RegistryPath = uninstallRoot
-            };
-          }
-        }
+      if (registration == null) {
+        return null;
       }
 
-      return null;
+      return new LegacySunshineRegistration {
+        DisplayName = string.IsNullOrWhiteSpace(registration.DisplayName) ? "Apollo" : registration.DisplayName,
+        DisplayVersion = registration.Version == null ? string.Empty : registration.Version.ToString(),
+        UninstallString = registration.UninstallString ?? string.Empty,
+        QuietUninstallString = registration.QuietUninstallString ?? string.Empty,
+        InstallLocation = registration.InstallLocation ?? string.Empty,
+        RegistryPath = registration.RegistryPath ?? string.Empty
+      };
     }
 
     public static PayloadMsiInfo TryGetPayloadMsiInfo(InstallerArguments arguments) {
@@ -2352,20 +2313,12 @@ namespace VibepolloInstaller {
 
     private static List<InstalledProductInfo> GetInstalledProducts(bool includeSunshine) {
       var installedProducts = new List<InstalledProductInfo>();
-      var uninstallRoots = new[] {
-        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
-      };
-
-      foreach (var root in uninstallRoots) {
-        using (var hklmRoot = Registry.LocalMachine.OpenSubKey(root)) {
-          if (hklmRoot != null) {
-            CollectProductsFromRoot(hklmRoot, installedProducts, includeSunshine);
-          }
-        }
-        using (var hkcuRoot = Registry.CurrentUser.OpenSubKey(root)) {
-          if (hkcuRoot != null) {
-            CollectProductsFromRoot(hkcuRoot, installedProducts, includeSunshine);
+      foreach (var hive in UninstallRegistryHives) {
+        foreach (var root in UninstallRegistryRoots) {
+          using (var uninstallRoot = hive.OpenSubKey(root)) {
+            if (uninstallRoot != null) {
+              CollectProductsFromRoot(hive, uninstallRoot, root, installedProducts, includeSunshine);
+            }
           }
         }
       }
@@ -2376,7 +2329,30 @@ namespace VibepolloInstaller {
         .ToList();
     }
 
-    private static void CollectProductsFromRoot(RegistryKey rootKey, List<InstalledProductInfo> output, bool includeSunshine) {
+    private static List<InstalledProductInfo> GetInstalledProductRegistrations(bool includeSunshine) {
+      var installedProducts = new List<InstalledProductInfo>();
+      foreach (var hive in UninstallRegistryHives) {
+        foreach (var root in UninstallRegistryRoots) {
+          using (var uninstallRoot = hive.OpenSubKey(root)) {
+            if (uninstallRoot != null) {
+              CollectProductRegistrationsFromRoot(hive, uninstallRoot, root, installedProducts, includeSunshine);
+            }
+          }
+        }
+      }
+
+      return installedProducts
+        .GroupBy(BuildProductRegistrationIdentity, StringComparer.OrdinalIgnoreCase)
+        .Select(MergeInstalledProductGroup)
+        .ToList();
+    }
+
+    private static string BuildRegistryPath(RegistryKey hive, string rootPath, string subKeyName) {
+      var hivePrefix = hive == Registry.LocalMachine ? "HKLM" : "HKCU";
+      return hivePrefix + "\\" + rootPath + "\\" + subKeyName;
+    }
+
+    private static void CollectProductsFromRoot(RegistryKey hive, RegistryKey rootKey, string rootPath, List<InstalledProductInfo> output, bool includeSunshine) {
       foreach (var subKeyName in rootKey.GetSubKeyNames()) {
         if (string.IsNullOrWhiteSpace(subKeyName) || !LooksLikeProductCode(subKeyName)) {
           continue;
@@ -2402,12 +2378,59 @@ namespace VibepolloInstaller {
 
           var versionText = Convert.ToString(productKey.GetValue("DisplayVersion"));
           var parsedVersion = ParseVersion(versionText);
+          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
+          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
 
           output.Add(new InstalledProductInfo {
             ProductCode = subKeyName,
             DisplayName = displayName ?? string.Empty,
             Version = parsedVersion,
-            Kind = kind
+            Kind = kind,
+            IsWindowsInstaller = true,
+            IsPerUser = hive == Registry.CurrentUser,
+            InstallLocation = ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
+            UninstallString = uninstallString,
+            QuietUninstallString = quietUninstallString,
+            RegistryPath = BuildRegistryPath(hive, rootPath, subKeyName)
+          });
+        }
+      }
+    }
+
+    private static void CollectProductRegistrationsFromRoot(RegistryKey hive, RegistryKey rootKey, string rootPath, List<InstalledProductInfo> output, bool includeSunshine) {
+      foreach (var subKeyName in rootKey.GetSubKeyNames()) {
+        if (string.IsNullOrWhiteSpace(subKeyName)) {
+          continue;
+        }
+
+        using (var productKey = rootKey.OpenSubKey(subKeyName)) {
+          if (productKey == null) {
+            continue;
+          }
+
+          var displayName = Convert.ToString(productKey.GetValue("DisplayName"));
+          var kind = GetInstalledProductKind(displayName);
+          if (kind == InstalledProductKind.Unknown) {
+            continue;
+          }
+          if (!includeSunshine && kind == InstalledProductKind.Sunshine) {
+            continue;
+          }
+
+          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
+          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
+
+          output.Add(new InstalledProductInfo {
+            ProductCode = LooksLikeProductCode(subKeyName) ? subKeyName : string.Empty,
+            DisplayName = displayName ?? string.Empty,
+            Version = ParseVersion(Convert.ToString(productKey.GetValue("DisplayVersion"))),
+            Kind = kind,
+            IsWindowsInstaller = IsWindowsInstallerProduct(productKey) && LooksLikeProductCode(subKeyName),
+            IsPerUser = hive == Registry.CurrentUser,
+            InstallLocation = ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
+            UninstallString = uninstallString,
+            QuietUninstallString = quietUninstallString,
+            RegistryPath = BuildRegistryPath(hive, rootPath, subKeyName)
           });
         }
       }
@@ -2472,46 +2495,227 @@ namespace VibepolloInstaller {
       return null;
     }
 
-    private static IEnumerable<InstalledProductKind> GetApolloFamilyKindsFromUninstallRegistry() {
-      var detectedKinds = new HashSet<InstalledProductKind>();
-      var uninstallRoots = new[] {
-        @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-        @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
-      };
-      var hives = new[] {
-        Registry.LocalMachine,
-        Registry.CurrentUser
-      };
-
-      foreach (var hive in hives) {
-        foreach (var uninstallRoot in uninstallRoots) {
-          using (var rootKey = hive.OpenSubKey(uninstallRoot)) {
-            if (rootKey == null) {
-              continue;
-            }
-
-            foreach (var subKeyName in rootKey.GetSubKeyNames()) {
-              if (string.IsNullOrWhiteSpace(subKeyName)) {
-                continue;
-              }
-
-              using (var productKey = rootKey.OpenSubKey(subKeyName)) {
-                if (productKey == null) {
-                  continue;
-                }
-
-                var displayName = Convert.ToString(productKey.GetValue("DisplayName"));
-                var kind = GetInstalledProductKind(displayName);
-                if (kind == InstalledProductKind.Apollo || kind == InstalledProductKind.Vibepollo) {
-                  detectedKinds.Add(kind);
-                }
-              }
-            }
-          }
-        }
+    private static void MergeProductMetadata(InstalledProductInfo target, InstalledProductInfo fallback) {
+      if (target == null || fallback == null) {
+        return;
       }
 
-      return detectedKinds;
+      if (string.IsNullOrWhiteSpace(target.InstallLocation)) {
+        target.InstallLocation = fallback.InstallLocation ?? string.Empty;
+      }
+      if (string.IsNullOrWhiteSpace(target.UninstallString)) {
+        target.UninstallString = fallback.UninstallString ?? string.Empty;
+      }
+      if (string.IsNullOrWhiteSpace(target.QuietUninstallString)) {
+        target.QuietUninstallString = fallback.QuietUninstallString ?? string.Empty;
+      }
+      if (string.IsNullOrWhiteSpace(target.RegistryPath)) {
+        target.RegistryPath = fallback.RegistryPath ?? string.Empty;
+      }
+    }
+
+    private static InstalledProductInfo MergeInstalledProductGroup(IEnumerable<InstalledProductInfo> products) {
+      var orderedProducts = products
+        .OrderByDescending(product => product.Version ?? new Version(0, 0, 0, 0))
+        .ThenByDescending(product => product.IsWindowsInstaller ? 1 : 0)
+        .ThenByDescending(product => string.IsNullOrWhiteSpace(product.InstallLocation) ? 0 : 1)
+        .ToList();
+      var primary = orderedProducts.First();
+
+      return new InstalledProductInfo {
+        ProductCode = orderedProducts.Select(product => product.ProductCode).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty,
+        DisplayName = orderedProducts.Select(product => product.DisplayName).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty,
+        Version = orderedProducts.Select(product => product.Version).FirstOrDefault(value => value != null),
+        Kind = primary.Kind,
+        IsWindowsInstaller = orderedProducts.Any(product => product.IsWindowsInstaller),
+        IsPerUser = primary.IsPerUser,
+        InstallLocation = orderedProducts.Select(product => product.InstallLocation).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty,
+        UninstallString = orderedProducts.Select(product => product.UninstallString).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty,
+        QuietUninstallString = orderedProducts.Select(product => product.QuietUninstallString).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty,
+        RegistryPath = orderedProducts.Select(product => product.RegistryPath).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty
+      };
+    }
+
+    private static string BuildProductRegistrationIdentity(InstalledProductInfo product) {
+      if (product == null) {
+        return string.Empty;
+      }
+
+      // Registry path is the uninstall-entry identity; separate hives can legitimately share a folder.
+      if (!string.IsNullOrWhiteSpace(product.RegistryPath)) {
+        return product.Kind + "|reg|" + product.RegistryPath;
+      }
+      if (product.IsWindowsInstaller && !string.IsNullOrWhiteSpace(product.ProductCode)) {
+        return product.Kind + "|msi|" + product.ProductCode;
+      }
+
+      var command = string.IsNullOrWhiteSpace(product.QuietUninstallString)
+        ? product.UninstallString
+        : product.QuietUninstallString;
+      if (!string.IsNullOrWhiteSpace(command)) {
+        return product.Kind + "|cmd|" + NormalizeCommandIdentity(command);
+      }
+
+      if (!string.IsNullOrWhiteSpace(product.InstallLocation)) {
+        return product.Kind + "|loc|" + product.InstallLocation;
+      }
+
+      return product.Kind + "|display|" + (product.DisplayName ?? string.Empty);
+    }
+
+    private static string ResolveInstallLocation(RegistryKey productKey, string uninstallString, string quietUninstallString) {
+      var installLocation = NormalizeDirectoryPath(Convert.ToString(productKey.GetValue("InstallLocation")));
+      if (!string.IsNullOrWhiteSpace(installLocation)) {
+        return installLocation;
+      }
+
+      installLocation = TryResolveDirectoryFromFileReference(Convert.ToString(productKey.GetValue("DisplayIcon")));
+      if (!string.IsNullOrWhiteSpace(installLocation)) {
+        return installLocation;
+      }
+
+      installLocation = TryResolveDirectoryFromCommand(quietUninstallString);
+      if (!string.IsNullOrWhiteSpace(installLocation)) {
+        return installLocation;
+      }
+
+      return TryResolveDirectoryFromCommand(uninstallString);
+    }
+
+    private static string TryResolveDirectoryFromFileReference(string pathValue) {
+      var trimmed = (pathValue ?? string.Empty).Trim();
+      if (trimmed.Length == 0) {
+        return string.Empty;
+      }
+
+      var commaIndex = trimmed.IndexOf(',');
+      if (commaIndex > 0) {
+        trimmed = trimmed.Substring(0, commaIndex);
+      }
+
+      trimmed = trimmed.Trim().Trim('"');
+      if (trimmed.Length == 0) {
+        return string.Empty;
+      }
+
+      var fullPath = NormalizePath(trimmed);
+      if (string.IsNullOrWhiteSpace(fullPath)) {
+        return string.Empty;
+      }
+      if (Directory.Exists(fullPath)) {
+        return fullPath;
+      }
+
+      var parent = Path.GetDirectoryName(fullPath);
+      return NormalizeDirectoryPath(parent);
+    }
+
+    private static string TryResolveDirectoryFromCommand(string commandLine) {
+      if (string.IsNullOrWhiteSpace(commandLine)) {
+        return string.Empty;
+      }
+
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return string.Empty;
+      }
+
+      var fullPath = NormalizePath(executablePath);
+      if (string.IsNullOrWhiteSpace(fullPath) || IsMsiexecExecutable(fullPath)) {
+        return string.Empty;
+      }
+      if (Directory.Exists(fullPath)) {
+        return fullPath;
+      }
+
+      var parent = Path.GetDirectoryName(fullPath);
+      return NormalizeDirectoryPath(parent);
+    }
+
+    private static string NormalizeDirectoryPath(string value) {
+      var fullPath = NormalizePath(value);
+      if (string.IsNullOrWhiteSpace(fullPath)) {
+        return string.Empty;
+      }
+      if (Directory.Exists(fullPath)) {
+        return fullPath;
+      }
+
+      var root = Path.GetPathRoot(fullPath);
+      if (!string.IsNullOrWhiteSpace(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)) {
+        return root;
+      }
+
+      return fullPath;
+    }
+
+    private static string NormalizePath(string value) {
+      var trimmed = Environment.ExpandEnvironmentVariables((value ?? string.Empty).Trim().Trim('"'));
+      if (trimmed.Length == 0) {
+        return string.Empty;
+      }
+
+      try {
+        var fullPath = Path.GetFullPath(trimmed);
+        var root = Path.GetPathRoot(fullPath);
+        if (!string.IsNullOrWhiteSpace(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)) {
+          return root;
+        }
+        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+      } catch {
+        return string.Empty;
+      }
+    }
+
+    private static string NormalizeCommandIdentity(string commandLine) {
+      return Environment.ExpandEnvironmentVariables(commandLine ?? string.Empty).Trim();
+    }
+
+    private static bool CanUninstallProduct(InstalledProductInfo product) {
+      if (product == null) {
+        return false;
+      }
+
+      if (product.IsWindowsInstaller && !string.IsNullOrWhiteSpace(product.ProductCode)) {
+        return true;
+      }
+
+      return HasUsableUninstallCommand(product);
+    }
+
+    private static bool HasUsableUninstallCommand(InstalledProductInfo product) {
+      var commandLine = BuildSilentUninstallCommand(product);
+      if (string.IsNullOrWhiteSpace(commandLine)) {
+        return false;
+      }
+
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return false;
+      }
+
+      return IsUsableExecutableReference(executablePath);
+    }
+
+    private static bool IsUsableExecutableReference(string executablePath) {
+      if (string.IsNullOrWhiteSpace(executablePath)) {
+        return false;
+      }
+
+      var trimmed = Environment.ExpandEnvironmentVariables(executablePath).Trim().Trim('"');
+      if (trimmed.Length == 0) {
+        return false;
+      }
+
+      var looksLikePath = trimmed.IndexOf('\\') >= 0 || trimmed.IndexOf('/') >= 0;
+      if (!looksLikePath) {
+        return true;
+      }
+
+      var fullPath = NormalizePath(trimmed);
+      return !string.IsNullOrWhiteSpace(fullPath) && File.Exists(fullPath);
     }
 
     private const uint MsiErrorSuccess = 0;
@@ -2628,14 +2832,10 @@ namespace VibepolloInstaller {
         return RunElevatedBootstrapperInstall(arguments, installDirectory, installVirtualDisplayDriver, saveInstallLogs);
       }
 
-      var uninstallCompetingProductsResult = UninstallInstalledProducts(
+      var uninstallCompetingProductsResult = UninstallCompetingProducts(
         "install_remove_competing",
         true,
-        false,
-        false,
-        false,
-        false,
-        new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+        false);
       var competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
       if (!uninstallCompetingProductsResult.Succeeded) {
         return new InstallerResult {
@@ -3127,13 +3327,88 @@ namespace VibepolloInstaller {
       return executablePath.Length > 0;
     }
 
+    private static int RunUninstallCommand(InstalledProductInfo product, bool hiddenWindow, bool requestElevationIfNeeded) {
+      var commandLine = BuildSilentUninstallCommand(product);
+      if (string.IsNullOrWhiteSpace(commandLine)) {
+        return 1;
+      }
+
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return 1;
+      }
+
+      return RunProcess(executablePath, arguments, hiddenWindow, requestElevationIfNeeded);
+    }
+
+    private static string BuildSilentUninstallCommand(InstalledProductInfo product) {
+      var commandLine = string.IsNullOrWhiteSpace(product == null ? null : product.QuietUninstallString)
+        ? (product == null ? string.Empty : product.UninstallString)
+        : product.QuietUninstallString;
+      if (string.IsNullOrWhiteSpace(commandLine)) {
+        return string.Empty;
+      }
+
+      var normalized = commandLine.Trim();
+      if (!string.IsNullOrWhiteSpace(product == null ? null : product.QuietUninstallString)) {
+        return normalized;
+      }
+      if (CommandTargetsMsiexec(normalized)) {
+        if (!HasCommandToken(normalized, "/qn") && !HasCommandToken(normalized, "/quiet")) {
+          normalized += " /qn";
+        }
+        if (!HasCommandToken(normalized, "/norestart")) {
+          normalized += " /norestart";
+        }
+        if (!ContainsPropertyAssignment(normalized, "REBOOT")) {
+          normalized += " REBOOT=ReallySuppress";
+        }
+        if (!ContainsPropertyAssignment(normalized, "SUPPRESSMSGBOXES")) {
+          normalized += " SUPPRESSMSGBOXES=1";
+        }
+        return normalized;
+      }
+      if (!HasQuietCommandSwitch(normalized)) {
+        normalized += " /S";
+      }
+      return normalized;
+    }
+
+    private static bool HasQuietCommandSwitch(string commandLine) {
+      return HasCommandToken(commandLine, "/s")
+        || HasCommandToken(commandLine, "/silent")
+        || HasCommandToken(commandLine, "/verysilent")
+        || HasCommandToken(commandLine, "/quiet")
+        || HasCommandToken(commandLine, "/qn");
+    }
+
+    private static bool HasCommandToken(string commandLine, string token) {
+      var expanded = " " + Environment.ExpandEnvironmentVariables(commandLine ?? string.Empty).ToUpperInvariant() + " ";
+      return expanded.IndexOf(" " + token.ToUpperInvariant() + " ", StringComparison.Ordinal) >= 0;
+    }
+
+    private static bool ContainsPropertyAssignment(string commandLine, string propertyName) {
+      return Environment.ExpandEnvironmentVariables(commandLine ?? string.Empty)
+        .IndexOf(propertyName + "=", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool CommandTargetsMsiexec(string commandLine) {
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return false;
+      }
+
+      return IsMsiexecExecutable(executablePath);
+    }
     private static bool IsMsiexecExecutable(string executablePath) {
       if (string.IsNullOrWhiteSpace(executablePath)) {
         return false;
       }
-
-      var fileName = Path.GetFileName(executablePath).ToLowerInvariant();
-      return fileName == "msiexec.exe";
+      var fileName = Path.GetFileName(executablePath.Trim().Trim('"'));
+      return string.Equals(fileName, "msiexec.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "msiexec", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasQuietUninstallSwitch(string uninstallArguments) {
@@ -3226,14 +3501,10 @@ namespace VibepolloInstaller {
       var uninstallCompetingProducts = ShouldPreUninstallCompetingProducts(cliArgs);
       var competingProductsRequireRestart = false;
       if (uninstallCompetingProducts) {
-        var uninstallCompetingProductsResult = UninstallInstalledProducts(
+        var uninstallCompetingProductsResult = UninstallCompetingProducts(
           "cli_remove_competing",
           arguments.IsCliQuietMode(),
-          true,
-          false,
-          false,
-          false,
-          new[] { InstalledProductKind.Apollo, InstalledProductKind.Vibepollo, InstalledProductKind.Sunshine });
+          true);
         if (!uninstallCompetingProductsResult.Succeeded) {
           return new InstallerResult {
             Operation = InstallerOperation.Install,
@@ -3671,6 +3942,82 @@ namespace VibepolloInstaller {
         && installedProduct.Version.Build == UpgradeSourcePreUninstallVersion.Build;
     }
 
+    private static InstallerResult UninstallCompetingProducts(
+      string logPhase,
+      bool hiddenWindow,
+      bool requestElevationIfNeeded) {
+      var installedProducts = GetInstalledProductRegistrations(true)
+        .Where(product =>
+          product.Kind == InstalledProductKind.Apollo
+          || product.Kind == InstalledProductKind.Vibepollo
+          || product.Kind == InstalledProductKind.Sunshine)
+        .GroupBy(BuildProductRegistrationIdentity, StringComparer.OrdinalIgnoreCase)
+        .Select(MergeInstalledProductGroup)
+        .ToList();
+      if (installedProducts.Count == 0) {
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = 0,
+          Message = "No conflicting Apollo, Vibepollo, or Sunshine installation was found."
+        };
+      }
+
+      var finalCode = 0;
+      var lastLogPath = string.Empty;
+      foreach (var product in installedProducts) {
+        if (!CanUninstallProduct(product)) {
+          // Stale ARP entry with no usable uninstall command — skip rather
+          // than blocking installation over a leftover registry key.
+          continue;
+        }
+
+        int code;
+        string logPath = string.Empty;
+        if (product.IsWindowsInstaller && !string.IsNullOrWhiteSpace(product.ProductCode)) {
+          logPath = BuildLogPath(logPhase + "_remove");
+          lastLogPath = logPath;
+          var args = new List<string> {
+            "/x",
+            product.ProductCode,
+            "/qn",
+            "/norestart",
+            "/l*v",
+            logPath,
+            "REBOOT=ReallySuppress",
+            "SUPPRESSMSGBOXES=1"
+          };
+          code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
+        } else {
+          // Never elevate non-MSI uninstall commands sourced from HKCU since
+          // those registry values are user-writable and could be tampered with.
+          var allowElevation = requestElevationIfNeeded && !product.IsPerUser;
+          code = RunUninstallCommand(product, hiddenWindow, allowElevation);
+        }
+
+        if (code == 3010) {
+          finalCode = 3010;
+          continue;
+        }
+        if (code == 0 || code == 1605) {
+          continue;
+        }
+
+        return new InstallerResult {
+          Operation = InstallerOperation.Uninstall,
+          ExitCode = code,
+          Message = BuildProductUninstallFailureMessage(product, code, logPath),
+          LogPath = logPath
+        };
+      }
+
+      return new InstallerResult {
+        Operation = InstallerOperation.Uninstall,
+        ExitCode = finalCode,
+        Message = BuildResultMessage("Uninstall", finalCode, lastLogPath),
+        LogPath = lastLogPath
+      };
+    }
+
     private static InstallerResult UninstallInstalledProducts(
       string logPhase,
       bool hiddenWindow,
@@ -3738,6 +4085,23 @@ namespace VibepolloInstaller {
         Message = BuildResultMessage("Uninstall", finalCode, lastLogPath),
         LogPath = lastLogPath
       };
+    }
+
+    private static string BuildProductDisplayName(InstalledProductInfo product) {
+      if (product == null || string.IsNullOrWhiteSpace(product.DisplayName)) {
+        return "the conflicting product";
+      }
+      return product.DisplayName.Trim();
+    }
+
+    private static string BuildProductUninstallFailureMessage(InstalledProductInfo product, int exitCode, string logPath) {
+      var message = "Failed to uninstall " + BuildProductDisplayName(product) + ".";
+      if (!string.IsNullOrWhiteSpace(logPath)) {
+        message += " MSI log: " + logPath;
+      } else {
+        message += " Exit code: " + exitCode + ".";
+      }
+      return message;
     }
 
     private static string ResolveMsiPath(string overridePath, bool forceFreshExtract = false) {
@@ -4395,17 +4759,30 @@ namespace VibepolloInstaller {
         if (ex.NativeErrorCode == 1223) {
           return 1223;
         }
-        throw;
+        return ex.NativeErrorCode == 0 ? 1 : ex.NativeErrorCode;
       }
     }
 
     private static int RunMsiexec(IReadOnlyList<string> arguments, bool hiddenWindow, bool requestElevationIfNeeded) {
+      return RunProcess(ResolveMsiexecPath(), BuildCommandLine(arguments), hiddenWindow, requestElevationIfNeeded);
+    }
+
+    private static int RunProcess(string executablePath, string arguments, bool hiddenWindow, bool requestElevationIfNeeded) {
       var shouldElevate = requestElevationIfNeeded && !IsProcessElevated();
+      var workingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+      try {
+        var executableDirectory = Path.GetDirectoryName(NormalizePath(executablePath));
+        if (!string.IsNullOrWhiteSpace(executableDirectory) && Directory.Exists(executableDirectory)) {
+          workingDirectory = executableDirectory;
+        }
+      } catch {
+      }
+
       var startInfo = new ProcessStartInfo {
-        FileName = ResolveMsiexecPath(),
-        Arguments = BuildCommandLine(arguments),
+        FileName = executablePath,
+        Arguments = arguments ?? string.Empty,
         UseShellExecute = shouldElevate,
-        WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+        WorkingDirectory = workingDirectory
       };
 
       if (shouldElevate) {
