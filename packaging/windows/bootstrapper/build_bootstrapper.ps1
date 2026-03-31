@@ -150,7 +150,9 @@ if (-not $UninstallOnly) {
 
 $sourceFile = Resolve-PathStrict (Join-Path $scriptDir "VibeshineInstaller.cs")
 $manifestFile = Resolve-PathStrict (Join-Path $scriptDir "app.manifest")
-$iconPath = Resolve-PathStrict (Join-Path $repoRoot "apollo.ico")
+# Use a bootstrapper-specific icon so Windows shell heuristics do not see
+# the installer as the same app identity as the installed product.
+$iconPath = Resolve-PathStrict (Join-Path $repoRoot "third-party\tray\icons\icon.ico")
 $licensePath = Resolve-PathStrict (Join-Path $repoRoot "LICENSE")
 $cscPath = Resolve-CscPath
 $frameworkRoot = Resolve-PathStrict "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
@@ -208,7 +210,8 @@ if ($UninstallOnly) {
 $assemblyInfoContent = @(
     "using System.Reflection;",
     "[assembly: AssemblyTitle(""$assemblyTitle"")]",
-    "[assembly: AssemblyProduct(""Vibepollo"")]",
+    "[assembly: AssemblyDescription(""$assemblyTitle"")]",
+    "[assembly: AssemblyProduct(""$assemblyTitle"")]",
     "[assembly: AssemblyCompany(""Nonary"")]",
     "[assembly: AssemblyVersion(""$assemblyVersion"")]",
     "[assembly: AssemblyFileVersion(""$assemblyVersion"")]",

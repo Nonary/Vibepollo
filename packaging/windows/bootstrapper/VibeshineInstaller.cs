@@ -30,6 +30,18 @@ namespace VibepolloInstaller {
   }
 
   internal static class Program {
+    private const string InstallerAppUserModelId = "Vibeshine.Installer";
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
+
+    private static void TrySetExplicitAppUserModelId() {
+      try {
+        SetCurrentProcessExplicitAppUserModelID(InstallerAppUserModelId);
+      } catch {
+      }
+    }
+
     [STAThread]
     private static int Main(string[] args) {
       if (InstallerArguments.IsHelpRequested(args)) {
@@ -78,6 +90,8 @@ namespace VibepolloInstaller {
         }
         return cliResult.ExitCode;
       }
+
+      TrySetExplicitAppUserModelId();
 
       var app = new Application {
         ShutdownMode = ShutdownMode.OnMainWindowClose
@@ -128,7 +142,7 @@ namespace VibepolloInstaller {
     private readonly InstallerRunner.InstalledProductInfo _legacySunshineProduct;
     private readonly InstallerRunner.LegacySunshineRegistration _legacySunshineRegistration;
     private readonly InstallerRunner.LegacySunshineRegistration _legacyApolloRegistration;
-    private readonly InstallerRunner.PayloadMsiInfo _payloadMsiInfo;
+    private InstallerRunner.PayloadMsiInfo _payloadMsiInfo;
     private readonly string _licenseText;
     private readonly string _preferredInstallDirectory;
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
@@ -143,7 +157,9 @@ namespace VibepolloInstaller {
     public InstallerWindow(InstallerArguments arguments) {
       _arguments = arguments;
       _bundleVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
-      _payloadMsiInfo = InstallerRunner.TryGetPayloadMsiInfo(arguments);
+      // Avoid MSI-backed discovery during window construction because even
+      // read-only package inspection can trigger Windows Installer self-repair.
+      _payloadMsiInfo = null;
       _licenseText = LoadEmbeddedLicenseText();
       _installedProduct = InstallerRunner.GetInstalledVibepolloProduct();
       _legacySunshineProduct = InstallerRunner.GetInstalledSunshineProduct();
@@ -788,6 +804,25 @@ namespace VibepolloInstaller {
         BringWindowToFront();
         FocusDefaultActionControl();
       }), DispatcherPriority.ContextIdle);
+
+      // Defer MSI payload inspection until after the window is fully rendered
+      // so that read-only MSI queries cannot trigger Windows Installer
+      // self-repair during window construction.  Run the inspection on a
+      // thread-pool thread so the UI thread never blocks on file I/O.
+      if (!BuildFlavor.IsUninstallOnly) {
+        var args = _arguments;
+        System.Threading.ThreadPool.QueueUserWorkItem(_ => {
+          var info = InstallerRunner.TryGetPayloadMsiInfo(args);
+          if (info != null) {
+            Dispatcher.BeginInvoke(new Action(() => {
+              _payloadMsiInfo = info;
+              var displayVersion = GetTargetVersionText();
+              Title = "Vibeshine Installer v" + displayVersion;
+              _continueButton.Content = BuildInstallButtonLabel();
+            }), DispatcherPriority.Normal);
+          }
+        });
+      }
     }
 
     private void FocusDefaultActionControl() {
@@ -2720,6 +2755,7 @@ namespace VibepolloInstaller {
 
     private const uint MsiErrorSuccess = 0;
     private const uint MsiErrorMoreData = 234;
+    private const uint MsiOpenPackageIgnoreMachineState = 1;
 
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiOpenPackageEx(string szPackagePath, uint dwOptions, out IntPtr hProduct);
@@ -2752,7 +2788,7 @@ namespace VibepolloInstaller {
       }
 
       IntPtr packageHandle;
-      var openCode = MsiOpenPackageEx(msiPath, 0, out packageHandle);
+      var openCode = MsiOpenPackageEx(msiPath, MsiOpenPackageIgnoreMachineState, out packageHandle);
       if (openCode != MsiErrorSuccess || packageHandle == IntPtr.Zero) {
         return string.Empty;
       }
@@ -2782,7 +2818,7 @@ namespace VibepolloInstaller {
       }
 
       IntPtr packageHandle;
-      var openCode = MsiOpenPackageEx(msiPath, 0, out packageHandle);
+      var openCode = MsiOpenPackageEx(msiPath, MsiOpenPackageIgnoreMachineState, out packageHandle);
       if (openCode != MsiErrorSuccess || packageHandle == IntPtr.Zero) {
         return false;
       }
