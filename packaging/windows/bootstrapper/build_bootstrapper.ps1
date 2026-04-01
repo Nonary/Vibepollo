@@ -150,9 +150,9 @@ if (-not $UninstallOnly) {
 
 $sourceFile = Resolve-PathStrict (Join-Path $scriptDir "VibeshineInstaller.cs")
 $manifestFile = Resolve-PathStrict (Join-Path $scriptDir "app.manifest")
-# Use a bootstrapper-specific icon so Windows shell heuristics do not see
-# the installer as the same app identity as the installed product.
-$iconPath = Resolve-PathStrict (Join-Path $repoRoot "third-party\tray\icons\icon.ico")
+# Keep the branded product icon on the bootstrapper; the installer now uses
+# explicit process/window shell metadata to stay distinct from the installed app.
+$iconPath = Resolve-PathStrict (Join-Path $repoRoot "sunshine.ico")
 $licensePath = Resolve-PathStrict (Join-Path $repoRoot "LICENSE")
 $cscPath = Resolve-CscPath
 $frameworkRoot = Resolve-PathStrict "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"

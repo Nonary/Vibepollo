@@ -30,14 +30,12 @@ namespace VibepolloInstaller {
   }
 
   internal static class Program {
-    private const string InstallerAppUserModelId = "Vibeshine.Installer";
-
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
 
     private static void TrySetExplicitAppUserModelId() {
       try {
-        SetCurrentProcessExplicitAppUserModelID(InstallerAppUserModelId);
+        SetCurrentProcessExplicitAppUserModelID(ShellIdentity.InstallerAppUserModelId);
       } catch {
       }
     }
@@ -805,24 +803,17 @@ namespace VibepolloInstaller {
         FocusDefaultActionControl();
       }), DispatcherPriority.ContextIdle);
 
-      // Defer MSI payload inspection until after the window is fully rendered
-      // so that read-only MSI queries cannot trigger Windows Installer
-      // self-repair during window construction.  Run the inspection on a
-      // thread-pool thread so the UI thread never blocks on file I/O.
-      if (!BuildFlavor.IsUninstallOnly) {
-        var args = _arguments;
-        System.Threading.ThreadPool.QueueUserWorkItem(_ => {
-          var info = InstallerRunner.TryGetPayloadMsiInfo(args);
-          if (info != null) {
-            Dispatcher.BeginInvoke(new Action(() => {
-              _payloadMsiInfo = info;
-              var displayVersion = GetTargetVersionText();
-              Title = "Vibeshine Installer v" + displayVersion;
-              _continueButton.Content = BuildInstallButtonLabel();
-            }), DispatcherPriority.Normal);
-          }
-        });
-      }
+    }
+
+    protected override void OnSourceInitialized(EventArgs e) {
+      base.OnSourceInitialized(e);
+      // Apply shell identity to the concrete top-level window handle as early as
+      // possible so Windows does not briefly bucket the installer under the
+      // installed app or temporary generic taskbar identities while WPF loads.
+      ShellIdentity.TryApplyInstallerWindowIdentity(
+        new WindowInteropHelper(this).Handle,
+        BuildFlavor.IsUninstallOnly ? "Vibeshine Uninstaller" : "Vibeshine Installer"
+      );
     }
 
     private void FocusDefaultActionControl() {
@@ -1290,6 +1281,10 @@ namespace VibepolloInstaller {
         return InstallActionKind.Downgrade;
       }
 
+      if (_installedProduct.Version != null && targetVersion != null && _installedProduct.Version < targetVersion) {
+        return InstallActionKind.Upgrade;
+      }
+
       if (WillPayloadMsiUpgradeInstalledProduct()) {
         return InstallActionKind.Upgrade;
       }
@@ -1304,16 +1299,6 @@ namespace VibepolloInstaller {
       if (string.IsNullOrWhiteSpace(_installedProduct.ProductCode) || string.IsNullOrWhiteSpace(_payloadMsiInfo.ProductCode)) {
         return false;
       }
-      if (_payloadMsiInfo.RelatedProductCodes == null || _payloadMsiInfo.RelatedProductCodes.Count == 0) {
-        return false;
-      }
-
-      var hasRelatedInstalledProduct = _payloadMsiInfo.RelatedProductCodes.Any(code =>
-        string.Equals(code, _installedProduct.ProductCode, StringComparison.OrdinalIgnoreCase));
-      if (!hasRelatedInstalledProduct) {
-        return false;
-      }
-
       return !string.Equals(_installedProduct.ProductCode, _payloadMsiInfo.ProductCode, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -2193,7 +2178,6 @@ namespace VibepolloInstaller {
       public string UpgradeCode { get; set; }
       public string VersionText { get; set; }
       public Version Version { get; set; }
-      public List<string> RelatedProductCodes { get; set; }
     }
 
     internal sealed class LegacySunshineRegistration {
@@ -2330,20 +2314,49 @@ namespace VibepolloInstaller {
         return null;
       }
 
-      var productCode = ReadMsiProperty(msiPath, "ProductCode");
-      var upgradeCode = ReadMsiProperty(msiPath, "UpgradeCode");
-      var versionText = ReadMsiProperty(msiPath, "ProductVersion");
-      if (string.IsNullOrWhiteSpace(productCode) && string.IsNullOrWhiteSpace(versionText) && string.IsNullOrWhiteSpace(upgradeCode)) {
+      IntPtr packageHandle;
+      var openCode = MsiOpenPackageEx(msiPath, MsiOpenPackageIgnoreMachineState, out packageHandle);
+      if (openCode != MsiErrorSuccess || packageHandle == IntPtr.Zero) {
         return null;
       }
 
-      return new PayloadMsiInfo {
-        ProductCode = productCode ?? string.Empty,
-        UpgradeCode = upgradeCode ?? string.Empty,
-        VersionText = versionText ?? string.Empty,
-        Version = ParseVersion(versionText),
-        RelatedProductCodes = EnumerateRelatedProducts(upgradeCode)
-      };
+      try {
+        var productCode = ReadMsiProperty(packageHandle, "ProductCode");
+        var upgradeCode = ReadMsiProperty(packageHandle, "UpgradeCode");
+        var versionText = ReadMsiProperty(packageHandle, "ProductVersion");
+        if (string.IsNullOrWhiteSpace(productCode) && string.IsNullOrWhiteSpace(versionText) && string.IsNullOrWhiteSpace(upgradeCode)) {
+          return null;
+        }
+
+        return new PayloadMsiInfo {
+          ProductCode = productCode ?? string.Empty,
+          UpgradeCode = upgradeCode ?? string.Empty,
+          VersionText = versionText ?? string.Empty,
+          Version = ParseVersion(versionText)
+        };
+      } finally {
+        MsiCloseHandle(packageHandle);
+      }
+    }
+
+    private static string ReadMsiProperty(IntPtr packageHandle, string propertyName) {
+      if (packageHandle == IntPtr.Zero || string.IsNullOrWhiteSpace(propertyName)) {
+        return null;
+      }
+
+      uint length = 256;
+      var buffer = new StringBuilder((int)length);
+      var getCode = MsiGetProperty(packageHandle, propertyName, buffer, ref length);
+      if (getCode == MsiErrorMoreData) {
+        length += 1;
+        buffer = new StringBuilder((int)length);
+        getCode = MsiGetProperty(packageHandle, propertyName, buffer, ref length);
+      }
+      if (getCode != MsiErrorSuccess) {
+        return string.Empty;
+      }
+
+      return buffer.ToString();
     }
 
     private static List<InstalledProductInfo> GetInstalledProducts(bool includeSunshine) {
@@ -2763,54 +2776,8 @@ namespace VibepolloInstaller {
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiGetProperty(IntPtr hInstall, string szName, StringBuilder szValueBuf, ref uint pchValueBuf);
 
-    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
-    private static extern uint MsiEnumRelatedProducts(string lpUpgradeCode, uint dwReserved, uint iProductIndex, StringBuilder lpProductBuf);
-
-    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
-    private static extern int MsiQueryProductState(string szProduct);
-
     [DllImport("msi.dll")]
     private static extern uint MsiCloseHandle(IntPtr hAny);
-
-    private static bool IsInstalledProductCode(string productCode) {
-      if (!LooksLikeProductCode(productCode)) {
-        return false;
-      }
-
-      // INSTALLSTATE values considered installed: 1=Advertised, 3=Local, 4=Source, 5=Default.
-      var state = MsiQueryProductState(productCode);
-      return state == 1 || state == 3 || state == 4 || state == 5;
-    }
-
-    private static string ReadMsiProperty(string msiPath, string propertyName) {
-      if (string.IsNullOrWhiteSpace(msiPath) || string.IsNullOrWhiteSpace(propertyName)) {
-        return string.Empty;
-      }
-
-      IntPtr packageHandle;
-      var openCode = MsiOpenPackageEx(msiPath, MsiOpenPackageIgnoreMachineState, out packageHandle);
-      if (openCode != MsiErrorSuccess || packageHandle == IntPtr.Zero) {
-        return string.Empty;
-      }
-
-      try {
-        uint length = 256;
-        var buffer = new StringBuilder((int)length);
-        var getCode = MsiGetProperty(packageHandle, propertyName, buffer, ref length);
-        if (getCode == MsiErrorMoreData) {
-          length += 1;
-          buffer = new StringBuilder((int)length);
-          getCode = MsiGetProperty(packageHandle, propertyName, buffer, ref length);
-        }
-        if (getCode != MsiErrorSuccess) {
-          return string.Empty;
-        }
-
-        return buffer.ToString();
-      } finally {
-        MsiCloseHandle(packageHandle);
-      }
-    }
 
     private static bool CanOpenMsiPackage(string msiPath) {
       if (string.IsNullOrWhiteSpace(msiPath) || !File.Exists(msiPath)) {
@@ -2828,34 +2795,6 @@ namespace VibepolloInstaller {
       } finally {
         MsiCloseHandle(packageHandle);
       }
-    }
-
-    private static List<string> EnumerateRelatedProducts(string upgradeCode) {
-      var products = new List<string>();
-      if (string.IsNullOrWhiteSpace(upgradeCode)) {
-        return products;
-      }
-
-      const uint noMoreItems = 259;
-      uint index = 0;
-      while (true) {
-        var buffer = new StringBuilder(39);
-        var code = MsiEnumRelatedProducts(upgradeCode, 0, index, buffer);
-        if (code == noMoreItems) {
-          break;
-        }
-        if (code != MsiErrorSuccess) {
-          break;
-        }
-
-        var productCode = buffer.ToString();
-        if (!string.IsNullOrWhiteSpace(productCode)) {
-          products.Add(productCode);
-        }
-        index++;
-      }
-
-      return products;
     }
 
     public static InstallerResult RunInteractiveInstall(
@@ -4189,8 +4128,7 @@ namespace VibepolloInstaller {
         var shouldWrite = forceFreshExtract
           || !File.Exists(msiPath)
           || new FileInfo(msiPath).Length != stream.Length
-          || !FileHashMatches(msiPath, versionToken)
-          || !WaitForMsiPackageAvailability(msiPath, 1, 0);
+          || !FileHashMatches(msiPath, versionToken);
         if (shouldWrite) {
           WriteStreamAtomically(stream, msiPath);
         }
@@ -4902,6 +4840,142 @@ namespace VibepolloInstaller {
         message += " Log: " + logPath;
       }
       return message;
+    }
+  }
+
+  internal static class ShellIdentity {
+    internal const string InstallerAppUserModelId = "Vibeshine.Installer";
+
+    private static readonly PropertyKey AppUserModelIdKey =
+      new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+    private static readonly PropertyKey RelaunchCommandKey =
+      new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 2);
+    private static readonly PropertyKey RelaunchDisplayNameKey =
+      new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 4);
+    private static readonly PropertyKey RelaunchIconKey =
+      new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 3);
+    private static readonly Guid PropertyStoreGuid =
+      new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+
+    [ComImport]
+    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStore {
+      [PreserveSig] int GetCount(out uint cProps);
+      [PreserveSig] int GetAt(uint iProp, out PropertyKey pkey);
+      [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant pv);
+      [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant pv);
+      [PreserveSig] int Commit();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropertyKey {
+      public Guid FormatId;
+      public uint PropertyId;
+
+      public PropertyKey(Guid formatId, uint propertyId) {
+        FormatId = formatId;
+        PropertyId = propertyId;
+      }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropVariant : IDisposable {
+      private ushort _valueType;
+      private ushort _reserved1;
+      private ushort _reserved2;
+      private ushort _reserved3;
+      private IntPtr _pointerValue;
+      private int _int32Value;
+
+      public static PropVariant FromString(string value) {
+        return new PropVariant {
+          _valueType = 31,
+          _pointerValue = Marshal.StringToCoTaskMemUni(value ?? string.Empty)
+        };
+      }
+
+      public void Dispose() {
+        PropVariantClear(ref this);
+      }
+    }
+
+    [DllImport("shell32.dll")]
+    private static extern int SHGetPropertyStoreForWindow(
+      IntPtr hwnd,
+      [In] ref Guid iid,
+      [Out, MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore
+    );
+
+    [DllImport("ole32.dll")]
+    private static extern int PropVariantClear(ref PropVariant propVariant);
+
+    internal static void TryApplyInstallerWindowIdentity(IntPtr windowHandle, string displayName) {
+      if (windowHandle == IntPtr.Zero) {
+        return;
+      }
+
+      try {
+        IPropertyStore propertyStore;
+        var propertyStoreGuid = PropertyStoreGuid;
+        var hr = SHGetPropertyStoreForWindow(windowHandle, ref propertyStoreGuid, out propertyStore);
+        if (hr != 0 || propertyStore == null) {
+          return;
+        }
+
+        try {
+          SetStringProperty(propertyStore, AppUserModelIdKey, InstallerAppUserModelId);
+
+          if (!string.IsNullOrWhiteSpace(displayName)) {
+            SetStringProperty(propertyStore, RelaunchDisplayNameKey, displayName);
+          }
+
+          var executablePath = GetExecutablePath();
+          if (!string.IsNullOrWhiteSpace(executablePath)) {
+            SetStringProperty(propertyStore, RelaunchCommandKey, QuoteForCommandLine(executablePath));
+            SetStringProperty(propertyStore, RelaunchIconKey, executablePath + ",0");
+          }
+
+          propertyStore.Commit();
+        } finally {
+          Marshal.FinalReleaseComObject(propertyStore);
+        }
+      } catch {
+      }
+    }
+
+    private static void SetStringProperty(IPropertyStore propertyStore, PropertyKey key, string value) {
+      var propVariant = PropVariant.FromString(value);
+      try {
+        propertyStore.SetValue(ref key, ref propVariant);
+      } finally {
+        propVariant.Dispose();
+      }
+    }
+
+    private static string GetExecutablePath() {
+      try {
+        var entryAssembly = Assembly.GetEntryAssembly();
+        if (entryAssembly != null && !string.IsNullOrWhiteSpace(entryAssembly.Location)) {
+          return Path.GetFullPath(entryAssembly.Location);
+        }
+      } catch {
+      }
+
+      try {
+        using (var process = Process.GetCurrentProcess()) {
+          if (process.MainModule != null && !string.IsNullOrWhiteSpace(process.MainModule.FileName)) {
+            return Path.GetFullPath(process.MainModule.FileName);
+          }
+        }
+      } catch {
+      }
+
+      return string.Empty;
+    }
+
+    private static string QuoteForCommandLine(string path) {
+      return string.IsNullOrWhiteSpace(path) ? string.Empty : "\"" + path + "\"";
     }
   }
 
