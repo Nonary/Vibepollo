@@ -812,7 +812,7 @@ namespace VibepolloInstaller {
       // installed app or temporary generic taskbar identities while WPF loads.
       ShellIdentity.TryApplyInstallerWindowIdentity(
         new WindowInteropHelper(this).Handle,
-        BuildFlavor.IsUninstallOnly ? "Vibeshine Uninstaller" : "Vibeshine Installer"
+        BuildFlavor.IsUninstallOnly ? "Vibepollo Uninstaller" : "Vibepollo Installer"
       );
     }
 
@@ -2776,8 +2776,21 @@ namespace VibepolloInstaller {
     [DllImport("msi.dll", CharSet = CharSet.Unicode)]
     private static extern uint MsiGetProperty(IntPtr hInstall, string szName, StringBuilder szValueBuf, ref uint pchValueBuf);
 
+    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+    private static extern int MsiQueryProductState(string szProduct);
+
     [DllImport("msi.dll")]
     private static extern uint MsiCloseHandle(IntPtr hAny);
+
+    private static bool IsInstalledProductCode(string productCode) {
+      if (!LooksLikeProductCode(productCode)) {
+        return false;
+      }
+
+      // INSTALLSTATE values considered installed: 1=Advertised, 3=Local, 4=Source, 5=Default.
+      var state = MsiQueryProductState(productCode);
+      return state == 1 || state == 3 || state == 4 || state == 5;
+    }
 
     private static bool CanOpenMsiPackage(string msiPath) {
       if (string.IsNullOrWhiteSpace(msiPath) || !File.Exists(msiPath)) {
@@ -3117,7 +3130,7 @@ namespace VibepolloInstaller {
         return new InstallerResult {
           Operation = InstallerOperation.Uninstall,
           ExitCode = 0,
-          Message = "Legacy Apollo uninstall entry is stale; continuing with Vibeshine installation."
+          Message = "Legacy Apollo uninstall entry is stale; continuing with Vibepollo installation."
         };
       }
 
@@ -4844,7 +4857,7 @@ namespace VibepolloInstaller {
   }
 
   internal static class ShellIdentity {
-    internal const string InstallerAppUserModelId = "Vibeshine.Installer";
+    internal const string InstallerAppUserModelId = "Vibepollo.Installer";
 
     private static readonly PropertyKey AppUserModelIdKey =
       new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);

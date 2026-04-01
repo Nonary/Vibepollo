@@ -152,7 +152,7 @@ $sourceFile = Resolve-PathStrict (Join-Path $scriptDir "VibeshineInstaller.cs")
 $manifestFile = Resolve-PathStrict (Join-Path $scriptDir "app.manifest")
 # Keep the branded product icon on the bootstrapper; the installer now uses
 # explicit process/window shell metadata to stay distinct from the installed app.
-$iconPath = Resolve-PathStrict (Join-Path $repoRoot "sunshine.ico")
+$iconPath = Resolve-PathStrict (Join-Path $repoRoot "apollo.ico")
 $licensePath = Resolve-PathStrict (Join-Path $repoRoot "LICENSE")
 $cscPath = Resolve-CscPath
 $frameworkRoot = Resolve-PathStrict "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
