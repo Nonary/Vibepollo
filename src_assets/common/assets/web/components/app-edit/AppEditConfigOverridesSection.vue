@@ -1550,12 +1550,12 @@ function addFirstFilteredEntry() {
 }
 
 function addOverrideToDraft(key: string) {
-  if (!isAllowedKey(key)) return;
   if (isHiddenOverrideKey(key)) return;
   if (isSyntheticKey(key)) {
     addSyntheticOverrideFor('draft', key);
     return;
   }
+  if (!isAllowedKey(key)) return;
   ensureOverridesObjectFor('draft');
   if ((draftOverrides.value as any)[key] !== undefined) return;
   const current = getGlobalValue(key);
@@ -1563,8 +1563,8 @@ function addOverrideToDraft(key: string) {
 }
 
 function queueOverrideAddition(key: string) {
-  if (!isAllowedKey(key)) return;
   if (isHiddenOverrideKey(key)) return;
+  if (!isSyntheticKey(key) && !isAllowedKey(key)) return;
   if (modalUsedOverrideKeys.value.has(key)) return;
   addOverrideToDraft(key);
   if (!usedOverrideKeys.value.has(key) && !pendingAddKeys.value.includes(key)) {
