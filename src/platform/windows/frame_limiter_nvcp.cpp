@@ -21,6 +21,8 @@
   #include <sstream>
   #include <string>
   #include <system_error>
+  #include <type_traits>
+  #include <vector>
   #include <windows.h>
 
 namespace platf::frame_limiter_nvcp {
@@ -64,19 +66,35 @@ namespace platf::frame_limiter_nvcp {
 
     constexpr NvU32 SMOOTH_MOTION_ENABLE_ID = 0xB0D384C0;
     constexpr NvU32 SMOOTH_MOTION_API_MASK_ID = 0xB0CC0875;
+    constexpr NvU32 SMOOTH_MOTION_OFF = 0x00000000;
     constexpr NvU32 SMOOTH_MOTION_ON = 0x00000001;
+    constexpr NvU32 SMOOTH_MOTION_API_MASK_OFF = 0x00000000;
     constexpr NvU32 SMOOTH_MOTION_API_MASK_VALUE = 0x00000007;
     constexpr NvU32 SMOOTH_MOTION_MIN_DRIVER_VERSION = 57186;
     constexpr NvU32 NVAPI_DRIVER_AND_BRANCH_VERSION_ID = 0x2926AAAD;
     constexpr NvU32 NVAPI_DRS_GET_CURRENT_GLOBAL_PROFILE_ID = 0x617bff9f;
+    constexpr NvU32 NVAPI_DRS_RESTORE_PROFILE_DEFAULT_SETTING_ID = 0x53f0381e;
+    constexpr NvU32 NVAPI_DRS_RESTORE_PROFILE_DEFAULT_SETTING_NEW_ID = 0x7DD5B261;
+    constexpr NvU32 NVAPI_DRS_SET_SETTING_ID = 0x577DD202;
+    constexpr NvU32 NVAPI_DRS_SET_SETTING_NEW_ID = 0x8A2CF5F5;
+    constexpr NvU32 NVAPI_DRS_GET_SETTING_ID = 0x73BF8338;
+    constexpr NvU32 NVAPI_DRS_GET_SETTING_NEW_ID = 0xEA99498D;
+    constexpr NvU32 NVAPI_DRS_DELETE_PROFILE_SETTING_ID = 0xE4A26362;
+    constexpr NvU32 NVAPI_DRS_DELETE_PROFILE_SETTING_NEW_ID = 0xD20D29DF;
     constexpr NvU32 ULTRA_LOW_LATENCY_CPL_STATE_ID = 0x0005F543;
     constexpr NvU32 ULTRA_LOW_LATENCY_ENABLED_ID = 0x10835000;
+    constexpr NvU32 ULTRA_LOW_LATENCY_CPL_STATE_OFF = 0x00000000;
     constexpr NvU32 ULTRA_LOW_LATENCY_CPL_STATE_ULTRA = 0x00000002;
+    constexpr NvU32 ULTRA_LOW_LATENCY_ENABLED_OFF = 0x00000000;
     constexpr NvU32 ULTRA_LOW_LATENCY_ENABLED_ON = 0x00000001;
 
     using query_interface_fn = void *(__cdecl *) (NvU32);
     using driver_version_fn = NvAPI_Status(__cdecl *)(NvU32 *, NvAPI_ShortString);
     using get_current_global_profile_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle *);
+    using restore_profile_default_setting_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle, NvU32);
+    using drs_set_setting_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle, NVDRS_SETTING *, NvU32, NvU32);
+    using drs_get_setting_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle, NvU32, NVDRS_SETTING *, NvU32 *);
+    using drs_delete_profile_setting_fn = NvAPI_Status(__cdecl *)(NvDRSSessionHandle, NvDRSProfileHandle, NvU32);
 
     void log_nvapi_error(NvAPI_Status status, const char *label) {
       NvAPI_ShortString message = {};
@@ -161,6 +179,91 @@ namespace platf::frame_limiter_nvcp {
         return NVAPI_NO_IMPLEMENTATION;
       }
       return fn(session, profile);
+    }
+
+    template<typename Func>
+    Func resolve_interface_function(NvU32 primary_id, NvU32 fallback_id = 0) {
+      static_assert(std::is_pointer_v<Func>);
+      auto query = resolve_query_interface();
+      if (!query) {
+        return nullptr;
+      }
+
+      if (auto fn = reinterpret_cast<Func>(query(primary_id))) {
+        return fn;
+      }
+      if (fallback_id != 0) {
+        return reinterpret_cast<Func>(query(fallback_id));
+      }
+      return nullptr;
+    }
+
+    NvAPI_Status drs_set_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NVDRS_SETTING *setting) {
+      static drs_set_setting_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        fn = resolve_interface_function<drs_set_setting_fn>(NVAPI_DRS_SET_SETTING_NEW_ID, NVAPI_DRS_SET_SETTING_ID);
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      return fn(session, profile, setting, 0, 0);
+    }
+
+    NvAPI_Status drs_get_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, NVDRS_SETTING *setting) {
+      static drs_get_setting_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        fn = resolve_interface_function<drs_get_setting_fn>(NVAPI_DRS_GET_SETTING_NEW_ID, NVAPI_DRS_GET_SETTING_ID);
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      NvU32 extra = 0;
+      return fn(session, profile, setting_id, setting, &extra);
+    }
+
+    NvAPI_Status drs_delete_profile_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id) {
+      static drs_delete_profile_setting_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        fn = resolve_interface_function<drs_delete_profile_setting_fn>(NVAPI_DRS_DELETE_PROFILE_SETTING_NEW_ID, NVAPI_DRS_DELETE_PROFILE_SETTING_ID);
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      return fn(session, profile, setting_id);
+    }
+
+    NvAPI_Status restore_profile_default_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id) {
+      static restore_profile_default_setting_fn fn = nullptr;
+      static bool attempted = false;
+      if (!fn && !attempted) {
+        attempted = true;
+        fn = resolve_interface_function<restore_profile_default_setting_fn>(NVAPI_DRS_RESTORE_PROFILE_DEFAULT_SETTING_NEW_ID, NVAPI_DRS_RESTORE_PROFILE_DEFAULT_SETTING_ID);
+      }
+      if (!fn) {
+        return NVAPI_NO_IMPLEMENTATION;
+      }
+      return fn(session, profile, setting_id);
+    }
+
+    bool is_process_running(std::uint32_t pid) {
+      if (pid == 0) {
+        return false;
+      }
+
+      HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+      if (!process) {
+        return false;
+      }
+
+      const DWORD wait_result = WaitForSingleObject(process, 0);
+      CloseHandle(process);
+      return wait_result == WAIT_TIMEOUT;
     }
 
     void cleanup() {
@@ -254,12 +357,13 @@ namespace platf::frame_limiter_nvcp {
     NvAPI_Status get_current_setting(NvU32 setting_id, std::optional<NvU32> &storage, bool *had_override = nullptr, NvU32 *current_value = nullptr) {
       NVDRS_SETTING existing = {};
       existing.version = NVDRS_SETTING_VER;
-      NvAPI_Status status = NvAPI_DRS_GetSetting(g_state.session, g_state.profile, setting_id, &existing);
+      NvAPI_Status status = drs_get_setting(g_state.session, g_state.profile, setting_id, &existing);
       if (status == NVAPI_OK) {
-        const bool setting_in_profile =
+        const bool setting_visible_in_profile =
           existing.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION ||
           (g_state.profile_is_global && existing.settingLocation == NVDRS_GLOBAL_PROFILE_LOCATION) ||
           (!g_state.profile_is_global && existing.settingLocation == NVDRS_BASE_PROFILE_LOCATION);
+        const bool setting_in_profile = setting_visible_in_profile && existing.isCurrentPredefined == 0;
         if (had_override) {
           *had_override = setting_in_profile;
         }
@@ -297,7 +401,7 @@ namespace platf::frame_limiter_nvcp {
       NvDRSProfileHandle profile = nullptr;
       NvAPI_Status status = get_current_global_profile(session, &profile);
       if (status == NVAPI_OK && profile) {
-        NvAPI_Status probe_status = NvAPI_DRS_GetSetting(session, profile, FRL_FPS_ID, &probe);
+        NvAPI_Status probe_status = drs_get_setting(session, profile, FRL_FPS_ID, &probe);
         if (probe_status == NVAPI_OK || probe_status == NVAPI_SETTING_NOT_FOUND) {
           if (is_global) {
             *is_global = true;
@@ -324,7 +428,7 @@ namespace platf::frame_limiter_nvcp {
         NvDRSProfileHandle profile = nullptr;
         NvAPI_Status status = get_current_global_profile(session, &profile);
         if (status == NVAPI_OK && profile) {
-          NvAPI_Status probe_status = NvAPI_DRS_GetSetting(session, profile, FRL_FPS_ID, &probe);
+          NvAPI_Status probe_status = drs_get_setting(session, profile, FRL_FPS_ID, &probe);
           if (probe_status == NVAPI_OK || probe_status == NVAPI_SETTING_NOT_FOUND) {
             return profile;
           }
@@ -372,6 +476,7 @@ namespace platf::frame_limiter_nvcp {
       std::optional<NvU32> smooth_motion_mask_fallback_value;
       bool smooth_motion_mask_override = false;
       std::optional<bool> profile_is_global;
+      std::optional<std::uint32_t> owner_pid;
     };
 
     bool restore_with_fresh_session(const restore_info_t &restore_data);
@@ -455,6 +560,9 @@ namespace platf::frame_limiter_nvcp {
         j["profile_scope"] = *info.profile_is_global ? "global" : "base";
       } else {
         j["profile_scope"] = nullptr;
+      }
+      if (info.owner_pid.has_value()) {
+        j["owner_pid"] = *info.owner_pid;
       }
 
       std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
@@ -563,6 +671,9 @@ namespace platf::frame_limiter_nvcp {
       } else if (j.contains("profile_is_global") && j["profile_is_global"].is_boolean()) {
         info.profile_is_global = j["profile_is_global"].get<bool>();
       }
+      if (j.contains("owner_pid") && j["owner_pid"].is_number_unsigned()) {
+        info.owner_pid = j["owner_pid"].get<std::uint32_t>();
+      }
 
       if (!info.frame_limit_applied && !info.vsync_applied && !info.llm_applied && !info.ull_cpl_applied && !info.ull_enabled_applied && !info.smooth_motion_applied && !info.smooth_motion_mask_applied) {
         return std::nullopt;
@@ -590,6 +701,14 @@ namespace platf::frame_limiter_nvcp {
       auto info_opt = read_overrides_file();
       if (!info_opt) {
         return;
+      }
+      if (info_opt->owner_pid.has_value()) {
+        const auto owner_pid = *info_opt->owner_pid;
+        const auto current_pid = static_cast<std::uint32_t>(GetCurrentProcessId());
+        if (owner_pid != current_pid && is_process_running(owner_pid)) {
+          BOOST_LOG(debug) << "NVIDIA Control Panel overrides: recovery file owned by active process " << owner_pid << "; skipping restore";
+          return;
+        }
       }
 
       BOOST_LOG(info) << "NVIDIA Control Panel overrides: pending recovery file detected; attempting restore";
@@ -646,99 +765,220 @@ namespace platf::frame_limiter_nvcp {
         }
         BOOST_LOG(debug) << "NVIDIA Control Panel overrides: restoring " << (profile_is_global ? "global" : "base") << " profile settings";
 
-        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *label, bool skip_delete = false) -> bool {
+        auto append_unique_profile = [](std::vector<NvDRSProfileHandle> &profiles, NvDRSProfileHandle candidate) {
+          if (candidate && std::find(profiles.begin(), profiles.end(), candidate) == profiles.end()) {
+            profiles.push_back(candidate);
+          }
+        };
+
+        std::vector<NvDRSProfileHandle> hidden_setting_profiles;
+        append_unique_profile(hidden_setting_profiles, profile);
+        if (profile_is_global) {
+          NvDRSProfileHandle current_global_profile = nullptr;
+          NvAPI_Status global_status = get_current_global_profile(session, &current_global_profile);
+          if (global_status == NVAPI_OK && current_global_profile) {
+            append_unique_profile(hidden_setting_profiles, current_global_profile);
+          }
+
+          NvDRSProfileHandle base_profile = nullptr;
+          NvAPI_Status base_status = NvAPI_DRS_GetBaseProfile(session, &base_profile);
+          if (base_status == NVAPI_OK && base_profile) {
+            append_unique_profile(hidden_setting_profiles, base_profile);
+          }
+        }
+
+        auto set_setting_value = [&](NvDRSProfileHandle target_profile, NvU32 setting_id, NvU32 value, const char *label) -> bool {
           NVDRS_SETTING setting = {};
           setting.version = NVDRS_SETTING_VER;
           setting.settingId = setting_id;
           setting.settingType = NVDRS_DWORD_TYPE;
           setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
+          setting.u32CurrentValue = value;
 
+          NvAPI_Status s = drs_set_setting(session, target_profile, &setting);
+          if (s != NVAPI_OK) {
+            log_nvapi_error(s, label);
+            return false;
+          }
+          return true;
+        };
+
+        auto restore_profile_default = [&](NvDRSProfileHandle target_profile, NvU32 setting_id, const char *label) -> bool {
+          NvAPI_Status s = restore_profile_default_setting(session, target_profile, setting_id);
+          if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
+            log_nvapi_error(s, label);
+            return false;
+          }
+          return true;
+        };
+
+        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *restore_label, const char *restore_default_label) -> bool {
           if (had_override) {
-            if (value) {
-              setting.u32CurrentValue = *value;
-              NvAPI_Status s = NvAPI_DRS_SetSetting(session, profile, &setting);
-              if (s != NVAPI_OK) {
-                log_nvapi_error(s, label);
-                return false;
-              }
-            } else if (!skip_delete) {
-              NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
-              if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
-                log_nvapi_error(s, label);
-                return false;
-              }
+            const std::optional<NvU32> restore_value = value.has_value() ? value : fallback;
+            if (restore_value) {
+              return set_setting_value(profile, setting_id, *restore_value, restore_label);
             }
-          } else {
-            if (fallback) {
-              setting.u32CurrentValue = *fallback;
-              NvAPI_Status s = NvAPI_DRS_SetSetting(session, profile, &setting);
-              if (s != NVAPI_OK) {
-                log_nvapi_error(s, label);
-                return false;
+          }
+          return restore_profile_default(profile, setting_id, restore_default_label);
+        };
+
+        auto delete_profile_setting = [&](NvDRSProfileHandle target_profile, NvU32 setting_id, const char *label) -> bool {
+          NvAPI_Status s = drs_delete_profile_setting(session, target_profile, setting_id);
+          if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
+            log_nvapi_error(s, label);
+            return false;
+          }
+          return true;
+        };
+
+        auto restore_hidden_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *restore_label, const char *restore_default_label, const char *delete_label) -> bool {
+          if (had_override) {
+            const std::optional<NvU32> restore_value = value.has_value() ? value : fallback;
+            if (restore_value) {
+              for (const auto candidate_profile : hidden_setting_profiles) {
+                if (candidate_profile == NVAPI_DRS_GLOBAL_PROFILE) {
+                  continue;
+                }
+                if (!set_setting_value(candidate_profile, setting_id, *restore_value, restore_label)) {
+                  return false;
+                }
               }
-            } else if (!skip_delete) {
-              NvAPI_Status s = NvAPI_DRS_DeleteProfileSetting(session, profile, setting_id);
-              if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
-                log_nvapi_error(s, label);
-                return false;
-              }
+              return true;
+            }
+          }
+
+          for (const auto candidate_profile : hidden_setting_profiles) {
+            if (!restore_profile_default(candidate_profile, setting_id, restore_default_label) ||
+                !delete_profile_setting(candidate_profile, setting_id, delete_label)) {
+              return false;
             }
           }
           return true;
         };
 
+        const bool force_disable_smooth_motion_for_default_restore =
+          (restore_data.smooth_motion_applied || restore_data.smooth_motion_mask_applied) &&
+          ((!restore_data.smooth_motion_override && !restore_data.smooth_motion_value) ||
+           (!restore_data.smooth_motion_mask_override && !restore_data.smooth_motion_mask_value));
+        const bool force_disable_ull_for_default_restore =
+          (restore_data.ull_cpl_applied || restore_data.ull_enabled_applied) &&
+          ((!restore_data.ull_cpl_override && !restore_data.ull_cpl_value) ||
+           (!restore_data.ull_enabled_override && !restore_data.ull_enabled_value));
+
+        if (force_disable_smooth_motion_for_default_restore || force_disable_ull_for_default_restore) {
+          if (force_disable_smooth_motion_for_default_restore) {
+            for (const auto candidate_profile : hidden_setting_profiles) {
+              if (candidate_profile == NVAPI_DRS_GLOBAL_PROFILE) {
+                continue;
+              }
+              if (!set_setting_value(candidate_profile, SMOOTH_MOTION_ENABLE_ID, SMOOTH_MOTION_OFF, "DRS_SetSetting(SMOOTH_MOTION force_off)")) {
+                result = NVAPI_ERROR;
+                break;
+              }
+            }
+            if (result != NVAPI_OK) {
+              break;
+            }
+          }
+          if (force_disable_ull_for_default_restore) {
+            for (const auto candidate_profile : hidden_setting_profiles) {
+              if (candidate_profile == NVAPI_DRS_GLOBAL_PROFILE) {
+                continue;
+              }
+              if (!set_setting_value(candidate_profile, ULTRA_LOW_LATENCY_CPL_STATE_ID, ULTRA_LOW_LATENCY_CPL_STATE_OFF, "DRS_SetSetting(ULL_CPL force_off)") ||
+                  !set_setting_value(candidate_profile, ULTRA_LOW_LATENCY_ENABLED_ID, ULTRA_LOW_LATENCY_ENABLED_OFF, "DRS_SetSetting(ULL_ENABLED force_off)")) {
+                result = NVAPI_ERROR;
+                break;
+              }
+            }
+            if (result != NVAPI_OK) {
+              break;
+            }
+          }
+
+          result = NvAPI_DRS_SaveSettings(session);
+          if (result != NVAPI_OK) {
+            log_nvapi_error(result, "DRS_SaveSettings(force_off)");
+            break;
+          }
+        }
+
         if (restore_data.frame_limit_applied) {
-          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value.has_value(), restore_data.frame_limit_value, std::nullopt, "DRS_SetSetting(FRL_FPS restore)")) {
+          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value.has_value(), restore_data.frame_limit_value, std::nullopt, "DRS_SetSetting(FRL_FPS restore)", "DRS_RestoreProfileDefaultSetting(FRL_FPS)")) {
+            result = NVAPI_ERROR;
             break;
           }
         }
 
         if (restore_data.vsync_applied) {
-          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value.has_value(), restore_data.vsync_value, std::nullopt, "DRS_SetSetting(VSYNCMODE restore)")) {
+          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value.has_value(), restore_data.vsync_value, std::nullopt, "DRS_SetSetting(VSYNCMODE restore)", "DRS_RestoreProfileDefaultSetting(VSYNCMODE)")) {
+            result = NVAPI_ERROR;
             break;
           }
         }
 
         if (restore_data.llm_applied) {
-          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value.has_value(), restore_data.prerender_value, std::nullopt, "DRS_SetSetting(PRERENDERLIMIT restore)")) {
+          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value.has_value(), restore_data.prerender_value, std::nullopt, "DRS_SetSetting(PRERENDERLIMIT restore)", "DRS_RestoreProfileDefaultSetting(PRERENDERLIMIT)")) {
+            result = NVAPI_ERROR;
             break;
           }
         }
 
         if (restore_data.ull_cpl_applied) {
-          if (!restore_setting(ULTRA_LOW_LATENCY_CPL_STATE_ID, restore_data.ull_cpl_override, restore_data.ull_cpl_value, restore_data.ull_cpl_fallback_value, "DRS_SetSetting(ULL_CPL restore)", true)) {
+          if (!restore_hidden_setting(ULTRA_LOW_LATENCY_CPL_STATE_ID, restore_data.ull_cpl_override, restore_data.ull_cpl_value, restore_data.ull_cpl_fallback_value, "DRS_SetSetting(ULL_CPL restore)", "DRS_RestoreProfileDefaultSetting(ULL_CPL)", "DRS_DeleteProfileSetting(ULL_CPL)")) {
+            result = NVAPI_ERROR;
             break;
           }
-          NvU32 restored_value = restore_data.ull_cpl_override && restore_data.ull_cpl_value ? *restore_data.ull_cpl_value : (restore_data.ull_cpl_fallback_value ? *restore_data.ull_cpl_fallback_value : 0u);
-          BOOST_LOG(info) << "NVIDIA Ultra Low Latency CPL state restored to value " << restored_value;
+          if (restore_data.ull_cpl_override && restore_data.ull_cpl_value) {
+            BOOST_LOG(info) << "NVIDIA Ultra Low Latency CPL state restored to value " << *restore_data.ull_cpl_value;
+          } else {
+            BOOST_LOG(info) << "NVIDIA Ultra Low Latency CPL state restored to profile default";
+          }
         }
 
         if (restore_data.ull_enabled_applied) {
-          if (!restore_setting(ULTRA_LOW_LATENCY_ENABLED_ID, restore_data.ull_enabled_override, restore_data.ull_enabled_value, restore_data.ull_enabled_fallback_value, "DRS_SetSetting(ULL_ENABLED restore)", true)) {
+          if (!restore_hidden_setting(ULTRA_LOW_LATENCY_ENABLED_ID, restore_data.ull_enabled_override, restore_data.ull_enabled_value, restore_data.ull_enabled_fallback_value, "DRS_SetSetting(ULL_ENABLED restore)", "DRS_RestoreProfileDefaultSetting(ULL_ENABLED)", "DRS_DeleteProfileSetting(ULL_ENABLED)")) {
+            result = NVAPI_ERROR;
             break;
           }
-          NvU32 restored_value = restore_data.ull_enabled_override && restore_data.ull_enabled_value ? *restore_data.ull_enabled_value : (restore_data.ull_enabled_fallback_value ? *restore_data.ull_enabled_fallback_value : 0u);
-          BOOST_LOG(info) << "NVIDIA Ultra Low Latency enable restored to value " << restored_value;
+          if (restore_data.ull_enabled_override && restore_data.ull_enabled_value) {
+            BOOST_LOG(info) << "NVIDIA Ultra Low Latency enable restored to value " << *restore_data.ull_enabled_value;
+          } else {
+            BOOST_LOG(info) << "NVIDIA Ultra Low Latency enable restored to profile default";
+          }
         }
 
         if (restore_data.smooth_motion_applied) {
-          // Skip delete for smooth motion settings to avoid breaking driver state.
-          // Deleting undocumented settings can mark them as unsupported in the driver profile.
-          if (!restore_setting(SMOOTH_MOTION_ENABLE_ID, restore_data.smooth_motion_override, restore_data.smooth_motion_value, restore_data.smooth_motion_fallback_value, "DRS_SetSetting(SMOOTH_MOTION restore)", true)) {
+          const bool restore_smooth_motion_to_default = !restore_data.smooth_motion_override;
+          if (!restore_hidden_setting(
+                SMOOTH_MOTION_ENABLE_ID,
+                restore_data.smooth_motion_override,
+                restore_data.smooth_motion_value,
+                restore_data.smooth_motion_fallback_value,
+                "DRS_SetSetting(SMOOTH_MOTION restore)",
+                "DRS_RestoreProfileDefaultSetting(SMOOTH_MOTION)",
+                "DRS_DeleteProfileSetting(SMOOTH_MOTION)"
+              )) {
+            result = NVAPI_ERROR;
             break;
           }
-          NvU32 restored_value = restore_data.smooth_motion_override && restore_data.smooth_motion_value ? *restore_data.smooth_motion_value : (restore_data.smooth_motion_fallback_value ? *restore_data.smooth_motion_fallback_value : 0u);
-          BOOST_LOG(info) << "NVIDIA Smooth Motion restored to value " << restored_value;
+          if (!restore_smooth_motion_to_default && restore_data.smooth_motion_value) {
+            BOOST_LOG(info) << "NVIDIA Smooth Motion restored to value " << *restore_data.smooth_motion_value;
+          } else {
+            BOOST_LOG(info) << "NVIDIA Smooth Motion restored to profile default";
+          }
         }
 
         if (restore_data.smooth_motion_mask_applied) {
-          // Skip delete for smooth motion settings to avoid breaking driver state.
-          // Deleting undocumented settings can mark them as unsupported in the driver profile.
-          if (!restore_setting(SMOOTH_MOTION_API_MASK_ID, restore_data.smooth_motion_mask_override, restore_data.smooth_motion_mask_value, restore_data.smooth_motion_mask_fallback_value, "DRS_SetSetting(SMOOTH_MOTION_MASK restore)", true)) {
+          if (!restore_hidden_setting(SMOOTH_MOTION_API_MASK_ID, restore_data.smooth_motion_mask_override, restore_data.smooth_motion_mask_value, restore_data.smooth_motion_mask_fallback_value, "DRS_SetSetting(SMOOTH_MOTION_MASK restore)", "DRS_RestoreProfileDefaultSetting(SMOOTH_MOTION_MASK)", "DRS_DeleteProfileSetting(SMOOTH_MOTION_MASK)")) {
+            result = NVAPI_ERROR;
             break;
           }
-          NvU32 restored_mask = restore_data.smooth_motion_mask_override && restore_data.smooth_motion_mask_value ? *restore_data.smooth_motion_mask_value : (restore_data.smooth_motion_mask_fallback_value ? *restore_data.smooth_motion_mask_fallback_value : 0u);
-          BOOST_LOG(info) << "NVIDIA Smooth Motion API mask restored to value " << restored_mask;
+          if (restore_data.smooth_motion_mask_override && restore_data.smooth_motion_mask_value) {
+            BOOST_LOG(info) << "NVIDIA Smooth Motion API mask restored to value " << *restore_data.smooth_motion_mask_value;
+          } else {
+            BOOST_LOG(info) << "NVIDIA Smooth Motion API mask restored to profile default";
+          }
         }
 
         result = NvAPI_DRS_SaveSettings(session);
@@ -862,7 +1102,7 @@ namespace platf::frame_limiter_nvcp {
         }
 
         if (!already_disabled || apply_frame_limit) {
-          status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+          status = drs_set_setting(g_state.session, g_state.profile, &setting);
           if (status != NVAPI_OK) {
             log_nvapi_error(status, "DRS_SetSetting(FRL_FPS)");
           } else {
@@ -891,7 +1131,7 @@ namespace platf::frame_limiter_nvcp {
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
         setting.u32CurrentValue = VSYNCMODE_FORCEOFF;
 
-        status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+        status = drs_set_setting(g_state.session, g_state.profile, &setting);
         if (status != NVAPI_OK) {
           log_nvapi_error(status, "DRS_SetSetting(VSYNCMODE)");
         } else {
@@ -914,7 +1154,7 @@ namespace platf::frame_limiter_nvcp {
         setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
         setting.u32CurrentValue = 1u;
 
-        status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+        status = drs_set_setting(g_state.session, g_state.profile, &setting);
         if (status != NVAPI_OK) {
           log_nvapi_error(status, "DRS_SetSetting(PRERENDERLIMIT)");
         } else {
@@ -939,6 +1179,11 @@ namespace platf::frame_limiter_nvcp {
         }
         if (status == NVAPI_OK) {
           g_state.original_smooth_motion_value = original_smooth_value;
+          if (g_state.original_smooth_motion_override && original_smooth_value == SMOOTH_MOTION_OFF) {
+            BOOST_LOG(warning) << "NVIDIA Smooth Motion explicit Off override detected; treating it as poisoned state and restoring to profile default after stream";
+            g_state.original_smooth_motion.reset();
+            g_state.original_smooth_motion_override = false;
+          }
         }
 
         NvU32 original_mask_value = 0;
@@ -949,6 +1194,11 @@ namespace platf::frame_limiter_nvcp {
         }
         NvU32 recorded_mask_value = original_mask_value;
         if (mask_status == NVAPI_OK) {
+          if (g_state.original_smooth_motion_mask_override && recorded_mask_value == SMOOTH_MOTION_API_MASK_OFF) {
+            BOOST_LOG(warning) << "NVIDIA Smooth Motion API mask explicit 0 override detected; treating it as poisoned state and restoring to profile default after stream";
+            g_state.original_smooth_motion_mask.reset();
+            g_state.original_smooth_motion_mask_override = false;
+          }
           if (!g_state.original_smooth_motion_mask_override && !g_state.original_smooth_motion_mask.has_value() && recorded_mask_value == 0) {
             recorded_mask_value = SMOOTH_MOTION_API_MASK_VALUE;
           }
@@ -966,7 +1216,7 @@ namespace platf::frame_limiter_nvcp {
           setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
           setting.u32CurrentValue = desired;
 
-          status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+          status = drs_set_setting(g_state.session, g_state.profile, &setting);
           if (status != NVAPI_OK) {
             log_nvapi_error(status, "DRS_SetSetting(SMOOTH_MOTION)");
           } else {
@@ -989,7 +1239,7 @@ namespace platf::frame_limiter_nvcp {
             mask_setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
             mask_setting.u32CurrentValue = SMOOTH_MOTION_API_MASK_VALUE;
 
-            NvAPI_Status set_mask_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &mask_setting);
+            NvAPI_Status set_mask_status = drs_set_setting(g_state.session, g_state.profile, &mask_setting);
             if (set_mask_status != NVAPI_OK) {
               log_nvapi_error(set_mask_status, "DRS_SetSetting(SMOOTH_MOTION_MASK)");
             } else {
@@ -1007,6 +1257,11 @@ namespace platf::frame_limiter_nvcp {
             g_state.original_ull_cpl_state_value.reset();
           } else {
             g_state.original_ull_cpl_state_value = ull_cpl_value;
+            if (g_state.original_ull_cpl_state_override && ull_cpl_value == ULTRA_LOW_LATENCY_CPL_STATE_OFF) {
+              BOOST_LOG(warning) << "NVIDIA Ultra Low Latency CPL state explicit Off override detected; treating it as poisoned state and restoring to profile default after stream";
+              g_state.original_ull_cpl_state.reset();
+              g_state.original_ull_cpl_state_override = false;
+            }
             if (ull_cpl_value != ULTRA_LOW_LATENCY_CPL_STATE_ULTRA) {
               NVDRS_SETTING setting = {};
               setting.version = NVDRS_SETTING_VER;
@@ -1015,7 +1270,7 @@ namespace platf::frame_limiter_nvcp {
               setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
               setting.u32CurrentValue = ULTRA_LOW_LATENCY_CPL_STATE_ULTRA;
 
-              NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+              NvAPI_Status set_status = drs_set_setting(g_state.session, g_state.profile, &setting);
               if (set_status != NVAPI_OK) {
                 log_nvapi_error(set_status, "DRS_SetSetting(ULL_CPL_STATE)");
               } else {
@@ -1033,6 +1288,11 @@ namespace platf::frame_limiter_nvcp {
             g_state.original_ull_enabled_value.reset();
           } else {
             g_state.original_ull_enabled_value = ull_enabled_value;
+            if (g_state.original_ull_enabled_override && ull_enabled_value == ULTRA_LOW_LATENCY_ENABLED_OFF) {
+              BOOST_LOG(warning) << "NVIDIA Ultra Low Latency enabled explicit Off override detected; treating it as poisoned state and restoring to profile default after stream";
+              g_state.original_ull_enabled.reset();
+              g_state.original_ull_enabled_override = false;
+            }
             if (ull_enabled_value != ULTRA_LOW_LATENCY_ENABLED_ON) {
               NVDRS_SETTING setting = {};
               setting.version = NVDRS_SETTING_VER;
@@ -1041,7 +1301,7 @@ namespace platf::frame_limiter_nvcp {
               setting.settingLocation = NVDRS_CURRENT_PROFILE_LOCATION;
               setting.u32CurrentValue = ULTRA_LOW_LATENCY_ENABLED_ON;
 
-              NvAPI_Status set_status = NvAPI_DRS_SetSetting(g_state.session, g_state.profile, &setting);
+              NvAPI_Status set_status = drs_set_setting(g_state.session, g_state.profile, &setting);
               if (set_status != NVAPI_OK) {
                 log_nvapi_error(set_status, "DRS_SetSetting(ULL_ENABLED)");
               } else {
@@ -1084,6 +1344,7 @@ namespace platf::frame_limiter_nvcp {
           g_state.original_smooth_motion_mask_value,
           g_state.original_smooth_motion_mask_override,
           g_state.profile_is_global,
+          static_cast<std::uint32_t>(GetCurrentProcessId()),
         };
         if (write_overrides_file(info)) {
           g_recovery_file_owned = true;
@@ -1125,6 +1386,7 @@ namespace platf::frame_limiter_nvcp {
       g_state.original_smooth_motion_mask_value,
       g_state.original_smooth_motion_mask_override,
       g_state.profile_is_global,
+      static_cast<std::uint32_t>(GetCurrentProcessId()),
     };
 
     cleanup();
