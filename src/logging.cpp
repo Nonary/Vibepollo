@@ -54,8 +54,10 @@ using namespace std::literals;
 namespace logging {
   namespace detail {
     constexpr std::size_t k_max_session_count = 30;
-    constexpr std::size_t k_max_session_rollovers = 10;
     constexpr std::uintmax_t k_rollover_size_bytes = 2ull * 1024ull * 1024ull;
+    constexpr std::uintmax_t k_max_session_log_bytes = 10ull * 1024ull * 1024ull;
+    // Keep one active log plus up to four rollover files so a single session stays around 10 MiB.
+    constexpr std::size_t k_max_session_rollovers = static_cast<std::size_t>((k_max_session_log_bytes / k_rollover_size_bytes) - 1ull);
     inline std::filesystem::path log_root;
     inline std::filesystem::path current_log_file;
     inline std::string log_basename;

@@ -62,7 +62,7 @@ See below for details on token endpoints and usage examples.
 ## GET /api/logs
 @copydoc confighttp::getLogs()
 
-- Returns the most recent session log from the managed `logs` folder (Sunshine keeps the last 30 sessions with rollovers for files that exceed ~2MB).
+- Returns the most recent session log from the managed `logs` folder (Sunshine keeps the last 30 sessions, with each session capped at about 10 MiB by rolling ~2MB log files).
 
 ## GET /api/logs/export
 Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).

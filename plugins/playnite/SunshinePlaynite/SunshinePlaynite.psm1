@@ -136,13 +136,87 @@ function Purge-OldLogSessions {
   } catch {}
 }
 
+function Get-LogMaxRollovers {
+  try {
+    if (-not $script:LogRolloverBytes) { return 0 }
+    $maxSessionBytes = $script:LogMaxSessionBytes
+    if (-not $maxSessionBytes) { $maxSessionBytes = 10MB }
+    $fileCount = [Math]::Floor([double]$maxSessionBytes / [double]$script:LogRolloverBytes)
+    if ($fileCount -le 1) { return 0 }
+    return [int]($fileCount - 1)
+  } catch {
+    return 4
+  }
+}
+
+function Rotate-LogFile {
+  [CmdletBinding()]
+  param()
+
+  try {
+    if (-not $script:LogBasePath) { $script:LogBasePath = $script:LogPath }
+    if (-not $script:LogBasePath) { return }
+    if (-not $script:LogRolloverIndex) { $script:LogRolloverIndex = 0 }
+
+    $maxRollovers = 0
+    try { $maxRollovers = [int]$script:LogMaxRollovers } catch { $maxRollovers = 0 }
+
+    $activePath = $script:LogPath
+    if (-not $activePath) { $activePath = $script:LogBasePath }
+
+    if ($maxRollovers -le 0) {
+      try {
+        if (Test-Path $script:LogBasePath) {
+          Remove-Item -Path $script:LogBasePath -Force -ErrorAction SilentlyContinue
+        }
+      } catch {}
+      $script:LogPath = $script:LogBasePath
+      return
+    }
+
+    $next = [int]$script:LogRolloverIndex + 1
+    if ($next -gt $maxRollovers) { $next = 1 }
+
+    $rolloverPath = "$($script:LogBasePath).$next"
+    try {
+      if (Test-Path $rolloverPath) {
+        Remove-Item -Path $rolloverPath -Force -ErrorAction SilentlyContinue
+      }
+    } catch {}
+
+    try {
+      if ($activePath -and (Test-Path $activePath) -and ($activePath -ne $rolloverPath)) {
+        Move-Item -Path $activePath -Destination $rolloverPath -Force -ErrorAction Stop
+      }
+    }
+    catch {
+      try {
+        if ($activePath -and (Test-Path $activePath) -and ($activePath -ne $rolloverPath)) {
+          Copy-Item -Path $activePath -Destination $rolloverPath -Force -ErrorAction Stop
+          Remove-Item -Path $activePath -Force -ErrorAction SilentlyContinue
+        }
+      } catch {}
+    }
+
+    try {
+      if (Test-Path $script:LogBasePath) {
+        Remove-Item -Path $script:LogBasePath -Force -ErrorAction SilentlyContinue
+      }
+    } catch {}
+
+    $script:LogRolloverIndex = $next
+    $script:LogPath = $script:LogBasePath
+  } catch {}
+}
+
 function Initialize-Logging {
   try {
     if (-not $script:LogPath) { $script:LogPath = Resolve-LogPath }
     if (-not $script:LogBasePath) { $script:LogBasePath = $script:LogPath }
     if (-not $script:LogRolloverIndex) { $script:LogRolloverIndex = 0 }
     if (-not $script:LogRolloverBytes) { $script:LogRolloverBytes = 2MB }
-    if (-not $script:LogMaxRollovers) { $script:LogMaxRollovers = 10 }
+    if (-not $script:LogMaxSessionBytes) { $script:LogMaxSessionBytes = 10MB }
+    if (-not $script:LogMaxRollovers) { $script:LogMaxRollovers = Get-LogMaxRollovers }
     # Initialize log level from env, default to DEBUG (slightly excessive, but controlled)
     if (-not $script:LogLevel) {
       $lvl = $env:SUNSHINE_PLAYNITE_LOGLEVEL
@@ -245,12 +319,7 @@ function Write-Log {
         if (Test-Path $script:LogPath) {
           $len = (Get-Item $script:LogPath).Length
           if ($script:LogRolloverBytes -and $len -ge $script:LogRolloverBytes) {
-            if (-not $script:LogBasePath) { $script:LogBasePath = $script:LogPath }
-            if (-not $script:LogRolloverIndex) { $script:LogRolloverIndex = 0 }
-            $next = [int]$script:LogRolloverIndex + 1
-            if ($script:LogMaxRollovers -and $next -gt [int]$script:LogMaxRollovers) { $next = 1 }
-            $script:LogRolloverIndex = $next
-            $script:LogPath = "$($script:LogBasePath).$($script:LogRolloverIndex)"
+            Rotate-LogFile
           }
         }
       } catch {}
