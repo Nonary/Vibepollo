@@ -1921,6 +1921,7 @@ namespace playnite_launcher::lossless {
     if (exe.empty()) {
       return false;
     }
+    SetLastError(ERROR_SUCCESS);
     STARTUPINFOW si {sizeof(si)};
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_SHOWNORMAL;
@@ -1983,10 +1984,14 @@ namespace playnite_launcher::lossless {
             &pi
           );
           if (!ok) {
-            BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << GetLastError();
+            DWORD err = GetLastError();
+            BOOST_LOG(warning) << "Lossless Scaling: CreateProcessAsUser failed, error=" << err;
+            SetLastError(err);
           }
         } else {
-          BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << GetLastError();
+          DWORD err = GetLastError();
+          BOOST_LOG(warning) << "Lossless Scaling: impersonation failed for CreateProcessAsUser, error=" << err;
+          SetLastError(err);
         }
         if (ok) {
           launched = true;
@@ -1999,8 +2004,10 @@ namespace playnite_launcher::lossless {
     }
     if (!launched) {
       if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi)) {
-        BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << GetLastError();
+        DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Lossless Scaling: CreateProcess fallback failed, error=" << err;
         close_process_handles();
+        SetLastError(err);
         return false;
       }
       launched = true;
@@ -2108,7 +2115,8 @@ namespace playnite_launcher::lossless {
       if (launch_lossless_executable(*exe, focused_game_pid, !legacy_auto_detect)) {
         BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
       } else {
-        BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << GetLastError();
+        DWORD err = GetLastError();
+        BOOST_LOG(warning) << "Lossless Scaling: relaunch failed, error=" << err;
         return;
       }
       if (!wait_for_lossless_ready(3s)) {
