@@ -527,11 +527,35 @@ namespace platf {
     virtual ~mic_t() = default;
   };
 
+  class speaker_t {
+  public:
+    virtual int write(const float *samples, std::uint32_t frame_count) = 0;
+    virtual ~speaker_t() = default;
+  };
+
+  struct capture_snapshot_t {
+    std::wstring console_id;
+    std::wstring comms_id;
+    std::wstring multimedia_id;
+  };
+
   class audio_control_t {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) = 0;
+
+    virtual std::unique_ptr<speaker_t> virtual_microphone(const std::string &device_name, std::uint32_t sample_rate, std::uint32_t frame_size) = 0;
+
+    virtual capture_snapshot_t snapshot_capture_defaults() { return {}; }
+
+    virtual void switch_capture_to(const std::string &device_name) {}
+
+    virtual void restore_capture_from(const capture_snapshot_t &snapshot) {}
+
+    virtual std::string get_current_default_capture_name() { return {}; }
+
+    virtual void reset_default_capture_to_first_real() {}
 
     /**
      * @brief Check if the audio sink is available in the system.

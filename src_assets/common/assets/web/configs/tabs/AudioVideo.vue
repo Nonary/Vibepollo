@@ -229,6 +229,30 @@ function selectVirtualDisplayLayout(v: unknown) {
       class="mb-6"
     />
 
+    <ConfigFieldRenderer
+      setting-key="mic_sink"
+      v-model="config.mic_sink"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      setting-key="mic_capture_device"
+      v-model="config.mic_capture_device"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      setting-key="mic_buffer_ms"
+      v-model="config.mic_buffer_ms"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      setting-key="mic_buffer_packets"
+      v-model="config.mic_buffer_packets"
+      class="mb-6"
+    />
+
     <AdapterNameSelector />
 
     <!-- Display configuration: clear, guided, pre-stream focused -->
