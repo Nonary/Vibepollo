@@ -365,9 +365,17 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+  if (shutdown_event->peek()) {
+    return lifetime::desired_exit_code;
+  }
+
   auto proc_deinit_guard = proc::init();
   if (!proc_deinit_guard) {
     BOOST_LOG(error) << "Proc failed to initialize"sv;
+  }
+
+  if (shutdown_event->peek()) {
+    return lifetime::desired_exit_code;
   }
 
 #ifdef _WIN32
@@ -375,6 +383,10 @@ int main(int argc, char *argv[]) {
   if (VDISPLAY::should_auto_enable_virtual_display()) {
     BOOST_LOG(info) << "No physical monitors detected at initialization. Initializing virtual display driver.";
     proc::initVDisplayDriver();
+  }
+
+  if (shutdown_event->peek()) {
+    return lifetime::desired_exit_code;
   }
 
   // Crash-recovery janitor: if Sunshine starts and finds active virtual displays before
@@ -395,6 +407,10 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
+  if (shutdown_event->peek()) {
+    return lifetime::desired_exit_code;
+  }
+
   reed_solomon_init();
   auto input_deinit_guard = input::init();
 
@@ -402,9 +418,13 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
-  auto startup_probe = []() {
+  auto startup_probe = [&shutdown_event]() {
     if (video::has_attempted_encoder_probe()) {
       BOOST_LOG(debug) << "Startup encoder probe skipped; probe already attempted.";
+      return;
+    }
+
+    if (shutdown_event->peek()) {
       return;
     }
 
@@ -419,6 +439,10 @@ int main(int argc, char *argv[]) {
     auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
       VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
     });
+
+    if (shutdown_event->peek()) {
+      return;
+    }
 #endif
 
     bool encoder_probe_failed = video::probe_encoders();
@@ -426,12 +450,12 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
     // If the probe failed and there's no active display (headless with VDD),
     // wait for the display to become available via DXGI and retry.
-    if (encoder_probe_failed) {
+    if (encoder_probe_failed && !shutdown_event->peek()) {
       BOOST_LOG(info) << "Startup encoder probe failed; waiting for display activation before retry.";
       constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
       const auto deadline = std::chrono::steady_clock::now() + kDisplayActivationTimeout;
       bool display_activated = false;
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (std::chrono::steady_clock::now() < deadline && !shutdown_event->peek()) {
         if (VDISPLAY::has_active_physical_display() ||
             !VDISPLAY::enumerateSudaVDADisplays().empty()) {
           display_activated = true;
