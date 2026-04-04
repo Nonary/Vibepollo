@@ -542,6 +542,12 @@ namespace platf {
 
     virtual std::optional<sink_t> sink_info() = 0;
 
+    /**
+     * @brief Resets the default audio device away from virtual streaming speakers.
+     * If no valid device is available, waits for one to appear before giving up.
+     */
+    virtual void reset_default_device() {}
+
     virtual ~audio_control_t() = default;
   };
 

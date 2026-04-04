@@ -354,6 +354,93 @@ namespace platf::audio {
     return device;
   }
 
+  /**
+   * @brief Lightweight IMMNotificationClient that signals a Win32 Event
+   * when a non-ignored audio device becomes active or is added.
+   * Used by reset_default_device() to wait for device arrival.
+   */
+  class device_arrival_notification_t: public ::IMMNotificationClient {
+  public:
+    /**
+     * @param ignored_device_id Device ID to ignore in notifications (e.g., Steam Streaming Speakers).
+     */
+    explicit device_arrival_notification_t(const std::wstring &ignored_device_id):
+        ignored_id(ignored_device_id) {
+      arrival_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      if (!arrival_event) {
+        BOOST_LOG(warning) << "Failed to create device arrival event"sv;
+      }
+    }
+
+    ~device_arrival_notification_t() {
+      if (arrival_event) {
+        CloseHandle(arrival_event);
+      }
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() { return 1; }
+    ULONG STDMETHODCALLTYPE Release() { return 1; }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, VOID **ppvInterface) {
+      if (IID_IUnknown == riid) {
+        AddRef();
+        *ppvInterface = (IUnknown *) this;
+        return S_OK;
+      } else if (__uuidof(IMMNotificationClient) == riid) {
+        AddRef();
+        *ppvInterface = (IMMNotificationClient *) this;
+        return S_OK;
+      } else {
+        *ppvInterface = nullptr;
+        return E_NOINTERFACE;
+      }
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow, ERole, LPCWSTR) { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) { return S_OK; }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR pwstrDeviceId) {
+      if (arrival_event && !is_ignored(pwstrDeviceId)) {
+        SetEvent(arrival_event);
+      }
+      return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState) {
+      if (dwNewState == DEVICE_STATE_ACTIVE && arrival_event && !is_ignored(pwstrDeviceId)) {
+        SetEvent(arrival_event);
+      }
+      return S_OK;
+    }
+
+    /**
+     * @brief Wait for the arrival event to be signaled.
+     * @param timeout_ms Maximum time to wait in milliseconds.
+     * @return true if signaled, false on timeout.
+     */
+    bool wait(DWORD timeout_ms) {
+      if (!arrival_event) {
+        Sleep(timeout_ms);
+        return false;
+      }
+      auto result = WaitForSingleObject(arrival_event, timeout_ms);
+      if (result == WAIT_OBJECT_0) {
+        ResetEvent(arrival_event);
+        return true;
+      }
+      return false;
+    }
+
+  private:
+    bool is_ignored(LPCWSTR device_id) const {
+      return device_id && !ignored_id.empty() && ignored_id == device_id;
+    }
+
+    HANDLE arrival_event = nullptr;
+    std::wstring ignored_id;
+  };
+
   class audio_notification_t: public ::IMMNotificationClient {
   public:
     audio_notification_t() {
@@ -984,8 +1071,22 @@ namespace platf::audio {
 
     /**
      * @brief Resets the default audio device from Steam Streaming Speakers.
+     * If no other device is available, waits for one to appear (up to ~15 seconds).
      */
-    void reset_default_device() {
+    void reset_default_device() override {
+      reset_default_device_impl(true);
+    }
+
+    /**
+     * @brief Non-blocking variant of reset_default_device() for startup.
+     * Tries once to move the default away from Steam speakers without waiting.
+     */
+    void reset_default_device_no_wait() {
+      reset_default_device_impl(false);
+    }
+
+  private:
+    void reset_default_device_impl(bool wait_for_device) {
       auto matched_steam = find_device_id(match_steam_speakers());
       if (!matched_steam) {
         return;
@@ -1008,39 +1109,100 @@ namespace platf::audio {
         }
       }
 
-      // Disable the Steam Streaming Speakers temporarily to allow the OS to pick a new default.
+      // Try to move the default away from Steam speakers immediately
+      auto result = try_reset_from_steam(steam_device_id);
+      if (result == reset_result_e::success || !wait_for_device) {
+        return;
+      }
+      if (result == reset_result_e::fatal) {
+        return;
+      }
+
+      // No non-Steam device available yet. Wait for one to appear.
+      BOOST_LOG(info) << "No non-Steam audio device available, waiting for one to appear..."sv;
+
+      device_arrival_notification_t arrival_notifier(steam_device_id);
+      auto reg_status = device_enum->RegisterEndpointNotificationCallback(&arrival_notifier);
+      if (FAILED(reg_status)) {
+        BOOST_LOG(warning) << "Failed to register device arrival notification: "sv << util::hex(reg_status).to_string_view();
+        return;
+      }
+      auto unreg_guard = util::fail_guard([&]() {
+        device_enum->UnregisterEndpointNotificationCallback(&arrival_notifier);
+      });
+
+      constexpr int max_iterations = 15;
+      for (int i = 0; i < max_iterations; ++i) {
+        arrival_notifier.wait(1000);
+
+        // Check if a non-Steam device has appeared and try to switch
+        result = try_reset_from_steam(steam_device_id);
+        if (result == reset_result_e::success) {
+          return;
+        }
+        if (result == reset_result_e::fatal) {
+          return;
+        }
+      }
+
+      BOOST_LOG(warning) << "Timed out waiting for a non-Steam audio device to appear"sv;
+    }
+
+    enum class reset_result_e {
+      success,       ///< A non-Steam device was set as default
+      no_device,     ///< No non-Steam device is available yet (retriable)
+      fatal,         ///< Unrecoverable failure (do not retry)
+    };
+
+    /**
+     * @brief Attempts to move the default audio device away from Steam Streaming Speakers.
+     * Temporarily disables Steam speakers so the OS picks another default,
+     * then re-enables them and confirms the new default.
+     * @param steam_device_id The device ID of Steam Streaming Speakers.
+     * @return Result indicating success, retriable failure, or fatal failure.
+     */
+    reset_result_e try_reset_from_steam(const std::wstring &steam_device_id) {
+      // Disable Steam speakers temporarily to let the OS pick a new default
       auto hr = policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
       if (FAILED(hr)) {
         BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv << util::hex(hr).to_string_view();
-        return;
+        return reset_result_e::fatal;
       }
 
-      // Get the newly selected default audio device
       auto new_default_dev = default_device(device_enum);
 
-      // Enable the Steam Streaming Speakers again
+      // Re-enable Steam speakers
       hr = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
       if (FAILED(hr)) {
         BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv << util::hex(hr).to_string_view();
-        return;
+        return reset_result_e::fatal;
       }
 
-      // If there's now no audio device, the Steam Streaming Speakers were the only device available.
-      // There's no other device to set as the default, so just return.
       if (!new_default_dev) {
-        return;
+        return reset_result_e::no_device;
       }
 
       audio::wstring_t new_default_id;
       new_default_dev->GetId(&new_default_id);
 
-      // Set the new default audio device
+      int failure = 0;
       for (int x = 0; x < (int) ERole_enum_count; ++x) {
-        policy->SetDefaultEndpoint(new_default_id.get(), (ERole) x);
+        auto status = policy->SetDefaultEndpoint(new_default_id.get(), (ERole) x);
+        if (FAILED(status)) {
+          BOOST_LOG(warning) << "Couldn't set new default audio endpoint for role ["sv << x << "]: 0x"sv << util::hex(status).to_string_view();
+          ++failure;
+        }
+      }
+
+      if (failure) {
+        return reset_result_e::fatal;
       }
 
       BOOST_LOG(info) << "Successfully reset default audio device"sv;
+      return reset_result_e::success;
     }
+
+  public:
 
     /**
      * @brief Installs the Steam Streaming Speakers driver, if present.
@@ -1189,7 +1351,7 @@ namespace platf {
     // change the default to something else (if another device is available).
     audio::audio_control_t audio_ctrl;
     if (audio_ctrl.init() == 0) {
-      audio_ctrl.reset_default_device();
+      audio_ctrl.reset_default_device_no_wait();
     }
 
     return co_init;

@@ -339,6 +339,11 @@ namespace audio {
       // Best effort, it's allowed to fail
       ctx.control->set_sink(sink);
     }
+
+    // Ensure Steam Streaming Speakers aren't left as the default device.
+    // If the original device is temporarily unavailable (e.g., DisplayPort audio
+    // reconnecting after virtual display teardown), this will wait for it.
+    ctx.control->reset_default_device();
   }
 
   void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params) {
