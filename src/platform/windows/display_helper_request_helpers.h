@@ -63,6 +63,7 @@ namespace display_helper_integration::helpers {
   /**
    * @brief Convenience helper that builds a DisplayApplyRequest from config/session data.
    */
+  [[nodiscard]] rtsp_stream::launch_session_t make_display_request_session_snapshot(const rtsp_stream::launch_session_t &session);
   [[nodiscard]] std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
   [[nodiscard]] std::optional<DisplayApplyRequest> build_request_from_session(
     const config::video_t &video_config,

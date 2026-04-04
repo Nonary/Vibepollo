@@ -78,6 +78,35 @@ namespace display_helper_integration::helpers {
       return it->cmd.empty() && it->playnite_id.empty();
     }
 
+    rtsp_stream::launch_session_t make_display_request_session_snapshot_impl(const rtsp_stream::launch_session_t &session) {
+      rtsp_stream::launch_session_t snapshot {};
+      snapshot.id = session.id;
+      snapshot.host_audio = session.host_audio;
+      snapshot.client_name = session.client_name;
+      snapshot.enable_hdr = session.enable_hdr;
+      snapshot.enable_sops = session.enable_sops;
+      snapshot.width = session.width;
+      snapshot.height = session.height;
+      snapshot.fps = session.fps;
+      snapshot.appid = session.appid;
+      snapshot.app_metadata = session.app_metadata;
+      snapshot.client_display_mode_override = session.client_display_mode_override;
+      snapshot.virtual_display = session.virtual_display;
+      snapshot.virtual_display_failed = session.virtual_display_failed;
+      snapshot.virtual_display_mode_override = session.virtual_display_mode_override;
+      snapshot.virtual_display_layout_override = session.virtual_display_layout_override;
+      snapshot.dd_config_option_override = session.dd_config_option_override;
+      snapshot.output_name_override = session.output_name_override;
+      snapshot.virtual_display_device_id = session.virtual_display_device_id;
+      snapshot.virtual_display_ready_since = session.virtual_display_ready_since;
+      snapshot.virtual_display_topology_snapshot = session.virtual_display_topology_snapshot;
+      snapshot.pre_virtual_display_refresh_rates = session.pre_virtual_display_refresh_rates;
+      snapshot.gen1_framegen_fix = session.gen1_framegen_fix;
+      snapshot.gen2_framegen_fix = session.gen2_framegen_fix;
+      snapshot.framegen_refresh_rate = session.framegen_refresh_rate;
+      return snapshot;
+    }
+
     std::optional<std::string> resolve_virtual_device_id(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session.virtual_display_device_id, session.client_name)) {
         return resolved;
@@ -628,6 +657,10 @@ namespace display_helper_integration::helpers {
     }
 
     topology.monitor_positions[isolated_device_id] = display_device::Point {kIsolatedVirtualDisplayOffset, kIsolatedVirtualDisplayOffset};
+  }
+
+  rtsp_stream::launch_session_t make_display_request_session_snapshot(const rtsp_stream::launch_session_t &session) {
+    return make_display_request_session_snapshot_impl(session);
   }
 
   std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {

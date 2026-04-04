@@ -610,61 +610,58 @@ namespace nvhttp {
             recovery_params.should_abort = [recovery_guid]() {
               return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
             };
-            std::weak_ptr<rtsp_stream::launch_session_t> session_weak = launch_session;
-            recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
-              if (auto session_locked = session_weak.lock()) {
-                if (result.device_id && !result.device_id->empty()) {
-                  session_locked->virtual_display_device_id = *result.device_id;
-                  config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
-                }
-                session_locked->virtual_display_ready_since = result.ready_since;
-                if (session_locked->virtual_display) {
-                  // Re-apply display configuration synchronously on the recovery monitor thread.
-                  // Running this inline (blocking) prevents the recovery monitor from polling during
-                  // topology churn caused by APPLY, which would otherwise cause transient CCD
-                  // enumeration failures that look like the display disappeared.
-                  constexpr int kMaxApplyAttempts = 5;
-                  bool applied = false;
+            auto recovery_session = std::make_shared<rtsp_stream::launch_session_t>(
+              display_helper_integration::helpers::make_display_request_session_snapshot(*launch_session)
+            );
+            recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result) {
+              if (result.device_id && !result.device_id->empty()) {
+                recovery_session->virtual_display_device_id = *result.device_id;
+                config::set_runtime_output_name_override(recovery_session->virtual_display_device_id);
+              }
+              recovery_session->virtual_display_ready_since = result.ready_since;
+              if (recovery_session->virtual_display) {
+                // Re-apply display configuration synchronously on the recovery monitor thread.
+                // Running this inline (blocking) prevents the recovery monitor from polling during
+                // topology churn caused by APPLY, which would otherwise cause transient CCD
+                // enumeration failures that look like the display disappeared.
+                constexpr int kMaxApplyAttempts = 5;
+                bool applied = false;
 
-                  for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
-                    // Disarm any in-flight restore logic in the helper before re-applying a session config.
-                    // This recovery path can run while the helper is still restoring after a disconnect/
-                    // topology churn, and REVERT/restore work can race with APPLY.
-                    (void) display_helper_integration::disarm_pending_restore();
+                for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
+                  // Disarm any in-flight restore logic in the helper before re-applying a session config.
+                  // This recovery path can run while the helper is still restoring after a disconnect/
+                  // topology churn, and REVERT/restore work can race with APPLY.
+                  (void) display_helper_integration::disarm_pending_restore();
 
-                    auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
-                    if (!request) {
-                      BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
-                                         << attempt << "/" << kMaxApplyAttempts << ").";
-                      // Progressive backoff: give the display subsystem more settling time on later attempts.
-                      // Each failed attempt may trigger additional CCD topology churn that needs to resolve.
-                      std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
-                      continue;
-                    }
-
-                    if (display_helper_integration::apply(*request)) {
-                      BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
-                      applied = true;
-                      break;
-                    }
-
-                    BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
+                  auto request = display_helper_integration::helpers::build_request_from_session(config::video, *recovery_session);
+                  if (!request) {
+                    BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
                                        << attempt << "/" << kMaxApplyAttempts << ").";
-                    // Progressive backoff: 250ms, 500ms, 750ms, 1000ms, 1250ms
+                    // Progressive backoff: give the display subsystem more settling time on later attempts.
+                    // Each failed attempt may trigger additional CCD topology churn that needs to resolve.
                     std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                    continue;
+                  }
+
+                  if (display_helper_integration::apply(*request)) {
+                    BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
+                    applied = true;
+                    break;
+                  }
+
+                  BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
+                                     << attempt << "/" << kMaxApplyAttempts << ").";
+                  // Progressive backoff: 250ms, 500ms, 750ms, 1000ms, 1250ms
+                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
                 }
 
-                // Force the capture thread to reinitialize so it rebinds to the recreated display.
-                // Prefer to do this after a successful APPLY so HDR/refresh/res changes are reflected immediately.
                 if (mail::man) {
-                  // -1 means "reinit only; keep display selection logic intact".
                   mail::man->event<int>(mail::switch_display)->raise(-1);
                 }
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
                                 << (applied ? "." : " (apply did not succeed).");
               }
-            }
-          };
+            };
 
             VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
           } else {

@@ -434,22 +434,23 @@ namespace webrtc_stream {
         recovery_params.should_abort = [recovery_guid]() {
           return !VDISPLAY::is_virtual_display_guid_tracked(recovery_guid);
         };
-        std::weak_ptr<rtsp_stream::launch_session_t> session_weak = session;
-        recovery_params.on_recovery_success = [session_weak](const VDISPLAY::VirtualDisplayCreationResult &result) {
-          if (auto session_locked = session_weak.lock()) {
+        auto recovery_session = std::make_shared<rtsp_stream::launch_session_t>(
+          display_helper_integration::helpers::make_display_request_session_snapshot(*session)
+        );
+        recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result) {
             if (result.device_id && !result.device_id->empty()) {
-              session_locked->virtual_display_device_id = *result.device_id;
-              config::set_runtime_output_name_override(session_locked->virtual_display_device_id);
+              recovery_session->virtual_display_device_id = *result.device_id;
+              config::set_runtime_output_name_override(recovery_session->virtual_display_device_id);
             }
-            session_locked->virtual_display_ready_since = result.ready_since;
-            if (session_locked->virtual_display) {
+            recovery_session->virtual_display_ready_since = result.ready_since;
+            if (recovery_session->virtual_display) {
               constexpr int kMaxApplyAttempts = 5;
               bool applied = false;
 
               for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
                 (void) display_helper_integration::disarm_pending_restore();
 
-                auto request = display_helper_integration::helpers::build_request_from_session(config::video, *session_locked);
+                auto request = display_helper_integration::helpers::build_request_from_session(config::video, *recovery_session);
                 if (!request) {
                   BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild WebRTC display request after recreation (attempt "
                                      << attempt << "/" << kMaxApplyAttempts << ").";
@@ -474,7 +475,6 @@ namespace webrtc_stream {
               BOOST_LOG(info) << "Virtual display recovery: requested WebRTC capture reinit to pick up recreated display"
                               << (applied ? "." : " (apply did not succeed).");
             }
-          }
         };
 
         VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);

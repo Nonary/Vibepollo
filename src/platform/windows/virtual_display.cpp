@@ -84,6 +84,7 @@ namespace VDISPLAY {
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
     std::mutex g_watchdog_thread_mutex;
     std::thread g_watchdog_thread;
+    std::function<void()> g_watchdog_fail_cb;
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
     std::atomic<bool> g_reinstall_attempted {false};
@@ -161,6 +162,16 @@ namespace VDISPLAY {
       } else {
         watchdog_thread.detach();
       }
+    }
+
+    std::function<void()> copy_watchdog_fail_cb() {
+      std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+      return g_watchdog_fail_cb;
+    }
+
+    void store_watchdog_fail_cb(const std::function<void()> &fail_cb) {
+      std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+      g_watchdog_fail_cb = fail_cb;
     }
 
     bool should_skip_restart_attempt(std::chrono::steady_clock::time_point now, std::chrono::milliseconds &cooldown_remaining) {
@@ -2266,6 +2277,16 @@ namespace VDISPLAY {
         return false;
       }
 
+      // Restart the watchdog ping thread with the new driver handle.
+      // The old ping thread is still feeding a stale duplicated handle;
+      // startPingThread stops it and duplicates the freshly opened handle.
+      if (auto watchdog_fail_cb = copy_watchdog_fail_cb(); watchdog_fail_cb) {
+        if (!startPingThread(std::move(watchdog_fail_cb))) {
+          BOOST_LOG(warning) << "Virtual display recovery: failed to restart watchdog ping thread for "
+                             << state.describe_target();
+        }
+      }
+
       setWatchdogFeedingEnabled(true);
       auto recreation = createVirtualDisplay(
         state.params.client_uid.c_str(),
@@ -2284,6 +2305,10 @@ namespace VDISPLAY {
       }
 
       state.update_identifiers(recreation->display_name, recreation->device_id, recreation->monitor_device_path);
+      if (monitor_should_abort(state)) {
+        BOOST_LOG(debug) << "Virtual display recovery aborted after recreation for " << state.describe_target();
+        return false;
+      }
       if (state.params.on_recovery_success) {
         state.params.on_recovery_success(*recreation);
       }
@@ -2746,6 +2771,9 @@ namespace VDISPLAY {
 
   bool startPingThread(std::function<void()> failCb) {
     stop_watchdog_thread(true);
+
+    // Save the callback so recovery can restart the ping thread with the same callback.
+    store_watchdog_fail_cb(failCb);
 
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return false;
