@@ -659,6 +659,20 @@ namespace playnite_launcher {
         }
         auto now = std::chrono::steady_clock::now();
         auto deadline = now + std::chrono::seconds(std::max(1, config.focus_timeout_secs));
+        // If autofocus is already active, don't reset the attempt budget.
+        // Playnite sends multiple status updates (installDir, exe, gameStarted)
+        // in rapid succession for the same game launch, and each one was
+        // resetting the budget — effectively making it unlimited.
+        // Only extend the deadline and clear the throttle so the next attempt
+        // uses the updated target info promptly.
+        if (request_game_focus.load(std::memory_order_acquire)) {
+          focus_retry_deadline_ms.store(steady_to_millis(deadline), std::memory_order_relaxed);
+          next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
+          game_focus_confirmed.store(false, std::memory_order_release);
+          BOOST_LOG(debug) << "Autofocus: extended deadline (budget already active, remaining="
+                           << game_focus_successes_left.load(std::memory_order_acquire) << ')';
+          return;
+        }
         focus_retry_deadline_ms.store(steady_to_millis(deadline), std::memory_order_relaxed);
         next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
         int attempts = std::max(0, config.focus_attempts);
