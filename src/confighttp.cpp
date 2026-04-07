@@ -63,6 +63,7 @@
   #include "platform/windows/misc.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
+  #include "src/platform/windows/playnite_sync.h"
 
   #include <windows.h>
 #endif
@@ -1236,6 +1237,14 @@ namespace confighttp {
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
 #ifdef _WIN32
       enhance_app_with_playnite_cover(input_tree);
+      try {
+        if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
+          const auto playnite_id = input_tree["playnite-id"].get<std::string>();
+          if (!playnite_id.empty()) {
+            input_tree["uuid"] = platf::playnite::sync::canonical_playnite_app_uuid(playnite_id);
+          }
+        }
+      } catch (...) {}
 #endif
 
 #ifndef _WIN32

@@ -14,8 +14,33 @@ namespace platf::playnite::sync {
   constexpr int kSourceCategory = 1 << 1;
   constexpr int kSourcePlugin = 1 << 2;
   constexpr int kSourceInstalled = 1 << 3;
+
+  std::string canonical_playnite_app_uuid(std::string_view playnite_id) {
+    std::string uuid(playnite_id);
+    std::transform(uuid.begin(), uuid.end(), uuid.begin(), [](unsigned char c) {
+      return static_cast<char>(std::toupper(c));
+    });
+    return uuid;
+  }
+
   void ensure_app_uuid(nlohmann::json &app, bool &changed) {
     try {
+      if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
+        const auto playnite_id = app["playnite-id"].get<std::string>();
+        if (!playnite_id.empty()) {
+          const auto desired_uuid = canonical_playnite_app_uuid(playnite_id);
+          const bool uuid_matches =
+            app.contains("uuid") &&
+            app["uuid"].is_string() &&
+            app["uuid"].get<std::string>() == desired_uuid;
+          if (!uuid_matches) {
+            app["uuid"] = desired_uuid;
+            changed = true;
+          }
+          return;
+        }
+      }
+
       const bool missing_uuid =
         !app.contains("uuid") ||
         app["uuid"].is_null() ||
@@ -78,6 +103,46 @@ namespace platf::playnite::sync {
       }
     }
     return to_lower_copy(s);
+  }
+
+  std::string normalize_name_for_match(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    bool previous_was_space = false;
+    for (char ch: s) {
+      const auto uch = static_cast<unsigned char>(ch);
+      if (std::isspace(uch)) {
+        if (!out.empty()) {
+          previous_was_space = true;
+        }
+        continue;
+      }
+      if (previous_was_space && !out.empty()) {
+        out.push_back(' ');
+      }
+      out.push_back(static_cast<char>(std::tolower(uch)));
+      previous_was_space = false;
+    }
+    return out;
+  }
+
+  std::string extract_cmd_executable_for_match(const std::string &cmd) {
+    auto start = cmd.find_first_not_of(" \t");
+    if (start == std::string::npos) {
+      return {};
+    }
+
+    std::string exe;
+    if (cmd[start] == '"') {
+      ++start;
+      auto end = cmd.find('"', start);
+      exe = cmd.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    } else {
+      auto end = cmd.find_first_of(" \t", start);
+      exe = cmd.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+
+    return exe.empty() ? std::string {} : normalize_path_for_match(exe);
   }
 
   static bool game_has_excluded_category(const Game &g, const std::unordered_set<std::string> &exclude_categories_lower) {
@@ -297,7 +362,8 @@ namespace platf::playnite::sync {
     return out;
   }
 
-  void build_game_indexes(const std::vector<Game> &selected, std::unordered_map<std::string, GameRef> &by_exe, std::unordered_map<std::string, GameRef> &by_dir, std::unordered_map<std::string, GameRef> &by_id) {
+  void build_game_indexes(const std::vector<Game> &selected, std::unordered_map<std::string, GameRef> &by_exe, std::unordered_map<std::string, GameRef> &by_dir, std::unordered_map<std::string, GameRef> &by_id, std::unordered_map<std::string, GameRef> &by_unique_name) {
+    std::unordered_set<std::string> ambiguous_names;
     for (const auto &g : selected) {
       if (!g.exe.empty()) {
         by_exe[normalize_path_for_match(g.exe)] = GameRef {&g};
@@ -307,6 +373,13 @@ namespace platf::playnite::sync {
       }
       if (!g.id.empty()) {
         by_id[g.id] = GameRef {&g};
+      }
+      auto normalized_name = normalize_name_for_match(g.name);
+      if (!normalized_name.empty() && !ambiguous_names.contains(normalized_name)) {
+        if (auto [it, inserted] = by_unique_name.emplace(normalized_name, GameRef {&g}); !inserted) {
+          by_unique_name.erase(it);
+          ambiguous_names.insert(std::move(normalized_name));
+        }
       }
     }
   }
@@ -343,7 +416,7 @@ namespace platf::playnite::sync {
     return m;
   }
 
-  const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir) {
+  const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name) {
     try {
       if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
         auto it = by_id.find(app["playnite-id"].get<std::string>());
@@ -354,7 +427,7 @@ namespace platf::playnite::sync {
     } catch (...) {}
     try {
       if (app.contains("cmd") && app["cmd"].is_string()) {
-        auto it = by_exe.find(normalize_path_for_match(app["cmd"].get<std::string>()));
+        auto it = by_exe.find(extract_cmd_executable_for_match(app["cmd"].get<std::string>()));
         if (it != by_exe.end()) {
           return it->second.g;
         }
@@ -364,6 +437,14 @@ namespace platf::playnite::sync {
       if (app.contains("working-dir") && app["working-dir"].is_string()) {
         auto it = by_dir.find(normalize_path_for_match(app["working-dir"].get<std::string>()));
         if (it != by_dir.end()) {
+          return it->second.g;
+        }
+      }
+    } catch (...) {}
+    try {
+      if (app.contains("name") && app["name"].is_string()) {
+        auto it = by_unique_name.find(normalize_name_for_match(app["name"].get<std::string>()));
+        if (it != by_unique_name.end()) {
           return it->second.g;
         }
       }
@@ -449,10 +530,10 @@ namespace platf::playnite::sync {
     return now_time >= deadline && !played;
   }
 
-  void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed) {
+  void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed) {
     for (auto &app : root["apps"]) {
       ensure_app_uuid(app, changed);
-      auto g = match_app_against_indexes(app, by_id, by_exe, by_dir);
+      auto g = match_app_against_indexes(app, by_id, by_exe, by_dir, by_unique_name);
       if (!g) {
         continue;
       }
@@ -655,12 +736,12 @@ namespace platf::playnite::sync {
     }
 
     // Build indexes
-    std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id_idx;
-    build_game_indexes(selected, by_exe, by_dir, by_id_idx);
+    std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id_idx, by_unique_name;
+    build_game_indexes(selected, by_exe, by_dir, by_id_idx, by_unique_name);
 
     // Update existing
     std::unordered_set<std::string> matched_ids;
-    iterate_existing_apps(root, by_id_idx, by_exe, by_dir, source_flags, matched_out, matched_ids, changed);
+    iterate_existing_apps(root, by_id_idx, by_exe, by_dir, by_unique_name, source_flags, matched_out, matched_ids, changed);
 
     // Purge
     auto last_played_map = build_last_played_map(installed);

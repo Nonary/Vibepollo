@@ -23,8 +23,11 @@
 namespace platf::playnite::sync {
 
   // String helpers
+  std::string canonical_playnite_app_uuid(std::string_view playnite_id);
   std::string to_lower_copy(std::string s);
   std::string normalize_path_for_match(const std::string &p);
+  std::string normalize_name_for_match(std::string_view s);
+  std::string extract_cmd_executable_for_match(const std::string &cmd);
 
   // Time helpers
   bool parse_iso8601_utc(const std::string &s, std::time_t &out);
@@ -44,17 +47,17 @@ namespace platf::playnite::sync {
     const Game *g;
   };
 
-  void build_game_indexes(const std::vector<Game> &selected, std::unordered_map<std::string, GameRef> &by_exe, std::unordered_map<std::string, GameRef> &by_dir, std::unordered_map<std::string, GameRef> &by_id);
+  void build_game_indexes(const std::vector<Game> &selected, std::unordered_map<std::string, GameRef> &by_exe, std::unordered_map<std::string, GameRef> &by_dir, std::unordered_map<std::string, GameRef> &by_id, std::unordered_map<std::string, GameRef> &by_unique_name);
 
   // Additional small helpers for apps.json reconciliation
   std::unordered_set<std::string> build_exclusion_lower(const std::vector<std::string> &ids);
   void snapshot_installed_and_uninstalled(const std::vector<Game> &all, std::vector<Game> &installed, std::unordered_set<std::string> &uninstalled_lower);
   std::unordered_map<std::string, std::time_t> build_last_played_map(const std::vector<Game> &installed);
-  const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir);
+  const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name);
   void apply_game_metadata_to_app(const Game &g, nlohmann::json &app);
   void mark_app_as_playnite_auto(nlohmann::json &app, int flags);
   bool should_ttl_delete(const nlohmann::json &app, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map);
-  void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed);
+  void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed);
   void add_missing_auto_entries(nlohmann::json &root, const std::vector<Game> &selected, const std::unordered_set<std::string> &matched_ids, const std::unordered_map<std::string, int> &source_flags, bool &changed);
   void write_and_refresh_apps(nlohmann::json &root, const std::string &apps_path);
 

@@ -50,27 +50,27 @@ TEST(PlayniteSync_Indexes, MatchAppByIdThenCmdThenDir) {
   std::vector<Game> sel {G("ID1", "2024-01-01T00:00:00Z"), G("ID2", "2024-01-01T00:00:00Z")};
   sel[1].exe = "C:/Games/Game.exe";
   sel[1].working_dir = "C:/Games";
-  std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id;
-  build_game_indexes(sel, by_exe, by_dir, by_id);
+  std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id, by_unique_name;
+  build_game_indexes(sel, by_exe, by_dir, by_id, by_unique_name);
 
   nlohmann::json app;
   // Prefer id
   app["playnite-id"] = "ID2";
-  auto g = match_app_against_indexes(app, by_id, by_exe, by_dir);
+  auto g = match_app_against_indexes(app, by_id, by_exe, by_dir, by_unique_name);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->id, "ID2");
 
   // No id, match by cmd
   nlohmann::json app2;
   app2["cmd"] = "\"C:/Games/Game.exe\"";  // quotes and forward slashes acceptable
-  g = match_app_against_indexes(app2, by_id, by_exe, by_dir);
+  g = match_app_against_indexes(app2, by_id, by_exe, by_dir, by_unique_name);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->id, "ID2");
 
   // No id/cmd, match by working-dir
   nlohmann::json app3;
   app3["working-dir"] = "C:/Games";
-  g = match_app_against_indexes(app3, by_id, by_exe, by_dir);
+  g = match_app_against_indexes(app3, by_id, by_exe, by_dir, by_unique_name);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->id, "ID2");
 }
@@ -164,9 +164,26 @@ TEST(PlayniteSync_AddMissing, AddsMissingSelectedWithMetadataAndTimestamps) {
   ASSERT_EQ(root["apps"].size(), 1u);
   const auto &app = root["apps"][0];
   EXPECT_EQ(app["playnite-id"], "S2");
+  EXPECT_EQ(app["uuid"], "S2");
   EXPECT_EQ(app["playnite-managed"], "auto");
   EXPECT_EQ(app["playnite-source"], "recent+category");
   EXPECT_TRUE(app.contains("playnite-added-at"));
+}
+
+TEST(PlayniteSync_Uuid, ExistingPlayniteEntrySnapsUuidToPlayniteId) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  std::vector<Game> selected {G("abc-def", "2024-01-01T00:00:00Z")};
+  std::unordered_set<std::string> matched_ids;
+  std::unordered_map<std::string, int> src_flags;
+  bool changed = false;
+
+  add_missing_auto_entries(root, selected, matched_ids, src_flags, changed);
+
+  EXPECT_TRUE(changed);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0]["uuid"], "ABC-DEF");
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "abc-def");
 }
 
 TEST(PlayniteSync_CurrentAutoIds, CollectsOnlyAutoManaged) {

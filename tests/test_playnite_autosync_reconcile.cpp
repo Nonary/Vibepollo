@@ -117,6 +117,7 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   root["apps"] = nlohmann::json::array();
   nlohmann::json a;
   a["playnite-id"] = "A";
+  a["uuid"] = "OLD";
   root["apps"].push_back(a);
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
@@ -125,6 +126,7 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
+  EXPECT_EQ(root["apps"][0]["uuid"], "A");
   EXPECT_EQ(root["apps"][0]["playnite-managed"], "auto");
 }
 
