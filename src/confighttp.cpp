@@ -1225,6 +1225,14 @@ namespace confighttp {
       // Migrate/merge the new app into the file tree.
       proc::migrate_apps(&file_tree, &input_tree);
 
+      if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
+        auto &overrides = input_tree["config-overrides"];
+        if (overrides.contains("nvenc_force_split_encode") && !overrides.contains("nvenc_split_encode")) {
+          overrides["nvenc_split_encode"] = overrides["nvenc_force_split_encode"];
+        }
+        overrides.erase("nvenc_force_split_encode");
+      }
+
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
 #ifdef _WIN32
       enhance_app_with_playnite_cover(input_tree);
@@ -1902,7 +1910,10 @@ namespace confighttp {
         } else if (input_tree["config_overrides"].is_object()) {
           std::unordered_map<std::string, std::string> overrides;
           for (const auto &item : input_tree["config_overrides"].items()) {
-            const std::string &key = item.key();
+            std::string key = item.key();
+            if (key == "nvenc_force_split_encode") {
+              key = "nvenc_split_encode";
+            }
             const auto &val = item.value();
             if (key.empty() || val.is_null()) {
               continue;
@@ -1913,7 +1924,7 @@ namespace confighttp {
             } else {
               encoded = val.dump();
             }
-            overrides.emplace(key, std::move(encoded));
+            overrides[key] = std::move(encoded);
           }
           config_overrides = std::move(overrides);
         }

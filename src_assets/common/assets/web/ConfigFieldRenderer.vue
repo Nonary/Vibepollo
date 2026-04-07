@@ -157,7 +157,7 @@ const selectModel = computed<string | number | null>({
     ) {
       return model.value;
     }
-    return resolvedOptions.value[0]?.value ?? null;
+    return null;
   },
   set(value) {
     model.value = value;

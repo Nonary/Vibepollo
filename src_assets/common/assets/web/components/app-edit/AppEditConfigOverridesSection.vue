@@ -117,6 +117,7 @@
             :setting-key="entry.key"
             :label="entry.label"
             :desc="entry.desc"
+            :options="selectOptions(entry.key)"
             :default-value="entry.globalValue"
             :size="'small'"
             :model-value="rawOverrideValue(entry.key)"
@@ -375,6 +376,7 @@
                     :setting-key="entry.key"
                     :label="entry.label"
                     :desc="entry.desc"
+                    :options="selectOptions(entry.key, 'draft')"
                     :default-value="entry.globalValue"
                     :size="'small'"
                     :model-value="rawOverrideValueFor('draft', entry.key)"
@@ -793,6 +795,38 @@ const DD_KEYS = {
   hdrRequestOverride: 'dd_hdr_request_override',
 } as const;
 
+const OVERRIDE_KEY_ALIASES: Record<string, string> = {
+  nvenc_force_split_encode: 'nvenc_split_encode',
+};
+
+function normalizeOverrideKey(key: string): string {
+  return OVERRIDE_KEY_ALIASES[key] ?? key;
+}
+
+function normalizeOverrideRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = normalizeOverrideKey(rawKey);
+    if (rawKey !== key && Object.prototype.hasOwnProperty.call(normalized, key)) {
+      continue;
+    }
+    normalized[key] = cloneValue(rawValue);
+  }
+  return normalized;
+}
+
+function overrideRecordsEqual(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+  } catch {
+    return false;
+  }
+}
+
 const HIDDEN_OVERRIDE_KEYS = new Set<string>([
   DD_KEYS.configurationOption,
   DD_KEYS.resolutionOption,
@@ -898,6 +932,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'nvenc_preset',
   'nvenc_twopass',
   'nvenc_spatial_aq',
+  'nvenc_split_encode',
   'nvenc_vbv_increase',
   'nvenc_realtime_hags',
   'nvenc_latency_over_power',
@@ -994,25 +1029,46 @@ function ensureOverridesObjectFor(target: EditTarget): void {
   }
 }
 
-function setOverrideKeyFor(target: EditTarget, key: string, value: unknown): void {
-  ensureOverridesObjectFor(target);
+function replaceOverridesFor(target: EditTarget, nextValue: unknown): void {
+  const next = normalizeOverrideRecord(nextValue);
   if (target === 'draft') {
-    (draftOverrides.value as any)[key] = value;
+    draftOverrides.value = next;
     return;
   }
-  (overrides.value as any)[key] = value;
+
+  ensureOverridesObjectFor('live');
+  const current = overrides.value as Record<string, unknown>;
+  for (const key of Object.keys(current)) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      delete current[key];
+    }
+  }
+  for (const [key, value] of Object.entries(next)) {
+    current[key] = value;
+  }
+}
+
+function setOverrideKeyFor(target: EditTarget, key: string, value: unknown): void {
+  ensureOverridesObjectFor(target);
+  const normalizedKey = normalizeOverrideKey(key);
+  if (target === 'draft') {
+    (draftOverrides.value as any)[normalizedKey] = value;
+    return;
+  }
+  (overrides.value as any)[normalizedKey] = value;
 }
 
 function clearOverrideKeyFor(target: EditTarget, key: string): void {
   ensureOverridesObjectFor(target);
+  const normalizedKey = normalizeOverrideKey(key);
   try {
     if (target === 'draft') {
-      delete (draftOverrides.value as any)[key];
+      delete (draftOverrides.value as any)[normalizedKey];
     } else {
-      delete (overrides.value as any)[key];
+      delete (overrides.value as any)[normalizedKey];
     }
   } catch {}
-  clearJsonStateFor(target, key);
+  clearJsonStateFor(target, normalizedKey);
 }
 
 function setOverrideKey(key: string, value: unknown): void {
@@ -1386,6 +1442,17 @@ const pickerReservedKeys = computed(() =>
   browseModalOpen.value ? modalUsedOverrideKeys.value : usedOverrideKeys.value,
 );
 
+watch(
+  overrides,
+  (value) => {
+    const normalized = normalizeOverrideRecord(value);
+    if (!overrideRecordsEqual(value, normalized)) {
+      replaceOverridesFor('live', normalized);
+    }
+  },
+  { immediate: true },
+);
+
 const availableEntries = computed<Entry[]>(() =>
   allEntries.value.filter(
     (entry) => !pickerReservedKeys.value.has(entry.key) && !isHiddenOverrideKey(entry.key),
@@ -1528,7 +1595,7 @@ function resetAddSettingsState() {
 }
 
 function openAddSettings() {
-  draftOverrides.value = cloneValue(overrides.value ?? {}) as Record<string, unknown>;
+  replaceOverridesFor('draft', getOverridesSource('live'));
   pendingAddKeys.value = [];
   draftJsonDrafts.value = {};
   draftJsonErrors.value = {};
@@ -1574,7 +1641,7 @@ function queueOverrideAddition(key: string) {
 
 function savePendingAdditions() {
   commitAllJsonFor('draft');
-  overrides.value = cloneValue(draftOverrides.value ?? {}) as Record<string, unknown>;
+  replaceOverridesFor('live', draftOverrides.value ?? {});
   browseModalOpen.value = false;
   resetAddSettingsState();
 }
@@ -1597,7 +1664,7 @@ function removeDraftOverride(key: string) {
 }
 
 function clearAll() {
-  overrides.value = {};
+  replaceOverridesFor('live', {});
   jsonDrafts.value = {};
   jsonErrors.value = {};
 }

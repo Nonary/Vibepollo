@@ -263,6 +263,7 @@ export function getConfigSelectOptions(
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
+    case 'nvenc_split_encode':
     case 'nvenc_force_split_encode': {
       const options = [
         { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },

@@ -88,6 +88,27 @@ namespace VDISPLAY {
 namespace config {
 
   namespace nv {
+    constexpr std::string_view split_encode_key = "nvenc_split_encode"sv;
+    constexpr std::string_view legacy_split_encode_key = "nvenc_force_split_encode"sv;
+
+    std::string normalize_split_encode_key(std::string key) {
+      if (key == legacy_split_encode_key) {
+        return std::string(split_encode_key);
+      }
+      return key;
+    }
+
+    void normalize_split_encode_alias(std::unordered_map<std::string, std::string> &vars) {
+      auto legacy = vars.find(std::string(legacy_split_encode_key));
+      if (legacy == vars.end()) {
+        return;
+      }
+
+      if (!vars.contains(std::string(split_encode_key))) {
+        vars.emplace(std::string(split_encode_key), legacy->second);
+      }
+      vars.erase(legacy);
+    }
 
     nvenc::nvenc_two_pass twopass_from_view(const ::std::string_view &preset) {
       if (preset == "disabled") {
@@ -113,7 +134,7 @@ namespace config {
       if (value == "disabled") {
         return nvenc::split_encode_mode::disabled;
       }
-      BOOST_LOG(warning) << "config: unknown nvenc_force_split_encode value: " << value;
+      BOOST_LOG(warning) << "config: unknown " << split_encode_key << " value: " << value;
       return nvenc::split_encode_mode::auto_mode;
     }
 
@@ -1459,6 +1480,8 @@ namespace config {
     }
 #endif
 
+    nv::normalize_split_encode_alias(vars);
+
     for (auto &[name, val] : vars) {
 #ifdef _WIN32
       BOOST_LOG(info) << "config: ["sv << name << "] -- ["sv << utf8ToAcp(val) << ']';
@@ -1513,7 +1536,7 @@ namespace config {
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
-    generic_f(vars, "nvenc_force_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
+    generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);
@@ -2130,7 +2153,7 @@ namespace config {
         "nvenc_preset",
         "nvenc_twopass",
         "nvenc_spatial_aq",
-        "nvenc_force_split_encode",
+        "nvenc_split_encode",
         "nvenc_vbv_increase",
         "nvenc_realtime_hags",
         "nvenc_latency_over_power",
@@ -2397,10 +2420,11 @@ namespace config {
     filtered.reserve(overrides.size());
 
     for (auto &[k, v] : overrides) {
-      if (!is_valid_override_key(k) || !is_allowed_override_key(k)) {
+      auto normalized_key = nv::normalize_split_encode_key(std::move(k));
+      if (!is_valid_override_key(normalized_key) || !is_allowed_override_key(normalized_key)) {
         continue;
       }
-      filtered.emplace(std::move(k), std::move(v));
+      filtered.emplace(std::move(normalized_key), std::move(v));
     }
 
     std::scoped_lock lk(g_runtime_overrides_mutex);
@@ -2413,11 +2437,12 @@ namespace config {
   }
 
   bool has_runtime_config_override(std::string_view key) {
-    if (!is_valid_override_key(key)) {
+    const auto normalized_key = nv::normalize_split_encode_key(std::string(key));
+    if (!is_valid_override_key(normalized_key)) {
       return false;
     }
     std::scoped_lock lk(g_runtime_overrides_mutex);
-    return g_runtime_config_overrides.find(std::string(key)) != g_runtime_config_overrides.end();
+    return g_runtime_config_overrides.find(normalized_key) != g_runtime_config_overrides.end();
   }
 
   bool has_runtime_config_overrides() {
