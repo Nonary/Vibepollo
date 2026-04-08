@@ -4632,8 +4632,11 @@ namespace webrtc_stream {
     if (last_session) {
       stop_media_thread();
       reset_input_context();
-  #ifdef _WIN32
       const bool rtsp_active = rtsp_sessions_active.load(std::memory_order_relaxed);
+      if (!rtsp_active) {
+        proc::proc.pause();
+      }
+  #ifdef _WIN32
       if (!rtsp_active) {
         VDISPLAY::restorePhysicalHdrProfiles();
         platf::rtss_set_sync_limiter_override(std::nullopt);

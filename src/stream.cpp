@@ -2307,14 +2307,16 @@ namespace stream {
         // Only revert on disconnect when explicitly enabled by config.
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
 
-        const bool is_paused = proc::proc.running();
+        const bool webrtc_active = webrtc_stream::has_active_sessions();
+        if (!webrtc_active) {
+          proc::proc.pause();
+        }
+        const bool is_paused = proc::proc.running() > 0;
         if (is_paused) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
           system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
 #endif
         }
-
-        const bool webrtc_active = webrtc_stream::has_active_sessions();
         const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
 
         const bool skip_teardown_due_to_pause = is_paused && !revert_display_config;
