@@ -95,9 +95,24 @@ LRESULT CALLBACK SessionMonitorWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
       return 0;
     case WM_ENDSESSION:
       {
-        // Terminate ourselves with a blocking exit call
-        std::cout << "Received WM_ENDSESSION"sv << std::endl;
-        lifetime::exit_sunshine(0, false);
+        if (!wParam) {
+          return 0;
+        }
+
+        // Trigger async shutdown so the message loop keeps pumping.
+        // When the main thread's cleanup guard runs, it will
+        // PostMessage(WM_CLOSE) to this window, which dispatches
+        // through the outer GetMessage loop → WM_CLOSE → DestroyWindow
+        // → WM_DESTROY → PostQuitMessage → GetMessage returns 0 →
+        // thread exits.
+        //
+        // Previously this called exit_sunshine(0, false) which blocked
+        // the thread in a sleep loop, starving the message pump.  That
+        // prevented WM_CLOSE from ever being processed, the join
+        // timed out, the thread was detached, and the still-running
+        // thread crashed during CRT atexit cleanup (abort/FAST_FAIL).
+        BOOST_LOG(info) << "Received WM_ENDSESSION"sv;
+        lifetime::exit_sunshine(0, true);
         return 0;
       }
     default:
@@ -226,12 +241,20 @@ int main(int argc, char *argv[]) {
 
   // We must create a hidden window to receive shutdown notifications since we load gdi32.dll
   std::promise<HWND> session_monitor_hwnd_promise;
-  auto session_monitor_hwnd_future = session_monitor_hwnd_promise.get_future();
+  auto session_monitor_hwnd_future = session_monitor_hwnd_promise.get_future().share();
+  std::promise<DWORD> session_monitor_thread_id_promise;
+  auto session_monitor_thread_id_future = session_monitor_thread_id_promise.get_future().share();
   std::promise<void> session_monitor_join_thread_promise;
   auto session_monitor_join_thread_future = session_monitor_join_thread_promise.get_future();
 
   std::thread session_monitor_thread([&]() {
     session_monitor_join_thread_promise.set_value_at_thread_exit();
+
+    // Create a message queue immediately so shutdown can always fall back
+    // to PostThreadMessage(WM_QUIT), even if window creation fails.
+    MSG msg {};
+    PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE);
+    session_monitor_thread_id_promise.set_value(GetCurrentThreadId());
 
     WNDCLASSA wnd_class {};
     wnd_class.lpszClassName = "SunshineSessionMonitorClass";
@@ -267,7 +290,6 @@ int main(int argc, char *argv[]) {
     ShowWindow(wnd, SW_HIDE);
 
     // Run the message loop for our window
-    MSG msg {};
     while (GetMessage(&msg, nullptr, 0, 0) > 0) {
       TranslateMessage(&msg);
       DispatchMessage(&msg);
@@ -275,22 +297,62 @@ int main(int argc, char *argv[]) {
   });
 
   auto session_monitor_join_thread_guard = util::fail_guard([&]() {
-    if (session_monitor_hwnd_future.wait_for(1s) == std::future_status::ready) {
-      if (HWND session_monitor_hwnd = session_monitor_hwnd_future.get()) {
-        PostMessage(session_monitor_hwnd, WM_CLOSE, 0, 0);
+    auto request_session_monitor_shutdown = [&](bool force_quit_only) {
+      if (!force_quit_only) {
+        if (session_monitor_hwnd_future.wait_for(1s) == std::future_status::ready) {
+          if (HWND session_monitor_hwnd = session_monitor_hwnd_future.get()) {
+            if (PostMessage(session_monitor_hwnd, WM_CLOSE, 0, 0)) {
+              return true;
+            }
+
+            BOOST_LOG(warning) << "Failed to post WM_CLOSE to session monitor window: "sv << GetLastError();
+          } else {
+            BOOST_LOG(warning) << "Session monitor window was not created"sv;
+          }
+        } else {
+          BOOST_LOG(warning) << "session_monitor_hwnd_future reached timeout";
+        }
       }
 
-      if (session_monitor_join_thread_future.wait_for(1s) == std::future_status::ready) {
-        session_monitor_thread.join();
-        return;
-      } else {
-        BOOST_LOG(warning) << "session_monitor_join_thread_future reached timeout";
+      if (session_monitor_thread_id_future.wait_for(1s) != std::future_status::ready) {
+        BOOST_LOG(warning) << "session_monitor_thread_id_future reached timeout";
+        return false;
       }
-    } else {
-      BOOST_LOG(warning) << "session_monitor_hwnd_future reached timeout";
+
+      const DWORD session_monitor_thread_id = session_monitor_thread_id_future.get();
+      if (!session_monitor_thread_id) {
+        BOOST_LOG(warning) << "Session monitor thread id was not set"sv;
+        return false;
+      }
+
+      if (PostThreadMessage(session_monitor_thread_id, WM_QUIT, 0, 0)) {
+        return true;
+      }
+
+      BOOST_LOG(warning) << "Failed to post WM_QUIT to session monitor thread: "sv << GetLastError();
+      return false;
+    };
+
+    request_session_monitor_shutdown(false);
+
+    if (session_monitor_join_thread_future.wait_for(3s) == std::future_status::ready) {
+      session_monitor_thread.join();
+      return;
     }
 
-    session_monitor_thread.detach();
+    BOOST_LOG(warning) << "session_monitor_join_thread_future reached timeout";
+    request_session_monitor_shutdown(true);
+
+    // Detaching a thread that is still running causes undefined behavior
+    // when main() returns (CRT atexit cleanup may abort).  Join with a
+    // generous timeout so the thread has time to finish even on slow
+    // systems.  If it still hasn't exited, detach as a last resort.
+    if (session_monitor_join_thread_future.wait_for(5s) == std::future_status::ready) {
+      session_monitor_thread.join();
+    } else {
+      BOOST_LOG(warning) << "session_monitor_thread still running after extended wait; detaching";
+      session_monitor_thread.detach();
+    }
   });
 
 #endif
@@ -549,3 +611,4 @@ int main(int argc, char *argv[]) {
 
   return lifetime::desired_exit_code;
 }
+
