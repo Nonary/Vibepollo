@@ -2217,6 +2217,9 @@ namespace {
     std::atomic<uint64_t> restore_cancel_generation {0};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
+    // After a few consecutive confirmed session fallbacks, stop forcing golden
+    // retries within the same restore request.
+    std::atomic<size_t> golden_pending_session_fallbacks {0};
     // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
     std::atomic<bool> always_restore_from_golden {false};
     // When true, prefer golden over previous only when current is unavailable.
@@ -2241,6 +2244,7 @@ namespace {
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
     static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
+    static constexpr size_t kGoldenFallbackCompletionThreshold = 3;
     std::atomic<size_t> restore_backoff_index {0};
     std::atomic<long long> restore_next_allowed_ms {0};
     static constexpr std::array<std::chrono::seconds, 8> kRestoreBackoffProfile {
@@ -2339,6 +2343,14 @@ namespace {
     void reset_restore_backoff() {
       restore_backoff_index.store(0, std::memory_order_release);
       restore_next_allowed_ms.store(0, std::memory_order_release);
+    }
+
+    void reset_pending_golden_session_fallbacks() {
+      golden_pending_session_fallbacks.store(0, std::memory_order_release);
+    }
+
+    size_t note_pending_golden_session_fallback() {
+      return golden_pending_session_fallbacks.fetch_add(1, std::memory_order_acq_rel) + 1;
     }
 
     void arm_restore_grace(std::chrono::milliseconds delay, const char *reason) {
@@ -3135,6 +3147,9 @@ namespace {
       }
 
       const bool golden_first = always_restore_from_golden.load(std::memory_order_acquire);
+      if (!golden_first) {
+        reset_pending_golden_session_fallbacks();
+      }
 
       // Lambda to try golden restore
       auto try_golden = [&]() -> bool {
@@ -3220,31 +3235,46 @@ namespace {
         // Prefer golden snapshot, fallback to session snapshots
         BOOST_LOG(info) << "Restore: using golden-first strategy (always_restore_from_golden=true)";
         if (try_golden()) {
+          reset_pending_golden_session_fallbacks();
           return true;
         }
         // Golden failed. Session snapshots can keep the machine usable, but
-        // should not terminate restore polling while a golden snapshot is still
-        // available to retry.
+        // only retry golden a few times within the same restore request before
+        // accepting the confirmed session fallback.
         if (!try_session_snapshots()) {
+          reset_pending_golden_session_fallbacks();
           return false;
         }
 
         if (controller.load_display_settings_snapshot(golden_path)) {
-          last_session_restore_success_ms.store(0, std::memory_order_release);
-          BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling.";
-          return false;
+          const auto fallback_count = note_pending_golden_session_fallback();
+          if (fallback_count < kGoldenFallbackCompletionThreshold) {
+            BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
+                            << fallback_count << '/' << kGoldenFallbackCompletionThreshold << ").";
+            return false;
+          }
+
+          reset_pending_golden_session_fallbacks();
+          BOOST_LOG(info) << "Restore: session fallback confirmed while golden snapshot remains pending; accepting session restore after "
+                          << kGoldenFallbackCompletionThreshold << " consecutive golden-first attempts.";
+          return true;
         }
 
+        reset_pending_golden_session_fallbacks();
         return true;
       } else {
         // Default: prefer session snapshots, fallback to golden
         if (try_session_snapshots()) {
+          reset_pending_golden_session_fallbacks();
           return true;
         }
         if (tried_golden_before_previous) {
+          reset_pending_golden_session_fallbacks();
           return false;
         }
-        return try_golden();
+        const bool restored_golden = try_golden();
+        reset_pending_golden_session_fallbacks();
+        return restored_golden;
       }
     }
 
@@ -3303,6 +3333,7 @@ namespace {
       restore_requested.store(false, std::memory_order_release);
       restore_origin_epoch.store(0, std::memory_order_release);
       prefer_golden_if_current_missing.store(false, std::memory_order_release);
+      reset_pending_golden_session_fallbacks();
     }
 
     void disarm_restore_requests(const char *reason = nullptr) {
@@ -3339,6 +3370,7 @@ namespace {
     void clear_restore_origin() {
       restore_origin_epoch.store(0, std::memory_order_release);
       prefer_golden_if_current_missing.store(false, std::memory_order_release);
+      reset_pending_golden_session_fallbacks();
     }
 
     bool should_exit_after_restore() const {

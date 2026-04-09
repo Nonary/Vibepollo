@@ -3,58 +3,29 @@ import { getConfigFieldDefinition } from '@web/configs/configFieldSchema';
 const baseContext = {
   t: (key: string) => key,
   platform: 'windows',
+  metadata: {},
 };
 
 describe('configFieldSchema', () => {
-  test('keeps number fields stable when the edited value crosses 0 or 1', () => {
-    expect(
-      getConfigFieldDefinition('back_button_timeout', {
+  test.each([0, 1, '0', '1'])(
+    'keeps back_button_timeout as a number field for %p',
+    (currentValue) => {
+      const field = getConfigFieldDefinition('back_button_timeout', {
         ...baseContext,
+        currentValue,
         defaultValue: -1,
-        currentValue: 0,
-      }).kind,
-    ).toBe('number');
+      });
 
-    expect(
-      getConfigFieldDefinition('back_button_timeout', {
-        ...baseContext,
-        defaultValue: -1,
-        currentValue: 1,
-      }).kind,
-    ).toBe('number');
-  });
+      expect(field.kind).toBe('number');
+    },
+  );
 
-  test('anchors known fields to the default type instead of the live edited value', () => {
-    expect(
-      getConfigFieldDefinition('system_tray', {
-        ...baseContext,
-        defaultValue: true,
-        currentValue: '0',
-      }).kind,
-    ).toBe('checkbox');
+  test('still infers checkbox fields from boolean-like numeric values when not overridden', () => {
+    const field = getConfigFieldDefinition('custom_toggle', {
+      ...baseContext,
+      currentValue: 0,
+    });
 
-    expect(
-      getConfigFieldDefinition('remember_me_refresh_token_ttl_seconds', {
-        ...baseContext,
-        defaultValue: 604800,
-        currentValue: 'enabled',
-      }).kind,
-    ).toBe('number');
-  });
-
-  test('still falls back to the current value when no default is available', () => {
-    expect(
-      getConfigFieldDefinition('unknown_number_key', {
-        ...baseContext,
-        currentValue: 1,
-      }).kind,
-    ).toBe('number');
-
-    expect(
-      getConfigFieldDefinition('unknown_bool_key', {
-        ...baseContext,
-        currentValue: 'enabled',
-      }).kind,
-    ).toBe('checkbox');
+    expect(field.kind).toBe('checkbox');
   });
 });

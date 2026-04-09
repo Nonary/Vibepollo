@@ -8,11 +8,13 @@
   #include "src/platform/windows/virtual_display.h"
 
   #include <algorithm>
+  #include <chrono>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
   #include <exception>
   #include <memory>
   #include <string>
+  #include <thread>
 
 namespace platf::virtual_display_cleanup {
   namespace {
@@ -25,6 +27,37 @@ namespace platf::virtual_display_cleanup {
           return info.is_active;
         }
       );
+    }
+
+    std::size_t active_virtual_display_count() {
+      const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      return static_cast<std::size_t>(std::count_if(
+        virtual_displays.begin(),
+        virtual_displays.end(),
+        [](const VDISPLAY::SudaVDADisplayInfo &info) {
+          return info.is_active;
+        }
+      ));
+    }
+
+    bool wait_for_virtual_display_teardown(std::chrono::steady_clock::duration timeout) {
+      constexpr auto kPollInterval = std::chrono::milliseconds(100);
+
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (true) {
+        const auto remaining = active_virtual_display_count();
+        if (remaining == 0) {
+          return true;
+        }
+
+        if (std::chrono::steady_clock::now() >= deadline) {
+          BOOST_LOG(warning) << "Virtual display cleanup: teardown wait expired with "
+                             << remaining << " virtual display(s) still enumerated.";
+          return false;
+        }
+
+        std::this_thread::sleep_for(kPollInterval);
+      }
     }
 
     bool restore_windows_display_database() {
@@ -76,6 +109,16 @@ namespace platf::virtual_display_cleanup {
     }
 
     result.virtual_displays_removed = VDISPLAY::removeAllVirtualDisplays();
+    const bool should_wait_for_teardown_before_restore =
+      had_active_virtual_display &&
+      enforce_db_restore &&
+      (revert_order == revert_order_t::remove_before_restore || !result.helper_revert_dispatched);
+    if (should_wait_for_teardown_before_restore) {
+      constexpr auto kTeardownSettleTimeout = std::chrono::seconds(5);
+      if (wait_for_virtual_display_teardown(kTeardownSettleTimeout)) {
+        BOOST_LOG(debug) << "Virtual display cleanup: teardown settled before restore.";
+      }
+    }
 
     if (enforce_db_restore) {
       if (revert_order == revert_order_t::remove_before_restore) {
