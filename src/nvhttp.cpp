@@ -229,8 +229,6 @@ namespace nvhttp {
       return has_any_active_display();
     }
 
-    std::atomic<bool> virtual_display_cleanup_pending {false};
-
     void cleanup_virtual_display_state() {
       if (!has_active_virtual_display()) {
         BOOST_LOG(debug) << "Skipping virtual display cleanup after cancel because no active virtual display exists.";
@@ -242,30 +240,19 @@ namespace nvhttp {
       }
     }
 
-    void schedule_virtual_display_cleanup() {
-      bool expected = false;
-      if (!virtual_display_cleanup_pending.compare_exchange_strong(expected, true)) {
-        return;
-      }
-
-      std::thread([] {
-        auto guard = util::fail_guard([]() {
-          virtual_display_cleanup_pending.store(false, std::memory_order_release);
-        });
-        try {
-          // If a new session spun up while we were scheduling cleanup, leave displays alone.
-          if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
-            BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
-            return;
-          }
-
-          cleanup_virtual_display_state();
-        } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
-        } catch (...) {
-          BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+    void cleanup_virtual_display_if_idle() {
+      try {
+        if (rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions()) {
+          BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active.";
+          return;
         }
-      }).detach();
+
+        cleanup_virtual_display_state();
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
+      }
     }
 
     void prepare_virtual_display_for_session(
@@ -2737,7 +2724,9 @@ namespace nvhttp {
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
 
 #ifdef _WIN32
-    schedule_virtual_display_cleanup();
+    // RTSP session termination above is synchronous, so by the time we reach
+    // this point the old session threads have already completed their joins.
+    cleanup_virtual_display_if_idle();
 #endif
   }
 
