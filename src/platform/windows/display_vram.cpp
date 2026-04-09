@@ -371,81 +371,95 @@ namespace platf::dxgi {
       }
 
       auto &img = (img_d3d_t &) img_base;
-      if (!img.blank) {
-        auto &img_ctx = img_ctx_map[img.id];
+      auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport, DXGI_FORMAT input_format) {
+        device_ctx->PSSetShaderResources(0, 1, &input);
 
-        // Open the shared capture texture with our ID3D11Device
-        if (initialize_image_context(img, img_ctx)) {
-          return -1;
+        // Draw Y/YUV
+        device_ctx->OMSetRenderTargets(1, &out_Y_or_YUV_rtv, nullptr);
+        device_ctx->VSSetShader(convert_Y_or_YUV_vs.get(), nullptr, 0);
+        device_ctx->PSSetShader(input_format == DXGI_FORMAT_R16G16B16A16_FLOAT ? convert_Y_or_YUV_fp16_ps.get() : convert_Y_or_YUV_ps.get(), nullptr, 0);
+        auto viewport_count = (format == DXGI_FORMAT_R16_UINT) ? 3 : 1;
+        assert(viewport_count <= y_or_yuv_viewports.size());
+        device_ctx->RSSetViewports(viewport_count, y_or_yuv_viewports.data());
+        device_ctx->Draw(3 * viewport_count, 0);  // vertex shader will spread vertices across viewports
+
+        // Draw UV if needed
+        if (out_UV_rtv) {
+          assert(format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010);
+          device_ctx->OMSetRenderTargets(1, &out_UV_rtv, nullptr);
+          device_ctx->VSSetShader(convert_UV_vs.get(), nullptr, 0);
+          device_ctx->PSSetShader(input_format == DXGI_FORMAT_R16G16B16A16_FLOAT ? convert_UV_fp16_ps.get() : convert_UV_ps.get(), nullptr, 0);
+          device_ctx->RSSetViewports(1, &uv_viewport);
+          device_ctx->Draw(3, 0);
         }
+      };
 
-        // Acquire encoder mutex to synchronize with capture code.
-        // Use a finite timeout to avoid hard-deadlocks during display re-init / device loss.
-        auto status = img_ctx.encoder_mutex->AcquireSync(0, 3000);
-        if (status == WAIT_TIMEOUT) {
-          BOOST_LOG(error) << "Timed out acquiring encoder mutex; capture/encoder sync likely wedged";
-          return -1;
-        }
-        if (status != S_OK && status != WAIT_ABANDONED) {
-          BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
-          return -1;
-        }
-        if (status == WAIT_ABANDONED) {
-          BOOST_LOG(error) << "Encoder mutex was abandoned; continuing with lock held";
-        }
-
-        auto release_encoder_mutex = util::fail_guard([&]() {
-          const HRESULT hr = img_ctx.encoder_mutex->ReleaseSync(0);
-          if (FAILED(hr)) {
-            BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(hr).to_string_view() << ']';
-          }
-        });
-
-        auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport) {
-          device_ctx->PSSetShaderResources(0, 1, &input);
-
-          // Draw Y/YUV
-          device_ctx->OMSetRenderTargets(1, &out_Y_or_YUV_rtv, nullptr);
-          device_ctx->VSSetShader(convert_Y_or_YUV_vs.get(), nullptr, 0);
-          device_ctx->PSSetShader(img.format == DXGI_FORMAT_R16G16B16A16_FLOAT ? convert_Y_or_YUV_fp16_ps.get() : convert_Y_or_YUV_ps.get(), nullptr, 0);
-          auto viewport_count = (format == DXGI_FORMAT_R16_UINT) ? 3 : 1;
-          assert(viewport_count <= y_or_yuv_viewports.size());
-          device_ctx->RSSetViewports(viewport_count, y_or_yuv_viewports.data());
-          device_ctx->Draw(3 * viewport_count, 0);  // vertex shader will spread vertices across viewports
-
-          // Draw UV if needed
-          if (out_UV_rtv) {
-            assert(format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010);
-            device_ctx->OMSetRenderTargets(1, &out_UV_rtv, nullptr);
-            device_ctx->VSSetShader(convert_UV_vs.get(), nullptr, 0);
-            device_ctx->PSSetShader(img.format == DXGI_FORMAT_R16G16B16A16_FLOAT ? convert_UV_fp16_ps.get() : convert_UV_ps.get(), nullptr, 0);
-            device_ctx->RSSetViewports(1, &uv_viewport);
-            device_ctx->Draw(3, 0);
-          }
-        };
-
-        // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
-        if (!rtvs_cleared) {
-          if (ensure_black_texture_for_rtv_clear()) {
-            draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear);
-          }
-          rtvs_cleared = true;
-        }
-
-        // Draw captured frame
-        draw(img_ctx.encoder_input_res, out_Y_or_YUV_viewports, out_UV_viewport);
-
-        // Release encoder mutex to allow capture code to reuse this image
-        const HRESULT release_hr = img_ctx.encoder_mutex->ReleaseSync(0);
-        if (SUCCEEDED(release_hr)) {
-          release_encoder_mutex.disable();
-        } else {
-          BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(release_hr).to_string_view() << ']';
-        }
-
+      auto unbind_shader_resource = [&]() {
         ID3D11ShaderResourceView *emptyShaderResourceView = nullptr;
         device_ctx->PSSetShaderResources(0, 1, &emptyShaderResourceView);
+      };
+
+      auto clear_output_to_black = [&]() -> bool {
+        if (!ensure_black_texture_for_rtv_clear()) {
+          return false;
+        }
+
+        draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear, DXGI_FORMAT_B8G8R8A8_UNORM);
+        rtvs_cleared = true;
+        unbind_shader_resource();
+        return true;
+      };
+
+      if (img.blank) {
+        return clear_output_to_black() ? 0 : -1;
       }
+
+      auto &img_ctx = img_ctx_map[img.id];
+
+      // Open the shared capture texture with our ID3D11Device
+      if (initialize_image_context(img, img_ctx)) {
+        return -1;
+      }
+
+      // Acquire encoder mutex to synchronize with capture code.
+      // Use a finite timeout to avoid hard-deadlocks during display re-init / device loss.
+      auto status = img_ctx.encoder_mutex->AcquireSync(0, 3000);
+      if (status == WAIT_TIMEOUT) {
+        BOOST_LOG(error) << "Timed out acquiring encoder mutex; capture/encoder sync likely wedged";
+        return -1;
+      }
+      if (status != S_OK && status != WAIT_ABANDONED) {
+        BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+      if (status == WAIT_ABANDONED) {
+        BOOST_LOG(error) << "Encoder mutex was abandoned; continuing with lock held";
+      }
+
+      auto release_encoder_mutex = util::fail_guard([&]() {
+        const HRESULT hr = img_ctx.encoder_mutex->ReleaseSync(0);
+        if (FAILED(hr)) {
+          BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(hr).to_string_view() << ']';
+        }
+      });
+
+      // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
+      if (!rtvs_cleared && !clear_output_to_black()) {
+        return -1;
+      }
+
+      // Draw captured frame
+      draw(img_ctx.encoder_input_res, out_Y_or_YUV_viewports, out_UV_viewport, img.format);
+
+      // Release encoder mutex to allow capture code to reuse this image
+      const HRESULT release_hr = img_ctx.encoder_mutex->ReleaseSync(0);
+      if (SUCCEEDED(release_hr)) {
+        release_encoder_mutex.disable();
+      } else {
+        BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(release_hr).to_string_view() << ']';
+      }
+
+      unbind_shader_resource();
 
       return 0;
     }
