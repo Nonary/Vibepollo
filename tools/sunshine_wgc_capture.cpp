@@ -142,6 +142,60 @@ static std::weak_ptr<AsyncNamedPipe> g_communication_pipe_weak;
 static safe_winevent_hook g_desktop_switch_hook = nullptr;
 
 /**
+ * @brief Flag indicating if a secure desktop has been detected.
+ */
+static bool g_secure_desktop_detected = false;
+
+/**
+ * @brief Pending verification deadline for desktop switches that were not immediately secure.
+ */
+static std::optional<std::chrono::steady_clock::time_point> g_pending_secure_desktop_check_deadline;
+
+/**
+ * @brief Grace window for confirming secure desktop after a desktop switch event.
+ *
+ * EVENT_SYSTEM_DESKTOPSWITCH can fire before OpenInputDesktop reflects the final target desktop.
+ * Keep a short follow-up probe window so we still notify the main process when the switch settles
+ * onto secure desktop, without forcing a reinit for ordinary non-secure desktop churn.
+ */
+constexpr auto SECURE_DESKTOP_CONFIRMATION_WINDOW = std::chrono::seconds(1);
+
+void notify_main_process_about_secure_desktop() {
+  if (g_secure_desktop_detected) {
+    return;
+  }
+
+  g_secure_desktop_detected = true;
+  g_pending_secure_desktop_check_deadline.reset();
+  BOOST_LOG(info) << "Secure desktop detected - sending notification to main process";
+
+  if (auto pipe = g_communication_pipe_weak.lock(); pipe && pipe->is_connected()) {
+    uint8_t msg = SECURE_DESKTOP_MSG;
+    pipe->send(std::span<const uint8_t>(&msg, 1));
+    BOOST_LOG(info) << "Queued desktop switch reinit notification to main process";
+  } else {
+    BOOST_LOG(warning) << "Desktop switch detected, but the main process pipe is not connected";
+  }
+}
+
+void poll_pending_secure_desktop_transition() {
+  if (!g_pending_secure_desktop_check_deadline) {
+    return;
+  }
+
+  if (platf::dxgi::is_secure_desktop_active()) {
+    BOOST_LOG(info) << "Secure desktop became active shortly after desktop switch";
+    notify_main_process_about_secure_desktop();
+    return;
+  }
+
+  if (std::chrono::steady_clock::now() >= *g_pending_secure_desktop_check_deadline) {
+    BOOST_LOG(debug) << "Desktop switch settled without entering secure desktop; ignoring reinit";
+    g_pending_secure_desktop_check_deadline.reset();
+  }
+}
+
+/**
  * @brief System initialization class to handle DPI, threading, and MMCSS setup.
  *
  * This class manages critical system-level initialization for optimal capture performance:
@@ -1334,9 +1388,9 @@ private:
  * @brief Callback procedure for desktop switch events.
  *
  * This function handles EVENT_SYSTEM_DESKTOPSWITCH events to detect when the system
- * transitions between desktop states that can disrupt WGC capture (such as UAC prompts
- * or lock screens). Every transition sends a reinit notification so the main process
- * can reevaluate whether DXGI fallback is required.
+ * transitions to or from secure desktop mode (such as UAC prompts or lock screens).
+ * If secure desktop is not active yet, it starts a short confirmation window so we can
+ * still catch the secure-desktop transition after the event settles.
  *
  * @param h_win_event_hook Handle to the event hook (unused).
  * @param event The event type that occurred.
@@ -1353,12 +1407,15 @@ void CALLBACK desktop_switch_hook_proc(HWINEVENTHOOK /*h_win_event_hook*/, DWORD
     const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
     BOOST_LOG(info) << "Desktop switch - Secure desktop: " << (secure_desktop_active ? "YES" : "NO");
 
-    if (auto pipe = g_communication_pipe_weak.lock(); pipe && pipe->is_connected()) {
-      uint8_t msg = SECURE_DESKTOP_MSG;
-      pipe->send(std::span<const uint8_t>(&msg, 1));
-      BOOST_LOG(info) << "Queued desktop switch reinit notification to main process";
+    if (secure_desktop_active) {
+      notify_main_process_about_secure_desktop();
+    } else if (!secure_desktop_active && g_secure_desktop_detected) {
+      BOOST_LOG(info) << "Returned to normal desktop";
+      g_secure_desktop_detected = false;
+      g_pending_secure_desktop_check_deadline.reset();
     } else {
-      BOOST_LOG(warning) << "Desktop switch detected, but the main process pipe is not connected";
+      g_pending_secure_desktop_check_deadline = std::chrono::steady_clock::now() + SECURE_DESKTOP_CONFIRMATION_WINDOW;
+      BOOST_LOG(debug) << "Desktop switch was not immediately secure; waiting briefly for confirmation";
     }
   }
 }
@@ -1713,6 +1770,8 @@ int main(int argc, char *argv[]) {
     if (!process_window_messages(shutdown_requested)) {
       break;
     }
+
+    poll_pending_secure_desktop_transition();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Reduced from 5ms for lower IPC jitter
   }
