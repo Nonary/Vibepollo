@@ -1,0 +1,123 @@
+---
+name: Logs Needed Closure
+permissions: {}
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}"
+  cancel-in-progress: true
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close stale logs-needed issues
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const labelName = 'logs requested';
+            const reminderMarker = '<!-- logs-needed-reminder -->';
+            const closureMarker = '<!-- logs-needed-closure -->';
+            const foundMarker = '<!-- logs-needed-detected -->';
+            const logFileRegex = /(?:vibeshine_logs-\d{8}-\d{6}(?:-part\d+)?\.zip|sunshine-logs-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.log)/i;
+            const crashBundleRegex = /sunshine_crashbundle-\d{8}-\d{6}(?:-part\d+)?\.zip/i;
+            const cutoffMs = 14 * 24 * 60 * 60 * 1000;
+            const cutoffDate = new Date(Date.now() - cutoffMs);
+            const { owner, repo } = context.repo;
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labelName,
+              per_page: 100,
+            });
+
+            for (const issue of issues) {
+              if (issue.pull_request) {
+                continue;
+              }
+
+              const events = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner,
+                repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+
+              const labelAddedAt = events
+                .filter((event) => event.event === 'labeled' && event.label?.name === labelName)
+                .map((event) => new Date(event.created_at))
+                .sort((a, b) => b - a)[0];
+
+              const reopenedAt = events
+                .filter((event) => event.event === 'reopened')
+                .map((event) => new Date(event.created_at))
+                .sort((a, b) => b - a)[0];
+
+              const staleSince = [labelAddedAt, reopenedAt]
+                .filter(Boolean)
+                .sort((a, b) => b - a)[0];
+
+              if (!staleSince || staleSince > cutoffDate) {
+                continue;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+
+              const issueText = [
+                issue.title ?? '',
+                issue.body ?? '',
+                ...comments.map((comment) => comment.body ?? ''),
+              ].join('\n');
+
+              const hasSupportedAttachment = logFileRegex.test(issueText) || crashBundleRegex.test(issueText);
+
+              if (hasSupportedAttachment) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  name: labelName,
+                });
+
+                if (!comments.some((comment) => comment.body?.includes(foundMarker))) {
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    body: `${foundMarker}\nLogs or a crash bundle were detected, so the \`${labelName}\` label was removed and this issue can be reviewed.`,
+                  });
+                }
+
+                continue;
+              }
+
+              if (!comments.some((comment) => comment.body?.includes(closureMarker))) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  body: `${closureMarker}\nClosing this issue as not planned because the requested logs or crash bundle were not provided within 14 days. Please reopen with the logs attached if further review is needed.\n\n${reminderMarker}`,
+                });
+              }
+
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'not_planned',
+              });
+            }

@@ -1,0 +1,120 @@
+---
+name: Logs Needed Reminder
+permissions: {}
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+      - reopened
+      - labeled
+  issue_comment:
+    types:
+      - created
+      - edited
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Add or clear logs request comment
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const labelName = 'logs requested';
+            const marker = '<!-- logs-needed-reminder -->';
+            const foundMarker = '<!-- logs-needed-detected -->';
+            const logFileRegex = /(?:vibeshine_logs-\d{8}-\d{6}(?:-part\d+)?\.zip|sunshine-logs-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.log)/i;
+            const crashBundleRegex = /sunshine_crashbundle-\d{8}-\d{6}(?:-part\d+)?\.zip/i;
+
+            const { owner, repo } = context.repo;
+            const issueNumber = context.payload.issue?.number ?? context.payload.comment?.issue_url?.match(/\/issues\/(\d+)$/)?.[1];
+
+            if (!issueNumber) {
+              core.info('No issue number found in payload.');
+              return;
+            }
+
+            const issue = await github.rest.issues.get({
+              owner,
+              repo,
+              issue_number: Number(issueNumber),
+            });
+
+            if (issue.data.pull_request) {
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: Number(issueNumber),
+              per_page: 100,
+            });
+
+            const issueText = [
+              issue.data.title ?? '',
+              issue.data.body ?? '',
+              ...comments.map((comment) => comment.body ?? ''),
+            ].join('\n');
+
+            const hasLogs = logFileRegex.test(issueText);
+            const hasCrashBundle = crashBundleRegex.test(issueText);
+            const hasSupportedAttachment = hasLogs || hasCrashBundle;
+            const hasLogsNeededLabel = issue.data.labels.some((label) => label.name === labelName);
+            const shouldPostReminder = context.eventName === 'issues' && ['opened', 'labeled', 'reopened'].includes(context.payload.action);
+
+            if (hasSupportedAttachment && hasLogsNeededLabel) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: Number(issueNumber),
+                name: labelName,
+              });
+
+              if (!comments.some((comment) => comment.body?.includes(foundMarker))) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: Number(issueNumber),
+                  body: `${foundMarker}\nLogs or a crash bundle were detected, so the \`${labelName}\` label was removed and this issue can be reviewed.`,
+                });
+              }
+
+              return;
+            }
+
+            if (!hasLogsNeededLabel || !shouldPostReminder) {
+              return;
+            }
+
+            const commentBody = `${marker}
+
+            Thank you for the report. We need logs in order to troubleshoot this issue.
+
+            Please collect them from Vibepollo:
+            1. Open the system tray icon for Apollo.
+            2. Click **Open Vibepollo**.
+            3. If required, log into the Web UI.
+            4. Open the **Troubleshooting** tab.
+            5. Click **Export Logs**.
+            6. Upload the resulting logs archive or crash bundle to this issue.
+
+            For automation purposes, please do not rename the exported logs or crash bundle after downloading them.
+
+            Once logs or a crash bundle are attached, they will be reviewed. If no logs or a crash bundle are provided within 2 weeks, this issue will be closed for lack of information provided.`;
+
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info(`Issue #${issueNumber} already has the logs reminder comment.`);
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body: commentBody,
+            });
