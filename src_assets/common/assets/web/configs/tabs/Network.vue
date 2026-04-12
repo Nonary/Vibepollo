@@ -137,6 +137,12 @@ const effectivePort = computed(() => Number(config.port ?? defaultMoonlightPort)
     />
 
     <ConfigFieldRenderer setting-key="ping_timeout" v-model="config.ping_timeout" class="mb-6" />
+
+    <ConfigFieldRenderer
+      setting-key="video_max_batch_size_kb"
+      v-model="config.video_max_batch_size_kb"
+      class="mb-6"
+    />
   </div>
 </template>
 

@@ -95,10 +95,6 @@ namespace nvenc::api {
 
   inline std::vector<uint32_t> h264_api_candidates() {
     return filter_to_compiled({
-      make_api_version(13U, 0U),
-      make_api_version(12U, 2U),
-      make_api_version(12U, 1U),
-      make_api_version(12U, 0U),
       make_api_version(11U, 0U),
     });
   }
@@ -113,8 +109,6 @@ namespace nvenc::api {
 
       case 2:
         return filter_to_compiled({
-          make_api_version(13U, 0U),
-          make_api_version(12U, 2U),
           make_api_version(12U, 1U),
         });
 

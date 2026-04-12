@@ -205,6 +205,7 @@ namespace config {
     std::string file_apps;
 
     int fec_percentage;
+    int video_max_batch_size_kb;
 
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;

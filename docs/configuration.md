@@ -1991,6 +1991,36 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### video_max_batch_size_kb
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Maximum size in KiB for each outgoing video send batch.
+            The default is 64 KiB.
+            Lower values can improve stream stability on cheaper switches, routers, and Wi-Fi hardware by reducing burst size,
+            but at the cost of less than 1 ms of additional host-side delay.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            64
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Choices</td>
+        <td colspan="2">16, 32, 64</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            video_max_batch_size_kb = 32
+            @endcode</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps

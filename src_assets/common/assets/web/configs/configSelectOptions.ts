@@ -131,6 +131,14 @@ export function getConfigSelectOptions(
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
+    case 'video_max_batch_size_kb': {
+      const options = [
+        { label: '64 KiB (default)', value: 64 },
+        { label: '32 KiB', value: 32 },
+        { label: '16 KiB', value: 16 },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
     case 'hevc_mode': {
       const options = [0, 1, 2, 3].map((value) => ({
         label: translateOr(t, `config.hevc_mode_${value}`, String(value)),

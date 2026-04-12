@@ -156,6 +156,7 @@ const defaultGroups = [
       lan_encryption_mode: 0,
       wan_encryption_mode: 1,
       ping_timeout: 10000,
+      video_max_batch_size_kb: 64,
     },
   },
   {
