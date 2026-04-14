@@ -2179,7 +2179,7 @@ namespace proc {
 #endif
   }
 
-  void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
+  void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert, bool is_session_end) {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
     placebo = false;
@@ -2188,10 +2188,45 @@ namespace proc {
     _lossless_should_start_support = false;
     stop_lossless_scaling_support();
 #endif
+    // When a streaming session ends (Moonlight "cancel") and the configured policy is
+    // to keep Playnite-managed apps running, detach the child process handles instead
+    // of killing them. The rest of teardown (undo_cmds, display revert, state reset,
+    // virtual display cleanup) still runs as normal.
+    const bool detach_playnite_app_for_session_end = is_session_end
+      && config::playnite.keep_running_on_session_end
+      && had_active_app
+      && !_app.playnite_id.empty();
     // For Playnite-managed apps, request a graceful stop via Playnite first
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
-    if (had_active_app && !_app.playnite_id.empty()) {
+    if (detach_playnite_app_for_session_end) {
+      BOOST_LOG(info) << "Session ended; detaching Playnite app '" << _app.name
+                      << "' so it keeps running (playnite_keep_running_on_session_end=enabled).";
+      // The process group is a Windows job object created with
+      // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (see boost_process_shim.h). Closing the
+      // job handle — which group::detach() and the group destructor both do —
+      // would kill the launcher and the game along with it. Clear the kill-on-close
+      // flag first so the processes outlive the handle close.
+      if (_process_group) {
+        HANDLE job = _process_group.native_handle();
+        if (job) {
+          JOBOBJECT_EXTENDED_LIMIT_INFORMATION info {};
+          info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+          if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+            BOOST_LOG(warning) << "Failed to clear JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; "
+                                  "app may be killed when handle closes. GetLastError="
+                               << GetLastError();
+          }
+        }
+        _process_group.detach();
+      }
+      if (_process.valid()) {
+        _process.detach();
+      }
+      // IPC teardown still runs to match status-quo Playnite session cleanup;
+      // only the game/launcher kill is skipped.
+      platf::playnite::stop_client_for_session();
+    } else if (had_active_app && !_app.playnite_id.empty()) {
       bool should_request_playnite_stop = true;
       try {
         if (_process && !_process.running() && _process.native_exit_code() == 0) {
@@ -2218,8 +2253,12 @@ namespace proc {
       platf::playnite::stop_client_for_session();
     }
 #endif
-    // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout)
-    terminate_process_group(_process, _process_group, remaining_timeout);
+    // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout).
+    // Exception: when detaching a Playnite app at session end, handles were already detached
+    // above so the processes continue running outside of Sunshine's control.
+    if (!detach_playnite_app_for_session_end) {
+      terminate_process_group(_process, _process_group, remaining_timeout);
+    }
     _process = bp::child();
     _process_group = bp::group();
 

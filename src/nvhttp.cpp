@@ -2719,7 +2719,7 @@ namespace nvhttp {
     rtsp_stream::terminate_sessions();
 
     if (proc::proc.running() > 0) {
-      proc::proc.terminate();
+      proc::proc.terminate(false, true, false, true /* is_session_end */);
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
 

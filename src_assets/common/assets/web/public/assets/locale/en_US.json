@@ -1045,6 +1045,8 @@
     "focus_timeout_secs_help": "How long auto-focus runs while re-applying focus (0 to disable).",
     "focus_exit_on_first": "Stop auto-focus after first successful focus",
     "focus_exit_on_first_help": "Stop auto-focus after the first success; otherwise, re-apply until attempts or timeout elapse.",
+    "keep_running_on_session_end": "Keep Playnite games running after session ends",
+    "keep_running_on_session_end_help": "When a streaming session ends, leave the Playnite-launched game running on the host instead of terminating it. Explicit close actions (tray, Web UI, Moonlight Terminate entry) still terminate the game.",
     "diagnostic_not_installed": "Playnite plugin is not installed in the Extensions directory.",
     "diagnostic_not_running": "Playnite is not running. Launch it to resume syncing.",
     "section_auto_sync": "Auto-sync",
