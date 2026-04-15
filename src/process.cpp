@@ -2480,7 +2480,7 @@ namespace proc {
 
         dollar = std::find(next, std::end(val_raw), '$');
       } else {
-        BOOST_LOG(info) << "Playnite URI launch started";
+        BOOST_LOG(warning) << "Trailing '$' at end of environment variable value will be passed through literally";
         dollar = next;
       }
     }
@@ -2577,7 +2577,7 @@ namespace proc {
       if (file_hash) {
         to_hash.push_back(file_hash.value());
       } else {
-        BOOST_LOG(info) << "Playnite URI launch started";
+        BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
         // Fallback to just hashing image path
         to_hash.push_back(file_path);
       }
