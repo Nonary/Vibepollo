@@ -1765,7 +1765,8 @@ namespace video {
     safe::mail_raw_t::queue_t<packet_t> &packets,
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> capture_timestamp
+    std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
   ) {
     auto &frame = session.device->frame;
     frame->pts = frame_nr;
@@ -1831,6 +1832,7 @@ namespace video {
       if (av_packet && av_packet->pts == frame_nr) {
         packet->frame_timestamp = frame_timestamp;
         packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
+        packet->host_processing_timestamp = host_processing_timestamp;
       }
 
       packet->replacements = &session.replacements;
@@ -1850,7 +1852,8 @@ namespace video {
     safe::mail_raw_t::queue_t<packet_t> &packets,
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> capture_timestamp
+    std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
   ) {
     auto encoded_frame = session.encode_frame(frame_nr);
     if (encoded_frame.data.empty()) {
@@ -1867,6 +1870,7 @@ namespace video {
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
     packet->frame_timestamp = frame_timestamp;
     packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
+    packet->host_processing_timestamp = host_processing_timestamp;
     if (webrtc_stream::has_active_sessions()) {
       webrtc_stream::submit_video_packet(*packet);
     }
@@ -1881,12 +1885,13 @@ namespace video {
     safe::mail_raw_t::queue_t<packet_t> &packets,
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> capture_timestamp
+    std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
   ) {
     if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
-      return encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp, capture_timestamp);
+      return encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
-      return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp, capture_timestamp);
+      return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
     }
 
     return -1;
@@ -2352,7 +2357,7 @@ namespace video {
 
       // Encode the dummy img only once
       const auto now = std::chrono::steady_clock::now();
-      if (encode(frame_nr++, *session, packets, channel_data, now, now)) {
+      if (encode(frame_nr++, *session, packets, channel_data, now, now, now)) {
         BOOST_LOG(error) << "Could not encode dummy video packet"sv;
         return;
       }
@@ -2400,6 +2405,7 @@ namespace video {
 
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
       bool placeholder_input = bootstrap_state.current_input_placeholder;
 
       // Encode at a minimum FPS to avoid image quality issues with static content
@@ -2412,6 +2418,7 @@ namespace video {
           if (!placeholder_input) {
             capture_timestamp = img->frame_timestamp;
             frame_timestamp = capture_timestamp;
+            host_processing_timestamp = img->host_processing_timestamp;
           }
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
@@ -2438,6 +2445,7 @@ namespace video {
             *encode_frame_timestamp += encode_frame_threshold;
           } else {
             frame_timestamp.reset();
+            host_processing_timestamp.reset();
           }
         } else if (!images->running()) {
           break;
@@ -2450,7 +2458,7 @@ namespace video {
         continue;
       }
 
-      if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp)) {
+      if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         break;
       }
@@ -2711,6 +2719,7 @@ namespace video {
 
           std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
           std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
+          std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
           bool placeholder_input = pos->bootstrap.current_input_placeholder;
 
           if (frame_captured) {
@@ -2721,6 +2730,7 @@ namespace video {
 
             if (!placeholder_input) {
               capture_timestamp = img->frame_timestamp;
+              host_processing_timestamp = img->host_processing_timestamp;
             }
 
             if (pos->session->convert(*img)) {
@@ -2745,7 +2755,7 @@ namespace video {
             continue;
           }
 
-          if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp)) {
+          if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
             BOOST_LOG(error) << "Could not encode video packet"sv;
             ctx->shutdown_event->raise(true);
 
@@ -2989,7 +2999,7 @@ namespace video {
         auto packets = probe_mail->queue<packet_t>(mail::video_packets);
 
         while (!packets->peek()) {
-          if (encode(1, *session, packets, nullptr, {}, {})) {
+          if (encode(1, *session, packets, nullptr, {}, {}, {})) {
             return util::false_v<util::optional_t<int>>;
           }
         }

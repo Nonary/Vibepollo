@@ -1194,6 +1194,7 @@ namespace platf::dxgi {
       return capture_e::timeout;
     }
 
+    const auto host_processing_timestamp = std::chrono::steady_clock::now();
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     if (auto qpc_displayed = std::max(frame_info.LastPresentTime.QuadPart, frame_info.LastMouseUpdateTime.QuadPart)) {
       // Translate QueryPerformanceCounter() value to steady_clock time point
@@ -1578,6 +1579,7 @@ namespace platf::dxgi {
 
     if (img_out) {
       img_out->frame_timestamp = frame_timestamp;
+      img_out->host_processing_timestamp = host_processing_timestamp;
     }
 
     return capture_e::ok;

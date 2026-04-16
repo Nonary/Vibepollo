@@ -138,7 +138,8 @@ namespace platf::dxgi {
 
     if (capture_status == capture_e::ok) {
       // Got a new frame - process it normally
-      auto frame_timestamp = std::chrono::steady_clock::now() - qpc_time_difference(qpc_counter(), frame_qpc);
+      const auto host_processing_timestamp = std::chrono::steady_clock::now();
+      auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame_qpc);
       D3D11_TEXTURE2D_DESC desc;
       src->GetDesc(&desc);
 
@@ -212,6 +213,7 @@ namespace platf::dxgi {
       d3d_img->data = (std::uint8_t *) d3d_img->capture_texture.get();
 
       img->frame_timestamp = frame_timestamp;
+      img->host_processing_timestamp = host_processing_timestamp;
       img_out = img;
 
       // Cache this frame for potential reuse
@@ -227,6 +229,7 @@ namespace platf::dxgi {
       // Update timestamp to current time to maintain proper timing
       if (img_out) {
         img_out->frame_timestamp = std::chrono::steady_clock::now();
+        img_out->host_processing_timestamp = img_out->frame_timestamp;
       }
 
       return capture_e::ok;
@@ -352,6 +355,7 @@ namespace platf::dxgi {
         // Update timestamp to current time to maintain proper timing
         if (img_out) {
           img_out->frame_timestamp = std::chrono::steady_clock::now();
+          img_out->host_processing_timestamp = img_out->frame_timestamp;
         }
 
         return capture_e::ok;
@@ -460,8 +464,10 @@ namespace platf::dxgi {
     }
 
     // Set frame timestamp
-    auto frame_timestamp = std::chrono::steady_clock::now() - qpc_time_difference(qpc_counter(), frame_qpc);
+    const auto host_processing_timestamp = std::chrono::steady_clock::now();
+    auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame_qpc);
     img->frame_timestamp = frame_timestamp;
+    img->host_processing_timestamp = host_processing_timestamp;
 
     // Cache this frame for potential reuse in constant FPS mode
     last_cached_frame = img_out;
