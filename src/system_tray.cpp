@@ -33,11 +33,16 @@
 
   // standard includes
   #include <atomic>
+  #include <condition_variable>
   #include <csignal>
   #include <cstring>
   #include <cwchar>
+  #include <functional>
+  #include <mutex>
+  #include <queue>
   #include <string>
   #include <thread>
+  #include <utility>
 
   // lib includes
   #include <boost/filesystem.hpp>
@@ -61,6 +66,12 @@ namespace system_tray {
   static std::atomic<bool> tray_thread_running = false;
   static std::atomic<bool> tray_thread_should_exit = false;
   static std::thread tray_thread;
+#ifdef _WIN32
+  static std::mutex tray_action_mutex;
+  static std::condition_variable tray_action_cv;
+  static std::queue<std::function<void()>> tray_actions;
+  static std::atomic<bool> tray_shutdown_requested = false;
+#endif
 
   static int init_tray();
 
@@ -151,6 +162,44 @@ namespace system_tray {
     .iconPathCount = 4,
     .allIconPaths = {TRAY_ICON, TRAY_ICON_LOCKED, TRAY_ICON_PLAYING, TRAY_ICON_PAUSING},
   };
+
+#ifdef _WIN32
+  static void clear_pending_quit_messages() {
+    MSG msg {};
+    while (PeekMessageA(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
+  }
+
+  static void run_pending_tray_actions() {
+    std::queue<std::function<void()>> pending_actions;
+    {
+      std::lock_guard lock(tray_action_mutex);
+      pending_actions.swap(tray_actions);
+    }
+
+    while (!pending_actions.empty()) {
+      auto action = std::move(pending_actions.front());
+      pending_actions.pop();
+      action();
+    }
+  }
+#endif
+
+  template<typename Fn>
+  static void run_on_tray_thread(Fn &&fn) {
+    if (!tray_initialized.load()) {
+      return;
+    }
+
+#ifdef _WIN32
+    {
+      std::lock_guard lock(tray_action_mutex);
+      tray_actions.emplace(std::forward<Fn>(fn));
+    }
+    tray_action_cv.notify_one();
+#else
+    fn();
+#endif
+  }
 
   static int init_tray() {
   #ifdef _WIN32
@@ -248,16 +297,19 @@ namespace system_tray {
     int attempt = 0;
     int tray_init_result = -1;
     while (tray_init_result < 0 && attempt < 30) {
+#ifdef _WIN32
+      if (tray_shutdown_requested.load()) {
+        return 0;
+      }
+#endif
       tray_init_result = tray_init(&tray);
       if (tray_init_result >= 0) {
         break;
       }
-  #ifdef _WIN32
-      auto last_error = GetLastError();
-      BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ", error " << last_error << ')';
-  #else
+#ifdef _WIN32
+      clear_pending_quit_messages();
+#endif
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
-  #endif
       std::this_thread::sleep_for(2s);
       ++attempt;
     }
@@ -277,11 +329,29 @@ namespace system_tray {
       return 1;
     }
 
+#ifdef _WIN32
+    while (!tray_shutdown_requested.load()) {
+      run_pending_tray_actions();
+      if (tray_loop(0) < 0) {
+        break;
+      }
+
+      std::unique_lock lock(tray_action_mutex);
+      tray_action_cv.wait_for(lock, 50ms, []() {
+        return tray_shutdown_requested.load() || !tray_actions.empty();
+      });
+    }
+
+    tray_exit();
+    clear_pending_quit_messages();
+#else
     while (tray_loop(1) == 0) {
       BOOST_LOG(debug) << "System tray loop"sv;
     }
 
     tray_exit();
+#endif
+
     tray_initialized = false;
     return 0;
   }
@@ -299,15 +369,34 @@ namespace system_tray {
 
     BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
   #else  // Windows, Linux
-    // create tray in separate thread
-    std::thread tray_thread(system_tray);
-    tray_thread.detach();
+    if (tray_thread.joinable()) {
+      return;
+    }
+#ifdef _WIN32
+    tray_shutdown_requested = false;
+#endif
+    tray_thread = std::thread(system_tray);
   #endif
   }
 
   int end_tray() {
     tray_initialized = false;
-    tray_exit();
+#ifdef _WIN32
+    tray_shutdown_requested = true;
+    tray_action_cv.notify_one();
+#else
+    if (tray_thread.joinable()) {
+      tray_exit();
+    }
+#endif
+    if (tray_thread.joinable()) {
+      tray_thread.join();
+    }
+#ifdef _WIN32
+    std::lock_guard lock(tray_action_mutex);
+    std::queue<std::function<void()>> empty;
+    tray_actions.swap(empty);
+#endif
     return 0;
   }
 
@@ -317,220 +406,208 @@ namespace system_tray {
   static std::string s_last_playing_app;
 
   void update_tray_playing(std::string app_name) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([app_name = std::move(app_name)]() mutable {
+      if (!app_name.empty() && app_name == s_last_playing_app && tray.icon && std::strcmp(tray.icon, TRAY_ICON_PLAYING) == 0) {
+        return;
+      }
 
-    if (!app_name.empty() && app_name == s_last_playing_app && tray.icon && std::strcmp(tray.icon, TRAY_ICON_PLAYING) == 0) {
-      return;
-    }
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON_PLAYING;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON_PLAYING;
-
-    char msg[256];
-    static char force_close_msg[256];
-    snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
-    snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
+      char msg[256];
+      static char force_close_msg[256];
+      snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
+      snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    auto force_msg_acp = utf8ToAcp(force_close_msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
-    strncpy(force_close_msg, force_msg_acp.c_str(), std::size(force_close_msg) - 1);
-    force_close_msg[std::size(force_close_msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      auto force_msg_acp = utf8ToAcp(force_close_msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
+      strncpy(force_close_msg, force_msg_acp.c_str(), std::size(force_close_msg) - 1);
+      force_close_msg[std::size(force_close_msg) - 1] = '\0';
   #endif
-    s_notification_text = msg;
-    s_tooltip = "Streaming started for " + app_name;
-    tray.notification_title = "App launched";
-    tray.notification_text = s_notification_text.c_str();
-    tray.notification_icon = TRAY_ICON_PLAYING;
-    tray.tooltip = s_tooltip.c_str();
-    tray.menu[2].text = force_close_msg;
-    s_last_playing_app = app_name;
-    tray_update(&tray);
+      s_notification_text = msg;
+      s_tooltip = "Streaming started for " + app_name;
+      tray.notification_title = "App launched";
+      tray.notification_text = s_notification_text.c_str();
+      tray.notification_icon = TRAY_ICON_PLAYING;
+      tray.tooltip = s_tooltip.c_str();
+      tray.menu[2].text = force_close_msg;
+      s_last_playing_app = std::move(app_name);
+      tray_update(&tray);
+    });
   }
 
   void update_tray_pausing(std::string app_name) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([app_name = std::move(app_name)]() {
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_title = nullptr;
+      tray.icon = TRAY_ICON_PAUSING;
 
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_title = nullptr;
-    tray.icon = TRAY_ICON_PAUSING;
-
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
+      char msg[256];
+      snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
   #endif
-    s_notification_text = msg;
-    tray.notification_title = "Stream Paused";
-    tray.notification_text = s_notification_text.c_str();
-    tray.notification_icon = TRAY_ICON_PAUSING;
-    tray.tooltip = s_notification_text.c_str();
-    tray_update(&tray);
+      s_notification_text = msg;
+      tray.notification_title = "Stream Paused";
+      tray.notification_text = s_notification_text.c_str();
+      tray.notification_icon = TRAY_ICON_PAUSING;
+      tray.tooltip = s_notification_text.c_str();
+      tray_update(&tray);
+    });
   }
 
   void update_tray_stopped(std::string app_name) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([app_name = std::move(app_name)]() {
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_title = nullptr;
+      tray.icon = TRAY_ICON;
 
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_title = nullptr;
-    tray.icon = TRAY_ICON;
-
-    char msg[256];
-    snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
+      char msg[256];
+      snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
   #endif
-    s_notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
-    tray.notification_title = "Application Stopped";
-    tray.notification_text = s_notification_text.c_str();
-    tray.tooltip = PROJECT_NAME;
-    tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
-    s_last_playing_app.clear();
-    tray_update(&tray);
+      s_notification_text = msg;
+      tray.notification_icon = TRAY_ICON;
+      tray.notification_title = "Application Stopped";
+      tray.notification_text = s_notification_text.c_str();
+      tray.tooltip = PROJECT_NAME;
+      tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
+      s_last_playing_app.clear();
+      tray_update(&tray);
+    });
   }
 
   void
     update_tray_launch_error(std::string app_name, int exit_code) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([app_name = std::move(app_name), exit_code]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON;
-
-    char msg[256];
-    snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
+      char msg[256];
+      snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
   #endif
-    s_notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
-    tray.notification_title = "Launch Error";
-    tray.notification_text = s_notification_text.c_str();
-    tray.notification_cb = []() {
-      BOOST_LOG(info) << "Force stop from notification"sv;
-      proc::proc.terminate();
-    };
-    tray.tooltip = PROJECT_NAME;
-    s_last_playing_app.clear();
-    tray_update(&tray);
+      s_notification_text = msg;
+      tray.notification_icon = TRAY_ICON;
+      tray.notification_title = "Launch Error";
+      tray.notification_text = s_notification_text.c_str();
+      tray.notification_cb = []() {
+        BOOST_LOG(info) << "Force stop from notification"sv;
+        proc::proc.terminate();
+      };
+      tray.tooltip = PROJECT_NAME;
+      s_last_playing_app.clear();
+      tray_update(&tray);
+    });
   }
 
   void update_tray_require_pin() {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON;
-
-    tray.notification_title = "Incoming Pairing Request";
-    tray.notification_text = "Click here to complete the pairing process";
-    tray.notification_icon = TRAY_ICON_LOCKED;
-    tray.tooltip = PROJECT_NAME;
-    tray.notification_cb = []() {
-      launch_ui("/clients");
-    };
-    tray_update(&tray);
+      tray.notification_title = "Incoming Pairing Request";
+      tray.notification_text = "Click here to complete the pairing process";
+      tray.notification_icon = TRAY_ICON_LOCKED;
+      tray.tooltip = PROJECT_NAME;
+      tray.notification_cb = []() {
+        launch_ui("/clients");
+      };
+      tray_update(&tray);
+    });
   }
 
   void
     update_tray_paired(std::string device_name) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([device_name = std::move(device_name)]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-
-    char msg[256];
-    snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
+      char msg[256];
+      snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
   #endif
-    tray.notification_title = "Device Paired Succesfully";
-    tray.notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
-    tray.tooltip = PROJECT_NAME;
-    tray_update(&tray);
+      tray.notification_title = "Device Paired Succesfully";
+      static std::string s_paired_text;
+      s_paired_text = msg;
+      tray.notification_text = s_paired_text.c_str();
+      tray.notification_icon = TRAY_ICON;
+      tray.tooltip = PROJECT_NAME;
+      tray_update(&tray);
+    });
   }
 
   void
     update_tray_client_connected(std::string client_name) {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([client_name = std::move(client_name)]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON;
-
-    char msg[256];
-    snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
+      char msg[256];
+      snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
   #ifdef _WIN32
-    auto msg_acp = utf8ToAcp(msg);
-    strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
-    msg[std::size(msg) - 1] = '\0';
+      auto msg_acp = utf8ToAcp(msg);
+      strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
+      msg[std::size(msg) - 1] = '\0';
   #endif
-    tray.notification_title = "Client Connected";
-    tray.notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
-    tray.tooltip = PROJECT_NAME;
-    tray_update(&tray);
+      tray.notification_title = "Client Connected";
+      static std::string s_client_text;
+      s_client_text = msg;
+      tray.notification_text = s_client_text.c_str();
+      tray.notification_icon = TRAY_ICON;
+      tray.tooltip = PROJECT_NAME;
+      tray_update(&tray);
+    });
   }
 
   void update_tray_vigem_missing() {
-    if (!tray_initialized) {
-      return;
-    }
+    run_on_tray_thread([]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON;
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON;
-
-    tray.notification_title = "Gamepad Input Unavailable";
-    tray.notification_text = "ViGEm is not installed. Click for setup info";
-    tray.notification_icon = TRAY_ICON;
-    tray.tooltip = PROJECT_NAME;
-    tray.notification_cb = []() {
-      launch_ui("/");
-    };
-    tray_update(&tray);
+      tray.notification_title = "Gamepad Input Unavailable";
+      tray.notification_text = "ViGEm is not installed. Click for setup info";
+      tray.notification_icon = TRAY_ICON;
+      tray.tooltip = PROJECT_NAME;
+      tray.notification_cb = []() {
+        launch_ui("/");
+      };
+      tray_update(&tray);
+    });
   }
 
   // Threading functions available on all platforms
@@ -629,25 +706,29 @@ namespace system_tray {
   }
 
   void tray_notify(const char *title, const char *text, void (*cb)()) {
-    if (!tray_initialized) {
-      return;
-    }
+    std::string title_copy = title ? std::string {title} : std::string {};
+    std::string text_copy = text ? std::string {text} : std::string {};
 
-    tray.notification_title = nullptr;
-    tray.notification_text = nullptr;
-    tray.notification_cb = nullptr;
-    tray.notification_icon = nullptr;
-    tray.icon = TRAY_ICON;
-    tray_update(&tray);
+    run_on_tray_thread([title_copy = std::move(title_copy), text_copy = std::move(text_copy), cb]() {
+      tray.notification_title = nullptr;
+      tray.notification_text = nullptr;
+      tray.notification_cb = nullptr;
+      tray.notification_icon = nullptr;
+      tray.icon = TRAY_ICON;
+      tray_update(&tray);
 
-    tray.icon = TRAY_ICON;
-    tray.notification_title = title;
-    s_notification_text = text ? std::string {text} : std::string {};
-    tray.notification_text = s_notification_text.c_str();
-    tray.notification_icon = TRAY_ICON;
-    tray.tooltip = PROJECT_NAME;
-    tray.notification_cb = cb;
-    tray_update(&tray);
+      static std::string s_notify_title;
+      s_notify_title = title_copy;
+      s_notification_text = text_copy;
+
+      tray.icon = TRAY_ICON;
+      tray.notification_title = s_notify_title.empty() ? nullptr : s_notify_title.c_str();
+      tray.notification_text = s_notification_text.c_str();
+      tray.notification_icon = TRAY_ICON;
+      tray.tooltip = PROJECT_NAME;
+      tray.notification_cb = cb;
+      tray_update(&tray);
+    });
   }
 
 }  // namespace system_tray
