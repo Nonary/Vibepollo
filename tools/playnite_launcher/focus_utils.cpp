@@ -206,9 +206,12 @@ namespace playnite_launcher::focus {
     return true;
   }
 
-  bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel) {
+  bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel, DWORD *confirmed_pid_out) {
     if (!exe_name_w || timeout_secs <= 0 || max_successes < 0) {
       return false;
+    }
+    if (confirmed_pid_out) {
+      *confirmed_pid_out = 0;
     }
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, timeout_secs));
     int successes = 0;
@@ -233,6 +236,15 @@ namespace playnite_launcher::focus {
           break;
         }
         if (confirm_foreground_pid(pid)) {
+          successes++;
+          any = true;
+          if (confirmed_pid_out) {
+            *confirmed_pid_out = pid;
+          }
+          BOOST_LOG(info) << "Confirmed focus for PID=" << pid << " (already foreground), successes=" << successes;
+          if (exit_on_first || (max_successes > 0 && successes >= max_successes)) {
+            return true;
+          }
           std::this_thread::sleep_for(200ms);
           continue;
         }
@@ -246,6 +258,9 @@ namespace playnite_launcher::focus {
           if (confirm_foreground_pid(pid)) {
             successes++;
             any = true;
+            if (confirmed_pid_out) {
+              *confirmed_pid_out = pid;
+            }
             BOOST_LOG(info) << "Confirmed focus for PID=" << pid << ", successes=" << successes;
             if (exit_on_first || (max_successes > 0 && successes >= max_successes)) {
               return true;
@@ -273,9 +288,12 @@ namespace playnite_launcher::focus {
     return find_pids_under_install_dir_sorted(install_dir, true);
   }
 
-  bool focus_by_install_dir_extended(const std::wstring &install_dir, int max_successes, int total_wait_sec, bool exit_on_first, std::function<bool()> cancel) {
+  bool focus_by_install_dir_extended(const std::wstring &install_dir, int max_successes, int total_wait_sec, bool exit_on_first, std::function<bool()> cancel, DWORD *confirmed_pid_out) {
     if (install_dir.empty() || total_wait_sec <= 0 || max_successes < 0) {
       return false;
+    }
+    if (confirmed_pid_out) {
+      *confirmed_pid_out = 0;
     }
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, total_wait_sec));
     int successes = 0;
@@ -295,6 +313,15 @@ namespace playnite_launcher::focus {
           break;
         }
         if (confirm_foreground_pid(pid)) {
+          successes++;
+          any = true;
+          if (confirmed_pid_out) {
+            *confirmed_pid_out = pid;
+          }
+          BOOST_LOG(info) << "Confirmed focus (installDir) for PID=" << pid << " (already foreground), successes=" << successes;
+          if (exit_on_first || (max_successes > 0 && successes >= max_successes)) {
+            return true;
+          }
           continue;
         }
         auto now = std::chrono::steady_clock::now();
@@ -307,6 +334,9 @@ namespace playnite_launcher::focus {
           if (confirm_foreground_pid(pid)) {
             successes++;
             any = true;
+            if (confirmed_pid_out) {
+              *confirmed_pid_out = pid;
+            }
             BOOST_LOG(info) << "Confirmed focus (installDir) for PID=" << pid << ", successes=" << successes;
             if (exit_on_first || (max_successes > 0 && successes >= max_successes)) {
               return true;

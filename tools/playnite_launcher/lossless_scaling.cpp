@@ -577,8 +577,11 @@ namespace playnite_launcher::lossless {
     std::vector<std::wstring> lossless_collect_executable_names(const std::filesystem::path &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
       std::vector<std::wstring> executables;
       std::unordered_set<std::wstring> seen;
-      scan_directory_for_executables(base_dir, seen, executables);
-      add_explicit_executable(explicit_exe, base_dir, seen, executables);
+      if (explicit_exe) {
+        add_explicit_executable(explicit_exe, base_dir, seen, executables);
+      } else {
+        scan_directory_for_executables(base_dir, seen, executables);
+      }
       sort_executable_names(executables);
       return executables;
     }
@@ -961,13 +964,7 @@ namespace playnite_launcher::lossless {
       if (path.size() < dir_prefix.size()) {
         return false;
       }
-      if (path.compare(0, dir_prefix.size(), dir_prefix) != 0) {
-        return false;
-      }
-      if (path.size() == dir_prefix.size()) {
-        return true;
-      }
-      return path[dir_prefix.size()] == L'\\';
+      return path.compare(0, dir_prefix.size(), dir_prefix) == 0;
     }
 
     bool path_matches_filter(const std::wstring &path, const std::optional<std::wstring> &install_dir_norm, const std::optional<std::wstring> &exe_path_norm) {
@@ -982,6 +979,36 @@ namespace playnite_launcher::lossless {
         return path_matches_prefix(normalized, *install_dir_norm);
       }
       return false;
+    }
+
+    bool is_ignored_process_path(const std::wstring &path);
+
+    std::optional<DWORD> match_foreground_pid_to_filter(const std::string &install_dir_utf8, const std::string &exe_path_utf8) {
+      HWND foreground = GetForegroundWindow();
+      if (!foreground) {
+        return std::nullopt;
+      }
+      DWORD pid = 0;
+      GetWindowThreadProcessId(foreground, &pid);
+      if (!pid) {
+        return std::nullopt;
+      }
+      auto path = query_process_image_path_optional(pid);
+      if (!path || is_ignored_process_path(*path)) {
+        return std::nullopt;
+      }
+      auto install_dir_norm = normalize_utf8_path(install_dir_utf8);
+      auto exe_path_norm = normalize_utf8_path(exe_path_utf8);
+      if (install_dir_norm && !install_dir_norm->empty() && install_dir_norm->back() != L'\\') {
+        install_dir_norm->push_back(L'\\');
+      }
+      const bool has_filter = (install_dir_norm && !install_dir_norm->empty()) || (exe_path_norm && !exe_path_norm->empty());
+      if (has_filter && !path_matches_filter(*path, install_dir_norm, exe_path_norm)) {
+        return std::nullopt;
+      }
+      BOOST_LOG(info) << "Lossless Scaling: using foreground PID=" << pid
+                      << " exe=" << platf::dxgi::wide_to_utf8(*path);
+      return pid;
     }
 
     bool is_ignored_process_path(const std::wstring &path) {
@@ -1859,6 +1886,10 @@ namespace playnite_launcher::lossless {
     return should_accept_focus_candidate(has_filter, path_matches, has_main_window);
   }
 
+  std::string build_executable_filter_for_tests(const std::optional<std::filesystem::path> &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
+    return build_executable_filter(base_dir, explicit_exe);
+  }
+
   bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch) {
     return should_launch_new_instance(state, force_launch);
   }
@@ -2085,6 +2116,17 @@ namespace playnite_launcher::lossless {
   void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8, DWORD focused_game_pid, bool legacy_auto_detect) {
     focus_and_minimize_existing_instances(state, !legacy_auto_detect);
     const bool should_launch = should_launch_new_instance(state, force_launch);
+    DWORD target_pid = focused_game_pid;
+    if (!target_pid) {
+      if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {
+        target_pid = *selected;
+      }
+    }
+    if (!target_pid) {
+      if (auto foreground_match = match_foreground_pid_to_filter(install_dir_utf8, exe_path_utf8)) {
+        target_pid = *foreground_match;
+      }
+    }
 
     if (!install_dir_utf8.empty() || !exe_path_utf8.empty()) {
       auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
@@ -2106,13 +2148,21 @@ namespace playnite_launcher::lossless {
       }
     }
 
+    if (!target_pid) {
+      if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {
+        target_pid = *selected;
+      } else if (auto foreground_match = match_foreground_pid_to_filter(install_dir_utf8, exe_path_utf8)) {
+        target_pid = *foreground_match;
+      }
+    }
+
     if (should_launch) {
       auto exe = discover_lossless_scaling_exe(state);
       if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
         BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
         return;
       }
-      if (launch_lossless_executable(*exe, focused_game_pid, !legacy_auto_detect)) {
+      if (launch_lossless_executable(*exe, target_pid, !legacy_auto_detect)) {
         BOOST_LOG(info) << "Lossless Scaling: relaunched at " << platf::dxgi::wide_to_utf8(*exe);
       } else {
         DWORD err = GetLastError();
@@ -2146,10 +2196,9 @@ namespace playnite_launcher::lossless {
                        << " mods=none";
     }
 
-    DWORD target_pid = focused_game_pid;
     if (!target_pid) {
-      if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {
-        target_pid = *selected;
+      if (auto foreground_match = match_foreground_pid_to_filter(install_dir_utf8, exe_path_utf8)) {
+        target_pid = *foreground_match;
       }
     }
     if (legacy_auto_detect && !target_pid) {
@@ -2159,17 +2208,10 @@ namespace playnite_launcher::lossless {
           target_pid = *selected;
           break;
         }
-      }
-    }
-    if (!target_pid && !install_dir_utf8.empty()) {
-      try {
-        auto install_dir_w = platf::dxgi::utf8_to_wide(install_dir_utf8);
-        auto pids = focus::find_pids_under_install_dir_sorted(install_dir_w, false);
-        if (!pids.empty()) {
-          target_pid = pids.front();
-          BOOST_LOG(info) << "Lossless Scaling: fallback focus PID=" << target_pid << " via installDir";
+        if (auto foreground_match = match_foreground_pid_to_filter(install_dir_utf8, exe_path_utf8)) {
+          target_pid = *foreground_match;
+          break;
         }
-      } catch (...) {
       }
     }
     if (legacy_auto_detect) {

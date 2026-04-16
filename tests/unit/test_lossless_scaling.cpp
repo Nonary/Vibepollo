@@ -5,10 +5,13 @@
 
 #ifdef _WIN32
   #include <tools/playnite_launcher/lossless_scaling.h>
+  #include <filesystem>
+  #include <fstream>
 
 namespace {
 
   using playnite_launcher::lossless::lossless_scaling_runtime_state;
+  namespace fs = std::filesystem;
 
   TEST(LosslessScalingRestart, LaunchesWhenNoHelperRunning) {
     lossless_scaling_runtime_state state;
@@ -53,6 +56,22 @@ namespace {
   TEST(LosslessScalingFocusCandidate, UnfilteredCandidateStillRequiresWindow) {
     EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, false));
     EXPECT_TRUE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, true));
+  }
+
+  TEST(LosslessScalingFilter, ExplicitExeOverridesDirectoryScan) {
+    auto temp_dir = fs::temp_directory_path() / ("sunshine-lossless-filter-" + std::to_string(GetCurrentProcessId()));
+    fs::create_directories(temp_dir);
+
+    std::ofstream(temp_dir / "crashreport.exe").put('\n');
+    std::ofstream(temp_dir / "installermessage.exe").put('\n');
+    auto explicit_exe = temp_dir / "re9.exe";
+    std::ofstream(explicit_exe).put('\n');
+
+    auto filter = playnite_launcher::lossless::build_executable_filter_for_tests(temp_dir, explicit_exe);
+    EXPECT_EQ(filter, "re9.exe");
+
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
   }
 
 }  // namespace
