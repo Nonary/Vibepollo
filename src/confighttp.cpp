@@ -52,6 +52,8 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "rtsp.h"
+#include "stream.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -2389,6 +2391,31 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void listRTSPSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &info : stream::get_all_session_info()) {
+      nlohmann::json s;
+      s["uuid"] = info.uuid;
+      s["device_name"] = info.device_name;
+      s["width"] = info.width;
+      s["height"] = info.height;
+      s["fps"] = info.fps;
+      s["bitrate_kbps"] = info.bitrate_kbps;
+      s["video_format"] = info.video_format;
+      s["codec"] = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
+      s["hdr"] = info.dynamic_range > 0;
+      s["audio_channels"] = info.audio_channels;
+      s["state"] = info.state;
+      output["sessions"].push_back(std::move(s));
+    }
+    send_response(response, output);
+  }
+
   void listWebRTCSessions(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3885,6 +3912,7 @@ namespace confighttp {
     register_api_route("^/api/clients/disconnect$", "POST", disconnectClient);
     register_api_route("^/api/apps/close$", "POST", closeApp);
     register_api_route("^/api/session/status$", "GET", getSessionStatus);
+    register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
     register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);

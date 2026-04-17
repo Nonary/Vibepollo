@@ -28,7 +28,60 @@
     </div>
 
     <!-- RTSP Sessions -->
-    <div v-if="rtspCount > 0" class="mb-4">
+    <div v-if="rtspSessions.length > 0" class="mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
+        <span class="text-sm font-medium">
+          {{ t('sessions.rtsp_active', { count: rtspSessions.length }) }}
+        </span>
+        <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
+          {{ t('sessions.app_running') }}
+        </n-tag>
+      </div>
+
+      <div class="space-y-3">
+        <div
+          v-for="session in rtspSessions"
+          :key="session.uuid"
+          class="rounded-xl border border-dark/[0.06] bg-light/[0.03] p-4 dark:border-light/[0.10] dark:bg-dark/[0.06]"
+        >
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <span class="text-sm font-semibold">{{ session.device_name || session.uuid.substring(0, 8) }}</span>
+            <n-tag type="success" size="small" :bordered="false">
+              <i class="fas fa-video mr-1" />{{ t('sessions.video') }}
+            </n-tag>
+            <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+            <n-tag type="default" size="small" :bordered="false">{{ session.state }}</n-tag>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            <div v-if="session.width && session.height" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.resolution') }}</div>
+              <div class="stat-value">{{ session.width }}×{{ session.height }}</div>
+            </div>
+            <div v-if="session.fps" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.fps') }}</div>
+              <div class="stat-value">{{ session.fps }}</div>
+            </div>
+            <div v-if="session.bitrate_kbps" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.bitrate') }}</div>
+              <div class="stat-value">{{ formatBitrate(session.bitrate_kbps) }}</div>
+            </div>
+            <div v-if="session.codec" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.codec') }}</div>
+              <div class="stat-value">{{ session.codec }}</div>
+            </div>
+            <div v-if="session.audio_channels" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
+              <div class="stat-value">{{ session.audio_channels }}ch</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RTSP fallback: count only (if new endpoint not available) -->
+    <div v-else-if="rtspCount > 0" class="mb-4">
       <div class="flex items-center gap-2 mb-3">
         <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
         <span class="text-sm font-medium">
@@ -224,15 +277,30 @@ interface WebRTCSession {
   last_video_age_ms: number | null;
 }
 
+interface RTSPSession {
+  uuid: string;
+  device_name: string;
+  width: number;
+  height: number;
+  fps: number;
+  bitrate_kbps: number;
+  video_format: number;
+  codec: string;
+  hdr: boolean;
+  audio_channels: number;
+  state: string;
+}
+
 const loading = ref(false);
 const rtspCount = ref(0);
 const appRunning = ref(false);
+const rtspSessions = ref<RTSPSession[]>([]);
 const webrtcSessions = ref<WebRTCSession[]>([]);
 
 let pollIntervalId: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL_MS = 2000;
 
-const hasActiveSessions = computed(() => rtspCount.value > 0 || webrtcSessions.value.length > 0);
+const hasActiveSessions = computed(() => rtspCount.value > 0 || rtspSessions.value.length > 0 || webrtcSessions.value.length > 0);
 
 function formatBitrate(kbps: number): string {
   if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
@@ -259,6 +327,21 @@ async function fetchSessionStatus(): Promise<void> {
   }
 }
 
+async function fetchRTSPSessions(): Promise<void> {
+  try {
+    const r = await http.get<{ sessions: RTSPSession[] }>('./api/rtsp/sessions', {
+      validateStatus: () => true,
+    });
+    if (r.status === 200 && r.data?.sessions) {
+      rtspSessions.value = r.data.sessions;
+    } else {
+      rtspSessions.value = [];
+    }
+  } catch {
+    rtspSessions.value = [];
+  }
+}
+
 async function fetchWebRTCSessions(): Promise<void> {
   try {
     const r = await http.get<{ sessions: WebRTCSession[] }>('./api/webrtc/sessions', {
@@ -277,7 +360,7 @@ async function fetchWebRTCSessions(): Promise<void> {
 async function refresh(): Promise<void> {
   if (!auth.isAuthenticated) return;
   loading.value = true;
-  await Promise.all([fetchSessionStatus(), fetchWebRTCSessions()]);
+  await Promise.all([fetchSessionStatus(), fetchRTSPSessions(), fetchWebRTCSessions()]);
   loading.value = false;
 }
 
@@ -285,7 +368,7 @@ function startPolling(): void {
   if (pollIntervalId !== null) return;
   pollIntervalId = setInterval(() => {
     if (!auth.isAuthenticated) return;
-    void Promise.all([fetchSessionStatus(), fetchWebRTCSessions()]);
+    void Promise.all([fetchSessionStatus(), fetchRTSPSessions(), fetchWebRTCSessions()]);
   }, POLL_INTERVAL_MS);
 }
 

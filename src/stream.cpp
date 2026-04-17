@@ -38,6 +38,7 @@ extern "C" {
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
+#include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
 #include "system_tray.h"
@@ -561,6 +562,48 @@ namespace stream {
       }
       session->video.idr_events->raise(true);
     }
+  }
+
+  static const char *video_format_name(int fmt) {
+    switch (fmt) {
+      case 0: return "H.264";
+      case 1: return "HEVC";
+      case 2: return "AV1";
+      default: return "Unknown";
+    }
+  }
+
+  static const char *state_name(session::state_e st) {
+    switch (st) {
+      case session::state_e::STOPPED: return "stopped";
+      case session::state_e::STOPPING: return "stopping";
+      case session::state_e::STARTING: return "starting";
+      case session::state_e::RUNNING: return "running";
+      default: return "unknown";
+    }
+  }
+
+  std::vector<session_info_t> get_all_session_info() {
+    std::vector<session_info_t> result;
+    auto uuids = rtsp_stream::get_all_session_uuids();
+    for (auto &uuid : uuids) {
+      auto session = rtsp_stream::find_session(uuid);
+      if (!session) continue;
+
+      session_info_t info;
+      info.uuid = session->device_uuid;
+      info.device_name = session->device_name;
+      info.width = session->config.monitor.width;
+      info.height = session->config.monitor.height;
+      info.fps = session->stream_fps;
+      info.bitrate_kbps = session->config.monitor.bitrate;
+      info.video_format = session->config.monitor.videoFormat;
+      info.dynamic_range = session->config.monitor.dynamicRange;
+      info.audio_channels = session->config.audio.channels;
+      info.state = state_name(session->state.load(std::memory_order_relaxed));
+      result.push_back(std::move(info));
+    }
+    return result;
   }
 
 #ifdef _WIN32

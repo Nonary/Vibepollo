@@ -749,7 +749,8 @@
     "audio_codec": "Audio Codec",
     "profile": "Profile",
     "last_video": "Last Video",
-    "last_audio": "Last Audio"
+    "last_audio": "Last Audio",
+    "audio_channels": "Audio Ch"
   },
   "playnite": {
     "title": "Playnite Integration",

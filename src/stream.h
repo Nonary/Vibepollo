@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 // lib includes
 #include <boost/asio.hpp>
@@ -69,6 +70,21 @@ namespace stream {
     state_e state(session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
   }  // namespace session
+
+  struct session_info_t {
+    std::string uuid;
+    std::string device_name;
+    int width;
+    int height;
+    int fps;
+    int bitrate_kbps;
+    int video_format;  // 0=H.264, 1=HEVC, 2=AV1
+    int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
+    int audio_channels;
+    std::string state;
+  };
+
+  std::vector<session_info_t> get_all_session_info();
 
   void request_idr_for_all_sessions();
 }  // namespace stream
