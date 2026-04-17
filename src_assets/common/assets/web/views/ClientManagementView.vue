@@ -4,6 +4,9 @@
       <i class="fas fa-users-cog" /> {{ $t('clients.title') }}
     </h1>
 
+    <!-- Active Streaming Sessions -->
+    <ActiveSessionsCard />
+
     <!-- Pair New Client -->
     <n-card class="mb-8" :segmented="{ content: true, footer: true }">
       <template #header>
@@ -651,6 +654,7 @@ import {
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
+import ActiveSessionsCard from '@/components/ActiveSessionsCard.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
