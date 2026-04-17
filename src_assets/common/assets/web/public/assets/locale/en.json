@@ -758,7 +758,15 @@
     "client_losses": "Client Losses",
     "idr_requests": "IDR Requests",
     "frame_invalidations": "Ref Invalidations",
-    "uptime": "Uptime"
+    "uptime": "Uptime",
+    "show_charts": "Show Charts",
+    "hide_charts": "Hide Charts",
+    "chart_encode_latency": "Encode Latency",
+    "chart_throughput": "Network Throughput",
+    "chart_quality": "Connection Quality",
+    "chart_framerate": "Actual Frame Rate",
+    "chart_ms": "ms",
+    "chart_events": "events / poll"
   },
   "playnite": {
     "title": "Playnite Integration",

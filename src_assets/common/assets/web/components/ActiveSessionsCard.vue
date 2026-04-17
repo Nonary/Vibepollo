@@ -120,9 +120,18 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- RTSP fallback: count only (if new endpoint not available) -->
+      <!-- Charts toggle -->
+      <div class="flex items-center gap-2 mt-3">
+        <n-button size="small" :type="showCharts ? 'primary' : 'default'" @click="showCharts = !showCharts">
+          <i :class="['fas', showCharts ? 'fa-chart-line' : 'fa-chart-line']" />
+          <span class="ml-2">{{ showCharts ? t('sessions.hide_charts') : t('sessions.show_charts') }}</span>
+        </n-button>
+      </div>
+
+      <!-- Session Charts -->
+      <SessionCharts v-if="showCharts && rtspSessions.length > 0" :session="rtspSessions[0]" />
+    </div>
     <div v-else-if="rtspCount > 0" class="mb-4">
       <div class="flex items-center gap-2 mb-3">
         <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
@@ -273,6 +282,7 @@ import { useI18n } from 'vue-i18n';
 import { http } from '@/http';
 import { NButton, NCard, NTag } from 'naive-ui';
 import { useAuthStore } from '@/stores/auth';
+import SessionCharts from './SessionCharts.vue';
 
 const { t } = useI18n();
 const auth = useAuthStore();
@@ -350,6 +360,7 @@ const appRunning = ref(false);
 const appName = ref('');
 const rtspSessions = ref<RTSPSession[]>([]);
 const webrtcSessions = ref<WebRTCSession[]>([]);
+const showCharts = ref(false);
 
 let pollIntervalId: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL_MS = 2000;
