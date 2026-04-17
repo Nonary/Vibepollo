@@ -48,9 +48,9 @@
           <div class="flex flex-wrap items-center gap-2 mb-3">
             <span class="text-sm font-semibold">{{ session.device_name || session.uuid.substring(0, 8) }}</span>
             <n-tag type="success" size="small" :bordered="false">
-              <i class="fas fa-video mr-1" />{{ t('sessions.video') }}
+              <span class="inline-flex items-center"><i class="fas fa-video mr-1" />{{ t('sessions.video') }}</span>
             </n-tag>
-            <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+            <n-tag v-if="session.hdr"type="warning" size="small" :bordered="false">HDR</n-tag>
             <n-tag type="default" size="small" :bordered="false">{{ session.state }}</n-tag>
           </div>
 
@@ -163,10 +163,10 @@
           <div class="flex flex-wrap items-center gap-2 mb-3">
             <span class="text-sm font-semibold">{{ session.id.substring(0, 8) }}</span>
             <n-tag v-if="session.video" type="success" size="small" :bordered="false">
-              <i class="fas fa-video mr-1" />{{ t('sessions.video') }}
+              <span class="inline-flex items-center"><i class="fas fa-video mr-1" />{{ t('sessions.video') }}</span>
             </n-tag>
             <n-tag v-if="session.audio" type="success" size="small" :bordered="false">
-              <i class="fas fa-volume-up mr-1" />{{ t('sessions.audio') }}
+              <span class="inline-flex items-center"><i class="fas fa-volume-up mr-1" />{{ t('sessions.audio') }}</span>
             </n-tag>
             <n-tag v-if="session.encoded" type="info" size="small" :bordered="false">
               {{ t('sessions.encoded') }}
