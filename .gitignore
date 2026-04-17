@@ -63,3 +63,5 @@ build-msvc
 
 # Local-only Copilot instructions (not committed)
 .github/copilot-instructions.md
+/build_release
+
