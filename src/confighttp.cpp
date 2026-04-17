@@ -2387,6 +2387,7 @@ namespace confighttp {
     const bool app_running = proc::proc.running() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
+    output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
     output_tree["paused"] = app_running && active == 0;
     output_tree["status"] = true;
     send_response(response, output_tree);

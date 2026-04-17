@@ -35,7 +35,7 @@
           {{ t('sessions.rtsp_active', { count: rtspSessions.length }) }}
         </span>
         <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-          {{ t('sessions.app_running') }}
+          <i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}
         </n-tag>
       </div>
 
@@ -130,7 +130,7 @@
           {{ t('sessions.rtsp_active', { count: rtspCount }) }}
         </span>
         <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-          {{ t('sessions.app_running') }}
+          <i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}
         </n-tag>
       </div>
     </div>
@@ -280,6 +280,7 @@ const auth = useAuthStore();
 interface SessionStatus {
   activeSessions: number;
   appRunning: boolean;
+  appName: string;
   paused: boolean;
   status: boolean;
 }
@@ -346,6 +347,7 @@ interface RTSPSession {
 const loading = ref(false);
 const rtspCount = ref(0);
 const appRunning = ref(false);
+const appName = ref('');
 const rtspSessions = ref<RTSPSession[]>([]);
 const webrtcSessions = ref<WebRTCSession[]>([]);
 
@@ -389,6 +391,7 @@ async function fetchSessionStatus(): Promise<void> {
     if (r.status === 200 && r.data) {
       rtspCount.value = r.data.activeSessions ?? 0;
       appRunning.value = r.data.appRunning ?? false;
+      appName.value = r.data.appName ?? '';
     }
   } catch {
     // Silently ignore — will retry on next poll
