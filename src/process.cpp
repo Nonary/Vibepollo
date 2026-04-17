@@ -2480,7 +2480,7 @@ namespace proc {
 
         dollar = std::find(next, std::end(val_raw), '$');
       } else {
-        BOOST_LOG(info) << "Playnite URI launch started";
+        BOOST_LOG(warning) << "Trailing '$' at end of environment variable value will be passed through literally";
         dollar = next;
       }
     }
@@ -2577,7 +2577,7 @@ namespace proc {
       if (file_hash) {
         to_hash.push_back(file_hash.value());
       } else {
-        BOOST_LOG(info) << "Playnite URI launch started";
+        BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
         // Fallback to just hashing image path
         to_hash.push_back(file_path);
       }
@@ -3322,11 +3322,17 @@ namespace proc {
   }
 
   void proc_t::update_apps(std::vector<ctx_t> &&apps, bp::environment &&env) {
-    // Replace app list and environment while keeping current running app intact
+    // Replace app list while keeping current running app intact.
+    // Only replace _env if no app is currently running, because execute()
+    // populates _env with stream-specific variables (APOLLO_APP_UUID,
+    // APOLLO_CLIENT_UUID, SUNSHINE_CLIENT_*, etc.) that must survive
+    // until terminate() runs the undo prep commands.
     {
       std::scoped_lock lk(_apps_mutex);
       _apps = std::move(apps);
-      _env = std::move(env);
+      if (_app_id <= 0) {
+        _env = std::move(env);
+      }
     }
   }
 
