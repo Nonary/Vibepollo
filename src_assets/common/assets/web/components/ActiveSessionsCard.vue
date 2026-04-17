@@ -35,7 +35,7 @@
           {{ t('sessions.rtsp_active', { count: rtspSessions.length }) }}
         </span>
         <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-          <i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}
+          <span class="inline-flex items-center"><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span>
         </n-tag>
       </div>
 
@@ -139,7 +139,7 @@
           {{ t('sessions.rtsp_active', { count: rtspCount }) }}
         </span>
         <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-          <i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}
+          <span class="inline-flex items-center"><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span>
         </n-tag>
       </div>
     </div>
