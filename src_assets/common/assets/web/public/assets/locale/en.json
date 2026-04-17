@@ -750,7 +750,15 @@
     "profile": "Profile",
     "last_video": "Last Video",
     "last_audio": "Last Audio",
-    "audio_channels": "Audio Ch"
+    "audio_channels": "Audio Ch",
+    "encode_latency": "Encode Latency",
+    "frames_sent": "Frames Sent",
+    "packets_sent": "Packets Sent",
+    "data_sent": "Data Sent",
+    "client_losses": "Client Losses",
+    "idr_requests": "IDR Requests",
+    "frame_invalidations": "Ref Invalidations",
+    "uptime": "Uptime"
   },
   "playnite": {
     "title": "Playnite Integration",

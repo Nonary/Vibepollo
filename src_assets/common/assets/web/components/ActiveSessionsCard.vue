@@ -75,6 +75,48 @@
               <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
               <div class="stat-value">{{ session.audio_channels }}ch</div>
             </div>
+
+            <!-- Real-time performance stats -->
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.encode_latency') }}</div>
+              <div :class="['stat-value', session.encode_latency_ms > 16 ? 'text-danger' : session.encode_latency_ms > 8 ? 'text-warning' : '']">
+                {{ session.encode_latency_ms.toFixed(1) }}ms
+              </div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.frames_sent') }}</div>
+              <div class="stat-value">{{ formatNumber(session.frames_sent) }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.packets_sent') }}</div>
+              <div class="stat-value">{{ formatNumber(session.packets_sent) }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.data_sent') }}</div>
+              <div class="stat-value">{{ formatBytes(session.bytes_sent) }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.client_losses') }}</div>
+              <div :class="['stat-value', session.client_reported_losses > 0 ? 'text-danger' : '']">
+                {{ formatNumber(session.client_reported_losses) }}
+              </div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.idr_requests') }}</div>
+              <div :class="['stat-value', session.idr_requests > 10 ? 'text-warning' : '']">
+                {{ session.idr_requests }}
+              </div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.frame_invalidations') }}</div>
+              <div :class="['stat-value', session.invalidate_ref_count > 0 ? 'text-warning' : '']">
+                {{ session.invalidate_ref_count }}
+              </div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.uptime') }}</div>
+              <div class="stat-value">{{ formatUptime(session.uptime_seconds) }}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -289,6 +331,16 @@ interface RTSPSession {
   hdr: boolean;
   audio_channels: number;
   state: string;
+  // Real-time performance stats
+  frames_sent: number;
+  packets_sent: number;
+  bytes_sent: number;
+  idr_requests: number;
+  invalidate_ref_count: number;
+  client_reported_losses: number;
+  encode_latency_ms: number;
+  last_frame_index: number;
+  uptime_seconds: number;
 }
 
 const loading = ref(false);
@@ -311,6 +363,22 @@ function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 async function fetchSessionStatus(): Promise<void> {

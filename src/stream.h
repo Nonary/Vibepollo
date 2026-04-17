@@ -82,6 +82,17 @@ namespace stream {
     int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
     int audio_channels;
     std::string state;
+
+    // Real-time performance counters
+    std::uint64_t frames_sent;
+    std::uint64_t packets_sent;
+    std::uint64_t bytes_sent;
+    std::uint32_t idr_requests;
+    std::uint32_t invalidate_ref_count;
+    std::int64_t client_reported_losses;
+    double encode_latency_ms;  // last frame encode latency in ms
+    std::int64_t last_frame_index;
+    double uptime_seconds;
   };
 
   std::vector<session_info_t> get_all_session_info();

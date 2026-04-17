@@ -480,6 +480,19 @@ namespace stream {
 
     std::atomic<session::state_e> state;
 
+    // Real-time performance counters (updated by broadcast/control threads)
+    struct {
+      std::atomic<std::uint64_t> frames_sent {0};
+      std::atomic<std::uint64_t> packets_sent {0};
+      std::atomic<std::uint64_t> bytes_sent {0};
+      std::atomic<std::uint32_t> idr_requests {0};
+      std::atomic<std::uint32_t> invalidate_ref_count {0};
+      std::atomic<std::int64_t> client_reported_losses {0};
+      std::atomic<std::uint16_t> last_encode_latency_us10 {0};  // in 1/10 ms units
+      std::atomic<std::int64_t> last_frame_index {0};
+      std::chrono::steady_clock::time_point start_time {std::chrono::steady_clock::now()};
+    } stats;
+
 #ifdef _WIN32
     struct {
       bool active = false;
@@ -564,15 +577,6 @@ namespace stream {
     }
   }
 
-  static const char *video_format_name(int fmt) {
-    switch (fmt) {
-      case 0: return "H.264";
-      case 1: return "HEVC";
-      case 2: return "AV1";
-      default: return "Unknown";
-    }
-  }
-
   static const char *state_name(session::state_e st) {
     switch (st) {
       case session::state_e::STOPPED: return "stopped";
@@ -585,6 +589,7 @@ namespace stream {
 
   std::vector<session_info_t> get_all_session_info() {
     std::vector<session_info_t> result;
+    auto now = std::chrono::steady_clock::now();
     auto uuids = rtsp_stream::get_all_session_uuids();
     for (auto &uuid : uuids) {
       auto session = rtsp_stream::find_session(uuid);
@@ -601,6 +606,18 @@ namespace stream {
       info.dynamic_range = session->config.monitor.dynamicRange;
       info.audio_channels = session->config.audio.channels;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
+
+      // Real-time performance counters
+      info.frames_sent = session->stats.frames_sent.load(std::memory_order_relaxed);
+      info.packets_sent = session->stats.packets_sent.load(std::memory_order_relaxed);
+      info.bytes_sent = session->stats.bytes_sent.load(std::memory_order_relaxed);
+      info.idr_requests = session->stats.idr_requests.load(std::memory_order_relaxed);
+      info.invalidate_ref_count = session->stats.invalidate_ref_count.load(std::memory_order_relaxed);
+      info.client_reported_losses = session->stats.client_reported_losses.load(std::memory_order_relaxed);
+      info.encode_latency_ms = session->stats.last_encode_latency_us10.load(std::memory_order_relaxed) / 10.0;
+      info.last_frame_index = session->stats.last_frame_index.load(std::memory_order_relaxed);
+      info.uptime_seconds = std::chrono::duration<double>(now - session->stats.start_time).count();
+
       result.push_back(std::move(info));
     }
     return result;
@@ -1173,6 +1190,8 @@ namespace stream {
 
       auto lastGoodFrame = stats[3];
 
+      session->stats.client_reported_losses.fetch_add(count, std::memory_order_relaxed);
+
       BOOST_LOG(verbose)
         << "type [IDX_LOSS_STATS]"sv << std::endl
         << "---begin stats---" << std::endl
@@ -1185,6 +1204,7 @@ namespace stream {
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
+      session->stats.idr_requests.fetch_add(1, std::memory_order_relaxed);
       session->video.idr_events->raise(true);
     });
 
@@ -1192,6 +1212,8 @@ namespace stream {
       auto frames = (std::int64_t *) payload.data();
       auto firstFrame = frames[0];
       auto lastFrame = frames[1];
+
+      session->stats.invalidate_ref_count.fetch_add(1, std::memory_order_relaxed);
 
       BOOST_LOG(debug)
         << "type [IDX_INVALIDATE_REF_FRAMES]"sv << std::endl
@@ -1645,6 +1667,7 @@ namespace stream {
         uint16_t latency = duration_to_latency(std::chrono::steady_clock::now() - *host_processing_timestamp);
         frame_header.frame_processing_latency = latency;
         frame_processing_latency_logger.collect_and_log(latency / 10.);
+        session->stats.last_encode_latency_us10.store(latency, std::memory_order_relaxed);
       } else {
         frame_header.frame_processing_latency = 0;
       }
@@ -1894,6 +1917,12 @@ namespace stream {
         });
 
         session->video.lowseq = lowseq;
+
+        // Update per-session performance counters
+        session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
+        session->stats.packets_sent.fetch_add(ratecontrol_frame_packets_sent, std::memory_order_relaxed);
+        session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * blocksize, std::memory_order_relaxed);
+        session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);

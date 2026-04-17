@@ -12,6 +12,7 @@
 #include <boost/regex.hpp>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <cstdint>
 #include <format>
@@ -2411,6 +2412,17 @@ namespace confighttp {
       s["hdr"] = info.dynamic_range > 0;
       s["audio_channels"] = info.audio_channels;
       s["state"] = info.state;
+
+      // Real-time performance stats
+      s["frames_sent"] = info.frames_sent;
+      s["packets_sent"] = info.packets_sent;
+      s["bytes_sent"] = info.bytes_sent;
+      s["idr_requests"] = info.idr_requests;
+      s["invalidate_ref_count"] = info.invalidate_ref_count;
+      s["client_reported_losses"] = info.client_reported_losses;
+      s["encode_latency_ms"] = std::round(info.encode_latency_ms * 10.0) / 10.0;
+      s["last_frame_index"] = info.last_frame_index;
+      s["uptime_seconds"] = std::round(info.uptime_seconds * 10.0) / 10.0;
       output["sessions"].push_back(std::move(s));
     }
     send_response(response, output);
