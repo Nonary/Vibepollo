@@ -111,6 +111,18 @@
               :value="`${detail.audio_channels}ch`"
               :tip="t('sessions.tip_audio_channels')"
             />
+            <StatCell
+              v-if="detail.host_cpu_model"
+              :label="t('sessions.host_cpu_model')"
+              :value="detail.host_cpu_model"
+              :tip="t('sessions.tip_host_cpu_model')"
+            />
+            <StatCell
+              v-if="detail.host_gpu_model"
+              :label="t('sessions.host_gpu_model')"
+              :value="detail.host_gpu_model"
+              :tip="t('sessions.tip_host_gpu_model')"
+            />
           </div>
         </div>
 

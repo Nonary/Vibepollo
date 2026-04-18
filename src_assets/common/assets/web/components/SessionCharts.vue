@@ -116,6 +116,64 @@
       </div>
     </div>
 
+    <!-- Host CPU/GPU usage (history mode only) -->
+    <div v-if="mode === 'history' && hasHostCompute" class="chart-container">
+      <div class="chart-header">
+        <span class="chart-title">
+          <i class="fas fa-microchip mr-1" />{{ t('sessions.chart_host_compute') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_host_compute') }}
+          </n-tooltip>
+        </span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">%</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('host_compute')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
+      </div>
+      <div class="chart-wrapper">
+        <Line :data="hostComputeChartData" :options="hostPercentChartOptions" />
+      </div>
+    </div>
+
+    <!-- Host RAM/VRAM usage (history mode only) -->
+    <div v-if="mode === 'history' && hasHostMemory" class="chart-container">
+      <div class="chart-header">
+        <span class="chart-title">
+          <i class="fas fa-memory mr-1" />{{ t('sessions.chart_host_memory') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_host_memory') }}
+          </n-tooltip>
+        </span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">%</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('host_memory')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
+      </div>
+      <div class="chart-wrapper">
+        <Line :data="hostMemoryChartData" :options="hostPercentChartOptions" />
+      </div>
+    </div>
+
     <n-modal
       v-model:show="zoomVisible"
       preset="card"
@@ -178,6 +236,18 @@
           ref="modalChartRef"
           :data="fpsChartData"
           :options="fpsChartOptionsZoom"
+        />
+        <Line
+          v-else-if="zoomChart === 'host_compute'"
+          ref="modalChartRef"
+          :data="hostComputeChartData"
+          :options="hostPercentChartOptionsZoom"
+        />
+        <Line
+          v-else-if="zoomChart === 'host_memory'"
+          ref="modalChartRef"
+          :data="hostMemoryChartData"
+          :options="hostPercentChartOptionsZoom"
         />
       </div>
       <div class="zoom-hint">
@@ -259,6 +329,17 @@ interface DataPoint {
   delta_idr: number;
   delta_invalidations: number;
   actual_fps: number;
+  host_cpu_percent: number;
+  host_gpu_percent: number;
+  host_gpu_encoder_percent: number;
+  host_ram_percent: number;
+  host_vram_percent: number;
+}
+
+function nz(v?: number): number {
+  // Backend uses -1 to mean "not available"; treat that and missing values as 0 for charting.
+  if (typeof v !== 'number') return 0;
+  return v < 0 ? 0 : v;
 }
 
 const history = ref<DataPoint[]>([]);
@@ -294,9 +375,41 @@ function convertHistoryData(samples: SessionSample[]): DataPoint[] {
         ? Math.max(0, sample.ref_invalidations - prev.ref_invalidations)
         : 0,
       actual_fps: Math.round(sample.actual_fps * 10) / 10,
+      host_cpu_percent: nz(sample.host_cpu_percent),
+      host_gpu_percent: nz(sample.host_gpu_percent),
+      host_gpu_encoder_percent: nz(sample.host_gpu_encoder_percent),
+      host_ram_percent: nz(sample.host_ram_percent),
+      host_vram_percent: nz(sample.host_vram_percent),
     };
   });
 }
+
+function hasHostSeries(
+  field: keyof Pick<
+    SessionSample,
+    | 'host_cpu_percent'
+    | 'host_gpu_percent'
+    | 'host_gpu_encoder_percent'
+    | 'host_ram_percent'
+    | 'host_vram_percent'
+  >,
+): boolean {
+  if (props.mode !== 'history' || !props.historyData?.length) return false;
+  return props.historyData.some((s) => {
+    const v = s[field];
+    return typeof v === 'number' && v >= 0;
+  });
+}
+
+const hasHostCompute = computed(
+  () =>
+    hasHostSeries('host_cpu_percent') ||
+    hasHostSeries('host_gpu_percent') ||
+    hasHostSeries('host_gpu_encoder_percent'),
+);
+const hasHostMemory = computed(
+  () => hasHostSeries('host_ram_percent') || hasHostSeries('host_vram_percent'),
+);
 
 const displayData = computed<DataPoint[]>(() => {
   if (props.mode === 'history' && props.historyData) {
@@ -375,6 +488,11 @@ watch(
       delta_idr,
       delta_invalidations,
       actual_fps: Math.round(actual_fps * 10) / 10,
+      host_cpu_percent: 0,
+      host_gpu_percent: 0,
+      host_gpu_encoder_percent: 0,
+      host_ram_percent: 0,
+      host_vram_percent: 0,
     };
 
     const h = [...history.value, point];
@@ -651,8 +769,88 @@ const fpsChartData = computed(() => ({
   ],
 }));
 
+// Host stats charts (history mode only)
+
+const hostPercentChartOptions = computed(() => {
+  const base = { ...baseChartOptions.value };
+  return {
+    ...base,
+    plugins: {
+      ...base.plugins,
+      legend: {
+        display: true,
+        position: 'top' as const,
+        labels: { color: tickColor, boxWidth: 12, padding: 8, font: { size: 10 } },
+      },
+    },
+    scales: {
+      ...base.scales,
+      y: {
+        ...base.scales.y,
+        suggestedMax: 100,
+        ticks: { ...base.scales.y.ticks, callback: (v: number) => `${v}%` },
+      },
+    },
+  };
+});
+
+const hostComputeChartData = computed(() => {
+  const datasets: Array<Record<string, unknown>> = [];
+  if (hasHostSeries('host_cpu_percent')) {
+    datasets.push({
+      label: t('sessions.chart_host_cpu'),
+      data: displayData.value.map((p) => p.host_cpu_percent),
+      borderColor: 'rgb(59, 130, 246)',
+      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      fill: true,
+    });
+  }
+  if (hasHostSeries('host_gpu_percent')) {
+    datasets.push({
+      label: t('sessions.chart_host_gpu'),
+      data: displayData.value.map((p) => p.host_gpu_percent),
+      borderColor: 'rgb(16, 185, 129)',
+      backgroundColor: 'rgba(16, 185, 129, 0.12)',
+      fill: true,
+    });
+  }
+  if (hasHostSeries('host_gpu_encoder_percent')) {
+    datasets.push({
+      label: t('sessions.chart_host_gpu_encoder'),
+      data: displayData.value.map((p) => p.host_gpu_encoder_percent),
+      borderColor: 'rgb(168, 85, 247)',
+      backgroundColor: 'rgba(168, 85, 247, 0.12)',
+      fill: true,
+    });
+  }
+  return { labels: labels.value, datasets };
+});
+
+const hostMemoryChartData = computed(() => {
+  const datasets: Array<Record<string, unknown>> = [];
+  if (hasHostSeries('host_ram_percent')) {
+    datasets.push({
+      label: t('sessions.chart_host_ram'),
+      data: displayData.value.map((p) => p.host_ram_percent),
+      borderColor: 'rgb(245, 158, 11)',
+      backgroundColor: 'rgba(245, 158, 11, 0.12)',
+      fill: true,
+    });
+  }
+  if (hasHostSeries('host_vram_percent')) {
+    datasets.push({
+      label: t('sessions.chart_host_vram'),
+      data: displayData.value.map((p) => p.host_vram_percent),
+      borderColor: 'rgb(236, 72, 153)',
+      backgroundColor: 'rgba(236, 72, 153, 0.12)',
+      fill: true,
+    });
+  }
+  return { labels: labels.value, datasets };
+});
+
 // Chart zoom modal
-type ZoomKey = 'latency' | 'throughput' | 'quality' | 'fps';
+type ZoomKey = 'latency' | 'throughput' | 'quality' | 'fps' | 'host_compute' | 'host_memory';
 const zoomVisible = ref(false);
 const zoomChart = ref<ZoomKey>('throughput');
 const modalChartRef = ref<InstanceType<typeof Line>>();
@@ -684,6 +882,7 @@ const latencyChartOptionsZoom = computed(() => withZoom(latencyChartOptions.valu
 const throughputChartOptionsZoom = computed(() => withZoom(baseChartOptions.value));
 const qualityChartOptionsZoom = computed(() => withZoom(qualityChartOptions.value));
 const fpsChartOptionsZoom = computed(() => withZoom(fpsChartOptions.value));
+const hostPercentChartOptionsZoom = computed(() => withZoom(hostPercentChartOptions.value));
 
 interface ZoomableChart {
   zoom: (f: number) => void;
@@ -718,6 +917,10 @@ const zoomTitle = computed(() => {
       return t('sessions.chart_quality');
     case 'fps':
       return t('sessions.chart_framerate');
+    case 'host_compute':
+      return t('sessions.chart_host_compute');
+    case 'host_memory':
+      return t('sessions.chart_host_memory');
     default:
       return '';
   }
