@@ -2483,6 +2483,7 @@ namespace confighttp {
       j["height"] = s.height;
       j["target_fps"] = s.target_fps;
       j["target_bitrate_kbps"] = s.target_bitrate_kbps;
+      j["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
       j["codec"] = s.codec;
       j["hdr"] = s.hdr;
       j["audio_channels"] = s.audio_channels;
@@ -2518,6 +2519,7 @@ namespace confighttp {
     output["height"] = s.height;
     output["target_fps"] = s.target_fps;
     output["target_bitrate_kbps"] = s.target_bitrate_kbps;
+    output["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
     output["codec"] = s.codec;
     output["hdr"] = s.hdr;
     output["audio_channels"] = s.audio_channels;

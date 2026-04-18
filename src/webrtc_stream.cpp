@@ -4536,6 +4536,7 @@ namespace webrtc_stream {
       meta.height = snapshot.height.value_or(0);
       meta.target_fps = snapshot.fps.value_or(0);
       meta.target_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.target_requested_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
       meta.codec = snapshot.codec.value_or("");
       meta.hdr = snapshot.hdr.value_or(false);
       meta.audio_channels = snapshot.audio_channels.value_or(0);

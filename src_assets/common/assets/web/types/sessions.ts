@@ -10,6 +10,7 @@ export interface SessionSummary {
   height: number;
   target_fps: number;
   target_bitrate_kbps: number;
+  target_requested_bitrate_kbps?: number;
   client_bitrate_kbps?: number;
   audio_channels: number;
   hdr: boolean;

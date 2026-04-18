@@ -259,8 +259,9 @@ namespace session_history {
       auto s = prepare(db,
         "INSERT OR IGNORE INTO sessions "
         "(uuid, protocol, client_name, device_name, app_name, "
-        " width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, start_time_unix) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        " width, height, target_fps, target_bitrate_kbps, target_requested_bitrate_kbps, "
+        " codec, hdr, audio_channels, start_time_unix) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       if (!s) return;
 
       sqlite3_bind_text(s.get(), 1, m.uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -272,10 +273,11 @@ namespace session_history {
       sqlite3_bind_int(s.get(), 7, m.height);
       sqlite3_bind_int(s.get(), 8, m.target_fps);
       sqlite3_bind_int(s.get(), 9, m.target_bitrate_kbps);
-      sqlite3_bind_text(s.get(), 10, m.codec.c_str(), -1, SQLITE_TRANSIENT);
-      sqlite3_bind_int(s.get(), 11, m.hdr ? 1 : 0);
-      sqlite3_bind_int(s.get(), 12, m.audio_channels);
-      sqlite3_bind_double(s.get(), 13, now_unix());
+      sqlite3_bind_int(s.get(), 10, m.target_requested_bitrate_kbps);
+      sqlite3_bind_text(s.get(), 11, m.codec.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(s.get(), 12, m.hdr ? 1 : 0);
+      sqlite3_bind_int(s.get(), 13, m.audio_channels);
+      sqlite3_bind_double(s.get(), 14, now_unix());
 
       sqlite3_step(s.get());
 
@@ -634,6 +636,14 @@ namespace session_history {
       out.duration_seconds = sqlite3_column_double(s, 14);
       auto col15 = sqlite3_column_text(s, 15);
       out.verdict = col15 ? reinterpret_cast<const char *>(col15) : "unknown";
+      // Column 16 is the post-migration target_requested_bitrate_kbps; may be NULL
+      // for sessions recorded before phase 14, in which case we fall back to the
+      // encode bitrate so the UI just shows a single value.
+      if (sqlite3_column_count(s) > 16 && sqlite3_column_type(s, 16) != SQLITE_NULL) {
+        out.target_requested_bitrate_kbps = sqlite3_column_int(s, 16);
+      } else {
+        out.target_requested_bitrate_kbps = out.target_bitrate_kbps;
+      }
       return out;
     }
 
@@ -661,6 +671,25 @@ namespace session_history {
       BOOST_LOG(error) << "session_history: schema creation failed";
       g_write_db.reset();
       return;
+    }
+
+    // Idempotent migrations for columns added after initial release.
+    {
+      sqlite3_stmt *check = nullptr;
+      bool has_requested = false;
+      if (sqlite3_prepare_v2(g_write_db.get(), "PRAGMA table_info(sessions)", -1, &check, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(check) == SQLITE_ROW) {
+          const unsigned char *name = sqlite3_column_text(check, 1);
+          if (name && std::string(reinterpret_cast<const char *>(name)) == "target_requested_bitrate_kbps") {
+            has_requested = true;
+            break;
+          }
+        }
+      }
+      if (check) sqlite3_finalize(check);
+      if (!has_requested) {
+        exec(g_write_db.get(), "ALTER TABLE sessions ADD COLUMN target_requested_bitrate_kbps INTEGER");
+      }
     }
 
     // Open read connection (read-only)
@@ -791,7 +820,7 @@ namespace session_history {
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps "
       "FROM sessions WHERE end_time_unix IS NOT NULL "
       "ORDER BY end_time_unix DESC LIMIT ? OFFSET ?");
     if (!s) return result;
@@ -812,7 +841,7 @@ namespace session_history {
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps "
       "FROM sessions WHERE uuid = ?");
     if (!s) return std::nullopt;
     sqlite3_bind_text(s.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);

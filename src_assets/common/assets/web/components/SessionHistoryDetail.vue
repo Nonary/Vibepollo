@@ -76,8 +76,9 @@
             />
             <StatCell
               :label="t('sessions.bitrate')"
-              :value="formatBitrate(detail.target_bitrate_kbps)"
-              :tip="t('sessions.tip_history_bitrate')"
+              :value="formatBitrate(bitrateRequestedKbps)"
+              :sub-value="bitrateEncodeSubValue"
+              :tip="bitrateTip"
             />
             <StatCell
               :label="t('sessions.history_duration')"
@@ -137,7 +138,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import {
   NButton,
@@ -182,6 +183,35 @@ const detail = ref<SessionDetail>();
 const loading = ref(false);
 const deleting = ref(false);
 let lastLoadedUuid = '';
+
+const bitrateRequestedKbps = computed(() => {
+  const d = detail.value;
+  if (!d) return 0;
+  return d.target_requested_bitrate_kbps && d.target_requested_bitrate_kbps > 0
+    ? d.target_requested_bitrate_kbps
+    : d.target_bitrate_kbps;
+});
+
+const bitrateEncodeSubValue = computed(() => {
+  const d = detail.value;
+  if (!d) return undefined;
+  const requested = d.target_requested_bitrate_kbps ?? 0;
+  const encode = d.target_bitrate_kbps ?? 0;
+  if (requested > 0 && encode > 0 && requested !== encode) {
+    return `${t('sessions.bitrate_encode_label')} ${formatBitrate(encode)}`;
+  }
+  return undefined;
+});
+
+const bitrateTip = computed(() => {
+  const d = detail.value;
+  const requested = d?.target_requested_bitrate_kbps ?? 0;
+  const encode = d?.target_bitrate_kbps ?? 0;
+  if (requested > 0 && encode > 0 && requested !== encode) {
+    return t('sessions.tip_bitrate_dual');
+  }
+  return t('sessions.tip_history_bitrate');
+});
 
 function exportJson(): void {
   if (!detail.value) return;
