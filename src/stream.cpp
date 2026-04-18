@@ -1670,6 +1670,7 @@ namespace stream {
         session->stats.last_encode_latency_us10.store(latency, std::memory_order_relaxed);
       } else {
         frame_header.frame_processing_latency = 0;
+        session->stats.last_encode_latency_us10.store(0, std::memory_order_relaxed);
       }
 
       auto fecPercentage = config::stream.fec_percentage;
@@ -1921,7 +1922,8 @@ namespace stream {
         // Update per-session performance counters
         session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
         session->stats.packets_sent.fetch_add(ratecontrol_frame_packets_sent, std::memory_order_relaxed);
-        session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * blocksize, std::memory_order_relaxed);
+        auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
+        session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
