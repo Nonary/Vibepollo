@@ -1,6 +1,10 @@
 <template>
-  <n-drawer v-model:show="visibleModel" :width="680" placement="right" :native-scrollbar="false">
-    <n-drawer-content :title="t('sessions.history_detail_title')" closable>
+  <n-drawer v-model:show="visibleModel" :width="680" placement="right">
+    <n-drawer-content
+      :title="t('sessions.history_detail_title')"
+      closable
+      :native-scrollbar="false"
+    >
       <div v-if="loading && !detail" class="flex items-center justify-center py-10">
         <n-spin size="medium" />
       </div>
@@ -249,5 +253,27 @@ function eventTimelineType(
 }
 .stat-value {
   @apply text-sm font-semibold;
+}
+</style>
+
+<!--
+  Naive UI's drawer panel relies on a flex chain (.n-drawer-content { display: flex;
+  flex-direction: column; height: 100% }) so that .n-drawer-body can grow with flex:1.
+  In some environments that chain breaks and the body collapses to height:0, which
+  hides our content even though it's in the DOM. Force the chain explicitly here.
+-->
+<style>
+.n-drawer-content {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+.n-drawer-content > .n-drawer-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+.n-drawer-body > .n-drawer-body-content-wrapper {
+  height: 100%;
 }
 </style>
