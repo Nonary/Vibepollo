@@ -723,6 +723,26 @@
     "confirm_unpair_all_message": "Are you sure you want to unpair all clients? They will all need to be re-paired.",
     "confirm_unpair_all_message_count": "This will unpair all {count} client(s). They will all need to pair again to connect."
   },
+  "host": {
+    "title": "Host System",
+    "idle": "Idle",
+    "cpu": "CPU",
+    "gpu": "GPU",
+    "ram": "RAM",
+    "vram": "VRAM",
+    "encoder": "Encoder",
+    "cores": "cores",
+    "temp_cpu": "CPU Temp",
+    "temp_gpu": "GPU Temp",
+    "unavailable": "Some host metrics are unavailable on this system.",
+    "tip_cpu": "Total CPU utilisation across all logical cores, sampled every 2 seconds.",
+    "tip_gpu": "Aggregate 3D engine utilisation across all GPU adapters (Task Manager equivalent).",
+    "tip_encoder": "Hardware video-encode engine utilisation. High during active streaming.",
+    "tip_ram": "System memory in use vs total physical RAM.",
+    "tip_vram": "Dedicated GPU memory in use vs total VRAM on the primary adapter.",
+    "tip_temp_cpu": "Temperature of the hottest CPU core, when reported by the platform.",
+    "tip_temp_gpu": "Temperature of the GPU, when reported by the vendor driver."
+  },
   "sessions": {
     "title": "Active Streaming Sessions",
     "live": "Live",
