@@ -863,4 +863,60 @@ namespace platf {
   bool
     set_clipboard(const std::string &content);
 
+  /**
+   * @brief Snapshot of host system performance counters.
+   *
+   * Any field that cannot be sampled on the current platform is left at the
+   * default sentinel (-1.f for percentages/temperatures, 0 for byte counts).
+   */
+  struct host_stats_t {
+    float cpu_percent = -1.f;
+    float cpu_temp_c = -1.f;
+    std::uint64_t ram_used_bytes = 0;
+    std::uint64_t ram_total_bytes = 0;
+    float gpu_percent = -1.f;
+    float gpu_encoder_percent = -1.f;
+    float gpu_temp_c = -1.f;
+    std::uint64_t vram_used_bytes = 0;
+    std::uint64_t vram_total_bytes = 0;
+  };
+
+  /**
+   * @brief Static information about the host (cached, sampled once at startup).
+   */
+  struct host_info_t {
+    std::string cpu_model;
+    std::string gpu_model;
+    int cpu_logical_cores = 0;
+    std::uint64_t ram_total_bytes = 0;
+    std::uint64_t vram_total_bytes = 0;
+  };
+
+  /**
+   * @brief Per-platform host stats provider.
+   *
+   * Implementations live in src/platform/<os>/host_stats.cpp and are
+   * instantiated through @ref create_host_stats_provider. The provider is
+   * polled from a single sampler thread owned by @ref host_stats.
+   */
+  class host_stats_provider_t {
+  public:
+    virtual ~host_stats_provider_t() = default;
+
+    /** @brief Sample the current host stats. */
+    virtual host_stats_t sample() = 0;
+
+    /** @brief Return the static host info (called once, may be cached). */
+    virtual host_info_t info() = 0;
+  };
+
+  /**
+   * @brief Factory for the platform-specific host stats provider.
+   *
+   * Always returns a usable provider; on platforms without a real
+   * implementation, it returns a stub that emits empty samples.
+   */
+  std::unique_ptr<host_stats_provider_t>
+    create_host_stats_provider();
+
 }  // namespace platf

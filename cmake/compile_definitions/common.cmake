@@ -129,6 +129,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/state_storage.h"
         "${CMAKE_SOURCE_DIR}/src/session_history.cpp"
         "${CMAKE_SOURCE_DIR}/src/session_history.h"
+        "${CMAKE_SOURCE_DIR}/src/host_stats.cpp"
+        "${CMAKE_SOURCE_DIR}/src/host_stats.h"
         ${PLATFORM_TARGET_FILES})
 
 if(NOT SUNSHINE_ASSETS_DIR_DEF)

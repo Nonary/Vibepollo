@@ -14,6 +14,7 @@
 #include "confighttp.h"
 #include "entry_handler.h"
 #include "globals.h"
+#include "host_stats.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "main.h"
@@ -428,6 +429,8 @@ int main(int argc, char *argv[]) {
   if (!platf_deinit_guard) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
+
+  auto host_stats_deinit_guard = host_stats::start();
 
   if (shutdown_event->peek()) {
     return lifetime::desired_exit_code;

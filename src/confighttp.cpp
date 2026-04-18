@@ -56,6 +56,7 @@
 #include "rtsp.h"
 #include "session_history.h"
 #include "stream.h"
+#include "host_stats.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -2399,6 +2400,53 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  // Live host system performance counters (CPU/GPU/RAM/VRAM/temps).
+  void getHostStats(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    const auto s = host_stats::latest();
+    nlohmann::json out;
+    out["cpu_percent"] = s.cpu_percent;
+    out["cpu_temp_c"] = s.cpu_temp_c;
+    out["ram_used_bytes"] = s.ram_used_bytes;
+    out["ram_total_bytes"] = s.ram_total_bytes;
+    out["ram_percent"] = s.ram_total_bytes > 0
+                          ? (static_cast<double>(s.ram_used_bytes) * 100.0 /
+                             static_cast<double>(s.ram_total_bytes))
+                          : 0.0;
+    out["gpu_percent"] = s.gpu_percent;
+    out["gpu_encoder_percent"] = s.gpu_encoder_percent;
+    out["gpu_temp_c"] = s.gpu_temp_c;
+    out["vram_used_bytes"] = s.vram_used_bytes;
+    out["vram_total_bytes"] = s.vram_total_bytes;
+    out["vram_percent"] = s.vram_total_bytes > 0
+                           ? (static_cast<double>(s.vram_used_bytes) * 100.0 /
+                              static_cast<double>(s.vram_total_bytes))
+                           : 0.0;
+    send_response(response, out);
+  }
+
+  // Static host info — model strings + total RAM/VRAM, sampled once.
+  void getHostInfo(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    const auto &i = host_stats::info();
+    nlohmann::json out;
+    out["cpu_model"] = i.cpu_model;
+    out["gpu_model"] = i.gpu_model;
+    out["cpu_logical_cores"] = i.cpu_logical_cores;
+    out["ram_total_bytes"] = i.ram_total_bytes;
+    out["vram_total_bytes"] = i.vram_total_bytes;
+    send_response(response, out);
+  }
+
+
   void listRTSPSessions(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -4095,6 +4143,8 @@ namespace confighttp {
     register_api_route("^/api/clients/disconnect$", "POST", disconnectClient);
     register_api_route("^/api/apps/close$", "POST", closeApp);
     register_api_route("^/api/session/status$", "GET", getSessionStatus);
+    register_api_route("^/api/host/stats$", "GET", getHostStats);
+    register_api_route("^/api/host/info$", "GET", getHostInfo);
     register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
     register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
