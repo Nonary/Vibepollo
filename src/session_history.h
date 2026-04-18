@@ -144,6 +144,10 @@ namespace session_history {
   void begin_session(const session_metadata_t &metadata);
   void end_session(const std::string &uuid);
 
+  // ── Event recording ───────────────────────────────────────────────
+
+  void record_event(const std::string &uuid, const std::string &event_type, const std::string &payload = "");
+
   // ── Read API (called from confighttp.cpp) ──────────────────────────
 
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);

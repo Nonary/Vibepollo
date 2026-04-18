@@ -67,10 +67,20 @@ import {
   Tooltip,
   Legend,
 } from 'chart.js';
+import annotationPlugin from 'chartjs-plugin-annotation';
 import { Line } from 'vue-chartjs';
-import type { SessionSample } from '@/types/sessions';
+import type { SessionSample, SessionEvent } from '@/types/sessions';
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Filler,
+  Tooltip,
+  Legend,
+  annotationPlugin,
+);
 
 const { t } = useI18n();
 
@@ -98,6 +108,7 @@ const props = defineProps<{
   protocol?: 'rtsp' | 'webrtc';
   mode?: 'live' | 'history';
   historyData?: SessionSample[];
+  events?: SessionEvent[];
 }>();
 
 const MAX_POINTS = 150; // 5 minutes at 2s polling
@@ -244,41 +255,95 @@ onBeforeUnmount(() => {
 
 const labels = computed(() => displayData.value.map((p) => p.time));
 
+// Event annotation colors by event type
+const eventColors: Record<string, string> = {
+  stream_started: 'rgba(34, 197, 94, 0.6)',
+  stream_ended: 'rgba(59, 130, 246, 0.6)',
+  first_drop: 'rgba(239, 68, 68, 0.7)',
+  drop_burst: 'rgba(239, 68, 68, 0.5)',
+  stall: 'rgba(245, 158, 11, 0.7)',
+  recovery: 'rgba(34, 197, 94, 0.5)',
+};
+
+// Build annotation lines from events in history mode
+const eventAnnotations = computed(() => {
+  if (props.mode !== 'history' || !props.events?.length || !props.historyData?.length) return {};
+  const data = displayData.value;
+  if (!data.length) return {};
+
+  const annotations: Record<string, unknown> = {};
+  const samples = props.historyData ?? [];
+  for (const [i, evt] of props.events.entries()) {
+    // Find the closest label index
+    let closest = 0;
+    let minDiff = Infinity;
+    for (let j = 0; j < data.length; j++) {
+      const diff = Math.abs(evt.timestamp_unix - (samples[j]?.timestamp_unix ?? 0));
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = j;
+      }
+    }
+    annotations[`event-${i}`] = {
+      type: 'line',
+      xMin: closest,
+      xMax: closest,
+      borderColor: eventColors[evt.event_type] ?? 'rgba(128, 128, 128, 0.5)',
+      borderWidth: 2,
+      borderDash: [4, 4],
+      label: {
+        display: true,
+        content: evt.event_type.replace(/_/g, ' '),
+        position: 'start',
+        backgroundColor: eventColors[evt.event_type] ?? 'rgba(128, 128, 128, 0.8)',
+        color: '#fff',
+        font: { size: 9 },
+        padding: 3,
+      },
+    };
+  }
+  return annotations;
+});
+
 // Shared styling
 const gridColor = 'rgba(128, 128, 128, 0.15)';
 const tickColor = 'rgba(128, 128, 128, 0.6)';
 
-const baseChartOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  animation: { duration: 0 },
-  interaction: { mode: 'index' as const, intersect: false },
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      backgroundColor: 'rgba(0, 0, 0, 0.8)',
-      titleColor: '#fff',
-      bodyColor: '#fff',
-      padding: 8,
-      cornerRadius: 6,
+const baseChartOptions = computed(() => {
+  const hasAnnotations = Object.keys(eventAnnotations.value).length > 0;
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 0 },
+    interaction: { mode: 'index' as const, intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+        titleColor: '#fff',
+        bodyColor: '#fff',
+        padding: 8,
+        cornerRadius: 6,
+      },
+      ...(hasAnnotations ? { annotation: { annotations: eventAnnotations.value } } : {}),
     },
-  },
-  scales: {
-    x: {
-      grid: { color: gridColor },
-      ticks: { color: tickColor, maxTicksLimit: 8, maxRotation: 0, font: { size: 10 } },
+    scales: {
+      x: {
+        grid: { color: gridColor },
+        ticks: { color: tickColor, maxTicksLimit: 8, maxRotation: 0, font: { size: 10 } },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: gridColor },
+        ticks: { color: tickColor, font: { size: 10 } },
+      },
     },
-    y: {
-      beginAtZero: true,
-      grid: { color: gridColor },
-      ticks: { color: tickColor, font: { size: 10 } },
+    elements: {
+      point: { radius: 0, hitRadius: 8 },
+      line: { tension: 0.3, borderWidth: 2 },
     },
-  },
-  elements: {
-    point: { radius: 0, hitRadius: 8 },
-    line: { tension: 0.3, borderWidth: 2 },
-  },
-}));
+  };
+});
 
 const latencyChartOptions = computed(() => {
   const base = { ...baseChartOptions.value };

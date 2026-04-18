@@ -69,6 +69,7 @@
             v-if="detail.samples.length > 0"
             mode="history"
             :history-data="detail.samples"
+            :events="detail.events"
             :protocol="detail.protocol === 'webrtc' ? 'webrtc' : 'rtsp'"
           />
 

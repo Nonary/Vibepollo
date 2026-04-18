@@ -172,6 +172,11 @@ namespace session_history {
       double last_actual_bitrate_kbps = 0;
       double last_jitter_ms = 0;
 
+      // Event detection state
+      bool had_any_losses = false;      // first_drop detection
+      bool in_stall = false;            // stall/recovery detection
+      int zero_frame_ticks = 0;         // consecutive ticks with 0 new frames
+
       void update(double ts, std::uint64_t frames, std::uint64_t bytes, std::int64_t losses) {
         if (prev_timestamp > 0) {
           double dt = ts - prev_timestamp;
@@ -449,10 +454,47 @@ namespace session_history {
 
     // ── Sampler thread ─────────────────────────────────────────────
 
+    // Detect and emit automatic events based on aggregator state changes
+    void detect_events(const std::string &uuid, aggregator_t &agg, std::int64_t current_losses, std::uint64_t current_frames) {
+      // First drop in session
+      if (!agg.had_any_losses && current_losses > 0 && agg.prev_losses == 0 && agg.prev_timestamp > 0) {
+        agg.had_any_losses = true;
+        record_event(uuid, "first_drop", "");
+      }
+      else if (current_losses > 0) {
+        agg.had_any_losses = true;
+      }
+
+      // Drop burst: >10 new losses in a single sample interval
+      if (agg.prev_timestamp > 0) {
+        auto delta_losses = current_losses - agg.prev_losses;
+        if (delta_losses > 10) {
+          record_event(uuid, "drop_burst", std::to_string(delta_losses) + " losses in interval");
+        }
+      }
+
+      // Stall detection: no new frames for >=2 consecutive ticks (4+ seconds)
+      if (agg.prev_timestamp > 0 && current_frames == agg.prev_frames_sent) {
+        agg.zero_frame_ticks++;
+        if (agg.zero_frame_ticks >= 2 && !agg.in_stall) {
+          agg.in_stall = true;
+          record_event(uuid, "stall", "No frames for " + std::to_string(agg.zero_frame_ticks * 2) + "s");
+        }
+      }
+      else {
+        if (agg.in_stall) {
+          record_event(uuid, "recovery", "Frames resumed after stall");
+          agg.in_stall = false;
+        }
+        agg.zero_frame_ticks = 0;
+      }
+    }
+
     void sample_rtsp_sessions(double ts) {
       auto infos = stream::get_all_session_info();
       for (const auto &info : infos) {
         auto &agg = g_aggregators[info.uuid];
+        detect_events(info.uuid, agg, info.client_reported_losses, info.frames_sent);
         agg.update(ts, info.frames_sent, info.bytes_sent, info.client_reported_losses);
 
         session_sample_t s;
@@ -481,6 +523,7 @@ namespace session_history {
       auto sessions = webrtc_stream::list_sessions();
       for (const auto &ws : sessions) {
         auto &agg = g_aggregators[ws.id];
+        detect_events(ws.id, agg, static_cast<int64_t>(ws.video_dropped), ws.video_packets);
         agg.update(ts, ws.video_packets, 0, static_cast<int64_t>(ws.video_dropped));
 
         session_sample_t s;
@@ -677,6 +720,18 @@ namespace session_history {
     write_cmd_t prune_cmd;
     prune_cmd.type = cmd_type::prune;
     enqueue(std::move(prune_cmd));
+  }
+
+  void record_event(const std::string &uuid, const std::string &event_type, const std::string &payload) {
+    session_event_t evt;
+    evt.session_uuid = uuid;
+    evt.timestamp_unix = now_unix();
+    evt.event_type = event_type;
+    evt.payload = payload;
+    write_cmd_t cmd;
+    cmd.type = cmd_type::insert_event;
+    cmd.event = std::move(evt);
+    enqueue(std::move(cmd));
   }
 
   std::vector<session_summary_t> list_sessions(int limit, int offset) {
