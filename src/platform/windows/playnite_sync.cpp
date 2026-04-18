@@ -15,6 +15,10 @@ namespace platf::playnite::sync {
   constexpr int kSourcePlugin = 1 << 2;
   constexpr int kSourceInstalled = 1 << 3;
 
+  static std::string playnite_id_key(std::string_view playnite_id) {
+    return to_lower_copy(std::string(playnite_id));
+  }
+
   std::string canonical_playnite_app_uuid(std::string_view playnite_id) {
     std::string uuid(playnite_id);
     std::transform(uuid.begin(), uuid.end(), uuid.begin(), [](unsigned char c) {
@@ -273,7 +277,7 @@ namespace platf::playnite::sync {
         }
       }
       out.push_back(g);
-      out_source_flags[g.id] |= kSourceRecent;
+      out_source_flags[playnite_id_key(g.id)] |= kSourceRecent;
     }
     return out;
   }
@@ -302,7 +306,7 @@ namespace platf::playnite::sync {
         continue;
       }
       out.push_back(g);
-      out_source_flags[g.id] |= kSourcePlugin;
+      out_source_flags[playnite_id_key(g.id)] |= kSourcePlugin;
     }
     return out;
   }
@@ -323,7 +327,7 @@ namespace platf::playnite::sync {
       }
       out.push_back(g);
       if (!g.id.empty()) {
-        out_source_flags[g.id] |= kSourceInstalled;
+        out_source_flags[playnite_id_key(g.id)] |= kSourceInstalled;
       }
     }
     return out;
@@ -356,7 +360,7 @@ namespace platf::playnite::sync {
       }
       if (ok) {
         out.push_back(g);
-        out_source_flags[g.id] |= kSourceCategory;
+        out_source_flags[playnite_id_key(g.id)] |= kSourceCategory;
       }
     }
     return out;
@@ -372,7 +376,7 @@ namespace platf::playnite::sync {
         by_dir[normalize_path_for_match(g.working_dir)] = GameRef {&g};
       }
       if (!g.id.empty()) {
-        by_id[g.id] = GameRef {&g};
+        by_id[playnite_id_key(g.id)] = GameRef {&g};
       }
       auto normalized_name = normalize_name_for_match(g.name);
       if (!normalized_name.empty() && !ambiguous_names.contains(normalized_name)) {
@@ -410,7 +414,7 @@ namespace platf::playnite::sync {
     for (const auto &g : installed) {
       std::time_t t = 0;
       if (!g.id.empty() && parse_iso8601_utc(g.last_played, t)) {
-        m[g.id] = t;
+        m[playnite_id_key(g.id)] = t;
       }
     }
     return m;
@@ -419,7 +423,7 @@ namespace platf::playnite::sync {
   const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name) {
     try {
       if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
-        auto it = by_id.find(app["playnite-id"].get<std::string>());
+        auto it = by_id.find(playnite_id_key(app["playnite-id"].get<std::string>()));
         if (it != by_id.end()) {
           return it->second.g;
         }
@@ -524,10 +528,46 @@ namespace platf::playnite::sync {
     if (!has) {
       added = now_time;
     }
-    auto it = last_played_map.find(pid);
+    auto it = last_played_map.find(playnite_id_key(pid));
     bool played = it != last_played_map.end() && it->second >= added;
     std::time_t deadline = added + (long long) delete_after_days * 86400LL;
     return now_time >= deadline && !played;
+  }
+
+  static void dedupe_auto_apps_by_playnite_id(nlohmann::json &root, bool &changed) {
+    if (!root.contains("apps") || !root["apps"].is_array()) {
+      return;
+    }
+
+    nlohmann::json kept = nlohmann::json::array();
+    std::unordered_set<std::string> seen_auto_ids;
+
+    for (auto &app : root["apps"]) {
+      bool is_auto = false;
+      std::string pid;
+      try {
+        is_auto = app.contains("playnite-managed") && app["playnite-managed"].is_string() && app["playnite-managed"].get<std::string>() == "auto";
+        if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
+          pid = app["playnite-id"].get<std::string>();
+        }
+      } catch (...) {}
+
+      if (!is_auto || pid.empty()) {
+        kept.push_back(app);
+        continue;
+      }
+
+      if (!seen_auto_ids.insert(playnite_id_key(pid)).second) {
+        changed = true;
+        continue;
+      }
+
+      kept.push_back(app);
+    }
+
+    if (kept.size() != root["apps"].size()) {
+      root["apps"] = std::move(kept);
+    }
   }
 
   void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed) {
@@ -538,10 +578,10 @@ namespace platf::playnite::sync {
         continue;
       }
       ++matched;
-      matched_ids.insert(g->id);
+      matched_ids.insert(playnite_id_key(g->id));
       apply_game_metadata_to_app(*g, app);
       int flags = 0;
-      if (auto it = source_flags.find(g->id); it != source_flags.end()) {
+      if (auto it = source_flags.find(playnite_id_key(g->id)); it != source_flags.end()) {
         flags = it->second;
       }
       mark_app_as_playnite_auto(app, flags);
@@ -551,14 +591,14 @@ namespace platf::playnite::sync {
 
   void add_missing_auto_entries(nlohmann::json &root, const std::vector<Game> &selected, const std::unordered_set<std::string> &matched_ids, const std::unordered_map<std::string, int> &source_flags, bool &changed) {
     for (const auto &g : selected) {
-      if (matched_ids.contains(g.id)) {
+      if (matched_ids.contains(playnite_id_key(g.id))) {
         continue;
       }
       nlohmann::json app = nlohmann::json::object();
       apply_game_metadata_to_app(g, app);
       ensure_app_uuid(app, changed);
       int flags = 0;
-      if (auto it = source_flags.find(g.id); it != source_flags.end()) {
+      if (auto it = source_flags.find(playnite_id_key(g.id)); it != source_flags.end()) {
         flags = it->second;
       }
       mark_app_as_playnite_auto(app, flags);
@@ -586,7 +626,10 @@ namespace platf::playnite::sync {
     for (auto &a : root["apps"]) {
       try {
         if (a.contains("playnite-managed") && a["playnite-managed"].get<std::string>() == "auto") {
-          s.insert(a.value("playnite-id", std::string()));
+          auto pid = a.value("playnite-id", std::string());
+          if (!pid.empty()) {
+            s.insert(playnite_id_key(pid));
+          }
         }
       } catch (...) {}
     }
@@ -610,20 +653,22 @@ namespace platf::playnite::sync {
     for (auto &app : root["apps"]) {
       bool is_auto = false;
       std::string pid;
+      std::string pid_key;
       try {
         is_auto = app.contains("playnite-managed") && app["playnite-managed"].get<std::string>() == "auto";
         if (app.contains("playnite-id")) {
           pid = app["playnite-id"].get<std::string>();
+          pid_key = playnite_id_key(pid);
         }
       } catch (...) {}
       if (is_auto && !pid.empty()) {
-        if ((remove_uninstalled && uninstalled_lower.contains(to_lower_copy(pid))) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
+        if ((remove_uninstalled && uninstalled_lower.contains(pid_key)) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
           changed = true;
           continue;
         }
         // When sync_all_installed is disabled, remove apps that were added by the "installed" source
         // and are no longer in the selected set (unless they also have other sources)
-        if (!sync_all_installed && !selected_ids.contains(pid)) {
+        if (!sync_all_installed && !selected_ids.contains(pid_key)) {
           try {
             if (app.contains("playnite-source")) {
               std::string source = app["playnite-source"].get<std::string>();
@@ -636,7 +681,7 @@ namespace platf::playnite::sync {
             }
           } catch (...) {}
         }
-        if (!selected_ids.contains(pid) && recent_mode && require_repl && repl > 0) {
+        if (!selected_ids.contains(pid_key) && recent_mode && require_repl && repl > 0) {
           --repl;
           changed = true;
           continue;
@@ -660,6 +705,7 @@ namespace platf::playnite::sync {
     for (auto &app : root["apps"]) {
       ensure_app_uuid(app, changed);
     }
+    dedupe_auto_apps_by_playnite_id(root, changed);
     // Build installed and uninstalled sets
     std::vector<Game> installed;
     std::unordered_set<std::string> uninstalled_lower;
@@ -709,24 +755,27 @@ namespace platf::playnite::sync {
     std::unordered_map<std::string, const Game *> by_id;
     for (const auto &g : sel_recent) {
       if (!g.id.empty()) {
-        by_id.emplace(g.id, &g);
+        by_id.emplace(playnite_id_key(g.id), &g);
       }
     }
     for (const auto &g : sel_cats) {
       if (!g.id.empty()) {
-        if (!by_id.contains(g.id)) {
-          by_id.emplace(g.id, &g);
+        auto key = playnite_id_key(g.id);
+        if (!by_id.contains(key)) {
+          by_id.emplace(std::move(key), &g);
         }
       }
     }
     for (const auto &g : sel_plugins) {
-      if (!g.id.empty() && !by_id.contains(g.id)) {
-        by_id.emplace(g.id, &g);
+      auto key = playnite_id_key(g.id);
+      if (!g.id.empty() && !by_id.contains(key)) {
+        by_id.emplace(std::move(key), &g);
       }
     }
     for (const auto &g : sel_all) {
-      if (!g.id.empty() && !by_id.contains(g.id)) {
-        by_id.emplace(g.id, &g);
+      auto key = playnite_id_key(g.id);
+      if (!g.id.empty() && !by_id.contains(key)) {
+        by_id.emplace(std::move(key), &g);
       }
     }
     std::vector<Game> selected;
@@ -747,7 +796,7 @@ namespace platf::playnite::sync {
     auto last_played_map = build_last_played_map(installed);
     std::unordered_set<std::string> selected_ids;
     for (const auto &g : selected) {
-      selected_ids.insert(g.id);
+      selected_ids.insert(playnite_id_key(g.id));
     }
     const bool recent_mode = (recentN > 0);
     purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, sync_all_installed, selected_ids, changed);
