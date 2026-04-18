@@ -289,8 +289,8 @@ namespace session_history {
         auto s = prepare(db,
           "SELECT COUNT(*), "
           "SUM(CASE WHEN encode_latency_ms > 16 THEN 1 ELSE 0 END), "
-          "SUM(client_reported_losses), "
-          "SUM(frames_sent) "
+          "MAX(client_reported_losses), "
+          "MAX(frames_sent) "
           "FROM samples WHERE session_uuid = ?");
         if (s) {
           sqlite3_bind_text(s.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -376,22 +376,26 @@ namespace session_history {
 
     void process_prune(sqlite3 *db) {
       // Keep only the most recent MAX_HISTORY_SESSIONS completed sessions
-      exec(db,
+      const auto limit_str = std::to_string(MAX_HISTORY_SESSIONS);
+      const std::string del_events =
         "DELETE FROM events WHERE session_uuid IN ("
         "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET 50"
-        ")");
-      exec(db,
+        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
+        ")";
+      const std::string del_samples =
         "DELETE FROM samples WHERE session_uuid IN ("
         "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET 50"
-        ")");
-      exec(db,
+        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
+        ")";
+      const std::string del_sessions =
         "DELETE FROM sessions WHERE end_time_unix IS NOT NULL "
         "AND uuid NOT IN ("
         "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-        "  ORDER BY end_time_unix DESC LIMIT 50"
-        ")");
+        "  ORDER BY end_time_unix DESC LIMIT " + limit_str +
+        ")";
+      exec(db, del_events.c_str());
+      exec(db, del_samples.c_str());
+      exec(db, del_sessions.c_str());
     }
 
     void writer_loop() {
@@ -459,13 +463,11 @@ namespace session_history {
 
     // Detect and emit automatic events based on aggregator state changes
     void detect_events(const std::string &uuid, aggregator_t &agg, std::int64_t current_losses, std::uint64_t current_frames) {
-      // First drop in session
-      if (!agg.had_any_losses && current_losses > 0 && agg.prev_losses == 0 && agg.prev_timestamp > 0) {
+      // First drop in session: fire as soon as any losses appear, including
+      // on the very first sample (no need for a prior sample to compare against).
+      if (!agg.had_any_losses && current_losses > 0) {
         agg.had_any_losses = true;
         record_event(uuid, "first_drop", "");
-      }
-      else if (current_losses > 0) {
-        agg.had_any_losses = true;
       }
 
       // Drop burst: >10 new losses in a single sample interval
