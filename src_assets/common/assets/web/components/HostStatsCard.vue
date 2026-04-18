@@ -135,6 +135,37 @@
         </n-tooltip>
       </div>
 
+      <!-- Network throughput -->
+      <n-tooltip v-if="hasNetwork" trigger="hover" placement="top" :style="{ maxWidth: '320px' }">
+        <template #trigger>
+          <div class="network-row">
+            <div class="network-header">
+              <i class="fas fa-network-wired text-primary" />
+              <span class="font-semibold">{{ $t('host.network') }}</span>
+              <span v-if="info.net_interface" class="opacity-70 text-xs">
+                ({{ info.net_interface
+                }}<span v-if="(info.net_link_speed_mbps ?? 0) > 0">
+                  · {{ info.net_link_speed_mbps }} Mbps</span
+                >)
+              </span>
+            </div>
+            <div class="network-stats">
+              <div class="network-stat">
+                <i class="fas fa-arrow-down text-success" />
+                <span class="network-label">{{ $t('host.network_down') }}</span>
+                <span class="network-value">{{ formatBps(snapshot.net_rx_bps) }}</span>
+              </div>
+              <div class="network-stat">
+                <i class="fas fa-arrow-up text-info" />
+                <span class="network-label">{{ $t('host.network_up') }}</span>
+                <span class="network-value">{{ formatBps(snapshot.net_tx_bps) }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+        {{ $t('host.tip_network') }}
+      </n-tooltip>
+
       <p v-if="hasNoData" class="text-xs opacity-60 italic">
         {{ $t('host.unavailable') }}
       </p>
@@ -165,6 +196,21 @@ const hasNoData = computed(
     snapshot.value.gpu_percent < 0 &&
     snapshot.value.ram_total_bytes === 0,
 );
+
+const hasNetwork = computed(
+  () =>
+    typeof snapshot.value.net_rx_bps === 'number' &&
+    snapshot.value.net_rx_bps >= 0 &&
+    typeof snapshot.value.net_tx_bps === 'number' &&
+    snapshot.value.net_tx_bps >= 0,
+);
+
+const formatBps = (v?: number): string => {
+  if (typeof v !== 'number' || v < 0) return 'N/A';
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)} Mbps`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)} Kbps`;
+  return `${v.toFixed(0)} bps`;
+};
 
 const clampPercent = (v: number): number => {
   if (!Number.isFinite(v) || v < 0) {
@@ -249,5 +295,44 @@ const memoryColor = (v: number): string => {
   background: rgba(239, 68, 68, 0.12);
   color: rgb(239, 68, 68);
   font-weight: 600;
+}
+
+.network-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.6rem;
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.network-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.network-stats {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.network-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.network-label {
+  opacity: 0.75;
+  font-size: 0.75rem;
+}
+
+.network-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 </style>

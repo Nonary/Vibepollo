@@ -44,6 +44,8 @@ export interface SessionSample {
   host_vram_percent?: number;
   host_cpu_temp_c?: number;
   host_gpu_temp_c?: number;
+  host_net_rx_bps?: number;
+  host_net_tx_bps?: number;
 }
 
 export interface SessionEvent {

@@ -14,6 +14,8 @@ export interface HostStatsSnapshot {
   vram_used_bytes: number;
   vram_total_bytes: number;
   vram_percent: number;
+  net_rx_bps?: number;
+  net_tx_bps?: number;
 }
 
 export interface HostInfo {
@@ -22,6 +24,8 @@ export interface HostInfo {
   cpu_logical_cores: number;
   ram_total_bytes: number;
   vram_total_bytes: number;
+  net_interface?: string;
+  net_link_speed_mbps?: number;
 }
 
 export interface HostHistoryPoint {
@@ -31,4 +35,6 @@ export interface HostHistoryPoint {
   gpu_encoder_percent: number;
   ram_percent: number;
   vram_percent: number;
+  net_rx_bps?: number;
+  net_tx_bps?: number;
 }

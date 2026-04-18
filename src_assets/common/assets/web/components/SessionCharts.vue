@@ -174,6 +174,34 @@
       </div>
     </div>
 
+    <div v-if="mode === 'history' && hasHostNetwork" class="chart-container">
+      <div class="chart-header">
+        <span class="chart-title">
+          <i class="fas fa-network-wired mr-1" />{{ t('sessions.chart_host_network') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_host_network') }}
+          </n-tooltip>
+        </span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">Mbps</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('host_network')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
+      </div>
+      <div class="chart-wrapper">
+        <Line :data="hostNetworkChartData" :options="hostNetworkChartOptions" />
+      </div>
+    </div>
+
     <n-modal
       v-model:show="zoomVisible"
       preset="card"
@@ -248,6 +276,12 @@
           ref="modalChartRef"
           :data="hostMemoryChartData"
           :options="hostPercentChartOptionsZoom"
+        />
+        <Line
+          v-else-if="zoomChart === 'host_network'"
+          ref="modalChartRef"
+          :data="hostNetworkChartData"
+          :options="hostNetworkChartOptionsZoom"
         />
       </div>
       <div class="zoom-hint">
@@ -334,6 +368,8 @@ interface DataPoint {
   host_gpu_encoder_percent: number;
   host_ram_percent: number;
   host_vram_percent: number;
+  host_net_rx_bps: number;
+  host_net_tx_bps: number;
 }
 
 function nz(v?: number): number {
@@ -380,6 +416,8 @@ function convertHistoryData(samples: SessionSample[]): DataPoint[] {
       host_gpu_encoder_percent: nz(sample.host_gpu_encoder_percent),
       host_ram_percent: nz(sample.host_ram_percent),
       host_vram_percent: nz(sample.host_vram_percent),
+      host_net_rx_bps: nz(sample.host_net_rx_bps),
+      host_net_tx_bps: nz(sample.host_net_tx_bps),
     };
   });
 }
@@ -392,6 +430,8 @@ function hasHostSeries(
     | 'host_gpu_encoder_percent'
     | 'host_ram_percent'
     | 'host_vram_percent'
+    | 'host_net_rx_bps'
+    | 'host_net_tx_bps'
   >,
 ): boolean {
   if (props.mode !== 'history' || !props.historyData?.length) return false;
@@ -409,6 +449,9 @@ const hasHostCompute = computed(
 );
 const hasHostMemory = computed(
   () => hasHostSeries('host_ram_percent') || hasHostSeries('host_vram_percent'),
+);
+const hasHostNetwork = computed(
+  () => hasHostSeries('host_net_rx_bps') || hasHostSeries('host_net_tx_bps'),
 );
 
 const displayData = computed<DataPoint[]>(() => {
@@ -493,6 +536,8 @@ watch(
       host_gpu_encoder_percent: 0,
       host_ram_percent: 0,
       host_vram_percent: 0,
+      host_net_rx_bps: 0,
+      host_net_tx_bps: 0,
     };
 
     const h = [...history.value, point];
@@ -849,8 +894,65 @@ const hostMemoryChartData = computed(() => {
   return { labels: labels.value, datasets };
 });
 
+const hostNetworkChartOptions = computed(() => {
+  const base = { ...baseChartOptions.value };
+  return {
+    ...base,
+    plugins: {
+      ...base.plugins,
+      legend: {
+        display: true,
+        position: 'top' as const,
+        labels: { color: tickColor, boxWidth: 12, padding: 8, font: { size: 10 } },
+      },
+    },
+    scales: {
+      ...base.scales,
+      y: {
+        ...base.scales.y,
+        beginAtZero: true,
+        ticks: { ...base.scales.y.ticks, callback: (v: number) => `${v} Mbps` },
+      },
+    },
+  };
+});
+
+function bpsToMbps(v: number): number {
+  return Math.round((v / 1_000_000) * 100) / 100;
+}
+
+const hostNetworkChartData = computed(() => {
+  const datasets: Array<Record<string, unknown>> = [];
+  if (hasHostSeries('host_net_rx_bps')) {
+    datasets.push({
+      label: t('sessions.chart_host_net_rx'),
+      data: displayData.value.map((p) => bpsToMbps(p.host_net_rx_bps)),
+      borderColor: 'rgb(34, 197, 94)',
+      backgroundColor: 'rgba(34, 197, 94, 0.12)',
+      fill: true,
+    });
+  }
+  if (hasHostSeries('host_net_tx_bps')) {
+    datasets.push({
+      label: t('sessions.chart_host_net_tx'),
+      data: displayData.value.map((p) => bpsToMbps(p.host_net_tx_bps)),
+      borderColor: 'rgb(59, 130, 246)',
+      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      fill: true,
+    });
+  }
+  return { labels: labels.value, datasets };
+});
+
 // Chart zoom modal
-type ZoomKey = 'latency' | 'throughput' | 'quality' | 'fps' | 'host_compute' | 'host_memory';
+type ZoomKey =
+  | 'latency'
+  | 'throughput'
+  | 'quality'
+  | 'fps'
+  | 'host_compute'
+  | 'host_memory'
+  | 'host_network';
 const zoomVisible = ref(false);
 const zoomChart = ref<ZoomKey>('throughput');
 const modalChartRef = ref<InstanceType<typeof Line>>();
@@ -883,6 +985,7 @@ const throughputChartOptionsZoom = computed(() => withZoom(baseChartOptions.valu
 const qualityChartOptionsZoom = computed(() => withZoom(qualityChartOptions.value));
 const fpsChartOptionsZoom = computed(() => withZoom(fpsChartOptions.value));
 const hostPercentChartOptionsZoom = computed(() => withZoom(hostPercentChartOptions.value));
+const hostNetworkChartOptionsZoom = computed(() => withZoom(hostNetworkChartOptions.value));
 
 interface ZoomableChart {
   zoom: (f: number) => void;
@@ -921,6 +1024,8 @@ const zoomTitle = computed(() => {
       return t('sessions.chart_host_compute');
     case 'host_memory':
       return t('sessions.chart_host_memory');
+    case 'host_network':
+      return t('sessions.chart_host_network');
     default:
       return '';
   }

@@ -72,6 +72,8 @@ namespace session_history {
     double host_vram_percent = -1;
     double host_cpu_temp_c = -1;
     double host_gpu_temp_c = -1;
+    double host_net_rx_bps = -1;
+    double host_net_tx_bps = -1;
   };
 
   struct session_event_t {

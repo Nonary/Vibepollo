@@ -31,15 +31,20 @@
 #include <windows.h>
 
 #include <dxgi.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <psapi.h>
+#include <ws2tcpip.h>
 
 // local includes
 #include "src/logging.h"
 
+#pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 using namespace std::chrono_literals;
 
@@ -349,6 +354,10 @@ namespace {
       if (GlobalMemoryStatusEx(&ms)) {
         _ram_total_cached = ms.ullTotalPhys;
       }
+
+      // Network: pick the primary interface up-front so info() can return
+      // a non-empty name even before sample() runs.
+      refresh_primary_interface();
     }
 
     platf::host_stats_t
@@ -406,6 +415,9 @@ namespace {
       // Temps (best effort, NVIDIA only via NVML)
       s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
 
+      // Network throughput (delta over wall-clock time on the primary interface).
+      sample_network(s);
+
       return s;
     }
 
@@ -417,10 +429,146 @@ namespace {
       i.cpu_logical_cores = _cpu_logical_cores;
       i.ram_total_bytes = _ram_total_cached;
       i.vram_total_bytes = _vram_total_cached;
+      i.net_interface = _net_iface_name;
+      i.net_link_speed_mbps = _net_link_speed_mbps;
       return i;
     }
 
   private:
+    // -- Network sampling ------------------------------------------------------
+
+    /**
+     * @brief Pick the primary outbound interface (the one carrying the
+     * default route) and remember its LUID + friendly name for sampling.
+     *
+     * Falls back to the first non-loopback up interface if route lookup
+     * fails.
+     */
+    void
+      refresh_primary_interface() {
+      _net_have_iface = false;
+      _net_iface_name.clear();
+      _net_link_speed_mbps = 0;
+
+      NET_LUID luid {};
+      if (!find_default_route_luid(luid)) {
+        // fallback: first non-loopback interface that is up
+        if (!find_first_up_interface_luid(luid)) {
+          return;
+        }
+      }
+
+      // Resolve LUID to friendly name + link speed via MIB_IF_ROW2.
+      MIB_IF_ROW2 row {};
+      row.InterfaceLuid = luid;
+      if (GetIfEntry2(&row) != NO_ERROR) {
+        return;
+      }
+      char narrow[ARRAYSIZE(row.Alias) + 1] {};
+      WideCharToMultiByte(CP_UTF8, 0, row.Alias, -1, narrow, sizeof(narrow), nullptr, nullptr);
+      _net_iface_name.assign(narrow);
+      // ReceiveLinkSpeed is in bits/sec; report Mbps.
+      _net_link_speed_mbps = row.ReceiveLinkSpeed / 1'000'000ULL;
+      _net_iface_luid = luid;
+      _net_have_iface = true;
+      _net_iface_chosen_at = std::chrono::steady_clock::now();
+    }
+
+    static bool
+      find_default_route_luid(NET_LUID &out_luid) {
+      // Use GetBestInterfaceEx with a dummy public destination; gives us
+      // the IF index of the route that would be taken to reach the
+      // internet, which is what users typically care about.
+      sockaddr_in dst {};
+      dst.sin_family = AF_INET;
+      dst.sin_addr.s_addr = htonl(0x08080808);  // 8.8.8.8
+      DWORD if_index = 0;
+      if (GetBestInterfaceEx(reinterpret_cast<sockaddr *>(&dst), &if_index) != NO_ERROR) {
+        return false;
+      }
+      return ConvertInterfaceIndexToLuid(if_index, &out_luid) == NO_ERROR;
+    }
+
+    static bool
+      find_first_up_interface_luid(NET_LUID &out_luid) {
+      MIB_IF_TABLE2 *table = nullptr;
+      if (GetIfTable2(&table) != NO_ERROR || !table) {
+        return false;
+      }
+      bool found = false;
+      for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const auto &row = table->Table[i];
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) {
+          continue;
+        }
+        if (row.OperStatus != IfOperStatusUp) {
+          continue;
+        }
+        out_luid = row.InterfaceLuid;
+        found = true;
+        break;
+      }
+      FreeMibTable(table);
+      return found;
+    }
+
+    void
+      sample_network(platf::host_stats_t &s) {
+      using clock = std::chrono::steady_clock;
+
+      // Re-pick the interface periodically so we adapt to e.g. a VPN
+      // coming up or a cable being unplugged.
+      auto now = clock::now();
+      if (!_net_have_iface ||
+          now - _net_iface_chosen_at > std::chrono::seconds(30)) {
+        refresh_primary_interface();
+      }
+      if (!_net_have_iface) {
+        s.net_rx_bps = -1.0;
+        s.net_tx_bps = -1.0;
+        return;
+      }
+
+      MIB_IF_ROW2 row {};
+      row.InterfaceLuid = _net_iface_luid;
+      if (GetIfEntry2(&row) != NO_ERROR) {
+        s.net_rx_bps = -1.0;
+        s.net_tx_bps = -1.0;
+        return;
+      }
+
+      auto rx = row.InOctets;
+      auto tx = row.OutOctets;
+
+      if (!_have_net_baseline) {
+        _last_rx = rx;
+        _last_tx = tx;
+        _last_net_sample_at = now;
+        _have_net_baseline = true;
+        // First sample after start: report 0 (not -1) so the chart shows
+        // a defined baseline rather than a gap.
+        s.net_rx_bps = 0.0;
+        s.net_tx_bps = 0.0;
+        return;
+      }
+
+      double dt = std::chrono::duration<double>(now - _last_net_sample_at).count();
+      if (dt <= 0.0) {
+        s.net_rx_bps = 0.0;
+        s.net_tx_bps = 0.0;
+        return;
+      }
+      // Counters wrap around modulo 2^64; the unsigned subtraction does
+      // the right thing if the wrap is small enough that one tick fits.
+      auto drx = rx - _last_rx;
+      auto dtx = tx - _last_tx;
+      s.net_rx_bps = static_cast<double>(drx) * 8.0 / dt;
+      s.net_tx_bps = static_cast<double>(dtx) * 8.0 / dt;
+
+      _last_rx = rx;
+      _last_tx = tx;
+      _last_net_sample_at = now;
+    }
     bool _have_cpu_baseline = false;
     filetime_u64_t _last_idle = 0;
     filetime_u64_t _last_kernel = 0;
@@ -438,6 +586,17 @@ namespace {
     int _cpu_logical_cores = 0;
     std::uint64_t _ram_total_cached = 0;
     std::uint64_t _vram_total_cached = 0;
+
+    // Network state
+    bool _net_have_iface = false;
+    NET_LUID _net_iface_luid {};
+    std::string _net_iface_name;
+    std::uint64_t _net_link_speed_mbps = 0;
+    std::chrono::steady_clock::time_point _net_iface_chosen_at {};
+    bool _have_net_baseline = false;
+    std::uint64_t _last_rx = 0;
+    std::uint64_t _last_tx = 0;
+    std::chrono::steady_clock::time_point _last_net_sample_at {};
   };
 
 }  // namespace

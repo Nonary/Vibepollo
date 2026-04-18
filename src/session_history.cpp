@@ -129,7 +129,9 @@ namespace session_history {
         host_ram_percent REAL DEFAULT -1,
         host_vram_percent REAL DEFAULT -1,
         host_cpu_temp_c REAL DEFAULT -1,
-        host_gpu_temp_c REAL DEFAULT -1
+        host_gpu_temp_c REAL DEFAULT -1,
+        host_net_rx_bps REAL DEFAULT -1,
+        host_net_tx_bps REAL DEFAULT -1
       );
 
       CREATE INDEX IF NOT EXISTS idx_samples_session ON samples(session_uuid);
@@ -363,8 +365,9 @@ namespace session_history {
         " client_reported_losses, idr_requests, ref_invalidations, "
         " encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
         " host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
-        " host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        " host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
+        " host_net_rx_bps, host_net_tx_bps) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       if (!s) return;
 
       sqlite3_bind_text(s.get(), 1, sample.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -389,6 +392,8 @@ namespace session_history {
       sqlite3_bind_double(s.get(), 20, sample.host_vram_percent);
       sqlite3_bind_double(s.get(), 21, sample.host_cpu_temp_c);
       sqlite3_bind_double(s.get(), 22, sample.host_gpu_temp_c);
+      sqlite3_bind_double(s.get(), 23, sample.host_net_rx_bps);
+      sqlite3_bind_double(s.get(), 24, sample.host_net_tx_bps);
 
       sqlite3_step(s.get());
     }
@@ -570,6 +575,8 @@ namespace session_history {
                                 : -1.0;
         s.host_cpu_temp_c = host.cpu_temp_c;
         s.host_gpu_temp_c = host.gpu_temp_c;
+        s.host_net_rx_bps = host.net_rx_bps;
+        s.host_net_tx_bps = host.net_tx_bps;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -626,6 +633,8 @@ namespace session_history {
                                 : -1.0;
         s.host_cpu_temp_c = host.cpu_temp_c;
         s.host_gpu_temp_c = host.gpu_temp_c;
+        s.host_net_rx_bps = host.net_rx_bps;
+        s.host_net_tx_bps = host.net_tx_bps;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -765,6 +774,8 @@ namespace session_history {
       add_column("samples", "host_vram_percent", "REAL DEFAULT -1");
       add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1");
       add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1");
+      add_column("samples", "host_net_rx_bps", "REAL DEFAULT -1");
+      add_column("samples", "host_net_tx_bps", "REAL DEFAULT -1");
     }
 
     // Open read connection (read-only)
@@ -946,7 +957,8 @@ namespace session_history {
       "client_reported_losses, idr_requests, ref_invalidations, "
       "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
       "host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
-      "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c "
+      "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
+      "host_net_rx_bps, host_net_tx_bps "
       "FROM samples WHERE session_uuid = ? ORDER BY timestamp_unix");
     if (ss) {
       sqlite3_bind_text(ss.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -982,6 +994,8 @@ namespace session_history {
         sample.host_vram_percent = read_optional_real(19, -1);
         sample.host_cpu_temp_c = read_optional_real(20, -1);
         sample.host_gpu_temp_c = read_optional_real(21, -1);
+        sample.host_net_rx_bps = read_optional_real(22, -1);
+        sample.host_net_tx_bps = read_optional_real(23, -1);
         detail.samples.push_back(std::move(sample));
       }
     }

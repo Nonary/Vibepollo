@@ -879,6 +879,11 @@ namespace platf {
     float gpu_temp_c = -1.f;
     std::uint64_t vram_used_bytes = 0;
     std::uint64_t vram_total_bytes = 0;
+    // Network throughput on the chosen primary interface, in bits/sec.
+    // -1 means "no measurement yet" (e.g. first sample after start, or
+    // platform without an implementation).
+    double net_rx_bps = -1.0;
+    double net_tx_bps = -1.0;
   };
 
   /**
@@ -890,6 +895,11 @@ namespace platf {
     int cpu_logical_cores = 0;
     std::uint64_t ram_total_bytes = 0;
     std::uint64_t vram_total_bytes = 0;
+    // Friendly name of the network interface used for throughput sampling
+    // (empty if none was selectable).
+    std::string net_interface;
+    // Reported link speed in Mbps (0 if unknown).
+    std::uint64_t net_link_speed_mbps = 0;
   };
 
   /**

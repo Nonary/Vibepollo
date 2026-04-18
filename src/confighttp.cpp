@@ -2426,6 +2426,8 @@ namespace confighttp {
                            ? (static_cast<double>(s.vram_used_bytes) * 100.0 /
                               static_cast<double>(s.vram_total_bytes))
                            : 0.0;
+    out["net_rx_bps"] = s.net_rx_bps;
+    out["net_tx_bps"] = s.net_tx_bps;
     send_response(response, out);
   }
 
@@ -2443,6 +2445,8 @@ namespace confighttp {
     out["cpu_logical_cores"] = i.cpu_logical_cores;
     out["ram_total_bytes"] = i.ram_total_bytes;
     out["vram_total_bytes"] = i.vram_total_bytes;
+    out["net_interface"] = i.net_interface;
+    out["net_link_speed_mbps"] = i.net_link_speed_mbps;
     send_response(response, out);
   }
 
@@ -2604,6 +2608,8 @@ namespace confighttp {
       js["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
       js["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
       js["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
+      js["host_net_rx_bps"] = sample.host_net_rx_bps < 0 ? -1 : sample.host_net_rx_bps;
+      js["host_net_tx_bps"] = sample.host_net_tx_bps < 0 ? -1 : sample.host_net_tx_bps;
       output["samples"].push_back(std::move(js));
     }
 
