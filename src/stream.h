@@ -78,6 +78,7 @@ namespace stream {
     int height;
     int fps;
     int bitrate_kbps;
+    int client_bitrate_kbps;  // Original client-requested wire bitrate (== bitrate_kbps for clients that don't send maximumBitrateKbps)
     int video_format;  // 0=H.264, 1=HEVC, 2=AV1
     int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
     int audio_channels;

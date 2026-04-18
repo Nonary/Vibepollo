@@ -488,6 +488,8 @@ namespace confighttp {
     output["height"] = state.height ? nlohmann::json(*state.height) : nlohmann::json(nullptr);
     output["fps"] = state.fps ? nlohmann::json(*state.fps) : nlohmann::json(nullptr);
     output["bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
+    // WebRTC has no FEC/audio adjustment, so the client-requested bitrate is the same as the encode bitrate.
+    output["client_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
     output["codec"] = state.codec ? nlohmann::json(*state.codec) : nlohmann::json(nullptr);
     output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
@@ -2412,6 +2414,7 @@ namespace confighttp {
       s["height"] = info.height;
       s["fps"] = info.fps;
       s["bitrate_kbps"] = info.bitrate_kbps;
+      s["client_bitrate_kbps"] = info.client_bitrate_kbps;
       s["video_format"] = info.video_format;
       s["codec"] = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
       s["hdr"] = info.dynamic_range > 0;

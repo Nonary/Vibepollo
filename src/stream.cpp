@@ -608,6 +608,9 @@ namespace stream {
       info.height = session->config.monitor.height;
       info.fps = session->stream_fps;
       info.bitrate_kbps = session->config.monitor.bitrate;
+      info.client_bitrate_kbps = session->config.monitor.client_requested_bitrate
+                                   ? session->config.monitor.client_requested_bitrate
+                                   : session->config.monitor.bitrate;
       info.video_format = session->config.monitor.videoFormat;
       info.dynamic_range = session->config.monitor.dynamicRange;
       info.audio_channels = session->config.audio.channels;
@@ -2490,7 +2493,9 @@ namespace stream {
         meta.width = session.config.monitor.width;
         meta.height = session.config.monitor.height;
         meta.target_fps = session.stream_fps;
-        meta.target_bitrate_kbps = session.config.monitor.bitrate;
+        meta.target_bitrate_kbps = session.config.monitor.client_requested_bitrate
+                                     ? session.config.monitor.client_requested_bitrate
+                                     : session.config.monitor.bitrate;
         meta.codec = session.config.monitor.videoFormat == 0 ? "H.264" : session.config.monitor.videoFormat == 1 ? "HEVC" : "AV1";
         meta.hdr = session.config.monitor.dynamicRange != 0;
         meta.audio_channels = session.config.audio.channels;
