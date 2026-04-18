@@ -6,7 +6,17 @@
         <span class="chart-title">
           <i class="fas fa-clock mr-1" />{{ t('sessions.chart_encode_latency') }}
         </span>
-        <span class="chart-subtitle">{{ t('sessions.chart_ms') }}</span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">{{ t('sessions.chart_ms') }}</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('latency')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
       </div>
       <div class="chart-wrapper">
         <Line :data="latencyChartData" :options="latencyChartOptions" />
@@ -19,7 +29,17 @@
         <span class="chart-title">
           <i class="fas fa-tachometer-alt mr-1" />{{ t('sessions.chart_throughput') }}
         </span>
-        <span class="chart-subtitle">Mbps</span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">Mbps</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('throughput')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
       </div>
       <div class="chart-wrapper">
         <Line :data="throughputChartData" :options="baseChartOptions" />
@@ -32,7 +52,17 @@
         <span class="chart-title">
           <i class="fas fa-exclamation-triangle mr-1" />{{ t('sessions.chart_quality') }}
         </span>
-        <span class="chart-subtitle">{{ t('sessions.chart_events') }}</span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">{{ t('sessions.chart_events') }}</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('quality')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
       </div>
       <div class="chart-wrapper">
         <Line :data="qualityChartData" :options="qualityChartOptions" />
@@ -45,18 +75,58 @@
         <span class="chart-title">
           <i class="fas fa-film mr-1" />{{ t('sessions.chart_framerate') }}
         </span>
-        <span class="chart-subtitle">FPS</span>
+        <span class="chart-actions">
+          <span class="chart-subtitle">FPS</span>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_expand')"
+            @click="openZoom('fps')"
+          >
+            <i class="fas fa-expand" />
+          </button>
+        </span>
       </div>
       <div class="chart-wrapper">
         <Line :data="fpsChartData" :options="fpsChartOptions" />
       </div>
     </div>
+
+    <n-modal
+      v-model:show="zoomVisible"
+      preset="card"
+      :title="zoomTitle"
+      style="width: min(95vw, 1100px)"
+      :bordered="false"
+      size="huge"
+      :segmented="{ content: true }"
+    >
+      <div class="chart-wrapper-zoom">
+        <Line
+          v-if="zoomChart === 'latency'"
+          :data="latencyChartData"
+          :options="latencyChartOptions"
+        />
+        <Line
+          v-else-if="zoomChart === 'throughput'"
+          :data="throughputChartData"
+          :options="baseChartOptions"
+        />
+        <Line
+          v-else-if="zoomChart === 'quality'"
+          :data="qualityChartData"
+          :options="qualityChartOptions"
+        />
+        <Line v-else-if="zoomChart === 'fps'" :data="fpsChartData" :options="fpsChartOptions" />
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { NModal } from 'naive-ui';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -513,6 +583,31 @@ const fpsChartData = computed(() => ({
     },
   ],
 }));
+
+// Chart zoom modal
+type ZoomKey = 'latency' | 'throughput' | 'quality' | 'fps';
+const zoomVisible = ref(false);
+const zoomChart = ref<ZoomKey>('throughput');
+
+const zoomTitle = computed(() => {
+  switch (zoomChart.value) {
+    case 'latency':
+      return t('sessions.chart_encode_latency');
+    case 'throughput':
+      return t('sessions.chart_throughput');
+    case 'quality':
+      return t('sessions.chart_quality');
+    case 'fps':
+      return t('sessions.chart_framerate');
+    default:
+      return '';
+  }
+});
+
+function openZoom(key: ZoomKey): void {
+  zoomChart.value = key;
+  zoomVisible.value = true;
+}
 </script>
 
 <style scoped>
@@ -530,5 +625,22 @@ const fpsChartData = computed(() => ({
 }
 .chart-wrapper {
   height: 160px;
+}
+.chart-wrapper-zoom {
+  height: 60vh;
+  min-height: 360px;
+}
+.chart-actions {
+  @apply flex items-center gap-2;
+}
+.chart-expand-btn {
+  @apply text-[11px] opacity-50 hover:opacity-100 transition-opacity px-1 py-0.5 rounded;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+}
+.chart-expand-btn:hover {
+  @apply bg-light/10 dark:bg-dark/20;
 }
 </style>
