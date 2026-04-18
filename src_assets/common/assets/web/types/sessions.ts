@@ -17,6 +17,8 @@ export interface SessionSummary {
   start_time_unix: number;
   end_time_unix?: number;
   duration_seconds: number;
+  host_cpu_model?: string;
+  host_gpu_model?: string;
 }
 
 export interface SessionSample {
@@ -35,6 +37,13 @@ export interface SessionSample {
   actual_fps: number;
   actual_bitrate_kbps: number;
   frame_interval_jitter_ms: number;
+  host_cpu_percent?: number;
+  host_gpu_percent?: number;
+  host_gpu_encoder_percent?: number;
+  host_ram_percent?: number;
+  host_vram_percent?: number;
+  host_cpu_temp_c?: number;
+  host_gpu_temp_c?: number;
 }
 
 export interface SessionEvent {

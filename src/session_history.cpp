@@ -23,6 +23,7 @@
 
 // local includes
 #include "session_history.h"
+#include "host_stats.h"
 #include "logging.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -100,7 +101,9 @@ namespace session_history {
         start_time_unix REAL NOT NULL,
         end_time_unix REAL,
         duration_seconds REAL,
-        verdict TEXT DEFAULT 'unknown'
+        verdict TEXT DEFAULT 'unknown',
+        host_cpu_model TEXT,
+        host_gpu_model TEXT
       );
 
       CREATE TABLE IF NOT EXISTS samples (
@@ -119,7 +122,14 @@ namespace session_history {
         encode_latency_ms REAL DEFAULT 0,
         actual_fps REAL DEFAULT 0,
         actual_bitrate_kbps REAL DEFAULT 0,
-        frame_interval_jitter_ms REAL DEFAULT 0
+        frame_interval_jitter_ms REAL DEFAULT 0,
+        host_cpu_percent REAL DEFAULT -1,
+        host_gpu_percent REAL DEFAULT -1,
+        host_gpu_encoder_percent REAL DEFAULT -1,
+        host_ram_percent REAL DEFAULT -1,
+        host_vram_percent REAL DEFAULT -1,
+        host_cpu_temp_c REAL DEFAULT -1,
+        host_gpu_temp_c REAL DEFAULT -1
       );
 
       CREATE INDEX IF NOT EXISTS idx_samples_session ON samples(session_uuid);
@@ -260,8 +270,8 @@ namespace session_history {
         "INSERT OR IGNORE INTO sessions "
         "(uuid, protocol, client_name, device_name, app_name, "
         " width, height, target_fps, target_bitrate_kbps, target_requested_bitrate_kbps, "
-        " codec, hdr, audio_channels, start_time_unix) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        " codec, hdr, audio_channels, start_time_unix, host_cpu_model, host_gpu_model) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       if (!s) return;
 
       sqlite3_bind_text(s.get(), 1, m.uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -278,6 +288,8 @@ namespace session_history {
       sqlite3_bind_int(s.get(), 12, m.hdr ? 1 : 0);
       sqlite3_bind_int(s.get(), 13, m.audio_channels);
       sqlite3_bind_double(s.get(), 14, now_unix());
+      sqlite3_bind_text(s.get(), 15, m.host_cpu_model.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(s.get(), 16, m.host_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
 
       sqlite3_step(s.get());
 
@@ -349,8 +361,10 @@ namespace session_history {
         "(session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
         " frames_sent, last_frame_index, video_dropped, audio_dropped, "
         " client_reported_losses, idr_requests, ref_invalidations, "
-        " encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        " encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
+        " host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+        " host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       if (!s) return;
 
       sqlite3_bind_text(s.get(), 1, sample.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -368,6 +382,13 @@ namespace session_history {
       sqlite3_bind_double(s.get(), 13, sample.actual_fps);
       sqlite3_bind_double(s.get(), 14, sample.actual_bitrate_kbps);
       sqlite3_bind_double(s.get(), 15, sample.frame_interval_jitter_ms);
+      sqlite3_bind_double(s.get(), 16, sample.host_cpu_percent);
+      sqlite3_bind_double(s.get(), 17, sample.host_gpu_percent);
+      sqlite3_bind_double(s.get(), 18, sample.host_gpu_encoder_percent);
+      sqlite3_bind_double(s.get(), 19, sample.host_ram_percent);
+      sqlite3_bind_double(s.get(), 20, sample.host_vram_percent);
+      sqlite3_bind_double(s.get(), 21, sample.host_cpu_temp_c);
+      sqlite3_bind_double(s.get(), 22, sample.host_gpu_temp_c);
 
       sqlite3_step(s.get());
     }
@@ -507,7 +528,7 @@ namespace session_history {
       }
     }
 
-    void sample_rtsp_sessions(double ts) {
+    void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
       auto infos = stream::get_all_session_info();
       for (const auto &info : infos) {
         // Snapshot/update aggregator under lock
@@ -538,6 +559,17 @@ namespace session_history {
         s.actual_fps = agg_fps;
         s.actual_bitrate_kbps = agg_bitrate;
         s.frame_interval_jitter_ms = agg_jitter;
+        s.host_cpu_percent = host.cpu_percent;
+        s.host_gpu_percent = host.gpu_percent;
+        s.host_gpu_encoder_percent = host.gpu_encoder_percent;
+        s.host_ram_percent = host.ram_total_bytes > 0
+                               ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
+                               : -1.0;
+        s.host_vram_percent = host.vram_total_bytes > 0
+                                ? static_cast<double>(host.vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
+                                : -1.0;
+        s.host_cpu_temp_c = host.cpu_temp_c;
+        s.host_gpu_temp_c = host.gpu_temp_c;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -546,7 +578,7 @@ namespace session_history {
       }
     }
 
-    void sample_webrtc_sessions(double ts) {
+    void sample_webrtc_sessions(double ts, const platf::host_stats_t &host) {
       auto sessions = webrtc_stream::list_sessions();
       for (const auto &ws : sessions) {
         // Use true frame index (one per encoded video frame) for FPS, and
@@ -583,6 +615,17 @@ namespace session_history {
         s.actual_fps = agg_fps;
         s.actual_bitrate_kbps = agg_bitrate;
         s.frame_interval_jitter_ms = agg_jitter;
+        s.host_cpu_percent = host.cpu_percent;
+        s.host_gpu_percent = host.gpu_percent;
+        s.host_gpu_encoder_percent = host.gpu_encoder_percent;
+        s.host_ram_percent = host.ram_total_bytes > 0
+                               ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
+                               : -1.0;
+        s.host_vram_percent = host.vram_total_bytes > 0
+                                ? static_cast<double>(host.vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
+                                : -1.0;
+        s.host_cpu_temp_c = host.cpu_temp_c;
+        s.host_gpu_temp_c = host.gpu_temp_c;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -605,8 +648,9 @@ namespace session_history {
         if (!has_active) continue;
 
         double ts = now_unix();
-        sample_rtsp_sessions(ts);
-        sample_webrtc_sessions(ts);
+        auto host = host_stats::latest();
+        sample_rtsp_sessions(ts, host);
+        sample_webrtc_sessions(ts, host);
       }
       BOOST_LOG(info) << "session_history: sampler thread stopped";
     }
@@ -644,6 +688,16 @@ namespace session_history {
       } else {
         out.target_requested_bitrate_kbps = out.target_bitrate_kbps;
       }
+      // Columns 17/18 are post-phase-21 host identification; may be missing
+      // for sessions recorded before that migration.
+      if (sqlite3_column_count(s) > 17 && sqlite3_column_type(s, 17) != SQLITE_NULL) {
+        auto col17 = sqlite3_column_text(s, 17);
+        out.host_cpu_model = col17 ? reinterpret_cast<const char *>(col17) : "";
+      }
+      if (sqlite3_column_count(s) > 18 && sqlite3_column_type(s, 18) != SQLITE_NULL) {
+        auto col18 = sqlite3_column_text(s, 18);
+        out.host_gpu_model = col18 ? reinterpret_cast<const char *>(col18) : "";
+      }
       return out;
     }
 
@@ -675,21 +729,42 @@ namespace session_history {
 
     // Idempotent migrations for columns added after initial release.
     {
-      sqlite3_stmt *check = nullptr;
-      bool has_requested = false;
-      if (sqlite3_prepare_v2(g_write_db.get(), "PRAGMA table_info(sessions)", -1, &check, nullptr) == SQLITE_OK) {
-        while (sqlite3_step(check) == SQLITE_ROW) {
-          const unsigned char *name = sqlite3_column_text(check, 1);
-          if (name && std::string(reinterpret_cast<const char *>(name)) == "target_requested_bitrate_kbps") {
-            has_requested = true;
-            break;
+      auto column_exists = [&](const char *table, const char *column) -> bool {
+        sqlite3_stmt *check = nullptr;
+        std::string sql = std::string("PRAGMA table_info(") + table + ")";
+        bool found = false;
+        if (sqlite3_prepare_v2(g_write_db.get(), sql.c_str(), -1, &check, nullptr) == SQLITE_OK) {
+          while (sqlite3_step(check) == SQLITE_ROW) {
+            const unsigned char *name = sqlite3_column_text(check, 1);
+            if (name && std::string(reinterpret_cast<const char *>(name)) == column) {
+              found = true;
+              break;
+            }
           }
         }
-      }
-      if (check) sqlite3_finalize(check);
-      if (!has_requested) {
-        exec(g_write_db.get(), "ALTER TABLE sessions ADD COLUMN target_requested_bitrate_kbps INTEGER");
-      }
+        if (check) sqlite3_finalize(check);
+        return found;
+      };
+
+      auto add_column = [&](const char *table, const char *column, const char *type_default) {
+        if (!column_exists(table, column)) {
+          std::string sql = std::string("ALTER TABLE ") + table + " ADD COLUMN " + column + " " + type_default;
+          exec(g_write_db.get(), sql.c_str());
+        }
+      };
+
+      // Phase 14
+      add_column("sessions", "target_requested_bitrate_kbps", "INTEGER");
+      // Phase 21 — host identification on session, host snapshot on samples
+      add_column("sessions", "host_cpu_model", "TEXT");
+      add_column("sessions", "host_gpu_model", "TEXT");
+      add_column("samples", "host_cpu_percent", "REAL DEFAULT -1");
+      add_column("samples", "host_gpu_percent", "REAL DEFAULT -1");
+      add_column("samples", "host_gpu_encoder_percent", "REAL DEFAULT -1");
+      add_column("samples", "host_ram_percent", "REAL DEFAULT -1");
+      add_column("samples", "host_vram_percent", "REAL DEFAULT -1");
+      add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1");
+      add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1");
     }
 
     // Open read connection (read-only)
@@ -748,19 +823,31 @@ namespace session_history {
   void begin_session(const session_metadata_t &metadata) {
     BOOST_LOG(info) << "session_history: begin_session uuid=" << metadata.uuid
                     << " protocol=" << metadata.protocol;
+    // Auto-populate static host identification from the host_stats subsystem
+    // so callers in stream.cpp / webrtc_stream.cpp don't need to know about it.
+    session_metadata_t enriched = metadata;
+    if (enriched.host_cpu_model.empty() || enriched.host_gpu_model.empty()) {
+      auto info = host_stats::info();
+      if (enriched.host_cpu_model.empty()) {
+        enriched.host_cpu_model = info.cpu_model;
+      }
+      if (enriched.host_gpu_model.empty()) {
+        enriched.host_gpu_model = info.gpu_model;
+      }
+    }
     {
       std::lock_guard lk {g_active_mutex};
-      g_active_sessions[metadata.uuid] = metadata;
+      g_active_sessions[enriched.uuid] = enriched;
     }
 
     write_cmd_t cmd;
     cmd.type = cmd_type::begin_session;
-    cmd.metadata = metadata;
+    cmd.metadata = enriched;
     enqueue(std::move(cmd));
 
     // Emit stream_started event
     session_event_t evt;
-    evt.session_uuid = metadata.uuid;
+    evt.session_uuid = enriched.uuid;
     evt.timestamp_unix = now_unix();
     evt.event_type = "stream_started";
     write_cmd_t evt_cmd;
@@ -820,7 +907,8 @@ namespace session_history {
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, "
+      "host_cpu_model, host_gpu_model "
       "FROM sessions WHERE end_time_unix IS NOT NULL "
       "ORDER BY end_time_unix DESC LIMIT ? OFFSET ?");
     if (!s) return result;
@@ -841,7 +929,8 @@ namespace session_history {
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, "
+      "host_cpu_model, host_gpu_model "
       "FROM sessions WHERE uuid = ?");
     if (!s) return std::nullopt;
     sqlite3_bind_text(s.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -855,7 +944,9 @@ namespace session_history {
       "SELECT session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
       "frames_sent, last_frame_index, video_dropped, audio_dropped, "
       "client_reported_losses, idr_requests, ref_invalidations, "
-      "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms "
+      "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
+      "host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+      "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c "
       "FROM samples WHERE session_uuid = ? ORDER BY timestamp_unix");
     if (ss) {
       sqlite3_bind_text(ss.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -877,6 +968,20 @@ namespace session_history {
         sample.actual_fps = sqlite3_column_double(ss.get(), 12);
         sample.actual_bitrate_kbps = sqlite3_column_double(ss.get(), 13);
         sample.frame_interval_jitter_ms = sqlite3_column_double(ss.get(), 14);
+        // Phase 21 columns are NULL for sessions recorded before that migration.
+        auto read_optional_real = [&](int col, double fallback) {
+          if (sqlite3_column_count(ss.get()) > col && sqlite3_column_type(ss.get(), col) != SQLITE_NULL) {
+            return sqlite3_column_double(ss.get(), col);
+          }
+          return fallback;
+        };
+        sample.host_cpu_percent = read_optional_real(15, -1);
+        sample.host_gpu_percent = read_optional_real(16, -1);
+        sample.host_gpu_encoder_percent = read_optional_real(17, -1);
+        sample.host_ram_percent = read_optional_real(18, -1);
+        sample.host_vram_percent = read_optional_real(19, -1);
+        sample.host_cpu_temp_c = read_optional_real(20, -1);
+        sample.host_gpu_temp_c = read_optional_real(21, -1);
         detail.samples.push_back(std::move(sample));
       }
     }

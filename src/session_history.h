@@ -37,6 +37,9 @@ namespace session_history {
     std::string codec;
     bool hdr = false;
     int audio_channels = 0;
+    // Static host identification captured at session start.
+    std::string host_cpu_model;
+    std::string host_gpu_model;
   };
 
   struct session_sample_t {
@@ -60,6 +63,15 @@ namespace session_history {
     double actual_fps = 0;
     double actual_bitrate_kbps = 0;
     double frame_interval_jitter_ms = 0;
+
+    // Host system snapshot. -1 indicates "not available on this platform".
+    double host_cpu_percent = -1;
+    double host_gpu_percent = -1;
+    double host_gpu_encoder_percent = -1;
+    double host_ram_percent = -1;
+    double host_vram_percent = -1;
+    double host_cpu_temp_c = -1;
+    double host_gpu_temp_c = -1;
   };
 
   struct session_event_t {
@@ -87,6 +99,8 @@ namespace session_history {
     double end_time_unix = 0;
     double duration_seconds = 0;
     std::string verdict;  // "healthy", "degraded", "failed", "unknown"
+    std::string host_cpu_model;
+    std::string host_gpu_model;
   };
 
   struct session_detail_t {

@@ -2539,6 +2539,8 @@ namespace confighttp {
       j["end_time_unix"] = s.end_time_unix;
       j["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
       j["verdict"] = s.verdict;
+      j["host_cpu_model"] = s.host_cpu_model;
+      j["host_gpu_model"] = s.host_gpu_model;
       output["sessions"].push_back(std::move(j));
     }
     send_response(response, output);
@@ -2575,6 +2577,8 @@ namespace confighttp {
     output["end_time_unix"] = s.end_time_unix;
     output["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
     output["verdict"] = s.verdict;
+    output["host_cpu_model"] = s.host_cpu_model;
+    output["host_gpu_model"] = s.host_gpu_model;
 
     output["samples"] = nlohmann::json::array();
     for (const auto &sample : detail->samples) {
@@ -2593,6 +2597,13 @@ namespace confighttp {
       js["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
       js["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
       js["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
+      js["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : std::round(sample.host_cpu_percent * 10.0) / 10.0;
+      js["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : std::round(sample.host_gpu_percent * 10.0) / 10.0;
+      js["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : std::round(sample.host_gpu_encoder_percent * 10.0) / 10.0;
+      js["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : std::round(sample.host_ram_percent * 10.0) / 10.0;
+      js["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
+      js["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
+      js["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
       output["samples"].push_back(std::move(js));
     }
 
