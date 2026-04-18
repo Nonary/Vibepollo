@@ -17,6 +17,7 @@
     "axios": "1.7.7",
     "chart.js": "^4.5.1",
     "chartjs-plugin-annotation": "^3.1.0",
+    "chartjs-plugin-zoom": "^2.2.0",
     "naive-ui": "^2.39.0",
     "pinia": "^2.1.8",
     "vue": "3.5.18",

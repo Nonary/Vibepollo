@@ -124,24 +124,65 @@
       :bordered="false"
       size="huge"
       :segmented="{ content: true }"
+      @after-leave="zoomReset"
     >
+      <template #header-extra>
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_zoom_out')"
+            @click="zoomOut"
+          >
+            <i class="fas fa-minus" />
+          </button>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_zoom_reset')"
+            @click="zoomReset"
+          >
+            <i class="fas fa-rotate-left" />
+          </button>
+          <button
+            type="button"
+            class="chart-expand-btn"
+            :title="t('sessions.chart_zoom_in')"
+            @click="zoomIn"
+          >
+            <i class="fas fa-plus" />
+          </button>
+        </div>
+      </template>
       <div class="chart-wrapper-zoom">
         <Line
           v-if="zoomChart === 'latency'"
+          ref="modalChartRef"
           :data="latencyChartData"
-          :options="latencyChartOptions"
+          :options="latencyChartOptionsZoom"
         />
         <Line
           v-else-if="zoomChart === 'throughput'"
+          ref="modalChartRef"
           :data="throughputChartData"
-          :options="baseChartOptions"
+          :options="throughputChartOptionsZoom"
         />
         <Line
           v-else-if="zoomChart === 'quality'"
+          ref="modalChartRef"
           :data="qualityChartData"
-          :options="qualityChartOptions"
+          :options="qualityChartOptionsZoom"
         />
-        <Line v-else-if="zoomChart === 'fps'" :data="fpsChartData" :options="fpsChartOptions" />
+        <Line
+          v-else-if="zoomChart === 'fps'"
+          ref="modalChartRef"
+          :data="fpsChartData"
+          :options="fpsChartOptionsZoom"
+        />
+      </div>
+      <div class="zoom-hint">
+        <i class="fas fa-circle-info" />
+        {{ t('sessions.chart_zoom_hint') }}
       </div>
     </n-modal>
   </div>
@@ -162,6 +203,7 @@ import {
   Legend,
 } from 'chart.js';
 import annotationPlugin from 'chartjs-plugin-annotation';
+import zoomPlugin from 'chartjs-plugin-zoom';
 import { Line } from 'vue-chartjs';
 import type { SessionSample, SessionEvent } from '@/types/sessions';
 
@@ -174,6 +216,7 @@ ChartJS.register(
   Tooltip,
   Legend,
   annotationPlugin,
+  zoomPlugin,
 );
 
 const { t } = useI18n();
@@ -612,6 +655,58 @@ const fpsChartData = computed(() => ({
 type ZoomKey = 'latency' | 'throughput' | 'quality' | 'fps';
 const zoomVisible = ref(false);
 const zoomChart = ref<ZoomKey>('throughput');
+const modalChartRef = ref<InstanceType<typeof Line>>();
+
+const zoomPluginConfig = {
+  pan: { enabled: true, mode: 'x' as const, modifierKey: 'shift' as const },
+  zoom: {
+    wheel: { enabled: true },
+    pinch: { enabled: true },
+    drag: { enabled: false },
+    mode: 'x' as const,
+  },
+  limits: {
+    x: { minRange: 2 },
+  },
+};
+
+function withZoom<T extends { plugins?: Record<string, unknown> }>(opts: T): T {
+  return {
+    ...opts,
+    plugins: {
+      ...(opts.plugins ?? {}),
+      zoom: zoomPluginConfig,
+    },
+  };
+}
+
+const latencyChartOptionsZoom = computed(() => withZoom(latencyChartOptions.value));
+const throughputChartOptionsZoom = computed(() => withZoom(baseChartOptions.value));
+const qualityChartOptionsZoom = computed(() => withZoom(qualityChartOptions.value));
+const fpsChartOptionsZoom = computed(() => withZoom(fpsChartOptions.value));
+
+interface ZoomableChart {
+  zoom: (f: number) => void;
+  resetZoom: () => void;
+}
+
+function modalChartInstance(): ZoomableChart | false {
+  const inst = modalChartRef.value as unknown as { chart?: ZoomableChart };
+  return inst?.chart ?? false;
+}
+
+function zoomIn(): void {
+  const c = modalChartInstance();
+  if (c) c.zoom(1.2);
+}
+function zoomOut(): void {
+  const c = modalChartInstance();
+  if (c) c.zoom(0.8);
+}
+function zoomReset(): void {
+  const c = modalChartInstance();
+  if (c) c.resetZoom();
+}
 
 const zoomTitle = computed(() => {
   switch (zoomChart.value) {
@@ -669,5 +764,8 @@ function openZoom(key: ZoomKey): void {
 }
 .chart-expand-btn:hover {
   @apply bg-light/10 dark:bg-dark/20;
+}
+.zoom-hint {
+  @apply mt-2 text-[11px] opacity-60 text-center flex items-center justify-center gap-2;
 }
 </style>
