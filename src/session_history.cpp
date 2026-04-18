@@ -537,14 +537,22 @@ namespace session_history {
     void sample_webrtc_sessions(double ts) {
       auto sessions = webrtc_stream::list_sessions();
       for (const auto &ws : sessions) {
+        // Use true frame index (one per encoded video frame) for FPS, and
+        // accumulated video+audio byte totals for bitrate. video_dropped
+        // serves as the "losses" signal for this protocol.
+        const auto frames_total = static_cast<std::uint64_t>(
+          ws.last_video_frame_index > 0 ? ws.last_video_frame_index : 0);
+        const auto bytes_total = ws.video_bytes_total + ws.audio_bytes_total;
+        const auto losses_total = static_cast<std::int64_t>(ws.video_dropped);
+
         double agg_fps = 0;
         double agg_bitrate = 0;
         double agg_jitter = 0;
         {
           std::lock_guard lk {g_aggregators_mutex};
           auto &agg = g_aggregators[ws.id];
-          detect_events(ws.id, agg, static_cast<int64_t>(ws.video_dropped), ws.video_packets);
-          agg.update(ts, ws.video_packets, 0, static_cast<int64_t>(ws.video_dropped));
+          detect_events(ws.id, agg, losses_total, frames_total);
+          agg.update(ts, frames_total, bytes_total, losses_total);
           agg_fps = agg.last_actual_fps;
           agg_bitrate = agg.last_actual_bitrate_kbps;
           agg_jitter = agg.last_jitter_ms;
@@ -553,11 +561,13 @@ namespace session_history {
         session_sample_t s;
         s.session_uuid = ws.id;
         s.timestamp_unix = ts;
-        s.bytes_sent_total = 0;  // WebRTC doesn't have cumulative bytes yet
+        s.bytes_sent_total = bytes_total;
         s.packets_sent_video = ws.video_packets;
-        s.frames_sent = ws.video_packets;
+        s.frames_sent = frames_total;
+        s.last_frame_index = ws.last_video_frame_index;
         s.video_dropped = ws.video_dropped;
         s.audio_dropped = ws.audio_dropped;
+        s.client_reported_losses = losses_total;
         s.actual_fps = agg_fps;
         s.actual_bitrate_kbps = agg_bitrate;
         s.frame_interval_jitter_ms = agg_jitter;
@@ -923,7 +933,10 @@ namespace session_history {
       as.target_bitrate_kbps = ws.bitrate_kbps.value_or(0);
       as.codec = ws.codec.value_or("");
       as.hdr = ws.hdr.value_or(false);
-      as.frames_sent = ws.video_packets;
+      as.frames_sent = static_cast<std::uint64_t>(
+        ws.last_video_frame_index > 0 ? ws.last_video_frame_index : 0);
+      as.bytes_sent = ws.video_bytes_total + ws.audio_bytes_total;
+      as.client_reported_losses = static_cast<std::int64_t>(ws.video_dropped);
 
       {
         std::lock_guard lk {g_aggregators_mutex};

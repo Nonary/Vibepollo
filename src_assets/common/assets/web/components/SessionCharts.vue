@@ -19,7 +19,7 @@
         <span class="chart-title">
           <i class="fas fa-tachometer-alt mr-1" />{{ t('sessions.chart_throughput') }}
         </span>
-        <span class="chart-subtitle">{{ protocol === 'rtsp' ? 'Mbps' : 'packets/s' }}</span>
+        <span class="chart-subtitle">Mbps</span>
       </div>
       <div class="chart-wrapper">
         <Line :data="throughputChartData" :options="baseChartOptions" />
@@ -45,7 +45,7 @@
         <span class="chart-title">
           <i class="fas fa-film mr-1" />{{ t('sessions.chart_framerate') }}
         </span>
-        <span class="chart-subtitle">{{ protocol === 'rtsp' ? 'FPS' : 'packets/s' }}</span>
+        <span class="chart-subtitle">FPS</span>
       </div>
       <div class="chart-wrapper">
         <Line :data="fpsChartData" :options="fpsChartOptions" />
@@ -100,6 +100,7 @@ interface SessionSnapshot {
   audio_packets?: number;
   video_dropped?: number;
   audio_dropped?: number;
+  last_video_frame_index?: number;
 }
 
 const props = defineProps<{
@@ -212,18 +213,19 @@ watch(
           const deltaFrames = (session.frames_sent ?? 0) - (prevSnapshot.frames_sent ?? 0);
           actual_fps = Math.max(0, deltaFrames / dt);
         } else {
-          // WebRTC: packet-based throughput, drop-based quality
-          const deltaVideoPackets =
-            (session.video_packets ?? 0) - (prevSnapshot.video_packets ?? 0);
-          throughput_mbps = Math.max(0, deltaVideoPackets / dt);
+          // WebRTC: backend now exposes cumulative bytes_sent (video+audio)
+          // and last_video_frame_index, so use real Mbps + FPS like RTSP.
+          const deltaBytes = (session.bytes_sent ?? 0) - (prevSnapshot.bytes_sent ?? 0);
+          throughput_mbps = Math.max(0, (deltaBytes * 8) / (dt * 1_000_000));
           delta_losses = Math.max(
             0,
             (session.video_dropped ?? 0) - (prevSnapshot.video_dropped ?? 0),
           );
           delta_idr = Math.max(0, (session.audio_dropped ?? 0) - (prevSnapshot.audio_dropped ?? 0));
-          const deltaAudioPackets =
-            (session.audio_packets ?? 0) - (prevSnapshot.audio_packets ?? 0);
-          actual_fps = Math.max(0, deltaAudioPackets / dt);
+          const prevFrame = prevSnapshot.last_video_frame_index ?? 0;
+          const curFrame = session.last_video_frame_index ?? 0;
+          const deltaFrames = curFrame - prevFrame;
+          actual_fps = Math.max(0, deltaFrames / dt);
         }
       }
     }
@@ -472,8 +474,7 @@ const fpsChartData = computed(() => ({
   labels: labels.value,
   datasets: [
     {
-      label:
-        props.protocol !== 'webrtc' ? t('sessions.chart_framerate') : t('sessions.audio_packets'),
+      label: t('sessions.chart_framerate'),
       data: displayData.value.map((p) => p.actual_fps),
       borderColor: 'rgb(236, 72, 153)',
       backgroundColor: 'rgba(236, 72, 153, 0.1)',

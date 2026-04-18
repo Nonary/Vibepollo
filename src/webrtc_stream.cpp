@@ -4779,6 +4779,7 @@ namespace webrtc_stream {
       session.state.video_packets++;
       session.state.last_video_time = now;
       session.state.last_video_bytes = payload->size();
+      session.state.video_bytes_total += payload->size();
       session.state.last_video_idr = packet.is_idr();
       session.state.last_video_frame_index = packet.frame_index();
       if (dropped) {
@@ -4812,6 +4813,7 @@ namespace webrtc_stream {
       session.state.audio_packets++;
       session.state.last_audio_time = std::chrono::steady_clock::now();
       session.state.last_audio_bytes = payload->size();
+      session.state.audio_bytes_total += payload->size();
       if (dropped) {
         session.state.audio_dropped++;
       }
@@ -4920,6 +4922,7 @@ namespace webrtc_stream {
         session.state.audio_packets++;
         session.state.last_audio_time = now;
         session.state.last_audio_bytes = byte_count;
+        session.state.audio_bytes_total += byte_count;
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC

@@ -498,6 +498,9 @@ namespace confighttp {
     output["video_max_frame_age_ms"] = state.video_max_frame_age_ms ? nlohmann::json(*state.video_max_frame_age_ms) : nlohmann::json(nullptr);
     output["last_audio_bytes"] = state.last_audio_bytes;
     output["last_video_bytes"] = state.last_video_bytes;
+    output["video_bytes_total"] = state.video_bytes_total;
+    output["audio_bytes_total"] = state.audio_bytes_total;
+    output["bytes_sent"] = state.video_bytes_total + state.audio_bytes_total;
     output["last_video_idr"] = state.last_video_idr;
     output["last_video_frame_index"] = state.last_video_frame_index;
 
