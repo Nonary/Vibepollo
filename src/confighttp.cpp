@@ -2558,6 +2558,24 @@ namespace confighttp {
     send_response(response, output);
   }
 
+  void deleteSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    auto uuid = request->path_match[1].str();
+    bool ok = session_history::delete_session(uuid);
+    if (!ok) {
+      not_found(response, request);
+      return;
+    }
+
+    nlohmann::json output;
+    output["status"] = "ok";
+    output["uuid"] = uuid;
+    send_response(response, output);
+  }
+
   void getActiveSessionHistory(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -4080,6 +4098,7 @@ namespace confighttp {
     register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
     register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
     register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "GET", getSessionHistoryDetail);
+    register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteSessionHistory);
     register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);

@@ -5,6 +5,27 @@
       closable
       :native-scrollbar="false"
     >
+      <template #footer>
+        <div v-if="detail" class="flex items-center justify-end gap-2 w-full">
+          <n-button size="small" tertiary @click="exportJson">
+            <template #icon><i class="fas fa-file-export" /></template>
+            {{ t('sessions.history_export_json') }}
+          </n-button>
+          <n-popconfirm
+            :positive-text="t('sessions.history_delete_confirm_yes')"
+            :negative-text="t('sessions.history_delete_confirm_no')"
+            @positive-click="confirmDelete"
+          >
+            <template #trigger>
+              <n-button size="small" type="error" :loading="deleting">
+                <template #icon><i class="fas fa-trash" /></template>
+                {{ t('sessions.history_delete') }}
+              </n-button>
+            </template>
+            {{ t('sessions.history_delete_confirm') }}
+          </n-popconfirm>
+        </div>
+      </template>
       <div v-if="loading && !detail" class="flex items-center justify-center py-10">
         <n-spin size="medium" />
       </div>
@@ -118,8 +139,18 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NDrawer, NDrawerContent, NEmpty, NSpin, NTag, NTimeline, NTimelineItem } from 'naive-ui';
-import { fetchSessionDetail } from '@/services/sessionsApi';
+import {
+  NButton,
+  NDrawer,
+  NDrawerContent,
+  NEmpty,
+  NPopconfirm,
+  NSpin,
+  NTag,
+  NTimeline,
+  NTimelineItem,
+} from 'naive-ui';
+import { fetchSessionDetail, deleteSessionHistory } from '@/services/sessionsApi';
 import type { SessionDetail } from '@/types/sessions';
 import SessionCharts from './SessionCharts.vue';
 import StatCell from './StatCell.vue';
@@ -133,6 +164,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void;
+  (e: 'deleted', uuid: string): void;
 }>();
 
 const visibleModel = ref(props.visible);
@@ -148,7 +180,44 @@ watch(visibleModel, (v) => {
 
 const detail = ref<SessionDetail>();
 const loading = ref(false);
+const deleting = ref(false);
 let lastLoadedUuid = '';
+
+function exportJson(): void {
+  if (!detail.value) return;
+  const blob = new Blob([JSON.stringify(detail.value, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (detail.value.app_name || detail.value.client_name || 'session')
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .slice(0, 40);
+  const ts = new Date((detail.value.start_time_unix ?? Date.now() / 1000) * 1000)
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .slice(0, 19);
+  a.href = url;
+  a.download = `sunshine-session-${safeName}-${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function confirmDelete(): Promise<void> {
+  if (!detail.value || !props.uuid) return;
+  deleting.value = true;
+  try {
+    await deleteSessionHistory(props.uuid);
+    emit('deleted', props.uuid);
+    visibleModel.value = false;
+    detail.value = undefined;
+    lastLoadedUuid = '';
+  } catch (e) {
+    console.error('Failed to delete session', e);
+  } finally {
+    deleting.value = false;
+  }
+}
 
 async function loadDetail(uuid: string): Promise<void> {
   if (!uuid) {

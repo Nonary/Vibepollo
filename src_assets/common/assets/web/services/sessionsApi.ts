@@ -27,3 +27,7 @@ export async function fetchActiveSessions(): Promise<ActiveSession[]> {
   const r = await http.get<ActiveSessionsResponse>('/api/history/sessions/active');
   return r.data?.sessions ?? [];
 }
+
+export async function deleteSessionHistory(uuid: string): Promise<void> {
+  await http.delete(`/api/history/sessions/${encodeURIComponent(uuid)}`);
+}

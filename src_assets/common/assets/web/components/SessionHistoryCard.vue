@@ -40,7 +40,11 @@
       </div>
     </template>
 
-    <SessionHistoryDetail v-model:visible="showDetail" :uuid="selectedUuid" />
+    <SessionHistoryDetail
+      v-model:visible="showDetail"
+      :uuid="selectedUuid"
+      @deleted="onSessionDeleted"
+    />
   </n-card>
 </template>
 
@@ -387,6 +391,11 @@ async function loadPage(page: number): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+function onSessionDeleted(uuid: string): void {
+  sessions.value = sessions.value.filter((s) => s.uuid !== uuid);
+  void loadPage(currentPage.value);
 }
 
 onMounted(async () => {

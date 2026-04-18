@@ -964,4 +964,50 @@ namespace session_history {
     return result;
   }
 
+  bool delete_session(const std::string &uuid) {
+    if (!g_write_db) {
+      return false;
+    }
+
+    std::lock_guard lk {g_queue_mutex};
+    auto *db = g_write_db.get();
+
+    constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
+    constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
+    constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
+
+    if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+      return false;
+    }
+
+    int affected = 0;
+    bool ok = true;
+    for (const char *sql : {DELETE_EVENTS, DELETE_SAMPLES, DELETE_SESSION}) {
+      sqlite3_stmt *stmt = nullptr;
+      if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        ok = false;
+        if (stmt) sqlite3_finalize(stmt);
+        break;
+      }
+      sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        ok = false;
+        break;
+      }
+      if (sql == DELETE_SESSION) {
+        affected = sqlite3_changes(db);
+      }
+      sqlite3_finalize(stmt);
+    }
+
+    if (!ok) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      return false;
+    }
+    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+    BOOST_LOG(info) << "Deleted session "sv << uuid << " from history (rows="sv << affected << ")"sv;
+    return affected > 0;
+  }
+
 }  // namespace session_history

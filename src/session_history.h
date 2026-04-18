@@ -153,5 +153,6 @@ namespace session_history {
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);
   std::optional<session_detail_t> get_session_detail(const std::string &uuid);
   std::vector<active_session_t> get_active_sessions();
+  bool delete_session(const std::string &uuid);
 
 }  // namespace session_history

@@ -830,7 +830,12 @@
     "tip_chart_encode_latency": "How long the GPU/CPU spent encoding each frame, sampled every ~2 seconds. Consistently above 16ms means the encoder is struggling to keep up.",
     "tip_chart_throughput": "Average outgoing video+audio bitrate in megabits per second, computed from byte deltas between samples. Should hover near the target bitrate.",
     "tip_chart_quality": "Connection-quality events: client-reported packet losses, IDR (full-frame) requests, and reference-frame invalidations. Spikes indicate network problems.",
-    "tip_chart_framerate": "Actual frames-per-second sent to the client, computed from frame-counter deltas. Compare to the target FPS — large gaps mean dropped frames or capture stalls."
+    "tip_chart_framerate": "Actual frames-per-second sent to the client, computed from frame-counter deltas. Compare to the target FPS — large gaps mean dropped frames or capture stalls.",
+    "history_export_json": "Export JSON",
+    "history_delete": "Delete",
+    "history_delete_confirm": "Permanently delete this session and all of its samples and events? This cannot be undone.",
+    "history_delete_confirm_yes": "Delete",
+    "history_delete_confirm_no": "Cancel"
   },
   "playnite": {
     "title": "Playnite Integration",
