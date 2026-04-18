@@ -367,7 +367,13 @@ function rowProps(row: GroupedRow) {
   if (row.isGroup) {
     return {
       style: 'cursor: pointer;',
-      onClick: () => {
+      onClick: (e: MouseEvent) => {
+        // Ignore clicks that originate from the expand chevron so the
+        // arrow only toggles the group and the row body opens the detail.
+        const target = e.target as HTMLElement | null;
+        if (target && target.closest('.n-data-table-expand-trigger')) {
+          return;
+        }
         const uuids = (row.children ?? []).map((c) => c.uuid);
         if (uuids.length === 0) return;
         selectedGroupUuids.value = uuids;
@@ -379,7 +385,11 @@ function rowProps(row: GroupedRow) {
   }
   return {
     style: 'cursor: pointer;',
-    onClick: () => {
+    onClick: (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('.n-data-table-expand-trigger')) {
+        return;
+      }
       selectedGroupUuids.value = [];
       selectedGroupLabel.value = '';
       selectedUuid.value = row.uuid;
