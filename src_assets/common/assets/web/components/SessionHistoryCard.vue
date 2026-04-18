@@ -20,7 +20,8 @@
       <n-data-table
         v-else
         :columns="columns"
-        :data="sessions"
+        :data="rows"
+        :row-key="rowKey"
         :row-props="rowProps"
         :bordered="false"
         size="small"
@@ -57,12 +58,158 @@ const { t } = useI18n();
 const auth = useAuthStore();
 
 const PAGE_SIZE = 25;
+const GROUP_GAP_SECS = 120;
 const sessions = ref<SessionSummary[]>([]);
 const loading = ref(false);
 const currentPage = ref(1);
 const totalCount = ref(0);
 const showDetail = ref(false);
 const selectedUuid = ref('');
+
+interface GroupedRow {
+  key: string;
+  isGroup: boolean;
+  groupSize: number;
+  uuid: string;
+  protocol: string;
+  client_name: string;
+  device_name: string;
+  app_name: string;
+  width: number;
+  height: number;
+  target_fps: number;
+  duration_seconds: number;
+  start_time_unix: number;
+  end_time_unix?: number;
+  verdict?: string;
+  children?: GroupedRow[];
+  raw?: SessionSummary;
+}
+
+function verdictRank(v?: string): number {
+  switch (v) {
+    case 'failed':
+      return 3;
+    case 'degraded':
+      return 2;
+    case 'healthy':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function rankToVerdict(r: number): string {
+  switch (r) {
+    case 3:
+      return 'failed';
+    case 2:
+      return 'degraded';
+    case 1:
+      return 'healthy';
+    default:
+      return '';
+  }
+}
+
+function makeLeaf(s: SessionSummary): GroupedRow {
+  const row: GroupedRow = {
+    key: s.uuid,
+    isGroup: false,
+    groupSize: 1,
+    uuid: s.uuid,
+    protocol: s.protocol,
+    client_name: s.client_name,
+    device_name: s.device_name,
+    app_name: s.app_name,
+    width: s.width,
+    height: s.height,
+    target_fps: s.target_fps,
+    duration_seconds: s.duration_seconds,
+    start_time_unix: s.start_time_unix,
+    raw: s,
+  };
+  if (s.end_time_unix !== undefined) row.end_time_unix = s.end_time_unix;
+  if (s.verdict !== undefined) row.verdict = s.verdict;
+  return row;
+}
+
+function buildGroups(items: SessionSummary[]): GroupedRow[] {
+  const out: GroupedRow[] = [];
+  let bucket: SessionSummary[] = [];
+
+  const flush = () => {
+    if (!bucket.length) return;
+    if (bucket.length === 1) {
+      const s = bucket[0];
+      if (s) out.push(makeLeaf(s));
+    } else {
+      const newest = bucket[0];
+      const oldest = bucket[bucket.length - 1];
+      if (!newest || !oldest) {
+        bucket = [];
+        return;
+      }
+      const totalDuration = bucket.reduce((acc, s) => acc + (s.duration_seconds || 0), 0);
+      const worstRank = bucket.reduce((acc, s) => Math.max(acc, verdictRank(s.verdict)), 0);
+      const worstVerdict = rankToVerdict(worstRank);
+      const groupKey = `g:${newest.client_name}|${newest.app_name}|${oldest.start_time_unix}`;
+      const children: GroupedRow[] = bucket.map(makeLeaf);
+      const row: GroupedRow = {
+        key: groupKey,
+        isGroup: true,
+        groupSize: bucket.length,
+        uuid: groupKey,
+        protocol: newest.protocol,
+        client_name: newest.client_name,
+        device_name: newest.device_name,
+        app_name: newest.app_name,
+        width: newest.width,
+        height: newest.height,
+        target_fps: newest.target_fps,
+        duration_seconds: totalDuration,
+        start_time_unix: oldest.start_time_unix,
+        children,
+      };
+      if (newest.end_time_unix !== undefined) row.end_time_unix = newest.end_time_unix;
+      if (worstVerdict) row.verdict = worstVerdict;
+      out.push(row);
+    }
+    bucket = [];
+  };
+
+  for (const s of items) {
+    if (!bucket.length) {
+      bucket.push(s);
+      continue;
+    }
+    const last = bucket[bucket.length - 1];
+    if (!last) {
+      bucket.push(s);
+      continue;
+    }
+    const lastEnd = s.end_time_unix;
+    const sameGroup =
+      s.protocol === last.protocol &&
+      s.client_name === last.client_name &&
+      s.app_name === last.app_name &&
+      typeof last.start_time_unix === 'number' &&
+      typeof lastEnd === 'number' &&
+      last.start_time_unix - lastEnd <= GROUP_GAP_SECS &&
+      last.start_time_unix - lastEnd >= 0;
+    if (sameGroup) {
+      bucket.push(s);
+    } else {
+      flush();
+      bucket.push(s);
+    }
+  }
+  flush();
+  return out;
+}
+
+const rows = computed<GroupedRow[]>(() => buildGroups(sessions.value));
+const rowKey = (row: GroupedRow) => row.key;
 
 const pageCount = computed(() => Math.max(1, Math.ceil(totalCount.value / PAGE_SIZE)));
 
@@ -124,11 +271,11 @@ function verdictIcon(verdict?: string): string {
   }
 }
 
-const columns = computed<DataTableColumns<SessionSummary>>(() => [
+const columns = computed<DataTableColumns<GroupedRow>>(() => [
   {
     title: t('sessions.history_protocol'),
     key: 'protocol',
-    width: 90,
+    width: 110,
     render(row) {
       return h(
         NTag,
@@ -144,8 +291,16 @@ const columns = computed<DataTableColumns<SessionSummary>>(() => [
     render(row) {
       const primary = row.client_name || row.device_name || row.uuid.substring(0, 8);
       const secondary = row.client_name && row.device_name ? row.device_name : '';
+      const groupBadge =
+        row.isGroup && row.groupSize > 1
+          ? h(
+              NTag,
+              { size: 'tiny', bordered: false, type: 'primary', class: 'ml-2' },
+              () => `×${row.groupSize}`,
+            )
+          : null;
       return h('div', {}, [
-        h('div', { class: 'font-medium text-sm' }, primary),
+        h('div', { class: 'font-medium text-sm flex items-center' }, [primary, groupBadge]),
         secondary ? h('div', { class: 'text-xs opacity-60' }, secondary) : null,
       ]);
     },
@@ -173,10 +328,15 @@ const columns = computed<DataTableColumns<SessionSummary>>(() => [
   {
     title: t('sessions.history_duration'),
     key: 'duration_seconds',
-    width: 120,
+    width: 140,
     render(row) {
+      const totalLabel = formatDuration(row.duration_seconds);
+      const dur =
+        row.isGroup && row.groupSize > 1
+          ? `${totalLabel} ${t('sessions.history_group_total')}`
+          : totalLabel;
       return h('div', {}, [
-        h('div', { class: 'text-sm font-mono' }, formatDuration(row.duration_seconds)),
+        h('div', { class: 'text-sm font-mono' }, dur),
         h('div', { class: 'text-xs opacity-60' }, formatStartTime(row.start_time_unix)),
       ]);
     },
@@ -195,7 +355,11 @@ const columns = computed<DataTableColumns<SessionSummary>>(() => [
   },
 ]);
 
-function rowProps(row: SessionSummary) {
+function rowProps(row: GroupedRow) {
+  if (row.isGroup) {
+    // Click toggles native expand (handled by n-data-table's expand column)
+    return { style: 'cursor: pointer;' };
+  }
   return {
     style: 'cursor: pointer;',
     onClick: () => {

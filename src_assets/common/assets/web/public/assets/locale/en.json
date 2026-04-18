@@ -785,6 +785,8 @@
     "history_events": "Events",
     "history_no_events": "No events recorded for this session.",
     "history_no_samples": "No performance samples recorded for this session.",
+    "history_group_total": "(total)",
+    "history_group_subtitle": "Resumed sessions grouped automatically",
     "history_device": "Device",
     "history_started": "Started",
     "history_ended": "Ended",
