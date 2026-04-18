@@ -2497,7 +2497,7 @@ namespace confighttp {
     auto uuid = request->path_match[1].str();
     auto detail = session_history::get_session_detail(uuid);
     if (!detail) {
-      send_unauthorized(response, request);
+      not_found(response, request);
       return;
     }
 

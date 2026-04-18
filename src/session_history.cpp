@@ -220,7 +220,10 @@ namespace session_history {
     std::thread g_sampler_thread;
     std::atomic<bool> g_running {false};
 
-    // Per-session aggregators (only accessed by sampler thread)
+    // Per-session aggregators. Mutated by the sampler thread, by the caller of
+    // end_session(), and read by the HTTP handler thread (get_active_sessions).
+    // Always access under g_aggregators_mutex.
+    std::mutex g_aggregators_mutex;
     std::unordered_map<std::string, aggregator_t> g_aggregators;
 
     // Track active session UUIDs for the /active endpoint
@@ -493,9 +496,19 @@ namespace session_history {
     void sample_rtsp_sessions(double ts) {
       auto infos = stream::get_all_session_info();
       for (const auto &info : infos) {
-        auto &agg = g_aggregators[info.uuid];
-        detect_events(info.uuid, agg, info.client_reported_losses, info.frames_sent);
-        agg.update(ts, info.frames_sent, info.bytes_sent, info.client_reported_losses);
+        // Snapshot/update aggregator under lock
+        double agg_fps = 0;
+        double agg_bitrate = 0;
+        double agg_jitter = 0;
+        {
+          std::lock_guard lk {g_aggregators_mutex};
+          auto &agg = g_aggregators[info.uuid];
+          detect_events(info.uuid, agg, info.client_reported_losses, info.frames_sent);
+          agg.update(ts, info.frames_sent, info.bytes_sent, info.client_reported_losses);
+          agg_fps = agg.last_actual_fps;
+          agg_bitrate = agg.last_actual_bitrate_kbps;
+          agg_jitter = agg.last_jitter_ms;
+        }
 
         session_sample_t s;
         s.session_uuid = info.uuid;
@@ -508,9 +521,9 @@ namespace session_history {
         s.idr_requests = info.idr_requests;
         s.ref_invalidations = info.invalidate_ref_count;
         s.encode_latency_ms = info.encode_latency_ms;
-        s.actual_fps = agg.last_actual_fps;
-        s.actual_bitrate_kbps = agg.last_actual_bitrate_kbps;
-        s.frame_interval_jitter_ms = agg.last_jitter_ms;
+        s.actual_fps = agg_fps;
+        s.actual_bitrate_kbps = agg_bitrate;
+        s.frame_interval_jitter_ms = agg_jitter;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -522,9 +535,18 @@ namespace session_history {
     void sample_webrtc_sessions(double ts) {
       auto sessions = webrtc_stream::list_sessions();
       for (const auto &ws : sessions) {
-        auto &agg = g_aggregators[ws.id];
-        detect_events(ws.id, agg, static_cast<int64_t>(ws.video_dropped), ws.video_packets);
-        agg.update(ts, ws.video_packets, 0, static_cast<int64_t>(ws.video_dropped));
+        double agg_fps = 0;
+        double agg_bitrate = 0;
+        double agg_jitter = 0;
+        {
+          std::lock_guard lk {g_aggregators_mutex};
+          auto &agg = g_aggregators[ws.id];
+          detect_events(ws.id, agg, static_cast<int64_t>(ws.video_dropped), ws.video_packets);
+          agg.update(ts, ws.video_packets, 0, static_cast<int64_t>(ws.video_dropped));
+          agg_fps = agg.last_actual_fps;
+          agg_bitrate = agg.last_actual_bitrate_kbps;
+          agg_jitter = agg.last_jitter_ms;
+        }
 
         session_sample_t s;
         s.session_uuid = ws.id;
@@ -534,9 +556,9 @@ namespace session_history {
         s.frames_sent = ws.video_packets;
         s.video_dropped = ws.video_dropped;
         s.audio_dropped = ws.audio_dropped;
-        s.actual_fps = agg.last_actual_fps;
-        s.actual_bitrate_kbps = agg.last_actual_bitrate_kbps;
-        s.frame_interval_jitter_ms = agg.last_jitter_ms;
+        s.actual_fps = agg_fps;
+        s.actual_bitrate_kbps = agg_bitrate;
+        s.frame_interval_jitter_ms = agg_jitter;
 
         write_cmd_t cmd;
         cmd.type = cmd_type::insert_sample;
@@ -657,7 +679,10 @@ namespace session_history {
       g_writer_thread.join();
     }
 
-    g_aggregators.clear();
+    {
+      std::lock_guard lk {g_aggregators_mutex};
+      g_aggregators.clear();
+    }
     {
       std::lock_guard lk {g_active_mutex};
       g_active_sessions.clear();
@@ -699,7 +724,10 @@ namespace session_history {
       std::lock_guard lk {g_active_mutex};
       g_active_sessions.erase(uuid);
     }
-    g_aggregators.erase(uuid);
+    {
+      std::lock_guard lk {g_aggregators_mutex};
+      g_aggregators.erase(uuid);
+    }
 
     // Emit stream_ended event
     session_event_t evt;
@@ -861,11 +889,14 @@ namespace session_history {
       as.idr_requests = info.idr_requests;
 
       // Fill aggregated metrics if available
-      auto agg_it = g_aggregators.find(info.uuid);
-      if (agg_it != g_aggregators.end()) {
-        as.actual_fps = agg_it->second.last_actual_fps;
-        as.actual_bitrate_kbps = agg_it->second.last_actual_bitrate_kbps;
-        as.frame_interval_jitter_ms = agg_it->second.last_jitter_ms;
+      {
+        std::lock_guard lk {g_aggregators_mutex};
+        auto agg_it = g_aggregators.find(info.uuid);
+        if (agg_it != g_aggregators.end()) {
+          as.actual_fps = agg_it->second.last_actual_fps;
+          as.actual_bitrate_kbps = agg_it->second.last_actual_bitrate_kbps;
+          as.frame_interval_jitter_ms = agg_it->second.last_jitter_ms;
+        }
       }
 
       result.push_back(std::move(as));
@@ -892,11 +923,14 @@ namespace session_history {
       as.hdr = ws.hdr.value_or(false);
       as.frames_sent = ws.video_packets;
 
-      auto agg_it = g_aggregators.find(ws.id);
-      if (agg_it != g_aggregators.end()) {
-        as.actual_fps = agg_it->second.last_actual_fps;
-        as.actual_bitrate_kbps = agg_it->second.last_actual_bitrate_kbps;
-        as.frame_interval_jitter_ms = agg_it->second.last_jitter_ms;
+      {
+        std::lock_guard lk {g_aggregators_mutex};
+        auto agg_it = g_aggregators.find(ws.id);
+        if (agg_it != g_aggregators.end()) {
+          as.actual_fps = agg_it->second.last_actual_fps;
+          as.actual_bitrate_kbps = agg_it->second.last_actual_bitrate_kbps;
+          as.frame_interval_jitter_ms = agg_it->second.last_jitter_ms;
+        }
       }
 
       result.push_back(std::move(as));
