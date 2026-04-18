@@ -1,103 +1,111 @@
 <template>
   <n-drawer v-model:show="visibleModel" :width="680" placement="right" :native-scrollbar="false">
     <n-drawer-content :title="t('sessions.history_detail_title')" closable>
-      <n-spin :show="loading">
-        <template v-if="detail">
-          <!-- Session metadata header -->
-          <div class="space-y-4 mb-6">
-            <div class="flex flex-wrap items-center gap-2">
-              <n-tag
-                size="small"
-                :bordered="false"
-                :type="detail.protocol === 'rtsp' ? 'info' : 'warning'"
-              >
-                {{ detail.protocol.toUpperCase() }}
-              </n-tag>
-              <n-tag v-if="detail.hdr" size="small" :bordered="false" type="warning">HDR</n-tag>
-              <n-tag
-                v-if="detail.verdict"
-                size="small"
-                :bordered="false"
-                :type="verdictType(detail.verdict)"
-              >
-                {{ verdictLabel(detail.verdict) }}
-              </n-tag>
-            </div>
+      <div v-if="loading && !detail" class="flex items-center justify-center py-10">
+        <n-spin size="medium" />
+      </div>
 
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.history_client') }}</div>
-                <div class="stat-value">{{ detail.client_name || detail.device_name || '—' }}</div>
-              </div>
-              <div v-if="detail.device_name && detail.client_name" class="stat-cell">
-                <div class="stat-label">{{ t('sessions.resolution') }}</div>
-                <div class="stat-value">{{ detail.device_name }}</div>
-              </div>
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.history_resolution') }}</div>
-                <div class="stat-value font-mono">
-                  {{ detail.width }}×{{ detail.height }}@{{ detail.target_fps }}
-                </div>
-              </div>
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.codec') }}</div>
-                <div class="stat-value">{{ detail.codec }}</div>
-              </div>
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-                <div class="stat-value">{{ formatBitrate(detail.target_bitrate_kbps) }}</div>
-              </div>
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.history_duration') }}</div>
-                <div class="stat-value font-mono">
-                  {{ formatDuration(detail.duration_seconds) }}
-                </div>
-              </div>
-              <div v-if="detail.app_name" class="stat-cell">
-                <div class="stat-label">{{ t('sessions.history_app') }}</div>
-                <div class="stat-value">{{ detail.app_name }}</div>
-              </div>
-              <div class="stat-cell">
-                <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
-                <div class="stat-value">{{ detail.audio_channels }}ch</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Performance Charts -->
-          <SessionCharts
-            v-if="detail.samples.length > 0"
-            mode="history"
-            :history-data="detail.samples"
-            :events="detail.events"
-            :protocol="detail.protocol === 'webrtc' ? 'webrtc' : 'rtsp'"
-          />
-
-          <!-- Event Timeline -->
-          <div class="mt-6">
-            <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
-              <i class="fas fa-stream" /> {{ t('sessions.history_events') }}
-            </h3>
-            <n-empty
-              v-if="!detail.events || detail.events.length === 0"
-              :description="t('sessions.history_no_events')"
+      <div v-else-if="detail">
+        <!-- Session metadata header -->
+        <div class="space-y-4 mb-6">
+          <div class="flex flex-wrap items-center gap-2">
+            <n-tag
               size="small"
-            />
-            <n-timeline v-else>
-              <n-timeline-item
-                v-for="(event, idx) in detail.events"
-                :key="idx"
-                :type="eventTimelineType(event.event_type)"
-                :title="event.event_type"
-                v-bind="event.payload ? { content: event.payload } : {}"
-                :time="formatEventTime(event.timestamp_unix)"
-              />
-            </n-timeline>
+              :bordered="false"
+              :type="detail.protocol === 'rtsp' ? 'info' : 'warning'"
+            >
+              {{ (detail.protocol || '').toUpperCase() || '—' }}
+            </n-tag>
+            <n-tag v-if="detail.hdr" size="small" :bordered="false" type="warning">HDR</n-tag>
+            <n-tag
+              v-if="detail.verdict"
+              size="small"
+              :bordered="false"
+              :type="verdictType(detail.verdict)"
+            >
+              {{ verdictLabel(detail.verdict) }}
+            </n-tag>
           </div>
-        </template>
 
-        <n-empty v-else-if="!loading" :description="t('sessions.history_empty')" />
-      </n-spin>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.history_client') }}</div>
+              <div class="stat-value">{{ detail.client_name || detail.device_name || '—' }}</div>
+            </div>
+            <div v-if="detail.device_name && detail.client_name" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.history_device') }}</div>
+              <div class="stat-value">{{ detail.device_name }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.history_resolution') }}</div>
+              <div class="stat-value font-mono">
+                {{ detail.width }}×{{ detail.height }}@{{ detail.target_fps }}
+              </div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.codec') }}</div>
+              <div class="stat-value">{{ detail.codec || '—' }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.bitrate') }}</div>
+              <div class="stat-value">{{ formatBitrate(detail.target_bitrate_kbps) }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.history_duration') }}</div>
+              <div class="stat-value font-mono">
+                {{ formatDuration(detail.duration_seconds) }}
+              </div>
+            </div>
+            <div v-if="detail.app_name" class="stat-cell">
+              <div class="stat-label">{{ t('sessions.history_app') }}</div>
+              <div class="stat-value">{{ detail.app_name }}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
+              <div class="stat-value">{{ detail.audio_channels }}ch</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Performance Charts -->
+        <SessionCharts
+          v-if="(detail.samples?.length ?? 0) > 0"
+          mode="history"
+          :history-data="detail.samples"
+          :events="detail.events"
+          :protocol="detail.protocol === 'webrtc' ? 'webrtc' : 'rtsp'"
+        />
+        <n-empty
+          v-else
+          :description="t('sessions.history_no_samples')"
+          size="small"
+          class="my-4"
+        />
+
+        <!-- Event Timeline -->
+        <div class="mt-6">
+          <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
+            <i class="fas fa-stream" /> {{ t('sessions.history_events') }}
+          </h3>
+          <n-empty
+            v-if="!detail.events || detail.events.length === 0"
+            :description="t('sessions.history_no_events')"
+            size="small"
+          />
+          <n-timeline v-else>
+            <n-timeline-item
+              v-for="(event, idx) in detail.events"
+              :key="idx"
+              :type="eventTimelineType(event.event_type)"
+              :title="event.event_type"
+              v-bind="event.payload ? { content: event.payload } : {}"
+              :time="formatEventTime(event.timestamp_unix)"
+            />
+          </n-timeline>
+        </div>
+      </div>
+
+      <n-empty v-else :description="t('sessions.history_empty')" />
     </n-drawer-content>
   </n-drawer>
 </template>
@@ -134,21 +142,43 @@ watch(visibleModel, (v) => {
 
 const detail = ref<SessionDetail>();
 const loading = ref(false);
+let lastLoadedUuid = '';
 
-watch(
-  () => props.uuid,
-  async (uuid) => {
-    if (!uuid) return;
-    loading.value = true;
+async function loadDetail(uuid: string): Promise<void> {
+  if (!uuid) {
     detail.value = undefined;
-    try {
-      detail.value = await fetchSessionDetail(uuid);
-    } catch {
-      // Silently ignore
-    } finally {
-      loading.value = false;
+    lastLoadedUuid = '';
+    return;
+  }
+  loading.value = true;
+  try {
+    const result = await fetchSessionDetail(uuid);
+    // Defensive: ensure samples/events exist so the template never crashes.
+    if (result) {
+      result.samples = result.samples ?? [];
+      result.events = result.events ?? [];
+    }
+    detail.value = result;
+    lastLoadedUuid = uuid;
+  } catch {
+    detail.value = undefined;
+    lastLoadedUuid = '';
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Re-fetch whenever uuid changes OR drawer is (re)opened for the same uuid.
+watch(
+  [() => props.uuid, () => props.visible],
+  ([uuid, visible], [, prevVisible]) => {
+    if (!visible) return;
+    const opening = !prevVisible && visible;
+    if (uuid && (uuid !== lastLoadedUuid || opening)) {
+      void loadDetail(uuid);
     }
   },
+  { immediate: true },
 );
 
 function verdictType(verdict?: string): 'success' | 'warning' | 'error' | 'default' {
