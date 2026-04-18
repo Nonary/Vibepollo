@@ -32,42 +32,48 @@
           </div>
 
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.history_client') }}</div>
-              <div class="stat-value">{{ detail.client_name || detail.device_name || '—' }}</div>
-            </div>
-            <div v-if="detail.device_name && detail.client_name" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.history_device') }}</div>
-              <div class="stat-value">{{ detail.device_name }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.history_resolution') }}</div>
-              <div class="stat-value font-mono">
-                {{ detail.width }}×{{ detail.height }}@{{ detail.target_fps }}
-              </div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.codec') }}</div>
-              <div class="stat-value">{{ detail.codec || '—' }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-              <div class="stat-value">{{ formatBitrate(detail.target_bitrate_kbps) }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.history_duration') }}</div>
-              <div class="stat-value font-mono">
-                {{ formatDuration(detail.duration_seconds) }}
-              </div>
-            </div>
-            <div v-if="detail.app_name" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.history_app') }}</div>
-              <div class="stat-value">{{ detail.app_name }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
-              <div class="stat-value">{{ detail.audio_channels }}ch</div>
-            </div>
+            <StatCell
+              :label="t('sessions.history_client')"
+              :value="detail.client_name || detail.device_name || '—'"
+              :tip="t('sessions.tip_history_client')"
+            />
+            <StatCell
+              v-if="detail.device_name && detail.client_name"
+              :label="t('sessions.history_device')"
+              :value="detail.device_name"
+              :tip="t('sessions.tip_history_device')"
+            />
+            <StatCell
+              :label="t('sessions.history_resolution')"
+              :value="`${detail.width}×${detail.height}@${detail.target_fps}`"
+              :tip="t('sessions.tip_resolution')"
+            />
+            <StatCell
+              :label="t('sessions.codec')"
+              :value="detail.codec || '—'"
+              :tip="t('sessions.tip_codec')"
+            />
+            <StatCell
+              :label="t('sessions.bitrate')"
+              :value="formatBitrate(detail.target_bitrate_kbps)"
+              :tip="t('sessions.tip_history_bitrate')"
+            />
+            <StatCell
+              :label="t('sessions.history_duration')"
+              :value="formatDuration(detail.duration_seconds)"
+              :tip="t('sessions.tip_history_duration')"
+            />
+            <StatCell
+              v-if="detail.app_name"
+              :label="t('sessions.history_app')"
+              :value="detail.app_name"
+              :tip="t('sessions.tip_history_app')"
+            />
+            <StatCell
+              :label="t('sessions.audio_channels')"
+              :value="`${detail.audio_channels}ch`"
+              :tip="t('sessions.tip_audio_channels')"
+            />
           </div>
         </div>
 
@@ -79,12 +85,7 @@
           :events="detail.events"
           :protocol="detail.protocol === 'webrtc' ? 'webrtc' : 'rtsp'"
         />
-        <n-empty
-          v-else
-          :description="t('sessions.history_no_samples')"
-          size="small"
-          class="my-4"
-        />
+        <n-empty v-else :description="t('sessions.history_no_samples')" size="small" class="my-4" />
 
         <!-- Event Timeline -->
         <div class="mt-6">
@@ -121,6 +122,7 @@ import { NDrawer, NDrawerContent, NEmpty, NSpin, NTag, NTimeline, NTimelineItem 
 import { fetchSessionDetail } from '@/services/sessionsApi';
 import type { SessionDetail } from '@/types/sessions';
 import SessionCharts from './SessionCharts.vue';
+import StatCell from './StatCell.vue';
 
 const { t } = useI18n();
 

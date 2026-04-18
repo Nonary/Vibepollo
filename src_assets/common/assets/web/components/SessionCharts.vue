@@ -5,6 +5,12 @@
       <div class="chart-header">
         <span class="chart-title">
           <i class="fas fa-clock mr-1" />{{ t('sessions.chart_encode_latency') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_encode_latency') }}
+          </n-tooltip>
         </span>
         <span class="chart-actions">
           <span class="chart-subtitle">{{ t('sessions.chart_ms') }}</span>
@@ -28,6 +34,12 @@
       <div class="chart-header">
         <span class="chart-title">
           <i class="fas fa-tachometer-alt mr-1" />{{ t('sessions.chart_throughput') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_throughput') }}
+          </n-tooltip>
         </span>
         <span class="chart-actions">
           <span class="chart-subtitle">Mbps</span>
@@ -51,6 +63,12 @@
       <div class="chart-header">
         <span class="chart-title">
           <i class="fas fa-exclamation-triangle mr-1" />{{ t('sessions.chart_quality') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_quality') }}
+          </n-tooltip>
         </span>
         <span class="chart-actions">
           <span class="chart-subtitle">{{ t('sessions.chart_events') }}</span>
@@ -74,6 +92,12 @@
       <div class="chart-header">
         <span class="chart-title">
           <i class="fas fa-film mr-1" />{{ t('sessions.chart_framerate') }}
+          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
+            <template #trigger>
+              <i class="fas fa-circle-info chart-title-tip" />
+            </template>
+            {{ t('sessions.tip_chart_framerate') }}
+          </n-tooltip>
         </span>
         <span class="chart-actions">
           <span class="chart-subtitle">FPS</span>
@@ -126,7 +150,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NModal } from 'naive-ui';
+import { NModal, NTooltip } from 'naive-ui';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -619,6 +643,9 @@ function openZoom(key: ZoomKey): void {
 }
 .chart-title {
   @apply text-xs font-semibold opacity-80;
+}
+.chart-title-tip {
+  @apply ml-1 text-[10px] opacity-50 cursor-help;
 }
 .chart-subtitle {
   @apply text-[10px] uppercase tracking-wider opacity-50 font-semibold;

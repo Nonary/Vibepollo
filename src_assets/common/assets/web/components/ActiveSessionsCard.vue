@@ -63,88 +63,98 @@
           </div>
 
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-            <div v-if="session.width && session.height" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.resolution') }}</div>
-              <div class="stat-value">{{ session.width }}×{{ session.height }}</div>
-            </div>
-            <div v-if="session.fps" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.fps') }}</div>
-              <div class="stat-value">{{ session.fps }}</div>
-            </div>
-            <div v-if="session.bitrate_kbps" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-              <div class="stat-value">
-                {{ formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps) }}
-              </div>
-              <div
-                v-if="
-                  session.client_bitrate_kbps &&
-                  session.client_bitrate_kbps !== session.bitrate_kbps
-                "
-                class="stat-subvalue"
-              >
-                {{ t('sessions.bitrate_encode_label') }} {{ formatBitrate(session.bitrate_kbps) }}
-              </div>
-            </div>
-            <div v-if="session.codec" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.codec') }}</div>
-              <div class="stat-value">{{ session.codec }}</div>
-            </div>
-            <div v-if="session.audio_channels" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_channels') }}</div>
-              <div class="stat-value">{{ session.audio_channels }}ch</div>
-            </div>
+            <StatCell
+              v-if="session.width && session.height"
+              :label="t('sessions.resolution')"
+              :value="`${session.width}×${session.height}`"
+              :tip="t('sessions.tip_resolution')"
+            />
+            <StatCell
+              v-if="session.fps"
+              :label="t('sessions.fps')"
+              :value="session.fps"
+              :tip="t('sessions.tip_fps')"
+            />
+            <StatCell
+              v-if="session.bitrate_kbps"
+              :label="t('sessions.bitrate')"
+              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :sub-value="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                  : undefined
+              "
+              :tip="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? t('sessions.tip_bitrate_dual')
+                  : t('sessions.tip_bitrate')
+              "
+            />
+            <StatCell
+              v-if="session.codec"
+              :label="t('sessions.codec')"
+              :value="session.codec"
+              :tip="t('sessions.tip_codec')"
+            />
+            <StatCell
+              v-if="session.audio_channels"
+              :label="t('sessions.audio_channels')"
+              :value="`${session.audio_channels}ch`"
+              :tip="t('sessions.tip_audio_channels')"
+            />
 
             <!-- Real-time performance stats -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.encode_latency') }}</div>
-              <div
-                :class="[
-                  'stat-value',
+            <StatCell :label="t('sessions.encode_latency')" :tip="t('sessions.tip_encode_latency')">
+              <span
+                :class="
                   session.encode_latency_ms > 16
                     ? 'text-danger'
                     : session.encode_latency_ms > 8
                       ? 'text-warning'
-                      : '',
-                ]"
+                      : ''
+                "
               >
                 {{ session.encode_latency_ms.toFixed(1) }}ms
-              </div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.frames_sent') }}</div>
-              <div class="stat-value">{{ formatNumber(session.frames_sent) }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.packets_sent') }}</div>
-              <div class="stat-value">{{ formatNumber(session.packets_sent) }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.data_sent') }}</div>
-              <div class="stat-value">{{ formatBytes(session.bytes_sent) }}</div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.client_losses') }}</div>
-              <div :class="['stat-value', session.client_reported_losses > 0 ? 'text-danger' : '']">
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.frames_sent')"
+              :value="formatNumber(session.frames_sent)"
+              :tip="t('sessions.tip_frames_sent')"
+            />
+            <StatCell
+              :label="t('sessions.packets_sent')"
+              :value="formatNumber(session.packets_sent)"
+              :tip="t('sessions.tip_packets_sent')"
+            />
+            <StatCell
+              :label="t('sessions.data_sent')"
+              :value="formatBytes(session.bytes_sent)"
+              :tip="t('sessions.tip_data_sent')"
+            />
+            <StatCell :label="t('sessions.client_losses')" :tip="t('sessions.tip_client_losses')">
+              <span :class="session.client_reported_losses > 0 ? 'text-danger' : ''">
                 {{ formatNumber(session.client_reported_losses) }}
-              </div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.idr_requests') }}</div>
-              <div :class="['stat-value', session.idr_requests > 10 ? 'text-warning' : '']">
+              </span>
+            </StatCell>
+            <StatCell :label="t('sessions.idr_requests')" :tip="t('sessions.tip_idr_requests')">
+              <span :class="session.idr_requests > 10 ? 'text-warning' : ''">
                 {{ session.idr_requests }}
-              </div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.frame_invalidations') }}</div>
-              <div :class="['stat-value', session.invalidate_ref_count > 0 ? 'text-warning' : '']">
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.frame_invalidations')"
+              :tip="t('sessions.tip_frame_invalidations')"
+            >
+              <span :class="session.invalidate_ref_count > 0 ? 'text-warning' : ''">
                 {{ session.invalidate_ref_count }}
-              </div>
-            </div>
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.uptime') }}</div>
-              <div class="stat-value">{{ formatUptime(session.uptime_seconds) }}</div>
-            </div>
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.uptime')"
+              :value="formatUptime(session.uptime_seconds)"
+              :tip="t('sessions.tip_uptime')"
+            />
           </div>
         </div>
       </div>
@@ -221,110 +231,98 @@
 
           <!-- Stats grid -->
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-            <!-- Resolution -->
-            <div v-if="session.width && session.height" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.resolution') }}</div>
-              <div class="stat-value">{{ session.width }}×{{ session.height }}</div>
-            </div>
-
-            <!-- FPS -->
-            <div v-if="session.fps != null" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.fps') }}</div>
-              <div class="stat-value">{{ session.fps }}</div>
-            </div>
-
-            <!-- Bitrate -->
-            <div v-if="session.bitrate_kbps != null" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-              <div class="stat-value">
-                {{ formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps) }}
-              </div>
-              <div
-                v-if="
-                  session.client_bitrate_kbps &&
-                  session.client_bitrate_kbps !== session.bitrate_kbps
-                "
-                class="stat-subvalue"
-              >
-                {{ t('sessions.bitrate_encode_label') }} {{ formatBitrate(session.bitrate_kbps) }}
-              </div>
-            </div>
-
-            <!-- Codec -->
-            <div v-if="session.codec" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.codec') }}</div>
-              <div class="stat-value">{{ session.codec }}</div>
-            </div>
-
-            <!-- Video Packets -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.video_packets') }}</div>
-              <div class="stat-value">{{ formatNumber(session.video_packets) }}</div>
-            </div>
-
-            <!-- Audio Packets -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_packets') }}</div>
-              <div class="stat-value">{{ formatNumber(session.audio_packets) }}</div>
-            </div>
-
-            <!-- Video Dropped -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.video_dropped') }}</div>
-              <div :class="['stat-value', session.video_dropped > 0 ? 'text-danger' : '']">
+            <StatCell
+              v-if="session.width && session.height"
+              :label="t('sessions.resolution')"
+              :value="`${session.width}×${session.height}`"
+              :tip="t('sessions.tip_resolution')"
+            />
+            <StatCell
+              v-if="session.fps != null"
+              :label="t('sessions.fps')"
+              :value="session.fps"
+              :tip="t('sessions.tip_fps')"
+            />
+            <StatCell
+              v-if="session.bitrate_kbps != null"
+              :label="t('sessions.bitrate')"
+              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :sub-value="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                  : undefined
+              "
+              :tip="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? t('sessions.tip_bitrate_dual')
+                  : t('sessions.tip_bitrate')
+              "
+            />
+            <StatCell
+              v-if="session.codec"
+              :label="t('sessions.codec')"
+              :value="session.codec"
+              :tip="t('sessions.tip_codec')"
+            />
+            <StatCell
+              :label="t('sessions.video_packets')"
+              :value="formatNumber(session.video_packets)"
+              :tip="t('sessions.tip_video_packets')"
+            />
+            <StatCell
+              :label="t('sessions.audio_packets')"
+              :value="formatNumber(session.audio_packets)"
+              :tip="t('sessions.tip_audio_packets')"
+            />
+            <StatCell :label="t('sessions.video_dropped')" :tip="t('sessions.tip_video_dropped')">
+              <span :class="session.video_dropped > 0 ? 'text-danger' : ''">
                 {{ formatNumber(session.video_dropped) }}
-              </div>
-            </div>
-
-            <!-- Audio Dropped -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_dropped') }}</div>
-              <div :class="['stat-value', session.audio_dropped > 0 ? 'text-danger' : '']">
+              </span>
+            </StatCell>
+            <StatCell :label="t('sessions.audio_dropped')" :tip="t('sessions.tip_audio_dropped')">
+              <span :class="session.audio_dropped > 0 ? 'text-danger' : ''">
                 {{ formatNumber(session.audio_dropped) }}
-              </div>
-            </div>
-
-            <!-- Video Queue -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.video_queue') }}</div>
-              <div class="stat-value">{{ session.video_queue_frames }}</div>
-            </div>
-
-            <!-- Audio Queue -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_queue') }}</div>
-              <div class="stat-value">{{ session.audio_queue_frames }}</div>
-            </div>
-
-            <!-- In-flight Frames -->
-            <div class="stat-cell">
-              <div class="stat-label">{{ t('sessions.inflight') }}</div>
-              <div class="stat-value">{{ session.video_inflight_frames }}</div>
-            </div>
-
-            <!-- Audio Codec -->
-            <div v-if="session.audio_codec" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.audio_codec') }}</div>
-              <div class="stat-value">{{ session.audio_codec }}</div>
-            </div>
-
-            <!-- Profile -->
-            <div v-if="session.profile" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.profile') }}</div>
-              <div class="stat-value">{{ session.profile }}</div>
-            </div>
-
-            <!-- Last Video Age -->
-            <div v-if="session.last_video_age_ms != null" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.last_video') }}</div>
-              <div class="stat-value">{{ session.last_video_age_ms }}ms</div>
-            </div>
-
-            <!-- Last Audio Age -->
-            <div v-if="session.last_audio_age_ms != null" class="stat-cell">
-              <div class="stat-label">{{ t('sessions.last_audio') }}</div>
-              <div class="stat-value">{{ session.last_audio_age_ms }}ms</div>
-            </div>
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.video_queue')"
+              :value="session.video_queue_frames"
+              :tip="t('sessions.tip_video_queue')"
+            />
+            <StatCell
+              :label="t('sessions.audio_queue')"
+              :value="session.audio_queue_frames"
+              :tip="t('sessions.tip_audio_queue')"
+            />
+            <StatCell
+              :label="t('sessions.inflight')"
+              :value="session.video_inflight_frames"
+              :tip="t('sessions.tip_inflight')"
+            />
+            <StatCell
+              v-if="session.audio_codec"
+              :label="t('sessions.audio_codec')"
+              :value="session.audio_codec"
+              :tip="t('sessions.tip_audio_codec')"
+            />
+            <StatCell
+              v-if="session.profile"
+              :label="t('sessions.profile')"
+              :value="session.profile"
+              :tip="t('sessions.tip_profile')"
+            />
+            <StatCell
+              v-if="session.last_video_age_ms != null"
+              :label="t('sessions.last_video')"
+              :value="`${session.last_video_age_ms}ms`"
+              :tip="t('sessions.tip_last_video')"
+            />
+            <StatCell
+              v-if="session.last_audio_age_ms != null"
+              :label="t('sessions.last_audio')"
+              :value="`${session.last_audio_age_ms}ms`"
+              :tip="t('sessions.tip_last_audio')"
+            />
           </div>
         </div>
       </div>
@@ -358,6 +356,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useSessionsStore } from '@/stores/sessions';
 import { storeToRefs } from 'pinia';
 import SessionCharts from './SessionCharts.vue';
+import StatCell from './StatCell.vue';
 
 const { t } = useI18n();
 const auth = useAuthStore();
