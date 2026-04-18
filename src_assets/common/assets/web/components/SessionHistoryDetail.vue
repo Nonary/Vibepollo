@@ -1,7 +1,11 @@
 <template>
   <n-drawer v-model:show="visibleModel" :width="680" placement="right">
     <n-drawer-content
-      :title="t('sessions.history_detail_title')"
+      :title="
+        isGroupMode
+          ? t('sessions.history_group_title', { count: props.groupUuids?.length ?? 0 })
+          : t('sessions.history_detail_title')
+      "
       closable
       :native-scrollbar="false"
     >
@@ -12,6 +16,7 @@
             {{ t('sessions.history_export_json') }}
           </n-button>
           <n-popconfirm
+            v-if="!isGroupMode"
             :positive-text="t('sessions.history_delete_confirm_yes')"
             :negative-text="t('sessions.history_delete_confirm_no')"
             @positive-click="confirmDelete"
@@ -31,6 +36,16 @@
       </div>
 
       <div v-else-if="detail">
+        <n-alert v-if="isGroupMode" type="info" :show-icon="false" class="mb-4">
+          <div class="text-xs">
+            {{
+              t('sessions.history_group_summary', {
+                count: props.groupUuids?.length ?? 0,
+                duration: formatDuration(detail.duration_seconds ?? 0),
+              })
+            }}
+          </div>
+        </n-alert>
         <!-- Session metadata header -->
         <div class="space-y-4 mb-6">
           <div class="flex flex-wrap items-center gap-2">
@@ -141,6 +156,7 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import {
+  NAlert,
   NButton,
   NDrawer,
   NDrawerContent,
@@ -161,6 +177,8 @@ const { t } = useI18n();
 const props = defineProps<{
   uuid: string;
   visible: boolean;
+  groupUuids?: string[];
+  groupLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -258,7 +276,6 @@ async function loadDetail(uuid: string): Promise<void> {
   loading.value = true;
   try {
     const result = await fetchSessionDetail(uuid);
-    // Defensive: ensure samples/events exist so the template never crashes.
     if (result) {
       result.samples = result.samples ?? [];
       result.events = result.events ?? [];
@@ -273,13 +290,78 @@ async function loadDetail(uuid: string): Promise<void> {
   }
 }
 
-// Re-fetch whenever uuid changes OR drawer is (re)opened for the same uuid.
+async function loadGroup(uuids: string[]): Promise<void> {
+  if (!uuids.length) {
+    detail.value = undefined;
+    lastLoadedUuid = '';
+    return;
+  }
+  loading.value = true;
+  try {
+    const results = await Promise.all(
+      uuids.map((u) => fetchSessionDetail(u).catch(() => undefined)),
+    );
+    const valid = results.filter((r): r is SessionDetail => !!r);
+    if (valid.length === 0) {
+      detail.value = undefined;
+      lastLoadedUuid = '';
+      return;
+    }
+    valid.sort((a, b) => a.start_time_unix - b.start_time_unix);
+    const first = valid[0];
+    const last = valid[valid.length - 1];
+
+    const allSamples = valid
+      .flatMap((s) => (s.samples ?? []).map((sm) => ({ ...sm, session_uuid: s.uuid })))
+      .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
+    const allEvents = valid
+      .flatMap((s) => (s.events ?? []).map((ev) => ({ ...ev, session_uuid: s.uuid })))
+      .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
+
+    const totalDuration = valid.reduce((acc, s) => acc + (s.duration_seconds ?? 0), 0);
+    const verdictRank = (v?: string) =>
+      v === 'failed' ? 3 : v === 'degraded' ? 2 : v === 'healthy' ? 1 : 0;
+    const worstVerdict = valid.reduce<string>(
+      (acc, s) => (verdictRank(s.verdict) > verdictRank(acc) ? (s.verdict ?? '') : acc),
+      '',
+    );
+    const maxRequested = Math.max(...valid.map((s) => s.target_requested_bitrate_kbps ?? 0));
+    const maxEncode = Math.max(...valid.map((s) => s.target_bitrate_kbps ?? 0));
+
+    detail.value = {
+      ...first,
+      uuid: `group:${valid.map((v) => v.uuid).join(',')}`,
+      duration_seconds: totalDuration,
+      end_time_unix: last.end_time_unix,
+      verdict: worstVerdict || undefined,
+      target_requested_bitrate_kbps: maxRequested,
+      target_bitrate_kbps: maxEncode,
+      samples: allSamples,
+      events: allEvents,
+    };
+    lastLoadedUuid = uuids.join(',');
+  } catch {
+    detail.value = undefined;
+    lastLoadedUuid = '';
+  } finally {
+    loading.value = false;
+  }
+}
+
+const isGroupMode = computed(() => (props.groupUuids?.length ?? 0) > 1);
+
+// Re-fetch whenever uuid/groupUuids change OR drawer is (re)opened.
 watch(
-  [() => props.uuid, () => props.visible],
-  ([uuid, visible], [, prevVisible]) => {
+  [() => props.uuid, () => props.groupUuids, () => props.visible],
+  ([uuid, groupUuids, visible], [, , prevVisible]) => {
     if (!visible) return;
     const opening = !prevVisible && visible;
-    if (uuid && (uuid !== lastLoadedUuid || opening)) {
+    const groupKey = (groupUuids ?? []).join(',');
+    if (groupUuids && groupUuids.length > 0) {
+      if (groupKey !== lastLoadedUuid || opening) {
+        void loadGroup(groupUuids);
+      }
+    } else if (uuid && (uuid !== lastLoadedUuid || opening)) {
       void loadDetail(uuid);
     }
   },

@@ -43,6 +43,8 @@
     <SessionHistoryDetail
       v-model:visible="showDetail"
       :uuid="selectedUuid"
+      :group-uuids="selectedGroupUuids"
+      :group-label="selectedGroupLabel"
       @deleted="onSessionDeleted"
     />
   </n-card>
@@ -69,6 +71,8 @@ const currentPage = ref(1);
 const totalCount = ref(0);
 const showDetail = ref(false);
 const selectedUuid = ref('');
+const selectedGroupUuids = ref<string[]>([]);
+const selectedGroupLabel = ref('');
 
 interface GroupedRow {
   key: string;
@@ -361,12 +365,23 @@ const columns = computed<DataTableColumns<GroupedRow>>(() => [
 
 function rowProps(row: GroupedRow) {
   if (row.isGroup) {
-    // Click toggles native expand (handled by n-data-table's expand column)
-    return { style: 'cursor: pointer;' };
+    return {
+      style: 'cursor: pointer;',
+      onClick: () => {
+        const uuids = (row.children ?? []).map((c) => c.uuid);
+        if (uuids.length === 0) return;
+        selectedGroupUuids.value = uuids;
+        selectedGroupLabel.value = `${row.app_name || row.client_name} · ${uuids.length}`;
+        selectedUuid.value = '';
+        showDetail.value = true;
+      },
+    };
   }
   return {
     style: 'cursor: pointer;',
     onClick: () => {
+      selectedGroupUuids.value = [];
+      selectedGroupLabel.value = '';
       selectedUuid.value = row.uuid;
       showDetail.value = true;
     },
