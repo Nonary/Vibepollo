@@ -73,7 +73,18 @@
             </div>
             <div v-if="session.bitrate_kbps" class="stat-cell">
               <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-              <div class="stat-value">{{ formatBitrate(session.bitrate_kbps) }}</div>
+              <div class="stat-value">
+                {{ formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps) }}
+              </div>
+              <div
+                v-if="
+                  session.client_bitrate_kbps &&
+                  session.client_bitrate_kbps !== session.bitrate_kbps
+                "
+                class="stat-subvalue"
+              >
+                {{ t('sessions.bitrate_encode_label') }} {{ formatBitrate(session.bitrate_kbps) }}
+              </div>
             </div>
             <div v-if="session.codec" class="stat-cell">
               <div class="stat-label">{{ t('sessions.codec') }}</div>
@@ -225,7 +236,18 @@
             <!-- Bitrate -->
             <div v-if="session.bitrate_kbps != null" class="stat-cell">
               <div class="stat-label">{{ t('sessions.bitrate') }}</div>
-              <div class="stat-value">{{ formatBitrate(session.bitrate_kbps) }}</div>
+              <div class="stat-value">
+                {{ formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps) }}
+              </div>
+              <div
+                v-if="
+                  session.client_bitrate_kbps &&
+                  session.client_bitrate_kbps !== session.bitrate_kbps
+                "
+                class="stat-subvalue"
+              >
+                {{ t('sessions.bitrate_encode_label') }} {{ formatBitrate(session.bitrate_kbps) }}
+              </div>
             </div>
 
             <!-- Codec -->
@@ -392,5 +414,8 @@ onMounted(async () => {
 }
 .stat-value {
   @apply text-sm font-mono font-semibold;
+}
+.stat-subvalue {
+  @apply text-[10px] font-mono opacity-60 mt-0.5;
 }
 </style>

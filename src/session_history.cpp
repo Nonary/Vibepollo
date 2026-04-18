@@ -900,7 +900,7 @@ namespace session_history {
       as.width = info.width;
       as.height = info.height;
       as.target_fps = info.fps;
-      as.target_bitrate_kbps = info.bitrate_kbps;
+      as.target_bitrate_kbps = info.client_bitrate_kbps ? info.client_bitrate_kbps : info.bitrate_kbps;
       as.codec = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
       as.hdr = info.dynamic_range > 0;
       as.uptime_seconds = info.uptime_seconds;

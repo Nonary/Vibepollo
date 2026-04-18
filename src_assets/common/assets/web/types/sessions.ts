@@ -10,6 +10,7 @@ export interface SessionSummary {
   height: number;
   target_fps: number;
   target_bitrate_kbps: number;
+  client_bitrate_kbps?: number;
   audio_channels: number;
   hdr: boolean;
   start_time_unix: number;
@@ -58,6 +59,7 @@ export interface ActiveSession {
   height: number;
   target_fps: number;
   target_bitrate_kbps: number;
+  client_bitrate_kbps?: number;
   hdr: boolean;
   uptime_seconds: number;
   actual_fps: number;

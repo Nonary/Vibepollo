@@ -738,6 +738,7 @@
     "resolution": "Resolution",
     "fps": "FPS",
     "bitrate": "Bitrate",
+    "bitrate_encode_label": "encode:",
     "codec": "Codec",
     "video_packets": "Video Pkts",
     "audio_packets": "Audio Pkts",

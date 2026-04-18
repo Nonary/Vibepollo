@@ -18,6 +18,7 @@ export interface RTSPSession {
   height: number;
   fps: number;
   bitrate_kbps: number;
+  client_bitrate_kbps?: number;
   video_format: number;
   codec: string;
   hdr: boolean;
@@ -53,6 +54,7 @@ export interface WebRTCSession {
   height?: number;
   fps?: number;
   bitrate_kbps?: number;
+  client_bitrate_kbps?: number;
   codec?: string;
   hdr?: boolean;
   audio_channels?: number;
