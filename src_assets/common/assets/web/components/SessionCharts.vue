@@ -68,6 +68,7 @@ import {
   Legend,
 } from 'chart.js';
 import { Line } from 'vue-chartjs';
+import type { SessionSample } from '@/types/sessions';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
@@ -95,6 +96,8 @@ const props = defineProps<{
   session?: SessionSnapshot;
   sessionId?: string;
   protocol?: 'rtsp' | 'webrtc';
+  mode?: 'live' | 'history';
+  historyData?: SessionSample[];
 }>();
 
 const MAX_POINTS = 150; // 5 minutes at 2s polling
@@ -126,9 +129,37 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function convertHistoryData(samples: SessionSample[]): DataPoint[] {
+  if (!samples.length) return [];
+  return samples.map((sample, i) => {
+    const prev = i > 0 ? samples[i - 1] : undefined;
+    return {
+      time: formatTime(new Date(sample.timestamp_unix * 1000)),
+      encode_latency_ms: sample.encode_latency_ms,
+      throughput_mbps: Math.round((sample.actual_bitrate_kbps / 1000) * 100) / 100,
+      delta_losses: prev
+        ? Math.max(0, sample.client_reported_losses - prev.client_reported_losses)
+        : 0,
+      delta_idr: prev ? Math.max(0, sample.idr_requests - prev.idr_requests) : 0,
+      delta_invalidations: prev
+        ? Math.max(0, sample.ref_invalidations - prev.ref_invalidations)
+        : 0,
+      actual_fps: Math.round(sample.actual_fps * 10) / 10,
+    };
+  });
+}
+
+const displayData = computed<DataPoint[]>(() => {
+  if (props.mode === 'history' && props.historyData) {
+    return convertHistoryData(props.historyData);
+  }
+  return history.value;
+});
+
 watch(
   () => props.session,
   (session) => {
+    if (props.mode === 'history') return;
     if (!session) return;
 
     // Reset history when the session identity changes to prevent cross-session delta contamination
@@ -211,7 +242,7 @@ onBeforeUnmount(() => {
   trackedSessionId = undefined;
 });
 
-const labels = computed(() => history.value.map((p) => p.time));
+const labels = computed(() => displayData.value.map((p) => p.time));
 
 // Shared styling
 const gridColor = 'rgba(128, 128, 128, 0.15)';
@@ -317,7 +348,7 @@ const latencyChartData = computed(() => ({
   datasets: [
     {
       label: t('sessions.chart_encode_latency'),
-      data: history.value.map((p) => p.encode_latency_ms),
+      data: displayData.value.map((p) => p.encode_latency_ms),
       borderColor: 'rgb(59, 130, 246)',
       backgroundColor: 'rgba(59, 130, 246, 0.1)',
       fill: true,
@@ -330,7 +361,7 @@ const throughputChartData = computed(() => ({
   datasets: [
     {
       label: t('sessions.chart_throughput'),
-      data: history.value.map((p) => p.throughput_mbps),
+      data: displayData.value.map((p) => p.throughput_mbps),
       borderColor: 'rgb(16, 185, 129)',
       backgroundColor: 'rgba(16, 185, 129, 0.1)',
       fill: true,
@@ -345,14 +376,14 @@ const qualityChartData = computed(() => {
     datasets: [
       {
         label: isRtsp ? t('sessions.client_losses') : t('sessions.video_dropped'),
-        data: history.value.map((p) => p.delta_losses),
+        data: displayData.value.map((p) => p.delta_losses),
         borderColor: 'rgb(239, 68, 68)',
         backgroundColor: 'rgba(239, 68, 68, 0.15)',
         fill: true,
       },
       {
         label: isRtsp ? t('sessions.idr_requests') : t('sessions.audio_dropped'),
-        data: history.value.map((p) => p.delta_idr),
+        data: displayData.value.map((p) => p.delta_idr),
         borderColor: 'rgb(245, 158, 11)',
         backgroundColor: 'rgba(245, 158, 11, 0.15)',
         fill: true,
@@ -361,7 +392,7 @@ const qualityChartData = computed(() => {
         ? [
             {
               label: t('sessions.frame_invalidations'),
-              data: history.value.map((p) => p.delta_invalidations),
+              data: displayData.value.map((p) => p.delta_invalidations),
               borderColor: 'rgb(168, 85, 247)',
               backgroundColor: 'rgba(168, 85, 247, 0.15)',
               fill: true,
@@ -378,7 +409,7 @@ const fpsChartData = computed(() => ({
     {
       label:
         props.protocol !== 'webrtc' ? t('sessions.chart_framerate') : t('sessions.audio_packets'),
-      data: history.value.map((p) => p.actual_fps),
+      data: displayData.value.map((p) => p.actual_fps),
       borderColor: 'rgb(236, 72, 153)',
       backgroundColor: 'rgba(236, 72, 153, 0.1)',
       fill: true,
