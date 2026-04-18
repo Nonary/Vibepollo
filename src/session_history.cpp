@@ -278,6 +278,16 @@ namespace session_history {
       sqlite3_bind_double(s.get(), 13, now_unix());
 
       sqlite3_step(s.get());
+
+      // Defensive: if no row was inserted then a session with this uuid
+      // already exists. With the per-stream history_uuid contract this
+      // should never happen; warn loudly so any future regression is
+      // visible in the logs and we don't silently merge sessions.
+      if (sqlite3_changes(db) == 0) {
+        BOOST_LOG(warning)
+          << "session_history: begin_session ignored - uuid already present in DB: "
+          << m.uuid << " (sessions will be merged into the existing row)";
+      }
     }
 
     void process_end(sqlite3 *db, const std::string &uuid) {

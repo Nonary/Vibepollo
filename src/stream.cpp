@@ -46,6 +46,7 @@ extern "C" {
 #include "thread_safe.h"
 #include "update.h"
 #include "utility.h"
+#include "uuid.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -471,6 +472,10 @@ namespace stream {
     std::uint32_t launch_session_id;
     std::string device_name;
     std::string device_uuid;
+    // Per-stream identifier used by the session_history subsystem. Distinct
+    // from device_uuid so that consecutive streams from the same Moonlight
+    // client produce separate history rows.
+    std::string history_uuid;
     crypto::PERM permission;
 
     std::list<crypto::command_entry_t> do_cmds;
@@ -597,7 +602,7 @@ namespace stream {
       if (!session) continue;
 
       session_info_t info;
-      info.uuid = session->device_uuid;
+      info.uuid = session->history_uuid;
       info.device_name = session->device_name;
       info.width = session->config.monitor.width;
       info.height = session->config.monitor.height;
@@ -2440,7 +2445,7 @@ namespace stream {
       BOOST_LOG(info) << "Session ended"sv;
 
       // Record session end in persistent history (fires exactly once, after join)
-      session_history::end_session(session.device_uuid);
+      session_history::end_session(session.history_uuid);
     }
 
     int start(session_t &session, const std::string &addr_string) {
@@ -2477,7 +2482,7 @@ namespace stream {
       // Record session in persistent history
       {
         session_history::session_metadata_t meta;
-        meta.uuid = session.device_uuid;
+        meta.uuid = session.history_uuid;
         meta.protocol = "rtsp";
         meta.client_name = session.device_name;
         meta.device_name = session.device_name;
@@ -2599,6 +2604,9 @@ namespace stream {
       session->launch_session_id = launch_session.id;
       session->device_name = launch_session.device_name;
       session->device_uuid = !launch_session.client_uuid.empty() ? launch_session.client_uuid : launch_session.unique_id;
+      // Fresh history identifier per stream so each start/stop cycle produces
+      // a distinct row in the session_history database.
+      session->history_uuid = uuid_util::uuid_t::generate().string();
       session->permission = launch_session.perm;
 
       session->do_cmds = std::move(launch_session.client_do_cmds);
