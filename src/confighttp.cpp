@@ -54,6 +54,7 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "rtsp.h"
+#include "session_history.h"
 #include "stream.h"
 #include "webrtc_stream.h"
 
@@ -2442,6 +2443,149 @@ namespace confighttp {
     send_response(response, output);
   }
 
+  // ── Session History endpoints ────────────────────────────────────
+
+  void listSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    int limit = 25;
+    int offset = 0;
+    auto query = request->parse_query_string();
+    auto it_limit = query.find("limit");
+    if (it_limit != query.end()) {
+      try { limit = std::stoi(it_limit->second); } catch (...) {}
+    }
+    auto it_offset = query.find("offset");
+    if (it_offset != query.end()) {
+      try { offset = std::stoi(it_offset->second); } catch (...) {}
+    }
+    limit = std::clamp(limit, 1, 100);
+    offset = std::max(offset, 0);
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &s : session_history::list_sessions(limit, offset)) {
+      nlohmann::json j;
+      j["uuid"] = s.uuid;
+      j["protocol"] = s.protocol;
+      j["client_name"] = s.client_name;
+      j["device_name"] = s.device_name;
+      j["app_name"] = s.app_name;
+      j["width"] = s.width;
+      j["height"] = s.height;
+      j["target_fps"] = s.target_fps;
+      j["target_bitrate_kbps"] = s.target_bitrate_kbps;
+      j["codec"] = s.codec;
+      j["hdr"] = s.hdr;
+      j["audio_channels"] = s.audio_channels;
+      j["start_time_unix"] = s.start_time_unix;
+      j["end_time_unix"] = s.end_time_unix;
+      j["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
+      j["verdict"] = s.verdict;
+      output["sessions"].push_back(std::move(j));
+    }
+    send_response(response, output);
+  }
+
+  void getSessionHistoryDetail(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    auto uuid = request->path_match[1].str();
+    auto detail = session_history::get_session_detail(uuid);
+    if (!detail) {
+      send_unauthorized(response, request);
+      return;
+    }
+
+    nlohmann::json output;
+    auto &s = detail->summary;
+    output["uuid"] = s.uuid;
+    output["protocol"] = s.protocol;
+    output["client_name"] = s.client_name;
+    output["device_name"] = s.device_name;
+    output["app_name"] = s.app_name;
+    output["width"] = s.width;
+    output["height"] = s.height;
+    output["target_fps"] = s.target_fps;
+    output["target_bitrate_kbps"] = s.target_bitrate_kbps;
+    output["codec"] = s.codec;
+    output["hdr"] = s.hdr;
+    output["audio_channels"] = s.audio_channels;
+    output["start_time_unix"] = s.start_time_unix;
+    output["end_time_unix"] = s.end_time_unix;
+    output["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
+    output["verdict"] = s.verdict;
+
+    output["samples"] = nlohmann::json::array();
+    for (const auto &sample : detail->samples) {
+      nlohmann::json js;
+      js["timestamp_unix"] = sample.timestamp_unix;
+      js["bytes_sent_total"] = sample.bytes_sent_total;
+      js["packets_sent_video"] = sample.packets_sent_video;
+      js["frames_sent"] = sample.frames_sent;
+      js["last_frame_index"] = sample.last_frame_index;
+      js["video_dropped"] = sample.video_dropped;
+      js["audio_dropped"] = sample.audio_dropped;
+      js["client_reported_losses"] = sample.client_reported_losses;
+      js["idr_requests"] = sample.idr_requests;
+      js["ref_invalidations"] = sample.ref_invalidations;
+      js["encode_latency_ms"] = std::round(sample.encode_latency_ms * 10.0) / 10.0;
+      js["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
+      js["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
+      js["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
+      output["samples"].push_back(std::move(js));
+    }
+
+    output["events"] = nlohmann::json::array();
+    for (const auto &evt : detail->events) {
+      nlohmann::json je;
+      je["timestamp_unix"] = evt.timestamp_unix;
+      je["event_type"] = evt.event_type;
+      je["payload"] = evt.payload;
+      output["events"].push_back(std::move(je));
+    }
+
+    send_response(response, output);
+  }
+
+  void getActiveSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &as : session_history::get_active_sessions()) {
+      nlohmann::json j;
+      j["uuid"] = as.uuid;
+      j["protocol"] = as.protocol;
+      j["client_name"] = as.client_name;
+      j["device_name"] = as.device_name;
+      j["app_name"] = as.app_name;
+      j["width"] = as.width;
+      j["height"] = as.height;
+      j["target_fps"] = as.target_fps;
+      j["target_bitrate_kbps"] = as.target_bitrate_kbps;
+      j["codec"] = as.codec;
+      j["hdr"] = as.hdr;
+      j["uptime_seconds"] = std::round(as.uptime_seconds * 10.0) / 10.0;
+      j["actual_fps"] = std::round(as.actual_fps * 10.0) / 10.0;
+      j["actual_bitrate_kbps"] = std::round(as.actual_bitrate_kbps * 10.0) / 10.0;
+      j["encode_latency_ms"] = std::round(as.encode_latency_ms * 10.0) / 10.0;
+      j["frame_interval_jitter_ms"] = std::round(as.frame_interval_jitter_ms * 100.0) / 100.0;
+      j["frames_sent"] = as.frames_sent;
+      j["bytes_sent"] = as.bytes_sent;
+      j["client_reported_losses"] = as.client_reported_losses;
+      j["idr_requests"] = as.idr_requests;
+      output["sessions"].push_back(std::move(j));
+    }
+    send_response(response, output);
+  }
+
   void createWebRTCSession(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3927,6 +4071,9 @@ namespace confighttp {
     register_api_route("^/api/session/status$", "GET", getSessionStatus);
     register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
+    register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
+    register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
+    register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "GET", getSessionHistoryDetail);
     register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);

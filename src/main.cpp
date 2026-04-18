@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <codecvt>
 #include <csignal>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 
@@ -24,6 +25,7 @@
 #include "upnp.h"
 #include "uuid.h"
 #include "video.h"
+#include "session_history.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -541,6 +543,13 @@ int main(int argc, char *argv[]) {
 
   startup_probe();
 
+  // Initialize session history database alongside the state file
+  {
+    std::filesystem::path state_path {config::nvhttp.file_state};
+    auto history_db = state_path.parent_path() / "session_history.db";
+    session_history::init(history_db.string());
+  }
+
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
 
@@ -608,6 +617,8 @@ int main(int argc, char *argv[]) {
     nvprefs_instance.unload();
   }
 #endif
+
+  session_history::shutdown();
 
   return lifetime::desired_exit_code;
 }

@@ -55,6 +55,7 @@
 #include "logging.h"
 #include "process.h"
 #include "rtsp.h"
+#include "session_history.h"
 #include "stream.h"
 #include "utility.h"
 #include "uuid.h"
@@ -4522,6 +4523,25 @@ namespace webrtc_stream {
       first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
     }
     BOOST_LOG(debug) << "WebRTC: create_session exit id=" << snapshot.id;
+
+    // Record session in persistent history
+    {
+      session_history::session_metadata_t meta;
+      meta.uuid = snapshot.id;
+      meta.protocol = "webrtc";
+      meta.client_name = snapshot.client_name.value_or("");
+      meta.device_name = "";
+      meta.app_name = proc::proc.get_last_run_app_name();
+      meta.width = snapshot.width.value_or(0);
+      meta.height = snapshot.height.value_or(0);
+      meta.target_fps = snapshot.fps.value_or(0);
+      meta.target_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.codec = snapshot.codec.value_or("");
+      meta.hdr = snapshot.hdr.value_or(false);
+      meta.audio_channels = snapshot.audio_channels.value_or(0);
+      session_history::begin_session(meta);
+    }
+
     if (first_session && !rtsp_active) {
 #ifdef _WIN32
       WebRtcStreamStartParams start_params;
@@ -4651,6 +4671,10 @@ namespace webrtc_stream {
     }
 #endif
     BOOST_LOG(debug) << "WebRTC: close_session exit id=" << id;
+
+    // Record session end in persistent history
+    session_history::end_session(std::string {id});
+
     return true;
   }
 

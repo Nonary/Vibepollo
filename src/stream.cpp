@@ -39,6 +39,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "session_history.h"
 #include "stream.h"
 #include "sync.h"
 #include "system_tray.h"
@@ -2437,6 +2438,9 @@ namespace stream {
       }
 
       BOOST_LOG(info) << "Session ended"sv;
+
+      // Record session end in persistent history (fires exactly once, after join)
+      session_history::end_session(session.device_uuid);
     }
 
     int start(session_t &session, const std::string &addr_string) {
@@ -2469,6 +2473,24 @@ namespace stream {
       session.videoThread = std::thread {videoThread, &session};
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
+
+      // Record session in persistent history
+      {
+        session_history::session_metadata_t meta;
+        meta.uuid = session.device_uuid;
+        meta.protocol = "rtsp";
+        meta.client_name = session.device_name;
+        meta.device_name = session.device_name;
+        meta.app_name = proc::proc.get_last_run_app_name();
+        meta.width = session.config.monitor.width;
+        meta.height = session.config.monitor.height;
+        meta.target_fps = session.stream_fps;
+        meta.target_bitrate_kbps = session.config.monitor.bitrate;
+        meta.codec = session.config.monitor.videoFormat == 0 ? "H.264" : session.config.monitor.videoFormat == 1 ? "HEVC" : "AV1";
+        meta.hdr = session.config.monitor.dynamicRange != 0;
+        meta.audio_channels = session.config.audio.channels;
+        session_history::begin_session(meta);
+      }
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
