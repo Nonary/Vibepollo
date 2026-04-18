@@ -273,10 +273,10 @@ const eventAnnotations = computed(() => {
   const data = displayData.value;
   if (!data.length) return {};
 
-  const annotations: Record<string, unknown> = {};
   const samples = props.historyData ?? [];
-  for (const [i, evt] of props.events.entries()) {
-    // Find the closest label index
+
+  // Resolve every event to its closest sample index first.
+  const resolved = props.events.map((evt, i) => {
     let closest = 0;
     let minDiff = Infinity;
     for (let j = 0; j < data.length; j++) {
@@ -286,6 +286,37 @@ const eventAnnotations = computed(() => {
         closest = j;
       }
     }
+    return { i, evt, closest };
+  });
+
+  // Sort by index so we can detect clusters of nearby labels and avoid
+  // overlapping text by alternating label position (and dropping label
+  // text entirely when more than 2 events fall within CLUSTER_WINDOW
+  // points of each other).
+  const ordered = [...resolved].sort((a, b) => a.closest - b.closest);
+  const CLUSTER_WINDOW = 3;
+  const labelDecisions = new Map<number, { show: boolean; position: 'start' | 'end' }>();
+  let lastIdx = -Infinity;
+  let runLength = 0;
+  let alternate: 'start' | 'end' = 'start';
+  for (const item of ordered) {
+    if (item.closest - lastIdx <= CLUSTER_WINDOW) {
+      runLength++;
+      alternate = alternate === 'start' ? 'end' : 'start';
+    } else {
+      runLength = 1;
+      alternate = 'start';
+    }
+    // In a tight cluster of 3+ events, hide labels beyond the second to
+    // avoid an unreadable pile-up; the colored line + tooltip still tell
+    // the story.
+    labelDecisions.set(item.i, { show: runLength <= 2, position: alternate });
+    lastIdx = item.closest;
+  }
+
+  const annotations: Record<string, unknown> = {};
+  for (const { i, evt, closest } of resolved) {
+    const decision = labelDecisions.get(i) ?? { show: true, position: 'start' as const };
     annotations[`event-${i}`] = {
       type: 'line',
       xMin: closest,
@@ -294,9 +325,9 @@ const eventAnnotations = computed(() => {
       borderWidth: 2,
       borderDash: [4, 4],
       label: {
-        display: true,
+        display: decision.show,
         content: evt.event_type.replace(/_/g, ' '),
-        position: 'start',
+        position: decision.position,
         backgroundColor: eventColors[evt.event_type] ?? 'rgba(128, 128, 128, 0.8)',
         color: '#fff',
         font: { size: 9 },
