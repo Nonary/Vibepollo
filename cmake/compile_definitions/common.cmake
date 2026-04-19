@@ -147,9 +147,13 @@ include_directories(BEFORE "${CMAKE_SOURCE_DIR}")
 
 set(SUNSHINE_FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS})
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # The prepared FFmpeg headers must win over MSYS2's system FFmpeg headers
+    # (which can be older and lack macros like AV_HAS_ATTRIBUTE used by the
+    # bundled internal headers). Use -isystem with -iquote-style precedence so
+    # they are searched before /ucrt64/include.
     set(SUNSHINE_FFMPEG_INCLUDE_DIRS "")
     foreach(ffmpeg_dir IN LISTS FFMPEG_INCLUDE_DIRS)
-        add_compile_options("-idirafter" "${ffmpeg_dir}")
+        add_compile_options("-isystem" "${ffmpeg_dir}")
     endforeach()
 endif()
 
