@@ -81,6 +81,8 @@ namespace webrtc_stream {
 
     std::size_t last_audio_bytes = 0;
     std::size_t last_video_bytes = 0;
+    std::uint64_t video_bytes_total = 0;
+    std::uint64_t audio_bytes_total = 0;
     bool last_video_idr = false;
     std::int64_t last_video_frame_index = 0;
   };

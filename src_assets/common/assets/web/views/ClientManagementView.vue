@@ -4,6 +4,15 @@
       <i class="fas fa-users-cog" /> {{ $t('clients.title') }}
     </h1>
 
+    <!-- Active Streaming Sessions -->
+    <ActiveSessionsCard />
+
+    <!-- Host system stats -->
+    <HostStatsCard />
+
+    <!-- Session History -->
+    <SessionHistoryCard />
+
     <!-- Pair New Client -->
     <n-card class="mb-8" :segmented="{ content: true, footer: true }">
       <template #header>
@@ -171,11 +180,7 @@
 
               <div class="space-y-3">
                 <div class="grid gap-4 md:grid-cols-3">
-                  <div
-                    v-for="group in permissionGroups"
-                    :key="group.id"
-                    class="space-y-2"
-                  >
+                  <div v-for="group in permissionGroups" :key="group.id" class="space-y-2">
                     <div class="text-xs font-medium uppercase tracking-wide opacity-70">
                       {{ $t(group.labelKey) }}
                     </div>
@@ -246,7 +251,11 @@
                           class="font-mono"
                           :placeholder="$t('_common.cmd')"
                         />
-                        <n-checkbox v-if="isWindows" v-model:checked="command.elevated" size="small">
+                        <n-checkbox
+                          v-if="isWindows"
+                          v-model:checked="command.elevated"
+                          size="small"
+                        >
                           {{ $t('_common.elevated') }}
                         </n-checkbox>
                         <n-button
@@ -269,7 +278,11 @@
                     <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
                       Disconnect Commands
                     </div>
-                    <n-button size="tiny" tertiary @click="addClientCommand(client.editUndoCommands)">
+                    <n-button
+                      size="tiny"
+                      tertiary
+                      @click="addClientCommand(client.editUndoCommands)"
+                    >
                       <i class="fas fa-plus" /> {{ $t('_common.add') }}
                     </n-button>
                   </div>
@@ -288,7 +301,11 @@
                           class="font-mono"
                           :placeholder="$t('_common.cmd')"
                         />
-                        <n-checkbox v-if="isWindows" v-model:checked="command.elevated" size="small">
+                        <n-checkbox
+                          v-if="isWindows"
+                          v-model:checked="command.elevated"
+                          size="small"
+                        >
                           {{ $t('_common.elevated') }}
                         </n-checkbox>
                         <n-button
@@ -337,10 +354,10 @@
                   <div class="space-y-2">
                     <n-radio-group
                       :value="client.editDisplaySelection"
+                      class="grid gap-3 sm:grid-cols-2"
                       @update:value="
                         (v) => applyClientDisplaySelection(client, v as ClientDisplaySelection)
                       "
-                      class="grid gap-3 sm:grid-cols-2"
                     >
                       <n-radio value="virtual" class="app-radio-card cursor-pointer">
                         <span class="app-radio-card-title">{{
@@ -478,17 +495,18 @@
                           globalVirtualDisplayLayout ??
                           'exclusive'
                         "
+                        class="space-y-4"
                         @update:value="
                           (v) =>
                             (client.editVirtualDisplayLayout =
                               v === globalVirtualDisplayLayout ? null : (v as any))
                         "
-                        class="space-y-4"
                       >
                         <div
                           v-for="option in virtualDisplayLayoutOptions"
                           :key="option.value"
                           class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                          tabindex="0"
                           @click="
                             client.editVirtualDisplayLayout =
                               option.value === globalVirtualDisplayLayout ? null : option.value
@@ -501,7 +519,6 @@
                             client.editVirtualDisplayLayout =
                               option.value === globalVirtualDisplayLayout ? null : option.value
                           "
-                          tabindex="0"
                         >
                           <div class="flex items-center gap-3">
                             <n-radio :value="option.value" />
@@ -651,6 +668,9 @@ import {
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
+import ActiveSessionsCard from '@/components/ActiveSessionsCard.vue';
+import HostStatsCard from '@/components/HostStatsCard.vue';
+import SessionHistoryCard from '@/components/SessionHistoryCard.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
@@ -1569,7 +1589,7 @@ const displayDeviceOptions = computed(() => {
     const info = d.info as any;
     let active: boolean | null = null;
     if (info && typeof info === 'object' && 'active' in info) {
-      active = !!(info as any).active;
+      active = !!info.active;
     } else if (info) {
       active = true;
     }
