@@ -1,0 +1,105 @@
+---
+name: Fixed Issue Follow-Up
+permissions: {}
+
+on:
+  issues:
+    types:
+      - labeled
+  release:
+    types:
+      - published
+
+jobs:
+  queue-follow-up:
+    name: Queue Fixed Issue Follow-Up
+    if: >-
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fixed' &&
+      github.event.issue.state == 'open' &&
+      github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on fixed issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const pendingMarker = `<!-- fixed-next-release:${context.payload.issue.updated_at} -->`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            if (comments.some((comment) => comment.body?.includes(pendingMarker))) {
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `${pendingMarker}\nThis issue has been resolved and will be fixed in the next release. A follow-up comment will be added here once that release is published.`,
+            });
+
+  close-fixed-issues:
+    name: Close Fixed Issues On Release
+    if: github.event_name == 'release' && !github.event.release.draft
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close open fixed issues for the published release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const labelName = 'fixed';
+            const releaseMarker = `<!-- fixed-release-follow-up:${context.payload.release.id} -->`;
+            const { owner, repo } = context.repo;
+            const releaseName = context.payload.release.name || context.payload.release.tag_name;
+            const releaseUrl = context.payload.release.html_url;
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labelName,
+              per_page: 100,
+            });
+
+            for (const issue of issues) {
+              if (issue.pull_request) {
+                continue;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+
+              if (!comments.some((comment) => comment.body?.includes(releaseMarker))) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  body: `${releaseMarker}\nThis issue has been fixed in the latest release, [${releaseName}](${releaseUrl}). Closing this issue now that the release containing the fix is available.`,
+                });
+              }
+
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+            }
