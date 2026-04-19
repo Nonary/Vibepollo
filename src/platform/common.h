@@ -545,9 +545,14 @@ namespace platf {
 
     /**
      * @brief Resets the default audio device away from virtual streaming speakers.
-     * If no valid device is available, waits for one to appear before giving up.
+     * Implementations may continue trying in the background to restore the
+     * preferred device after moving the default away from virtual speakers.
+     * @param preferred_device Device identifier (platform-specific, e.g. on Windows the
+     *        endpoint device_id) of the device that should be restored as default. If
+     *        empty, implementations fall back to letting the OS pick whatever non-virtual
+     *        device is currently present.
      */
-    virtual void reset_default_device() {}
+    virtual void reset_default_device(const std::string &preferred_device = {}) {}
 
     virtual ~audio_control_t() = default;
   };

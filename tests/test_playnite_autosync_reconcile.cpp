@@ -130,6 +130,51 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   EXPECT_EQ(root["apps"][0]["playnite-managed"], "auto");
 }
 
+TEST(PlayniteAutosync_Reconcile, MatchesExistingEntriesCaseInsensitively) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  nlohmann::json a;
+  a["playnite-id"] = "ABC-DEF";
+  a["uuid"] = "OLD";
+  root["apps"].push_back(a);
+
+  std::vector<Game> all {G("abc-def", "2025-01-01T00:00:00Z", true)};
+  bool changed = false;
+  std::size_t matched = 0;
+  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, changed, matched);
+
+  EXPECT_TRUE(changed);
+  EXPECT_EQ(matched, 1u);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "abc-def");
+  EXPECT_EQ(root["apps"][0]["uuid"], "ABC-DEF");
+}
+
+TEST(PlayniteAutosync_Reconcile, RemovesDuplicateAutoEntriesByPlayniteId) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+
+  nlohmann::json a1;
+  a1["playnite-id"] = "ABC-DEF";
+  a1["playnite-managed"] = "auto";
+  root["apps"].push_back(a1);
+
+  nlohmann::json a2;
+  a2["playnite-id"] = "abc-def";
+  a2["playnite-managed"] = "auto";
+  root["apps"].push_back(a2);
+
+  std::vector<Game> all {G("abc-def", "2025-01-01T00:00:00Z", true)};
+  bool changed = false;
+  std::size_t matched = 0;
+  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, changed, matched);
+
+  EXPECT_TRUE(changed);
+  EXPECT_EQ(matched, 1u);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "abc-def");
+}
+
 TEST(PlayniteAutosync_Reconcile, SyncPluginsIncludesGames) {
   nlohmann::json root;
   root["apps"] = nlohmann::json::array();

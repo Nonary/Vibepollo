@@ -31,6 +31,7 @@
 #ifdef _WIN32
   #include <shobjidl.h>
 
+  #include "src/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
@@ -605,6 +606,17 @@ int main(int argc, char *argv[]) {
   configThread.join();
   rtspThread.join();
 
+#ifdef _WIN32
+  // Full process shutdown cannot leave the paused-session watchdog running.
+  // If it survives past main(), CRT teardown can fast-fail while the helper
+  // watchdog thread is still unwinding.
+  display_helper_integration::stop_watchdog();
+
+  // The legacy SudoVDA watchdog thread also lives in static storage.
+  // Ensure it is joined before CRT on-exit handlers destroy the thread object.
+  VDISPLAY::closeVDisplayDevice();
+#endif
+
   task_pool.stop();
   task_pool.join();
 
@@ -625,4 +637,3 @@ int main(int argc, char *argv[]) {
 
   return lifetime::desired_exit_code;
 }
-

@@ -8,6 +8,8 @@
 #include <Windows.h>
 #include <WtsApi32.h>
 
+#include "src/platform/windows/service_constants.h"
+
 // PROC_THREAD_ATTRIBUTE_JOB_LIST is currently missing from MinGW headers
 #ifndef PROC_THREAD_ATTRIBUTE_JOB_LIST
   #define PROC_THREAD_ATTRIBUTE_JOB_LIST ProcThreadAttributeValue(13, FALSE, TRUE, FALSE)
@@ -239,6 +241,8 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   service_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE;
   service_status.dwCurrentState = SERVICE_RUNNING;
   SetServiceStatus(service_status_handle, &service_status);
+
+  SetEnvironmentVariableW(platf::service_launch::launched_by_service_env_var, L"1");
 
   // Loop every 3 seconds until the stop event is set or Sunshine.exe is running
   while (WaitForSingleObject(stop_event, 3000) != WAIT_OBJECT_0) {
