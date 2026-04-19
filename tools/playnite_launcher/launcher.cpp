@@ -185,6 +185,12 @@ namespace playnite_launcher {
       lossless::lossless_scaling_profile_backup fullscreen_lossless_backup {};
       bool fullscreen_lossless_applied = false;
       bool game_started_once = false;
+      bool fullscreen_was_running = false;
+
+      auto renew_grace_deadline = [&](const char *reason) {
+        grace_deadline_ms.store(steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15)));
+        BOOST_LOG(debug) << "Fullscreen mode: extending handoff grace due to " << reason;
+      };
 
       auto resolve_install_dir = [&](const std::string &install_dir, const std::string &exe_path) -> std::string {
         if (!install_dir.empty()) {
@@ -211,7 +217,6 @@ namespace playnite_launcher {
           return;
         }
         auto norm_id = normalize_game_id(msg.status_game_id);
-        auto now = std::chrono::steady_clock::now();
         if (msg.status_name == "gameStarted") {
           std::string install_for_ls;
           std::string exe_for_ls;
@@ -239,7 +244,7 @@ namespace playnite_launcher {
           active_game_flag.store(true);
           game_start_signal.store(true);
           cleanup_spawn_signal.store(true);
-          grace_deadline_ms.store(steady_to_millis(now + std::chrono::seconds(15)));
+          renew_grace_deadline("gameStarted");
           if (lossless_options.enabled && !fullscreen_lossless_applied) {
             if (lossless_options.launch_delay_seconds > 0) {
               BOOST_LOG(info) << "Lossless Scaling: delaying launch by " << lossless_options.launch_delay_seconds << " seconds after gameStarted";
@@ -290,7 +295,7 @@ namespace playnite_launcher {
           if (matches) {
             active_game_flag.store(false);
             game_stop_signal.store(true);
-            grace_deadline_ms.store(steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15)));
+            renew_grace_deadline("gameStopped");
             if (fullscreen_lossless_applied) {
               auto runtime = lossless::capture_lossless_scaling_state();
               if (!runtime.running_pids.empty()) {
@@ -411,6 +416,7 @@ namespace playnite_launcher {
       bool fullscreen_detected = false;
 
       int consecutive_missing = 0;
+      auto connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
 
       auto send_stop_command_if_needed = [&]() {
         if (!client.is_active()) {
@@ -447,20 +453,33 @@ namespace playnite_launcher {
 
         bool active_game_now = active_game_flag.load();
 
+        // Playnite fullscreen can exit before the plugin delivers gameStarted for the launched game.
+        // Hold the session briefly on that transition so Sunshine does not tear down the stream first.
+        if (!fs_running && fullscreen_was_running && fullscreen_detected && !active_game_now) {
+          renew_grace_deadline("fullscreen-handoff");
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        int64_t grace_ms = grace_deadline_ms.load();
+        bool in_grace = grace_ms > 0 && now < millis_to_steady(grace_ms);
+        bool waiting_for_pipe = !pipe_connected.load() && now < connection_grace_deadline;
+
         if (!fullscreen_detected && fs_running) {
           fullscreen_detected = true;
         }
 
-        if (fs_running || active_game_now) {
+        if (fs_running || active_game_now || in_grace || waiting_for_pipe) {
           consecutive_missing = 0;
-        } else {
+        }
+        else {
           consecutive_missing++;
         }
 
-        // If fullscreen not running and we've detected it once before, exit
-        if (consecutive_missing >= 12 || (!fs_running && fullscreen_detected)) {
+        if (consecutive_missing >= 12) {
           break;
         }
+
+        fullscreen_was_running = fs_running;
 
         if (!watcher_spawned.load() && !fullscreen_install_dir_utf8.empty()) {
           bool expected = false;
