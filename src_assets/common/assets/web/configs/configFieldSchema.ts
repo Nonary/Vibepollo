@@ -48,6 +48,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   max_bitrate: { min: 0, placeholder: '0' },
   minimum_fps_target: { min: 0, max: 1000, placeholder: '0' },
   nvenc_vbv_increase: { min: 0, max: 400, placeholder: '0' },
+  amd_slices_per_frame: { min: 1, max: 8, step: 1, placeholder: '1' },
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 1, precision: 0, placeholder: '0' },
 };
 

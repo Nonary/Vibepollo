@@ -147,6 +147,8 @@
     "amd_enforce_hrd_desc": "Increases the constraints on rate control to meet HRD model requirements. This greatly reduces bitrate overflows, but may cause encoding artifacts or reduced quality on certain cards.",
     "amd_preanalysis": "AMF Preanalysis",
     "amd_preanalysis_desc": "This enables rate-control preanalysis, which may increase quality at the expense of increased encoding latency.",
+    "amd_slices_per_frame": "AMF Slices / Tiles Per Frame",
+    "amd_slices_per_frame_desc": "Number of slices (H.264/HEVC) or tiles (AV1) each frame is split into. Allows the encoder to emit partial-frame output that Moonlight can start transmitting before the whole frame is encoded, reducing end-to-end latency. On dual-VCN AMD GPUs with Split Frame Encoding enabled, slices/tiles can be encoded in parallel across both engines. 1 is the encoder default; 2–4 is recommended; higher values add overhead with diminishing returns.",
     "amd_quality": "AMF Quality",
     "amd_quality_balanced": "balanced -- balanced (default)",
     "amd_quality_desc": "This controls the balance between encoding speed and quality.",

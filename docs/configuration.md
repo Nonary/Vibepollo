@@ -3406,6 +3406,39 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### amd_slices_per_frame
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of slices (H.264/HEVC) or tiles (AV1) each frame is split into.
+            Allows the encoder to emit partial-frame output that Moonlight can begin
+            transmitting before the whole frame is encoded, reducing end-to-end latency.
+            On dual-VCN AMD GPUs with Split Frame Encoding enabled, slices/tiles can be
+            encoded in parallel across both engines. Higher values add overhead with
+            diminishing returns; 2-4 is recommended.
+            @note{This option only applies when using amdvce [encoder](#encoder).}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            1
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_slices_per_frame = 4
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1-8</td>
+    </tr>
+</table>
+
 ## VideoToolbox Encoder
 
 ### vt_coder

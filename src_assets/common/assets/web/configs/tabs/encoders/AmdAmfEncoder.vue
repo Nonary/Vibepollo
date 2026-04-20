@@ -46,7 +46,13 @@ const config = store.config;
 
           <ConfigFieldRenderer setting-key="amd_vbaq" v-model="config.amd_vbaq" class="mb-3" />
 
-          <ConfigFieldRenderer setting-key="amd_coder" v-model="config.amd_coder" class="mb-0" />
+          <ConfigFieldRenderer setting-key="amd_coder" v-model="config.amd_coder" class="mb-3" />
+
+          <ConfigFieldRenderer
+            setting-key="amd_slices_per_frame"
+            v-model="config.amd_slices_per_frame"
+            class="mb-0"
+          />
         </section>
       </div>
     </div>
