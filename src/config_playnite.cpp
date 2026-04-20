@@ -223,6 +223,13 @@ namespace config {
       playnite.fullscreen_entry_enabled = to_bool(tmp);
     }
 
+    // Keep Playnite-managed apps running when a streaming session ends.
+    tmp.clear();
+    erase_take(vars, "playnite_keep_running_on_session_end", tmp);
+    if (!tmp.empty()) {
+      playnite.keep_running_on_session_end = to_bool(tmp);
+    }
+
     // lists (already cleared by reset above, but explicit for clarity)
     playnite.sync_categories_meta.clear();
     playnite.sync_categories.clear();

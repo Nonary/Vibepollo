@@ -69,6 +69,12 @@ namespace config {
     // When enabled, Sunshine maintains a "Playnite (Fullscreen)" entry in apps.json
     // that launches Playnite in fullscreen/desktop mode via the helper.
     bool fullscreen_entry_enabled = false;
+
+    // When true, ending a streaming session (Moonlight "cancel") leaves a Playnite-
+    // managed app running on the host instead of terminating it. Non-Playnite apps
+    // and explicit close actions (tray, Web UI, Moonlight Terminate entry) are
+    // unaffected.
+    bool keep_running_on_session_end = false;
   };
 
   extern playnite_t playnite;

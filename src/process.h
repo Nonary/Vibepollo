@@ -189,7 +189,7 @@ namespace proc {
     bp::environment get_env();
     void resume();
     void pause();
-    void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);
+    void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false, bool is_session_end = false);
     bool last_run_app_frame_gen_limiter_fix() const;
 
     // Hot-update app list and environment without disrupting a running app
