@@ -1587,6 +1587,7 @@ namespace config {
     bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
     bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
+    int_f(vars, "amd_slices_per_frame", video.amd.amd_slices_per_frame);
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -2178,6 +2179,7 @@ namespace config {
         "amd_preanalysis",
         "amd_vbaq",
         "amd_coder",
+        "amd_slices_per_frame",
         "vt_coder",
         "vt_software",
         "vt_realtime",

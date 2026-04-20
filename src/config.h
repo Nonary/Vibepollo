@@ -89,6 +89,7 @@ namespace config {
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;
       int amd_coder;
+      std::optional<int> amd_slices_per_frame;
     } amd;
 
     struct {
