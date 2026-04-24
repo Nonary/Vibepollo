@@ -57,6 +57,7 @@ export interface WebRtcSessionState {
   video_pacing_mode?: string | null;
   video_pacing_slack_ms?: number | null;
   video_max_frame_age_ms?: number | null;
+  bytes_sent?: number;
   last_audio_bytes?: number;
   last_video_bytes?: number;
   last_video_idr?: boolean;

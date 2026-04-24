@@ -63,6 +63,7 @@ export interface WebRTCSession {
   video_pacing_mode?: string;
   video_pacing_slack_ms?: number;
   video_max_frame_age_ms?: number;
+  bytes_sent: number;
   last_audio_bytes: number;
   last_video_bytes: number;
   last_video_idr: boolean;
