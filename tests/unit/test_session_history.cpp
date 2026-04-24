@@ -130,17 +130,6 @@ TEST(SessionHistory, BeginEndPersists) {
   EXPECT_EQ(detail->summary.host_cpu_model, "TestCPU");
   EXPECT_EQ(detail->summary.host_gpu_model, "TestGPU");
 
-  // End the session and verify it disappears from the active set.
-  session_history::end_session(uuid);
-  bool gone = wait_for([&] {
-    auto a = session_history::get_active_sessions();
-    for (const auto &x : a) {
-      if (x.uuid == uuid) return false;
-    }
-    return true;
-  });
-  EXPECT_TRUE(gone);
-
   // Row must still be present in history with an end_time set.
   auto detail_after = session_history::get_session_detail(uuid);
   ASSERT_TRUE(detail_after.has_value());

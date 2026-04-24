@@ -560,20 +560,29 @@ namespace session_history {
 
     // ── Sampler thread ─────────────────────────────────────────────
 
-    // Detect and emit automatic events based on aggregator state changes
-    void detect_events(const std::string &uuid, aggregator_t &agg, std::int64_t current_losses, std::uint64_t current_frames) {
+    struct pending_event_t {
+      std::string event_type;
+      std::string payload;
+    };
+
+    // Detect automatic events based on aggregator state changes. The caller
+    // emits them after releasing g_aggregators_mutex so event recording never
+    // runs while the aggregator map is locked.
+    std::vector<pending_event_t> detect_events(aggregator_t &agg, std::int64_t current_losses, std::uint64_t current_frames) {
+      std::vector<pending_event_t> pending;
+
       // First drop in session: fire as soon as any losses appear, including
       // on the very first sample (no need for a prior sample to compare against).
       if (!agg.had_any_losses && current_losses > 0) {
         agg.had_any_losses = true;
-        record_event(uuid, "first_drop", "");
+        pending.push_back({"first_drop", ""});
       }
 
       // Drop burst: >10 new losses in a single sample interval
       if (agg.prev_timestamp > 0) {
         auto delta_losses = current_losses - agg.prev_losses;
         if (delta_losses > 10) {
-          record_event(uuid, "drop_burst", std::to_string(delta_losses) + " losses in interval");
+          pending.push_back({"drop_burst", std::to_string(delta_losses) + " losses in interval"});
         }
       }
 
@@ -582,16 +591,18 @@ namespace session_history {
         agg.zero_frame_ticks++;
         if (agg.zero_frame_ticks >= 2 && !agg.in_stall) {
           agg.in_stall = true;
-          record_event(uuid, "stall", "No frames for " + std::to_string(agg.zero_frame_ticks * 2) + "s");
+          pending.push_back({"stall", "No frames for " + std::to_string(agg.zero_frame_ticks * 2) + "s"});
         }
       }
       else {
         if (agg.in_stall) {
-          record_event(uuid, "recovery", "Frames resumed after stall");
+          pending.push_back({"recovery", "Frames resumed after stall"});
           agg.in_stall = false;
         }
         agg.zero_frame_ticks = 0;
       }
+
+      return pending;
     }
 
     void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
@@ -601,14 +612,19 @@ namespace session_history {
         double agg_fps = 0;
         double agg_bitrate = 0;
         double agg_jitter = 0;
+        std::vector<pending_event_t> pending_events;
         {
           std::lock_guard lk {g_aggregators_mutex};
           auto &agg = g_aggregators[info.uuid];
-          detect_events(info.uuid, agg, info.client_reported_losses, info.frames_sent);
+          pending_events = detect_events(agg, info.client_reported_losses, info.frames_sent);
           agg.update(ts, info.frames_sent, info.bytes_sent, info.client_reported_losses);
           agg_fps = agg.last_actual_fps;
           agg_bitrate = agg.last_actual_bitrate_kbps;
           agg_jitter = agg.last_jitter_ms;
+        }
+
+        for (const auto &evt : pending_events) {
+          record_event(info.uuid, evt.event_type, evt.payload);
         }
 
         session_sample_t s;
@@ -660,14 +676,19 @@ namespace session_history {
         double agg_fps = 0;
         double agg_bitrate = 0;
         double agg_jitter = 0;
+        std::vector<pending_event_t> pending_events;
         {
           std::lock_guard lk {g_aggregators_mutex};
           auto &agg = g_aggregators[ws.id];
-          detect_events(ws.id, agg, losses_total, frames_total);
+          pending_events = detect_events(agg, losses_total, frames_total);
           agg.update(ts, frames_total, bytes_total, losses_total);
           agg_fps = agg.last_actual_fps;
           agg_bitrate = agg.last_actual_bitrate_kbps;
           agg_jitter = agg.last_jitter_ms;
+        }
+
+        for (const auto &evt : pending_events) {
+          record_event(ws.id, evt.event_type, evt.payload);
         }
 
         session_sample_t s;
