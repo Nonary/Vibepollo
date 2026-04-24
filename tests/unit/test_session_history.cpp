@@ -216,6 +216,27 @@ TEST(SessionHistory, DeleteRemovesSessionAndChildren) {
   }
 }
 
+TEST(SessionHistory, DeleteFlushesQueuedWritesBeforeReturning) {
+  auto path = make_temp_db_path("delete-flush");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "66666666-6666-6666-6666-666666666666";
+  session_history::begin_session(make_metadata(uuid));
+  session_history::record_event(uuid, "queued_event", R"({"ok":true})");
+  session_history::end_session(uuid);
+
+  // delete_session() should wait for the writer thread to process the queued
+  // lifecycle mutations and commit the delete before returning.
+  EXPECT_TRUE(session_history::delete_session(uuid));
+
+  EXPECT_FALSE(session_history::get_session_detail(uuid).has_value());
+  auto rows = session_history::list_sessions(50, 0);
+  for (const auto &r : rows) {
+    EXPECT_NE(r.uuid, uuid);
+  }
+}
+
 TEST(SessionHistory, ListSessionsRespectsLimit) {
   auto path = make_temp_db_path("limit");
   session_history::init(path.string());

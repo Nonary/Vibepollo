@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -153,6 +154,7 @@ namespace session_history {
     enum class cmd_type {
       begin_session,
       end_session,
+      delete_session,
       insert_sample,
       insert_event,
       prune,
@@ -165,6 +167,7 @@ namespace session_history {
       session_sample_t sample;
       session_event_t event;
       std::string uuid;
+      std::shared_ptr<std::promise<bool>> completion;
     };
 
     // ── Per-session aggregator (private, not in session_t) ─────────
@@ -412,6 +415,34 @@ namespace session_history {
       sqlite3_step(s.get());
     }
 
+    bool process_delete(sqlite3 *db, const std::string &uuid) {
+      constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
+      constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
+      constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
+
+      int affected = 0;
+      for (const auto &[sql, track_changes] : {
+             std::pair {DELETE_EVENTS, false},
+             std::pair {DELETE_SAMPLES, false},
+             std::pair {DELETE_SESSION, true},
+           }) {
+        auto stmt = prepare(db, sql);
+        if (!stmt) return false;
+
+        sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+          BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
+          return false;
+        }
+        if (track_changes) {
+          affected = sqlite3_changes(db);
+        }
+      }
+
+      BOOST_LOG(info) << "Deleted session "sv << uuid << " from history (rows="sv << affected << ")"sv;
+      return affected > 0;
+    }
+
     void process_prune(sqlite3 *db) {
       // Keep only the most recent MAX_HISTORY_SESSIONS completed sessions
       const auto limit_str = std::to_string(MAX_HISTORY_SESSIONS);
@@ -442,6 +473,7 @@ namespace session_history {
         auto batch = drain_queue();
         if (batch.empty()) continue;
 
+        std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
         exec(g_write_db.get(), "BEGIN TRANSACTION");
         for (auto &cmd : batch) {
           switch (cmd.type) {
@@ -450,6 +482,13 @@ namespace session_history {
               break;
             case cmd_type::end_session:
               process_end(g_write_db.get(), cmd.uuid);
+              break;
+            case cmd_type::delete_session:
+              if (cmd.completion) {
+                completions.emplace_back(cmd.completion, process_delete(g_write_db.get(), cmd.uuid));
+              } else {
+                process_delete(g_write_db.get(), cmd.uuid);
+              }
               break;
             case cmd_type::insert_sample:
               process_sample(g_write_db.get(), cmd.sample);
@@ -464,13 +503,17 @@ namespace session_history {
               break;
           }
         }
-        exec(g_write_db.get(), "COMMIT");
+        bool committed = exec(g_write_db.get(), "COMMIT");
+        for (auto &[completion, result] : completions) {
+          completion->set_value(committed && result);
+        }
       }
 
       // Final drain
       {
         std::lock_guard lk {g_queue_mutex};
         if (!g_queue.empty()) {
+          std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
           exec(g_write_db.get(), "BEGIN TRANSACTION");
           for (auto &cmd : g_queue) {
             switch (cmd.type) {
@@ -479,6 +522,13 @@ namespace session_history {
                 break;
               case cmd_type::end_session:
                 process_end(g_write_db.get(), cmd.uuid);
+                break;
+              case cmd_type::delete_session:
+                if (cmd.completion) {
+                  completions.emplace_back(cmd.completion, process_delete(g_write_db.get(), cmd.uuid));
+                } else {
+                  process_delete(g_write_db.get(), cmd.uuid);
+                }
                 break;
               case cmd_type::insert_sample:
                 process_sample(g_write_db.get(), cmd.sample);
@@ -490,7 +540,10 @@ namespace session_history {
                 break;
             }
           }
-          exec(g_write_db.get(), "COMMIT");
+          bool committed = exec(g_write_db.get(), "COMMIT");
+          for (auto &[completion, result] : completions) {
+            completion->set_value(committed && result);
+          }
           g_queue.clear();
         }
       }
@@ -1113,49 +1166,20 @@ namespace session_history {
   }
 
   bool delete_session(const std::string &uuid) {
-    if (!g_write_db) {
+    if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
       return false;
     }
 
-    std::lock_guard lk {g_queue_mutex};
-    auto *db = g_write_db.get();
+    auto completion = std::make_shared<std::promise<bool>>();
+    auto result = completion->get_future();
 
-    constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
-    constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
-    constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
+    write_cmd_t cmd;
+    cmd.type = cmd_type::delete_session;
+    cmd.uuid = uuid;
+    cmd.completion = completion;
+    enqueue(std::move(cmd));
 
-    if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
-      return false;
-    }
-
-    int affected = 0;
-    bool ok = true;
-    for (const char *sql : {DELETE_EVENTS, DELETE_SAMPLES, DELETE_SESSION}) {
-      sqlite3_stmt *stmt = nullptr;
-      if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        ok = false;
-        if (stmt) sqlite3_finalize(stmt);
-        break;
-      }
-      sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
-      if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        ok = false;
-        break;
-      }
-      if (sql == DELETE_SESSION) {
-        affected = sqlite3_changes(db);
-      }
-      sqlite3_finalize(stmt);
-    }
-
-    if (!ok) {
-      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
-      return false;
-    }
-    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
-    BOOST_LOG(info) << "Deleted session "sv << uuid << " from history (rows="sv << affected << ")"sv;
-    return affected > 0;
+    return result.get();
   }
 
 }  // namespace session_history

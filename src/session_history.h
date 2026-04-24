@@ -171,6 +171,14 @@ namespace session_history {
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);
   std::optional<session_detail_t> get_session_detail(const std::string &uuid);
   std::vector<active_session_t> get_active_sessions();
+  /**
+   * @brief Delete a persisted session and its child rows.
+   *
+   * The delete is executed on the dedicated writer thread and this call blocks
+   * until that delete transaction has committed.
+   *
+   * @return true if the session row existed and was deleted, false otherwise.
+   */
   bool delete_session(const std::string &uuid);
 
 }  // namespace session_history
