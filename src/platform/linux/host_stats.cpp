@@ -381,7 +381,12 @@ namespace {
       auto now = steady_clock::now();
       if (_have_net_baseline && _last_net_iface == iface) {
         auto dt = std::chrono::duration<double>(now - _last_net_at).count();
-        if (dt > 0.05) {
+        if (c->rx_bytes < _last_net.rx_bytes || c->tx_bytes < _last_net.tx_bytes) {
+          // Interface counters reset or wrapped: reset the baseline without
+          // emitting a synthetic spike for this sample.
+          out.net_rx_bps = 0.0;
+          out.net_tx_bps = 0.0;
+        } else if (dt > 0.05) {
           double drx = static_cast<double>(c->rx_bytes - _last_net.rx_bytes);
           double dtx = static_cast<double>(c->tx_bytes - _last_net.tx_bytes);
           out.net_rx_bps = (drx * 8.0) / dt;

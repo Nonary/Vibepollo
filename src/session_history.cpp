@@ -196,6 +196,14 @@ namespace session_history {
         if (prev_timestamp > 0) {
           double dt = ts - prev_timestamp;
           if (dt > 0.01) {
+            if (frames < prev_frames_sent || bytes < prev_bytes_sent) {
+              prev_timestamp = ts;
+              prev_frames_sent = frames;
+              prev_bytes_sent = bytes;
+              prev_losses = losses;
+              return;
+            }
+
             auto dframes = static_cast<double>(frames - prev_frames_sent);
             auto dbytes = static_cast<double>(bytes - prev_bytes_sent);
 
