@@ -30,6 +30,7 @@
 
   #include "src/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
+  #include "src/platform/windows/misc.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
   #include "src/platform/windows/virtual_display.h"
@@ -492,6 +493,11 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef _WIN32
+    if (!platf::is_default_input_desktop_active()) {
+      BOOST_LOG(info) << "Startup encoder probe deferred until the interactive desktop is ready.";
+      return;
+    }
+
     // Ensure a display is available first; probing encoders generally requires a display.
     auto encoder_probe_display_result = VDISPLAY::ensure_display();
     if (!encoder_probe_display_result.success) {
