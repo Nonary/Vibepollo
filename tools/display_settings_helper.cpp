@@ -2215,6 +2215,10 @@ namespace {
     // Track whether a revert/restore is currently pending
     std::atomic<bool> restore_requested {false};
     std::atomic<uint64_t> restore_cancel_generation {0};
+    // True after the restore loop has made at least one restore attempt that has
+    // not yet been confirmed. DISARM/SNAPSHOT_CURRENT from a later stream-start
+    // probe must not cancel or overwrite that restore baseline.
+    std::atomic<bool> restore_attempted_unconfirmed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
     // After a few consecutive confirmed session fallbacks, stop forcing golden
@@ -3146,6 +3150,8 @@ namespace {
         return false;
       }
 
+      restore_attempted_unconfirmed.store(true, std::memory_order_release);
+
       const bool golden_first = always_restore_from_golden.load(std::memory_order_acquire);
       if (!golden_first) {
         reset_pending_golden_session_fallbacks();
@@ -3324,6 +3330,7 @@ namespace {
       request_restore_cancel();
       event_pump.stop();
       event_pump_running.store(false, std::memory_order_release);
+      restore_attempted_unconfirmed.store(false, std::memory_order_release);
       reset_restore_backoff();
       restore_active_until_ms.store(0, std::memory_order_release);
       last_restore_event_ms.store(0, std::memory_order_release);
@@ -3370,6 +3377,7 @@ namespace {
     void clear_restore_origin() {
       restore_origin_epoch.store(0, std::memory_order_release);
       prefer_golden_if_current_missing.store(true, std::memory_order_release);
+      restore_attempted_unconfirmed.store(false, std::memory_order_release);
       reset_pending_golden_session_fallbacks();
     }
 
@@ -4837,8 +4845,17 @@ namespace {
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
     } else if (type == MsgType::Disarm) {
+      if (state.restore_requested.load(std::memory_order_acquire) &&
+          state.restore_attempted_unconfirmed.load(std::memory_order_acquire)) {
+        BOOST_LOG(info) << "DISARM command ignored because an unconfirmed restore attempt is still pending.";
+        return;
+      }
       state.disarm_restore_requests("DISARM command received");
     } else if (type == MsgType::SnapshotCurrent) {
+      if (state.restore_requested.load(std::memory_order_acquire)) {
+        BOOST_LOG(info) << "Skipping current session snapshot refresh while restore is pending.";
+        return;
+      }
       (void) state.refresh_current_snapshot_preserving_previous("snapshot-only");
     } else if (type == MsgType::Ping) {
       state.record_heartbeat_ping();
@@ -5147,7 +5164,11 @@ int main(int argc, char *argv[]) {
     }
 
     const auto connection_epoch = state.begin_connection_epoch();
-    state.stop_restore_polling();
+    // Do not cancel restore polling merely because Sunshine connected. Stream start
+    // often opens the helper first for SNAPSHOT_CURRENT/DISARM probes; cancelling
+    // here can strand a prior, unconfirmed restore when a physical monitor is
+    // present but its input is switched away. APPLY/DISARM handlers decide
+    // explicitly whether a restore should be superseded.
     state.begin_heartbeat_monitoring();
 
     // Reset and start per-connection command worker so IPC stays responsive even during heavy display work.
