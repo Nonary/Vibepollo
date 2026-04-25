@@ -940,6 +940,7 @@ namespace config {
     {},  // cmd args
     47989,  // Base port number
     "ipv4",  // Address family
+    {},  // Bind address
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
     false,  // legacy_ordering
@@ -1787,6 +1788,7 @@ namespace config {
     sunshine.port = (std::uint16_t) port;
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
+    string_f(vars, "bind_address", sunshine.bind_address);
 
     bool upnp = false;
     bool_f(vars, "upnp"s, upnp);
