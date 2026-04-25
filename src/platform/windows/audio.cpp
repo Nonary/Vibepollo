@@ -795,10 +795,21 @@ namespace platf::audio {
         audio::wstring_t id;
         device->GetId(&id);
 
-        sink.host = to_utf8(id.get());
+        std::wstring host_id = id.get();
+        auto matched_steam = find_device_id(match_steam_speakers());
+        if (matched_steam && host_id == matched_steam->second) {
+          auto pending_preferred_id = pending_preferred_restore_id();
+          if (pending_preferred_id) {
+            host_id = *pending_preferred_id;
+          }
+        } else {
+          clear_pending_preferred_restore();
+        }
+
+        sink.host = to_utf8(host_id.c_str());
         // Pre-populate the restore-cache so we have property snapshots even if
         // the device disappears before reset_default_device runs.
-        (void) preferred_device_match_list(id.get());
+        (void) preferred_device_match_list(host_id);
       }
 
       // Prepare to search for the device_id of the virtual audio sink device,
@@ -1019,6 +1030,38 @@ namespace platf::audio {
       return cache;
     }
 
+    static std::wstring &pending_preferred_restore_id_ref() {
+      static std::wstring id;
+      return id;
+    }
+
+    static std::optional<std::wstring> pending_preferred_restore_id() {
+      std::lock_guard lock {preferred_restore_cache_mutex_ref()};
+      const auto &id = pending_preferred_restore_id_ref();
+      if (id.empty()) {
+        return std::nullopt;
+      }
+
+      return id;
+    }
+
+    static void remember_pending_preferred_restore(const std::wstring &preferred_id, const std::wstring &steam_device_id) {
+      if (preferred_id.empty() || preferred_id == steam_device_id) {
+        return;
+      }
+
+      std::lock_guard lock {preferred_restore_cache_mutex_ref()};
+      pending_preferred_restore_id_ref() = preferred_id;
+    }
+
+    static void clear_pending_preferred_restore(const std::wstring &preferred_id = {}) {
+      std::lock_guard lock {preferred_restore_cache_mutex_ref()};
+      auto &pending_id = pending_preferred_restore_id_ref();
+      if (preferred_id.empty() || pending_id == preferred_id) {
+        pending_id.clear();
+      }
+    }
+
     static void append_match_field(match_fields_list_t &match_list, match_field_e field, const wchar_t *value) {
       if (value == nullptr || value[0] == L'\0') {
         return;
@@ -1156,9 +1199,9 @@ namespace platf::audio {
      * @brief Resets the default audio device from Steam Streaming Speakers.
      * If a preferred device is supplied, tries to restore that exact device,
      * keeping a background retry active if it is temporarily missing (e.g.,
-     * HDMI/DP audio coming back after virtual display teardown). If another
-     * valid render endpoint is already present, moves off Steam speakers
-     * immediately instead of waiting on the preferred device.
+     * HDMI/DP audio coming back after virtual display teardown). While a
+     * preferred restore is pending, Steam speakers remain usable instead of
+     * falling back to another endpoint.
      * @param preferred_device The endpoint device_id of the device to restore.
      */
     void reset_default_device(const std::string &preferred_device = {}) override {
@@ -1231,6 +1274,10 @@ namespace platf::audio {
 
     void run_pending_restore_task(std::stop_token stop_token, const std::wstring &steam_device_id, const std::wstring &preferred_id) {
       bool try_preferred_restore = !preferred_id.empty() && preferred_id != steam_device_id;
+      bool retry_fallback_reset = true;
+      if (try_preferred_restore) {
+        remember_pending_preferred_restore(preferred_id, steam_device_id);
+      }
 
       device_arrival_notification_t arrival_notifier(steam_device_id);
       HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -1274,11 +1321,15 @@ namespace platf::audio {
             return;
           }
           if (preferred_result == reset_result_e::fatal) {
-            try_preferred_restore = false;
+            clear_pending_preferred_restore(preferred_id);
+            return;
           }
+
+          arrival_notifier.wait(cancel_event, 1000);
+          continue;
         }
 
-        if (is_default_device(steam_device_id)) {
+        if (retry_fallback_reset && is_default_device(steam_device_id)) {
           auto fallback_result = try_reset_from_steam(steam_device_id);
           if (fallback_result == reset_result_e::fatal) {
             return;
@@ -1286,11 +1337,16 @@ namespace platf::audio {
           if (fallback_result == reset_result_e::success && !try_preferred_restore) {
             return;
           }
-        } else if (!try_preferred_restore) {
+          if (fallback_result == reset_result_e::no_device) {
+            retry_fallback_reset = false;
+          }
+        } else if (retry_fallback_reset && !try_preferred_restore) {
           return;
         }
 
-        arrival_notifier.wait(cancel_event, 1000);
+        if (arrival_notifier.wait(cancel_event, 1000)) {
+          retry_fallback_reset = true;
+        }
       }
     }
 
@@ -1306,20 +1362,35 @@ namespace platf::audio {
       // If the user already switched away from Steam speakers, leave the newer
       // default alone instead of restoring the previously recorded endpoint.
       if (!is_default_device(steam_device_id)) {
+        clear_pending_preferred_restore();
         return;
       }
 
       // Avoid restoring back to Steam speakers if that's somehow what got
       // recorded as the original host sink.
-      bool try_preferred_restore = !preferred_id.empty() && preferred_id != steam_device_id;
+      std::wstring effective_preferred_id = preferred_id;
+      if (effective_preferred_id.empty() || effective_preferred_id == steam_device_id) {
+        auto pending_preferred_id = pending_preferred_restore_id();
+        if (pending_preferred_id) {
+          effective_preferred_id = *pending_preferred_id;
+        }
+      }
+      bool try_preferred_restore = !effective_preferred_id.empty() && effective_preferred_id != steam_device_id;
 
       if (try_preferred_restore) {
-        auto result = try_restore_preferred(preferred_id);
+        remember_pending_preferred_restore(effective_preferred_id, steam_device_id);
+
+        auto result = try_restore_preferred(effective_preferred_id);
         if (result == reset_result_e::success) {
           return;
         }
         if (result == reset_result_e::fatal) {
-          try_preferred_restore = false;
+          clear_pending_preferred_restore(effective_preferred_id);
+        } else if (wait_for_device) {
+          start_pending_restore_task(steam_device_id, effective_preferred_id);
+          return;
+        } else {
+          return;
         }
       }
 
@@ -1338,7 +1409,7 @@ namespace platf::audio {
         return;
       }
 
-      start_pending_restore_task(steam_device_id, try_preferred_restore ? preferred_id : std::wstring {});
+      start_pending_restore_task(steam_device_id, {});
     }
 
     enum class reset_result_e {
@@ -1388,6 +1459,7 @@ namespace platf::audio {
       } else {
         BOOST_LOG(info) << "Restored original default audio device"sv;
       }
+      clear_pending_preferred_restore(preferred_id);
       return reset_result_e::success;
     }
 
