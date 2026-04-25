@@ -1,0 +1,52 @@
+---
+name: Environment-Specific Issue Closure
+permissions: {}
+
+on:
+  issues:
+    types:
+      - labeled
+
+jobs:
+  close:
+    name: Close Environment-Specific Issue
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'environment-specific' &&
+      github.event.issue.state == 'open' &&
+      github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close environment-specific issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const marker = '<!-- environment-specific-closure -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            if (!comments.some((comment) => comment.body?.includes(marker))) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body: `${marker}\nThank you for the report. Based on the information available, this appears to be specific to your local environment rather than a reproducible application bug affecting multiple users.\n\nGitHub issues are used to track actionable, reproducible bugs that can be confirmed and fixed in Vibepollo. Since there is not enough corroborating evidence from other users or a clear reproduction path that points to a shared defect, we are closing this as not planned.\n\nIf additional reports, logs, crash bundles, or reliable reproduction steps later show that this affects more users, please open a new issue with that information so it can be reviewed.`,
+              });
+            }
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number,
+              state: 'closed',
+              state_reason: 'not_planned',
+            });
