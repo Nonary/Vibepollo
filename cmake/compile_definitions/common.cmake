@@ -127,6 +127,10 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/http_auth.cpp"
         "${CMAKE_SOURCE_DIR}/src/state_storage.cpp"
         "${CMAKE_SOURCE_DIR}/src/state_storage.h"
+        "${CMAKE_SOURCE_DIR}/src/session_history.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session_history.h"
+        "${CMAKE_SOURCE_DIR}/src/host_stats.cpp"
+        "${CMAKE_SOURCE_DIR}/src/host_stats.h"
         ${PLATFORM_TARGET_FILES})
 
 if(NOT SUNSHINE_ASSETS_DIR_DEF)
@@ -165,6 +169,7 @@ include_directories(
         "${CMAKE_SOURCE_DIR}/third-party/nanors"
         "${CMAKE_SOURCE_DIR}/third-party/nanors/deps/obl"
         ${WEBRTC_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
         ${SUNSHINE_FFMPEG_INCLUDE_DIRS}
         ${Boost_INCLUDE_DIRS}  # has to be the last, or we get runtime error on macOS ffmpeg encoder
 )
@@ -172,6 +177,7 @@ include_directories(
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${MINIUPNP_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
+        ${SQLITE3_LIBRARIES}
         enet
         libdisplaydevice::display_device
         nlohmann_json::nlohmann_json

@@ -2,30 +2,27 @@
   <div class="flex items-center gap-2 text-xs">
     <span
       :class="[
-        'h-2.5 w-2.5 rounded-full animate-pulse',
-        streaming ? 'bg-success ring-2 ring-success/30' : 'bg-dark/30',
+        'h-2.5 w-2.5 rounded-full',
+        streaming
+          ? 'bg-success animate-pulse ring-2 ring-success/30'
+          : 'bg-dark/30 dark:bg-light/30',
       ]"
     />
     <span class="font-medium" v-text="streaming ? 'Live' : 'Idle'" />
   </div>
 </template>
-<script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+<script setup lang="ts">
+import { computed, onMounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
-// Placeholder polling logic; backend endpoint not yet implemented
-const streaming = ref(false);
-let iv;
-onMounted(() => {
+import { useSessionsStore } from '@/stores/sessions';
+
+const sessionsStore = useSessionsStore();
+const streaming = computed(() => sessionsStore.isStreaming);
+
+onMounted(async () => {
   const auth = useAuthStore();
-  // TODO replace with real endpoint; guard polling by auth
-  iv = setInterval(() => {
-    if (!auth.isAuthenticated) return;
-    // placeholder polling: no state change
-    void streaming.value;
-  }, 10000);
-});
-onBeforeUnmount(() => {
-  if (iv) clearInterval(iv);
+  await auth.waitForAuthentication();
+  sessionsStore.startPolling();
 });
 </script>
 <style scoped></style>
