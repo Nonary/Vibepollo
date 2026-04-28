@@ -487,6 +487,23 @@ namespace platf {
     return locked;
   }
 
+  bool is_default_input_desktop_active() {
+    HDESK hDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!hDesk) {
+      return false;
+    }
+
+    bool is_default = false;
+    wchar_t name[256] {};
+    DWORD needed = 0;
+    if (GetUserObjectInformationW(hDesk, UOI_NAME, name, sizeof(name), &needed)) {
+      is_default = (_wcsicmp(name, L"Default") == 0);
+    }
+
+    CloseDesktop(hDesk);
+    return is_default;
+  }
+
   // Note: This does NOT append a null terminator
   void append_string_to_environment_block(wchar_t *env_block, int &offset, const std::wstring &wstr) {
     std::memcpy(&env_block[offset], wstr.data(), wstr.length() * sizeof(wchar_t));
