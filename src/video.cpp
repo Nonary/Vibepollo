@@ -60,8 +60,11 @@ using namespace std::literals;
 
 namespace video {
 
+  /**
+   * @brief Check if we can allow probing for the encoders.
+   * @return True if there should be no issues with the probing, false if we should prevent it.
+   */
   bool allow_encoder_probing() {
-    // Always allow probing; previous in-process display checks removed.
     return true;
   }
 
@@ -3254,7 +3257,6 @@ namespace video {
 
   int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
-    encoder_probe_attempted.store(true, std::memory_order_release);
     const auto cache_key = build_probe_cache_key();
     const bool hevc_mode_auto = config::video.hevc_mode == 0;
     const bool av1_mode_auto = config::video.av1_mode == 0;
@@ -3265,6 +3267,7 @@ namespace video {
     const bool wants_av1_hdr = config::video.av1_mode == 3 || av1_mode_auto;
 
     if (probe_cache_matches(cache_key, wants_hdr, wants_hevc, wants_hevc_hdr, wants_av1, wants_av1_hdr)) {
+      encoder_probe_attempted.store(true, std::memory_order_release);
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
     }
@@ -3274,6 +3277,7 @@ namespace video {
       update_probe_cache(cache_key, false, false, false, false, false, false);
       return -1;
     }
+    encoder_probe_attempted.store(true, std::memory_order_release);
 
     const auto previous_active_hevc_mode = active_hevc_mode;
     const auto previous_active_av1_mode = active_av1_mode;

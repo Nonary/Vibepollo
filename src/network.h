@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -64,6 +65,13 @@ namespace net {
    * @return Normalized address.
    */
   std::string_view af_to_any_address_string(af_e af);
+
+  /**
+   * @brief Get the configured binding address, or wildcard address for the given address family.
+   * @param af Address family.
+   * @return Configured bind address or the wildcard address.
+   */
+  std::string get_bind_address(af_e af);
 
   /**
    * @brief Convert an address to a normalized form.
