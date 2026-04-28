@@ -8,8 +8,8 @@
  *               and @c "\GPU Engine(*engtype_VideoEncode)\Utilization Percentage".
  *               Vendor-agnostic (NVIDIA / AMD / Intel) — uses the WDDM
  *               scheduler, the same source Task Manager reads.
- * VRAM used   : PDH @c "\GPU Process Memory(*)\Dedicated Usage" (sum across
- *               processes).
+ * VRAM used   : PDH @c "\GPU Adapter Memory(*)\Dedicated Usage" filtered to
+ *               the selected DXGI adapter LUID.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
  * GPU temp    : optional NVML loaded at runtime via @c LoadLibrary.
  *
@@ -25,6 +25,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // platform includes
@@ -132,7 +133,7 @@ namespace {
      * @return -1.f on failure.
      */
     float
-      collect(float max_value = -1.f) {
+      collect(float max_value = -1.f, const std::wstring &instance_contains = {}) {
       if (!_query) {
         return -1.f;
       }
@@ -154,6 +155,12 @@ namespace {
       }
       double total = 0.0;
       for (DWORD i = 0; i < item_count; ++i) {
+        if (!instance_contains.empty()) {
+          const wchar_t *name = items[i].szName;
+          if (!name || std::wstring_view {name}.find(instance_contains) == std::wstring_view::npos) {
+            continue;
+          }
+        }
         if (items[i].FmtValue.CStatus == ERROR_SUCCESS ||
             items[i].FmtValue.CStatus == PDH_CSTATUS_NEW_DATA ||
             items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA) {
@@ -172,26 +179,39 @@ namespace {
     PDH_HCOUNTER _counter {};
   };
 
-  /**
-   * @brief Collect total dedicated VRAM in use across all GPU processes.
-   * @return Bytes; 0 on failure.
-   */
-  std::uint64_t
-    collect_vram_used_bytes(pdh_wildcard_sum_t &mem_query) {
-    float v = mem_query.collect();
-    if (v < 0.f) {
-      return 0;
-    }
-    return static_cast<std::uint64_t>(v);
+  std::wstring
+    luid_instance_prefix(const LUID &luid) {
+    wchar_t buf[64] {};
+    swprintf(buf,
+             ARRAYSIZE(buf),
+             L"luid_0x%08x_0x%08x",
+             static_cast<unsigned int>(luid.HighPart),
+             static_cast<unsigned int>(luid.LowPart));
+    return buf;
   }
 
   /**
-   * @brief Query the primary DXGI adapter and return total VRAM bytes
-   *        plus a printable description.
+   * @brief Collect dedicated VRAM in use for one adapter.
+   * @return Bytes; 0 on failure.
+   */
+  std::uint64_t
+    collect_vram_used_bytes(pdh_wildcard_sum_t &mem_query, const std::wstring &adapter_instance, std::uint64_t vram_total_bytes) {
+    float v = mem_query.collect(-1.f, adapter_instance);
+    if (v < 0.f) {
+      return 0;
+    }
+    auto used = static_cast<std::uint64_t>(v);
+    return vram_total_bytes > 0 && used > vram_total_bytes ? vram_total_bytes : used;
+  }
+
+  /**
+   * @brief Query the primary DXGI adapter and return total VRAM bytes,
+   *        adapter LUID, and a printable description.
    */
   void
-    query_dxgi(std::uint64_t &vram_total_bytes, std::string &gpu_model) {
+    query_dxgi(std::uint64_t &vram_total_bytes, LUID &adapter_luid, std::string &gpu_model) {
     vram_total_bytes = 0;
+    adapter_luid = {};
     gpu_model.clear();
 
     IDXGIFactory1 *factory = nullptr;
@@ -230,6 +250,7 @@ namespace {
 
     if (best_adapter) {
       vram_total_bytes = static_cast<std::uint64_t>(best_desc.DedicatedVideoMemory);
+      adapter_luid = best_desc.AdapterLuid;
       // wide → narrow conversion for the model name (ASCII subset is enough)
       char narrow[ARRAYSIZE(best_desc.Description) + 1] {};
       WideCharToMultiByte(CP_UTF8, 0, best_desc.Description, -1, narrow,
@@ -338,11 +359,11 @@ namespace {
       if (_gpu_mem.open()) {
         _have_gpu_mem = true;
       } else {
-        BOOST_LOG(::info) << "host_stats(win): \\GPU Process Memory(*) counter unavailable";
+        BOOST_LOG(::info) << "host_stats(win): \\GPU Adapter Memory(*) counter unavailable";
       }
-
       // static info — DXGI + registry
-      query_dxgi(_vram_total_cached, _gpu_model_cached);
+      query_dxgi(_vram_total_cached, _vram_adapter_luid, _gpu_model_cached);
+      _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
       _cpu_model_cached = read_processor_name();
 
       SYSTEM_INFO si;
@@ -407,10 +428,10 @@ namespace {
       if (_have_gpu_enc) {
         s.gpu_encoder_percent = _gpu_enc.collect(100.f);
       }
-      if (_have_gpu_mem) {
-        s.vram_used_bytes = collect_vram_used_bytes(_gpu_mem);
-      }
       s.vram_total_bytes = _vram_total_cached;
+      if (_have_gpu_mem) {
+        s.vram_used_bytes = collect_vram_used_bytes(_gpu_mem, _vram_adapter_instance, _vram_total_cached);
+      }
 
       // Temps (best effort, NVIDIA only via NVML)
       s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
@@ -576,7 +597,7 @@ namespace {
 
     pdh_wildcard_sum_t _gpu_3d {L"\\GPU Engine(*engtype_3D)\\Utilization Percentage"};
     pdh_wildcard_sum_t _gpu_enc {L"\\GPU Engine(*engtype_VideoEncode)\\Utilization Percentage"};
-    pdh_wildcard_sum_t _gpu_mem {L"\\GPU Process Memory(*)\\Dedicated Usage"};
+    pdh_wildcard_sum_t _gpu_mem {L"\\GPU Adapter Memory(*)\\Dedicated Usage"};
     bool _have_gpu_3d = false;
     bool _have_gpu_enc = false;
     bool _have_gpu_mem = false;
@@ -586,6 +607,8 @@ namespace {
     int _cpu_logical_cores = 0;
     std::uint64_t _ram_total_cached = 0;
     std::uint64_t _vram_total_cached = 0;
+    LUID _vram_adapter_luid {};
+    std::wstring _vram_adapter_instance;
 
     // Network state
     bool _net_have_iface = false;

@@ -647,8 +647,11 @@ namespace session_history {
         s.host_ram_percent = host.ram_total_bytes > 0
                                ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
                                : -1.0;
+        const auto vram_used_bytes = host.vram_total_bytes > 0 && host.vram_used_bytes > host.vram_total_bytes
+                                       ? host.vram_total_bytes
+                                       : host.vram_used_bytes;
         s.host_vram_percent = host.vram_total_bytes > 0
-                                ? static_cast<double>(host.vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
+                                ? static_cast<double>(vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
                                 : -1.0;
         s.host_cpu_temp_c = host.cpu_temp_c;
         s.host_gpu_temp_c = host.gpu_temp_c;
@@ -710,8 +713,11 @@ namespace session_history {
         s.host_ram_percent = host.ram_total_bytes > 0
                                ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
                                : -1.0;
+        const auto vram_used_bytes = host.vram_total_bytes > 0 && host.vram_used_bytes > host.vram_total_bytes
+                                       ? host.vram_total_bytes
+                                       : host.vram_used_bytes;
         s.host_vram_percent = host.vram_total_bytes > 0
-                                ? static_cast<double>(host.vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
+                                ? static_cast<double>(vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
                                 : -1.0;
         s.host_cpu_temp_c = host.cpu_temp_c;
         s.host_gpu_temp_c = host.gpu_temp_c;

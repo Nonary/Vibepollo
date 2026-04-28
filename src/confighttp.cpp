@@ -2420,10 +2420,13 @@ namespace confighttp {
     out["gpu_percent"] = s.gpu_percent;
     out["gpu_encoder_percent"] = s.gpu_encoder_percent;
     out["gpu_temp_c"] = s.gpu_temp_c;
-    out["vram_used_bytes"] = s.vram_used_bytes;
+    const auto vram_used_bytes = s.vram_total_bytes > 0 && s.vram_used_bytes > s.vram_total_bytes
+                                   ? s.vram_total_bytes
+                                   : s.vram_used_bytes;
+    out["vram_used_bytes"] = vram_used_bytes;
     out["vram_total_bytes"] = s.vram_total_bytes;
     out["vram_percent"] = s.vram_total_bytes > 0
-                           ? (static_cast<double>(s.vram_used_bytes) * 100.0 /
+                           ? (static_cast<double>(vram_used_bytes) * 100.0 /
                               static_cast<double>(s.vram_total_bytes))
                            : 0.0;
     out["net_rx_bps"] = s.net_rx_bps;
