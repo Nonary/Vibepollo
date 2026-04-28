@@ -1136,7 +1136,8 @@ namespace session_history {
       as.width = info.width;
       as.height = info.height;
       as.target_fps = info.fps;
-      as.target_bitrate_kbps = info.client_bitrate_kbps ? info.client_bitrate_kbps : info.bitrate_kbps;
+      as.target_bitrate_kbps = info.bitrate_kbps;
+      as.client_bitrate_kbps = info.client_bitrate_kbps ? info.client_bitrate_kbps : info.bitrate_kbps;
       as.codec = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
       as.hdr = info.dynamic_range > 0;
       as.uptime_seconds = info.uptime_seconds;
@@ -1177,6 +1178,7 @@ namespace session_history {
       as.height = ws.height.value_or(0);
       as.target_fps = ws.fps.value_or(0);
       as.target_bitrate_kbps = ws.bitrate_kbps.value_or(0);
+      as.client_bitrate_kbps = ws.bitrate_kbps.value_or(0);
       as.codec = ws.codec.value_or("");
       as.hdr = ws.hdr.value_or(false);
       as.frames_sent = static_cast<std::uint64_t>(

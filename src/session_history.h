@@ -121,6 +121,7 @@ namespace session_history {
     int height = 0;
     int target_fps = 0;
     int target_bitrate_kbps = 0;
+    int client_bitrate_kbps = 0;
     std::string codec;
     bool hdr = false;
     double uptime_seconds = 0;

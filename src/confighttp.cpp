@@ -2664,6 +2664,7 @@ namespace confighttp {
       j["height"] = as.height;
       j["target_fps"] = as.target_fps;
       j["target_bitrate_kbps"] = as.target_bitrate_kbps;
+      j["client_bitrate_kbps"] = as.client_bitrate_kbps;
       j["codec"] = as.codec;
       j["hdr"] = as.hdr;
       j["uptime_seconds"] = std::round(as.uptime_seconds * 10.0) / 10.0;
