@@ -8,8 +8,9 @@
  *               and @c "\GPU Engine(*engtype_VideoEncode)\Utilization Percentage".
  *               Vendor-agnostic (NVIDIA / AMD / Intel) — uses the WDDM
  *               scheduler, the same source Task Manager reads.
- * VRAM used   : PDH @c "\GPU Process Memory(*)\Dedicated Usage" filtered to
- *               the selected DXGI adapter LUID.
+ * VRAM used   : NVML device memory on NVIDIA, with PDH
+ *               @c "\GPU Process Memory(*)\Dedicated Usage" filtered to the
+ *               selected DXGI adapter LUID as a vendor-agnostic fallback.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
  * GPU temp    : optional NVML loaded at runtime via @c LoadLibrary.
  *
@@ -274,6 +275,11 @@ namespace {
    */
   class nvml_t {
   public:
+    struct memory_info_t {
+      std::uint64_t total = 0;
+      std::uint64_t used = 0;
+    };
+
     static nvml_t &
       instance() {
       static nvml_t inst;
@@ -297,7 +303,58 @@ namespace {
       return static_cast<float>(temp);
     }
 
+    memory_info_t
+      gpu_memory(std::uint64_t preferred_total_bytes) {
+      memory_info_t best {};
+      if (!_ok || !_device_get_memory_info) {
+        return best;
+      }
+
+      unsigned int count = 1;
+      if (_device_get_count) {
+        if (_device_get_count(&count) != 0 || count == 0) {
+          count = 1;
+        }
+      }
+
+      for (unsigned int i = 0; i < count; ++i) {
+        void *device = nullptr;
+        if (_device_get_handle(i, &device) != 0) {
+          continue;
+        }
+        nvml_memory_t mem {};
+        if (_device_get_memory_info(device, &mem) != 0) {
+          continue;
+        }
+
+        memory_info_t current {
+          static_cast<std::uint64_t>(mem.total),
+          static_cast<std::uint64_t>(mem.used),
+        };
+        if (current.total == 0) {
+          continue;
+        }
+        if (preferred_total_bytes > 0) {
+          const auto delta = current.total > preferred_total_bytes ? current.total - preferred_total_bytes : preferred_total_bytes - current.total;
+          if (delta < 256ULL * 1024ULL * 1024ULL) {
+            return current;
+          }
+        }
+        if (current.total > best.total) {
+          best = current;
+        }
+      }
+
+      return best;
+    }
+
   private:
+    struct nvml_memory_t {
+      unsigned long long total;
+      unsigned long long free;
+      unsigned long long used;
+    };
+
     nvml_t() {
       HMODULE mod = LoadLibraryA("nvml.dll");
       if (!mod) {
@@ -314,11 +371,15 @@ namespace {
         return;
       }
       using init_fn = int (*)();
+      using count_fn = int (*)(unsigned int *);
       using devh_fn = int (*)(unsigned int, void **);
       using temp_fn = int (*)(void *, int, unsigned int *);
+      using mem_fn = int (*)(void *, nvml_memory_t *);
       auto init_v2 = reinterpret_cast<init_fn>(GetProcAddress(mod, "nvmlInit_v2"));
+      _device_get_count = reinterpret_cast<count_fn>(GetProcAddress(mod, "nvmlDeviceGetCount_v2"));
       _device_get_handle = reinterpret_cast<devh_fn>(GetProcAddress(mod, "nvmlDeviceGetHandleByIndex_v2"));
       _device_get_temperature = reinterpret_cast<temp_fn>(GetProcAddress(mod, "nvmlDeviceGetTemperature"));
+      _device_get_memory_info = reinterpret_cast<mem_fn>(GetProcAddress(mod, "nvmlDeviceGetMemoryInfo"));
       if (!init_v2 || !_device_get_handle || !_device_get_temperature) {
         return;
       }
@@ -329,8 +390,10 @@ namespace {
     }
 
     bool _ok = false;
+    int (*_device_get_count)(unsigned int *) = nullptr;
     int (*_device_get_handle)(unsigned int, void **) = nullptr;
     int (*_device_get_temperature)(void *, int, unsigned int *) = nullptr;
+    int (*_device_get_memory_info)(void *, nvml_memory_t *) = nullptr;
   };
 
   class windows_host_stats_t: public platf::host_stats_provider_t {
@@ -431,11 +494,19 @@ namespace {
         s.gpu_encoder_percent = _gpu_enc.collect(100.f);
       }
       s.vram_total_bytes = _vram_total_cached;
-      if (_have_gpu_mem) {
+      auto nvml_memory = nvml_t::instance().gpu_memory(_vram_total_cached);
+      if (nvml_memory.used > 0) {
+        s.vram_used_bytes = _vram_total_cached > 0 && nvml_memory.used > _vram_total_cached
+                              ? _vram_total_cached
+                              : nvml_memory.used;
+        if (s.vram_total_bytes == 0) {
+          s.vram_total_bytes = nvml_memory.total;
+        }
+      } else if (_have_gpu_mem) {
         s.vram_used_bytes = collect_vram_used_bytes(_gpu_mem, _vram_adapter_instance, _vram_total_cached);
       }
 
-      // Temps (best effort, NVIDIA only via NVML)
+      // Temps (best effort, NVIDIA only via NVML).
       s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
 
       // Network throughput (delta over wall-clock time on the primary interface).
