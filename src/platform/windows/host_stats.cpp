@@ -197,13 +197,6 @@ namespace {
   std::uint64_t
     collect_vram_used_bytes(pdh_wildcard_sum_t &mem_query, const std::wstring &adapter_instance, std::uint64_t vram_total_bytes) {
     float v = mem_query.collect(-1.f, adapter_instance);
-    if (v == 0.f && !adapter_instance.empty()) {
-      // Some multi-adapter systems expose memory on a different active LUID
-      // than the static "largest VRAM" adapter chosen for host info. Falling
-      // back to the all-adapter sum is safer than reporting a permanently
-      // stuck 0; the clamp below still prevents impossible percentages.
-      v = mem_query.collect();
-    }
     if (v < 0.f) {
       return 0;
     }
