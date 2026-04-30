@@ -8,7 +8,7 @@
  *               and @c "\GPU Engine(*engtype_VideoEncode)\Utilization Percentage".
  *               Vendor-agnostic (NVIDIA / AMD / Intel) — uses the WDDM
  *               scheduler, the same source Task Manager reads.
- * VRAM used   : PDH @c "\GPU Adapter Memory(*)\Dedicated Usage" filtered to
+ * VRAM used   : PDH @c "\GPU Process Memory(*)\Dedicated Usage" filtered to
  *               the selected DXGI adapter LUID.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
  * GPU temp    : optional NVML loaded at runtime via @c LoadLibrary.
@@ -197,6 +197,13 @@ namespace {
   std::uint64_t
     collect_vram_used_bytes(pdh_wildcard_sum_t &mem_query, const std::wstring &adapter_instance, std::uint64_t vram_total_bytes) {
     float v = mem_query.collect(-1.f, adapter_instance);
+    if (v == 0.f && !adapter_instance.empty()) {
+      // Some multi-adapter systems expose memory on a different active LUID
+      // than the static "largest VRAM" adapter chosen for host info. Falling
+      // back to the all-adapter sum is safer than reporting a permanently
+      // stuck 0; the clamp below still prevents impossible percentages.
+      v = mem_query.collect();
+    }
     if (v < 0.f) {
       return 0;
     }
@@ -356,14 +363,14 @@ namespace {
       } else {
         BOOST_LOG(::info) << "host_stats(win): \\GPU Engine(*engtype_VideoEncode) counter unavailable";
       }
-      if (_gpu_mem.open()) {
-        _have_gpu_mem = true;
-      } else {
-        BOOST_LOG(::info) << "host_stats(win): \\GPU Adapter Memory(*) counter unavailable";
-      }
       // static info — DXGI + registry
       query_dxgi(_vram_total_cached, _vram_adapter_luid, _gpu_model_cached);
       _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
+      if (_gpu_mem.open()) {
+        _have_gpu_mem = true;
+      } else {
+        BOOST_LOG(::info) << "host_stats(win): \\GPU Process Memory(*) counter unavailable";
+      }
       _cpu_model_cached = read_processor_name();
 
       SYSTEM_INFO si;
@@ -597,7 +604,7 @@ namespace {
 
     pdh_wildcard_sum_t _gpu_3d {L"\\GPU Engine(*engtype_3D)\\Utilization Percentage"};
     pdh_wildcard_sum_t _gpu_enc {L"\\GPU Engine(*engtype_VideoEncode)\\Utilization Percentage"};
-    pdh_wildcard_sum_t _gpu_mem {L"\\GPU Adapter Memory(*)\\Dedicated Usage"};
+    pdh_wildcard_sum_t _gpu_mem {L"\\GPU Process Memory(*)\\Dedicated Usage"};
     bool _have_gpu_3d = false;
     bool _have_gpu_enc = false;
     bool _have_gpu_mem = false;
