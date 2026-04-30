@@ -8,9 +8,20 @@
  *               and @c "\GPU Engine(*engtype_VideoEncode)\Utilization Percentage".
  *               Vendor-agnostic (NVIDIA / AMD / Intel) — uses the WDDM
  *               scheduler, the same source Task Manager reads.
- * VRAM used   : NVML device memory on NVIDIA, with PDH
- *               @c "\GPU Process Memory(*)\Dedicated Usage" filtered to the
- *               selected DXGI adapter LUID as a vendor-agnostic fallback.
+ * VRAM used   : Tries vendor-agnostic sources first, then NVML as a last
+ *               resort. The picked source is logged once on the first
+ *               successful sample so it's visible in the runtime log.
+ *               Order:
+ *                 1) PDH @c "\GPU Adapter Memory(*)\Dedicated Usage" filtered
+ *                    to the DXGI adapter LUID — system-wide, vendor-agnostic
+ *                    (same source Task Manager uses). Note: on some Windows
+ *                    builds these instances are not published to session 0
+ *                    (LocalSystem) and the counter stays at 0; in that case
+ *                    we fall through.
+ *                 2) PDH @c "\GPU Process Memory(*)\Dedicated Usage" summed
+ *                    by adapter LUID and clamped to total VRAM.
+ *                 3) NVML @c nvmlDeviceGetMemoryInfo (NVIDIA only) when both
+ *                    PDH counters return no data.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
  * GPU temp    : optional NVML loaded at runtime via @c LoadLibrary.
  *
@@ -424,9 +435,14 @@ namespace {
       if (_vram_total_cached > 0) {
         _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
       }
+      if (!_vram_adapter_instance.empty() && _gpu_adapter_mem.open()) {
+        _have_gpu_adapter_mem = true;
+      } else if (!_vram_adapter_instance.empty()) {
+        BOOST_LOG(::info) << "host_stats(win): \\GPU Adapter Memory(*) counter unavailable";
+      }
       if (!_vram_adapter_instance.empty() && _gpu_mem.open()) {
         _have_gpu_mem = true;
-      } else {
+      } else if (!_vram_adapter_instance.empty()) {
         BOOST_LOG(::info) << "host_stats(win): \\GPU Process Memory(*) counter unavailable";
       }
       _cpu_model_cached = read_processor_name();
@@ -494,16 +510,49 @@ namespace {
         s.gpu_encoder_percent = _gpu_enc.collect(100.f);
       }
       s.vram_total_bytes = _vram_total_cached;
-      auto nvml_memory = nvml_t::instance().gpu_memory(_vram_total_cached);
-      if (nvml_memory.used > 0) {
-        s.vram_used_bytes = _vram_total_cached > 0 && nvml_memory.used > _vram_total_cached
-                              ? _vram_total_cached
-                              : nvml_memory.used;
-        if (s.vram_total_bytes == 0) {
-          s.vram_total_bytes = nvml_memory.total;
+      const char *vram_source = nullptr;
+
+      // Primary: vendor-agnostic, system-wide adapter memory counter
+      // (same one Task Manager uses for "Dedicated GPU memory").
+      if (_have_gpu_adapter_mem) {
+        auto v = collect_vram_used_bytes(_gpu_adapter_mem, _vram_adapter_instance, _vram_total_cached);
+        if (v > 0) {
+          s.vram_used_bytes = v;
+          vram_source = "pdh-adapter";
         }
-      } else if (_have_gpu_mem) {
-        s.vram_used_bytes = collect_vram_used_bytes(_gpu_mem, _vram_adapter_instance, _vram_total_cached);
+      }
+
+      // Fallback A: vendor-agnostic per-process memory summed by adapter LUID.
+      if (s.vram_used_bytes == 0 && _have_gpu_mem) {
+        auto v = collect_vram_used_bytes(_gpu_mem, _vram_adapter_instance, _vram_total_cached);
+        if (v > 0) {
+          s.vram_used_bytes = v;
+          vram_source = "pdh-process";
+        }
+      }
+
+      // Fallback B: NVIDIA-only NVML, last resort (e.g. PDH counters disabled by policy).
+      if (s.vram_used_bytes == 0) {
+        auto nvml_memory = nvml_t::instance().gpu_memory(_vram_total_cached);
+        if (nvml_memory.used > 0) {
+          s.vram_used_bytes = _vram_total_cached > 0 && nvml_memory.used > _vram_total_cached
+                                ? _vram_total_cached
+                                : nvml_memory.used;
+          if (s.vram_total_bytes == 0) {
+            s.vram_total_bytes = nvml_memory.total;
+          }
+          vram_source = "nvml";
+        }
+      }
+
+      if (vram_source && (!_logged_vram_source || _last_vram_source != vram_source)) {
+        _logged_vram_source = true;
+        _last_vram_source = vram_source;
+        BOOST_LOG(::info)
+          << "host_stats(win): vram source = " << vram_source
+          << " (used=" << (s.vram_used_bytes / (1024ULL * 1024ULL))
+          << " MiB, total=" << (s.vram_total_bytes / (1024ULL * 1024ULL))
+          << " MiB, instance='" << std::string(_vram_adapter_instance.begin(), _vram_adapter_instance.end()) << "')";
       }
 
       // Temps (best effort, NVIDIA only via NVML).
@@ -670,10 +719,14 @@ namespace {
 
     pdh_wildcard_sum_t _gpu_3d {L"\\GPU Engine(*engtype_3D)\\Utilization Percentage"};
     pdh_wildcard_sum_t _gpu_enc {L"\\GPU Engine(*engtype_VideoEncode)\\Utilization Percentage"};
+    pdh_wildcard_sum_t _gpu_adapter_mem {L"\\GPU Adapter Memory(*)\\Dedicated Usage"};
     pdh_wildcard_sum_t _gpu_mem {L"\\GPU Process Memory(*)\\Dedicated Usage"};
     bool _have_gpu_3d = false;
     bool _have_gpu_enc = false;
+    bool _have_gpu_adapter_mem = false;
     bool _have_gpu_mem = false;
+    bool _logged_vram_source = false;
+    std::string _last_vram_source;
 
     std::string _cpu_model_cached;
     std::string _gpu_model_cached;
