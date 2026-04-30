@@ -358,8 +358,10 @@ namespace {
       }
       // static info — DXGI + registry
       query_dxgi(_vram_total_cached, _vram_adapter_luid, _gpu_model_cached);
-      _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
-      if (_gpu_mem.open()) {
+      if (_vram_total_cached > 0) {
+        _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
+      }
+      if (!_vram_adapter_instance.empty() && _gpu_mem.open()) {
         _have_gpu_mem = true;
       } else {
         BOOST_LOG(::info) << "host_stats(win): \\GPU Process Memory(*) counter unavailable";
