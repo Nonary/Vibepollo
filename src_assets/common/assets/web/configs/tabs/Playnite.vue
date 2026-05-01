@@ -405,6 +405,16 @@
                 desc="playnite.focus_exit_on_first_help"
               />
             </div>
+            <div class="md:col-span-2">
+              <Checkbox
+                v-model="config.playnite_keep_running_on_session_end"
+                id="playnite_keep_running_on_session_end"
+                :default="store.defaults.playnite_keep_running_on_session_end"
+                :localePrefix="'playnite'"
+                label="playnite.keep_running_on_session_end"
+                desc="playnite.keep_running_on_session_end_help"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1464,6 +1474,10 @@ function resetLaunchSection() {
   store.updateOption('playnite_focus_attempts', d.playnite_focus_attempts);
   store.updateOption('playnite_focus_timeout_secs', d.playnite_focus_timeout_secs);
   store.updateOption('playnite_focus_exit_on_first', d.playnite_focus_exit_on_first);
+  store.updateOption(
+    'playnite_keep_running_on_session_end',
+    d.playnite_keep_running_on_session_end,
+  );
   notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
 }
 
