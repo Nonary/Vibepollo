@@ -44,8 +44,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Resolve release notes
-        id: release-notes
+      - name: Resolve release metadata
+        id: release-metadata
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
@@ -56,10 +56,20 @@ jobs:
             exit 1
           fi
 
+          if [[ "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?$ ]]; then
+            prerelease=true
+          elif [[ "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-stable)?$ ]]; then
+            prerelease=false
+          else
+            echo "::error::Unsupported release tag '${TAG_NAME}'. Use an unsuffixed or -stable semantic version for stable releases, or -alpha/-beta/-rc for pre-releases."
+            exit 1
+          fi
+
           notes_file="release_notes/${TAG_NAME}.md"
           if [[ -f "${notes_file}" ]]; then
             echo "Using release notes: ${notes_file}"
             echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+            echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -78,19 +88,35 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES_FILE: ${{ steps.release-notes.outputs.notes_file }}
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           TAG_NAME: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
         run: |
           set -euo pipefail
           release_title="v${TAG_NAME}"
 
+          release_args=(
+            --title "${release_title}"
+            --notes-file "${NOTES_FILE}"
+          )
+
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
           if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
-            gh release edit "${TAG_NAME}" \
-              --title "${release_title}" \
-              --notes-file "${NOTES_FILE}"
+            gh release edit "${TAG_NAME}" "${release_args[@]}"
             gh release upload "${TAG_NAME}" artifacts/* --clobber
           else
-            gh release create "${TAG_NAME}" artifacts/* \
-              --title "${release_title}" \
-              --notes-file "${NOTES_FILE}"
+            gh release create "${TAG_NAME}" artifacts/* "${release_args[@]}"
           fi
+
+          # Be explicit when updating existing releases too. The GitHub CLI can
+          # mark a release as pre-release, but this API patch also clears the
+          # pre-release flag for unsuffixed/-stable tags.
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq .id)
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F prerelease="${PRERELEASE}" \
+            >/dev/null
