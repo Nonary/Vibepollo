@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows-AMD64
+          - name: Windows
             os: windows-2022
             arch: x86_64
             msystem: ucrt64
@@ -289,21 +289,52 @@ jobs:
           mkdir -p artifacts
           cd build
 
+          set -euo pipefail
+
           # package
           cpack -G WIX
           cpack -G ZIP
 
-          # build custom installer executable that wraps the MSI payload
+          # build the custom setup executable that wraps the MSI payload
           powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/windows/bootstrapper/build_bootstrapper.ps1 -BuildDir "$(cygpath -w "$(pwd)")"
 
-          msi_file=$(ls -1 ./cpack_artifacts/*.msi | head -n 1)
-          installer_exe=$(ls -1 ./cpack_artifacts/VibepolloSetup.exe ./cpack_artifacts/*-installer.exe 2>/dev/null | head -n 1)
-          portable_zip=$(ls -1 ./cpack_artifacts/*.zip | head -n 1)
+          msi_file=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*.msi' | sort | head -n 1)
+          installer_exe=./cpack_artifacts/VibepolloSetup.exe
+          portable_zip=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*.zip' | sort | head -n 1)
 
-          # move
-          mv "${msi_file}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.msi
-          mv "${installer_exe}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.exe
-          mv "${portable_zip}" ../artifacts/Vibepollo-${{ matrix.name }}-portable.zip
+          if [[ -z "${msi_file}" ]]; then
+            echo "No MSI package was produced." >&2
+            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          if [[ ! -f "${installer_exe}" ]]; then
+            echo "Expected setup executable was not produced: ${installer_exe}" >&2
+            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          if [[ -z "${portable_zip}" ]]; then
+            echo "No portable ZIP package was produced." >&2
+            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          # Keep generated package names intact. In particular, do not rename
+          # VibepolloSetup.exe; downstream release/install docs expect that name.
+          cp "${msi_file}" "../artifacts/$(basename "${msi_file}")"
+          cp "${installer_exe}" ../artifacts/VibepolloSetup.exe
+          cp "${portable_zip}" "../artifacts/$(basename "${portable_zip}")"
+
+      - name: Debug nsis
+        if: always()
+        shell: msys2 {0}
+        run: cat ./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log || true
+
+      - name: Debug wix
+        if: always()
+        shell: msys2 {0}
+        run: cat ./build/cpack_artifacts/_CPack_Packages/win64/WIX/wix.log || true
 
       - name: Run tests
         id: test

@@ -1,0 +1,96 @@
+---
+name: CI
+permissions: {}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - vibe
+      - main
+      - master
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - vibe
+      - main
+      - master
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Windows
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      release_commit: ${{ github.sha }}
+      release_version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.0.0' }}
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-windows
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Resolve release notes
+        id: release-notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${TAG_NAME}" == v* ]]; then
+            echo "::error::Release tags should not include a v prefix. Use '${TAG_NAME#v}' instead of '${TAG_NAME}'."
+            exit 1
+          fi
+
+          notes_file="release_notes/${TAG_NAME}.md"
+          if [[ -f "${notes_file}" ]]; then
+            echo "Using release notes: ${notes_file}"
+            echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "::error::Release notes file not found: ${notes_file}"
+          exit 1
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: build-Windows
+          path: artifacts
+
+      - name: Debug artifacts
+        run: ls -l artifacts
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FILE: ${{ steps.release-notes.outputs.notes_file }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_title="v${TAG_NAME}"
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release edit "${TAG_NAME}" \
+              --title "${release_title}" \
+              --notes-file "${NOTES_FILE}"
+            gh release upload "${TAG_NAME}" artifacts/* --clobber
+          else
+            gh release create "${TAG_NAME}" artifacts/* \
+              --title "${release_title}" \
+              --notes-file "${NOTES_FILE}"
+          fi
