@@ -30,6 +30,10 @@ jobs:
     with:
       release_commit: ${{ github.sha }}
       release_version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.0.0' }}
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: polo
+    secrets:
+      symbol_token: ${{ secrets.SYMBOL_TOKEN }}
 
   release:
     name: Release
@@ -51,30 +55,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${TAG_NAME}" == v* ]]; then
-            echo "::error::Release tags should not include a v prefix. Use '${TAG_NAME#v}' instead of '${TAG_NAME}'."
-            exit 1
-          fi
-
-          if [[ "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?)$ ]]; then
+            release_version="${BASH_REMATCH[1]}"
             prerelease=true
-          elif [[ "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-stable)?$ ]]; then
+          elif [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+(-stable)?)$ ]]; then
+            release_version="${BASH_REMATCH[1]}"
             prerelease=false
           else
-            echo "::error::Unsupported release tag '${TAG_NAME}'. Use an unsuffixed or -stable semantic version for stable releases, or -alpha/-beta/-rc for pre-releases."
+            echo "::error::Unsupported release tag '${TAG_NAME}'. Use v-prefixed semantic versions for releases, e.g. v1.15.2-beta.2."
             exit 1
           fi
 
-          notes_file="release_notes/${TAG_NAME}.md"
-          if [[ -f "${notes_file}" ]]; then
-            echo "Using release notes: ${notes_file}"
-            echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
-            echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
-            exit 0
+          product_name="Vibepollo"
+
+          notes_file=""
+          for candidate in "release_notes/${TAG_NAME}.md" "release_notes/${release_version}.md"; do
+            if [[ -f "${candidate}" ]]; then
+              notes_file="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${notes_file}" ]]; then
+            echo "::error::Release notes file not found. Expected release_notes/${TAG_NAME}.md or release_notes/${release_version}.md"
+            exit 1
           fi
 
-          echo "::error::Release notes file not found: ${notes_file}"
-          exit 1
+          echo "Using release notes: ${notes_file}"
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "product_name=${product_name}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
@@ -89,11 +100,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
-          TAG_NAME: ${{ github.ref_name }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
+          PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
+          RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          release_title="v${TAG_NAME}"
+          release_title="${PRODUCT_NAME} v${RELEASE_VERSION}"
 
           release_args=(
             --title "${release_title}"

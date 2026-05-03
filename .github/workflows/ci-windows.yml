@@ -12,8 +12,16 @@ on:
       release_version:
         required: true
         type: string
+      symbol_product_name:
+        required: true
+        type: string
+      symbol_release_prefix:
+        required: true
+        type: string
     secrets:
       CODECOV_TOKEN:
+        required: false
+      symbol_token:
         required: false
 
 jobs:
@@ -258,14 +266,46 @@ jobs:
         run: |
           choco install wixtoolset -y
 
+      - name: Install cv2pdb
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          CV2PDB_VERSION: "0.54"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cv2pdbDir = Join-Path $env:RUNNER_TEMP 'cv2pdb'
+          $cv2pdbZip = Join-Path $env:RUNNER_TEMP 'cv2pdb.zip'
+          $cv2pdbUrl = "https://github.com/rainers/cv2pdb/releases/download/v${env:CV2PDB_VERSION}/cv2pdb-${env:CV2PDB_VERSION}.zip"
+
+          Invoke-WebRequest -Uri $cv2pdbUrl -OutFile $cv2pdbZip
+          Expand-Archive -Path $cv2pdbZip -DestinationPath $cv2pdbDir -Force
+          $cv2pdbExe = Get-ChildItem -Path $cv2pdbDir -Recurse -Filter cv2pdb64.exe -File | Select-Object -First 1
+          if (-not $cv2pdbExe) {
+            throw 'cv2pdb64.exe was not found in the downloaded archive.'
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $cv2pdbExe.FullName -Parent)
+
       - name: Build Windows
         shell: msys2 {0}
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          BUILD_VERSION: ${{ inputs.release_version }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           COMMIT: ${{ inputs.release_commit }}
+          MATRIX_MSYSTEM: ${{ matrix.msystem }}
+          RAW_BUILD_VERSION: ${{ inputs.release_version }}
         run: |
+          build_version="${RAW_BUILD_VERSION}"
+          if [[ "${build_version}" =~ ^v(.+)$ ]]; then
+            build_version="${BASH_REMATCH[1]}"
+          fi
+          export BUILD_VERSION="${build_version}"
+
+          # setup NodeJS PATH
+          if [[ "${MATRIX_MSYSTEM}" != "ucrt64" ]]; then
+            NODEJS_PATH=$(cygpath "$NODEJS_PATH")
+            export PATH="$PATH:$NODEJS_PATH"
+          fi
+
           mkdir -p build
           cmake \
             -B build \
@@ -281,10 +321,97 @@ jobs:
           ninja -C build
           echo "::remove-matcher owner=gcc::"
 
+      - name: Generate Windows PDB
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $executables = @(
+            '.\build\sunshine.exe',
+            '.\build\tools\audio-info.exe',
+            '.\build\tools\dxgi-info.exe',
+            '.\build\tools\playnite-launcher.exe',
+            '.\build\tools\sunshine_display_helper.exe',
+            '.\build\tools\sunshine_wgc_capture.exe',
+            '.\build\tools\sunshinesvc.exe'
+          )
+
+          foreach ($exe in $executables) {
+            if (Test-Path -LiteralPath $exe) {
+              & cv2pdb64.exe $exe
+            }
+          }
+
+          $sunshineSvc = '.\build\tools\sunshinesvc.exe'
+          $sunshineSvcPayload = '.\build\wix_payload\tools\sunshinesvc.exe'
+          if ((Test-Path -LiteralPath $sunshineSvc) -and (Test-Path -LiteralPath $sunshineSvcPayload)) {
+            Copy-Item -LiteralPath $sunshineSvc -Destination $sunshineSvcPayload -Force
+          }
+
+      - name: Package Windows Symbols
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseVersion = $env:RELEASE_VERSION
+          if ($releaseVersion -match '^v(.+)$') {
+            $releaseVersion = $Matches[1]
+          }
+
+          $symbolsRoot = Join-Path $PWD 'symbols'
+          $artifactName = "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
+          $artifactPath = Join-Path $symbolsRoot $artifactName
+
+          New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
+
+          $pdbFiles = Get-ChildItem -Path build -Recurse -Filter *.pdb -File |
+            Where-Object { $_.FullName -notlike '*\cpack_artifacts\*' }
+
+          if (-not $pdbFiles) {
+            throw 'No PDB files were produced.'
+          }
+
+          $buildRoot = (Resolve-Path build).Path
+          $pdbPaths = @($pdbFiles | ForEach-Object { [System.IO.Path]::GetRelativePath($buildRoot, $_.FullName) })
+          Push-Location $buildRoot
+          try {
+            & 7z a $artifactPath $pdbPaths
+          } finally {
+            Pop-Location
+          }
+
+      - name: Strip Windows binaries
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' binaries < <(
+            find build -type f \( -name '*.exe' -o -name '*.dll' \) \
+              ! -path '*/cpack_artifacts/*' \
+              ! -path '*/CMakeFiles/*' \
+              ! -path '*/_deps/*' \
+              ! -path '*/tests/*' \
+              -print0
+          )
+
+          if (( ${#binaries[@]} == 0 )); then
+            echo "No Windows binaries found to strip."
+            exit 0
+          fi
+
+          strip --strip-debug --strip-unneeded "${binaries[@]}"
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Package Windows
         shell: msys2 {0}
+        env:
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
         run: |
           mkdir -p artifacts
           cd build
@@ -299,7 +426,8 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/windows/bootstrapper/build_bootstrapper.ps1 -BuildDir "$(cygpath -w "$(pwd)")"
 
           msi_file=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*.msi' | sort | head -n 1)
-          installer_exe=./cpack_artifacts/VibepolloSetup.exe
+          installer_name="${SYMBOL_PRODUCT_NAME}Setup.exe"
+          installer_exe="./cpack_artifacts/${installer_name}"
           portable_zip=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*.zip' | sort | head -n 1)
 
           if [[ -z "${msi_file}" ]]; then
@@ -309,9 +437,14 @@ jobs:
           fi
 
           if [[ ! -f "${installer_exe}" ]]; then
-            echo "Expected setup executable was not produced: ${installer_exe}" >&2
-            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
-            exit 1
+            fallback_installer=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*Setup.exe' | sort | head -n 1)
+            if [[ -z "${fallback_installer}" ]]; then
+              echo "Expected setup executable was not produced: ${installer_exe}" >&2
+              find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+              exit 1
+            fi
+            installer_exe="${fallback_installer}"
+            installer_name="$(basename "${installer_exe}")"
           fi
 
           if [[ -z "${portable_zip}" ]]; then
@@ -323,7 +456,7 @@ jobs:
           # Keep generated package names intact. In particular, do not rename
           # VibepolloSetup.exe; downstream release/install docs expect that name.
           cp "${msi_file}" "../artifacts/$(basename "${msi_file}")"
-          cp "${installer_exe}" ../artifacts/VibepolloSetup.exe
+          cp "${installer_exe}" "../artifacts/${installer_name}"
           cp "${portable_zip}" "../artifacts/$(basename "${portable_zip}")"
 
       - name: Debug nsis
@@ -370,23 +503,81 @@ jobs:
             build/tests/test_results.xml
           if-no-files-found: error
 
-      - name: Package Windows Debug Info
-        shell: pwsh
-        working-directory: build
-        run: |
-          # use .dbg file extension for binaries to avoid confusion with real packages
-          Get-ChildItem -File -Recurse | `
-            % { Rename-Item -Path $_.PSPath -NewName $_.Name.Replace(".exe",".dbg") }
-
-          # save the binaries with debug info
-          7z -r `
-            "-xr!CMakeFiles" `
-            "-xr!cpack_artifacts" `
-            a "../artifacts/Vibepollo-${{ matrix.name }}-debuginfo.7z" "*.dbg"
-
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.name }}
           path: artifacts/
           if-no-files-found: error
+
+      - name: Publish private symbols release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.symbol_token }}
+          RELEASE_TAG: ${{ inputs.release_version }}
+          SYMBOL_RELEASE_PREFIX: ${{ inputs.symbol_release_prefix }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+          SYMBOLS_REPO: Nonary/vibeshine_symbols
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "SYMBOL_TOKEN is required to upload private symbols to $($env:SYMBOLS_REPO)."
+          }
+
+          $sourceReleaseTag = $env:RELEASE_TAG
+          $releaseVersion = $sourceReleaseTag
+          if ($releaseVersion -match '^v(.+)$') {
+            $releaseVersion = $Matches[1]
+          }
+
+          if ($releaseVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+((-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?)|-stable)?$') {
+            throw "Unsupported release tag '$sourceReleaseTag'. Expected a release tag like v1.15.2-beta.2."
+          }
+
+          if ($env:SYMBOL_RELEASE_PREFIX -notmatch '^(shine|polo)$') {
+            throw "Unsupported symbol release prefix '$($env:SYMBOL_RELEASE_PREFIX)'. Expected 'shine' or 'polo'."
+          }
+
+          $symbolReleaseTag = "$($env:SYMBOL_RELEASE_PREFIX)_$releaseVersion"
+          $prerelease = ($releaseVersion -match '-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?$')
+          $symbolPack = Join-Path (Join-Path $PWD 'symbols') "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
+
+          if (-not (Test-Path -LiteralPath $symbolPack)) {
+            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            throw "Private symbol pack not found: $symbolPack"
+          }
+
+          $releaseTitle = "$($env:SYMBOL_PRODUCT_NAME) symbols v$releaseVersion"
+          $releaseNotes = "Private Windows debug symbols for $($env:SYMBOL_PRODUCT_NAME) v$releaseVersion (source release $sourceReleaseTag)."
+          $releaseArgs = @('--repo', $env:SYMBOLS_REPO, '--title', $releaseTitle, '--notes', $releaseNotes)
+          if ($prerelease) {
+            $releaseArgs += '--prerelease'
+          }
+
+          $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $false
+          & gh release view $symbolReleaseTag --repo $env:SYMBOLS_REPO *> $null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+          $PSNativeCommandUseErrorActionPreference = $oldNativeCommandPreference
+
+          if ($releaseExists) {
+            & gh release edit $symbolReleaseTag @releaseArgs
+            if ($LASTEXITCODE -ne 0) { throw "Failed to update private symbols release '$symbolReleaseTag'." }
+            & gh release upload $symbolReleaseTag $symbolPack --repo $env:SYMBOLS_REPO --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Failed to upload private symbol pack '$symbolPack'." }
+          } else {
+            & gh release create $symbolReleaseTag $symbolPack @releaseArgs
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create private symbols release '$symbolReleaseTag'." }
+          }
+
+          $releaseId = & gh api "repos/$($env:SYMBOLS_REPO)/releases/tags/$symbolReleaseTag" --jq .id
+          if ($LASTEXITCODE -ne 0) { throw "Failed to resolve private symbols release id for '$symbolReleaseTag'." }
+          $prereleaseValue = if ($prerelease) { 'true' } else { 'false' }
+          & gh api `
+            --method PATCH `
+            "repos/$($env:SYMBOLS_REPO)/releases/$releaseId" `
+            -F "prerelease=$prereleaseValue" `
+            *> $null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to set private symbols release prerelease state for '$symbolReleaseTag'." }
