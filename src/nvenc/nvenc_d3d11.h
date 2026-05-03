@@ -5,8 +5,10 @@
 #pragma once
 #ifdef _WIN32
 
-  // standard includes
+  // platform includes
   #include <winsock2.h>
+
+  // standard includes
   #include <comdef.h>
   #include <d3d11.h>
 

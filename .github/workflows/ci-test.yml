@@ -1,0 +1,123 @@
+---
+name: CI Test
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Windows build test
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      publish_symbols: true
+      release_commit: ${{ github.sha }}
+      release_version: '0.0.0'
+      symbol_product_name: Vibepollo
+      symbol_release_draft: true
+      symbol_release_prefix: polo
+      symbol_release_tag: polo_test_ci
+      upload_symbols_artifact: true
+    secrets:
+      symbol_token: ${{ secrets.SYMBOL_TOKEN }}
+
+  release-test:
+    name: Draft test release
+    needs:
+      - build-windows
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: build-Windows
+          path: artifacts
+
+      - name: Create or update draft test release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: test_ci
+          RELEASE_TITLE: Vibepollo CI Test
+        run: |
+          set -euo pipefail
+
+          ls -l artifacts
+
+          release_notes="Draft CI test release for ${GITHUB_REPOSITORY}@${GITHUB_SHA}."
+          release_id="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq ".[] | select((.tag_name == \"${RELEASE_TAG}\") or (.name == \"${RELEASE_TITLE}\")) | .id" |
+              head -n 1
+          )"
+
+          if [[ -n "${release_id}" ]]; then
+            release_id="$(
+              gh api \
+                --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                -f tag_name="${RELEASE_TAG}" \
+                -f target_commitish="${GITHUB_SHA}" \
+                -f name="${RELEASE_TITLE}" \
+                -f body="${release_notes}" \
+                -F draft=true \
+                -F prerelease=true \
+                --jq .id
+            )"
+          else
+            release_id="$(
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/releases" \
+                -f tag_name="${RELEASE_TAG}" \
+                -f target_commitish="${GITHUB_SHA}" \
+                -f name="${RELEASE_TITLE}" \
+                -f body="${release_notes}" \
+                -F draft=true \
+                -F prerelease=true \
+                --jq .id
+            )"
+          fi
+
+          if [[ -z "${release_id}" ]]; then
+            echo "::error::Failed to resolve release id for ${RELEASE_TAG}."
+            exit 1
+          fi
+
+          upload_url="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              --jq '.upload_url | split("{")[0]'
+          )"
+          if [[ -z "${upload_url}" ]]; then
+            echo "::error::Failed to resolve release upload URL for ${RELEASE_TAG}."
+            exit 1
+          fi
+
+          for asset in artifacts/*; do
+            [[ -f "${asset}" ]] || continue
+            asset_name="$(basename "${asset}")"
+            existing_asset_ids="$(
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+                --jq ".[] | select(.name == \"${asset_name}\") | .id"
+            )"
+            while IFS= read -r asset_id; do
+              [[ -z "${asset_id}" ]] && continue
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+            done <<< "${existing_asset_ids}"
+
+            gh api \
+              --method POST \
+              "${upload_url}" \
+              -H "Content-Type: application/octet-stream" \
+              -f "name=${asset_name}" \
+              --input "${asset}" \
+              >/dev/null
+          done

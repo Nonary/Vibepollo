@@ -10,7 +10,8 @@ on:
       - main
       - master
     tags:
-      - '*'
+      - '[0-9]*.[0-9]*.[0-9]*'
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   pull_request:
     branches:
       - vibe
@@ -31,6 +32,7 @@ jobs:
       release_commit: ${{ github.sha }}
       release_version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.0.0' }}
       symbol_product_name: Vibepollo
+      symbol_release_draft: true
       symbol_release_prefix: polo
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
@@ -55,21 +57,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?)$ ]]; then
-            release_version="${BASH_REMATCH[1]}"
-            prerelease=true
-          elif [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+(-stable)?)$ ]]; then
-            release_version="${BASH_REMATCH[1]}"
-            prerelease=false
+          if [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$ ]]; then
+            base_version="${BASH_REMATCH[1]}"
+            release_version="${TAG_NAME#v}"
           else
-            echo "::error::Unsupported release tag '${TAG_NAME}'. Use v-prefixed semantic versions for releases, e.g. v1.15.2-beta.2."
+            echo "::error::Unsupported release tag '${TAG_NAME}'. Use a version tag like 1.15.4, v1.15.4, or 1.15.4-beta.1."
             exit 1
+          fi
+
+          tag_lower="$(printf '%s' "${release_version}" | tr '[:upper:]' '[:lower:]')"
+          prerelease=false
+          channel=stable
+          if [[ "${tag_lower}" == *alpha* ]]; then
+            prerelease=true
+            channel=alpha
+          elif [[ "${tag_lower}" == *beta* ]]; then
+            prerelease=true
+            channel=beta
+          elif [[ "${tag_lower}" == *rc* ]]; then
+            prerelease=true
+            channel=rc
+          elif [[ "${tag_lower}" == *stable* ]]; then
+            prerelease=false
+            channel=stable
+          fi
+
+          if [[ "${prerelease}" == "true" ]]; then
+            make_latest=false
+          else
+            make_latest=true
           fi
 
           product_name="Vibepollo"
 
           notes_file=""
-          for candidate in "release_notes/${TAG_NAME}.md" "release_notes/${release_version}.md"; do
+          for candidate in \
+            "release_notes/${release_version}.md" \
+            "release_notes/${base_version}.md" \
+            "release_notes/${TAG_NAME}.md"; do
             if [[ -f "${candidate}" ]]; then
               notes_file="${candidate}"
               break
@@ -82,6 +107,9 @@ jobs:
           fi
 
           echo "Using release notes: ${notes_file}"
+          echo "base_version=${base_version}" >> "${GITHUB_OUTPUT}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+          echo "make_latest=${make_latest}" >> "${GITHUB_OUTPUT}"
           echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
           echo "product_name=${product_name}" >> "${GITHUB_OUTPUT}"
@@ -98,7 +126,10 @@ jobs:
 
       - name: Create or update GitHub release
         env:
+          BASE_VERSION: ${{ steps.release-metadata.outputs.base_version }}
+          CHANNEL: ${{ steps.release-metadata.outputs.channel }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ steps.release-metadata.outputs.make_latest }}
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
           PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
@@ -107,29 +138,85 @@ jobs:
         run: |
           set -euo pipefail
           release_title="${PRODUCT_NAME} v${RELEASE_VERSION}"
+          versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${BASE_VERSION}-${CHANNEL}.exe"
 
-          release_args=(
-            --title "${release_title}"
-            --notes-file "${NOTES_FILE}"
-          )
-
-          if [[ "${PRERELEASE}" == "true" ]]; then
-            release_args+=(--prerelease)
+          mapfile -t setup_assets < <(find artifacts -maxdepth 1 -type f -name "${PRODUCT_NAME}Setup*.exe" | sort)
+          if (( ${#setup_assets[@]} != 1 )); then
+            echo "::error::Expected exactly one ${PRODUCT_NAME} setup artifact, found ${#setup_assets[@]}."
+            find artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
           fi
 
-          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
-            gh release edit "${TAG_NAME}" "${release_args[@]}"
-            gh release upload "${TAG_NAME}" artifacts/* --clobber
+          if [[ "${setup_assets[0]}" != "${versioned_setup}" ]]; then
+            mv -f "${setup_assets[0]}" "${versioned_setup}"
+          fi
+
+          release_payload="$(
+            jq -n \
+              --arg tag_name "${TAG_NAME}" \
+              --arg target_commitish "${GITHUB_SHA}" \
+              --arg name "${release_title}" \
+              --rawfile body "${NOTES_FILE}" \
+              --argjson draft false \
+              --argjson prerelease "${PRERELEASE}" \
+              --arg make_latest "${MAKE_LATEST}" \
+              '{
+                tag_name: $tag_name,
+                target_commitish: $target_commitish,
+                name: $name,
+                body: $body,
+                draft: $draft,
+                prerelease: $prerelease,
+                make_latest: $make_latest
+              }'
+          )"
+
+          release_id="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id" |
+              head -n 1
+          )"
+
+          if [[ -n "${release_id}" ]]; then
+            release_json="$(
+              gh api \
+                --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                --input - <<< "${release_payload}"
+            )"
           else
-            gh release create "${TAG_NAME}" artifacts/* "${release_args[@]}"
+            release_json="$(
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/releases" \
+                --input - <<< "${release_payload}"
+            )"
           fi
 
-          # Be explicit when updating existing releases too. The GitHub CLI can
-          # mark a release as pre-release, but this API patch also clears the
-          # pre-release flag for unsuffixed/-stable tags.
-          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq .id)
-          gh api \
-            --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F prerelease="${PRERELEASE}" \
-            >/dev/null
+          release_id="$(jq -r '.id // empty' <<< "${release_json}")"
+          upload_url="$(jq -r '.upload_url // "" | split("{")[0]' <<< "${release_json}")"
+          if [[ -z "${release_id}" || -z "${upload_url}" ]]; then
+            echo "::error::Failed to resolve release id/upload URL for ${TAG_NAME}."
+            exit 1
+          fi
+
+          existing_asset_ids="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+              --jq '.[].id'
+          )"
+          while IFS= read -r asset_id; do
+            [[ -z "${asset_id}" ]] && continue
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+          done <<< "${existing_asset_ids}"
+
+          for asset in artifacts/*; do
+            [[ -f "${asset}" ]] || continue
+            asset_name="$(basename "${asset}")"
+            encoded_asset_name="$(jq -rn --arg name "${asset_name}" '$name|@uri')"
+            gh api \
+              --method POST \
+              "${upload_url}?name=${encoded_asset_name}" \
+              -H "Content-Type: application/octet-stream" \
+              --input "${asset}" \
+              >/dev/null
+          done

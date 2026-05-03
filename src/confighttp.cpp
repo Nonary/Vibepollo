@@ -3083,6 +3083,7 @@ namespace confighttp {
       confighttp::refresh_client_apps_cache(file_tree);
 
       output_tree["status"] = true;
+      output_tree["removed"] = removed;
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "purgeAutoSyncedApps: "sv << e.what();

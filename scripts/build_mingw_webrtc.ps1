@@ -15,6 +15,8 @@ param(
   [string]$DepotToolsDir = "",
   [string]$GitCachePath = "",
   [int]$GclientJobs = 0,
+  [ValidateSet("All", "Sync", "Build")]
+  [string]$Stage = "All",
   [string]$CMakeCache = ""
 )
 
@@ -100,6 +102,40 @@ function Prepend-EnvList {
   }
 
   Set-Item -Path "Env:$Name" -Value ($combinedEntries -join ';')
+}
+
+function Import-BatchEnvironment {
+  param(
+    [string]$BatchFile,
+    [string[]]$Arguments = @()
+  )
+
+  if (-not (Test-Path $BatchFile)) {
+    throw "Batch environment file not found: $BatchFile"
+  }
+
+  $argumentString = ($Arguments | Where-Object { $_ }) -join " "
+  $command = "`"$BatchFile`" $argumentString >nul && set"
+  $environmentLines = & cmd.exe /s /c $command
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to import environment from $BatchFile"
+  }
+
+  foreach ($line in $environmentLines) {
+    if ($line -match '^([^=][^=]*)=(.*)$') {
+      Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
+    }
+  }
+}
+
+function ConvertTo-PythonSingleQuotedString {
+  param([string]$Value)
+
+  if (-not $Value) {
+    return "''"
+  }
+
+  return "'" + ($Value.Replace("\", "\\").Replace("'", "\'")) + "'"
 }
 
 function Patch-WebrtcToolchain {
@@ -255,6 +291,40 @@ if ($WinSdkDir) {
   $env:WINDOWSSDKDIR = $env:WINDOWSSDKDIR
 }
 
+$vsRoot = if ($VisualStudioPath) { $VisualStudioPath } elseif ($env:VSINSTALLDIR) { $env:VSINSTALLDIR } else { "" }
+if ($vsRoot) {
+  $vcvars64 = Join-Path $vsRoot "VC\Auxiliary\Build\vcvars64.bat"
+  if (Test-Path $vcvars64) {
+    Write-Step "Importing Visual Studio vcvars64 environment"
+    Import-BatchEnvironment -BatchFile $vcvars64
+  }
+
+  $msvcToolsRoot = Join-Path $vsRoot "VC\Tools\MSVC"
+  if (Test-Path $msvcToolsRoot) {
+    $msvcToolsDir = Get-ChildItem -Path $msvcToolsRoot -Directory |
+      Sort-Object Name -Descending |
+      Select-Object -First 1
+    if ($msvcToolsDir) {
+      $msvcBinDir = Join-Path $msvcToolsDir.FullName "bin\Hostx64\x64"
+      Prepend-EnvList -Name "PATH" -Entries @($msvcBinDir)
+    }
+  }
+}
+
+$sdkBinEntries = @()
+if ($env:WINDOWSSDKDIR) {
+  $sdkBinRoot = Join-Path $env:WINDOWSSDKDIR "bin"
+  if (Test-Path $sdkBinRoot) {
+    $sdkBinVersionDir = Get-ChildItem -Path $sdkBinRoot -Directory |
+      Sort-Object Name -Descending |
+      Select-Object -First 1
+    if ($sdkBinVersionDir) {
+      $sdkBinEntries += Join-Path $sdkBinVersionDir.FullName "x64"
+    }
+  }
+}
+Prepend-EnvList -Name "PATH" -Entries $sdkBinEntries
+
 Set-Location $BuildDir
 
 Write-Step "Initializing depot_tools"
@@ -264,14 +334,15 @@ cmd /c gclient
 cmd /c gclient
 Pop-Location
 
-if (Test-Path (Join-Path $BuildDir "src\\build\\.git")) {
-  Write-Step "Cleaning src\\build before sync"
-  git -C (Join-Path $BuildDir "src\\build") reset --hard | Out-Null
-  git -C (Join-Path $BuildDir "src\\build") clean -fdx | Out-Null
-}
+if ($Stage -eq "All" -or $Stage -eq "Sync") {
+  if (Test-Path (Join-Path $BuildDir "src\\build\\.git")) {
+    Write-Step "Cleaning src\\build before sync"
+    git -C (Join-Path $BuildDir "src\\build") reset --hard | Out-Null
+    git -C (Join-Path $BuildDir "src\\build") clean -fdx | Out-Null
+  }
 
-Write-Step "Writing .gclient"
-@" 
+  Write-Step "Writing .gclient"
+  @"
 solutions = [
   {
     "name"        : 'src',
@@ -286,11 +357,19 @@ solutions = [
 target_os  = ['win']
 "@ | Set-Content -Path (Join-Path $BuildDir ".gclient") -Encoding ASCII
 
-Write-Step "Syncing WebRTC sources"
-$syncJobs = if ($GclientJobs -gt 0) { $GclientJobs } else { 16 }
-gclient sync --jobs $syncJobs
-if ($LASTEXITCODE -ne 0) {
-  throw "gclient sync failed"
+  Write-Step "Syncing WebRTC sources"
+  $syncJobs = if ($GclientJobs -gt 0) { $GclientJobs } else { 16 }
+  gclient sync --jobs $syncJobs
+  if ($LASTEXITCODE -ne 0) {
+    throw "gclient sync failed"
+  }
+
+  if ($Stage -eq "Sync") {
+    Write-Step "WebRTC source sync complete."
+    return
+  }
+} elseif (-not (Test-Path (Join-Path $BuildDir "src\BUILD.gn"))) {
+  throw "WebRTC sources not found under $BuildDir. Run with -Stage Sync first."
 }
 
 $sdkRoot = if ($env:WINDOWSSDKDIR) { $env:WINDOWSSDKDIR } else { $WinSdkDir }
@@ -331,6 +410,18 @@ foreach ($path in @($vsToolchainPath, $setupToolchainPath)) {
   }
   $content = Get-Content $path -Raw
   $updated = $content -replace "SDK_VERSION = '([^']*)'", "SDK_VERSION = '$winSdkVersion'"
+  if ($path -eq $setupToolchainPath) {
+    $pythonInclude = ConvertTo-PythonSingleQuotedString $env:INCLUDE
+    $pythonLib = ConvertTo-PythonSingleQuotedString $env:LIB
+    $pythonLibPath = ConvertTo-PythonSingleQuotedString $env:LIBPATH
+
+    $updated = $updated.Replace("env['INCLUDE'].split(';')", "env.get('INCLUDE', $pythonInclude).split(';')")
+    $updated = $updated.Replace("env['LIB'].split(';')", "env.get('LIB', $pythonLib).split(';')")
+    $updated = $updated.Replace("env['LIBPATH'].split(';')", "env.get('LIBPATH', $pythonLibPath).split(';')")
+    $updated = [regex]::Replace($updated, "env\.get\('INCLUDE', .*?\)\.split\(';'\)", "env.get('INCLUDE', $pythonInclude).split(';')")
+    $updated = [regex]::Replace($updated, "env\.get\('LIB', .*?\)\.split\(';'\)", "env.get('LIB', $pythonLib).split(';')")
+    $updated = [regex]::Replace($updated, "env\.get\('LIBPATH', .*?\)\.split\(';'\)", "env.get('LIBPATH', $pythonLibPath).split(';')")
+  }
   if ($updated -ne $content) {
     Set-Content -Path $path -Value $updated -Encoding ASCII
   }

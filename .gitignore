@@ -45,6 +45,7 @@ docs/doxyconfig*
 # npm
 node_modules/
 package-lock.json
+!src_assets/common/assets/web/package-lock.json
 
 # Translations
 *.mo
