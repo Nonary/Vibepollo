@@ -4,14 +4,7 @@ permissions: {}
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - vibe
-      - main
-      - master
-    tags:
-      - '[0-9]*.[0-9]*.[0-9]*'
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+  push: {}
   pull_request:
     branches:
       - vibe
@@ -23,14 +16,157 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-candidate:
+    name: Release candidate
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      release_commit: ${{ steps.release-candidate.outputs.release_commit }}
+      release_version: ${{ steps.release-candidate.outputs.release_version }}
+      should_release: ${{ steps.release-candidate.outputs.should_release }}
+      tag_name: ${{ steps.release-candidate.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release candidate
+        id: release-candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          VERSION_RE = re.compile(r"^v?([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$")
+          REPO = os.environ["GITHUB_REPOSITORY"]
+
+          def run(*args, check=True):
+            return subprocess.run(args, check=check, text=True, capture_output=True).stdout.strip()
+
+          def output(**values):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              for key, value in values.items():
+                print(f"{key}={value}", file=fh)
+
+          def skip(reason):
+            print(f"::notice::{reason}")
+            output(should_release="false", tag_name="", release_version="", release_commit="")
+            sys.exit(0)
+
+          def version_key(tag):
+            match = VERSION_RE.match(tag)
+            if not match:
+              return None
+
+            major, minor, patch = (int(part) for part in match.group(1).split("."))
+            suffix = (match.group(2) or "").lstrip("-.").lower()
+            suffix_parts = re.split(r"[-.]", suffix) if suffix else []
+            suffix_num = next((int(part) for part in suffix_parts if part.isdigit()), 0)
+
+            if not suffix or "stable" in suffix_parts:
+              suffix_rank = 40
+            elif "rc" in suffix_parts:
+              suffix_rank = 30
+            elif "beta" in suffix_parts:
+              suffix_rank = 20
+            elif "alpha" in suffix_parts:
+              suffix_rank = 10
+            else:
+              suffix_rank = 5
+
+            return (major, minor, patch, suffix_rank, suffix_num, suffix)
+
+          def release_notes_for(tag):
+            match = VERSION_RE.match(tag)
+            if not match:
+              return None
+
+            base_version = match.group(1)
+            release_version = tag[1:] if tag.startswith("v") else tag
+            for candidate in (
+              Path("release_notes") / f"{release_version}.md",
+              Path("release_notes") / f"{base_version}.md",
+              Path("release_notes") / f"{tag}.md",
+            ):
+              if candidate.is_file():
+                return str(candidate)
+            return None
+
+          event_name = os.environ["EVENT_NAME"]
+          if event_name != "push":
+            skip("Release gate only applies to push events.")
+
+          run("git", "fetch", "--force", "--tags")
+
+          release_tags = set(filter(None, run(
+            "gh", "api", "--paginate", f"repos/{REPO}/releases", "--jq", ".[].tag_name"
+          ).splitlines()))
+          release_versions = [version_key(tag) for tag in release_tags]
+          release_versions = [key for key in release_versions if key is not None]
+          current_release_version = max(release_versions) if release_versions else None
+
+          ref = os.environ["REF"]
+          if ref.startswith("refs/tags/"):
+            candidate_tags = [os.environ["REF_NAME"]]
+          else:
+            candidate_tags = run("git", "tag", "--list").splitlines()
+
+          valid_candidates = []
+          for tag in candidate_tags:
+            key = version_key(tag)
+            if key is None:
+              continue
+            if tag in release_tags:
+              print(f"Skipping {tag}: release already exists.")
+              continue
+            if current_release_version is not None and key <= current_release_version:
+              print(f"Skipping {tag}: not newer than the current release.")
+              continue
+            notes_file = release_notes_for(tag)
+            if notes_file is None:
+              print(f"Skipping {tag}: no matching release_notes file.")
+              continue
+            valid_candidates.append((key, tag, notes_file))
+
+          if not valid_candidates:
+            skip("No unreleased newer tag with matching release notes was found.")
+
+          _, tag_name, notes_file = max(valid_candidates, key=lambda item: item[0])
+          release_commit = run("git", "rev-list", "-n", "1", tag_name)
+          release_version = tag_name[1:] if tag_name.startswith("v") else tag_name
+
+          print(f"Release candidate: {tag_name} ({release_commit}) using {notes_file}")
+          output(
+            should_release="true",
+            tag_name=tag_name,
+            release_version=release_version,
+            release_commit=release_commit,
+          )
+          PY
+
   build-windows:
     name: Windows
+    needs:
+      - release-candidate
+    if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
-      release_commit: ${{ github.sha }}
-      release_version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.0.0' }}
+      release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
       symbol_product_name: Vibepollo
       symbol_release_draft: true
       symbol_release_prefix: polo
@@ -39,8 +175,9 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: needs.release-candidate.outputs.should_release == 'true'
     needs:
+      - release-candidate
       - build-windows
     permissions:
       actions: read
@@ -49,11 +186,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_commit }}
 
       - name: Resolve release metadata
         id: release-metadata
         env:
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ needs.release-candidate.outputs.tag_name }}
         run: |
           set -euo pipefail
 
@@ -133,8 +272,9 @@ jobs:
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
           PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
+          RELEASE_COMMIT: ${{ needs.release-candidate.outputs.release_commit }}
           RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ needs.release-candidate.outputs.tag_name }}
         run: |
           set -euo pipefail
           release_title="v${RELEASE_VERSION}"
@@ -154,7 +294,7 @@ jobs:
           release_payload="$(
             jq -n \
               --arg tag_name "${TAG_NAME}" \
-              --arg target_commitish "${GITHUB_SHA}" \
+              --arg target_commitish "${RELEASE_COMMIT}" \
               --arg name "${release_title}" \
               --rawfile body "${NOTES_FILE}" \
               --argjson draft false \
