@@ -2047,7 +2047,7 @@ namespace nvhttp {
 
           pt::ptree app_node;
 
-          app_node.put("IsHdrSupported"s, video::active_hevc_mode == 3 ? 1 : 0);
+          app_node.put("IsHdrSupported"s, (video::active_hevc_mode == 3 || video::active_av1_mode == 3) ? 1 : 0);
           app_node.put("AppTitle"s, app_name);
           app_node.put("UUID", app.uuid);
           app_node.put("IDX", app.idx);
