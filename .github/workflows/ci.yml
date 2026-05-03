@@ -137,7 +137,7 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          release_title="${PRODUCT_NAME} v${RELEASE_VERSION}"
+          release_title="v${RELEASE_VERSION}"
           versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${BASE_VERSION}-${CHANNEL}.exe"
 
           mapfile -t setup_assets < <(find artifacts -maxdepth 1 -type f -name "${PRODUCT_NAME}Setup*.exe" | sort)
