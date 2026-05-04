@@ -54,10 +54,12 @@
 // local includes
 #include "src/logging.h"
 
-#pragma comment(lib, "iphlpapi.lib")
-#pragma comment(lib, "pdh.lib")
-#pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "ws2_32.lib")
+#ifdef _MSC_VER
+  #pragma comment(lib, "iphlpapi.lib")
+  #pragma comment(lib, "pdh.lib")
+  #pragma comment(lib, "dxgi.lib")
+  #pragma comment(lib, "ws2_32.lib")
+#endif
 
 using namespace std::chrono_literals;
 
