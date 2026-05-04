@@ -48,6 +48,9 @@ jobs:
     env:
       VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
       WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
+      WEBRTC_REPO_URL: https://github.com/webrtc-sdk/webrtc.git
+      WEBRTC_BRANCH: m125_release
+      WEBRTC_CONFIGURATION: Release
     defaults:
       run:
         shell: pwsh
@@ -123,15 +126,32 @@ jobs:
           "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
           "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
 
+      - name: Compute WebRTC cache keys
+        id: webrtc-cache-keys
+        shell: pwsh
+        env:
+          MATRIX_TOOLCHAIN: ${{ matrix.toolchain }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          .\scripts\get_webrtc_cache_keys.ps1 `
+            -RootDir $PWD `
+            -RunnerOs $env:RUNNER_OS_VALUE `
+            -Toolchain $env:MATRIX_TOOLCHAIN `
+            -Configuration $env:WEBRTC_CONFIGURATION `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcRef $env:WEBRTC_BRANCH
+
       - name: Restore WebRTC source cache
         id: restore-webrtc-source
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
         with:
           path: |
             .vibepollo-deps/libwebrtc/src
-          key: webrtc-source-${{ runner.os }}-${{ matrix.toolchain }}-${{ hashFiles('.gitmodules', 'third-party/libwebrtc/**') }}
+          key: ${{ steps.webrtc-cache-keys.outputs.source-key }}
           restore-keys: |
-            webrtc-source-${{ runner.os }}-${{ matrix.toolchain }}-
+            ${{ steps.webrtc-cache-keys.outputs.source-restore-prefix }}
 
       - name: Sync WebRTC sources
         if: steps.restore-webrtc-source.outputs.cache-hit != 'true'
@@ -144,6 +164,8 @@ jobs:
             -BuildDir (Join-Path $env:VIBEPOLLO_DEPS_DIR 'libwebrtc\src') `
             -OutDir $env:WEBRTC_ROOT `
             -Configuration Release `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcBranch '${{ steps.webrtc-cache-keys.outputs.webrtc-source-revision }}' `
             -Msys2Bin $env:WEBRTC_MSYS2_BIN `
             -VisualStudioPath $env:WEBRTC_VS_PATH `
             -WinSdkDir $env:WEBRTC_WINSDK_DIR `
@@ -155,7 +177,7 @@ jobs:
         with:
           path: |
             .vibepollo-deps/libwebrtc/src
-          key: ${{ steps.restore-webrtc-source.outputs.cache-primary-key }}
+          key: ${{ steps.webrtc-cache-keys.outputs.source-key }}
 
       - name: Restore WebRTC output cache
         id: restore-webrtc-output
@@ -163,7 +185,7 @@ jobs:
         with:
           path: |
             .vibepollo-deps/libwebrtc/out
-          key: webrtc-output-${{ runner.os }}-${{ matrix.toolchain }}-${{ hashFiles('.gitmodules', 'third-party/libwebrtc/**', 'scripts/build_mingw_webrtc.ps1') }}
+          key: ${{ steps.webrtc-cache-keys.outputs.output-key }}
 
       - name: Build WebRTC artifacts
         shell: pwsh
@@ -190,6 +212,8 @@ jobs:
             -BuildDir (Join-Path $env:VIBEPOLLO_DEPS_DIR 'libwebrtc\src') `
             -OutDir $webrtcRoot `
             -Configuration Release `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcBranch '${{ steps.webrtc-cache-keys.outputs.webrtc-source-revision }}' `
             -Msys2Bin $env:WEBRTC_MSYS2_BIN `
             -VisualStudioPath $env:WEBRTC_VS_PATH `
             -WinSdkDir $env:WEBRTC_WINSDK_DIR `
@@ -211,7 +235,7 @@ jobs:
         with:
           path: |
             .vibepollo-deps/libwebrtc/out
-          key: ${{ steps.restore-webrtc-output.outputs.cache-primary-key }}
+          key: ${{ steps.webrtc-cache-keys.outputs.output-key }}
 
 
       - name: Upload WebRTC artifacts
