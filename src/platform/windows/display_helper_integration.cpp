@@ -12,6 +12,7 @@
   #include <chrono>
   #include <cmath>
   #include <cstdint>
+  #include <exception>
   #include <filesystem>
   #include <limits>
   #include <mutex>
@@ -1015,47 +1016,65 @@ namespace {
     constexpr auto kSuspendedInterval = 20s;
     bool helper_ready = false;
 
-    while (!st.stop_requested()) {
-      if (!dd_feature_enabled()) {
-        if (helper_ready) {
-          platf::display_helper_client::reset_connection();
-          helper_ready = false;
-        }
-        for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-          std::this_thread::sleep_for(100ms);
-        }
-        continue;
-      }
-
-      if (!helper_ready) {
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
-          for (auto slept = 0ms; slept < kActiveInterval && !st.stop_requested(); slept += 100ms) {
-            std::this_thread::sleep_for(100ms);
-          }
-          continue;
-        }
-        (void) platf::display_helper_client::send_ping();
-      }
-
-      const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
-      const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
+    auto sleep_interruptible = [&st](std::chrono::milliseconds interval) {
       for (auto slept = 0ms; slept < interval && !st.stop_requested(); slept += 100ms) {
         std::this_thread::sleep_for(100ms);
       }
-      if (st.stop_requested()) {
-        break;
-      }
-
-      if (!platf::display_helper_client::send_ping()) {
-        // Avoid logging ping failures to reduce log spam; proceed to reconnect
+    };
+    auto reset_connection_noexcept = []() noexcept {
+      try {
         platf::display_helper_client::reset_connection();
-        helper_ready = ensure_helper_started();
-        if (!helper_ready) {
+      } catch (...) {
+      }
+    };
+
+    while (!st.stop_requested()) {
+      try {
+        if (!dd_feature_enabled()) {
+          if (helper_ready) {
+            platf::display_helper_client::reset_connection();
+            helper_ready = false;
+          }
+          sleep_interruptible(kActiveInterval);
           continue;
         }
-        // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
-        helper_ready = platf::display_helper_client::send_ping();
+
+        if (!helper_ready) {
+          helper_ready = ensure_helper_started();
+          if (!helper_ready) {
+            sleep_interruptible(kActiveInterval);
+            continue;
+          }
+          (void) platf::display_helper_client::send_ping();
+        }
+
+        const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
+        const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
+        sleep_interruptible(interval);
+        if (st.stop_requested()) {
+          break;
+        }
+
+        if (!platf::display_helper_client::send_ping()) {
+          // Avoid logging ping failures to reduce log spam; proceed to reconnect
+          platf::display_helper_client::reset_connection();
+          helper_ready = ensure_helper_started();
+          if (!helper_ready) {
+            continue;
+          }
+          // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
+          helper_ready = platf::display_helper_client::send_ping();
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Display helper watchdog failed: " << e.what();
+        reset_connection_noexcept();
+        helper_ready = false;
+        sleep_interruptible(kActiveInterval);
+      } catch (...) {
+        BOOST_LOG(error) << "Display helper watchdog failed with an unknown exception.";
+        reset_connection_noexcept();
+        helper_ready = false;
+        sleep_interruptible(kActiveInterval);
       }
     }
   }

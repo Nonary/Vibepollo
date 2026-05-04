@@ -1,0 +1,362 @@
+---
+name: CI
+permissions: {}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - vibe
+      - main
+      - master
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  release-candidate:
+    name: Release candidate
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      release_commit: ${{ steps.release-candidate.outputs.release_commit }}
+      release_version: ${{ steps.release-candidate.outputs.release_version }}
+      should_release: ${{ steps.release-candidate.outputs.should_release }}
+      tag_name: ${{ steps.release-candidate.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release candidate
+        id: release-candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          VERSION_RE = re.compile(r"^v?([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$")
+          REPO = os.environ["GITHUB_REPOSITORY"]
+
+          def run(*args, check=True):
+            return subprocess.run(args, check=check, text=True, capture_output=True).stdout.strip()
+
+          def output(**values):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              for key, value in values.items():
+                print(f"{key}={value}", file=fh)
+
+          def skip(reason):
+            print(f"::notice::{reason}")
+            output(should_release="false", tag_name="", release_version="", release_commit="")
+            sys.exit(0)
+
+          def version_key(tag):
+            match = VERSION_RE.match(tag)
+            if not match:
+              return None
+
+            major, minor, patch = (int(part) for part in match.group(1).split("."))
+            suffix = (match.group(2) or "").lstrip("-.").lower()
+            suffix_parts = re.split(r"[-.]", suffix) if suffix else []
+            suffix_num = next((int(part) for part in suffix_parts if part.isdigit()), 0)
+
+            if not suffix or "stable" in suffix_parts:
+              suffix_rank = 40
+            elif "rc" in suffix_parts:
+              suffix_rank = 30
+            elif "beta" in suffix_parts:
+              suffix_rank = 20
+            elif "alpha" in suffix_parts:
+              suffix_rank = 10
+            else:
+              suffix_rank = 5
+
+            return (major, minor, patch, suffix_rank, suffix_num, suffix)
+
+          def release_notes_for(tag):
+            match = VERSION_RE.match(tag)
+            if not match:
+              return None
+
+            base_version = match.group(1)
+            release_version = tag[1:] if tag.startswith("v") else tag
+            for candidate in (
+              Path("release_notes") / f"{release_version}.md",
+              Path("release_notes") / f"{base_version}.md",
+              Path("release_notes") / f"{tag}.md",
+            ):
+              if candidate.is_file():
+                return str(candidate)
+            return None
+
+          event_name = os.environ["EVENT_NAME"]
+          if event_name != "push":
+            skip("Release gate only applies to push events.")
+
+          run("git", "fetch", "--force", "--tags")
+
+          release_tags = set(filter(None, run(
+            "gh", "api", "--paginate", f"repos/{REPO}/releases", "--jq", ".[].tag_name"
+          ).splitlines()))
+          release_versions = [version_key(tag) for tag in release_tags]
+          release_versions = [key for key in release_versions if key is not None]
+          current_release_version = max(release_versions) if release_versions else None
+
+          head_sha = os.environ["GITHUB_SHA_VALUE"]
+          candidate_tags = run("git", "tag", "--points-at", head_sha).splitlines()
+          if not candidate_tags:
+            skip("No unreleased version tag points at this push commit.")
+
+          valid_candidates = []
+          for tag in candidate_tags:
+            key = version_key(tag)
+            if key is None:
+              continue
+            if tag in release_tags:
+              print(f"Skipping {tag}: release already exists.")
+              continue
+            if current_release_version is not None and key <= current_release_version:
+              print(f"Skipping {tag}: not newer than the current release.")
+              continue
+            notes_file = release_notes_for(tag)
+            if notes_file is None:
+              print(f"Skipping {tag}: no matching release_notes file.")
+              continue
+            valid_candidates.append((key, tag, notes_file))
+
+          if not valid_candidates:
+            skip("No unreleased newer tag with matching release notes was found.")
+
+          _, tag_name, notes_file = max(valid_candidates, key=lambda item: item[0])
+          release_commit = run("git", "rev-list", "-n", "1", tag_name)
+          release_version = tag_name[1:] if tag_name.startswith("v") else tag_name
+
+          print(f"Release candidate: {tag_name} ({release_commit}) using {notes_file}")
+          output(
+            should_release="true",
+            tag_name=tag_name,
+            release_version=release_version,
+            release_commit=release_commit,
+          )
+          PY
+
+  build-windows:
+    name: Windows
+    needs:
+      - release-candidate
+    if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      symbol_product_name: Vibepollo
+      symbol_release_draft: true
+      symbol_release_prefix: polo
+    secrets:
+      symbol_token: ${{ secrets.SYMBOL_TOKEN }}
+
+  release:
+    name: Release
+    if: needs.release-candidate.outputs.should_release == 'true'
+    needs:
+      - release-candidate
+      - build-windows
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.release-candidate.outputs.release_commit }}
+
+      - name: Resolve release metadata
+        id: release-metadata
+        env:
+          TAG_NAME: ${{ needs.release-candidate.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$ ]]; then
+            base_version="${BASH_REMATCH[1]}"
+            release_version="${TAG_NAME#v}"
+          else
+            echo "::error::Unsupported release tag '${TAG_NAME}'. Use a version tag like 1.15.4, v1.15.4, or 1.15.4-beta.1."
+            exit 1
+          fi
+
+          tag_lower="$(printf '%s' "${release_version}" | tr '[:upper:]' '[:lower:]')"
+          prerelease=false
+          channel=stable
+          if [[ "${tag_lower}" == *alpha* ]]; then
+            prerelease=true
+            channel=alpha
+          elif [[ "${tag_lower}" == *beta* ]]; then
+            prerelease=true
+            channel=beta
+          elif [[ "${tag_lower}" == *rc* ]]; then
+            prerelease=true
+            channel=rc
+          elif [[ "${tag_lower}" == *stable* ]]; then
+            prerelease=false
+            channel=stable
+          fi
+
+          if [[ "${prerelease}" == "true" ]]; then
+            make_latest=false
+          else
+            make_latest=true
+          fi
+
+          product_name="Vibepollo"
+
+          notes_file=""
+          for candidate in \
+            "release_notes/${release_version}.md" \
+            "release_notes/${base_version}.md" \
+            "release_notes/${TAG_NAME}.md"; do
+            if [[ -f "${candidate}" ]]; then
+              notes_file="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${notes_file}" ]]; then
+            echo "::error::Release notes file not found. Expected release_notes/${TAG_NAME}.md or release_notes/${release_version}.md"
+            exit 1
+          fi
+
+          echo "Using release notes: ${notes_file}"
+          echo "base_version=${base_version}" >> "${GITHUB_OUTPUT}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+          echo "make_latest=${make_latest}" >> "${GITHUB_OUTPUT}"
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "product_name=${product_name}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: build-Windows
+          path: artifacts
+
+      - name: Debug artifacts
+        run: ls -l artifacts
+
+      - name: Create or update GitHub release
+        env:
+          BASE_VERSION: ${{ steps.release-metadata.outputs.base_version }}
+          CHANNEL: ${{ steps.release-metadata.outputs.channel }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ steps.release-metadata.outputs.make_latest }}
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
+          PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
+          PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
+          RELEASE_COMMIT: ${{ needs.release-candidate.outputs.release_commit }}
+          RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ needs.release-candidate.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          release_title="v${RELEASE_VERSION}"
+          versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${BASE_VERSION}-${CHANNEL}.exe"
+
+          mapfile -t setup_assets < <(find artifacts -maxdepth 1 -type f -name "${PRODUCT_NAME}Setup*.exe" | sort)
+          if (( ${#setup_assets[@]} != 1 )); then
+            echo "::error::Expected exactly one ${PRODUCT_NAME} setup artifact, found ${#setup_assets[@]}."
+            find artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          if [[ "${setup_assets[0]}" != "${versioned_setup}" ]]; then
+            mv -f "${setup_assets[0]}" "${versioned_setup}"
+          fi
+
+          release_payload="$(
+            jq -n \
+              --arg tag_name "${TAG_NAME}" \
+              --arg target_commitish "${RELEASE_COMMIT}" \
+              --arg name "${release_title}" \
+              --rawfile body "${NOTES_FILE}" \
+              --argjson draft false \
+              --argjson prerelease "${PRERELEASE}" \
+              --arg make_latest "${MAKE_LATEST}" \
+              '{
+                tag_name: $tag_name,
+                target_commitish: $target_commitish,
+                name: $name,
+                body: $body,
+                draft: $draft,
+                prerelease: $prerelease,
+                make_latest: $make_latest
+              }'
+          )"
+
+          release_id="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id" |
+              head -n 1
+          )"
+
+          if [[ -n "${release_id}" ]]; then
+            release_json="$(
+              gh api \
+                --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                --input - <<< "${release_payload}"
+            )"
+          else
+            release_json="$(
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/releases" \
+                --input - <<< "${release_payload}"
+            )"
+          fi
+
+          release_id="$(jq -r '.id // empty' <<< "${release_json}")"
+          upload_url="$(jq -r '.upload_url // "" | split("{")[0]' <<< "${release_json}")"
+          if [[ -z "${release_id}" || -z "${upload_url}" ]]; then
+            echo "::error::Failed to resolve release id/upload URL for ${TAG_NAME}."
+            exit 1
+          fi
+
+          existing_asset_ids="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+              --jq '.[].id'
+          )"
+          while IFS= read -r asset_id; do
+            [[ -z "${asset_id}" ]] && continue
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+          done <<< "${existing_asset_ids}"
+
+          for asset in artifacts/*; do
+            [[ -f "${asset}" ]] || continue
+            asset_name="$(basename "${asset}")"
+            encoded_asset_name="$(jq -rn --arg name "${asset_name}" '$name|@uri')"
+            gh api \
+              --method POST \
+              "${upload_url}?name=${encoded_asset_name}" \
+              -H "Content-Type: application/octet-stream" \
+              --input "${asset}" \
+              >/dev/null
+          done

@@ -1,7 +1,6 @@
 ---
 name: CI-Windows
-permissions:
-  contents: read
+permissions: {}
 
 on:
   workflow_call:
@@ -12,140 +11,304 @@ on:
       release_version:
         required: true
         type: string
+      symbol_product_name:
+        required: true
+        type: string
+      symbol_release_prefix:
+        required: true
+        type: string
+      publish_symbols:
+        required: false
+        type: boolean
+        default: false
+      symbol_release_repo:
+        required: false
+        type: string
+        default: Nonary/vibeshine_symbols
+      symbol_release_tag:
+        required: false
+        type: string
+        default: ''
+      symbol_release_draft:
+        required: false
+        type: boolean
+        default: false
+      upload_symbols_artifact:
+        required: false
+        type: boolean
+        default: false
     secrets:
-      CODECOV_TOKEN:
+      symbol_token:
         required: false
 
 jobs:
-  build_windows:
-    name: ${{ matrix.name }}
+  build_webrtc:
+    name: WebRTC / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
+      WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
+      WEBRTC_REPO_URL: https://github.com/webrtc-sdk/webrtc.git
+      WEBRTC_BRANCH: m125_release
+      WEBRTC_CONFIGURATION: Release
     defaults:
       run:
-        shell: msys2 {0}
+        shell: pwsh
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows-AMD64
+          - name: Windows
             os: windows-2022
             arch: x86_64
             msystem: ucrt64
             toolchain: ucrt-x86_64
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          submodules: recursive
+          ref: ${{ inputs.release_commit }}
+          submodules: false
 
-      - name: Prepare tests
-        id: prepare-tests
-        if: false  # todo: DirectX11 is not available, so even software encoder fails
-        shell: pwsh
+      - name: Checkout libwebrtc wrapper
         run: |
-          # function to download and extract a zip file
-          function DownloadAndExtract {
-            param (
-              [string]$Uri,
-              [string]$OutFile
-            )
+          git submodule sync -- third-party/libwebrtc
+          git submodule update --init --recursive --depth 1 third-party/libwebrtc
 
-            $maxRetries = 5
-            $retryCount = 0
-            $success = $false
+      - name: Setup WebRTC MSYS2 tools
+        id: setup-msys2
+        uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda  # v2.30.0
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            git
+            mingw-w64-${{ matrix.toolchain }}-binutils
+            mingw-w64-${{ matrix.toolchain }}-ninja
+            mingw-w64-${{ matrix.toolchain }}-tools
+            wget
 
-            while (-not $success -and $retryCount -lt $maxRetries) {
-              $retryCount++
-              Write-Host "Downloading $Uri to $OutFile, attempt $retryCount of $maxRetries"
-              try {
-                Invoke-WebRequest -Uri $Uri -OutFile $OutFile
-                $success = $true
-              } catch {
-                Write-Host "Attempt $retryCount of $maxRetries failed with error: $($_.Exception.Message). Retrying..."
-                Start-Sleep -Seconds 5
-              }
-            }
+      - name: Resolve WebRTC toolchain
+        shell: pwsh
+        env:
+          MATRIX_MSYSTEM: ${{ matrix.msystem }}
+          MSYS2_LOCATION: ${{ steps.setup-msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-            if (-not $success) {
-              Write-Host "Failed to download the file after $maxRetries attempts."
-              exit 1
-            }
-
-            # use .NET to get the base name of the file
-            $baseName = (Get-Item $OutFile).BaseName
-
-            # Extract the zip file
-            Expand-Archive -Path $OutFile -DestinationPath $baseName
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe was not found at $vswhere"
           }
 
-          # virtual display driver
-          DownloadAndExtract `
-            -Uri "https://www.amyuni.com/downloads/usbmmidd_v2.zip" `
-            -OutFile "usbmmidd_v2.zip"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($vsPath) -or -not (Test-Path -LiteralPath $vsPath)) {
+            throw 'Visual Studio with the VC toolchain was not found.'
+          }
 
-          # install
-          Set-Location -Path usbmmidd_v2/usbmmidd_v2
-          ./deviceinstaller64 install usbmmidd.inf usbmmidd
+          $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
+          if ([string]::IsNullOrWhiteSpace($kitsRoot) -or -not (Test-Path -LiteralPath $kitsRoot)) {
+            throw 'Windows SDK KitsRoot10 was not found.'
+          }
 
-          # create the virtual display
-          ./deviceinstaller64 enableidd 1
+          if ([string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION) -or -not (Test-Path -LiteralPath $env:MSYS2_LOCATION)) {
+            throw "MSYS2 location was not found: $($env:MSYS2_LOCATION)"
+          }
 
-          # move up a directory
-          Set-Location -Path ../..
+          $msys2Bin = Join-Path $env:MSYS2_LOCATION "$($env:MATRIX_MSYSTEM)\bin"
+          if (-not (Test-Path -LiteralPath $msys2Bin)) {
+            throw "MSYS2 bin directory was not found: $msys2Bin"
+          }
 
-          # install devcon
-          DownloadAndExtract `
-            -Uri "https://github.com/Drawbackz/DevCon-Installer/releases/download/1.4-rc/Devcon.Installer.zip" `
-            -OutFile "Devcon.Installer.zip"
-          Set-Location -Path Devcon.Installer
-          # hash needs to match OS version
-          # https://github.com/Drawbackz/DevCon-Installer/blob/master/devcon_sources.json
-          Start-Process -FilePath "./Devcon Installer.exe" -Wait -ArgumentList `
-            'install', `
-            '-hash', '54004C83EE34F6A55380528A8B29F4C400E61FBB947A19E0AB9E5A193D7D961E', `
-            '-addpath', `
-            '-update', `
-            '-dir', 'C:\Windows\System32'
+          "WEBRTC_VS_PATH=$vsPath" >> $env:GITHUB_ENV
+          "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
+          "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
 
-          # disable Hyper-V Video
-          # https://stackoverflow.com/a/59490940
-          C:\Windows\System32\devcon.exe disable "VMBUS\{da0a7802-e377-4aac-8e77-0558eb1073f8}"
+      - name: Compute WebRTC cache keys
+        id: webrtc-cache-keys
+        shell: pwsh
+        env:
+          MATRIX_TOOLCHAIN: ${{ matrix.toolchain }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-          # move up a directory
-          Set-Location -Path ..
+          .\scripts\get_webrtc_cache_keys.ps1 `
+            -RootDir $PWD `
+            -RunnerOs $env:RUNNER_OS_VALUE `
+            -Toolchain $env:MATRIX_TOOLCHAIN `
+            -Configuration $env:WEBRTC_CONFIGURATION `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcRef $env:WEBRTC_BRANCH
 
-          # multi monitor tool
-          DownloadAndExtract `
-            -Uri "http://www.nirsoft.net/utils/multimonitortool-x64.zip" `
-            -OutFile "multimonitortool.zip"
+      - name: Restore WebRTC source cache
+        id: restore-webrtc-source
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: |
+            .vibepollo-deps/libwebrtc/src
+          key: ${{ steps.webrtc-cache-keys.outputs.source-key }}
+          restore-keys: |
+            ${{ steps.webrtc-cache-keys.outputs.source-restore-prefix }}
 
-          # enable the virtual display
-          # http://www.nirsoft.net/utils/multi_monitor_tool.html
-          Set-Location -Path multimonitortool
+      - name: Sync WebRTC sources
+        if: steps.restore-webrtc-source.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-          # Original Hyper-V is \\.\DISPLAY1, it will recreate itself as \\.\DISPLAY6 (or something higher than 2)
-          # USB Mobile Monitor Virtual Display is \\.\DISPLAY2
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_mingw_webrtc.ps1 `
+            -RootDir $PWD `
+            -BuildDir (Join-Path $env:VIBEPOLLO_DEPS_DIR 'libwebrtc\src') `
+            -OutDir $env:WEBRTC_ROOT `
+            -Configuration Release `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcBranch '${{ steps.webrtc-cache-keys.outputs.webrtc-source-revision }}' `
+            -Msys2Bin $env:WEBRTC_MSYS2_BIN `
+            -VisualStudioPath $env:WEBRTC_VS_PATH `
+            -WinSdkDir $env:WEBRTC_WINSDK_DIR `
+            -Stage Sync
 
-          # these don't seem to work if not using runAs
-          # todo: do they work if not using runAs?
-          Start-Process powershell -Verb runAs -ArgumentList '-Command ./MultiMonitorTool.exe /enable \\.\DISPLAY2'
-          Start-Process powershell -Verb runAs -ArgumentList '-Command ./MultiMonitorTool.exe /SetPrimary \\.\DISPLAY2'
+      - name: Save WebRTC source cache
+        if: steps.restore-webrtc-source.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: |
+            .vibepollo-deps/libwebrtc/src
+          key: ${{ steps.webrtc-cache-keys.outputs.source-key }}
 
-          # wait a few seconds
-          Start-Sleep -s 5
+      - name: Restore WebRTC output cache
+        id: restore-webrtc-output
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: |
+            .vibepollo-deps/libwebrtc/out
+          key: ${{ steps.webrtc-cache-keys.outputs.output-key }}
 
-          # list monitors
-          ./MultiMonitorTool.exe /stext monitor_list.txt
+      - name: Build WebRTC artifacts
+        shell: pwsh
+        env:
+          WEBRTC_OUTPUT_CACHE_HIT: ${{ steps.restore-webrtc-output.outputs.cache-hit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-          # wait a few seconds
-          Start-Sleep -s 5
+          $webrtcRoot = $env:WEBRTC_ROOT
+          $include = Join-Path $webrtcRoot 'include\libwebrtc.h'
+          $dll = Join-Path $webrtcRoot 'lib\libwebrtc.dll'
+          $importLib = Join-Path $webrtcRoot 'lib\libwebrtc.dll.a'
 
-          # print the monitor list
-          Get-Content -Path monitor_list.txt
+          if ($env:WEBRTC_OUTPUT_CACHE_HIT -eq 'true' -and
+              (Test-Path -LiteralPath $include) -and
+              (Test-Path -LiteralPath $dll) -and
+              (Test-Path -LiteralPath $importLib)) {
+            Write-Host "Using cached WebRTC artifacts from $webrtcRoot"
+            exit 0
+          }
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_mingw_webrtc.ps1 `
+            -RootDir $PWD `
+            -BuildDir (Join-Path $env:VIBEPOLLO_DEPS_DIR 'libwebrtc\src') `
+            -OutDir $webrtcRoot `
+            -Configuration Release `
+            -WebrtcRepoUrl $env:WEBRTC_REPO_URL `
+            -WebrtcBranch '${{ steps.webrtc-cache-keys.outputs.webrtc-source-revision }}' `
+            -Msys2Bin $env:WEBRTC_MSYS2_BIN `
+            -VisualStudioPath $env:WEBRTC_VS_PATH `
+            -WinSdkDir $env:WEBRTC_WINSDK_DIR `
+            -Stage Build
+
+          if (-not (Test-Path -LiteralPath $include)) {
+            throw "WebRTC include was not produced: $include"
+          }
+          if (-not (Test-Path -LiteralPath $dll)) {
+            throw "WebRTC runtime DLL was not produced: $dll"
+          }
+          if (-not (Test-Path -LiteralPath $importLib)) {
+            throw "WebRTC MinGW import library was not produced: $importLib"
+          }
+
+      - name: Save WebRTC output cache
+        if: steps.restore-webrtc-output.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: |
+            .vibepollo-deps/libwebrtc/out
+          key: ${{ steps.webrtc-cache-keys.outputs.output-key }}
+
+
+      - name: Upload WebRTC artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        with:
+          name: webrtc-${{ matrix.name }}
+          path: .vibepollo-deps/libwebrtc/out/
+          if-no-files-found: error
+          retention-days: 1
+
+
+  build_windows:
+    name: ${{ matrix.name }}
+    needs: build_webrtc
+    runs-on: ${{ matrix.os }}
+    env:
+      VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
+      WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
+    defaults:
+      run:
+        shell: msys2 {0}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-2022
+            arch: x86_64
+            msystem: ucrt64
+            toolchain: ucrt-x86_64
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Resolve Windows build version
+        shell: pwsh
+        env:
+          GITHUB_REF_NAME_VALUE: ${{ github.ref_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $buildVersion = $env:INPUT_RELEASE_VERSION
+
+          if ([string]::IsNullOrWhiteSpace($buildVersion)) {
+            if ($env:GITHUB_REF_VALUE -like 'refs/tags/*' -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REF_NAME_VALUE)) {
+              $buildVersion = $env:GITHUB_REF_NAME_VALUE
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($buildVersion)) {
+            $buildVersion = '0.0.0'
+          }
+
+          if ($buildVersion -match '^v(.+)$') {
+            $buildVersion = $Matches[1]
+          }
+
+          "Resolved Windows build version: $buildVersion"
+          "BUILD_VERSION=$buildVersion" >> $env:GITHUB_ENV
 
       - name: Setup Dependencies Windows
+        id: setup-msys2
         # if a dependency needs to be pinned, see https://github.com/LizardByte/build-deps/pull/186
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda  # v2.30.0
         with:
           msystem: ${{ matrix.msystem }}
           update: true
@@ -154,7 +317,9 @@ jobs:
 
       - name: Update Windows dependencies
         env:
-          MSYSTEM: ${{ matrix.msystem }}
+          # MSYSTEM is a built-in environment variable of MSYS2.
+          # Do not use this environment variable name.
+          MATRIX_MSYSTEM: ${{ matrix.msystem }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         shell: msys2 {0}
         run: |
@@ -164,21 +329,28 @@ jobs:
           # dependencies
           dependencies=(
             "git"
+            "mingw-w64-${TOOLCHAIN}-boost"
             "mingw-w64-${TOOLCHAIN}-cmake"
             "mingw-w64-${TOOLCHAIN}-cppwinrt"
             "mingw-w64-${TOOLCHAIN}-curl-winssl"
             "mingw-w64-${TOOLCHAIN}-gcc"
             "mingw-w64-${TOOLCHAIN}-graphviz"
-            "mingw-w64-${TOOLCHAIN}-MinHook"
             "mingw-w64-${TOOLCHAIN}-miniupnpc"
             "mingw-w64-${TOOLCHAIN}-nlohmann-json"
-            "mingw-w64-${TOOLCHAIN}-nodejs"
-            "mingw-w64-${TOOLCHAIN}-nsis"
             "mingw-w64-${TOOLCHAIN}-onevpl"
             "mingw-w64-${TOOLCHAIN}-openssl"
             "mingw-w64-${TOOLCHAIN}-opus"
             "mingw-w64-${TOOLCHAIN}-toolchain"
           )
+
+          if [[ "${MATRIX_MSYSTEM}" == "ucrt64" ]]; then
+            dependencies+=(
+              "mingw-w64-${TOOLCHAIN}-MinHook"
+              "mingw-w64-${TOOLCHAIN}-ninja"
+              "mingw-w64-${TOOLCHAIN}-nodejs"
+              "mingw-w64-${TOOLCHAIN}-tools"
+            )
+          fi
 
           # do not modify below this line
 
@@ -190,7 +362,7 @@ jobs:
             tarball="${pkg}-${version}-any.pkg.tar.zst"
 
             # download working version
-            wget "https://repo.msys2.org/mingw/${MSYSTEM}/${tarball}"
+            wget "https://repo.msys2.org/mingw/${MATRIX_MSYSTEM}/${tarball}"
 
             tarballs="${tarballs} ${tarball}"
           done
@@ -210,152 +382,426 @@ jobs:
             pacman -Syu --noconfirm "${dependencies[@]}"
           fi
 
-      - name: Install Doxygen
-        # GCC compiled doxygen has issues when running graphviz
-        env:
-          DOXYGEN_VERSION: "1.11.0"
+      - name: Setup dotnet  # needed for wix
+        uses: actions/setup-dotnet@baa11fbfe1d6520db94683bd5c7a3818018e4309  # v5.1.0
+        with:
+          dotnet-version: '10.x'
+
+      - name: Setup NodeJS
+        # Clang compiled NodeJS has issues when running rollup webpack
+        if: matrix.msystem != 'ucrt64'
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238  # v6.2.0
+        with:
+          node-version: 'lts/*'
+
+      - name: NodeJS Path
+        if: matrix.msystem != 'ucrt64'
         shell: pwsh
         run: |
-          # Set version variables
-          $doxy_ver = $env:DOXYGEN_VERSION
-          $_doxy_ver = $doxy_ver.Replace(".", "_")
+          # get NodeJS PATH
+          $NODEJS_BINARY_PATH = (Get-Command node).Source
+          $NODEJS_PATH = Split-Path -Path "$NODEJS_BINARY_PATH" -Parent
 
-          # Download the Doxygen installer
-          Invoke-WebRequest -Uri `
-            "https://github.com/doxygen/doxygen/releases/download/Release_${_doxy_ver}/doxygen-${doxy_ver}-setup.exe" `
-            -OutFile "doxygen-setup.exe"
-
-          # Run the installer
-          Start-Process `
-            -FilePath .\doxygen-setup.exe `
-            -ArgumentList `
-              '/VERYSILENT' `
-          -Wait `
-          -NoNewWindow
-
-          # Clean up
-          Remove-Item -Path doxygen-setup.exe
-
-      - name: Setup python
-        id: setup-python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Python Path
-        id: python-path
-        shell: msys2 {0}
-        run: |
-          # replace backslashes with double backslashes
-          python_path=$(echo "${{ steps.setup-python.outputs.python-path }}" | sed 's/\\/\\\\/g')
+          # setup environment variables
+          echo "NODEJS_PATH=$NODEJS_PATH" >> $env:GITHUB_ENV
 
           # step output
-          echo "python-path=${python_path}"
-          echo "python-path=${python_path}" >> "${GITHUB_OUTPUT}"
+          echo "nodejs-path=$NODEJS_PATH"
+          echo "nodejs-path=$NODEJS_PATH" >> $env:GITHUB_OUTPUT
 
       - name: Install WiX Toolset
         shell: pwsh
         run: |
           choco install wixtoolset -y
 
+      - name: Resolve WebRTC toolchain
+        shell: pwsh
+        env:
+          MATRIX_MSYSTEM: ${{ matrix.msystem }}
+          MSYS2_LOCATION: ${{ steps.setup-msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe was not found at $vswhere"
+          }
+
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($vsPath) -or -not (Test-Path -LiteralPath $vsPath)) {
+            throw 'Visual Studio with the VC toolchain was not found.'
+          }
+
+          $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
+          if ([string]::IsNullOrWhiteSpace($kitsRoot) -or -not (Test-Path -LiteralPath $kitsRoot)) {
+            throw 'Windows SDK KitsRoot10 was not found.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION) -or -not (Test-Path -LiteralPath $env:MSYS2_LOCATION)) {
+            throw "MSYS2 location was not found: $($env:MSYS2_LOCATION)"
+          }
+
+          $msys2Bin = Join-Path $env:MSYS2_LOCATION "$($env:MATRIX_MSYSTEM)\bin"
+          if (-not (Test-Path -LiteralPath $msys2Bin)) {
+            throw "MSYS2 bin directory was not found: $msys2Bin"
+          }
+
+          "WEBRTC_VS_PATH=$vsPath" >> $env:GITHUB_ENV
+          "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
+          "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
+
+
+      - name: Download WebRTC artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: webrtc-${{ matrix.name }}
+          path: .vibepollo-deps/libwebrtc/out
+
       - name: Build Windows
         shell: msys2 {0}
         env:
+          # MSYSTEM is a built-in environment variable of MSYS2.
+          # Do not use this environment variable name.
+          MATRIX_MSYSTEM: ${{ matrix.msystem }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          BUILD_VERSION: ${{ inputs.release_version }}
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           COMMIT: ${{ inputs.release_commit }}
         run: |
+          echo "Using BUILD_VERSION=${BUILD_VERSION}"
+
+          # setup NodeJS PATH
+          if [[ "${MATRIX_MSYSTEM}" != "ucrt64" ]]; then
+            NODEJS_PATH=$(cygpath "$NODEJS_PATH")
+            export PATH="$PATH:$NODEJS_PATH"
+          fi
+
           mkdir -p build
           cmake \
             -B build \
             -G Ninja \
             -S . \
             -DBUILD_WERROR=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_DOCS=OFF \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DSUNSHINE_ENABLE_WEBRTC=ON \
+            -DWEBRTC_ROOT="$(cygpath -u "${WEBRTC_ROOT}")" \
+            -DWEBRTC_INCLUDE_DIR="$(cygpath -u "${WEBRTC_ROOT}")/include" \
+            -DWEBRTC_LIBRARY="$(cygpath -u "${WEBRTC_ROOT}")/lib/libwebrtc.dll.a" \
+            -DWEBRTC_MSYS2_BIN="$(cygpath -u "${WEBRTC_MSYS2_BIN}")" \
+            -DWEBRTC_VS_PATH="$(cygpath -u "${WEBRTC_VS_PATH}")" \
+            -DWEBRTC_WINSDK_DIR="$(cygpath -u "${WEBRTC_WINSDK_DIR}")" \
             -DSUNSHINE_ASSETS_DIR=assets \
-            -DSUNSHINE_PUBLISHER_NAME='${{ github.repository_owner }}' \
-            -DSUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev' \
-            -DSUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
+            -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
+            -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support"
           echo "::add-matcher::.github/matchers/gcc.json"
           ninja -C build
           echo "::remove-matcher owner=gcc::"
 
+      - name: Install cv2pdb
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        shell: pwsh
+        env:
+          CV2PDB_VERSION: "0.54"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cv2pdbDir = Join-Path $env:RUNNER_TEMP 'cv2pdb'
+          $cv2pdbZip = Join-Path $env:RUNNER_TEMP 'cv2pdb.zip'
+          $cv2pdbUrl = "https://github.com/rainers/cv2pdb/releases/download/v${env:CV2PDB_VERSION}/cv2pdb-${env:CV2PDB_VERSION}.zip"
+
+          Invoke-WebRequest -Uri $cv2pdbUrl -OutFile $cv2pdbZip
+          Expand-Archive -Path $cv2pdbZip -DestinationPath $cv2pdbDir -Force
+          $cv2pdbExe = Get-ChildItem -Path $cv2pdbDir -Recurse -Filter cv2pdb64.exe -File | Select-Object -First 1
+          if (-not $cv2pdbExe) {
+            throw 'cv2pdb64.exe was not found in the downloaded archive.'
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $cv2pdbExe.FullName -Parent)
+
+      - name: Generate Windows PDB
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $executables = @(
+            '.\build\sunshine.exe',
+            '.\build\tools\audio-info.exe',
+            '.\build\tools\dxgi-info.exe',
+            '.\build\tools\playnite-launcher.exe',
+            '.\build\tools\sunshine_display_helper.exe',
+            '.\build\tools\sunshine_wgc_capture.exe',
+            '.\build\tools\sunshinesvc.exe'
+          )
+
+          foreach ($exe in $executables) {
+            if (Test-Path -LiteralPath $exe) {
+              & cv2pdb64.exe $exe
+            }
+          }
+
+          $sunshineSvc = '.\build\tools\sunshinesvc.exe'
+          $sunshineSvcPayload = '.\build\wix_payload\tools\sunshinesvc.exe'
+          if ((Test-Path -LiteralPath $sunshineSvc) -and (Test-Path -LiteralPath $sunshineSvcPayload)) {
+            Copy-Item -LiteralPath $sunshineSvc -Destination $sunshineSvcPayload -Force
+          }
+
+      - name: Package Windows Symbols
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseVersion = $env:RELEASE_VERSION
+          if ($releaseVersion -match '^v(.+)$') {
+            $releaseVersion = $Matches[1]
+          }
+
+          $symbolsRoot = Join-Path $PWD 'symbols'
+          $artifactName = "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
+          $artifactPath = Join-Path $symbolsRoot $artifactName
+
+          New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
+
+          $pdbFiles = Get-ChildItem -Path build -Recurse -Filter *.pdb -File |
+            Where-Object { $_.FullName -notlike '*\cpack_artifacts\*' }
+
+          if (-not $pdbFiles) {
+            throw 'No PDB files were produced.'
+          }
+
+          $buildRoot = (Resolve-Path build).Path
+          $pdbPaths = @($pdbFiles | ForEach-Object { [System.IO.Path]::GetRelativePath($buildRoot, $_.FullName) })
+          Push-Location $buildRoot
+          try {
+            & 7z a $artifactPath $pdbPaths
+          } finally {
+            Pop-Location
+          }
+
+      - name: Strip Windows binaries
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' binaries < <(
+            find build -type f \( -name '*.exe' -o -name '*.dll' \) \
+              ! -path '*/cpack_artifacts/*' \
+              ! -path '*/CMakeFiles/*' \
+              ! -path '*/_deps/*' \
+              ! -path '*/tests/*' \
+              -print0
+          )
+
+          if (( ${#binaries[@]} == 0 )); then
+            echo "No Windows binaries found to strip."
+            exit 0
+          fi
+
+          strip --strip-debug --strip-unneeded "${binaries[@]}"
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Package Windows
+        id: package-windows
         shell: msys2 {0}
+        env:
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
         run: |
           mkdir -p artifacts
           cd build
 
+          set -euo pipefail
+
           # package
           cpack -G WIX
-          cpack -G ZIP
 
-          # build custom installer executable that wraps the MSI payload
+          # build the custom setup executable that wraps the MSI payload
           powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/windows/bootstrapper/build_bootstrapper.ps1 -BuildDir "$(cygpath -w "$(pwd)")"
 
-          msi_file=$(ls -1 ./cpack_artifacts/*.msi | head -n 1)
-          installer_exe=$(ls -1 ./cpack_artifacts/VibepolloSetup.exe ./cpack_artifacts/*-installer.exe 2>/dev/null | head -n 1)
-          portable_zip=$(ls -1 ./cpack_artifacts/*.zip | head -n 1)
+          installer_name="${SYMBOL_PRODUCT_NAME}Setup.exe"
+          installer_exe="./cpack_artifacts/${installer_name}"
 
-          # move
-          mv "${msi_file}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.msi
-          mv "${installer_exe}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.exe
-          mv "${portable_zip}" ../artifacts/Vibepollo-${{ matrix.name }}-portable.zip
+          if [[ ! -f "${installer_exe}" ]]; then
+            fallback_installer=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*Setup.exe' | sort | head -n 1)
+            if [[ -z "${fallback_installer}" ]]; then
+              echo "Expected setup executable was not produced: ${installer_exe}" >&2
+              find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+              exit 1
+            fi
+            installer_exe="${fallback_installer}"
+            installer_name="$(basename "${installer_exe}")"
+          fi
 
-      - name: Run tests
-        id: test
-        shell: msys2 {0}
-        working-directory: build/tests
-        run: ./test_sunshine.exe --gtest_color=yes --gtest_output=xml:test_results.xml
+          # Keep generated package names intact. In particular, do not rename
+          # ${SYMBOL_PRODUCT_NAME}Setup.exe; downstream release/install docs expect that name.
+          cp "${installer_exe}" "../artifacts/${installer_name}"
 
-      - name: Generate gcov report
-        id: test_report
-        # any except canceled or skipped
-        if: always() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure')
-        shell: msys2 {0}
-        working-directory: build
-        run: |
-          ${{ steps.python-path.outputs.python-path }} -m pip install gcovr
-          ${{ steps.python-path.outputs.python-path }} -m gcovr . -r ../src \
-            --exclude-noncode-lines \
-            --exclude-throw-branches \
-            --exclude-unreachable-branches \
-            --verbose \
-            --xml-pretty \
-            -o coverage.xml
-
-      - name: Upload coverage artifact
-        if: >-
-          always() &&
-          (steps.test_report.outcome == 'success')
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.name }}
-          path: |
-            build/coverage.xml
-            build/tests/test_results.xml
-          if-no-files-found: error
-
-      - name: Package Windows Debug Info
+      - name: Include symbols in build artifact
+        if: inputs.upload_symbols_artifact
         shell: pwsh
-        working-directory: build
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
         run: |
-          # use .dbg file extension for binaries to avoid confusion with real packages
-          Get-ChildItem -File -Recurse | `
-            % { Rename-Item -Path $_.PSPath -NewName $_.Name.Replace(".exe",".dbg") }
+          $ErrorActionPreference = 'Stop'
 
-          # save the binaries with debug info
-          7z -r `
-            "-xr!CMakeFiles" `
-            "-xr!cpack_artifacts" `
-            a "../artifacts/Vibepollo-${{ matrix.name }}-debuginfo.7z" "*.dbg"
+          $releaseVersion = $env:RELEASE_VERSION
+          if ($releaseVersion -match '^v(.+)$') {
+            $releaseVersion = $Matches[1]
+          }
+
+          $symbolPack = Join-Path (Join-Path $PWD 'symbols') "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
+          if (-not (Test-Path -LiteralPath $symbolPack)) {
+            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            throw "Private symbol pack not found: $symbolPack"
+          }
+
+          Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
+
+      - name: Debug wix
+        if: always() && steps.package-windows.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+          } else {
+            Write-Host "WiX log was not found: $log"
+          }
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: build-${{ matrix.name }}
           path: artifacts/
           if-no-files-found: error
+
+      - name: Publish private symbols release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.symbol_token }}
+          RELEASE_TAG: ${{ inputs.release_version }}
+          SYMBOL_RELEASE_DRAFT: ${{ inputs.symbol_release_draft }}
+          SYMBOL_RELEASE_PREFIX: ${{ inputs.symbol_release_prefix }}
+          SYMBOL_RELEASE_TAG: ${{ inputs.symbol_release_tag }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+          SYMBOLS_REPO: ${{ inputs.symbol_release_repo }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "SYMBOL_TOKEN is required to upload private symbols to $($env:SYMBOLS_REPO)."
+          }
+
+          $sourceReleaseTag = $env:RELEASE_TAG
+          $releaseVersion = $sourceReleaseTag
+          if ($releaseVersion -match '^v(.+)$') {
+            $releaseVersion = $Matches[1]
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:SYMBOL_RELEASE_TAG)) {
+            if ($releaseVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+((-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?)|-stable)?$') {
+              throw "Unsupported release tag '$sourceReleaseTag'. Expected a release tag like v1.15.2-beta.2."
+            }
+
+            if ($env:SYMBOL_RELEASE_PREFIX -notmatch '^(shine|polo)$') {
+              throw "Unsupported symbol release prefix '$($env:SYMBOL_RELEASE_PREFIX)'. Expected 'shine' or 'polo'."
+            }
+
+            $symbolReleaseTag = "$($env:SYMBOL_RELEASE_PREFIX)_$releaseVersion"
+            $prerelease = ($releaseVersion -match '-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?$')
+          } else {
+            $symbolReleaseTag = $env:SYMBOL_RELEASE_TAG
+            $prerelease = $true
+          }
+
+          $draft = ($env:SYMBOL_RELEASE_DRAFT -eq 'true')
+          $symbolPack = Join-Path (Join-Path $PWD 'symbols') "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
+
+          if (-not (Test-Path -LiteralPath $symbolPack)) {
+            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            throw "Private symbol pack not found: $symbolPack"
+          }
+
+          $releaseTitle = "$($env:SYMBOL_PRODUCT_NAME) symbols v$releaseVersion"
+          $releaseNotes = "Private Windows debug symbols for $($env:SYMBOL_PRODUCT_NAME) v$releaseVersion (source release $sourceReleaseTag)."
+
+          function ConvertTo-JqStringLiteral([string] $Value) {
+            return $Value.Replace('\', '\\').Replace('"', '\"')
+          }
+
+          function Find-Release([string] $Repo, [string] $Tag, [string] $Name) {
+            $jqTag = ConvertTo-JqStringLiteral $Tag
+            $releaseJson = @(& gh api --paginate "repos/$Repo/releases" --jq ".[] | select(.tag_name == `"$jqTag`") | @json")
+            if ($LASTEXITCODE -ne 0) { throw "Failed to list releases for '$Repo'." }
+
+            if ($releaseJson.Count -eq 0) {
+              $jqName = ConvertTo-JqStringLiteral $Name
+              $releaseJson = @(& gh api --paginate "repos/$Repo/releases" --jq ".[] | select(.draft == true and .name == `"$jqName`") | @json")
+              if ($LASTEXITCODE -ne 0) { throw "Failed to list draft releases for '$Repo'." }
+            }
+
+            if ($releaseJson.Count -eq 0) { return $null }
+            return ($releaseJson[0] | ConvertFrom-Json)
+          }
+
+          $draftValue = $draft.ToString().ToLowerInvariant()
+          $prereleaseValue = $prerelease.ToString().ToLowerInvariant()
+          $release = Find-Release -Repo $env:SYMBOLS_REPO -Tag $symbolReleaseTag -Name $releaseTitle
+
+          if ($null -ne $release) {
+            $releaseJson = & gh api `
+              --method PATCH `
+              "repos/$($env:SYMBOLS_REPO)/releases/$($release.id)" `
+              -f "tag_name=$symbolReleaseTag" `
+              -f 'target_commitish=main' `
+              -f "name=$releaseTitle" `
+              -f "body=$releaseNotes" `
+              -F "draft=$draftValue" `
+              -F "prerelease=$prereleaseValue"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to update private symbols release '$symbolReleaseTag'." }
+          } else {
+            $releaseJson = & gh api `
+              --method POST `
+              "repos/$($env:SYMBOLS_REPO)/releases" `
+              -f "tag_name=$symbolReleaseTag" `
+              -f 'target_commitish=main' `
+              -f "name=$releaseTitle" `
+              -f "body=$releaseNotes" `
+              -F "draft=$draftValue" `
+              -F "prerelease=$prereleaseValue"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create private symbols release '$symbolReleaseTag'." }
+          }
+
+          $release = $releaseJson | ConvertFrom-Json
+          $releaseId = $release.id
+          if ([string]::IsNullOrWhiteSpace($releaseId)) { throw "Failed to resolve private symbols release id for '$symbolReleaseTag'." }
+
+          $uploadUrl = [string] $release.upload_url
+          if ([string]::IsNullOrWhiteSpace($uploadUrl)) { throw "Failed to resolve private symbols upload URL for '$symbolReleaseTag'." }
+          $uploadUrl = $uploadUrl -replace '\{.*$', ''
+
+          $assetName = Split-Path -Leaf $symbolPack
+          $assetsJson = & gh api "repos/$($env:SYMBOLS_REPO)/releases/$releaseId/assets"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to list private symbols assets for '$symbolReleaseTag'." }
+
+          $assetIds = @($assetsJson | ConvertFrom-Json | Where-Object { $_.name -eq $assetName } | Select-Object -ExpandProperty id)
+          foreach ($assetId in $assetIds) {
+            & gh api --method DELETE "repos/$($env:SYMBOLS_REPO)/releases/assets/$assetId" *> $null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to delete existing private symbol asset '$assetName'." }
+          }
+
+          $encodedAssetName = [System.Uri]::EscapeDataString($assetName)
+          & gh api `
+            --method POST `
+            "${uploadUrl}?name=${encodedAssetName}" `
+            -H 'Content-Type: application/octet-stream' `
+            --input $symbolPack `
+            *> $null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private symbol pack '$symbolPack'." }
+
+          Write-Host "Uploaded $assetName to $($env:SYMBOLS_REPO) release $symbolReleaseTag (id $releaseId)."
