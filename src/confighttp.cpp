@@ -12,6 +12,7 @@
 #include <boost/regex.hpp>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <cstdint>
 #include <format>
@@ -52,6 +53,10 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "rtsp.h"
+#include "session_history.h"
+#include "stream.h"
+#include "host_stats.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -484,6 +489,8 @@ namespace confighttp {
     output["height"] = state.height ? nlohmann::json(*state.height) : nlohmann::json(nullptr);
     output["fps"] = state.fps ? nlohmann::json(*state.fps) : nlohmann::json(nullptr);
     output["bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
+    // WebRTC has no FEC/audio adjustment, so the client-requested bitrate is the same as the encode bitrate.
+    output["client_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
     output["codec"] = state.codec ? nlohmann::json(*state.codec) : nlohmann::json(nullptr);
     output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
@@ -494,6 +501,9 @@ namespace confighttp {
     output["video_max_frame_age_ms"] = state.video_max_frame_age_ms ? nlohmann::json(*state.video_max_frame_age_ms) : nlohmann::json(nullptr);
     output["last_audio_bytes"] = state.last_audio_bytes;
     output["last_video_bytes"] = state.last_video_bytes;
+    output["video_bytes_total"] = state.video_bytes_total;
+    output["audio_bytes_total"] = state.audio_bytes_total;
+    output["bytes_sent"] = state.video_bytes_total + state.audio_bytes_total;
     output["last_video_idr"] = state.last_video_idr;
     output["last_video_frame_index"] = state.last_video_frame_index;
 
@@ -2384,9 +2394,101 @@ namespace confighttp {
     const bool app_running = proc::proc.running() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
+    output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
     output_tree["paused"] = app_running && active == 0;
     output_tree["status"] = true;
     send_response(response, output_tree);
+  }
+
+  // Live host system performance counters (CPU/GPU/RAM/VRAM/temps).
+  void getHostStats(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    const auto s = host_stats::latest();
+    nlohmann::json out;
+    out["cpu_percent"] = s.cpu_percent;
+    out["cpu_temp_c"] = s.cpu_temp_c;
+    out["ram_used_bytes"] = s.ram_used_bytes;
+    out["ram_total_bytes"] = s.ram_total_bytes;
+    out["ram_percent"] = s.ram_total_bytes > 0
+                          ? (static_cast<double>(s.ram_used_bytes) * 100.0 /
+                             static_cast<double>(s.ram_total_bytes))
+                          : 0.0;
+    out["gpu_percent"] = s.gpu_percent;
+    out["gpu_encoder_percent"] = s.gpu_encoder_percent;
+    out["gpu_temp_c"] = s.gpu_temp_c;
+    const auto vram_used_bytes = s.vram_total_bytes > 0 && s.vram_used_bytes > s.vram_total_bytes
+                                   ? s.vram_total_bytes
+                                   : s.vram_used_bytes;
+    out["vram_used_bytes"] = vram_used_bytes;
+    out["vram_total_bytes"] = s.vram_total_bytes;
+    out["vram_percent"] = s.vram_total_bytes > 0
+                           ? (static_cast<double>(vram_used_bytes) * 100.0 /
+                              static_cast<double>(s.vram_total_bytes))
+                           : 0.0;
+    out["net_rx_bps"] = s.net_rx_bps;
+    out["net_tx_bps"] = s.net_tx_bps;
+    send_response(response, out);
+  }
+
+  // Static host info — model strings + total RAM/VRAM, sampled once.
+  void getHostInfo(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    const auto &i = host_stats::info();
+    nlohmann::json out;
+    out["cpu_model"] = i.cpu_model;
+    out["gpu_model"] = i.gpu_model;
+    out["cpu_logical_cores"] = i.cpu_logical_cores;
+    out["ram_total_bytes"] = i.ram_total_bytes;
+    out["vram_total_bytes"] = i.vram_total_bytes;
+    out["net_interface"] = i.net_interface;
+    out["net_link_speed_mbps"] = i.net_link_speed_mbps;
+    send_response(response, out);
+  }
+
+
+  void listRTSPSessions(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &info : stream::get_all_session_info()) {
+      nlohmann::json s;
+      s["uuid"] = info.uuid;
+      s["device_name"] = info.device_name;
+      s["width"] = info.width;
+      s["height"] = info.height;
+      s["fps"] = info.fps;
+      s["bitrate_kbps"] = info.bitrate_kbps;
+      s["client_bitrate_kbps"] = info.client_bitrate_kbps;
+      s["video_format"] = info.video_format;
+      s["codec"] = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
+      s["hdr"] = info.dynamic_range > 0;
+      s["audio_channels"] = info.audio_channels;
+      s["state"] = info.state;
+
+      // Real-time performance stats
+      s["frames_sent"] = info.frames_sent;
+      s["packets_sent"] = info.packets_sent;
+      s["bytes_sent"] = info.bytes_sent;
+      s["idr_requests"] = info.idr_requests;
+      s["invalidate_ref_count"] = info.invalidate_ref_count;
+      s["client_reported_losses"] = info.client_reported_losses;
+      s["encode_latency_ms"] = std::round(info.encode_latency_ms * 10.0) / 10.0;
+      s["last_frame_index"] = info.last_frame_index;
+      s["uptime_seconds"] = std::round(info.uptime_seconds * 10.0) / 10.0;
+      output["sessions"].push_back(std::move(s));
+    }
+    send_response(response, output);
   }
 
   void listWebRTCSessions(resp_https_t response, req_https_t request) {
@@ -2398,6 +2500,183 @@ namespace confighttp {
     output["sessions"] = nlohmann::json::array();
     for (const auto &session : webrtc_stream::list_sessions()) {
       output["sessions"].push_back(webrtc_session_to_json(session));
+    }
+    send_response(response, output);
+  }
+
+  // ── Session History endpoints ────────────────────────────────────
+
+  void listSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    int limit = 25;
+    int offset = 0;
+    auto query = request->parse_query_string();
+    auto it_limit = query.find("limit");
+    if (it_limit != query.end()) {
+      try { limit = std::stoi(it_limit->second); } catch (...) {}
+    }
+    auto it_offset = query.find("offset");
+    if (it_offset != query.end()) {
+      try { offset = std::stoi(it_offset->second); } catch (...) {}
+    }
+    limit = std::clamp(limit, 1, 100);
+    offset = std::max(offset, 0);
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &s : session_history::list_sessions(limit, offset)) {
+      nlohmann::json j;
+      j["uuid"] = s.uuid;
+      j["protocol"] = s.protocol;
+      j["client_name"] = s.client_name;
+      j["device_name"] = s.device_name;
+      j["app_name"] = s.app_name;
+      j["width"] = s.width;
+      j["height"] = s.height;
+      j["target_fps"] = s.target_fps;
+      j["target_bitrate_kbps"] = s.target_bitrate_kbps;
+      j["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
+      j["codec"] = s.codec;
+      j["hdr"] = s.hdr;
+      j["audio_channels"] = s.audio_channels;
+      j["start_time_unix"] = s.start_time_unix;
+      j["end_time_unix"] = s.end_time_unix;
+      j["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
+      j["verdict"] = s.verdict;
+      j["host_cpu_model"] = s.host_cpu_model;
+      j["host_gpu_model"] = s.host_gpu_model;
+      output["sessions"].push_back(std::move(j));
+    }
+    send_response(response, output);
+  }
+
+  void getSessionHistoryDetail(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    auto uuid = request->path_match[1].str();
+    auto detail = session_history::get_session_detail(uuid);
+    if (!detail) {
+      not_found(response, request);
+      return;
+    }
+
+    nlohmann::json output;
+    auto &s = detail->summary;
+    output["uuid"] = s.uuid;
+    output["protocol"] = s.protocol;
+    output["client_name"] = s.client_name;
+    output["device_name"] = s.device_name;
+    output["app_name"] = s.app_name;
+    output["width"] = s.width;
+    output["height"] = s.height;
+    output["target_fps"] = s.target_fps;
+    output["target_bitrate_kbps"] = s.target_bitrate_kbps;
+    output["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
+    output["codec"] = s.codec;
+    output["hdr"] = s.hdr;
+    output["audio_channels"] = s.audio_channels;
+    output["start_time_unix"] = s.start_time_unix;
+    output["end_time_unix"] = s.end_time_unix;
+    output["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
+    output["verdict"] = s.verdict;
+    output["host_cpu_model"] = s.host_cpu_model;
+    output["host_gpu_model"] = s.host_gpu_model;
+
+    output["samples"] = nlohmann::json::array();
+    for (const auto &sample : detail->samples) {
+      nlohmann::json js;
+      js["timestamp_unix"] = sample.timestamp_unix;
+      js["bytes_sent_total"] = sample.bytes_sent_total;
+      js["packets_sent_video"] = sample.packets_sent_video;
+      js["frames_sent"] = sample.frames_sent;
+      js["last_frame_index"] = sample.last_frame_index;
+      js["video_dropped"] = sample.video_dropped;
+      js["audio_dropped"] = sample.audio_dropped;
+      js["client_reported_losses"] = sample.client_reported_losses;
+      js["idr_requests"] = sample.idr_requests;
+      js["ref_invalidations"] = sample.ref_invalidations;
+      js["encode_latency_ms"] = std::round(sample.encode_latency_ms * 10.0) / 10.0;
+      js["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
+      js["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
+      js["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
+      js["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : std::round(sample.host_cpu_percent * 10.0) / 10.0;
+      js["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : std::round(sample.host_gpu_percent * 10.0) / 10.0;
+      js["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : std::round(sample.host_gpu_encoder_percent * 10.0) / 10.0;
+      js["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : std::round(sample.host_ram_percent * 10.0) / 10.0;
+      js["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
+      js["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
+      js["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
+      js["host_net_rx_bps"] = sample.host_net_rx_bps < 0 ? -1 : sample.host_net_rx_bps;
+      js["host_net_tx_bps"] = sample.host_net_tx_bps < 0 ? -1 : sample.host_net_tx_bps;
+      output["samples"].push_back(std::move(js));
+    }
+
+    output["events"] = nlohmann::json::array();
+    for (const auto &evt : detail->events) {
+      nlohmann::json je;
+      je["timestamp_unix"] = evt.timestamp_unix;
+      je["event_type"] = evt.event_type;
+      je["payload"] = evt.payload;
+      output["events"].push_back(std::move(je));
+    }
+
+    send_response(response, output);
+  }
+
+  void deleteSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    auto uuid = request->path_match[1].str();
+    bool ok = session_history::delete_session(uuid);
+    if (!ok) {
+      not_found(response, request);
+      return;
+    }
+
+    nlohmann::json output;
+    output["status"] = "ok";
+    output["uuid"] = uuid;
+    send_response(response, output);
+  }
+
+  void getActiveSessionHistory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+    output["sessions"] = nlohmann::json::array();
+    for (const auto &as : session_history::get_active_sessions()) {
+      nlohmann::json j;
+      j["uuid"] = as.uuid;
+      j["protocol"] = as.protocol;
+      j["client_name"] = as.client_name;
+      j["device_name"] = as.device_name;
+      j["app_name"] = as.app_name;
+      j["width"] = as.width;
+      j["height"] = as.height;
+      j["target_fps"] = as.target_fps;
+      j["target_bitrate_kbps"] = as.target_bitrate_kbps;
+      j["client_bitrate_kbps"] = as.client_bitrate_kbps;
+      j["codec"] = as.codec;
+      j["hdr"] = as.hdr;
+      j["uptime_seconds"] = std::round(as.uptime_seconds * 10.0) / 10.0;
+      j["actual_fps"] = std::round(as.actual_fps * 10.0) / 10.0;
+      j["actual_bitrate_kbps"] = std::round(as.actual_bitrate_kbps * 10.0) / 10.0;
+      j["encode_latency_ms"] = std::round(as.encode_latency_ms * 10.0) / 10.0;
+      j["frame_interval_jitter_ms"] = std::round(as.frame_interval_jitter_ms * 100.0) / 100.0;
+      j["frames_sent"] = as.frames_sent;
+      j["bytes_sent"] = as.bytes_sent;
+      j["client_reported_losses"] = as.client_reported_losses;
+      j["idr_requests"] = as.idr_requests;
+      output["sessions"].push_back(std::move(j));
     }
     send_response(response, output);
   }
@@ -3886,7 +4165,14 @@ namespace confighttp {
     register_api_route("^/api/clients/disconnect$", "POST", disconnectClient);
     register_api_route("^/api/apps/close$", "POST", closeApp);
     register_api_route("^/api/session/status$", "GET", getSessionStatus);
+    register_api_route("^/api/host/stats$", "GET", getHostStats);
+    register_api_route("^/api/host/info$", "GET", getHostInfo);
+    register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
+    register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
+    register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
+    register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "GET", getSessionHistoryDetail);
+    register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteSessionHistory);
     register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);

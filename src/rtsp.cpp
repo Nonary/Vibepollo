@@ -1122,6 +1122,7 @@ namespace rtsp_stream {
       config.monitor.framerate = util::from_view(args.at("x-nv-video[0].maxFPS"sv));
       config.monitor.framerateX100 = util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
       config.monitor.bitrate = util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
+      config.monitor.client_requested_bitrate = config.monitor.bitrate;
       config.monitor.slicesPerFrame = util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
       config.monitor.numRefFrames = util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
       config.monitor.encoderCscMode = util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
@@ -1247,6 +1248,10 @@ namespace rtsp_stream {
     // down to nearly nothing.
     if (configuredBitrateKbps) {
       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+
+      // Preserve the original wire-bandwidth budget the client asked for so the
+      // UI can show it alongside the post-adjustment encoder bitrate.
+      config.monitor.client_requested_bitrate = static_cast<int>(configuredBitrateKbps);
 
       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
       // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.

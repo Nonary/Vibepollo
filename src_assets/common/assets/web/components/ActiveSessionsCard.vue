@@ -1,0 +1,420 @@
+<template>
+  <n-card class="mb-8" :segmented="{ content: true, footer: false }">
+    <template #header>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-medium flex items-center gap-2">
+            <i class="fas fa-broadcast-tower" /> {{ t('sessions.title') }}
+          </h2>
+          <span
+            :class="[
+              'h-2.5 w-2.5 rounded-full',
+              hasActiveSessions
+                ? 'bg-success animate-pulse ring-2 ring-success/30'
+                : 'bg-dark/30 dark:bg-light/30',
+            ]"
+          />
+          <span class="text-xs font-medium opacity-75">
+            {{ hasActiveSessions ? t('sessions.live') : t('sessions.idle') }}
+          </span>
+        </div>
+        <n-button size="small" :loading="loading" @click="refresh">
+          <i class="fas fa-rotate" />
+          <span class="ml-2">{{ t('sessions.refresh') }}</span>
+        </n-button>
+      </div>
+    </template>
+
+    <div v-if="!hasActiveSessions && !loading" class="text-sm opacity-60 py-2">
+      {{ t('sessions.no_active') }}
+    </div>
+
+    <!-- RTSP Sessions -->
+    <div v-if="rtspSessions.length > 0" class="mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
+        <span class="text-sm font-medium">
+          {{ t('sessions.rtsp_active', { count: rtspSessions.length }) }}
+        </span>
+        <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
+          <span class="inline-flex items-center"
+            ><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span
+          >
+        </n-tag>
+      </div>
+
+      <div class="space-y-3">
+        <div
+          v-for="session in rtspSessions"
+          :key="session.uuid"
+          class="rounded-xl border border-dark/[0.06] bg-light/[0.03] p-4 dark:border-light/[0.10] dark:bg-dark/[0.06]"
+        >
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <span class="text-sm font-semibold">{{
+              session.device_name || session.uuid.substring(0, 8)
+            }}</span>
+            <n-tag type="success" size="small" :bordered="false">
+              <span class="inline-flex items-center"
+                ><i class="fas fa-video mr-1" />{{ t('sessions.video') }}</span
+              >
+            </n-tag>
+            <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+            <n-tag type="default" size="small" :bordered="false">{{ session.state }}</n-tag>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            <StatCell
+              v-if="session.width && session.height"
+              :label="t('sessions.resolution')"
+              :value="`${session.width}×${session.height}`"
+              :tip="t('sessions.tip_resolution')"
+            />
+            <StatCell
+              v-if="session.fps"
+              :label="t('sessions.fps')"
+              :value="session.fps"
+              :tip="t('sessions.tip_fps')"
+            />
+            <StatCell
+              v-if="session.bitrate_kbps"
+              :label="t('sessions.bitrate')"
+              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :sub-value="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                  : undefined
+              "
+              :tip="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? t('sessions.tip_bitrate_dual')
+                  : t('sessions.tip_bitrate')
+              "
+            />
+            <StatCell
+              v-if="session.codec"
+              :label="t('sessions.codec')"
+              :value="session.codec"
+              :tip="t('sessions.tip_codec')"
+            />
+            <StatCell
+              v-if="session.audio_channels"
+              :label="t('sessions.audio_channels')"
+              :value="`${session.audio_channels}ch`"
+              :tip="t('sessions.tip_audio_channels')"
+            />
+
+            <!-- Real-time performance stats -->
+            <StatCell :label="t('sessions.encode_latency')" :tip="t('sessions.tip_encode_latency')">
+              <span
+                :class="
+                  session.encode_latency_ms > 16
+                    ? 'text-danger'
+                    : session.encode_latency_ms > 8
+                      ? 'text-warning'
+                      : ''
+                "
+              >
+                {{ session.encode_latency_ms.toFixed(1) }}ms
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.frames_sent')"
+              :value="formatNumber(session.frames_sent)"
+              :tip="t('sessions.tip_frames_sent')"
+            />
+            <StatCell
+              :label="t('sessions.packets_sent')"
+              :value="formatNumber(session.packets_sent)"
+              :tip="t('sessions.tip_packets_sent')"
+            />
+            <StatCell
+              :label="t('sessions.data_sent')"
+              :value="formatBytes(session.bytes_sent)"
+              :tip="t('sessions.tip_data_sent')"
+            />
+            <StatCell :label="t('sessions.client_losses')" :tip="t('sessions.tip_client_losses')">
+              <span :class="session.client_reported_losses > 0 ? 'text-danger' : ''">
+                {{ formatNumber(session.client_reported_losses) }}
+              </span>
+            </StatCell>
+            <StatCell :label="t('sessions.idr_requests')" :tip="t('sessions.tip_idr_requests')">
+              <span :class="session.idr_requests > 10 ? 'text-warning' : ''">
+                {{ session.idr_requests }}
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.frame_invalidations')"
+              :tip="t('sessions.tip_frame_invalidations')"
+            >
+              <span :class="session.invalidate_ref_count > 0 ? 'text-warning' : ''">
+                {{ session.invalidate_ref_count }}
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.uptime')"
+              :value="formatUptime(session.uptime_seconds)"
+              :tip="t('sessions.tip_uptime')"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts toggle -->
+      <div class="flex items-center gap-2 mt-3">
+        <n-button
+          size="small"
+          :type="showCharts ? 'primary' : 'default'"
+          @click="showCharts = !showCharts"
+        >
+          <i :class="['fas', showCharts ? 'fa-chart-line' : 'fa-chart-bar']" />
+          <span class="ml-2">{{
+            showCharts ? t('sessions.hide_charts') : t('sessions.show_charts')
+          }}</span>
+        </n-button>
+      </div>
+
+      <!-- Session Charts -->
+      <SessionCharts
+        v-if="showCharts && rtspSessions.length > 0"
+        :session="rtspSessions[0]"
+        :session-id="rtspSessions[0]?.uuid"
+        protocol="rtsp"
+      />
+    </div>
+    <div v-else-if="rtspCount > 0" class="mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
+        <span class="text-sm font-medium">
+          {{ t('sessions.rtsp_active', { count: rtspCount }) }}
+        </span>
+        <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
+          <span class="inline-flex items-center"
+            ><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span
+          >
+        </n-tag>
+      </div>
+    </div>
+
+    <!-- WebRTC Sessions -->
+    <div v-if="webrtcSessions.length > 0">
+      <div class="flex items-center gap-2 mb-3">
+        <n-tag type="warning" size="small" :bordered="false">WebRTC</n-tag>
+        <span class="text-sm font-medium">
+          {{ t('sessions.webrtc_active', { count: webrtcSessions.length }) }}
+        </span>
+      </div>
+
+      <div class="space-y-3">
+        <div
+          v-for="session in webrtcSessions"
+          :key="session.id"
+          class="rounded-xl border border-dark/[0.06] bg-light/[0.03] p-4 dark:border-light/[0.10] dark:bg-dark/[0.06]"
+        >
+          <!-- Session header -->
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <span class="text-sm font-semibold">{{ session.id.substring(0, 8) }}</span>
+            <n-tag v-if="session.video" type="success" size="small" :bordered="false">
+              <span class="inline-flex items-center"
+                ><i class="fas fa-video mr-1" />{{ t('sessions.video') }}</span
+              >
+            </n-tag>
+            <n-tag v-if="session.audio" type="success" size="small" :bordered="false">
+              <span class="inline-flex items-center"
+                ><i class="fas fa-volume-up mr-1" />{{ t('sessions.audio') }}</span
+              >
+            </n-tag>
+            <n-tag v-if="session.encoded" type="info" size="small" :bordered="false">
+              {{ t('sessions.encoded') }}
+            </n-tag>
+            <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+          </div>
+
+          <!-- Stats grid -->
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            <StatCell
+              v-if="session.width && session.height"
+              :label="t('sessions.resolution')"
+              :value="`${session.width}×${session.height}`"
+              :tip="t('sessions.tip_resolution')"
+            />
+            <StatCell
+              v-if="session.fps != null"
+              :label="t('sessions.fps')"
+              :value="session.fps"
+              :tip="t('sessions.tip_fps')"
+            />
+            <StatCell
+              v-if="session.bitrate_kbps != null"
+              :label="t('sessions.bitrate')"
+              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :sub-value="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                  : undefined
+              "
+              :tip="
+                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                  ? t('sessions.tip_bitrate_dual')
+                  : t('sessions.tip_bitrate')
+              "
+            />
+            <StatCell
+              v-if="session.codec"
+              :label="t('sessions.codec')"
+              :value="session.codec"
+              :tip="t('sessions.tip_codec')"
+            />
+            <StatCell
+              :label="t('sessions.video_packets')"
+              :value="formatNumber(session.video_packets)"
+              :tip="t('sessions.tip_video_packets')"
+            />
+            <StatCell
+              :label="t('sessions.audio_packets')"
+              :value="formatNumber(session.audio_packets)"
+              :tip="t('sessions.tip_audio_packets')"
+            />
+            <StatCell :label="t('sessions.video_dropped')" :tip="t('sessions.tip_video_dropped')">
+              <span :class="session.video_dropped > 0 ? 'text-danger' : ''">
+                {{ formatNumber(session.video_dropped) }}
+              </span>
+            </StatCell>
+            <StatCell :label="t('sessions.audio_dropped')" :tip="t('sessions.tip_audio_dropped')">
+              <span :class="session.audio_dropped > 0 ? 'text-danger' : ''">
+                {{ formatNumber(session.audio_dropped) }}
+              </span>
+            </StatCell>
+            <StatCell
+              :label="t('sessions.video_queue')"
+              :value="session.video_queue_frames"
+              :tip="t('sessions.tip_video_queue')"
+            />
+            <StatCell
+              :label="t('sessions.audio_queue')"
+              :value="session.audio_queue_frames"
+              :tip="t('sessions.tip_audio_queue')"
+            />
+            <StatCell
+              :label="t('sessions.inflight')"
+              :value="session.video_inflight_frames"
+              :tip="t('sessions.tip_inflight')"
+            />
+            <StatCell
+              v-if="session.audio_codec"
+              :label="t('sessions.audio_codec')"
+              :value="session.audio_codec"
+              :tip="t('sessions.tip_audio_codec')"
+            />
+            <StatCell
+              v-if="session.profile"
+              :label="t('sessions.profile')"
+              :value="session.profile"
+              :tip="t('sessions.tip_profile')"
+            />
+            <StatCell
+              v-if="session.last_video_age_ms != null"
+              :label="t('sessions.last_video')"
+              :value="`${session.last_video_age_ms}ms`"
+              :tip="t('sessions.tip_last_video')"
+            />
+            <StatCell
+              v-if="session.last_audio_age_ms != null"
+              :label="t('sessions.last_audio')"
+              :value="`${session.last_audio_age_ms}ms`"
+              :tip="t('sessions.tip_last_audio')"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- WebRTC Charts toggle -->
+      <div class="flex justify-end mt-3">
+        <n-button size="tiny" quaternary @click="showWebrtcCharts = !showWebrtcCharts">
+          <i :class="['fas', showWebrtcCharts ? 'fa-chart-line' : 'fa-chart-bar']" />
+          <span class="ml-1 text-xs">{{
+            showWebrtcCharts ? t('sessions.hide_charts') : t('sessions.show_charts')
+          }}</span>
+        </n-button>
+      </div>
+
+      <!-- WebRTC Session Charts -->
+      <SessionCharts
+        v-if="showWebrtcCharts && webrtcSessions.length > 0"
+        :session="webrtcSessions[0]"
+        :session-id="webrtcSessions[0]?.id"
+        protocol="webrtc"
+      />
+    </div>
+  </n-card>
+</template>
+
+<script setup lang="ts">
+import { onMounted, ref } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { NButton, NCard, NTag } from 'naive-ui';
+import { useAuthStore } from '@/stores/auth';
+import { useSessionsStore } from '@/stores/sessions';
+import { storeToRefs } from 'pinia';
+import SessionCharts from './SessionCharts.vue';
+import StatCell from './StatCell.vue';
+
+const { t } = useI18n();
+const auth = useAuthStore();
+const sessionsStore = useSessionsStore();
+const { rtspSessions, webrtcSessions, rtspCount, appRunning, appName, loading, hasActiveSessions } =
+  storeToRefs(sessionsStore);
+
+const showCharts = ref(false);
+const showWebrtcCharts = ref(false);
+
+function formatBitrate(kbps: number): string {
+  if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+  return `${kbps} Kbps`;
+}
+
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+async function refresh(): Promise<void> {
+  await sessionsStore.refresh();
+}
+
+onMounted(async () => {
+  await auth.waitForAuthentication();
+  sessionsStore.startPolling();
+});
+</script>
+
+<style scoped>
+.stat-cell {
+  @apply rounded-lg bg-dark/[0.04] dark:bg-light/[0.06] px-3 py-2;
+}
+.stat-label {
+  @apply text-[10px] uppercase tracking-wider opacity-60 font-semibold mb-0.5;
+}
+.stat-value {
+  @apply text-sm font-mono font-semibold;
+}
+.stat-subvalue {
+  @apply text-[10px] font-mono opacity-60 mt-0.5;
+}
+</style>
