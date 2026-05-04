@@ -3212,25 +3212,25 @@ namespace video {
 
         auto encoder_codec_name = encoder.codec_from_config(config).name;
 
-        // Test 4:4:4 HDR first. If 4:4:4 is supported, 4:2:0 should also be supported.
-        config.chromaSamplingType = 1;
-        if ((encoder.flags & YUV444_SUPPORT) &&
-            disp->is_codec_supported(encoder_codec_name, config) &&
-            validate_config(disp, encoder, config) >= 0) {
-          flag_map[encoder_t::DYNAMIC_RANGE] = true;
-          flag_map[encoder_t::YUV444] = true;
-          return;
-        } else {
-          flag_map[encoder_t::YUV444] = false;
-        }
+        flag_map[encoder_t::DYNAMIC_RANGE] = false;
+        flag_map[encoder_t::YUV444] = false;
 
-        // Test 4:2:0 HDR
+        // Test the mandatory HDR 4:2:0 path first. Some encoders support AV1/HEVC
+        // Main10 but reject optional 4:4:4, and that must not mask HDR support.
         config.chromaSamplingType = 0;
         if (disp->is_codec_supported(encoder_codec_name, config) &&
             validate_config(disp, encoder, config) >= 0) {
           flag_map[encoder_t::DYNAMIC_RANGE] = true;
         } else {
-          flag_map[encoder_t::DYNAMIC_RANGE] = false;
+          return;
+        }
+
+        // Test optional HDR 4:4:4 after 4:2:0 has already established HDR support.
+        config.chromaSamplingType = 1;
+        if ((encoder.flags & YUV444_SUPPORT) &&
+            disp->is_codec_supported(encoder_codec_name, config) &&
+            validate_config(disp, encoder, config) >= 0) {
+          flag_map[encoder_t::YUV444] = true;
         }
       };
 
