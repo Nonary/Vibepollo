@@ -4,6 +4,7 @@
 #include <cmath>
 #include <combaseapi.h>
 #include <cstdlib>
+#include <cstdint>
 #include <cstdio>
 #include <dxgi.h>
 #include <dxgi1_6.h>
