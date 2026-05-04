@@ -4,7 +4,9 @@ permissions: {}
 
 on:
   workflow_dispatch:
-  push: {}
+  push:
+    branches:
+      - '**'
   pull_request:
     branches:
       - vibe
@@ -37,8 +39,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -117,11 +117,7 @@ jobs:
           release_versions = [key for key in release_versions if key is not None]
           current_release_version = max(release_versions) if release_versions else None
 
-          ref = os.environ["REF"]
-          if ref.startswith("refs/tags/"):
-            candidate_tags = [os.environ["REF_NAME"]]
-          else:
-            candidate_tags = run("git", "tag", "--list").splitlines()
+          candidate_tags = run("git", "tag", "--list").splitlines()
 
           valid_candidates = []
           for tag in candidate_tags:
