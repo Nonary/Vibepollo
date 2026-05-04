@@ -38,6 +38,7 @@ jobs:
         id: release-candidate
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -117,7 +118,10 @@ jobs:
           release_versions = [key for key in release_versions if key is not None]
           current_release_version = max(release_versions) if release_versions else None
 
-          candidate_tags = run("git", "tag", "--list").splitlines()
+          head_sha = os.environ["GITHUB_SHA_VALUE"]
+          candidate_tags = run("git", "tag", "--points-at", head_sha).splitlines()
+          if not candidate_tags:
+            skip("No unreleased version tag points at this push commit.")
 
           valid_candidates = []
           for tag in candidate_tags:
