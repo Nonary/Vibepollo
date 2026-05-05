@@ -134,7 +134,10 @@ function Get-FileSha256 {
 }
 
 function Get-OutputInputHash {
-  param([string]$LibWebrtcDir)
+  param(
+    [string]$LibWebrtcDir,
+    [string]$Git
+  )
 
   if (-not (Test-Path -LiteralPath $LibWebrtcDir)) {
     throw "libwebrtc wrapper directory was not found: $LibWebrtcDir"
@@ -149,22 +152,18 @@ function Get-OutputInputHash {
   )
 
   $entries = New-Object System.Collections.Generic.List[string]
-  foreach ($inputPath in $inputPaths) {
-    $absolutePath = Join-Path $rootPath $inputPath
-    if (-not (Test-Path -LiteralPath $absolutePath)) {
-      continue
-    }
+  # Hash Git blob ids instead of working-tree file bytes. Windows checkouts can
+  # materialize these text files with CRLF or LF depending on git settings, but
+  # those line-ending differences do not change the produced WebRTC artifacts.
+  $treeOutput = & $Git -C $rootPath ls-tree -r HEAD -- $inputPaths
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect libwebrtc wrapper inputs from git tree at $LibWebrtcDir"
+  }
 
-    $item = Get-Item -LiteralPath $absolutePath
-    $files = if ($item.PSIsContainer) {
-      Get-ChildItem -LiteralPath $absolutePath -Recurse -File
-    } else {
-      @($item)
-    }
-
-    foreach ($file in $files) {
-      $relativePath = $file.FullName.Substring($rootPath.Length).TrimStart("\", "/").Replace("\", "/")
-      $entries.Add("$relativePath`0$(Get-FileSha256 -Path $file.FullName)")
+  foreach ($line in @($treeOutput)) {
+    if ($line -match '^\d+\s+blob\s+([0-9a-fA-F]{40,64})\s+(.+)$') {
+      $relativePath = $matches[2].Replace("\", "/")
+      $entries.Add("$relativePath`0$($matches[1].ToLowerInvariant())")
     }
   }
 
@@ -237,7 +236,7 @@ if (-not $sourceRevision) {
 }
 
 $wrapperCommit = Get-GitObject -Repository $RootDir -Object "HEAD:third-party/libwebrtc" -Git $GitExe
-$outputInputHash = Get-OutputInputHash -LibWebrtcDir (Join-Path $RootDir "third-party\libwebrtc")
+$outputInputHash = Get-OutputInputHash -LibWebrtcDir (Join-Path $RootDir "third-party\libwebrtc") -Git $GitExe
 
 # This is an explicit binary-output recipe, not a hash of the workflow or the
 # whole build script. Keep this list aligned with the GN args and copied
