@@ -2567,19 +2567,25 @@ namespace proc {
     return result.checksum();
   }
 
-  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, std::string app_image_path, int index) {
-    // Generate id by hashing name with image data if present
+  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index) {
+    // Prefer the persistent app UUID for stable client-facing IDs. Artwork can be
+    // refreshed by Playnite sync, so image bytes must not affect launch identity.
     std::vector<std::string> to_hash;
-    to_hash.push_back(app_name);
-    auto file_path = validate_app_image_path(app_image_path);
-    if (file_path != DEFAULT_APP_IMAGE_PATH) {
-      auto file_hash = calculate_sha256(file_path);
-      if (file_hash) {
-        to_hash.push_back(file_hash.value());
-      } else {
-        BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
-        // Fallback to just hashing image path
-        to_hash.push_back(file_path);
+    if (!app_uuid.empty()) {
+      to_hash.push_back(app_uuid);
+    } else {
+      // Legacy fallback for app entries that predate UUID normalization.
+      to_hash.push_back(app_name);
+      auto file_path = validate_app_image_path(app_image_path);
+      if (file_path != DEFAULT_APP_IMAGE_PATH) {
+        auto file_hash = calculate_sha256(file_path);
+        if (file_hash) {
+          to_hash.push_back(file_hash.value());
+        } else {
+          BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
+          // Fallback to just hashing image path
+          to_hash.push_back(file_path);
+        }
       }
     }
 
@@ -3086,7 +3092,7 @@ namespace proc {
         }
 
         // Calculate a unique application id.
-        auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
+        auto possible_ids = calculate_app_id(name, ctx.uuid, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
           ctx.id = std::get<0>(possible_ids);
         } else {
@@ -3157,7 +3163,7 @@ namespace proc {
       ctx.exit_timeout = 5s;
 
       // Calculate unique ID
-      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
+      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
       if (ids.count(std::get<0>(possible_ids)) == 0) {
         // Avoid using index to generate id if possible
         ctx.id = std::get<0>(possible_ids);
@@ -3190,7 +3196,7 @@ namespace proc {
       ctx.wait_all = false;
       ctx.exit_timeout = 5s;
 
-      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
+      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
       if (ids.count(std::get<0>(possible_ids)) == 0) {
         // Avoid using index to generate id if possible
         ctx.id = std::get<0>(possible_ids);
@@ -3224,7 +3230,7 @@ namespace proc {
         ctx.wait_all = true;
         ctx.exit_timeout = 5s;
 
-        auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
+        auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
           // Avoid using index to generate id if possible
           ctx.id = std::get<0>(possible_ids);
@@ -3260,7 +3266,7 @@ namespace proc {
       ctx.wait_all = true;
       ctx.exit_timeout = 5s;
 
-      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
+      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
       if (ids.count(std::get<0>(possible_ids)) == 0) {
         // Avoid using index to generate id if possible
         ctx.id = std::get<0>(possible_ids);
