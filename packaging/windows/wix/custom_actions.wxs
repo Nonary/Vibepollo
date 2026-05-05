@@ -8,7 +8,7 @@
     - Add/remove firewall rules
     - Install/update SudoVDA virtual display driver
     - Install/uninstall service and autostart configuration
-    - Optional prompts on uninstall for SudoVDA removal, virtual gamepad removal, and deleting install dir
+    - Optional prompts on uninstall for SudoVDA removal, virtual gamepad removal, and factory reset of known Vibepollo app data
     - Detect legacy Sunshine on direct MSI installs and prompt for removal
 
     Notes:
@@ -143,9 +143,8 @@
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="DeleteInstallDir" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <!-- Remove everything but config on manual uninstalls when user chooses to keep data -->
-    <CustomAction Id="PruneButConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="FactoryResetAppData" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="CleanupEmptyInstallRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Immediate property setters to pass commands to deferred QuietExec actions -->
     <CustomAction Id="SetResetAcls"
@@ -184,9 +183,12 @@
                  Property="UninstallGamepad"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\uninstall-gamepad.ps1&quot;"/>
 
-    <CustomAction Id="SetDeleteInstallDir"
-                 Property="DeleteInstallDir"
-                 Value="&quot;[SystemFolder]cmd.exe&quot; /C rmdir /S /Q &quot;[INSTALL_ROOT].&quot;"/>
+    <CustomAction Id="SetFactoryResetAppData"
+                 Property="FactoryResetAppData"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALL_ROOT]scripts\factory-reset-appdata.ps1&quot; -InstallRoot &quot;[INSTALL_ROOT].&quot;"/>
+    <CustomAction Id="SetCleanupEmptyInstallRoot"
+                 Property="CleanupEmptyInstallRoot"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C rd &quot;[INSTALL_ROOT].&quot; 2&gt;nul || exit /b 0"/>
     <!-- Immediate setter for quiet stop service -->
     <CustomAction Id="SetStopSvcQuietImmediate"
                  Property="StopSvcQuietImmediate"
@@ -194,11 +196,6 @@
     <CustomAction Id="SetStopSvcQuiet"
                  Property="StopSvcQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -Command &quot;&amp; { foreach ($name in @('ApolloService','SunshineService','VibeshineService','sunshinesvc')) { $svc = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($svc) { if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue; $svc.WaitForStatus('Stopped','00:00:30') } } } }&quot;"/>
-    <!-- Immediate setter to prune everything except the config directory -->
-    <CustomAction Id="SetPruneButConfig"
-                 Property="PruneButConfig"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$r='[INSTALL_ROOT]'; Get-ChildItem -LiteralPath $r -Force | Where-Object Name -ne 'config' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue&quot;"/>
-
     <!-- Immediate setter for quiet start service -->
     <CustomAction Id="SetStartSvcQuiet"
                  Property="StartSvcQuiet"
