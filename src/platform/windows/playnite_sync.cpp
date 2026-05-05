@@ -464,12 +464,20 @@ namespace platf::playnite::sync {
     } catch (...) {}
     try {
       if (!g.box_art_path.empty()) {
+        const auto src = std::filesystem::path(g.box_art_path);
         auto dstDir = platf::appdata() / "covers";
         file_handler::make_directory(dstDir.string());
         auto dst = dstDir / ("playnite_" + g.id + ".png");
-        bool ok = std::filesystem::exists(dst);
+        bool ok = false;
+        std::error_code src_time_ec;
+        std::error_code dst_time_ec;
+        if (std::filesystem::exists(dst)) {
+          const auto src_time = std::filesystem::last_write_time(src, src_time_ec);
+          const auto dst_time = std::filesystem::last_write_time(dst, dst_time_ec);
+          ok = !src_time_ec && !dst_time_ec && dst_time >= src_time;
+        }
         if (!ok) {
-          ok = platf::img::convert_to_png_96dpi(std::filesystem::path(g.box_art_path).wstring(), dst.wstring());
+          ok = platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring());
         }
         if (ok) {
           app["image-path"] = dst.generic_string();
