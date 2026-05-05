@@ -75,7 +75,7 @@ namespace VibepolloInstaller {
       if (parsed.InternalElevatedUninstall) {
         var internalUninstall = InstallerRunner.RunInteractiveUninstall(
           parsed,
-          parsed.InternalUninstallDeleteInstallDir,
+          parsed.InternalUninstallFactoryReset,
           parsed.InternalUninstallRemoveVirtualDisplayDriver,
           false);
         return internalUninstall.ExitCode;
@@ -1056,7 +1056,7 @@ namespace VibepolloInstaller {
       await RunOperationAsync(
         () => Task.Run(() => InstallerRunner.RunInteractiveUninstall(
           _arguments,
-          uninstallOptions.Value.DeleteInstallDirectory,
+          uninstallOptions.Value.FactoryResetAppData,
           uninstallOptions.Value.RemoveVirtualDisplayDriver)),
         "Uninstall",
         "Removing Vibepollo...",
@@ -1580,7 +1580,7 @@ namespace VibepolloInstaller {
 
     private struct UninstallOptions {
       public bool RemoveVirtualDisplayDriver;
-      public bool DeleteInstallDirectory;
+      public bool FactoryResetAppData;
     }
 
     private async Task<UninstallOptions?> ShowOverlayUninstallOptionsAsync() {
@@ -1592,7 +1592,7 @@ namespace VibepolloInstaller {
         IsChecked = false
       };
       var deleteFolderCheckBox = new CheckBox {
-        Content = "Factory reset (deletes all settings back to default)",
+        Content = "Factory reset (deletes Vibepollo settings, preserves user-added files)",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
         Margin = new Thickness(0, 0, 0, 0),
@@ -1600,7 +1600,8 @@ namespace VibepolloInstaller {
       };
 
       var message = "Choose what to remove during uninstall.\n\n"
-        + "Uninstall always removes the Vibepollo service, firewall rules, and program files.";
+        + "Uninstall always removes the Vibepollo service, firewall rules, and MSI-installed program files. "
+        + "Files you added after installation are preserved.";
 
       var result = await ShowOverlayAsync(
         "Uninstall Vibepollo",
@@ -1622,7 +1623,7 @@ namespace VibepolloInstaller {
 
       return new UninstallOptions {
         RemoveVirtualDisplayDriver = removeDriverCheckBox.IsChecked == true,
-        DeleteInstallDirectory = deleteFolderCheckBox.IsChecked == true
+        FactoryResetAppData = deleteFolderCheckBox.IsChecked == true
       };
     }
 
@@ -1990,6 +1991,7 @@ namespace VibepolloInstaller {
     private const string InternalInstallSaveLogsToken = "--internal-install-save-logs";
     private const string InternalInstallResultPathToken = "--internal-install-result-path";
     private const string InternalUninstallDeleteInstallDirToken = "--internal-uninstall-delete-install-dir";
+    private const string InternalUninstallFactoryResetToken = "--internal-uninstall-factory-reset";
     private const string InternalUninstallRemoveSudoVdaToken = "--internal-uninstall-remove-sudovda";
 
     public bool ShowUi { get; set; }
@@ -2000,7 +2002,7 @@ namespace VibepolloInstaller {
     public bool InternalInstallVirtualDisplay { get; set; }
     public bool InternalInstallSaveLogs { get; set; }
     public string InternalInstallResultPath { get; set; }
-    public bool InternalUninstallDeleteInstallDir { get; set; }
+    public bool InternalUninstallFactoryReset { get; set; }
     public bool InternalUninstallRemoveVirtualDisplayDriver { get; set; }
     public string MsiPathOverride { get; set; }
     public List<string> ForwardedArguments { get; private set; }
@@ -2057,8 +2059,10 @@ namespace VibepolloInstaller {
           parsed.InternalInstallResultPath = args[++index];
           continue;
         }
-        if (string.Equals(arg, InternalUninstallDeleteInstallDirToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
-          parsed.InternalUninstallDeleteInstallDir = ParseBooleanToken(args[++index]);
+        if ((string.Equals(arg, InternalUninstallFactoryResetToken, StringComparison.OrdinalIgnoreCase)
+          || string.Equals(arg, InternalUninstallDeleteInstallDirToken, StringComparison.OrdinalIgnoreCase))
+          && index + 1 < args.Length) {
+          parsed.InternalUninstallFactoryReset = ParseBooleanToken(args[++index]);
           continue;
         }
         if (string.Equals(arg, InternalUninstallRemoveSudoVdaToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
@@ -3419,18 +3423,18 @@ namespace VibepolloInstaller {
 
     public static InstallerResult RunInteractiveUninstall(
       InstallerArguments arguments,
-      bool deleteInstallDirectory = false,
+      bool factoryResetAppData = false,
       bool removeVirtualDisplayDriver = false,
       bool allowSelfElevation = true) {
       if (allowSelfElevation && !IsProcessElevated()) {
-        return RunElevatedBootstrapperUninstall(arguments, deleteInstallDirectory, removeVirtualDisplayDriver);
+        return RunElevatedBootstrapperUninstall(arguments, factoryResetAppData, removeVirtualDisplayDriver);
       }
 
       var uninstallResult = UninstallInstalledProducts(
         "uninstall",
         true,
         false,
-        deleteInstallDirectory,
+        factoryResetAppData,
         removeVirtualDisplayDriver,
         true,
         new[] { InstalledProductKind.Vibepollo });
@@ -4010,7 +4014,7 @@ namespace VibepolloInstaller {
       string logPhase,
       bool hiddenWindow,
       bool requestElevationIfNeeded,
-      bool deleteInstallDirectory,
+      bool factoryResetAppData,
       bool removeVirtualDisplayDriver,
       bool failWhenMissing,
       IReadOnlyCollection<InstalledProductKind> uninstallKinds) {
@@ -4044,13 +4048,16 @@ namespace VibepolloInstaller {
           "/norestart",
           "/l*v",
           logPath,
-          "DELETEINSTALLDIR=" + (deleteInstallDirectory ? "1" : "0"),
+          "FACTORYRESET=" + (factoryResetAppData ? "1" : "0"),
           "REMOVEVIRTUALDISPLAYDRIVER=" + (removeVirtualDisplayDriver ? "1" : "0"),
           "REBOOT=ReallySuppress",
           "SUPPRESSMSGBOXES=1"
         };
 
         var code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
+        if (factoryResetAppData && (code == 0 || code == 3010 || code == 1605)) {
+          TryFactoryResetKnownAppData(product.InstallLocation);
+        }
         if (code == 3010) {
           finalCode = 3010;
           continue;
@@ -4073,6 +4080,71 @@ namespace VibepolloInstaller {
         Message = BuildResultMessage("Uninstall", finalCode, lastLogPath),
         LogPath = lastLogPath
       };
+    }
+
+    private static void TryFactoryResetKnownAppData(string installLocation) {
+      if (string.IsNullOrWhiteSpace(installLocation)) {
+        return;
+      }
+
+      try {
+        var root = Path.GetFullPath(installLocation.Trim().Trim('"'));
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) {
+          return;
+        }
+
+        var knownItems = new[] {
+          "apps.json",
+          "sunshine.conf",
+          "sunshine.log",
+          "sunshine_state.json",
+          "vibeshine_state.json",
+          "virtual_display_cache.json",
+          "nvprefs_undo.json",
+          "sunshine_playnite.log",
+          "credentials",
+          "covers",
+          "logs"
+        };
+
+        var config = Path.Combine(root, "config");
+        foreach (var item in knownItems) {
+          TryDeleteKnownPath(Path.Combine(config, item));
+        }
+        foreach (var item in knownItems) {
+          TryDeleteKnownPath(Path.Combine(root, item));
+        }
+        TryDeleteDirectoryIfEmpty(config);
+      } catch {
+        // Factory reset cleanup is best-effort. MSI-owned files are still
+        // removed by Windows Installer, and user-added files must be preserved.
+      }
+    }
+
+    private static void TryDeleteKnownPath(string path) {
+      try {
+        if (string.IsNullOrWhiteSpace(path)) {
+          return;
+        }
+        if (Directory.Exists(path)) {
+          Directory.Delete(path, true);
+        } else if (File.Exists(path)) {
+          File.Delete(path);
+        }
+      } catch {
+      }
+    }
+
+    private static void TryDeleteDirectoryIfEmpty(string path) {
+      try {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) {
+          return;
+        }
+        if (!Directory.EnumerateFileSystemEntries(path).Any()) {
+          Directory.Delete(path, false);
+        }
+      } catch {
+      }
     }
 
     private static string BuildProductDisplayName(InstalledProductInfo product) {
@@ -4591,12 +4663,12 @@ namespace VibepolloInstaller {
 
     private static InstallerResult RunElevatedBootstrapperUninstall(
       InstallerArguments arguments,
-      bool deleteInstallDirectory,
+      bool factoryResetAppData,
       bool removeVirtualDisplayDriver) {
       var elevatedArgs = new List<string> {
         "--internal-elevated-uninstall",
-        "--internal-uninstall-delete-install-dir",
-        deleteInstallDirectory ? "1" : "0",
+        "--internal-uninstall-factory-reset",
+        factoryResetAppData ? "1" : "0",
         "--internal-uninstall-remove-sudovda",
         removeVirtualDisplayDriver ? "1" : "0"
       };

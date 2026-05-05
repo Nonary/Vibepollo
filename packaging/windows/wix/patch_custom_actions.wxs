@@ -13,6 +13,7 @@
       <RegistrySearch Id="SearchLegacySunshineUninstall32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw"/>
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
+    <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
@@ -75,13 +76,13 @@
       <Custom Action="SetUninstallSudovda" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
 
-      <!-- Execute delete/prune after MSI removes its files -->
-      <Custom Action="SetDeleteInstallDir" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR = "1"</Custom>
-      <Custom Action="DeleteInstallDir" After="SetDeleteInstallDir">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR = "1"</Custom>
+      <!-- Factory reset only removes known Vibepollo app data. MSI-owned files are removed by MSI itself. -->
+      <Custom Action="SetFactoryResetAppData" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND (FACTORYRESET = "1" OR DELETEINSTALLDIR = "1")</Custom>
+      <Custom Action="FactoryResetAppData" After="SetFactoryResetAppData">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND (FACTORYRESET = "1" OR DELETEINSTALLDIR = "1")</Custom>
 
-      <!-- If not deleting whole dir, prune everything but config -->
-      <Custom Action="SetPruneButConfig" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR &lt;&gt; "1"</Custom>
-      <Custom Action="PruneButConfig" After="SetPruneButConfig">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND DELETEINSTALLDIR &lt;&gt; "1"</Custom>
+      <!-- After MSI has removed its tracked files, remove the install root only if it is empty. -->
+      <Custom Action="SetCleanupEmptyInstallRoot" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="CleanupEmptyInstallRoot" After="SetCleanupEmptyInstallRoot">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
     <InstallUISequence>

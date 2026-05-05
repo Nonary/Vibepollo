@@ -1,0 +1,19 @@
+﻿{
+    "schema":  1,
+    "repository":  "Nonary/vibeshine",
+    "tag":  "webrtc-win-x64-v2-db3ba7af86dd-af1b957f0cf8-a20a4ee3232e",
+    "asset":  "libwebrtc-windows-x64-webrtc-win-x64-v2-db3ba7af86dd-af1b957f0cf8-a20a4ee3232e.zip",
+    "platform":  "windows-x64",
+    "configuration":  "Release",
+    "runner_os":  "Windows",
+    "toolchain":  "ucrt-x86_64",
+    "webrtc_repo_url":  "https://github.com/webrtc-sdk/webrtc.git",
+    "webrtc_ref":  "m125_release",
+    "webrtc_revision":  "db3ba7af86dd6d48174ed35387d11c0794f1a21b",
+    "libwebrtc_wrapper_commit":  "d3cf302362b5557b6a12542210de3190c50237a9",
+    "libwebrtc_output_input_hash":  "af1b957f0cf8c4ce55d5b0bd388e295a",
+    "binary_recipe_hash":  "a20a4ee3232ebcc59442",
+    "output_key":  "webrtc-output-v2-windows-ucrt-x86_64-release-db3ba7af86dd6d48174ed35387d11c0794f1a21b-libwebrtc-inputs-af1b957f0cf8c4ce55d5b0bd388e295a-win-x64-mingw-libwebrtc-dll-a20a4ee3232ebcc59442",
+    "sha256":  "ca3964e8726a972801ac9e5342856f97ba12112d43d7794b22ec48de5d7846a9",
+    "created_utc":  "2026-05-05T01:16:59Z"
+}
