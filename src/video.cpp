@@ -3212,16 +3212,18 @@ namespace video {
 
         auto encoder_codec_name = encoder.codec_from_config(config).name;
 
-        flag_map[encoder_t::DYNAMIC_RANGE] = false;
         flag_map[encoder_t::YUV444] = false;
 
         // Test the mandatory HDR 4:2:0 path first. Some encoders support AV1/HEVC
         // Main10 but reject optional 4:4:4, and that must not mask HDR support.
+        // Keep DYNAMIC_RANGE tentatively enabled while probing because validate_config()
+        // gates dynamicRange configs on the current codec capability bit.
         config.chromaSamplingType = 0;
         if (disp->is_codec_supported(encoder_codec_name, config) &&
             validate_config(disp, encoder, config) >= 0) {
           flag_map[encoder_t::DYNAMIC_RANGE] = true;
         } else {
+          flag_map[encoder_t::DYNAMIC_RANGE] = false;
           return;
         }
 
