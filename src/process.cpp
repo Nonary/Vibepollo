@@ -2380,8 +2380,9 @@ namespace proc {
   // Returns http content-type header compatible image type.
   std::string proc_t::get_app_image(int app_id) {
     std::scoped_lock lk(_apps_mutex);
-    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
-      return app.id == std::to_string(app_id);
+    const auto app_id_str = std::to_string(app_id);
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id_str](const auto &app) {
+      return app.matches_id(app_id_str);
     });
     auto app_image_path = iter == _apps.end() ? std::string() : iter->image_path;
 
@@ -2567,25 +2568,18 @@ namespace proc {
     return result.checksum();
   }
 
-  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index) {
-    // Prefer the persistent app UUID for stable client-facing IDs. Artwork can be
-    // refreshed by Playnite sync, so image bytes must not affect launch identity.
+  std::tuple<std::string, std::string> calculate_legacy_app_id(const std::string &app_name, std::string app_image_path, int index) {
     std::vector<std::string> to_hash;
-    if (!app_uuid.empty()) {
-      to_hash.push_back(app_uuid);
-    } else {
-      // Legacy fallback for app entries that predate UUID normalization.
-      to_hash.push_back(app_name);
-      auto file_path = validate_app_image_path(app_image_path);
-      if (file_path != DEFAULT_APP_IMAGE_PATH) {
-        auto file_hash = calculate_sha256(file_path);
-        if (file_hash) {
-          to_hash.push_back(file_hash.value());
-        } else {
-          BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
-          // Fallback to just hashing image path
-          to_hash.push_back(file_path);
-        }
+    to_hash.push_back(app_name);
+    auto file_path = validate_app_image_path(app_image_path);
+    if (file_path != DEFAULT_APP_IMAGE_PATH) {
+      auto file_hash = calculate_sha256(file_path);
+      if (file_hash) {
+        to_hash.push_back(file_hash.value());
+      } else {
+        BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app ID hash";
+        // Fallback to just hashing image path
+        to_hash.push_back(file_path);
       }
     }
 
@@ -2603,6 +2597,33 @@ namespace proc {
     auto id_with_index = std::to_string(abs((int32_t) calculate_crc32(input_with_index)));
 
     return std::make_tuple(id_no_index, id_with_index);
+  }
+
+  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index) {
+    // Prefer the persistent app UUID for stable client-facing IDs. Artwork can be
+    // refreshed by Playnite sync, so image bytes must not affect launch identity.
+    if (!app_uuid.empty()) {
+      std::vector<std::string> to_hash;
+      to_hash.push_back(app_uuid);
+
+      // Create combined strings for hash
+      std::stringstream ss;
+      for_each(to_hash.begin(), to_hash.end(), [&ss](const std::string &s) {
+        ss << s;
+      });
+      auto input_no_index = ss.str();
+      ss << index;
+      auto input_with_index = ss.str();
+
+      // CRC32 then truncate to signed 32-bit range due to client limitations
+      auto id_no_index = std::to_string(abs((int32_t) calculate_crc32(input_no_index)));
+      auto id_with_index = std::to_string(abs((int32_t) calculate_crc32(input_with_index)));
+
+      return std::make_tuple(id_no_index, id_with_index);
+    }
+
+    // Legacy fallback for app entries that predate UUID normalization.
+    return calculate_legacy_app_id(app_name, std::move(app_image_path), index);
   }
 
   /**
@@ -2797,6 +2818,7 @@ namespace proc {
     auto this_env = bp::this_process::env();
 
     std::set<std::string> ids;
+    std::set<std::string> legacy_ids;
     std::vector<proc::ctx_t> apps;
     int i = 0;
 
@@ -3091,14 +3113,26 @@ namespace proc {
           ctx.lossless_scaling_rtss_limit.reset();
         }
 
-        // Calculate a unique application id.
-        auto possible_ids = calculate_app_id(name, ctx.uuid, ctx.image_path, i++);
+        const int app_index = i++;
+        auto possible_ids = calculate_app_id(name, ctx.uuid, ctx.image_path, app_index);
         if (ids.count(std::get<0>(possible_ids)) == 0) {
           ctx.id = std::get<0>(possible_ids);
         } else {
           ctx.id = std::get<1>(possible_ids);
         }
         ids.insert(ctx.id);
+
+        auto possible_legacy_ids = calculate_legacy_app_id(name, ctx.image_path, app_index);
+        std::string legacy_id;
+        if (legacy_ids.count(std::get<0>(possible_legacy_ids)) == 0) {
+          legacy_id = std::get<0>(possible_legacy_ids);
+        } else {
+          legacy_id = std::get<1>(possible_legacy_ids);
+        }
+        legacy_ids.insert(legacy_id);
+        if (legacy_id != ctx.id) {
+          ctx.legacy_ids.emplace_back(std::move(legacy_id));
+        }
 
         ctx.name = std::move(name);
         ctx.prep_cmds = std::move(prep_cmds);

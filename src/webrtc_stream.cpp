@@ -2112,7 +2112,7 @@ namespace webrtc_stream {
           auto apps_snapshot = proc::proc.get_apps();
           const std::string app_id_str = std::to_string(effective_app_id);
           for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id != app_id_str) {
+            if (!app_ctx.matches_id(app_id_str)) {
               continue;
             }
             params.gen1_framegen_fix = app_ctx.gen1_framegen_fix;
@@ -2267,7 +2267,7 @@ namespace webrtc_stream {
           auto apps_snapshot = proc::proc.get_apps();
           const std::string app_id_str = std::to_string(launch_session->appid);
           for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id == app_id_str) {
+            if (app_ctx.matches_id(app_id_str)) {
               launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
               launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
               launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
@@ -2494,7 +2494,7 @@ namespace webrtc_stream {
         const auto &apps = proc::proc.get_apps();
         const auto requested_id_str = std::to_string(requested_app_id);
         auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
-          return app.id == requested_id_str;
+          return app.matches_id(requested_id_str);
         });
         if (app_iter == apps.end()) {
           return std::string {"Cannot find requested application"};

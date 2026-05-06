@@ -68,7 +68,7 @@ namespace display_helper_integration::helpers {
 
       const auto app_id = std::to_string(session.appid);
       const auto it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
-        return app.id == app_id;
+        return app.matches_id(app_id);
       });
 
       if (it == apps.end()) {

@@ -1207,7 +1207,7 @@ namespace nvhttp {
           auto apps_snapshot = proc::proc.get_apps();
           const std::string app_id_str = std::to_string(launch_session->appid);
           for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id == app_id_str) {
+            if (app_ctx.matches_id(app_id_str)) {
               launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
               launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
               launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
@@ -2195,7 +2195,7 @@ namespace nvhttp {
             if (!appuuid_str.empty()) {
               return app.uuid == appuuid_str;
             }
-            return app.id == appid_str;
+            return app.matches_id(appid_str);
           });
           if (app_iter != apps.end()) {
             overrides = app_iter->config_overrides;
@@ -2392,7 +2392,7 @@ namespace nvhttp {
         } else {
           const auto &apps = proc::proc.get_apps();
           auto app_iter = std::find_if(apps.begin(), apps.end(), [&appid_str, &appuuid_str](const auto _app) {
-            return _app.id == appid_str || _app.uuid == appuuid_str;
+            return _app.matches_id(appid_str) || _app.uuid == appuuid_str;
           });
 
           if (app_iter == apps.end()) {
