@@ -1523,6 +1523,7 @@ namespace video {
 
     constexpr auto capture_buffer_size = 12;
     std::list<std::shared_ptr<platf::img_t>> imgs(capture_buffer_size);
+    uint64_t image_pool_wait_count = 0;
 
     std::vector<std::optional<std::chrono::steady_clock::time_point>> imgs_used_timestamps;
     const std::chrono::seconds trim_timeot = 3s;
@@ -1576,6 +1577,8 @@ namespace video {
 
     auto pull_free_image_callback = [&](std::shared_ptr<platf::img_t> &img_out) -> bool {
       img_out.reset();
+      std::optional<std::chrono::steady_clock::time_point> wait_start;
+      uint32_t wait_iterations = 0;
       while (capture_ctx_queue->running()) {
         // pick first allocated but unused
         for (auto it = imgs.begin(); it != imgs.end(); it++) {
@@ -1606,11 +1609,27 @@ namespace video {
           }
         }
         if (img_out) {
+          if (wait_start) {
+            const auto wait_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *wait_start).count();
+            ++image_pool_wait_count;
+            if (image_pool_wait_count <= 5 || wait_ms > 1.5 || image_pool_wait_count % 120 == 0) {
+              BOOST_LOG(debug) << "Capture image pool waited " << wait_ms
+                               << "ms for a free image"
+                               << " iterations=" << wait_iterations
+                               << " count=" << image_pool_wait_count;
+            }
+          }
+
           // trim allocated but unused portion of the pool based on timeouts
           trim_imgs();
           img_out->frame_timestamp.reset();
+          img_out->capture_pacing_timestamp.reset();
           return true;
         } else {
+          if (!wait_start) {
+            wait_start = std::chrono::steady_clock::now();
+          }
+          ++wait_iterations;
           // sleep and retry if image pool is full
           std::this_thread::sleep_for(1ms);
         }
@@ -2785,6 +2804,7 @@ namespace video {
       auto pull_free_image_callback = [&img](std::shared_ptr<platf::img_t> &img_out) -> bool {
         img_out = img;
         img_out->frame_timestamp.reset();
+        img_out->capture_pacing_timestamp.reset();
         return true;
       };
 

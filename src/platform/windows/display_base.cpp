@@ -3,6 +3,7 @@
  * @brief Definitions for the Windows display base code.
  */
 // standard includes
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -50,6 +51,27 @@ namespace platf::dxgi {
     std::mutex g_adapter_luid_mutex;
     std::optional<LUID> g_last_wgc_adapter_luid;
     std::optional<LUID> g_dxgi_adapter_luid_override;
+
+    void sleep_until_capture_target(high_precision_timer *timer, const std::chrono::steady_clock::time_point &sleep_target) {
+      using namespace std::chrono_literals;
+
+      constexpr auto spin_guard = 300us;
+      constexpr auto yield_guard = 100us;
+
+      auto now = std::chrono::steady_clock::now();
+      auto sleep_period = sleep_target - now;
+      if (sleep_period > spin_guard) {
+        timer->sleep_for(sleep_period - spin_guard);
+      }
+
+      while ((now = std::chrono::steady_clock::now()) < sleep_target) {
+        if (sleep_target - now > yield_guard) {
+          std::this_thread::yield();
+        } else {
+          YieldProcessor();
+        }
+      }
+    }
 
     bool luid_equal(const LUID &lhs, const LUID &rhs) {
       return lhs.HighPart == rhs.HighPart && lhs.LowPart == rhs.LowPart;
@@ -282,11 +304,22 @@ namespace platf::dxgi {
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
     auto adjust_client_frame_rate = [&]() -> DXGI_RATIONAL {
       // Use exactly the requested rate if the client sent an X100 value
-      if (client_frame_rate_strict.Numerator > 0) {
+      if (client_frame_rate_strict.Numerator > 0 && client_frame_rate_strict.Denominator > 0) {
         return client_frame_rate_strict;
       }
+
+      int adjusted_client_frame_rate = client_frame_rate;
+      const bool valid_display_refresh_rate =
+        display_refresh_rate.Numerator > 0 &&
+        display_refresh_rate.Denominator > 0 &&
+        display_refresh_rate_rounded > 0;
+
+      if (valid_display_refresh_rate && adjusted_client_frame_rate > display_refresh_rate_rounded) {
+        adjusted_client_frame_rate = display_refresh_rate_rounded;
+      }
+
       // Adjust capture frame interval when display refresh rate is not integral but very close to requested fps.
-      if (display_refresh_rate.Denominator > 1 && client_frame_rate > 0 && display_refresh_rate_rounded > 0) {
+      if (valid_display_refresh_rate && display_refresh_rate.Denominator > 1 && adjusted_client_frame_rate > 0) {
         DXGI_RATIONAL candidate = display_refresh_rate;
         auto safe_mod = [](int a, int b) -> int {
           return b > 0 ? a % b : -1;
@@ -294,20 +327,20 @@ namespace platf::dxgi {
         auto safe_div = [](int a, int b) -> int {
           return b > 0 ? a / b : 0;
         };
-        if (safe_mod(client_frame_rate, display_refresh_rate_rounded) == 0) {
-          candidate.Numerator *= safe_div(client_frame_rate, display_refresh_rate_rounded);
-        } else if (safe_mod(display_refresh_rate_rounded, client_frame_rate) == 0) {
-          candidate.Denominator *= safe_div(display_refresh_rate_rounded, client_frame_rate);
+        if (safe_mod(adjusted_client_frame_rate, display_refresh_rate_rounded) == 0) {
+          candidate.Numerator *= safe_div(adjusted_client_frame_rate, display_refresh_rate_rounded);
+        } else if (safe_mod(display_refresh_rate_rounded, adjusted_client_frame_rate) == 0) {
+          candidate.Denominator *= safe_div(display_refresh_rate_rounded, adjusted_client_frame_rate);
         }
         double candidate_rate = (double) candidate.Numerator / candidate.Denominator;
         // Can only decrease requested fps, otherwise client may start accumulating frames and suffer increased latency.
-        if (client_frame_rate > candidate_rate && candidate_rate / client_frame_rate > 0.99) {
+        if (adjusted_client_frame_rate > candidate_rate && candidate_rate / adjusted_client_frame_rate > 0.99) {
           BOOST_LOG(info) << "Adjusted capture rate to " << candidate_rate << "fps to better match display";
           return candidate;
         }
       }
 
-      return {(uint32_t) client_frame_rate, 1};
+      return {static_cast<UINT>(std::max(0, adjusted_client_frame_rate)), 1};
     };
 
     DXGI_RATIONAL client_frame_rate_adjusted = adjust_client_frame_rate();
@@ -355,20 +388,11 @@ namespace platf::dxgi {
             frame_pacing_group_frames = 0;
             status = capture_e::timeout;
           } else {
-            bool elastic = false;
-            if (sleep_period >= 2ms) {
-              elastic = true;
-              timer->sleep_for(sleep_period - 2ms);
-              sleep_overshoot_logger.first_point(sleep_target);
-              sleep_overshoot_logger.second_point_now_and_log();
-            }
+            sleep_until_capture_target(timer.get(), sleep_target);
+            sleep_overshoot_logger.first_point(sleep_target);
+            sleep_overshoot_logger.second_point_now_and_log();
 
-            status = snapshot(
-              pull_free_image_cb,
-              img_out,
-              elastic ? 2ms : std::chrono::duration_cast<std::chrono::milliseconds>(sleep_period),
-              *cursor
-            );
+            status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
 
             if (status == capture_e::ok && img_out) {
               frame_pacing_group_frames += 1;
@@ -385,10 +409,10 @@ namespace platf::dxgi {
         status = snapshot(pull_free_image_cb, img_out, 200ms, *cursor);
 
         if (status == capture_e::ok && img_out) {
-          frame_pacing_group_start = img_out->frame_timestamp;
+          frame_pacing_group_start = img_out->capture_pacing_timestamp ? img_out->capture_pacing_timestamp : img_out->frame_timestamp;
 
           if (!frame_pacing_group_start) {
-            BOOST_LOG(warning) << "snapshot() provided image without timestamp";
+            BOOST_LOG(warning) << "snapshot() provided image without pacing timestamp";
             frame_pacing_group_start = std::chrono::steady_clock::now();
           }
 
@@ -565,6 +589,15 @@ namespace platf::dxgi {
     env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     env_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
+    display_refresh_rate = {0, 1};
+    display_refresh_rate_rounded = 0;
+    client_frame_rate = config.framerate;
+    client_frame_rate_strict = {0, 0};
+    if (config.framerateX100 > 0) {
+      AVRational fps = ::video::framerateX100_to_rational(config.framerateX100);
+      client_frame_rate_strict = DXGI_RATIONAL {static_cast<UINT>(fps.num), static_cast<UINT>(fps.den)};
+    }
+
     HRESULT status;
 
     status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
@@ -573,8 +606,8 @@ namespace platf::dxgi {
       return -1;
     }
 
-    auto adapter_name = from_utf8(config::video.adapter_name);
-    auto output_name = from_utf8(display_name);
+    auto adapter_name = platf::from_utf8(config::video.adapter_name);
+    auto output_name = platf::from_utf8(display_name);
 
     const auto adapter_luid_override = dxgi::get_dxgi_adapter_luid_override();
     adapter_t::pointer adapter_p;
@@ -696,7 +729,7 @@ namespace platf::dxgi {
     DXGI_ADAPTER_DESC adapter_desc;
     adapter->GetDesc(&adapter_desc);
 
-    auto description = to_utf8(adapter_desc.Description);
+    auto description = platf::to_utf8(adapter_desc.Description);
     BOOST_LOG(info)
       << std::endl
       << "Device Description : " << description << std::endl
@@ -800,15 +833,9 @@ namespace platf::dxgi {
         return -1;
       }
 
-      status = dxgi->SetGPUThreadPriority(0x4000001E);
+      status = dxgi->SetGPUThreadPriority(7);
       if (FAILED(status)) {
-        BOOST_LOG(info) << "Failed to request absoloute capture GPU thread priority. Trying relative priority.";
-        status = dxgi->SetGPUThreadPriority(7);
-        if (FAILED(status)) {
-          BOOST_LOG(warning) << "Failed to request relative capture GPU thread priority. Please run application as administrator for optimal performance.";
-        } else {
-          BOOST_LOG(info) << "Relative capture GPU thread priority request success.";
-        }
+        BOOST_LOG(warning) << "Failed to increase capture GPU thread priority. Please run application as administrator for optimal performance.";
       }
     }
 
@@ -825,13 +852,6 @@ namespace platf::dxgi {
       if (FAILED(status)) {
         BOOST_LOG(warning) << "Failed to set maximum frame latency [0x"sv << util::hex(status).to_string_view() << ']';
       }
-    }
-
-    client_frame_rate = config.framerate;
-    client_frame_rate_strict = {0, 0};
-    if (config.framerateX100 > 0) {
-      AVRational fps = ::video::framerateX100_to_rational(config.framerateX100);
-      client_frame_rate_strict = DXGI_RATIONAL {static_cast<UINT>(fps.num), static_cast<UINT>(fps.den)};
     }
 
     dxgi::output6_t output6 {};
@@ -1167,15 +1187,16 @@ namespace platf {
       return {};
     }
 
-    dxgi::adapter_t adapter;
-    for (int x = 0; factory->EnumAdapters1(x, &adapter) != DXGI_ERROR_NOT_FOUND; ++x) {
+    dxgi::adapter_t::pointer adapter_p;
+    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
+      dxgi::adapter_t adapter {adapter_p};
       DXGI_ADAPTER_DESC1 adapter_desc;
       adapter->GetDesc1(&adapter_desc);
 
       BOOST_LOG(debug)
         << std::endl
         << "====== ADAPTER ====="sv << std::endl
-        << "Device Name      : "sv << to_utf8(adapter_desc.Description) << std::endl
+        << "Device Name      : "sv << platf::to_utf8(adapter_desc.Description) << std::endl
         << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
         << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
         << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
@@ -1191,7 +1212,7 @@ namespace platf {
         DXGI_OUTPUT_DESC desc;
         output->GetDesc(&desc);
 
-        auto device_name = to_utf8(desc.DeviceName);
+        auto device_name = platf::to_utf8(desc.DeviceName);
 
         auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
         auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;

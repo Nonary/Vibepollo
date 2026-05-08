@@ -36,18 +36,27 @@ namespace platf::dxgi {
 
   constexpr uint8_t SECURE_DESKTOP_MSG = 0x01;  ///< Message type for WGC desktop-switch reinit notifications
   constexpr uint8_t ACK_MSG = 0x02;  ///< Message type for acknowledgment responses
-  constexpr uint8_t FRAME_READY_MSG = 0x03;  ///< Message type for frame ready notifications
 
   /**
    * @brief Structure for sharing handle and texture metadata via IPC.
    * @param texture_handle Shared texture handle.
+   * @param frame_event_handle Auto-reset event signaled when a new frame is ready.
+   * @param frame_metadata_handle File-mapping handle containing latest frame metadata.
    * @param width Width of the texture.
    * @param height Height of the texture.
    */
   struct shared_handle_data_t {
     HANDLE texture_handle;
+    HANDLE frame_event_handle;
+    HANDLE frame_metadata_handle;
     UINT width;
     UINT height;
+  };
+
+  struct alignas(8) frame_metadata_t {
+    volatile LONG64 sequence;
+    volatile LONG64 frame_id;
+    volatile LONG64 frame_qpc;
   };
 
   /**
@@ -56,26 +65,30 @@ namespace platf::dxgi {
    * @param log_level Logging level.
    * @param display_name Display name (wide string, max 32 chars).
    * @param adapter_luid LUID of the DXGI adapter to use for D3D11 device creation.
+   * @param min_update_interval_100ns Requested WGC minimum update interval in 100ns ticks.
+   *   Sunshine keeps this low and stable so WGC can produce compositor updates quickly;
+   *   the main capture loop remains responsible for stream pacing.
+   * @param target_fps Requested stream frame rate used for helper diagnostics/tuning.
+   * @param initial_frame_buffer_size Initial WGC frame pool buffer count.
+   * @param max_frame_buffer_size Maximum WGC frame pool buffer count for adaptive growth.
+   * @param flags Bitmask of wgc_ipc_config_flags_e values.
    */
+  enum wgc_ipc_config_flags_e : uint32_t {
+    WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
+    WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
+  };
+
   struct config_data_t {
     int dynamic_range;
     int log_level;
     wchar_t display_name[32];
     LUID adapter_luid;
+    int64_t min_update_interval_100ns;
+    int32_t target_fps;
+    uint32_t initial_frame_buffer_size;
+    uint32_t max_frame_buffer_size;
+    uint32_t flags;
   };
-
-/**
- * @brief Message structure for frame ready notifications with QPC timing data.
- * This is sent by the WGC helper to the main process with a high-resolution timestamp.
- */
-#pragma pack(push, 1)  // required to remove padding from compiler
-
-  struct frame_ready_msg_t {
-    uint8_t message_type = FRAME_READY_MSG;
-    uint64_t frame_qpc = 0;
-  };
-
-#pragma pack(pop)  // required to remove padding from compiler
 
   /**
    * @brief Result codes for pipe operations.
