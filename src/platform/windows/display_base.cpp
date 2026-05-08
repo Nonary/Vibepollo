@@ -375,31 +375,42 @@ namespace platf::dxgi {
           frame_pacing_group_start = std::nullopt;
           frame_pacing_group_frames = 0;
         } else {
-          const uint32_t seconds = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
-          const uint32_t remainder = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
-          const auto sleep_target = *frame_pacing_group_start +
-                                    std::chrono::nanoseconds(1s) * seconds +
-                                    std::chrono::nanoseconds(1s) * remainder / client_frame_rate_adjusted.Numerator;
-          const auto sleep_period = sleep_target - std::chrono::steady_clock::now();
+          auto compute_sleep_target = [&](uint32_t frames) {
+            const uint32_t seconds = (uint64_t) frames * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
+            const uint32_t remainder = (uint64_t) frames * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
+            return *frame_pacing_group_start +
+                   std::chrono::nanoseconds(1s) * seconds +
+                   std::chrono::nanoseconds(1s) * remainder / client_frame_rate_adjusted.Numerator;
+          };
 
-          if (sleep_period <= 0ns) {
-            // We missed next frame time, invalidating current frame pacing group
+          auto sleep_target = compute_sleep_target(frame_pacing_group_frames);
+          auto sleep_period = sleep_target - std::chrono::steady_clock::now();
+
+          // If we missed the target (encoder spike, OS scheduler hiccup), keep
+          // the original anchor and advance the frame counter to the first
+          // slot still in the future. Re-anchoring on every miss randomizes
+          // the pacing group's phase relative to the compositor's vblanks --
+          // a "good" phase becomes a fresh 50/50 roll on every transient
+          // hiccup, which is what produces the cyclic "perfect / struggle /
+          // perfect" pattern. Skipping forward instead lets a single bad
+          // frame cost one captured frame, not a re-rolled phase.
+          while (sleep_period <= 0ns) {
+            ++frame_pacing_group_frames;
+            sleep_target = compute_sleep_target(frame_pacing_group_frames);
+            sleep_period = sleep_target - std::chrono::steady_clock::now();
+          }
+
+          sleep_until_capture_target(timer.get(), sleep_target);
+          sleep_overshoot_logger.first_point(sleep_target);
+          sleep_overshoot_logger.second_point_now_and_log();
+
+          status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
+
+          if (status == capture_e::ok && img_out) {
+            frame_pacing_group_frames += 1;
+          } else {
             frame_pacing_group_start = std::nullopt;
             frame_pacing_group_frames = 0;
-            status = capture_e::timeout;
-          } else {
-            sleep_until_capture_target(timer.get(), sleep_target);
-            sleep_overshoot_logger.first_point(sleep_target);
-            sleep_overshoot_logger.second_point_now_and_log();
-
-            status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
-
-            if (status == capture_e::ok && img_out) {
-              frame_pacing_group_frames += 1;
-            } else {
-              frame_pacing_group_start = std::nullopt;
-              frame_pacing_group_frames = 0;
-            }
           }
         }
       }
