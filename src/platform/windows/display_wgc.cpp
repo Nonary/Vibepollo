@@ -79,14 +79,18 @@ namespace platf::dxgi {
 
     std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout) {
       if (timeout.count() == 0) {
-        // WGC IPC delivery is event-driven and the helper's publish latency
-        // varies a few ms under heavy encoder load. With a 2ms grace, a
-        // single late publish times the snapshot out, the capture loop
-        // resets the frame pacing group, and re-anchors at a freshly jittered
-        // host_processing_timestamp -- visible as a stutter. A 4ms grace is
-        // still well under the ~8.33ms 120Hz frame interval but absorbs the
-        // typical helper-side jitter, keeping the pacing group stable.
-        return std::chrono::milliseconds(4);
+        // WGC's instantaneous publish cadence is vsync-stepped on the source
+        // monitor (frame_qpc_delta tracks 240/N for an N integer), so the
+        // window between our sleep_target wake and the next helper publish
+        // can be up to one full helper interarrival. When DWM is composing
+        // at 240/2 = 120 fps the gap is ~8.3 ms, but when it bounces between
+        // 240 and 120 the average interarrival drops to ~6 ms and a 4 ms
+        // grace times out frequently -- captured rate falls visibly below
+        // the helper publish rate even though the helper is producing more
+        // than enough frames. 6 ms covers the high-rate regime while still
+        // staying under the 8.33 ms 120 Hz cadence with ~2 ms of slack for
+        // the snapshot's CPU work.
+        return std::chrono::milliseconds(6);
       }
 
       return timeout;
