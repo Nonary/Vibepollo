@@ -180,6 +180,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -261,6 +262,7 @@ jobs:
         run: ls -l artifacts
 
       - name: Create or update GitHub release
+        id: create-release
         env:
           BASE_VERSION: ${{ steps.release-metadata.outputs.base_version }}
           CHANNEL: ${{ steps.release-metadata.outputs.channel }}
@@ -337,6 +339,18 @@ jobs:
             exit 1
           fi
 
+          release_url="$(jq -r '.html_url // empty' <<< "${release_json}")"
+          if [[ -z "${release_url}" ]]; then
+            echo "::error::Failed to resolve release URL for ${TAG_NAME}."
+            exit 1
+          fi
+
+          {
+            echo "release_id=${release_id}"
+            echo "release_name=${release_title}"
+            echo "release_url=${release_url}"
+          } >> "${GITHUB_OUTPUT}"
+
           existing_asset_ids="$(
             gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
               --jq '.[].id'
@@ -356,4 +370,57 @@ jobs:
               -H "Content-Type: application/octet-stream" \
               --input "${asset}" \
               >/dev/null
+          done
+
+      - name: Close fixed issues for release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.create-release.outputs.release_id }}
+          RELEASE_NAME: ${{ steps.create-release.outputs.release_name }}
+          RELEASE_URL: ${{ steps.create-release.outputs.release_url }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_ID}" || -z "${RELEASE_NAME}" || -z "${RELEASE_URL}" ]]; then
+            echo "::error::Release metadata outputs were not set."
+            exit 1
+          fi
+
+          label_name="fixed"
+          release_marker="<!-- fixed-release-follow-up:${RELEASE_ID} -->"
+          encoded_label="$(jq -rn --arg label "${label_name}" '$label|@uri')"
+
+          mapfile -t issue_numbers < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=${encoded_label}&per_page=100" \
+              --jq '.[] | select(.pull_request | not) | .number'
+          )
+
+          if (( ${#issue_numbers[@]} == 0 )); then
+            echo "No open issues with the '${label_name}' label to close."
+            exit 0
+          fi
+
+          for issue_number in "${issue_numbers[@]}"; do
+            comments_file="$(mktemp)"
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments?per_page=100" \
+              --jq '.[].body' > "${comments_file}"
+
+            if ! grep -Fq "${release_marker}" "${comments_file}"; then
+              comment_body="${release_marker}"$'\n'"This issue has been fixed in the latest release, [${RELEASE_NAME}](${RELEASE_URL}). Closing this issue now that the release containing the fix is available."
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments" \
+                -f "body=${comment_body}" \
+                >/dev/null
+            fi
+            rm -f "${comments_file}"
+
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/${issue_number}" \
+              -f state=closed \
+              -f state_reason=completed \
+              >/dev/null
+
+            echo "Closed fixed issue #${issue_number} for ${RELEASE_NAME}."
           done
