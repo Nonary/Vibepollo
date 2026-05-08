@@ -94,11 +94,9 @@ jobs:
             if not match:
               return None
 
-            base_version = match.group(1)
             release_version = tag[1:] if tag.startswith("v") else tag
             for candidate in (
               Path("release_notes") / f"{release_version}.md",
-              Path("release_notes") / f"{base_version}.md",
               Path("release_notes") / f"{tag}.md",
             ):
               if candidate.is_file():
@@ -136,12 +134,12 @@ jobs:
               continue
             notes_file = release_notes_for(tag)
             if notes_file is None:
-              print(f"Skipping {tag}: no matching release_notes file.")
+              print(f"Skipping {tag}: no exact matching release_notes file.")
               continue
             valid_candidates.append((key, tag, notes_file))
 
           if not valid_candidates:
-            skip("No unreleased newer tag with matching release notes was found.")
+            skip("No unreleased newer tag with exact matching release notes was found.")
 
           _, tag_name, notes_file = max(valid_candidates, key=lambda item: item[0])
           release_commit = run("git", "rev-list", "-n", "1", tag_name)
@@ -232,7 +230,6 @@ jobs:
           notes_file=""
           for candidate in \
             "release_notes/${release_version}.md" \
-            "release_notes/${base_version}.md" \
             "release_notes/${TAG_NAME}.md"; do
             if [[ -f "${candidate}" ]]; then
               notes_file="${candidate}"
@@ -241,7 +238,7 @@ jobs:
           done
 
           if [[ -z "${notes_file}" ]]; then
-            echo "::error::Release notes file not found. Expected release_notes/${TAG_NAME}.md or release_notes/${release_version}.md"
+            echo "::error::Release notes file not found. Expected exact release notes at release_notes/${release_version}.md or release_notes/${TAG_NAME}.md"
             exit 1
           fi
 

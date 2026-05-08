@@ -17,5 +17,5 @@ Release tags should not include a `v` prefix. The workflow publishes the GitHub
 Release title with the `v` prefix automatically, e.g. tag `1.15.4` is published
 as `v1.15.4`.
 
-If no matching notes file exists, the release job fails instead of publishing
-generic generated notes.
+If no exact matching notes file exists for the release tag, the release flow
+skips instead of publishing generic generated notes.
