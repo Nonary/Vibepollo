@@ -4,7 +4,16 @@ param(
     [string]$BuildDir,
     [string]$MsiPath = "",
     [string]$OutputName = "",
-    [switch]$UninstallOnly
+    [switch]$UninstallOnly,
+    [switch]$SignWithSignPath,
+    [switch]$DisableSignPath,
+    [switch]$SkipSignPathIfNoToken,
+    [switch]$NoInstallSignPathModuleIfMissing,
+    [string]$SignPathApiToken = $env:SIGNPATH_API_TOKEN,
+    [string]$SignPathOrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
+    [string]$SignPathProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
+    [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
+    [string]$SignPathArtifactConfigurationSlug = $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,6 +144,35 @@ function Resolve-CscPath {
     throw "Could not locate a C# compiler (csc.exe)."
 }
 
+function Invoke-SignPathForArtifact(
+    [string]$ArtifactPath,
+    [string]$Description
+) {
+    $signPathScript = Resolve-PathStrict (Join-Path $repoRoot "scripts\signpath_sign.ps1")
+
+    $signArgs = @{
+        InputArtifactPath = $ArtifactPath
+        OutputArtifactPath = $ArtifactPath
+        ApiToken = $SignPathApiToken
+        OrganizationId = $SignPathOrganizationId
+        ProjectSlug = $SignPathProjectSlug
+        SigningPolicySlug = $SignPathSigningPolicySlug
+        ArtifactConfigurationSlug = $SignPathArtifactConfigurationSlug
+        Description = $Description
+        WaitForCompletionTimeoutInSeconds = 1800
+    }
+
+    if ($SkipSignPathIfNoToken) {
+        $signArgs.SkipIfMissingToken = $true
+    }
+
+    if (-not $NoInstallSignPathModuleIfMissing) {
+        $signArgs.InstallModuleIfMissing = $true
+    }
+
+    & $signPathScript @signArgs
+}
+
 $scriptDir = Split-Path -Parent $PSCommandPath
 $repoRoot = Resolve-PathStrict (Join-Path $scriptDir "..\..\..")
 $buildRoot = Resolve-PathStrict $BuildDir
@@ -219,6 +257,17 @@ $assemblyInfoContent = @(
 )
 Set-Content -Path $assemblyInfoPath -Value $assemblyInfoContent -Encoding UTF8
 
+$shouldSignWithSignPath = -not $DisableSignPath -and (
+    $SignWithSignPath -or
+    -not [string]::IsNullOrWhiteSpace($SignPathApiToken)
+)
+
+if ($shouldSignWithSignPath -and -not $UninstallOnly) {
+    Invoke-SignPathForArtifact `
+        -ArtifactPath $MsiPath `
+        -Description "Vibepollo MSI payload $informationalVersion"
+}
+
 $references = @(
     (Join-Path $frameworkRoot "System.dll"),
     (Join-Path $frameworkRoot "System.Core.dll"),
@@ -271,6 +320,15 @@ Write-Host "[bootstrapper] Version: $assemblyVersion ($informationalVersion)"
 & $cscPath @args
 if ($LASTEXITCODE -ne 0) {
     throw "C# compiler failed with exit code $LASTEXITCODE"
+}
+
+if ($shouldSignWithSignPath) {
+    $artifactDescription = if ($UninstallOnly) {
+        "Vibepollo uninstaller $informationalVersion"
+    } else {
+        "Vibepollo setup executable $informationalVersion"
+    }
+    Invoke-SignPathForArtifact -ArtifactPath $outputPath -Description $artifactDescription
 }
 
 if ($UninstallOnly) {

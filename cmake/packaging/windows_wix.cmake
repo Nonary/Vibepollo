@@ -58,6 +58,15 @@ set(CPACK_WIX_EXTRA_SOURCES
 # failures in transactional upgrade flows.
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
+# Plain `cpack -G WIX` invocations should also sign the uninstaller that is
+# embedded into the MSI whenever SignPath is configured.
+configure_file(
+  "${CMAKE_SOURCE_DIR}/packaging/windows/wix/sign_uninstaller_for_cpack.cmake.in"
+  "${CMAKE_BINARY_DIR}/sign_uninstaller_for_cpack.cmake"
+  @ONLY
+)
+set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_BINARY_DIR}/sign_uninstaller_for_cpack.cmake")
+
 
 # ----------------------------------------------------------------------------
 # Sanitize version for WiX: must be x.x.x.x with integers [0,65534]
