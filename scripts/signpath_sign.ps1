@@ -9,7 +9,9 @@ param(
     [string]$OrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
     [string]$ProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
     [string]$SigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
-    [string]$ArtifactConfigurationSlug = $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG,
+    [string]$ArtifactConfigurationSlug = "",
+    [string]$PeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
+    [string]$MsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }),
     [string]$Description = "",
     [int]$WaitForCompletionTimeoutInSeconds = 1800,
     [switch]$InstallModuleIfMissing,
@@ -49,6 +51,25 @@ function Ensure-SignPathCommand {
     }
 }
 
+function Resolve-ArtifactConfigurationSlug([string]$Path) {
+    if (-not [string]::IsNullOrWhiteSpace($ArtifactConfigurationSlug)) {
+        return $ArtifactConfigurationSlug
+    }
+
+    $extension = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    switch ($extension) {
+        { $_ -in @(".msi", ".msm", ".msp") } {
+            return $MsiArtifactConfigurationSlug
+        }
+        { $_ -in @(".exe", ".dll", ".sys", ".ocx", ".cpl", ".drv", ".efi", ".mui", ".scr") } {
+            return $PeArtifactConfigurationSlug
+        }
+        default {
+            return ""
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ApiToken)) {
     if ($SkipIfMissingToken) {
         Write-Warning "[signpath] SIGNPATH_API_TOKEN is not set; leaving artifact unsigned: $InputArtifactPath"
@@ -79,6 +100,8 @@ if ($samePath) {
 
 Ensure-SignPathCommand
 
+$resolvedArtifactConfigurationSlug = Resolve-ArtifactConfigurationSlug -Path $inputPath
+
 $requestArgs = @{
     InputArtifactPath = $inputPath
     ApiToken = $ApiToken
@@ -94,8 +117,8 @@ if ($WaitForCompletionTimeoutInSeconds -gt 0) {
     $requestArgs.WaitForCompletionTimeoutInSeconds = $WaitForCompletionTimeoutInSeconds
 }
 
-if (-not [string]::IsNullOrWhiteSpace($ArtifactConfigurationSlug)) {
-    $requestArgs.ArtifactConfigurationSlug = $ArtifactConfigurationSlug
+if (-not [string]::IsNullOrWhiteSpace($resolvedArtifactConfigurationSlug)) {
+    $requestArgs.ArtifactConfigurationSlug = $resolvedArtifactConfigurationSlug
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Description)) {
@@ -106,6 +129,11 @@ Write-Host "[signpath] Submitting signing request..."
 Write-Host "[signpath] Input:  $inputPath"
 Write-Host "[signpath] Output: $outputPath"
 Write-Host "[signpath] Project: $ProjectSlug / $SigningPolicySlug"
+if (-not [string]::IsNullOrWhiteSpace($resolvedArtifactConfigurationSlug)) {
+    Write-Host "[signpath] Artifact configuration: $resolvedArtifactConfigurationSlug"
+} else {
+    Write-Host "[signpath] Artifact configuration: project default"
+}
 
 try {
     Submit-SigningRequest @requestArgs

@@ -13,7 +13,8 @@ param(
     [string]$SignPathOrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
     [string]$SignPathProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
     [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
-    [string]$SignPathArtifactConfigurationSlug = $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
+    [string]$SignPathPeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
+    [string]$SignPathMsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG })
 )
 
 $ErrorActionPreference = "Stop"
@@ -157,7 +158,8 @@ function Invoke-SignPathForArtifact(
         OrganizationId = $SignPathOrganizationId
         ProjectSlug = $SignPathProjectSlug
         SigningPolicySlug = $SignPathSigningPolicySlug
-        ArtifactConfigurationSlug = $SignPathArtifactConfigurationSlug
+        PeArtifactConfigurationSlug = $SignPathPeArtifactConfigurationSlug
+        MsiArtifactConfigurationSlug = $SignPathMsiArtifactConfigurationSlug
         Description = $Description
         WaitForCompletionTimeoutInSeconds = 1800
     }
@@ -328,7 +330,9 @@ if ($shouldSignWithSignPath) {
     } else {
         "Vibepollo setup executable $informationalVersion"
     }
-    Invoke-SignPathForArtifact -ArtifactPath $outputPath -Description $artifactDescription
+    Invoke-SignPathForArtifact `
+        -ArtifactPath $outputPath `
+        -Description $artifactDescription
 }
 
 if ($UninstallOnly) {
