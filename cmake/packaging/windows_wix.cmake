@@ -12,6 +12,11 @@ set(CPACK_WIX_PROGRAM_MENU_FOLDER "Vibepollo")
 # NOTE: Do not change once released, or upgrades will break.
 set(CPACK_WIX_UPGRADE_GUID "{E3FA501A-85F8-4187-85A7-D6E6BDC7EDA1}")
 
+# Generate a fresh sortable ProductCode for every CPack WiX invocation.  The
+# Upgrade GUID above intentionally remains stable so Windows Installer still
+# treats all Vibepollo MSIs as the same product family.
+set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/generate_sortable_product_guid.cmake")
+
 # Start Menu shortcut is now defined in custom_actions.wxs with --shortcut argument
 # to ensure users launch the web UI instead of running the service binary directly
 
