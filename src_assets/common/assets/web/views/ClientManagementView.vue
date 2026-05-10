@@ -162,17 +162,17 @@
                   </n-tag>
                 </div>
                 <div class="client-record__meta">
-                  <span>
+                  <span class="client-record__meta-item">
                     <i class="fas fa-clock" />
-                    {{ lastSeenLabel(client) }}
+                    <span class="client-record__meta-label">{{ lastSeenLabel(client) }}</span>
                   </span>
-                  <span v-if="client.displayMode">
+                  <span v-if="client.displayMode" class="client-record__meta-item">
                     <i class="fas fa-tv" />
-                    {{ client.displayMode }}
+                    <span class="client-record__meta-label">{{ client.displayMode }}</span>
                   </span>
-                  <span v-if="client.hdrProfile">
+                  <span v-if="client.hdrProfile" class="client-record__meta-item">
                     <i class="fas fa-sun" />
-                    {{ client.hdrProfile }}
+                    <span class="client-record__meta-label">{{ client.hdrProfile }}</span>
                   </span>
                 </div>
               </div>
@@ -1058,11 +1058,11 @@ function normalizeClientCommandEntry(value: unknown): ClientCommandEntry | null 
   }
   if (!value || typeof value !== 'object') return null;
   const obj = value as Record<string, unknown>;
-  const cmd = String(obj.cmd ?? '').trim();
+  const cmd = String(obj['cmd'] ?? '').trim();
   if (!cmd) return null;
   return {
     cmd,
-    elevated: toBool(obj.elevated, false),
+    elevated: toBool(obj['elevated'], false),
   };
 }
 
@@ -1989,28 +1989,28 @@ onBeforeUnmount(() => {
 @media (min-width: 900px) {
   .client-record {
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
+    align-items: center;
   }
 }
 
 .client-record__main {
-  display: flex;
+  display: grid;
   min-width: 0;
-  align-items: flex-start;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  align-items: start;
   gap: 0.75rem;
 }
 
 .client-record__body {
   display: grid;
   min-width: 0;
-  flex: 1 1 auto;
   gap: 0.5rem;
 }
 
 .client-avatar {
   display: inline-flex;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2rem;
+  height: 2rem;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -2018,6 +2018,7 @@ onBeforeUnmount(() => {
   border-radius: 0.5rem;
   background: rgb(var(--color-surface) / 0.65);
   color: rgb(var(--color-dark) / 0.74);
+  font-size: 0.95rem;
 }
 
 .dark .client-avatar {
@@ -2049,25 +2050,31 @@ onBeforeUnmount(() => {
 }
 
 .client-record__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 0.875rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
+  gap: 0.4rem 1rem;
   font-size: 0.73rem;
   line-height: 1.35;
   opacity: 0.68;
 }
 
-.client-record__meta span {
-  display: inline-flex;
+.client-record__meta-item {
+  display: grid;
   min-width: 0;
-  align-items: center;
-  gap: 0.4rem;
+  grid-template-columns: 0.875rem minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.4rem;
 }
 
-.client-record__meta i {
+.client-record__meta-item i {
   width: 0.875rem;
-  flex: 0 0 auto;
+  line-height: 1.35;
   text-align: center;
+}
+
+.client-record__meta-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .client-record__actions {

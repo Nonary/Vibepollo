@@ -15,19 +15,15 @@
     </div>
 
     <div class="min-w-0 space-y-3">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div class="space-y-1">
+      <div class="override-summary-row">
+        <div class="min-w-0 space-y-1">
           <h4 class="text-xs font-semibold uppercase tracking-wide opacity-70">Active Overrides</h4>
           <p class="text-[12px] opacity-60 leading-relaxed">
             Adjust the values below to override the current global setting only for this
             {{ scopeSummaryLabel }}.
           </p>
         </div>
-        <div
-          class="rounded-full bg-dark/5 dark:bg-light/10 px-3 py-1 text-[11px] font-medium opacity-70"
-        >
-          {{ activeOverrideCount }} configured
-        </div>
+        <div class="configured-count">{{ activeOverrideCount }} configured</div>
       </div>
 
       <div
@@ -1973,6 +1969,42 @@ function commitAllJsonFor(target: EditTarget) {
 </script>
 
 <style scoped>
+.override-summary-row {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.configured-count {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgb(var(--color-dark) / 0.05);
+  padding: 0.25rem 0.75rem;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+
+.dark .configured-count {
+  background: rgb(var(--color-light) / 0.1);
+}
+
+@media (min-width: 640px) {
+  .override-summary-row {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+}
+
 .vb-scroll {
   overflow-y: scroll;
 }

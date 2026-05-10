@@ -33,7 +33,7 @@
             >
               <i class="fas fa-laptop" />
             </span>
-            <div class="min-w-0">
+            <div class="trusted-session-record__body">
               <div class="trusted-session-record__title-row">
                 <h3 class="trusted-session-record__title">{{ primaryLabel(session) }}</h3>
                 <n-tag v-if="session.current" size="small" type="success" round :bordered="false">
@@ -44,15 +44,19 @@
                 {{ secondaryLabel(session) }}
               </p>
               <div class="trusted-session-record__meta">
-                <span>
+                <span class="trusted-session-record__meta-item">
                   <i class="fas fa-clock" />
-                  {{ t('auth.sessions_last_seen', { time: formatTimestamp(session.last_seen) }) }}
+                  <span class="trusted-session-record__meta-label">
+                    {{ t('auth.sessions_last_seen', { time: formatTimestamp(session.last_seen) }) }}
+                  </span>
                 </span>
-                <span>
+                <span class="trusted-session-record__meta-item">
                   <i class="fas fa-hourglass-half" />
-                  {{
-                    t('auth.sessions_expires', { time: formatTimestamp(sessionExpiry(session)) })
-                  }}
+                  <span class="trusted-session-record__meta-label">
+                    {{
+                      t('auth.sessions_expires', { time: formatTimestamp(sessionExpiry(session)) })
+                    }}
+                  </span>
                 </span>
               </div>
             </div>
@@ -270,21 +274,28 @@ onMounted(() => {
 @media (min-width: 900px) {
   .trusted-session-record {
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
+    align-items: center;
   }
 }
 
 .trusted-session-record__main {
-  display: flex;
+  display: grid;
   min-width: 0;
-  align-items: flex-start;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  align-items: start;
   gap: 0.75rem;
+}
+
+.trusted-session-record__body {
+  display: grid;
+  min-width: 0;
+  gap: 0.45rem;
 }
 
 .trusted-session-record__avatar {
   display: inline-flex;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2rem;
+  height: 2rem;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -292,6 +303,7 @@ onMounted(() => {
   border-radius: 0.5rem;
   background: rgb(var(--color-surface) / 0.65);
   color: rgb(var(--color-dark) / 0.74);
+  font-size: 0.95rem;
 }
 
 .dark .trusted-session-record__avatar {
@@ -323,7 +335,7 @@ onMounted(() => {
 }
 
 .trusted-session-record__subtitle {
-  margin: 0.2rem 0 0;
+  margin: 0;
   overflow-wrap: anywhere;
   font-size: 0.75rem;
   line-height: 1.35;
@@ -331,20 +343,31 @@ onMounted(() => {
 }
 
 .trusted-session-record__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.75rem;
-  margin-top: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
+  gap: 0.4rem 1rem;
   font-size: 0.73rem;
   line-height: 1.35;
   opacity: 0.68;
 }
 
-.trusted-session-record__meta span {
-  display: inline-flex;
+.trusted-session-record__meta-item {
+  display: grid;
   min-width: 0;
-  align-items: center;
-  gap: 0.35rem;
+  grid-template-columns: 0.875rem minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.4rem;
+}
+
+.trusted-session-record__meta-item i {
+  width: 0.875rem;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.trusted-session-record__meta-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .trusted-session-record__side {
