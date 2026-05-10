@@ -36,7 +36,7 @@ Set restrictive permissions on `session_history.db`, `session_history.db-wal`, a
 
 Also consider a config option to disable persistence or shorten retention.
 
-**Status (2026-05-10):** **Done for the DB files themselves.** `src/session_history.cpp` now tightens `session_history.db`, `-wal`, and `-shm` during init (owner read/write on non-Windows, Administrators+SYSTEM DACL on Windows). The optional containing-directory hardening and persistence-disable configuration are still follow-up items, not merge blockers.
+**Status (2026-05-10):** **Mostly done.** `src/session_history.cpp` now tightens the containing history directory plus `session_history.db`, `-wal`, and `-shm` during init (owner-only directory/file permissions on non-Windows, Administrators+SYSTEM DACL on Windows). The remaining follow-up here is the optional persistence-disable / shorter-retention configuration, not the filesystem hardening itself.
 
 ### 4. Medium/Low: deleting active sessions can orphan samples/events and corrupt history state
 

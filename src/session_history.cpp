@@ -151,6 +151,10 @@ namespace session_history {
         }
       };
 
+      const auto parent_path = db_path.parent_path();
+      if (!parent_path.empty()) {
+        apply_windows_permissions(parent_path);
+      }
       apply_windows_permissions(db_path);
       apply_windows_permissions(db_path.string() + "-wal");
       apply_windows_permissions(db_path.string() + "-shm");
@@ -171,6 +175,23 @@ namespace session_history {
         }
       };
 
+      const auto apply_posix_directory_permissions = [&](const std::filesystem::path &path) {
+        std::error_code ec;
+        if (path.empty() || !std::filesystem::exists(path, ec) || ec) {
+          return;
+        }
+        std::filesystem::permissions(
+          path,
+          std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec,
+          std::filesystem::perm_options::replace,
+          ec);
+        if (ec) {
+          BOOST_LOG(warning) << "session_history: failed to tighten directory permissions for " << path.string()
+                             << ": " << ec.message();
+        }
+      };
+
+      apply_posix_directory_permissions(db_path.parent_path());
       apply_posix_permissions(db_path);
       apply_posix_permissions(db_path.string() + "-wal");
       apply_posix_permissions(db_path.string() + "-shm");
