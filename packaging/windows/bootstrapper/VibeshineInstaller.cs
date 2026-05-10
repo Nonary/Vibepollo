@@ -2203,13 +2203,19 @@ namespace VibepolloInstaller {
       "MainEngineThread is returning 1610"
     };
     private static readonly string[] RelatedServiceNames = {
+      "ApolloService",
       "SunshineService",
       "VibeshineService",
       "sunshinesvc"
     };
     private static readonly string[] RelatedProcessNames = {
       "sunshine",
-      "sunshinesvc"
+      "sunshinesvc",
+      "sunshine_wgc_capture",
+      "playnite_launcher",
+      "apollo",
+      "apollosvc",
+      "vibepollo"
     };
 
     internal sealed class InstalledProductInfo {
@@ -3047,6 +3053,9 @@ namespace VibepolloInstaller {
         "SUPPRESSMSGBOXES=1"
       };
       TryAppendSameProductReinstallProperties(args, msiPath);
+
+      AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI install attempt.");
+      TryStopRelatedServicesAndProcesses(logPath);
 
       var exitCode = RunMsiexec(args, true, false);
       exitCode = RetryInstallWithSameProductReinstallIfNeeded(exitCode, args, msiPath, true, false);
@@ -4271,6 +4280,9 @@ namespace VibepolloInstaller {
         cliArgs.Add("SKIP_REMOVE_CONFLICTING_PRODUCTS=1");
       }
 
+      AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before CLI MSI operation.");
+      TryStopRelatedServicesAndProcesses(logPath);
+
       var exitCode = RunMsiexec(cliArgs, arguments.IsCliQuietMode(), true);
       exitCode = RetryInstallWithSameProductReinstallIfNeeded(
         exitCode,
@@ -4765,6 +4777,8 @@ namespace VibepolloInstaller {
             "REBOOT=ReallySuppress",
             "SUPPRESSMSGBOXES=1"
           };
+          AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
+          TryStopRelatedServicesAndProcesses(logPath);
           code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
         } else {
           // Never elevate non-MSI uninstall commands sourced from HKCU since
@@ -4843,6 +4857,9 @@ namespace VibepolloInstaller {
           "REBOOT=ReallySuppress",
           "SUPPRESSMSGBOXES=1"
         };
+
+        AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
+        TryStopRelatedServicesAndProcesses(logPath);
 
         var code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
         if (factoryResetAppData && (code == 0 || code == 3010 || code == 1605)) {
