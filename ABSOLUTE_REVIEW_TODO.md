@@ -289,7 +289,7 @@ Split the implementation into smaller responsibilities. A reasonable shape would
 
 At minimum, extract the repeated writer command dispatch into one helper used by both the normal loop and final drain path.
 
-**Status (2026-05-10):** **Partially done.** The repeated writer dispatch was extracted into a shared helper, but the larger `session_history.cpp` split was intentionally deferred in the plan to avoid destabilizing merge-readiness fixes.
+**Status (2026-05-10):** **Mostly done.** The storage/schema/migration/query layer now lives in `src/session_history_storage.cpp` / `src/session_history_storage.h`, and the repeated writer dispatch was already collapsed behind shared helpers. `src/session_history.cpp` still owns the public facade, writer queue, and sampler/aggregator flow, so a deeper writer/sampler split remains optional follow-up rather than open review debt for this branch.
 
 ### 2. Medium: JSON response serialization is duplicated across handlers
 
@@ -331,7 +331,7 @@ sample_metrics_t update_aggregator(...);
 
 Then each protocol-specific sampler only needs to translate protocol-specific counters into the common sample model.
 
-**Status (2026-05-10):** **Partially done.** Shared sampler helpers now cover aggregator updates, host snapshot population, and sample enqueueing in `src/session_history.cpp`, reducing the copy-paste between RTSP and WebRTC paths. The protocol-specific samplers still remain in the same file and are not fully unified end-to-end.
+**Status (2026-05-10):** **Mostly done.** RTSP and WebRTC sampling now normalize through a shared sampled-session flow in `src/session_history.cpp`, so aggregator updates, event recording, host snapshot population, and sample enqueueing all run through one path. The remaining protocol-specific code is now mostly limited to mapping each protocol's counters into that shared shape.
 
 ### 4. Medium: base schema and migrations are not in sync
 
@@ -466,6 +466,8 @@ SessionChartPanel.vue
 ```
 
 For charts, consider a small dataset/config factory so adding a metric does not require duplicating chart construction logic across live and history modes.
+
+**Status (2026-05-10):** **Done.** `ActiveSessionsCard.vue` now delegates protocol-specific rendering to `components/session/ActiveRtspSessionsSection.vue` and `components/session/ActiveWebRtcSessionsSection.vue`, shared formatting moved into `components/session/sessionFormatting.ts`, and `SessionCharts.vue` now uses reusable `SessionChartPanel.vue` / `SessionChartZoomModal.vue` wrappers for the repeated chart shell and modal UI.
 
 ### 11. Low: frontend session services are inconsistent and partly unused
 

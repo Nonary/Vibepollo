@@ -1,301 +1,148 @@
 <template>
   <div class="space-y-4 mt-4">
-    <!-- Encode Latency Chart (RTSP only) -->
-    <div v-if="protocol === 'rtsp'" class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-clock mr-1" />{{ t('sessions.chart_encode_latency') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_encode_latency') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">{{ t('sessions.chart_ms') }}</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('latency')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="latencyChartData" :options="latencyChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      v-if="protocol === 'rtsp'"
+      icon="fas fa-clock"
+      :title="t('sessions.chart_encode_latency')"
+      :tip="t('sessions.tip_chart_encode_latency')"
+      :subtitle="t('sessions.chart_ms')"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('latency')"
+    >
+      <Line :data="latencyChartData" :options="latencyChartOptions" />
+    </SessionChartPanel>
 
-    <!-- Throughput Chart -->
-    <div class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-tachometer-alt mr-1" />{{ t('sessions.chart_throughput') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_throughput') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">Mbps</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('throughput')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="throughputChartData" :options="baseChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      icon="fas fa-tachometer-alt"
+      :title="t('sessions.chart_throughput')"
+      :tip="t('sessions.tip_chart_throughput')"
+      subtitle="Mbps"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('throughput')"
+    >
+      <Line :data="throughputChartData" :options="baseChartOptions" />
+    </SessionChartPanel>
 
-    <!-- Quality Chart -->
-    <div class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-exclamation-triangle mr-1" />{{ t('sessions.chart_quality') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_quality') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">{{ t('sessions.chart_events') }}</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('quality')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="qualityChartData" :options="qualityChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      icon="fas fa-exclamation-triangle"
+      :title="t('sessions.chart_quality')"
+      :tip="t('sessions.tip_chart_quality')"
+      :subtitle="t('sessions.chart_events')"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('quality')"
+    >
+      <Line :data="qualityChartData" :options="qualityChartOptions" />
+    </SessionChartPanel>
 
-    <!-- Frame Rate Chart -->
-    <div class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-film mr-1" />{{ t('sessions.chart_framerate') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_framerate') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">FPS</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('fps')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="fpsChartData" :options="fpsChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      icon="fas fa-film"
+      :title="t('sessions.chart_framerate')"
+      :tip="t('sessions.tip_chart_framerate')"
+      subtitle="FPS"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('fps')"
+    >
+      <Line :data="fpsChartData" :options="fpsChartOptions" />
+    </SessionChartPanel>
 
-    <!-- Host CPU/GPU usage (history mode only) -->
-    <div v-if="mode === 'history' && hasHostCompute" class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-microchip mr-1" />{{ t('sessions.chart_host_compute') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_host_compute') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">%</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('host_compute')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="hostComputeChartData" :options="hostPercentChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      v-if="mode === 'history' && hasHostCompute"
+      icon="fas fa-microchip"
+      :title="t('sessions.chart_host_compute')"
+      :tip="t('sessions.tip_chart_host_compute')"
+      subtitle="%"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('host_compute')"
+    >
+      <Line :data="hostComputeChartData" :options="hostPercentChartOptions" />
+    </SessionChartPanel>
 
-    <!-- Host RAM/VRAM usage (history mode only) -->
-    <div v-if="mode === 'history' && hasHostMemory" class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-memory mr-1" />{{ t('sessions.chart_host_memory') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_host_memory') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">%</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('host_memory')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="hostMemoryChartData" :options="hostPercentChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      v-if="mode === 'history' && hasHostMemory"
+      icon="fas fa-memory"
+      :title="t('sessions.chart_host_memory')"
+      :tip="t('sessions.tip_chart_host_memory')"
+      subtitle="%"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('host_memory')"
+    >
+      <Line :data="hostMemoryChartData" :options="hostPercentChartOptions" />
+    </SessionChartPanel>
 
-    <div v-if="mode === 'history' && hasHostNetwork" class="chart-container">
-      <div class="chart-header">
-        <span class="chart-title">
-          <i class="fas fa-network-wired mr-1" />{{ t('sessions.chart_host_network') }}
-          <n-tooltip trigger="hover" :delay="300" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <i class="fas fa-circle-info chart-title-tip" />
-            </template>
-            {{ t('sessions.tip_chart_host_network') }}
-          </n-tooltip>
-        </span>
-        <span class="chart-actions">
-          <span class="chart-subtitle">Mbps</span>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_expand')"
-            @click="openZoom('host_network')"
-          >
-            <i class="fas fa-expand" />
-          </button>
-        </span>
-      </div>
-      <div class="chart-wrapper">
-        <Line :data="hostNetworkChartData" :options="hostNetworkChartOptions" />
-      </div>
-    </div>
+    <SessionChartPanel
+      v-if="mode === 'history' && hasHostNetwork"
+      icon="fas fa-network-wired"
+      :title="t('sessions.chart_host_network')"
+      :tip="t('sessions.tip_chart_host_network')"
+      subtitle="Mbps"
+      :expand-title="t('sessions.chart_expand')"
+      @expand="openZoom('host_network')"
+    >
+      <Line :data="hostNetworkChartData" :options="hostNetworkChartOptions" />
+    </SessionChartPanel>
 
-    <n-modal
-      v-model:show="zoomVisible"
-      preset="card"
+    <SessionChartZoomModal
+      :show="zoomVisible"
       :title="zoomTitle"
-      style="width: min(95vw, 1100px)"
-      :bordered="false"
-      size="huge"
-      :segmented="{ content: true }"
+      :hint="t('sessions.chart_zoom_hint')"
+      :zoom-in-title="t('sessions.chart_zoom_in')"
+      :zoom-out-title="t('sessions.chart_zoom_out')"
+      :zoom-reset-title="t('sessions.chart_zoom_reset')"
+      @update:show="zoomVisible = $event"
+      @zoom-in="zoomIn"
+      @zoom-out="zoomOut"
+      @zoom-reset="zoomReset"
       @after-leave="zoomReset"
     >
-      <template #header-extra>
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_zoom_out')"
-            @click="zoomOut"
-          >
-            <i class="fas fa-minus" />
-          </button>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_zoom_reset')"
-            @click="zoomReset"
-          >
-            <i class="fas fa-rotate-left" />
-          </button>
-          <button
-            type="button"
-            class="chart-expand-btn"
-            :title="t('sessions.chart_zoom_in')"
-            @click="zoomIn"
-          >
-            <i class="fas fa-plus" />
-          </button>
-        </div>
-      </template>
-      <div class="chart-wrapper-zoom">
-        <Line
-          v-if="zoomChart === 'latency'"
-          ref="modalChartRef"
-          :data="latencyChartData"
-          :options="latencyChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'throughput'"
-          ref="modalChartRef"
-          :data="throughputChartData"
-          :options="throughputChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'quality'"
-          ref="modalChartRef"
-          :data="qualityChartData"
-          :options="qualityChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'fps'"
-          ref="modalChartRef"
-          :data="fpsChartData"
-          :options="fpsChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'host_compute'"
-          ref="modalChartRef"
-          :data="hostComputeChartData"
-          :options="hostPercentChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'host_memory'"
-          ref="modalChartRef"
-          :data="hostMemoryChartData"
-          :options="hostPercentChartOptionsZoom"
-        />
-        <Line
-          v-else-if="zoomChart === 'host_network'"
-          ref="modalChartRef"
-          :data="hostNetworkChartData"
-          :options="hostNetworkChartOptionsZoom"
-        />
-      </div>
-      <div class="zoom-hint">
-        <i class="fas fa-circle-info" />
-        {{ t('sessions.chart_zoom_hint') }}
-      </div>
-    </n-modal>
+      <Line
+        v-if="zoomChart === 'latency'"
+        ref="modalChartRef"
+        :data="latencyChartData"
+        :options="latencyChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'throughput'"
+        ref="modalChartRef"
+        :data="throughputChartData"
+        :options="throughputChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'quality'"
+        ref="modalChartRef"
+        :data="qualityChartData"
+        :options="qualityChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'fps'"
+        ref="modalChartRef"
+        :data="fpsChartData"
+        :options="fpsChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'host_compute'"
+        ref="modalChartRef"
+        :data="hostComputeChartData"
+        :options="hostPercentChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'host_memory'"
+        ref="modalChartRef"
+        :data="hostMemoryChartData"
+        :options="hostPercentChartOptionsZoom"
+      />
+      <Line
+        v-else-if="zoomChart === 'host_network'"
+        ref="modalChartRef"
+        :data="hostNetworkChartData"
+        :options="hostNetworkChartOptionsZoom"
+      />
+    </SessionChartZoomModal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NModal, NTooltip } from 'naive-ui';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -310,6 +157,8 @@ import annotationPlugin from 'chartjs-plugin-annotation';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import { Line } from 'vue-chartjs';
 import type { SessionSample, SessionEvent } from '@/types/sessions';
+import SessionChartPanel from './session/SessionChartPanel.vue';
+import SessionChartZoomModal from './session/SessionChartZoomModal.vue';
 
 ChartJS.register(
   CategoryScale,
