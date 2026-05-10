@@ -18,6 +18,10 @@
 #include "session_history_storage.h"
 #include "session_history_writer.h"
 
+#ifdef _WIN32
+  #include "platform/windows/display.h"
+#endif
+
 namespace session_history {
 
   namespace {
@@ -72,6 +76,11 @@ namespace session_history {
         enriched.host_gpu_model = info.gpu_model;
       }
     }
+#ifdef _WIN32
+    if (enriched.stream_gpu_model.empty()) {
+      enriched.stream_gpu_model = platf::dxgi::current_display_adapter_name();
+    }
+#endif
     enriched.codec = stream::canonical_codec_name(enriched.codec);
 
     sampler::register_session(enriched);

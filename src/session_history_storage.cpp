@@ -49,7 +49,8 @@ namespace session_history::storage {
         verdict TEXT DEFAULT 'unknown',
         server_version TEXT,
         host_cpu_model TEXT,
-        host_gpu_model TEXT
+        host_gpu_model TEXT,
+        stream_gpu_model TEXT
       );
 
       CREATE TABLE IF NOT EXISTS samples (
@@ -150,6 +151,10 @@ namespace session_history::storage {
       if (sqlite3_column_count(stmt) > 20 && sqlite3_column_type(stmt, 20) != SQLITE_NULL) {
         auto col20 = sqlite3_column_text(stmt, 20);
         out.host_gpu_model = col20 ? reinterpret_cast<const char *>(col20) : "";
+      }
+      if (sqlite3_column_count(stmt) > 21 && sqlite3_column_type(stmt, 21) != SQLITE_NULL) {
+        auto col21 = sqlite3_column_text(stmt, 21);
+        out.stream_gpu_model = col21 ? reinterpret_cast<const char *>(col21) : "";
       }
       return out;
     }
@@ -572,6 +577,9 @@ namespace session_history::storage {
       add_column("sessions", "yuv444", "INTEGER DEFAULT 0");
       add_column("sessions", "server_version", "TEXT");
     }
+    if (current_schema_version < 5) {
+      add_column("sessions", "stream_gpu_model", "TEXT");
+    }
 
     return exec(db, ("PRAGMA user_version = " + std::to_string(schema_version)).c_str());
   }
@@ -581,8 +589,8 @@ namespace session_history::storage {
       "INSERT OR IGNORE INTO sessions "
       "(uuid, protocol, client_name, device_name, app_name, "
       " width, height, target_fps, target_bitrate_kbps, target_requested_bitrate_kbps, "
-      " codec, hdr, yuv444, audio_channels, start_time_unix, server_version, host_cpu_model, host_gpu_model) "
-      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      " codec, hdr, yuv444, audio_channels, start_time_unix, server_version, host_cpu_model, host_gpu_model, stream_gpu_model) "
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     if (!stmt) return false;
 
     sqlite3_bind_text(stmt.get(), 1, metadata.uuid.c_str(), -1, SQLITE_TRANSIENT);
@@ -603,6 +611,7 @@ namespace session_history::storage {
     sqlite3_bind_text(stmt.get(), 16, metadata.server_version.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 17, metadata.host_cpu_model.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 18, metadata.host_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 19, metadata.stream_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
       BOOST_LOG(error) << "session_history: begin_session insert failed for uuid=" << metadata.uuid
@@ -826,7 +835,7 @@ namespace session_history::storage {
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
       "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
-      "host_cpu_model, host_gpu_model "
+      "host_cpu_model, host_gpu_model, stream_gpu_model "
       "FROM sessions WHERE end_time_unix IS NOT NULL "
       "ORDER BY end_time_unix DESC LIMIT ? OFFSET ?");
     if (!stmt) return result;
@@ -850,7 +859,7 @@ namespace session_history::storage {
       "SELECT uuid, protocol, client_name, device_name, app_name, "
       "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
       "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
-      "host_cpu_model, host_gpu_model "
+      "host_cpu_model, host_gpu_model, stream_gpu_model "
       "FROM sessions WHERE uuid = ?");
     if (!stmt) return std::nullopt;
     sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);

@@ -378,6 +378,7 @@ namespace session_history::sampler {
       as.codec = !it->second.codec.empty() ? it->second.codec : std::string(stream::video_format_name(info.video_format));
       as.hdr = info.dynamic_range > 0;
       as.yuv444 = info.yuv444;
+      as.stream_gpu_model = info.stream_gpu_model;
       as.uptime_seconds = info.uptime_seconds;
       as.encode_latency_ms = info.encode_latency_ms;
       as.frames_sent = info.frames_sent;
@@ -419,6 +420,7 @@ namespace session_history::sampler {
       as.codec = !it->second.codec.empty() ? it->second.codec : stream::canonical_codec_name(ws.codec.value_or(""));
       as.hdr = ws.hdr.value_or(false);
       as.yuv444 = ws.yuv444.value_or(false);
+      as.stream_gpu_model = it->second.stream_gpu_model;
       as.frames_sent = static_cast<std::uint64_t>(ws.last_video_frame_index > 0 ? ws.last_video_frame_index : 0);
       as.bytes_sent = ws.video_bytes_total + ws.audio_bytes_total;
       as.client_reported_losses = static_cast<std::int64_t>(ws.video_dropped);

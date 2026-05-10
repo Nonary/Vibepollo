@@ -495,6 +495,7 @@ namespace confighttp {
     output["codec"] = state.codec ? nlohmann::json(stream::canonical_codec_name(*state.codec)) : nlohmann::json(nullptr);
     output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
     output["yuv444"] = state.yuv444 ? nlohmann::json(*state.yuv444) : nlohmann::json(false);
+    output["stream_gpu_model"] = state.stream_gpu_model ? nlohmann::json(*state.stream_gpu_model) : nlohmann::json(nullptr);
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
     output["audio_codec"] = state.audio_codec ? nlohmann::json(*state.audio_codec) : nlohmann::json(nullptr);
     output["profile"] = state.profile ? nlohmann::json(*state.profile) : nlohmann::json(nullptr);
@@ -545,6 +546,7 @@ namespace confighttp {
     output["server_version"] = summary.server_version;
     output["host_cpu_model"] = summary.host_cpu_model;
     output["host_gpu_model"] = summary.host_gpu_model;
+    output["stream_gpu_model"] = summary.stream_gpu_model;
     return output;
   }
 
@@ -601,6 +603,7 @@ namespace confighttp {
     output["codec"] = session.codec;
     output["hdr"] = session.hdr;
     output["yuv444"] = session.yuv444;
+    output["stream_gpu_model"] = session.stream_gpu_model;
     output["uptime_seconds"] = std::round(session.uptime_seconds * 10.0) / 10.0;
     output["actual_fps"] = std::round(session.actual_fps * 10.0) / 10.0;
     output["actual_bitrate_kbps"] = std::round(session.actual_bitrate_kbps * 10.0) / 10.0;
@@ -2604,6 +2607,7 @@ namespace confighttp {
       s["codec"] = stream::video_format_name(info.video_format);
       s["hdr"] = info.dynamic_range > 0;
       s["yuv444"] = info.yuv444;
+      s["stream_gpu_model"] = info.stream_gpu_model;
       s["audio_channels"] = info.audio_channels;
       s["state"] = info.state;
 

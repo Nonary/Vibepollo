@@ -155,6 +155,12 @@
               :value="detail.host_gpu_model"
               :tip="t('sessions.tip_host_gpu_model')"
             />
+            <StatCell
+              v-if="detail.stream_gpu_model"
+              :label="t('sessions.stream_gpu_model')"
+              :value="detail.stream_gpu_model"
+              :tip="t('sessions.tip_stream_gpu_model')"
+            />
           </div>
         </div>
 

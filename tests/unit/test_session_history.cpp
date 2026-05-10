@@ -64,6 +64,7 @@ namespace {
     m.audio_channels = 2;
     m.host_cpu_model = "TestCPU";
     m.host_gpu_model = "TestGPU";
+    m.stream_gpu_model = "StreamGPU";
     return m;
   }
 
@@ -152,6 +153,7 @@ TEST(SessionHistory, BeginEndPersists) {
   EXPECT_EQ(detail->summary.codec, "H.264");
   EXPECT_EQ(detail->summary.host_cpu_model, "TestCPU");
   EXPECT_EQ(detail->summary.host_gpu_model, "TestGPU");
+  EXPECT_EQ(detail->summary.stream_gpu_model, "StreamGPU");
 
   // Row must still be present in history with an end_time set.
   auto detail_after = session_history::get_session_detail(uuid);

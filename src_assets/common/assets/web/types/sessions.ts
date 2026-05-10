@@ -18,6 +18,7 @@ export interface RTSPSession {
   codec: string;
   hdr: boolean;
   yuv444: boolean;
+  stream_gpu_model?: string;
   audio_channels: number;
   state: string;
   frames_sent: number;
@@ -54,6 +55,7 @@ export interface WebRTCSession {
   codec?: string;
   hdr?: boolean;
   yuv444?: boolean;
+  stream_gpu_model?: string;
   audio_channels?: number;
   audio_codec?: string;
   profile?: string;
@@ -93,6 +95,7 @@ export interface SessionSummary {
   duration_seconds: number;
   host_cpu_model?: string;
   host_gpu_model?: string;
+  stream_gpu_model?: string;
 }
 
 export interface SessionSample {
@@ -152,6 +155,7 @@ export interface ActiveSession {
   requested_bitrate_kbps?: number;
   hdr: boolean;
   yuv444?: boolean;
+  stream_gpu_model?: string;
   uptime_seconds: number;
   actual_fps: number;
   actual_bitrate_kbps: number;

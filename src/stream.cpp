@@ -50,6 +50,7 @@ extern "C" {
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
+  #include "platform/windows/display.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
@@ -489,6 +490,7 @@ namespace stream {
     // from device_uuid so that consecutive streams from the same Moonlight
     // client produce separate history rows.
     std::string history_uuid;
+    std::string stream_gpu_model;
     crypto::PERM permission;
 
     std::list<crypto::command_entry_t> do_cmds;
@@ -631,6 +633,7 @@ namespace stream {
       info.dynamic_range = session->config.monitor.dynamicRange;
       info.yuv444 = session->config.monitor.chromaSamplingType != 0;
       info.audio_channels = session->config.audio.channels;
+      info.stream_gpu_model = session->stream_gpu_model;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
 
       // Real-time performance counters
@@ -2529,6 +2532,9 @@ namespace stream {
 
       // Record session in persistent history
       {
+#ifdef _WIN32
+        session.stream_gpu_model = platf::dxgi::current_display_adapter_name();
+#endif
         session_history::session_metadata_t meta;
         meta.uuid = session.history_uuid;
         meta.protocol = "rtsp";
@@ -2550,6 +2556,7 @@ namespace stream {
         meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
         meta.audio_channels = session.config.audio.channels;
         meta.server_version = current_server_version();
+        meta.stream_gpu_model = session.stream_gpu_model;
         session_history::begin_session(meta);
       }
 

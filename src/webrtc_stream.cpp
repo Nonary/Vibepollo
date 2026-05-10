@@ -30,6 +30,7 @@
 
 #ifdef _WIN32
   #include <winsock2.h>
+  #include "platform/windows/display.h"
 #endif
 
 // lib includes
@@ -4517,6 +4518,11 @@ namespace webrtc_stream {
     session.state.codec = video_format_to_codec(session.video_config.videoFormat);
     session.state.hdr = session.video_config.dynamicRange != 0;
     session.state.yuv444 = session.video_config.chromaSamplingType != 0;
+#ifdef _WIN32
+    if (const auto stream_gpu_model = platf::dxgi::current_display_adapter_name(); !stream_gpu_model.empty()) {
+      session.state.stream_gpu_model = stream_gpu_model;
+    }
+#endif
     session.video_pacing = build_video_pacing_config(options);
     session.state.video_pacing_mode = video_pacing_mode_to_string(session.video_pacing.mode);
     session.state.video_pacing_slack_ms = static_cast<int>(
@@ -4554,6 +4560,7 @@ namespace webrtc_stream {
       meta.yuv444 = snapshot.yuv444.value_or(false);
       meta.audio_channels = snapshot.audio_channels.value_or(0);
       meta.server_version = current_server_version();
+      meta.stream_gpu_model = snapshot.stream_gpu_model.value_or("");
       session_history::begin_session(meta);
     }
 

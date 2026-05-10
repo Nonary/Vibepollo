@@ -125,6 +125,7 @@ namespace stream {
     int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
     bool yuv444;
     int audio_channels;
+    std::string stream_gpu_model;
     std::string state;
 
     // Real-time performance counters

@@ -42,6 +42,7 @@ namespace session_history {
     // Static host identification captured at session start.
     std::string host_cpu_model;
     std::string host_gpu_model;
+    std::string stream_gpu_model;
   };
 
   struct session_sample_t {
@@ -107,6 +108,7 @@ namespace session_history {
     std::string server_version;
     std::string host_cpu_model;
     std::string host_gpu_model;
+    std::string stream_gpu_model;
   };
 
   struct session_detail_t {
@@ -133,6 +135,7 @@ namespace session_history {
     std::string codec;
     bool hdr = false;
     bool yuv444 = false;
+    std::string stream_gpu_model;
     double uptime_seconds = 0;
 
     // Latest computed metrics

@@ -74,6 +74,7 @@ namespace webrtc_stream {
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
     std::optional<std::string> profile;
+    std::optional<std::string> stream_gpu_model;
     std::optional<std::string> video_pacing_mode;
     std::optional<int> video_pacing_slack_ms;
     std::optional<int> video_max_frame_age_ms;

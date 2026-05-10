@@ -69,6 +69,12 @@
             :tip="t('sessions.tip_codec')"
           />
           <StatCell
+            v-if="session.stream_gpu_model"
+            :label="t('sessions.stream_gpu_model')"
+            :value="session.stream_gpu_model"
+            :tip="t('sessions.tip_stream_gpu_model')"
+          />
+          <StatCell
             v-if="session.audio_channels"
             :label="t('sessions.audio_channels')"
             :value="`${session.audio_channels}ch`"

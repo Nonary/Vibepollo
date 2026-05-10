@@ -445,7 +445,7 @@ Make the limitation explicit in code comments and UI wording, or connect host GP
 
 Longer term, the platform abstraction should support selecting or reporting the actual stream adapter rather than independently guessing based on VRAM size.
 
-**Status (2026-05-10):** **Done for the merge-safe clarification.** The limitation is now called out in the Windows host-stats code comments and in the UI wording/tooltips so the reported host GPU is explicitly treated as a best-effort adapter selection. Wiring host telemetry to the exact capture/encode adapter remains longer-term follow-up work.
+**Status (2026-05-10):** **Done.** Host GPU wording still clearly describes the best-effort host-side adapter selection, and session/live/history paths now also persist and expose a separate `stream_gpu_model` field sourced from the active Windows DXGI/WGC capture adapter when a reliable adapter LUID is available.
 
 ### 10. Medium: `ActiveSessionsCard.vue` and `SessionCharts.vue` are large and repetitive
 

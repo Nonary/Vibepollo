@@ -69,6 +69,12 @@
             :tip="t('sessions.tip_codec')"
           />
           <StatCell
+            v-if="session.stream_gpu_model"
+            :label="t('sessions.stream_gpu_model')"
+            :value="session.stream_gpu_model"
+            :tip="t('sessions.tip_stream_gpu_model')"
+          />
+          <StatCell
             :label="t('sessions.video_packets')"
             :value="formatNumber(session.video_packets)"
             :tip="t('sessions.tip_video_packets')"
