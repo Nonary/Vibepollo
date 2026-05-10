@@ -204,6 +204,14 @@ namespace {
     return buf;
   }
 
+  double clamp_throughput_bps(double bits_per_second, std::uint64_t link_speed_mbps) {
+    if (bits_per_second < 0.0 || link_speed_mbps == 0) {
+      return bits_per_second;
+    }
+    const double max_bits_per_second = static_cast<double>(link_speed_mbps) * 1'000'000.0 * 1.10;
+    return std::min(bits_per_second, max_bits_per_second);
+  }
+
   /**
    * @brief Collect dedicated VRAM in use for one adapter.
    * @return Bytes; 0 on failure.
@@ -744,8 +752,8 @@ namespace {
       }
       auto drx = rx - _last_rx;
       auto dtx = tx - _last_tx;
-      s.net_rx_bps = static_cast<double>(drx) * 8.0 / dt;
-      s.net_tx_bps = static_cast<double>(dtx) * 8.0 / dt;
+      s.net_rx_bps = clamp_throughput_bps(static_cast<double>(drx) * 8.0 / dt, _net_link_speed_mbps);
+      s.net_tx_bps = clamp_throughput_bps(static_cast<double>(dtx) * 8.0 / dt, _net_link_speed_mbps);
 
       _last_rx = rx;
       _last_tx = tx;

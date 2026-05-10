@@ -12,6 +12,7 @@
  * proprietary NVIDIA bits.
  */
 // standard includes
+#include <array>
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -211,6 +212,14 @@ namespace {
     return mbps > 0 ? static_cast<std::uint64_t>(mbps) : 0;
   }
 
+  double clamp_throughput_bps(double bits_per_second, std::uint64_t link_speed_mbps) {
+    if (bits_per_second < 0.0 || link_speed_mbps == 0) {
+      return bits_per_second;
+    }
+    const double max_bits_per_second = static_cast<double>(link_speed_mbps) * 1'000'000.0 * 1.10;
+    return std::min(bits_per_second, max_bits_per_second);
+  }
+
   // --- NVML (dlopen) ------------------------------------------------------------
 
   struct nvml_memory_t {
@@ -243,13 +252,33 @@ namespace {
     nvml_t() = default;
 
     ~nvml_t() {
-      if (_inited && _shutdown) _shutdown();
-      if (_handle) dlclose(_handle);
+      reset();
     }
 
     bool try_open() {
-      _handle = dlopen("libnvidia-ml.so.1", RTLD_LAZY | RTLD_LOCAL);
+      reset();
+
+      static constexpr std::array<const char *, 7> trusted_candidates {
+        "/usr/lib/libnvidia-ml.so.1",
+        "/usr/lib64/libnvidia-ml.so.1",
+        "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+        "/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+        "/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
+        "/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
+        "/usr/lib/wsl/lib/libnvidia-ml.so.1",
+      };
+
+      for (const char *candidate : trusted_candidates) {
+        if (!std::filesystem::exists(candidate)) {
+          continue;
+        }
+        _handle = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL);
+        if (_handle) {
+          break;
+        }
+      }
       if (!_handle) return false;
+
 #define LOAD(name) name = reinterpret_cast<name##_t>(dlsym(_handle, #name))
       LOAD(nvmlInit_v2);
       LOAD(nvmlShutdown);
@@ -261,14 +290,24 @@ namespace {
       LOAD(nvmlDeviceGetMemoryInfo);
       LOAD(nvmlDeviceGetName);
 #undef LOAD
-      if (!nvmlInit_v2 || !nvmlShutdown || !nvmlDeviceGetHandleByIndex_v2) return false;
-      if (nvmlInit_v2() != NVML_SUCCESS) return false;
+      if (!nvmlInit_v2 || !nvmlShutdown || !nvmlDeviceGetHandleByIndex_v2) {
+        reset();
+        return false;
+      }
+      if (nvmlInit_v2() != NVML_SUCCESS) {
+        reset();
+        return false;
+      }
       _inited = true;
       _shutdown = nvmlShutdown;
       if (nvmlDeviceGetHandleByIndex_v2(0, &_dev) != NVML_SUCCESS) {
         _dev = nullptr;
       }
-      return _dev != nullptr;
+      if (!_dev) {
+        reset();
+        return false;
+      }
+      return true;
     }
 
     void *device() const { return _dev; }
@@ -280,6 +319,27 @@ namespace {
     nvmlDeviceGetName_t nvmlDeviceGetName = nullptr;
 
   private:
+    void reset() {
+      if (_inited && _shutdown) {
+        _shutdown();
+      }
+      if (_handle) {
+        dlclose(_handle);
+      }
+      _handle = nullptr;
+      _dev = nullptr;
+      _inited = false;
+      nvmlInit_v2 = nullptr;
+      _shutdown = nullptr;
+      nvmlDeviceGetCount_v2 = nullptr;
+      nvmlDeviceGetHandleByIndex_v2 = nullptr;
+      nvmlDeviceGetUtilizationRates = nullptr;
+      nvmlDeviceGetEncoderUtilization = nullptr;
+      nvmlDeviceGetTemperature = nullptr;
+      nvmlDeviceGetMemoryInfo = nullptr;
+      nvmlDeviceGetName = nullptr;
+    }
+
     void *_handle = nullptr;
     void *_dev = nullptr;
     bool _inited = false;
@@ -367,6 +427,7 @@ namespace {
         auto candidate = default_route_iface();
         if (!candidate.empty()) {
           _iface = candidate;
+          _net_link_speed_mbps = read_iface_link_speed_mbps(candidate);
         }
         _iface_picked_at = now;
       }
@@ -389,8 +450,8 @@ namespace {
         } else if (dt > 0.05) {
           double drx = static_cast<double>(c->rx_bytes - _last_net.rx_bytes);
           double dtx = static_cast<double>(c->tx_bytes - _last_net.tx_bytes);
-          out.net_rx_bps = (drx * 8.0) / dt;
-          out.net_tx_bps = (dtx * 8.0) / dt;
+          out.net_rx_bps = clamp_throughput_bps((drx * 8.0) / dt, _net_link_speed_mbps);
+          out.net_tx_bps = clamp_throughput_bps((dtx * 8.0) / dt, _net_link_speed_mbps);
         } else {
           out.net_rx_bps = 0.0;
           out.net_tx_bps = 0.0;
@@ -447,6 +508,7 @@ namespace {
     std::string _last_net_iface;
     steady_clock::time_point _last_net_at {};
     bool _have_net_baseline = false;
+    std::uint64_t _net_link_speed_mbps = 0;
 
     nvml_t _nvml;
     bool _have_nvml = false;

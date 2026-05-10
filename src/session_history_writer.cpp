@@ -47,7 +47,6 @@ namespace session_history::writer {
     };
 
     storage::db_ptr g_write_db;
-    storage::db_ptr g_read_db;
     std::mutex g_read_mutex;
 
     std::mutex g_queue_mutex;
@@ -67,12 +66,31 @@ namespace session_history::writer {
     constexpr int DEFAULT_DETAIL_EVENT_LIMIT = 500;
     constexpr int MAX_SAMPLES_PER_SESSION = 7200;
     constexpr int MAX_EVENTS_PER_SESSION = 2000;
-    constexpr int SESSION_HISTORY_SCHEMA_VERSION = 5;
+    constexpr int SESSION_HISTORY_SCHEMA_VERSION = 6;
     constexpr auto DELETE_WAIT_TIMEOUT = std::chrono::seconds(5);
 
     settings_t current_settings() {
       std::lock_guard lk {g_settings_mutex};
       return g_settings;
+    }
+
+    storage::db_ptr open_request_read_db() {
+      std::filesystem::path db_path;
+      {
+        std::lock_guard lk {g_read_mutex};
+        db_path = g_history_db_path;
+      }
+      if (db_path.empty()) {
+        return {};
+      }
+
+      storage::db_ptr read_db;
+      if (!storage::open_read_db(db_path.string(), read_db)) {
+        return {};
+      }
+      sqlite3_busy_timeout(read_db.get(), 3000);
+      storage::exec(read_db.get(), "PRAGMA foreign_keys = ON");
+      return read_db;
     }
 
     storage::prune_options_t current_prune_options() {
@@ -277,15 +295,6 @@ namespace session_history::writer {
     }
     storage::tighten_history_db_permissions(g_history_db_path);
 
-    if (!storage::open_read_db(db_path, g_read_db)) {
-      BOOST_LOG(warning) << "session_history: falling back to the write connection for read queries";
-    }
-    if (g_read_db) {
-      sqlite3_busy_timeout(g_read_db.get(), 3000);
-      storage::exec(g_read_db.get(), "PRAGMA foreign_keys = ON");
-      storage::tighten_history_db_permissions(g_history_db_path);
-    }
-
     g_running.store(true, std::memory_order_release);
     g_writer_thread = std::thread {writer_loop};
 
@@ -302,7 +311,6 @@ namespace session_history::writer {
       g_writer_thread.join();
     }
 
-    g_read_db.reset();
     g_write_db.reset();
     g_history_db_path.clear();
   }
@@ -345,16 +353,29 @@ namespace session_history::writer {
   }
 
   std::vector<session_summary_t> list_sessions(int limit, int offset) {
-    auto *db = g_read_db ? g_read_db.get() : g_write_db.get();
-    if (!db) return {};
+    if (auto read_db = open_request_read_db()) {
+      return storage::read_session_summaries(read_db.get(), limit, offset);
+    }
+
     std::lock_guard lk {g_read_mutex};
+    auto *db = g_write_db.get();
+    if (!db) return {};
     return storage::read_session_summaries(db, limit, offset);
   }
 
   std::optional<session_detail_t> get_session_detail(const std::string &uuid, bool include_all) {
-    auto *db = g_read_db ? g_read_db.get() : g_write_db.get();
-    if (!db) return std::nullopt;
+    if (auto read_db = open_request_read_db()) {
+      return storage::read_session_detail(
+        read_db.get(),
+        uuid,
+        include_all,
+        DEFAULT_DETAIL_SAMPLE_LIMIT,
+        DEFAULT_DETAIL_EVENT_LIMIT);
+    }
+
     std::lock_guard lk {g_read_mutex};
+    auto *db = g_write_db.get();
+    if (!db) return std::nullopt;
     return storage::read_session_detail(
       db,
       uuid,

@@ -190,6 +190,14 @@ namespace {
     return mbps;
   }
 
+  double clamp_throughput_bps(double bits_per_second, std::uint64_t link_speed_mbps) {
+    if (bits_per_second < 0.0 || link_speed_mbps == 0) {
+      return bits_per_second;
+    }
+    const double max_bits_per_second = static_cast<double>(link_speed_mbps) * 1'000'000.0 * 1.10;
+    return std::min(bits_per_second, max_bits_per_second);
+  }
+
   class macos_host_stats_t: public platf::host_stats_provider_t {
   public:
     platf::host_stats_t sample() override {
@@ -243,7 +251,10 @@ namespace {
       auto now = steady_clock::now();
       if (_iface.empty() || (now - _iface_picked_at) > std::chrono::seconds(30)) {
         auto candidate = default_route_iface();
-        if (!candidate.empty()) _iface = candidate;
+        if (!candidate.empty()) {
+          _iface = candidate;
+          _net_link_speed_mbps = read_iface_link_speed_mbps(candidate);
+        }
         _iface_picked_at = now;
       }
       return _iface;
@@ -263,8 +274,8 @@ namespace {
         } else if (dt > 0.05) {
           double drx = static_cast<double>(c->rx_bytes - _last_net.rx_bytes);
           double dtx = static_cast<double>(c->tx_bytes - _last_net.tx_bytes);
-          out.net_rx_bps = (drx * 8.0) / dt;
-          out.net_tx_bps = (dtx * 8.0) / dt;
+          out.net_rx_bps = clamp_throughput_bps((drx * 8.0) / dt, _net_link_speed_mbps);
+          out.net_tx_bps = clamp_throughput_bps((dtx * 8.0) / dt, _net_link_speed_mbps);
         } else {
           out.net_rx_bps = 0.0;
           out.net_tx_bps = 0.0;
@@ -289,6 +300,7 @@ namespace {
     std::string _last_net_iface;
     steady_clock::time_point _last_net_at {};
     bool _have_net_baseline = false;
+    std::uint64_t _net_link_speed_mbps = 0;
   };
 
 }  // namespace

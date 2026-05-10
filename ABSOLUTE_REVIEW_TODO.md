@@ -12,7 +12,7 @@ Use safe DLL loading APIs and restrict resolution to trusted locations. Prefer `
 
 The Linux `dlopen("libnvidia-ml.so.1", ...)` path is lower risk in normal service deployments, but should be hardened consistently where practical.
 
-**Status (2026-05-10):** **Done for the Windows path.** `src/platform/windows/host_stats.cpp` now loads NVML from trusted locations only and cleans up module ownership on failure/destruction. The Linux `dlopen` path was left unchanged as the lower-risk follow-up originally noted here.
+**Status (2026-05-10):** **Done.** `src/platform/windows/host_stats.cpp` now loads NVML from trusted locations only and cleans up module ownership on failure/destruction, and `src/platform/linux/host_stats.cpp` now also resolves NVML only from trusted absolute library paths instead of relying on loader search-order lookup.
 
 ### 2. Medium: unbounded samples/events can grow the DB and produce oversized API responses
 
@@ -112,7 +112,7 @@ This may be memory-safe only if SQLite is built and opened in serialized mode, b
 
 Add a read mutex at minimum. A better long-term design is a small read-only connection pool or per-request read connection with busy timeout. Also limit grouped detail request concurrency in the frontend.
 
-**Status (2026-05-10):** **Done for the merge-safe fixes.** Read-side SQLite access is serialized with an explicit mutex, and grouped history detail fetches are now concurrency-limited in the frontend instead of fanning out unboundedly.
+**Status (2026-05-10):** **Done.** Grouped history detail fetches are concurrency-limited in the frontend, and the backend no longer shares one long-lived read connection across requests: read APIs now open per-request full-mutex SQLite connections, falling back to the write handle only when a fresh read connection is unavailable.
 
 ### 5. High: RTSP active stats use the wrong identity and can duplicate one session while omitting another
 
@@ -193,7 +193,7 @@ After VPN changes, sleep/wake, Wi-Fi/Ethernet changes, or interface reset, this 
 
 Track interface identity as part of the network baseline. Reset the baseline when interface identity changes or counters decrease. If link speed is available, clamp impossible deltas to a sane maximum.
 
-**Status (2026-05-10):** **Done for the baseline-reset portion.** Windows and macOS now reset network baselines on interface changes or counter rollback, matching the already-defensive Linux behavior. Link-speed-based delta clamping was not added.
+**Status (2026-05-10):** **Done.** Windows, macOS, and Linux now reset network baselines on interface changes or counter rollback, and all three platforms clamp sampled RX/TX throughput to sane per-interface maxima when link-speed information is available.
 
 ### 10. Medium: frontend history chart annotations are O(events × samples)
 
@@ -331,7 +331,7 @@ sample_metrics_t update_aggregator(...);
 
 Then each protocol-specific sampler only needs to translate protocol-specific counters into the common sample model.
 
-**Status (2026-05-10):** **Mostly done.** RTSP and WebRTC sampling now normalize through a shared sampled-session flow in `src/session_history.cpp`, so aggregator updates, event recording, host snapshot population, and sample enqueueing all run through one path. The remaining protocol-specific code is now mostly limited to mapping each protocol's counters into that shared shape.
+**Status (2026-05-10):** **Done.** RTSP and WebRTC sampling now share one sampled-session path for aggregator updates, event detection, host snapshot population, and enqueueing; the protocol-specific pieces are reduced to producing the raw per-session counters that feed that shared path.
 
 ### 4. Medium: base schema and migrations are not in sync
 
@@ -371,7 +371,7 @@ encoder_bitrate_kbps
 
 The important part is that the same concept has the same name in C++ structs, JSON fields, TypeScript types, and UI labels.
 
-**Status (2026-05-10):** **Mostly done.** The live/session-history/API/frontend models now consistently use `requested_bitrate_kbps` and `encoder_bitrate_kbps`. The old SQLite column names remain in place for backward compatibility with existing databases, so the normalization is complete at the model/API/UI layer without forcing a DB rewrite.
+**Status (2026-05-10):** **Done.** The live/session-history/API/frontend models and the SQLite schema now consistently use `requested_bitrate_kbps` and `encoder_bitrate_kbps`, and the migration path renames older session-history databases away from the pre-release `target_*` column names.
 
 ### 6. Low/Medium: codec-name mapping is duplicated and inconsistent
 

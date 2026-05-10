@@ -37,8 +37,8 @@ namespace session_history::storage {
         width INTEGER,
         height INTEGER,
         target_fps INTEGER,
-        target_bitrate_kbps INTEGER,
-        target_requested_bitrate_kbps INTEGER,
+        encoder_bitrate_kbps INTEGER,
+        requested_bitrate_kbps INTEGER,
         codec TEXT,
         hdr INTEGER DEFAULT 0,
         yuv444 INTEGER DEFAULT 0,
@@ -514,7 +514,7 @@ namespace session_history::storage {
 
   bool open_read_db(const std::string &db_path, db_ptr &out_db) {
     sqlite3 *raw = nullptr;
-    int rc = sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr);
+    int rc = sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nullptr);
     if (rc != SQLITE_OK) {
       BOOST_LOG(error) << "session_history: failed to open read DB: " << sqlite3_errmsg(raw);
       sqlite3_close(raw);
@@ -554,6 +554,18 @@ namespace session_history::storage {
       }
     };
 
+    auto rename_column = [&](const char *table, const char *old_name, const char *new_name) {
+      if (!column_exists(table, old_name) || column_exists(table, new_name)) {
+        return true;
+      }
+      const std::string sql = std::string("ALTER TABLE ") + table + " RENAME COLUMN " + old_name + " TO " + new_name;
+      if (!exec(db, sql.c_str())) {
+        BOOST_LOG(error) << "session_history: failed to rename " << table << "." << old_name << " to " << new_name;
+        return false;
+      }
+      return true;
+    };
+
     const int current_schema_version = read_pragma_int(db, "PRAGMA user_version");
     (void) schema_version;
 
@@ -580,6 +592,14 @@ namespace session_history::storage {
     if (current_schema_version < 5) {
       add_column("sessions", "stream_gpu_model", "TEXT");
     }
+    if (current_schema_version < 6) {
+      if (!rename_column("sessions", "target_bitrate_kbps", "encoder_bitrate_kbps")) {
+        return false;
+      }
+      if (!rename_column("sessions", "target_requested_bitrate_kbps", "requested_bitrate_kbps")) {
+        return false;
+      }
+    }
 
     return exec(db, ("PRAGMA user_version = " + std::to_string(schema_version)).c_str());
   }
@@ -588,7 +608,7 @@ namespace session_history::storage {
     auto stmt = prepare(db,
       "INSERT OR IGNORE INTO sessions "
       "(uuid, protocol, client_name, device_name, app_name, "
-      " width, height, target_fps, target_bitrate_kbps, target_requested_bitrate_kbps, "
+      " width, height, target_fps, encoder_bitrate_kbps, requested_bitrate_kbps, "
       " codec, hdr, yuv444, audio_channels, start_time_unix, server_version, host_cpu_model, host_gpu_model, stream_gpu_model) "
       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     if (!stmt) return false;
@@ -833,8 +853,8 @@ namespace session_history::storage {
     std::vector<session_summary_t> result;
     auto stmt = prepare(db,
       "SELECT uuid, protocol, client_name, device_name, app_name, "
-      "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
+      "width, height, target_fps, encoder_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, requested_bitrate_kbps, server_version, "
       "host_cpu_model, host_gpu_model, stream_gpu_model "
       "FROM sessions WHERE end_time_unix IS NOT NULL "
       "ORDER BY end_time_unix DESC LIMIT ? OFFSET ?");
@@ -857,8 +877,8 @@ namespace session_history::storage {
     int default_detail_event_limit) {
     auto stmt = prepare(db,
       "SELECT uuid, protocol, client_name, device_name, app_name, "
-      "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
+      "width, height, target_fps, encoder_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, requested_bitrate_kbps, server_version, "
       "host_cpu_model, host_gpu_model, stream_gpu_model "
       "FROM sessions WHERE uuid = ?");
     if (!stmt) return std::nullopt;

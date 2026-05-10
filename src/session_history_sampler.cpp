@@ -93,6 +93,20 @@ namespace session_history::sampler {
       double encode_latency_ms = 0;
     };
 
+    struct sampled_session_snapshot_t {
+      std::string session_uuid;
+      std::uint64_t bytes_sent_total = 0;
+      std::uint64_t packets_sent_video = 0;
+      std::uint64_t frames_sent = 0;
+      std::int64_t last_frame_index = 0;
+      std::uint64_t video_dropped = 0;
+      std::uint64_t audio_dropped = 0;
+      std::int64_t client_reported_losses = 0;
+      std::uint32_t idr_requests = 0;
+      std::uint32_t ref_invalidations = 0;
+      double encode_latency_ms = 0;
+    };
+
     std::thread g_sampler_thread;
     std::atomic<bool> g_running {false};
 
@@ -176,63 +190,79 @@ namespace session_history::sampler {
       }
     }
 
+    std::unordered_map<std::string, session_metadata_t> snapshot_active_sessions() {
+      std::lock_guard lk {g_active_mutex};
+      return g_active_sessions;
+    }
+
+    void record_sampled_session(
+      const sampled_session_snapshot_t &snapshot,
+      double ts,
+      const platf::host_stats_t &host) {
+      std::vector<pending_event_t> pending_events;
+      const auto aggregated = update_aggregator(
+        snapshot.session_uuid,
+        ts,
+        snapshot.frames_sent,
+        snapshot.bytes_sent_total,
+        snapshot.client_reported_losses,
+        pending_events);
+
+      for (const auto &evt : pending_events) {
+        session_event_t event;
+        event.session_uuid = snapshot.session_uuid;
+        event.timestamp_unix = ts;
+        event.event_type = evt.event_type;
+        event.payload = evt.payload;
+        (void) writer::enqueue_event(event);
+      }
+
+      session_sample_t sample;
+      sample.session_uuid = snapshot.session_uuid;
+      sample.timestamp_unix = ts;
+      sample.bytes_sent_total = snapshot.bytes_sent_total;
+      sample.packets_sent_video = snapshot.packets_sent_video;
+      sample.frames_sent = snapshot.frames_sent;
+      sample.last_frame_index = snapshot.last_frame_index;
+      sample.video_dropped = snapshot.video_dropped;
+      sample.audio_dropped = snapshot.audio_dropped;
+      sample.client_reported_losses = snapshot.client_reported_losses;
+      sample.idr_requests = snapshot.idr_requests;
+      sample.ref_invalidations = snapshot.ref_invalidations;
+      sample.encode_latency_ms = snapshot.encode_latency_ms;
+      sample.actual_fps = aggregated.actual_fps;
+      sample.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
+      sample.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
+      populate_host_snapshot(sample, host);
+      (void) writer::enqueue_sample(std::move(sample));
+    }
+
     void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
       auto snapshot = stream::get_all_session_info();
-      std::unordered_map<std::string, session_metadata_t> active_copy;
-      {
-        std::lock_guard lk {g_active_mutex};
-        active_copy = g_active_sessions;
-      }
+      const auto active_copy = snapshot_active_sessions();
 
       for (const auto &info : snapshot) {
         if (!active_copy.contains(info.uuid)) {
           continue;
         }
 
-        std::vector<pending_event_t> pending_events;
-        const auto aggregated = update_aggregator(
-          info.uuid,
-          ts,
-          info.frames_sent,
-          info.bytes_sent,
-          info.client_reported_losses,
-          pending_events);
-
-        for (const auto &evt : pending_events) {
-          session_event_t event;
-          event.session_uuid = info.uuid;
-          event.timestamp_unix = ts;
-          event.event_type = evt.event_type;
-          event.payload = evt.payload;
-          (void) writer::enqueue_event(event);
-        }
-
-        session_sample_t sample;
-        sample.session_uuid = info.uuid;
-        sample.timestamp_unix = ts;
-        sample.bytes_sent_total = info.bytes_sent;
-        sample.packets_sent_video = info.packets_sent;
-        sample.frames_sent = info.frames_sent;
-        sample.last_frame_index = info.last_frame_index;
-        sample.client_reported_losses = info.client_reported_losses;
-        sample.idr_requests = info.idr_requests;
-        sample.ref_invalidations = info.invalidate_ref_count;
-        sample.encode_latency_ms = info.encode_latency_ms;
-        sample.actual_fps = aggregated.actual_fps;
-        sample.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
-        sample.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
-        populate_host_snapshot(sample, host);
-        (void) writer::enqueue_sample(std::move(sample));
+        record_sampled_session({
+          .session_uuid = info.uuid,
+          .bytes_sent_total = info.bytes_sent,
+          .packets_sent_video = info.packets_sent,
+          .frames_sent = info.frames_sent,
+          .last_frame_index = info.last_frame_index,
+          .client_reported_losses = info.client_reported_losses,
+          .idr_requests = info.idr_requests,
+          .ref_invalidations = info.invalidate_ref_count,
+          .encode_latency_ms = info.encode_latency_ms,
+        }, ts, host);
       }
     }
 
     void sample_webrtc_sessions(double ts, const platf::host_stats_t &host) {
       auto snapshot = webrtc_stream::list_sessions();
-      std::unordered_map<std::string, session_metadata_t> active_copy;
-      {
-        std::lock_guard lk {g_active_mutex};
-        active_copy = g_active_sessions;
-      }
+      const auto active_copy = snapshot_active_sessions();
 
       for (const auto &info : snapshot) {
         if (!active_copy.contains(info.id)) {
@@ -250,40 +280,17 @@ namespace session_history::sampler {
         const std::uint64_t bytes_sent_total = info.video_bytes_total + info.audio_bytes_total;
         const std::int64_t client_losses = static_cast<std::int64_t>(info.video_dropped);
 
-        std::vector<pending_event_t> pending_events;
-        const auto aggregated = update_aggregator(
-          info.id,
-          ts,
-          frames_sent,
-          bytes_sent_total,
-          client_losses,
-          pending_events);
-
-        for (const auto &evt : pending_events) {
-          session_event_t event;
-          event.session_uuid = info.id;
-          event.timestamp_unix = ts;
-          event.event_type = evt.event_type;
-          event.payload = evt.payload;
-          (void) writer::enqueue_event(event);
-        }
-
-        session_sample_t sample;
-        sample.session_uuid = info.id;
-        sample.timestamp_unix = ts;
-        sample.bytes_sent_total = bytes_sent_total;
-        sample.packets_sent_video = info.video_packets;
-        sample.frames_sent = frames_sent;
-        sample.last_frame_index = info.last_video_frame_index;
-        sample.video_dropped = info.video_dropped;
-        sample.audio_dropped = info.audio_dropped;
-        sample.client_reported_losses = client_losses;
-        sample.encode_latency_ms = last_video_age_ms;
-        sample.actual_fps = aggregated.actual_fps;
-        sample.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
-        sample.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
-        populate_host_snapshot(sample, host);
-        (void) writer::enqueue_sample(std::move(sample));
+        record_sampled_session({
+          .session_uuid = info.id,
+          .bytes_sent_total = bytes_sent_total,
+          .packets_sent_video = info.video_packets,
+          .frames_sent = frames_sent,
+          .last_frame_index = info.last_video_frame_index,
+          .video_dropped = info.video_dropped,
+          .audio_dropped = info.audio_dropped,
+          .client_reported_losses = client_losses,
+          .encode_latency_ms = last_video_age_ms,
+        }, ts, host);
       }
     }
 

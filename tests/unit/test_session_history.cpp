@@ -12,9 +12,11 @@
 
 #include <src/config.h>
 #include <src/session_history.h>
+#include <src/session_history_storage.h>
 
 #include <chrono>
 #include <filesystem>
+#include <sqlite3.h>
 #include <thread>
 
 namespace {
@@ -43,6 +45,34 @@ namespace {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     return pred();
+  }
+
+  bool exec_sql(sqlite3 *db, const char *sql) {
+    char *err = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (err) {
+      sqlite3_free(err);
+    }
+    return rc == SQLITE_OK;
+  }
+
+  bool column_exists(sqlite3 *db, const char *table, const char *column) {
+    sqlite3_stmt *stmt = nullptr;
+    const std::string sql = std::string("PRAGMA table_info(") + table + ")";
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+      return false;
+    }
+
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      const auto *name = sqlite3_column_text(stmt, 1);
+      if (name && std::string(reinterpret_cast<const char *>(name)) == column) {
+        found = true;
+        break;
+      }
+    }
+    sqlite3_finalize(stmt);
+    return found;
   }
 
   session_history::session_metadata_t
@@ -300,6 +330,68 @@ TEST(SessionHistory, DisabledHistorySkipsPersistence) {
   EXPECT_TRUE(session_history::list_sessions(50, 0).empty());
   EXPECT_FALSE(session_history::get_session_detail(uuid).has_value());
   EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::unavailable);
+}
+
+TEST(SessionHistory, MigratesLegacyBitrateColumnsToCanonicalNames) {
+  auto path = make_temp_db_path("legacy-bitrate-migration");
+
+  sqlite3 *seed_db = nullptr;
+  ASSERT_EQ(sqlite3_open(path.string().c_str(), &seed_db), SQLITE_OK);
+  ASSERT_TRUE(exec_sql(seed_db,
+    "CREATE TABLE sessions ("
+    "uuid TEXT PRIMARY KEY,"
+    "protocol TEXT NOT NULL,"
+    "client_name TEXT,"
+    "device_name TEXT,"
+    "app_name TEXT,"
+    "width INTEGER,"
+    "height INTEGER,"
+    "target_fps INTEGER,"
+    "target_bitrate_kbps INTEGER,"
+    "target_requested_bitrate_kbps INTEGER,"
+    "codec TEXT,"
+    "hdr INTEGER DEFAULT 0,"
+    "yuv444 INTEGER DEFAULT 0,"
+    "audio_channels INTEGER,"
+    "start_time_unix REAL NOT NULL,"
+    "end_time_unix REAL,"
+    "duration_seconds REAL,"
+    "verdict TEXT DEFAULT 'unknown',"
+    "server_version TEXT,"
+    "host_cpu_model TEXT,"
+    "host_gpu_model TEXT,"
+    "stream_gpu_model TEXT"
+    ");"
+    "PRAGMA user_version = 5;"));
+  sqlite3_close(seed_db);
+
+  session_history::storage::db_ptr migrated_db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), migrated_db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(migrated_db.get(), 6));
+  EXPECT_TRUE(column_exists(migrated_db.get(), "sessions", "encoder_bitrate_kbps"));
+  EXPECT_TRUE(column_exists(migrated_db.get(), "sessions", "requested_bitrate_kbps"));
+  EXPECT_FALSE(column_exists(migrated_db.get(), "sessions", "target_bitrate_kbps"));
+  EXPECT_FALSE(column_exists(migrated_db.get(), "sessions", "target_requested_bitrate_kbps"));
+  migrated_db.reset();
+
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "44444444-4444-4444-4444-444444444444";
+  session_history::begin_session(make_metadata(uuid, "Migrated Session"));
+  session_history::end_session(uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto rows = session_history::list_sessions(50, 0);
+    return std::any_of(rows.begin(), rows.end(), [&](const auto &row) {
+      return row.uuid == uuid;
+    });
+  }));
+
+  auto detail = session_history::get_session_detail(uuid, false);
+  ASSERT_TRUE(detail.has_value());
+  EXPECT_EQ(detail->summary.encoder_bitrate_kbps, 20000);
+  EXPECT_EQ(detail->summary.requested_bitrate_kbps, 25000);
 }
 
 TEST(SessionHistory, RetentionDaysPrunesOldEndedSessionsOnStartup) {
