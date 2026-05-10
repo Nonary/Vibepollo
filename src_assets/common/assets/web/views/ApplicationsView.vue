@@ -1,182 +1,119 @@
 <template>
-  <div class="max-w-3xl mx-auto px-4 py-6 space-y-4 sm:px-6 sm:py-8 sm:space-y-5">
-    <div
-      class="flex flex-col gap-3 rounded-2xl border border-dark/10 bg-white/75 p-4 shadow-sm backdrop-blur dark:border-light/10 dark:bg-surface/70 sm:flex-row sm:items-center sm:justify-between sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-none"
-    >
-      <div class="min-w-0 space-y-1">
-        <h2 class="text-base font-semibold text-dark dark:text-light sm:text-sm sm:uppercase sm:tracking-wider">
-          Applications
-        </h2>
-        <p class="text-[12px] leading-relaxed opacity-65 sm:hidden">
+  <div class="applications-page space-y-5 px-2 md:px-4">
+    <!-- Header card -->
+    <section class="apps-header">
+      <div class="apps-header__intro">
+        <h2 class="apps-header__title">Applications</h2>
+        <p class="apps-header__description">
           Add manual apps or connect Playnite to keep your library ready for streaming.
+          <span v-if="apps && apps.length" class="apps-header__count">
+            <span aria-hidden="true">•</span>
+            {{ apps.length }} {{ apps.length === 1 ? 'app' : 'apps' }}
+          </span>
         </p>
       </div>
 
-      <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:gap-4">
-        <!-- Windows + Playnite secondary action -->
+      <div class="apps-header__actions">
         <template v-if="isWindows">
           <n-button
             v-if="playniteEnabled"
             size="medium"
             type="default"
             strong
-            class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-3"
             :loading="syncBusy"
             :disabled="syncBusy"
-            @click="forceSync"
+            class="apps-header__action"
             aria-label="Force sync now"
+            @click="forceSync"
           >
-            <svg
-              class="mr-2 inline-block h-4 w-4 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.6"
-                d="M21 12a9 9 0 11-3.2-6.6M21 3v6h-6"
-              />
-            </svg>
-            <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
-              <span>{{ $t('playnite.force_sync') || 'Force Sync' }}</span>
-              <span class="text-[11px] opacity-60 sm:hidden">Refresh imported titles</span>
-            </span>
+            <i class="fas fa-rotate-right" />
+            <span>{{ $t('playnite.force_sync') || 'Force Sync' }}</span>
           </n-button>
 
-          <!-- Setup Playnite when disabled -->
           <n-button
             v-else
             size="medium"
             type="default"
             strong
+            class="apps-header__action"
             @click="gotoPlaynite"
-            class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-3"
           >
-            <svg
-              class="mr-2 inline-block h-4 w-4 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.6"
-                d="M12 3v3m0 12v3m9-9h-3M6 12H3m13.95 5.657l-2.121-2.121M8.172 8.172 6.05 6.05m11.9 0-2.121 2.121M8.172 15.828 6.05 17.95"
-              />
-            </svg>
-            <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
-              <span class="sm:hidden">Connect Playnite</span>
-              <span class="hidden sm:inline">{{
-                $t('playnite.setup_integration') || 'Setup Playnite'
-              }}</span>
-              <span class="text-[11px] opacity-60 sm:hidden">Import and manage your library</span>
-            </span>
+            <i class="fas fa-puzzle-piece" />
+            <span>{{ $t('playnite.setup_integration') || 'Connect Playnite' }}</span>
           </n-button>
         </template>
 
-        <!-- Primary: Add -->
         <n-button
           type="primary"
           size="medium"
           strong
-          class="h-11 justify-start rounded-xl px-4 text-left sm:h-10 sm:justify-center sm:rounded-md sm:px-4"
+          class="apps-header__action apps-header__action--primary"
           @click="openAdd"
         >
-          <svg
-            class="mr-2 inline-block h-4 w-4 shrink-0"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.6"
-              d="M12 5v14M5 12h14"
-            />
-          </svg>
-          <span class="inline-flex flex-col items-start leading-tight sm:flex-row sm:items-center">
-            <span class="sm:hidden">Add Application</span>
-            <span class="hidden sm:inline">Add</span>
-            <span class="text-[11px] opacity-80 sm:hidden">Create a manual entry</span>
-          </span>
+          <i class="fas fa-plus" />
+          <span>Add Application</span>
         </n-button>
       </div>
-    </div>
+    </section>
 
-    <!-- Redesigned list view -->
-    <div
-      class="rounded-2xl overflow-hidden border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-surface/80 backdrop-blur"
-    >
-      <div v-if="apps && apps.length" class="divide-y divide-black/5 dark:divide-white/10">
+    <!-- List card -->
+    <section class="apps-list-card">
+      <div v-if="apps && apps.length" class="apps-list">
         <button
           v-for="(app, i) in apps"
           :key="appKey(app, i)"
           type="button"
-          class="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          class="apps-row"
           @click="openEdit(app, i)"
           @keydown.enter.prevent="openEdit(app, i)"
           @keydown.space.prevent="openEdit(app, i)"
         >
-          <div
-            class="flex items-center justify-between px-6 py-4 min-h-[56px] hover:bg-dark/10 dark:hover:bg-light/10"
-          >
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-semibold truncate flex items-center gap-2">
-                <span class="truncate">{{ app.name || '(untitled)' }}</span>
-                <!-- Playnite or Custom badges -->
-                <template v-if="app['playnite-id']">
-                  <n-tag
-                    size="small"
-                    class="!px-2 !py-0.5 text-xs bg-slate-700 border-none text-slate-200"
-                    >Playnite</n-tag
-                  >
-                  <span v-if="app['playnite-managed'] === 'manual'" class="text-[10px] opacity-70"
-                    >manual</span
-                  >
-                  <span v-else-if="app['playnite-source']" class="text-[10px] opacity-70">{{
-                    String(app['playnite-source']).split('+').join(' + ')
-                  }}</span>
-                  <span v-else class="text-[10px] opacity-70">managed</span>
-                </template>
-                <template v-else>
-                  <n-tag
-                    size="small"
-                    class="!px-2 !py-0.5 text-xs bg-slate-700/70 border-none text-slate-200"
-                    >Custom</n-tag
-                  >
-                </template>
-              </div>
-              <div class="mt-0.5 text-[11px] opacity-60 truncate" v-if="app['working-dir']">
-                {{ app['working-dir'] }}
-              </div>
+          <div class="apps-row__main">
+            <div class="apps-row__title-line">
+              <span class="apps-row__title">{{ app.name || '(untitled)' }}</span>
+              <span v-if="app['playnite-id']" class="apps-row__badge apps-row__badge--playnite">
+                Playnite
+                <span v-if="playniteSourceLabel(app)" class="apps-row__badge-detail">
+                  · {{ playniteSourceLabel(app) }}
+                </span>
+              </span>
+              <span v-else class="apps-row__badge apps-row__badge--custom">Custom</span>
             </div>
-            <div class="shrink-0 text-dark/50 dark:text-light/70">
-              <svg
-                class="w-4 h-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                aria-hidden
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="1.6"
-                  d="M9 6l6 6-6 6"
-                />
-              </svg>
+            <div v-if="appSubtitle(app)" class="apps-row__subtitle" :title="appSubtitle(app)">
+              {{ appSubtitle(app) }}
             </div>
           </div>
+
+          <i class="fas fa-chevron-right apps-row__chevron" aria-hidden="true" />
         </button>
       </div>
-      <div v-else class="px-6 py-10 text-center text-sm opacity-60">
-        No applications configured.
+
+      <div v-else class="apps-empty">
+        <div class="apps-empty__icon">
+          <i class="fas fa-th-large" aria-hidden="true" />
+        </div>
+        <h3 class="apps-empty__title">No applications yet</h3>
+        <p class="apps-empty__description">
+          Add your first application to start streaming, or connect Playnite to import your
+          library automatically.
+        </p>
+        <div class="apps-empty__actions">
+          <n-button type="primary" size="medium" strong @click="openAdd">
+            <i class="fas fa-plus" />
+            <span>Add Application</span>
+          </n-button>
+          <n-button
+            v-if="isWindows && !playniteEnabled"
+            size="medium"
+            type="default"
+            @click="gotoPlaynite"
+          >
+            <i class="fas fa-puzzle-piece" />
+            <span>{{ $t('playnite.setup_integration') || 'Connect Playnite' }}</span>
+          </n-button>
+        </div>
       </div>
-    </div>
+    </section>
 
     <AppEditModal
       v-model="showModal"
@@ -192,24 +129,20 @@
       @saved="reload"
       @deleted="reload"
     />
-    <!-- Playnite integration removed for now -->
   </div>
 </template>
+
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, defineAsyncComponent } from 'vue';
-// Lazy-load the modal when first opened
+import { ref, onMounted, computed, defineAsyncComponent } from 'vue';
 const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
-import { NButton, NTag } from 'naive-ui';
+import { NButton } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import type { App } from '@/stores/apps';
-
-// Minimal shape used for rendering items returned by the backend
-// Use shared App type from store for consistency
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
@@ -246,9 +179,26 @@ function openEdit(app: App, i: number): void {
   currentIndex.value = i;
   showModal.value = true;
 }
+
 function appKey(app: App | null | undefined, index: number) {
   const id = app?.uuid || '';
   return `${app?.name || 'app'}|${id}|${index}`;
+}
+
+function appSubtitle(app: App): string {
+  const wd = (app['working-dir'] || '').toString().trim();
+  if (wd) return wd;
+  const cmd = app.cmd;
+  if (Array.isArray(cmd)) return cmd.filter((v) => typeof v === 'string').join(' ');
+  if (typeof cmd === 'string') return cmd;
+  return '';
+}
+
+function playniteSourceLabel(app: App): string {
+  if (app['playnite-managed'] === 'manual') return 'manual';
+  const src = app['playnite-source'];
+  if (typeof src === 'string' && src.length > 0) return src.split('+').join(' + ');
+  return 'managed';
 }
 
 async function forceSync(): Promise<void> {
@@ -271,7 +221,6 @@ function gotoPlaynite(): void {
 }
 
 async function fetchPlayniteStatus(): Promise<void> {
-  // Only attempt when authenticated; http layer blocks otherwise
   if (!auth.isAuthenticated) return;
   try {
     const r = await http.get('/api/playnite/status', { validateStatus: () => true });
@@ -294,52 +243,329 @@ async function fetchPlayniteStatus(): Promise<void> {
 }
 
 onMounted(async () => {
-  // Ensure metadata/config present for platform + playnite detection
   try {
     await configStore.fetchConfig?.();
   } catch {}
-  // Defer Playnite status until authenticated to avoid 401/canceled requests
   if (auth.isAuthenticated) {
     void fetchPlayniteStatus();
   } else {
-    playniteStatusReady.value = false; // not ready yet
+    playniteStatusReady.value = false;
   }
-  // Also load apps list (safe if already loaded by bootstrap)
   try {
     await appsStore.loadApps(true);
   } catch {}
 });
 
-// When user logs in while this view is mounted, refresh Playnite status
 auth.onLogin(() => {
   playniteStatusReady.value = false;
   void fetchPlayniteStatus();
 });
 </script>
+
 <style scoped>
-.main-btn {
+.applications-page {
+  width: 100%;
+}
+
+/* ---------- Header ---------- */
+.apps-header {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 1.125rem;
+  border-radius: 1rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.8);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.dark .apps-header {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+@media (min-width: 768px) {
+  .apps-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.5rem;
+    gap: 1.5rem;
+  }
+}
+
+.apps-header__intro {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.apps-header__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  line-height: 1.2;
+}
+
+@media (min-width: 768px) {
+  .apps-header__title {
+    font-size: 1.5rem;
+  }
+}
+
+.apps-header__description {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.apps-header__count {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(253, 184, 19, 0.9);
-  color: #212121;
-  font-size: 11px;
+  gap: 0.4rem;
   font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 6px;
+  opacity: 0.85;
+  margin-left: 0.25rem;
 }
 
-.main-btn:hover {
-  background: #fdb813;
+.apps-header__actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  flex-shrink: 0;
 }
 
-.dark .main-btn {
-  background: rgba(77, 163, 255, 0.85);
-  color: #050b1e;
+@media (min-width: 480px) {
+  .apps-header__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-.dark .main-btn:hover {
-  background: #4da3ff;
+@media (min-width: 768px) {
+  .apps-header__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
 }
-/* Row chevron styling adapts via text color set inline */
+
+.apps-header__action {
+  width: 100%;
+  justify-content: center;
+}
+
+@media (min-width: 768px) {
+  .apps-header__action {
+    width: auto;
+  }
+}
+
+/* ---------- List card ---------- */
+.apps-list-card {
+  border-radius: 1rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  background: rgb(var(--color-light) / 0.8);
+  backdrop-filter: blur(6px);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.dark .apps-list-card {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-surface) / 0.74);
+}
+
+.apps-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.apps-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid rgb(var(--color-dark) / 0.06);
+  cursor: pointer;
+  transition: background 0.12s ease;
+  color: inherit;
+  min-height: 3.25rem;
+}
+
+.dark .apps-row {
+  border-top-color: rgb(var(--color-light) / 0.08);
+}
+
+.apps-row:first-child {
+  border-top: 0;
+}
+
+.apps-row:hover {
+  background: rgb(var(--color-dark) / 0.04);
+}
+
+.dark .apps-row:hover {
+  background: rgb(var(--color-light) / 0.06);
+}
+
+.apps-row:focus-visible {
+  outline: 2px solid rgb(var(--color-primary) / 0.45);
+  outline-offset: -2px;
+  background: rgb(var(--color-dark) / 0.04);
+}
+
+.dark .apps-row:focus-visible {
+  background: rgb(var(--color-light) / 0.06);
+}
+
+@media (min-width: 640px) {
+  .apps-row {
+    padding: 0.625rem 1.25rem;
+  }
+}
+
+/* Main text column */
+.apps-row__main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.apps-row__title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.apps-row__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.apps-row__subtitle {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  opacity: 0.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Badges */
+.apps-row__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.apps-row__badge-detail {
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.apps-row__badge--playnite {
+  color: rgb(var(--color-primary));
+  background: rgb(var(--color-primary) / 0.12);
+}
+
+.dark .apps-row__badge--playnite {
+  background: rgb(var(--color-primary) / 0.18);
+}
+
+.apps-row__badge--custom {
+  color: rgb(var(--color-dark));
+  background: rgb(var(--color-dark) / 0.08);
+  opacity: 0.75;
+}
+
+.dark .apps-row__badge--custom {
+  color: rgb(var(--color-light));
+  background: rgb(var(--color-light) / 0.08);
+}
+
+/* Chevron */
+.apps-row__chevron {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  opacity: 0.3;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+  margin-left: 0.25rem;
+}
+
+.apps-row:hover .apps-row__chevron,
+.apps-row:focus-visible .apps-row__chevron {
+  opacity: 0.7;
+  transform: translateX(2px);
+}
+
+/* ---------- Empty state ---------- */
+.apps-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 3rem 1.5rem;
+  gap: 0.75rem;
+}
+
+.apps-empty__icon {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  background: rgb(var(--color-primary) / 0.12);
+  color: rgb(var(--color-primary));
+  margin-bottom: 0.5rem;
+}
+
+.apps-empty__title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.apps-empty__description {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  opacity: 0.7;
+}
+
+.apps-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
 </style>
