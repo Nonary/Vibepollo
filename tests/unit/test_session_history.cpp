@@ -20,10 +20,8 @@ namespace {
 
   std::filesystem::path
     make_temp_db_path(const char *label) {
-    auto dir = std::filesystem::temp_directory_path() / "vibepollo-tests";
-    std::filesystem::create_directories(dir);
     auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto path = dir / (std::string(label) + "-" + std::to_string(stamp) + ".sqlite");
+    auto path = std::filesystem::path("vibepollo-tests-" + std::string(label) + "-" + std::to_string(stamp) + ".sqlite");
     std::error_code ec;
     std::filesystem::remove(path, ec);
     return path;
@@ -57,10 +55,11 @@ namespace {
     m.width = 1920;
     m.height = 1080;
     m.target_fps = 60;
-    m.target_bitrate_kbps = 20000;
-    m.target_requested_bitrate_kbps = 25000;
+    m.encoder_bitrate_kbps = 20000;
+    m.requested_bitrate_kbps = 25000;
     m.codec = "h264";
     m.hdr = false;
+    m.yuv444 = false;
     m.audio_channels = 2;
     m.host_cpu_model = "TestCPU";
     m.host_gpu_model = "TestGPU";
@@ -124,8 +123,8 @@ TEST(SessionHistory, BeginEndPersists) {
   ASSERT_TRUE(detail.has_value());
   EXPECT_EQ(detail->summary.uuid, uuid);
   EXPECT_EQ(detail->summary.app_name, "Solitaire");
-  EXPECT_EQ(detail->summary.target_bitrate_kbps, 20000);
-  EXPECT_EQ(detail->summary.target_requested_bitrate_kbps, 25000);
+  EXPECT_EQ(detail->summary.encoder_bitrate_kbps, 20000);
+  EXPECT_EQ(detail->summary.requested_bitrate_kbps, 25000);
   EXPECT_EQ(detail->summary.codec, "h264");
   EXPECT_EQ(detail->summary.host_cpu_model, "TestCPU");
   EXPECT_EQ(detail->summary.host_gpu_model, "TestGPU");
@@ -193,7 +192,7 @@ TEST(SessionHistory, DeleteRemovesSessionAndChildren) {
     return session_history::get_session_detail(uuid).has_value();
   }));
 
-  EXPECT_TRUE(session_history::delete_session(uuid));
+  EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::deleted);
 
   // After delete, detail and list must no longer contain the uuid.
   auto detail = session_history::get_session_detail(uuid);
@@ -217,7 +216,7 @@ TEST(SessionHistory, DeleteFlushesQueuedWritesBeforeReturning) {
 
   // delete_session() should wait for the writer thread to process the queued
   // lifecycle mutations and commit the delete before returning.
-  EXPECT_TRUE(session_history::delete_session(uuid));
+  EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::deleted);
 
   EXPECT_FALSE(session_history::get_session_detail(uuid).has_value());
   auto rows = session_history::list_sessions(50, 0);
@@ -256,5 +255,5 @@ TEST(SessionHistory, GetSessionDetailMissingReturnsEmpty) {
 
   // delete_session() on an unknown uuid must not throw and should
   // report no rows affected.
-  EXPECT_FALSE(session_history::delete_session("also-not-there"));
+  EXPECT_EQ(session_history::delete_session("also-not-there"), session_history::delete_result_e::not_found);
 }
