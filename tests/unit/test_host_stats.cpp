@@ -94,3 +94,21 @@ TEST(HostStatsSingleton, DoubleStartIsHarmless) {
   // explode.
   SUCCEED();
 }
+
+TEST(HostStatsSingleton, SecondGuardResetDoesNotStopFirstOwner) {
+  auto first = host_stats::start();
+  if (!first) {
+    GTEST_SKIP() << "no host_stats provider on this platform";
+  }
+
+  EXPECT_TRUE(host_stats::is_running_for_tests());
+
+  auto second = host_stats::start();
+  ASSERT_TRUE(second);
+  second.reset();
+
+  EXPECT_TRUE(host_stats::is_running_for_tests());
+
+  first.reset();
+  EXPECT_FALSE(host_stats::is_running_for_tests());
+}

@@ -131,4 +131,12 @@ namespace host_stats {
     return g_info;
   }
 
+#ifdef SUNSHINE_TESTS
+  bool
+    is_running_for_tests() {
+    std::lock_guard<std::mutex> state_lk(g_state_mutex);
+    return static_cast<bool>(g_provider);
+  }
+#endif
+
 }  // namespace host_stats

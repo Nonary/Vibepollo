@@ -41,4 +41,9 @@ namespace host_stats {
   const platf::host_info_t &
     info();
 
+#ifdef SUNSHINE_TESTS
+  bool
+    is_running_for_tests();
+#endif
+
 }  // namespace host_stats

@@ -181,7 +181,7 @@ The existing double-start unit test only checks that the second start does not c
 
 Protect start/stop with a mutex and return `nullptr` or a true no-op guard on double start. Another safe option is a generation token so only the guard that actually started the sampler can stop it. Add a regression test that destroys the second guard and verifies the sampler remains owned by the first guard.
 
-**Status (2026-05-10):** **Done for the runtime fix.** `src/host_stats.cpp` now uses generation-based ownership so only the real starter can stop the sampler. The related regression test is still desirable, but the current build tree exposes no registered native tests.
+**Status (2026-05-10):** **Done.** `src/host_stats.cpp` now uses generation-based ownership so only the real starter can stop the sampler, and `tests/unit/test_host_stats.cpp` now covers the regression where destroying the second `start()` guard must not stop the first owner's sampler.
 
 ### 9. Medium: network throughput can spike after interface reset or interface change
 
