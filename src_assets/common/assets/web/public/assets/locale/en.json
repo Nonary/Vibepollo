@@ -1187,5 +1187,32 @@
     },
     "noticeTitle": "RTSS recommended",
     "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing."
+  },
+  "changelog": {
+    "nav": "Changelog",
+    "title": "Changelog",
+    "description": "Release notes for this installed Vibepollo build ({version}) and nearby releases.",
+    "installed": "Installed",
+    "latest_available": "Latest available",
+    "bundled_only": "Bundled notes only",
+    "filter_current": "Current version",
+    "filter_line": "Current release line",
+    "filter_all": "All releases",
+    "github_error": "Could not reach GitHub releases. Showing bundled release notes only.",
+    "release_count": "{count} releases",
+    "no_releases": "No release notes found.",
+    "current_badge": "Installed",
+    "latest_badge": "Latest",
+    "channel_stable": "Stable",
+    "channel_alpha": "Alpha",
+    "channel_beta": "Beta",
+    "channel_rc": "Release candidate",
+    "channel_other": "Prerelease",
+    "source_github": "GitHub",
+    "source_bundled": "Bundled",
+    "open_github": "Open GitHub release",
+    "all_releases_title": "All releases",
+    "release_line_title": "Release line {line}",
+    "current_version_title": "Current version {version}"
   }
 }
