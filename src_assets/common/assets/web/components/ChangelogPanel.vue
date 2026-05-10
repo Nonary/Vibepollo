@@ -1,5 +1,5 @@
 <template>
-  <div class="changelog-page space-y-5">
+  <div class="changelog-panel space-y-5">
     <section class="rounded-xl border border-dark/10 bg-light/70 p-4 shadow-sm backdrop-blur dark:border-light/10 dark:bg-surface/70 sm:p-5">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div class="min-w-0">
@@ -188,7 +188,7 @@ onMounted(() => {
 
 <style scoped>
 .changelog-list-card :deep(.n-card__content) {
-  max-height: calc(100vh - 17rem);
+  max-height: min(38rem, calc(100vh - 17rem));
   overflow: auto;
 }
 

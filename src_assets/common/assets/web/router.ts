@@ -9,15 +9,14 @@ const SettingsView = () => import('@/views/SettingsView.vue');
 const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
 const ClientManagementView = () => import('@/views/ClientManagementView.vue');
 const WebRtcClientView = () => import('@/views/WebRtcClientView.vue');
-const ChangelogView = () => import('@/views/ChangelogView.vue');
 
 const routes = [
-  { path: '/', component: DashboardView },
+  { path: '/', component: DashboardView, meta: { container: 'xl' } },
   { path: '/applications', component: ApplicationsView },
   { path: '/settings', component: SettingsView, meta: { container: 'lg' } },
-  { path: '/logs', component: DashboardView },
+  { path: '/logs', component: DashboardView, meta: { container: 'xl' } },
   { path: '/troubleshooting', component: TroubleshootingView },
-  { path: '/changelog', component: ChangelogView, meta: { container: 'xl' } },
+  { path: '/changelog', redirect: '/' },
   { path: '/clients', component: ClientManagementView },
   { path: '/webrtc', component: WebRtcClientView, meta: { container: 'full' } },
 ];

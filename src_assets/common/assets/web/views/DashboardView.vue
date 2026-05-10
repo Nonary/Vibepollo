@@ -464,6 +464,11 @@
           </div>
         </n-card>
       </div>
+
+      <!-- Changelog -->
+      <div class="min-w-0">
+        <ChangelogPanel />
+      </div>
     </div>
   </div>
 </template>
@@ -473,6 +478,7 @@ import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NCard, NAlert, useMessage, useDialog } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
+import ChangelogPanel from '@/components/ChangelogPanel.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';
 import { useConfigStore } from '@/stores/config';

@@ -37,9 +37,6 @@
                   <RouterLink to="/troubleshooting" :class="linkClass('/troubleshooting')">
                     <i class="fas fa-bug" /><span>{{ $t('navbar.troubleshoot') }}</span>
                   </RouterLink>
-                  <RouterLink to="/changelog" :class="linkClass('/changelog')">
-                    <i class="fas fa-list-ul" /><span>{{ $t('changelog.nav') }}</span>
-                  </RouterLink>
                   <a href="#" :class="linkClass('/logout')" @click.prevent="logout">
                     <i class="fas fa-sign-out-alt" /><span>{{ $t('navbar.logout') }}</span>
                   </a>
@@ -186,7 +183,6 @@ watch(
       '/settings': 'navbar.configuration',
       '/logs': 'navbar.troubleshoot',
       '/troubleshooting': 'navbar.troubleshoot',
-      '/changelog': 'changelog.nav',
       '/clients': 'clients.nav',
       '/webrtc': 'webrtc.nav',
     };
@@ -247,7 +243,6 @@ const mobileMenuOptions = computed(() => {
     { label: t('webrtc.nav'), key: '/webrtc', icon: icon('fas fa-satellite-dish') },
     { label: t('navbar.configuration'), key: '/settings', icon: icon('fas fa-sliders') },
     { label: t('navbar.troubleshoot'), key: '/troubleshooting', icon: icon('fas fa-bug') },
-    { label: t('changelog.nav'), key: '/changelog', icon: icon('fas fa-list-ul') },
     { type: 'divider' as const },
     { label: t('navbar.logout'), key: '__logout', icon: icon('fas fa-sign-out-alt') },
   ];

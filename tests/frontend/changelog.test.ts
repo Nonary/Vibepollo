@@ -74,14 +74,23 @@ describe('changelog utilities', () => {
     expect(merged[0]?.url).toContain('github.com/Nonary/Vibepollo');
   });
 
-  test('sorts stable respins after their base release within the same core', () => {
+  test('sorts stable respins before their base release within the same core', () => {
     const sorted = sortChangelogEntries([
       entry('1.15.4-stable.2'),
       entry('1.15.5-alpha.1'),
       entry('1.15.4'),
       entry('1.15.4-stable.1'),
+      entry('1.15.4-beta.1'),
+      entry('1.15.4-stable.3'),
     ]).map((release) => release.tag);
 
-    expect(sorted).toEqual(['1.15.5-alpha.1', '1.15.4', '1.15.4-stable.1', '1.15.4-stable.2']);
+    expect(sorted).toEqual([
+      '1.15.5-alpha.1',
+      '1.15.4-stable.3',
+      '1.15.4-stable.2',
+      '1.15.4-stable.1',
+      '1.15.4',
+      '1.15.4-beta.1',
+    ]);
   });
 });

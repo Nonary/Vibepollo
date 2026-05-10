@@ -133,27 +133,11 @@ export function compareChangelogTags(aTag: string, bTag: string): number {
   return compareIdentifiers(a.preRelease, b.preRelease);
 }
 
-function stableRespinIndex(entry: Pick<ChangelogEntry, 'tag'>): number {
-  const info = parseChangelogVersion(entry.tag);
-  const first = String(info.preRelease[0] ?? '').toLowerCase();
-  if (info.preRelease.length === 0) return 0;
-  if (first === 'stable') {
-    const id = info.preRelease[1];
-    return typeof id === 'number' ? id : 1;
-  }
-  return -1;
-}
-
 export function sortChangelogEntries(entries: ChangelogEntry[]): ChangelogEntry[] {
   return [...entries].sort((a, b) => {
     const aInfo = parseChangelogVersion(a.tag);
     const bInfo = parseChangelogVersion(b.tag);
     if (aInfo.coreVersion === bInfo.coreVersion) {
-      const aStableOrder = stableRespinIndex(a);
-      const bStableOrder = stableRespinIndex(b);
-      if (aStableOrder >= 0 && bStableOrder >= 0 && aStableOrder !== bStableOrder) {
-        return aStableOrder - bStableOrder;
-      }
       return -compareChangelogTags(a.tag, b.tag);
     }
     const cmp = compareChangelogTags(a.tag, b.tag);
