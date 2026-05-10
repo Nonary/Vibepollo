@@ -5,17 +5,22 @@
  * This standalone executable provides Windows Graphics Capture functionality
  * for the main Sunshine streaming process. It runs as a separate process to
  * isolate WGC operations and handle secure desktop scenarios. The helper
- * communicates with the main process via named pipes and shared D3D11 textures.
+ * communicates with the main process via a control pipe, shared D3D11 texture,
+ * shared frame metadata, and a frame-ready event.
  */
 
 #define WIN32_LEAN_AND_MEAN
 
 // standard includes
 #include <atomic>
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -124,7 +129,9 @@ const int INITIAL_LOG_LEVEL = 2;
 /**
  * @brief Global configuration data received from the main process.
  */
-static platf::dxgi::config_data_t g_config = {0, 0, L"", {0, 0}};
+static platf::dxgi::config_data_t g_config = {0, 0, L"", {0, 0}, 10000, 60, 2, 2, 0};
+static std::mutex g_config_mutex;
+static std::condition_variable g_config_cv;
 
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
@@ -769,14 +776,17 @@ public:
  * @brief Shared resource management class to handle texture, memory mapping, and events.
  *
  * This class manages shared D3D11 resources for inter-process communication with the main
- * Sunshine process. It creates shared textures with keyed mutexes for synchronization
- * and provides handles for cross-process resource sharing.
+ * Sunshine process. It creates a shared texture with a keyed mutex plus a shared metadata
+ * view and frame-ready event for realtime cross-process delivery.
  */
 class SharedResourceManager {
 private:
   winrt::com_ptr<ID3D11Texture2D> _shared_texture;  ///< Shared D3D11 texture for frame data
   winrt::com_ptr<IDXGIKeyedMutex> _keyed_mutex;  ///< Keyed mutex for synchronization
   winrt::handle _shared_handle;  ///< Shared handle for cross-process sharing
+  winrt::handle _frame_ready_event;  ///< Auto-reset event signaled after each published frame
+  winrt::handle _frame_metadata_mapping;  ///< Shared memory containing latest frame metadata
+  platf::dxgi::frame_metadata_t *_frame_metadata = nullptr;  ///< Mapped frame metadata view
   UINT _width = 0;  ///< Texture width in pixels
   UINT _height = 0;  ///< Texture height in pixels
 
@@ -882,6 +892,44 @@ public:
     return true;
   }
 
+  bool create_frame_signal() {
+    _frame_ready_event = winrt::handle(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (!_frame_ready_event) {
+      BOOST_LOG(error) << "Failed to create frame-ready event: " << GetLastError();
+      return false;
+    }
+
+    _frame_metadata_mapping = winrt::handle(CreateFileMappingW(
+      INVALID_HANDLE_VALUE,
+      nullptr,
+      PAGE_READWRITE,
+      0,
+      static_cast<DWORD>(sizeof(platf::dxgi::frame_metadata_t)),
+      nullptr
+    ));
+    if (!_frame_metadata_mapping) {
+      BOOST_LOG(error) << "Failed to create frame metadata mapping: " << GetLastError();
+      return false;
+    }
+
+    _frame_metadata = static_cast<platf::dxgi::frame_metadata_t *>(MapViewOfFile(
+      _frame_metadata_mapping.get(),
+      FILE_MAP_READ | FILE_MAP_WRITE,
+      0,
+      0,
+      sizeof(platf::dxgi::frame_metadata_t)
+    ));
+    if (!_frame_metadata) {
+      BOOST_LOG(error) << "Failed to map frame metadata view: " << GetLastError();
+      return false;
+    }
+
+    _frame_metadata->sequence = 0;
+    _frame_metadata->frame_id = 0;
+    _frame_metadata->frame_qpc = 0;
+    return true;
+  }
+
   /**
    * @brief Initializes all shared resource components: texture, keyed mutex, and handle.
    *
@@ -894,7 +942,8 @@ public:
   bool initialize_all(const winrt::com_ptr<ID3D11Device> &device, UINT texture_width, UINT texture_height, DXGI_FORMAT format) {
     return create_shared_texture(device, texture_width, texture_height, format) &&
            create_keyed_mutex() &&
-           create_shared_handle();
+           create_shared_handle() &&
+           create_frame_signal();
   }
 
   /**
@@ -904,9 +953,30 @@ public:
   platf::dxgi::shared_handle_data_t get_shared_handle_data() const {
     platf::dxgi::shared_handle_data_t data = {};
     data.texture_handle = const_cast<HANDLE>(_shared_handle.get());
+    data.frame_event_handle = const_cast<HANDLE>(_frame_ready_event.get());
+    data.frame_metadata_handle = const_cast<HANDLE>(_frame_metadata_mapping.get());
     data.width = _width;
     data.height = _height;
     return data;
+  }
+
+  void publish_frame_metadata(uint64_t frame_qpc) {
+    if (!_frame_metadata) {
+      return;
+    }
+
+    InterlockedIncrement64(&_frame_metadata->sequence);
+    InterlockedExchange64(&_frame_metadata->frame_qpc, static_cast<LONG64>(frame_qpc));
+    InterlockedIncrement64(&_frame_metadata->frame_id);
+    InterlockedIncrement64(&_frame_metadata->sequence);
+  }
+
+  void signal_frame_ready() {
+    if (!_frame_ready_event) {
+      return;
+    }
+
+    SetEvent(_frame_ready_event.get());
   }
 
   /**
@@ -929,7 +999,12 @@ public:
    * @brief Destructor for SharedResourceManager.
    * Uses RAII to automatically dispose resources
    */
-  ~SharedResourceManager() = default;
+  ~SharedResourceManager() {
+    if (_frame_metadata) {
+      UnmapViewOfFile(_frame_metadata);
+      _frame_metadata = nullptr;
+    }
+  }
 };
 
 /**
@@ -940,7 +1015,7 @@ public:
  * - Capture session lifecycle management
  * - Frame arrival event handling and processing
  * - Frame rate optimization and adaptive buffering
- * - Integration with shared texture resources for inter-process communication
+ * - Integration with shared texture resources and event signaling for inter-process communication
  */
 struct WgcCaptureDependencies {
   // Required devices/resources
@@ -948,25 +1023,62 @@ struct WgcCaptureDependencies {
   GraphicsCaptureItem graphics_item;  // Target capture item
   SharedResourceManager &resource_manager;  // Shared inter-process texture/mutex manager
   winrt::com_ptr<ID3D11DeviceContext> d3d_context;  // D3D11 context for copies
-  INamedPipe &pipe;  // IPC pipe for frame-ready
 };
 
 class WgcCaptureManager {
 private:
+  enum class scratch_state_e {
+    free,
+    reserved,
+    pending,
+    delivering
+  };
+
+  struct scratch_texture_t {
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    scratch_state_e state = scratch_state_e::free;
+  };
+
+  struct delivery_frame_t {
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    size_t scratch_index = 0;
+    uint64_t frame_qpc = 0;
+  };
+
   std::atomic<bool> _shutting_down {false};
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
   winrt::event_token _frame_arrived_token {};  ///< Event token for frame arrival notifications
   std::optional<WgcCaptureDependencies> _deps;  ///< Dependencies for frame processing
 
+  uint32_t _initial_buffer_size = 1;  ///< Minimum steady-state frame buffer size for this stream
   uint32_t _current_buffer_size = 1;  ///< Current frame buffer size for dynamic adjustment
-  static constexpr uint32_t MAX_BUFFER_SIZE = 4;  ///< Maximum allowed buffer size
+  uint32_t _max_buffer_size = 4;  ///< Maximum allowed buffer size for adaptive growth
+  static constexpr uint32_t ABSOLUTE_MAX_BUFFER_SIZE = 4;  ///< Hard cap to bound latency/VRAM
 
   std::deque<std::chrono::steady_clock::time_point> _drop_timestamps;  ///< Timestamps of recent frame drops for analysis
   std::atomic<int> _outstanding_frames {0};  ///< Number of frames currently being processed
   std::atomic<int> _peak_outstanding {0};  ///< Peak number of outstanding frames (for monitoring)
   std::chrono::steady_clock::time_point _last_quiet_start = std::chrono::steady_clock::now();  ///< Last time frame processing became quiet
   std::chrono::steady_clock::time_point _last_buffer_check = std::chrono::steady_clock::now();  ///< Last time buffer size was checked
+  std::mutex _stats_mutex;
+  std::optional<std::chrono::steady_clock::time_point> _last_arrival_time;
+  uint64_t _last_arrival_frame_qpc = 0;
+  std::atomic<uint64_t> _frame_arrival_count {0};
+  std::atomic<uint64_t> _drained_pool_frames {0};
+  std::atomic<uint64_t> _slow_mutex_waits {0};
+  std::atomic<uint64_t> _slow_copy_submissions {0};
+  std::atomic<uint64_t> _published_frames {0};
+  std::mutex _delivery_mutex;
+  std::condition_variable _delivery_cv;
+  std::jthread _delivery_thread;
+  std::optional<delivery_frame_t> _pending_delivery_frame;
+  bool _delivery_stop = false;
+  std::mutex _d3d_context_mutex;
+  std::array<scratch_texture_t, 3> _scratch_textures;
+  std::atomic<uint64_t> _delivery_backpressure_waits {0};
+  std::atomic<uint64_t> _delivery_replaced_frames {0};
+  std::atomic<uint64_t> _scratch_dropped_frames {0};
   DXGI_FORMAT _capture_format = DXGI_FORMAT_UNKNOWN;  ///< DXGI format for captured frames
   UINT _height = 0;  ///< Capture height in pixels
   UINT _width = 0;  ///< Capture width in pixels
@@ -982,13 +1094,28 @@ public:
    * @param width Capture width in pixels.
    * @param height Capture height in pixels.
    * @param deps Bundle of dependencies: winrt IDirect3DDevice, GraphicsCaptureItem,
-   *             reference to SharedResourceManager, D3D11 context com_ptr, and INamedPipe reference.
+   *             reference to SharedResourceManager and D3D11 context com_ptr.
    */
   WgcCaptureManager(DXGI_FORMAT capture_format, UINT width, UINT height, WgcCaptureDependencies deps):
       _deps(std::move(deps)),
       _capture_format(capture_format),
       _height(height),
       _width(width) {
+    _max_buffer_size = std::clamp<uint32_t>(
+      g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : ABSOLUTE_MAX_BUFFER_SIZE,
+      1,
+      ABSOLUTE_MAX_BUFFER_SIZE
+    );
+    _initial_buffer_size = std::clamp<uint32_t>(
+      g_config.initial_frame_buffer_size ? g_config.initial_frame_buffer_size : 1,
+      1,
+      _max_buffer_size
+    );
+    _current_buffer_size = _initial_buffer_size;
+
+    _delivery_thread = std::jthread([this](std::stop_token stop_token) {
+      delivery_thread_proc(stop_token);
+    });
   }
 
   /**
@@ -1020,9 +1147,28 @@ public:
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+
+    stop_delivery_thread();
   }
 
 private:
+  void stop_delivery_thread() noexcept {
+    {
+      std::lock_guard lock(_delivery_mutex);
+      _delivery_stop = true;
+      _pending_delivery_frame.reset();
+      for (auto &scratch: _scratch_textures) {
+        scratch.state = scratch_state_e::free;
+      }
+    }
+
+    _delivery_cv.notify_all();
+    if (_delivery_thread.joinable()) {
+      _delivery_thread.request_stop();
+      _delivery_thread.join();
+    }
+  }
+
   void cleanup_capture_session() noexcept {
     try {
       if (_capture_session) {
@@ -1128,24 +1274,45 @@ public:
       BOOST_LOG(info) << "First FrameArrived callback invoked";
     }
 
-    if (auto frame = sender.TryGetNextFrame(); frame) {
-      // Frame successfully retrieved
-      auto surface = frame.Surface();
+    Direct3D11CaptureFrame frame = nullptr;
+    uint32_t drained_frames = 0;
 
-      try {
-        // Get frame timing information from the WGC frame
-        uint64_t frame_qpc = frame.SystemRelativeTime().count();
-        process_surface_to_texture(surface, frame_qpc);
-      } catch (const winrt::hresult_error &ex) {
-        // Log error
-        BOOST_LOG(error) << "WinRT error in frame processing: " << ex.code() << " - " << winrt::to_string(ex.message());
+    try {
+      if (drain_to_latest()) {
+        while (auto next_frame = sender.TryGetNextFrame()) {
+          if (frame) {
+            ++drained_frames;
+          }
+          frame = std::move(next_frame);
+        }
+      } else {
+        frame = sender.TryGetNextFrame();
       }
-    } else {
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(error) << "WinRT error retrieving WGC frame: " << ex.code() << " - " << winrt::to_string(ex.message());
+      return;
+    }
+
+    if (!frame) {
       // Frame drop detected - record timestamp for sliding window analysis
       auto now = std::chrono::steady_clock::now();
       _drop_timestamps.push_back(now);
 
       BOOST_LOG(info) << "Frame drop detected (total drops in 5s window: " << _drop_timestamps.size() << ")";
+    } else {
+      // Frame successfully retrieved
+      try {
+        const auto arrival_time = std::chrono::steady_clock::now();
+        auto surface = frame.Surface();
+
+        // Get frame timing information from the WGC frame
+        uint64_t frame_qpc = frame.SystemRelativeTime().count();
+        record_frame_arrival(frame_qpc, arrival_time, drained_frames);
+        queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+      } catch (const winrt::hresult_error &ex) {
+        // Log error
+        BOOST_LOG(error) << "WinRT error in frame processing: " << ex.code() << " - " << winrt::to_string(ex.message());
+      }
     }
 
     // Check if we need to adjust frame buffer size
@@ -1153,6 +1320,54 @@ public:
   }
 
 private:
+  bool drain_to_latest() const {
+    return (g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) != 0;
+  }
+
+  bool allow_buffer_decrease() const {
+    return (g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) != 0;
+  }
+
+  void record_frame_arrival(uint64_t frame_qpc, const std::chrono::steady_clock::time_point &arrival_time, uint32_t drained_frames) {
+    const auto count = _frame_arrival_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (drained_frames > 0) {
+      const auto total_drained = _drained_pool_frames.fetch_add(drained_frames, std::memory_order_relaxed) + drained_frames;
+      if (total_drained == drained_frames || total_drained % 300 == 0) {
+        BOOST_LOG(debug) << "WGC drained " << drained_frames << " queued frame(s) from frame pool"
+                         << " (total drained=" << total_drained << ")";
+      }
+    }
+
+    std::optional<double> arrival_delta_ms;
+    std::optional<int64_t> frame_qpc_delta;
+    {
+      std::lock_guard lock(_stats_mutex);
+      if (_last_arrival_time) {
+        arrival_delta_ms = std::chrono::duration<double, std::milli>(arrival_time - *_last_arrival_time).count();
+      }
+      if (_last_arrival_frame_qpc != 0 && frame_qpc >= _last_arrival_frame_qpc) {
+        frame_qpc_delta = static_cast<int64_t>(frame_qpc - _last_arrival_frame_qpc);
+      }
+      _last_arrival_time = arrival_time;
+      _last_arrival_frame_qpc = frame_qpc;
+    }
+
+    const double expected_frame_ms = 1000.0 / static_cast<double>(std::max(1, g_config.target_fps));
+    const double cadence_warning_ms = std::max(25.0, expected_frame_ms * 1.5);
+    if (count == 1 || count % 1200 == 0 || drained_frames > 0 ||
+        (arrival_delta_ms && *arrival_delta_ms > cadence_warning_ms)) {
+      BOOST_LOG(info) << "WGC frame cadence: count=" << count
+                      << " published=" << _published_frames.load(std::memory_order_relaxed)
+                      << " arrival_delta_ms=" << (arrival_delta_ms ? *arrival_delta_ms : 0.0)
+                      << " frame_qpc_delta=" << (frame_qpc_delta ? *frame_qpc_delta : 0)
+                      << " buffer=" << _current_buffer_size
+                      << " delivery_backpressure_waits=" << _delivery_backpressure_waits.load(std::memory_order_relaxed)
+                      << " delivery_replaced=" << _delivery_replaced_frames.load(std::memory_order_relaxed)
+                      << " scratch_dropped=" << _scratch_dropped_frames.load(std::memory_order_relaxed)
+                      << " drained_pool=" << _drained_pool_frames.load(std::memory_order_relaxed);
+    }
+  }
+
   /**
    * @brief Prunes old frame drop timestamps from the sliding window.
    * @param now Current timestamp for comparison.
@@ -1169,7 +1384,7 @@ private:
    * @return true if buffer was increased, false otherwise.
    */
   bool try_increase_buffer_size(const std::chrono::steady_clock::time_point &now) {
-    if (_drop_timestamps.size() >= 2 && _current_buffer_size < MAX_BUFFER_SIZE) {
+    if (_drop_timestamps.size() >= 2 && _current_buffer_size < _max_buffer_size) {
       uint32_t new_buffer_size = _current_buffer_size + 1;
       BOOST_LOG(info) << "Detected " << _drop_timestamps.size() << " frame drops in 5s window, increasing buffer from "
                       << _current_buffer_size << " to " << new_buffer_size;
@@ -1188,6 +1403,10 @@ private:
    * @return true if buffer was decreased, false otherwise.
    */
   bool try_decrease_buffer_size(const std::chrono::steady_clock::time_point &now) {
+    if (!allow_buffer_decrease()) {
+      return false;
+    }
+
     bool is_quiet = _drop_timestamps.empty() &&
                     _peak_outstanding.load() <= static_cast<int>(_current_buffer_size) - 1;
 
@@ -1197,7 +1416,7 @@ private:
     }
 
     // Check if we've been quiet for 30 seconds
-    if (now - _last_quiet_start >= std::chrono::seconds(30) && _current_buffer_size > 1) {
+    if (now - _last_quiet_start >= std::chrono::seconds(30) && _current_buffer_size > _initial_buffer_size) {
       uint32_t new_buffer_size = _current_buffer_size - 1;
       BOOST_LOG(info) << "Sustained quiet period (30s) with peak occupancy " << _peak_outstanding.load()
                       << " ≤ " << (_current_buffer_size - 1) << ", decreasing buffer from "
@@ -1211,12 +1430,131 @@ private:
     return false;
   }
 
+  bool ensure_scratch_texture(size_t index) {
+    if (!_deps || index >= _scratch_textures.size()) {
+      return false;
+    }
+
+    auto &scratch = _scratch_textures[index];
+    if (scratch.texture) {
+      return true;
+    }
+
+    winrt::com_ptr<ID3D11Device> device;
+    _deps->d3d_context->GetDevice(device.put());
+    if (!device) {
+      BOOST_LOG(error) << "Failed to get D3D11 device for WGC scratch texture";
+      return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = _width;
+    desc.Height = _height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = _capture_format;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, scratch.texture.put());
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "Failed to create WGC scratch texture: " << std::format(": 0x{:08X}", hr);
+      return false;
+    }
+
+    return true;
+  }
+
+  std::optional<size_t> reserve_scratch_texture() {
+    std::lock_guard lock(_delivery_mutex);
+
+    if (_delivery_stop || _shutting_down.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+
+    for (size_t i = 0; i < _scratch_textures.size(); ++i) {
+      if (_scratch_textures[i].state == scratch_state_e::free) {
+        _scratch_textures[i].state = scratch_state_e::reserved;
+        return i;
+      }
+    }
+
+    if (_pending_delivery_frame) {
+      const auto stale_index = _pending_delivery_frame->scratch_index;
+      if (stale_index >= _scratch_textures.size()) {
+        _pending_delivery_frame.reset();
+        return std::nullopt;
+      }
+
+      _pending_delivery_frame.reset();
+      _scratch_textures[stale_index].state = scratch_state_e::reserved;
+
+      const auto replaced = _delivery_replaced_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (replaced <= 5 || replaced % 120 == 0) {
+        BOOST_LOG(debug) << "WGC delivery replaced stale queued scratch frame"
+                         << " (count=" << replaced << ")";
+      }
+      return stale_index;
+    }
+
+    const auto dropped = _scratch_dropped_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (dropped <= 5 || dropped % 120 == 0) {
+      BOOST_LOG(debug) << "WGC scratch handoff had no free texture; dropping frame"
+                       << " (count=" << dropped << ")";
+    }
+    return std::nullopt;
+  }
+
+  void release_reserved_scratch_texture(size_t index) {
+    std::lock_guard lock(_delivery_mutex);
+    if (index < _scratch_textures.size() && _scratch_textures[index].state == scratch_state_e::reserved) {
+      _scratch_textures[index].state = scratch_state_e::free;
+    }
+  }
+
+  bool enqueue_scratch_texture(size_t index, uint64_t frame_qpc) {
+    std::lock_guard lock(_delivery_mutex);
+
+    if (index >= _scratch_textures.size() || !_scratch_textures[index].texture) {
+      return false;
+    }
+
+    if (_delivery_stop || _shutting_down.load(std::memory_order_acquire)) {
+      _scratch_textures[index].state = scratch_state_e::free;
+      return false;
+    }
+
+    if (_pending_delivery_frame) {
+      const auto stale_index = _pending_delivery_frame->scratch_index;
+      _pending_delivery_frame.reset();
+      if (stale_index < _scratch_textures.size()) {
+        _scratch_textures[stale_index].state = scratch_state_e::free;
+      }
+
+      const auto replaced = _delivery_replaced_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (replaced <= 5 || replaced % 120 == 0) {
+        BOOST_LOG(debug) << "WGC delivery replaced stale queued scratch frame"
+                         << " (count=" << replaced << ")";
+      }
+    }
+
+    _scratch_textures[index].state = scratch_state_e::pending;
+    _pending_delivery_frame = delivery_frame_t {
+      .texture = _scratch_textures[index].texture,
+      .scratch_index = index,
+      .frame_qpc = frame_qpc
+    };
+    return true;
+  }
+
   /**
-   * @brief Copies the captured surface to the shared texture and notifies the main process.
+   * @brief Copies the next WGC frame into helper-owned scratch storage and queues it for delivery.
+   * @param frame The WGC frame object; it is released before the shared IPC mutex can block.
    * @param surface The captured D3D11 surface.
    * @param frame_qpc The QPC timestamp from when the frame was captured.
    */
-  void process_surface_to_texture(winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface surface, uint64_t frame_qpc) {
+  void queue_frame_for_delivery(Direct3D11CaptureFrame frame, winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface surface, uint64_t frame_qpc) {
     if (!_deps) {
       return;
     }
@@ -1235,9 +1573,109 @@ private:
       return;
     }
 
+    auto scratch_index = reserve_scratch_texture();
+    if (!scratch_index) {
+      return;
+    }
+
+    if (!ensure_scratch_texture(*scratch_index)) {
+      release_reserved_scratch_texture(*scratch_index);
+      return;
+    }
+
+    {
+      std::lock_guard context_lock(_d3d_context_mutex);
+      _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
+    }
+
+    // From here on the delivery thread owns only the helper scratch texture, not
+    // the Direct3D11CaptureFrame/WGC frame-pool buffer. The helper can wait for
+    // the main process' shared keyed mutex without starving WGC FrameArrived.
+    frame = nullptr;
+
+    if (!enqueue_scratch_texture(*scratch_index, frame_qpc)) {
+      return;
+    }
+    _delivery_cv.notify_one();
+  }
+
+  void delivery_thread_proc(std::stop_token stop_token) noexcept {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+    DWORD task_idx = 0;
+    safe_mmcss_handle mmcss_handle = nullptr;
+    HANDLE raw_mmcss_handle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_idx);
+    if (!raw_mmcss_handle) {
+      raw_mmcss_handle = AvSetMmThreadCharacteristicsW(L"Games", &task_idx);
+    }
+    if (raw_mmcss_handle) {
+      mmcss_handle.reset(raw_mmcss_handle);
+      AvSetMmThreadPriority(mmcss_handle.get(), AVRT_PRIORITY_HIGH);
+    } else {
+      BOOST_LOG(warning) << "Failed to set WGC delivery thread MMCSS characteristics: " << GetLastError();
+    }
+
+    for (;;) {
+      std::optional<delivery_frame_t> frame;
+      {
+        std::unique_lock lock(_delivery_mutex);
+        _delivery_cv.wait(lock, [&]() {
+          return _delivery_stop || stop_token.stop_requested() || _pending_delivery_frame.has_value();
+        });
+
+        if (_delivery_stop || stop_token.stop_requested()) {
+          break;
+        }
+
+        frame = std::move(_pending_delivery_frame);
+        _pending_delivery_frame.reset();
+        if (frame && frame->scratch_index < _scratch_textures.size()) {
+          _scratch_textures[frame->scratch_index].state = scratch_state_e::delivering;
+        }
+      }
+      _delivery_cv.notify_all();
+
+      if (!frame || !frame->texture) {
+        continue;
+      }
+
+      try {
+        copy_frame_to_shared_texture(frame->texture, frame->frame_qpc);
+      } catch (const winrt::hresult_error &ex) {
+        BOOST_LOG(error) << "WinRT error in WGC delivery thread: " << ex.code() << " - " << winrt::to_string(ex.message());
+      } catch (...) {
+        BOOST_LOG(error) << "Unknown error in WGC delivery thread";
+      }
+
+      {
+        std::lock_guard lock(_delivery_mutex);
+        if (frame->scratch_index < _scratch_textures.size() &&
+            _scratch_textures[frame->scratch_index].state == scratch_state_e::delivering) {
+          _scratch_textures[frame->scratch_index].state = scratch_state_e::free;
+        }
+      }
+    }
+  }
+
+  /**
+   * @brief Copies the captured texture to the shared texture and signals the main process.
+   * @param frame_tex The captured D3D11 texture.
+   * @param frame_qpc The QPC timestamp from when the frame was captured.
+   */
+  void copy_frame_to_shared_texture(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
+    if (!_deps || !frame_tex) {
+      return;
+    }
+
+    const auto mutex_wait_start = std::chrono::steady_clock::now();
     HRESULT hr = _deps->resource_manager.get_keyed_mutex()->AcquireSync(0, 200);
+    const auto mutex_wait = std::chrono::steady_clock::now() - mutex_wait_start;
     if (hr == WAIT_TIMEOUT) {
-      BOOST_LOG(error) << "Timed out acquiring keyed mutex; dropping frame";
+      const auto slow_mutex_count = _slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0) {
+        BOOST_LOG(debug) << "Timed out acquiring keyed mutex for WGC frame copy; dropping frame"
+                         << " (count=" << slow_mutex_count << ")";
+      }
       return;
     }
     if (hr != S_OK && hr != WAIT_ABANDONED) {
@@ -1248,26 +1686,52 @@ private:
       BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
     }
 
-    // Copy frame data and release mutex
-    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
+    // Copy frame data while holding the keyed mutex. The main process acquires
+    // the same mutex before snapshotting this shared texture into a pool-owned frame.
+    const auto copy_start = std::chrono::steady_clock::now();
+    {
+      std::lock_guard context_lock(_d3d_context_mutex);
+      _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
+    }
+    const auto copy_submit = std::chrono::steady_clock::now() - copy_start;
+
     const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
     if (FAILED(rel_hr)) {
       BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", rel_hr);
+      return;
     }
 
-    // Send frame ready message with QPC timing data
-    frame_ready_msg_t frame_msg;
-    frame_msg.frame_qpc = frame_qpc;
+    // Publish metadata after releasing the keyed mutex. The seqlock in
+    // publish_frame_metadata is independent of the mutex, so this ordering is
+    // safe; doing it after ReleaseSync makes "consumer observes new frame_id"
+    // imply "shared mutex is free", so the consumer's lock_frame() AcquireSync
+    // can never block waiting for the helper's release path.
+    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+    _deps->resource_manager.signal_frame_ready();
+    _published_frames.fetch_add(1, std::memory_order_relaxed);
 
-    std::span<const uint8_t> msg_span(reinterpret_cast<const uint8_t *>(&frame_msg), sizeof(frame_msg));
-    // Keep this short: if the main process stops reading, we must not deadlock the WGC callback thread.
-    bool send_ok = _deps->pipe.send(msg_span, 250);
+    const auto mutex_wait_ms = std::chrono::duration<double, std::milli>(mutex_wait).count();
+    const auto copy_submit_ms = std::chrono::duration<double, std::milli>(copy_submit).count();
+    const bool slow_mutex = mutex_wait_ms > 1.0;
+    const bool slow_copy = copy_submit_ms > 1.0;
+    if (slow_mutex || slow_copy) {
+      const auto slow_mutex_count = slow_mutex ? (_slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_mutex_waits.load(std::memory_order_relaxed);
+      const auto slow_copy_count = slow_copy ? (_slow_copy_submissions.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_copy_submissions.load(std::memory_order_relaxed);
+      const bool should_log_slow_mutex = slow_mutex && (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0);
+      const bool should_log_slow_copy = slow_copy && (slow_copy_count <= 5 || slow_copy_count % 120 == 0);
+      if (should_log_slow_mutex || should_log_slow_copy) {
+        BOOST_LOG(debug) << "WGC helper copy timing: mutex_wait_ms=" << mutex_wait_ms
+                         << " copy_submit_ms=" << copy_submit_ms
+                         << " slow_mutex_count=" << slow_mutex_count
+                         << " slow_copy_count=" << slow_copy_count;
+      }
+    }
 
     // Log first frame and frame 100 for quick sanity checks, but avoid long-running spam.
     static std::atomic<uint64_t> frame_count {0};
     const auto count = ++frame_count;
     if (count == 1 || count == 100) {
-      BOOST_LOG(info) << "Sent frame " << count << " to main process (send_ok=" << send_ok << ")";
+      BOOST_LOG(info) << "Published frame " << count << " to main process";
     }
   }
 
@@ -1340,10 +1804,13 @@ public:
       }
     }
 
-    // Technically this is not required for users that have 24H2, but there's really no functional difference.
-    // So instead of coding out a version check, we'll just set it for everyone.
     if (winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"MinUpdateInterval")) {
-      _capture_session.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan {10000});
+      if (g_config.min_update_interval_100ns > 0) {
+        _capture_session.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan {g_config.min_update_interval_100ns});
+        BOOST_LOG(info) << "WGC MinUpdateInterval set to " << g_config.min_update_interval_100ns << " ticks";
+      } else {
+        BOOST_LOG(info) << "WGC MinUpdateInterval left at system default";
+      }
     }
 
     return true;
@@ -1481,7 +1948,12 @@ std::string get_temp_log_path() {
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
   // Handle config data message
-  if (message.size() == sizeof(platf::dxgi::config_data_t) && !g_config_received) {
+  if (message.size() == sizeof(platf::dxgi::config_data_t)) {
+    std::lock_guard lock(g_config_mutex);
+    if (g_config_received) {
+      return;
+    }
+
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
     // If log_level in config differs from current, update log filter
@@ -1495,7 +1967,13 @@ void handle_ipc_message(std::span<const uint8_t> message) {
     BOOST_LOG(info) << "Received config data: hdr: " << g_config.dynamic_range
                     << ", display: '" << winrt::to_string(g_config.display_name) << "'"
                     << ", adapter LUID: " << std::hex << g_config.adapter_luid.HighPart
-                    << ":" << g_config.adapter_luid.LowPart << std::dec;
+                    << ":" << g_config.adapter_luid.LowPart << std::dec
+                    << ", target_fps: " << g_config.target_fps
+                    << ", min_update_interval_100ns: " << g_config.min_update_interval_100ns
+                    << ", initial_buffers: " << g_config.initial_frame_buffer_size
+                    << ", max_buffers: " << g_config.max_frame_buffer_size
+                    << ", drain_to_latest: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) ? "yes" : "no");
+    g_config_cv.notify_all();
   }
 }
 
@@ -1594,15 +2072,13 @@ int main(int argc, char *argv[]) {
   auto log_deinit = logging::init(2, get_temp_log_path());
 
   // Check command line arguments for pipe names
-  if (argc < 3) {
-    BOOST_LOG(error) << "Usage: " << argv[0] << " <pipe_name_guid> <frame_queue_pipe_name_guid>";
+  if (argc < 2) {
+    BOOST_LOG(error) << "Usage: " << argv[0] << " <pipe_name_guid>";
     return 1;
   }
 
   std::string pipe_name = argv[1];
-  std::string frame_queue_pipe_name = argv[2];
   BOOST_LOG(info) << "Using pipe name: " << pipe_name;
-  BOOST_LOG(info) << "Using frame queue pipe name: " << frame_queue_pipe_name;
 
   // Initialize system settings (DPI awareness, thread priority, MMCSS)
   SystemInitializer system_initializer;
@@ -1623,7 +2099,6 @@ int main(int argc, char *argv[]) {
   AnonymousPipeFactory pipe_factory;
 
   auto comm_pipe = pipe_factory.create_client(pipe_name);
-  auto frame_queue_pipe = pipe_factory.create_client(frame_queue_pipe_name);
   auto pipe_shared = std::make_shared<AsyncNamedPipe>(std::move(comm_pipe));
   g_communication_pipe_weak = pipe_shared;  // Store weak reference for desktop hook callback
 
@@ -1632,17 +2107,15 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  constexpr int max_wait_ms = 5000;
-  constexpr int poll_interval_ms = 10;
-  int waited_ms = 0;
-  while (!g_config_received && waited_ms < max_wait_ms) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
-    waited_ms += poll_interval_ms;
-  }
-
-  if (!g_config_received) {
-    BOOST_LOG(error) << "Timed out waiting for config data from main process (" << max_wait_ms << "ms)";
-    return 1;
+  constexpr auto max_wait = std::chrono::milliseconds(5000);
+  {
+    std::unique_lock lock(g_config_mutex);
+    if (!g_config_cv.wait_for(lock, max_wait, []() {
+          return g_config_received;
+        })) {
+      BOOST_LOG(error) << "Timed out waiting for config data from main process (" << max_wait.count() << "ms)";
+      return 1;
+    }
   }
 
   // Create D3D11 device and context using the same adapter as the main process
@@ -1742,13 +2215,17 @@ int main(int argc, char *argv[]) {
     d3d11_manager.get_winrt_device(),
     item,
     shared_resource_manager,
-    d3d11_manager.get_context(),
-    *frame_queue_pipe
+    d3d11_manager.get_context()
   };
 
   // Create WGC capture manager
   WgcCaptureManager wgc_capture_manager {capture_format, display_manager.get_width(), display_manager.get_height(), std::move(deps)};
-  if (!wgc_capture_manager.create_or_adjust_frame_pool(1)) {
+  const auto initial_frame_buffer_size = std::clamp<uint32_t>(
+    g_config.initial_frame_buffer_size ? g_config.initial_frame_buffer_size : 1,
+    1,
+    std::max<uint32_t>(1, g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : 1)
+  );
+  if (!wgc_capture_manager.create_or_adjust_frame_pool(initial_frame_buffer_size)) {
     BOOST_LOG(error) << "Failed to create frame pool";
     return 1;
   }

@@ -46,6 +46,7 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     env:
+      NODE_VERSION: 22.22.2
       VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
       WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
     defaults:
@@ -141,7 +142,6 @@ jobs:
             dependencies+=(
               "mingw-w64-${TOOLCHAIN}-MinHook"
               "mingw-w64-${TOOLCHAIN}-ninja"
-              "mingw-w64-${TOOLCHAIN}-nodejs"
               "mingw-w64-${TOOLCHAIN}-tools"
             )
           fi
@@ -182,14 +182,11 @@ jobs:
           dotnet-version: '10.x'
 
       - name: Setup NodeJS
-        # Clang compiled NodeJS has issues when running rollup webpack
-        if: matrix.msystem != 'ucrt64'
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238  # v6.2.0
         with:
-          node-version: 'lts/*'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: NodeJS Path
-        if: matrix.msystem != 'ucrt64'
         shell: pwsh
         run: |
           # get NodeJS PATH
@@ -268,11 +265,12 @@ jobs:
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
-          # setup NodeJS PATH
-          if [[ "${MATRIX_MSYSTEM}" != "ucrt64" ]]; then
-            NODEJS_PATH=$(cygpath "$NODEJS_PATH")
-            export PATH="$PATH:$NODEJS_PATH"
-          fi
+          # Prefer the pinned actions/setup-node runtime over rolling MSYS2 packages.
+          NODEJS_PATH=$(cygpath -u "$NODEJS_PATH")
+          export PATH="${NODEJS_PATH}:$PATH"
+          NPM_PATH="$(cygpath -m "${NODEJS_PATH}/npm.cmd")"
+          echo "Using node: $(command -v node) ($(node --version))"
+          echo "Using npm: ${NPM_PATH} ($(npm --version))"
 
           mkdir -p build
           cmake \
@@ -290,6 +288,7 @@ jobs:
             -DWEBRTC_MSYS2_BIN="$(cygpath -u "${WEBRTC_MSYS2_BIN}")" \
             -DWEBRTC_VS_PATH="$(cygpath -u "${WEBRTC_VS_PATH}")" \
             -DWEBRTC_WINSDK_DIR="$(cygpath -u "${WEBRTC_WINSDK_DIR}")" \
+            -DNPM="${NPM_PATH}" \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
