@@ -41,15 +41,100 @@ endif()
 
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_APP_USER_MODEL_ID="${WINDOWS_APP_USER_MODEL_ID}")
 
+# Generate Windows fixed FILEVERSION metadata at build time.  The generator is
+# intentionally run for every build so dirty/local builds and post-tag rebuilds
+# can advance the fourth version field without requiring a fresh CMake configure.
+set(SUNSHINE_WINDOWS_VERSIONINFO_DIR "${CMAKE_BINARY_DIR}/generated_versioninfo")
+set(SUNSHINE_WINDOWS_VERSIONINFO_HEADER "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}/windows_versioninfo_generated.h")
+set(SUNSHINE_WINDOWS_VERSIONINFO_CACHE "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}/windows_versioninfo_generated.cache")
+set(SUNSHINE_WINDOWS_VERSIONINFO_STAMP "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}/windows_versioninfo_generated.stamp")
+
+add_custom_target(generate_windows_versioninfo
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}"
+    COMMAND ${CMAKE_COMMAND}
+            "-DOUTPUT_FILE=${SUNSHINE_WINDOWS_VERSIONINFO_HEADER}"
+            "-DCACHE_FILE=${SUNSHINE_WINDOWS_VERSIONINFO_CACHE}"
+            "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DPROJECT_VERSION_FULL=${PROJECT_VERSION_FULL}"
+            "-DPROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}"
+            "-DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}"
+            "-DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"
+            "-DPROJECT_VERSION_PRERELEASE=${PROJECT_VERSION_PRERELEASE}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/prep/emit_windows_versioninfo.cmake"
+    COMMAND ${CMAKE_COMMAND} -E touch "${SUNSHINE_WINDOWS_VERSIONINFO_STAMP}"
+    BYPRODUCTS
+            "${SUNSHINE_WINDOWS_VERSIONINFO_HEADER}"
+            "${SUNSHINE_WINDOWS_VERSIONINFO_CACHE}"
+            "${SUNSHINE_WINDOWS_VERSIONINFO_STAMP}"
+    COMMENT "Generating Windows VERSIONINFO header"
+    VERBATIM
+)
+
+set_source_files_properties("${SUNSHINE_WINDOWS_VERSIONINFO_HEADER}" PROPERTIES GENERATED TRUE)
+set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/windows/windows.rc" PROPERTIES
+    OBJECT_DEPENDS "${SUNSHINE_WINDOWS_VERSIONINFO_HEADER};${SUNSHINE_WINDOWS_VERSIONINFO_STAMP}")
+
 # Create a separate object library for the RC file with minimal includes
 add_library(sunshine_rc_object OBJECT "${CMAKE_SOURCE_DIR}/src/platform/windows/windows.rc")
+add_dependencies(sunshine_rc_object generate_windows_versioninfo)
 
 # Set minimal properties for RC compilation - only what's needed for the resource file
 # Otherwise compilation can fail due to "line too long" errors
 set_target_properties(sunshine_rc_object PROPERTIES
-    COMPILE_DEFINITIONS "PROJECT_ICON_PATH=${PROJECT_ICON_PATH};PROJECT_NAME=${PROJECT_NAME};PROJECT_VENDOR=${SUNSHINE_PUBLISHER_NAME};PROJECT_VERSION=${PROJECT_VERSION};PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR};PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR};PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"  # cmake-lint: disable=C0301
-    INCLUDE_DIRECTORIES ""
+    COMPILE_DEFINITIONS "PROJECT_ICON_PATH=${PROJECT_ICON_PATH};PROJECT_NAME=${PROJECT_NAME};PROJECT_VENDOR=${SUNSHINE_PUBLISHER_NAME};PROJECT_VERSION=${PROJECT_VERSION_FULL};PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR};PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR};PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"  # cmake-lint: disable=C0301
+    INCLUDE_DIRECTORIES "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}"
 )
+
+function(sunshine_add_windows_versioninfo target_name)
+    if(NOT TARGET "${target_name}")
+        message(FATAL_ERROR "sunshine_add_windows_versioninfo: target not found: ${target_name}")
+    endif()
+
+    string(MAKE_C_IDENTIFIER "${target_name}" _target_id)
+    set(_rc_target "sunshine_${_target_id}_rc_object")
+    set(_rc_file "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}/${_target_id}_versioninfo.rc")
+
+    if(NOT TARGET "${_rc_target}")
+        set(_versioninfo_file_description "${target_name}")
+        set(_versioninfo_internal_name "${target_name}")
+        set(_versioninfo_original_filename "${target_name}.exe")
+        set(_versioninfo_product_name "${target_name}")
+        configure_file(
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/tool_version.rc.in"
+            "${_rc_file}"
+            @ONLY
+        )
+        set_source_files_properties("${_rc_file}" PROPERTIES
+            GENERATED TRUE
+            OBJECT_DEPENDS "${SUNSHINE_WINDOWS_VERSIONINFO_HEADER};${SUNSHINE_WINDOWS_VERSIONINFO_STAMP}"
+        )
+        add_library("${_rc_target}" OBJECT "${_rc_file}")
+        add_dependencies("${_rc_target}" generate_windows_versioninfo)
+        set_target_properties("${_rc_target}" PROPERTIES
+            INCLUDE_DIRECTORIES "${SUNSHINE_WINDOWS_VERSIONINFO_DIR}"
+        )
+    endif()
+
+    target_sources("${target_name}" PRIVATE "$<TARGET_OBJECTS:${_rc_target}>")
+endfunction()
+
+foreach(_sunshine_versioned_tool IN ITEMS
+        dxgi-info
+        audio-info
+        sunshinesvc
+        playnite-launcher
+        sunshine_wgc_capture
+        sunshine_display_helper)
+    if(TARGET "${_sunshine_versioned_tool}")
+        sunshine_add_windows_versioninfo("${_sunshine_versioned_tool}")
+    endif()
+endforeach()
+unset(_sunshine_versioned_tool)
+
+# ViGEmBus version
+set(VIGEMBUS_PACKAGED_V "1.21.442")
+set(VIGEMBUS_PACKAGED_V_2 "${VIGEMBUS_PACKAGED_V}.0")
+list(APPEND SUNSHINE_DEFINITIONS VIGEMBUS_PACKAGED_VERSION="${VIGEMBUS_PACKAGED_V_2}")
 
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"

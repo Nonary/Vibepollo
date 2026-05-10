@@ -2791,6 +2791,19 @@ namespace VibepolloInstaller {
       }
     }
 
+    private static bool PathIsUnderDirectory(string path, string directory) {
+      var normalizedPath = NormalizePath(path);
+      var normalizedDirectory = NormalizePath(directory);
+      if (string.IsNullOrWhiteSpace(normalizedPath) || string.IsNullOrWhiteSpace(normalizedDirectory)) {
+        return false;
+      }
+
+      var directoryWithSeparator = normalizedDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        + Path.DirectorySeparatorChar;
+      return normalizedPath.Equals(normalizedDirectory, StringComparison.OrdinalIgnoreCase)
+        || normalizedPath.StartsWith(directoryWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string NormalizeCommandIdentity(string commandLine) {
       return Environment.ExpandEnvironmentVariables(commandLine ?? string.Empty).Trim();
     }
@@ -3789,6 +3802,110 @@ namespace VibepolloInstaller {
       return result;
     }
 
+    private static bool UserDataProductRegistrationExists(
+      RegistryHive hive,
+      RegistryView view,
+      string sid,
+      string packedProductCode) {
+      if (string.IsNullOrWhiteSpace(sid) || string.IsNullOrWhiteSpace(packedProductCode)) {
+        return false;
+      }
+
+      try {
+        using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
+        using (var productKey = baseKey.OpenSubKey(
+          @"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\" + sid + @"\Products\" + packedProductCode,
+          false)) {
+          if (productKey != null) {
+            return true;
+          }
+        }
+      } catch {
+      }
+
+      return false;
+    }
+
+    private static int CleanupStaleComponentClientsForInstallLocation(string installLocation, string logPath) {
+      var normalizedInstallLocation = NormalizePath(installLocation);
+      if (string.IsNullOrWhiteSpace(normalizedInstallLocation) || !Directory.Exists(normalizedInstallLocation)) {
+        return 0;
+      }
+
+      var removed = 0;
+      foreach (var hive in GetRegistryCleanupHives()) {
+        foreach (var view in GetRegistryCleanupViews()) {
+          try {
+            using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
+            using (var userDataRoot = baseKey.OpenSubKey(
+              @"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData",
+              false)) {
+              if (userDataRoot == null) {
+                continue;
+              }
+
+              foreach (var sid in userDataRoot.GetSubKeyNames()) {
+                var componentsPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\" + sid + @"\Components";
+                using (var componentsRoot = baseKey.OpenSubKey(componentsPath, true)) {
+                  if (componentsRoot == null) {
+                    continue;
+                  }
+
+                  foreach (var componentKeyName in componentsRoot.GetSubKeyNames()) {
+                    using (var componentKey = componentsRoot.OpenSubKey(componentKeyName, true)) {
+                      if (componentKey == null) {
+                        continue;
+                      }
+
+                      foreach (var clientProductCode in componentKey.GetValueNames()) {
+                        if (string.IsNullOrWhiteSpace(clientProductCode)
+                            || UserDataProductRegistrationExists(hive, view, sid, clientProductCode)) {
+                          continue;
+                        }
+
+                        var componentPath = Convert.ToString(componentKey.GetValue(clientProductCode)) ?? string.Empty;
+                        if (!PathIsUnderDirectory(componentPath, normalizedInstallLocation)) {
+                          continue;
+                        }
+
+                        componentKey.DeleteValue(clientProductCode, false);
+                        removed++;
+                        AppendInstallerLogMessage(
+                          logPath,
+                          "Removed stale MSI component client " + clientProductCode
+                          + " for component " + componentKeyName
+                          + " pointing at " + componentPath + ".");
+                      }
+                    }
+
+                    TryDeleteRegistrySubKeyIfEmpty(
+                      hive,
+                      view,
+                      componentsPath,
+                      componentKeyName,
+                      null,
+                      logPath);
+                  }
+                }
+              }
+            }
+          } catch (Exception ex) {
+            AppendInstallerLogMessage(
+              logPath,
+              "Unable to inspect stale MSI component clients in " + hive + " " + view + ": " + ex.Message);
+          }
+        }
+      }
+
+      if (removed > 0) {
+        AppendInstallerLogMessage(
+          logPath,
+          "Removed " + removed + " stale MSI component client(s) under " + normalizedInstallLocation + " before uninstall.");
+      }
+
+      return removed;
+    }
+
     private static void DeleteUserDataProductRegistrations(
       string packedProductCode,
       MsiRegistrationCleanupResult result,
@@ -3907,7 +4024,9 @@ namespace VibepolloInstaller {
             return;
           }
           parentKey.DeleteSubKeyTree(subKeyName, false);
-          result.RemovedItems++;
+          if (result != null) {
+            result.RemovedItems++;
+          }
           AppendInstallerLogMessage(
             logPath,
             "Removed " + description + " " + hive + "\\" + parentPath + "\\" + subKeyName + " (" + view + ").");
@@ -3937,7 +4056,9 @@ namespace VibepolloInstaller {
             return;
           }
           parentKey.DeleteSubKeyTree(subKeyName, false);
-          result.RemovedItems++;
+          if (result != null) {
+            result.RemovedItems++;
+          }
           AppendInstallerLogMessage(
             logPath,
             "Removed empty MSI UpgradeCodes key " + hive + "\\" + parentPath + "\\" + subKeyName + " (" + view + ").");
@@ -4779,7 +4900,12 @@ namespace VibepolloInstaller {
           };
           AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
           TryStopRelatedServicesAndProcesses(logPath);
+          CleanupStaleComponentClientsForInstallLocation(product.InstallLocation, logPath);
           code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
+          if (code == 0 || code == 3010 || code == 1605) {
+            CleanupCustomArpRegistration(product.InstallLocation, logPath);
+            ScheduleSelfDeleteAndEmptyInstallRootCleanup(product.InstallLocation, logPath);
+          }
         } else {
           // Never elevate non-MSI uninstall commands sourced from HKCU since
           // those registry values are user-writable and could be tampered with.
@@ -4860,8 +4986,13 @@ namespace VibepolloInstaller {
 
         AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
         TryStopRelatedServicesAndProcesses(logPath);
+        CleanupStaleComponentClientsForInstallLocation(product.InstallLocation, logPath);
 
         var code = RunMsiexec(args, hiddenWindow, requestElevationIfNeeded);
+        if (code == 0 || code == 3010 || code == 1605) {
+          CleanupCustomArpRegistration(product.InstallLocation, logPath);
+          ScheduleSelfDeleteAndEmptyInstallRootCleanup(product.InstallLocation, logPath);
+        }
         if (factoryResetAppData && (code == 0 || code == 3010 || code == 1605)) {
           TryFactoryResetKnownAppData(product.InstallLocation);
         }
@@ -4890,6 +5021,97 @@ namespace VibepolloInstaller {
         Message = BuildResultMessage("Uninstall", finalCode, lastLogPath),
         LogPath = lastLogPath
       };
+    }
+
+    private static void CleanupCustomArpRegistration(string installLocation, string logPath) {
+      var normalizedInstallLocation = NormalizePath(installLocation);
+      if (string.IsNullOrWhiteSpace(normalizedInstallLocation)) {
+        return;
+      }
+
+      foreach (var hive in GetRegistryCleanupHives()) {
+        foreach (var view in GetRegistryCleanupViews()) {
+          try {
+            using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
+            using (var uninstallRoot = baseKey.OpenSubKey(
+              @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+              true)) {
+              if (uninstallRoot == null || !uninstallRoot.GetSubKeyNames().Contains("Vibeshine", StringComparer.OrdinalIgnoreCase)) {
+                continue;
+              }
+
+              using (var vibeshineKey = uninstallRoot.OpenSubKey("Vibeshine", false)) {
+                if (vibeshineKey == null) {
+                  continue;
+                }
+
+                var displayName = Convert.ToString(vibeshineKey.GetValue("DisplayName")) ?? string.Empty;
+                var keyInstallLocation = Convert.ToString(vibeshineKey.GetValue("InstallLocation")) ?? string.Empty;
+                var uninstallString = Convert.ToString(vibeshineKey.GetValue("UninstallString")) ?? string.Empty;
+                var quietUninstallString = Convert.ToString(vibeshineKey.GetValue("QuietUninstallString")) ?? string.Empty;
+                var matchesInstallLocation =
+                  PathIsUnderDirectory(keyInstallLocation, normalizedInstallLocation)
+                  || CommandReferencesInstallLocation(uninstallString, normalizedInstallLocation)
+                  || CommandReferencesInstallLocation(quietUninstallString, normalizedInstallLocation);
+                if (!displayName.StartsWith("Vibeshine", StringComparison.OrdinalIgnoreCase) || !matchesInstallLocation) {
+                  continue;
+                }
+              }
+
+              uninstallRoot.DeleteSubKeyTree("Vibeshine", false);
+              AppendInstallerLogMessage(
+                logPath,
+                "Removed orphan Vibeshine ARP uninstall entry from " + hive
+                + @"\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Vibeshine (" + view + ").");
+            }
+          } catch (Exception ex) {
+            AppendInstallerLogMessage(
+              logPath,
+              "Unable to remove orphan Vibeshine ARP uninstall entry in " + hive + " " + view + ": " + ex.Message);
+          }
+        }
+      }
+    }
+
+    private static bool CommandReferencesInstallLocation(string commandLine, string installLocation) {
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return false;
+      }
+      return PathIsUnderDirectory(executablePath, installLocation);
+    }
+
+    private static void ScheduleSelfDeleteAndEmptyInstallRootCleanup(string installLocation, string logPath) {
+      var normalizedInstallLocation = NormalizePath(installLocation);
+      var executablePath = NormalizePath(Assembly.GetExecutingAssembly().Location);
+      if (string.IsNullOrWhiteSpace(normalizedInstallLocation)
+          || string.IsNullOrWhiteSpace(executablePath)
+          || !PathIsUnderDirectory(executablePath, normalizedInstallLocation)
+          || !string.Equals(Path.GetFileName(executablePath), "uninstall.exe", StringComparison.OrdinalIgnoreCase)) {
+        return;
+      }
+
+      try {
+        var cmdPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+        var command = "ping 127.0.0.1 -n 3 > nul"
+          + " & del /F /Q " + QuoteForCmd(executablePath) + " > nul 2> nul"
+          + " & rd " + QuoteForCmd(normalizedInstallLocation) + " 2> nul";
+        Process.Start(new ProcessStartInfo {
+          FileName = cmdPath,
+          Arguments = "/D /C " + command,
+          UseShellExecute = false,
+          CreateNoWindow = true,
+          WindowStyle = ProcessWindowStyle.Hidden
+        });
+        AppendInstallerLogMessage(logPath, "Scheduled uninstall.exe self-delete and empty install root cleanup.");
+      } catch (Exception ex) {
+        AppendInstallerLogMessage(logPath, "Unable to schedule uninstall.exe self-delete: " + ex.Message);
+      }
+    }
+
+    private static string QuoteForCmd(string value) {
+      return "\"" + (value ?? string.Empty).Replace("\"", string.Empty) + "\"";
     }
 
     private static void TryFactoryResetKnownAppData(string installLocation) {

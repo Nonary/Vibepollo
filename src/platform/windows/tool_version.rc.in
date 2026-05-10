@@ -1,0 +1,38 @@
+/**
+ * @file src/platform/windows/tool_version.rc.in
+ * @brief Windows VERSIONINFO template for helper/tool executables.
+ *
+ * This intentionally does not include an ICON resource.  Helper binaries should
+ * keep their previous icon behavior while still carrying fixed FILEVERSION
+ * metadata so MSI can make deterministic file replacement decisions.
+ */
+#include "winver.h"
+#include "windows_versioninfo_generated.h"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     RC_VERSION_MAJOR,RC_VERSION_MINOR,RC_VERSION_BUILD,RC_VERSION_REVISION
+PRODUCTVERSION  RC_VERSION_MAJOR,RC_VERSION_MINOR,RC_VERSION_BUILD,RC_VERSION_REVISION
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "@SUNSHINE_PUBLISHER_NAME@"
+            VALUE "FileDescription",  "@_versioninfo_file_description@"
+            VALUE "FileVersion",      "@PROJECT_VERSION_FULL@"
+            VALUE "InternalName",     "@_versioninfo_internal_name@"
+            VALUE "OriginalFilename", "@_versioninfo_original_filename@"
+            VALUE "ProductName",      "@_versioninfo_product_name@"
+            VALUE "ProductVersion",   "@PROJECT_VERSION_FULL@"
+            VALUE "LegalCopyright",   "https://raw.githubusercontent.com/LizardByte/Sunshine/master/LICENSE"
+        END
+    END
+
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

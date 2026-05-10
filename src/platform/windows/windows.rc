@@ -3,6 +3,7 @@
  * @brief Windows resource file.
  */
 #include "winver.h"
+#include "windows_versioninfo_generated.h"
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)

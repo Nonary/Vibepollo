@@ -129,6 +129,30 @@ function Get-MsiProductVersion([string]$MsiPath) {
     return $null
 }
 
+function Get-GeneratedWindowsFileVersion([string]$BuildDir) {
+    $headerPath = Join-Path $BuildDir "generated_versioninfo\windows_versioninfo_generated.h"
+    if (-not (Test-Path -LiteralPath $headerPath)) {
+        return $null
+    }
+
+    $content = Get-Content -LiteralPath $headerPath -Raw
+    $fields = @{}
+    foreach ($name in @("MAJOR", "MINOR", "BUILD", "REVISION")) {
+        if ($content -match "(?m)^\s*#define\s+RC_VERSION_$name\s+(\d+)\s*$") {
+            $fields[$name] = [int]$matches[1]
+        }
+    }
+
+    foreach ($name in @("MAJOR", "MINOR", "BUILD", "REVISION")) {
+        if (-not $fields.ContainsKey($name)) {
+            Write-Warning "Generated Windows version header is missing RC_VERSION_$name`: $headerPath"
+            return $null
+        }
+    }
+
+    return "{0}.{1}.{2}.{3}" -f $fields["MAJOR"], $fields["MINOR"], $fields["BUILD"], $fields["REVISION"]
+}
+
 function Resolve-CscPath {
     $candidates = @(
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -215,11 +239,12 @@ $outputPath = Join-Path $artifactDir $OutputName
 $tagVersion = Get-GitTagVersion -RepoRoot $repoRoot
 $fallbackTag = if ($null -eq $tagVersion) { "" } else { $tagVersion.Tag }
 $informationalVersion = Get-GitInformationalVersion -RepoRoot $repoRoot -fallbackTag $fallbackTag
-$assemblyVersion = $null
+$generatedFileVersion = Get-GeneratedWindowsFileVersion -BuildDir $BuildDir
+$assemblyVersion = $generatedFileVersion
 
 if (-not $UninstallOnly) {
     $msiProductVersion = Get-MsiProductVersion -MsiPath $MsiPath
-    if (-not [string]::IsNullOrWhiteSpace($msiProductVersion) -and $msiProductVersion -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
+    if ([string]::IsNullOrWhiteSpace($assemblyVersion) -and -not [string]::IsNullOrWhiteSpace($msiProductVersion) -and $msiProductVersion -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
         $revision = if ([string]::IsNullOrWhiteSpace($matches[4])) { 0 } else { [int]$matches[4] }
         $assemblyVersion = "{0}.{1}.{2}.{3}" -f [int]$matches[1], [int]$matches[2], [int]$matches[3], $revision
         if ([string]::IsNullOrWhiteSpace($informationalVersion)) {
