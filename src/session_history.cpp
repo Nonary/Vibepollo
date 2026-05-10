@@ -285,6 +285,20 @@ namespace session_history {
       std::vector<pending_event_t> pending_events;
     };
 
+    struct sampled_session_t {
+      std::string uuid;
+      std::uint64_t bytes_sent_total = 0;
+      std::uint64_t packets_sent_video = 0;
+      std::uint64_t frames_sent = 0;
+      std::int64_t last_frame_index = 0;
+      std::uint64_t video_dropped = 0;
+      std::uint64_t audio_dropped = 0;
+      std::int64_t client_reported_losses = 0;
+      std::uint32_t idr_requests = 0;
+      std::uint32_t ref_invalidations = 0;
+      double encode_latency_ms = 0;
+    };
+
     // Detect automatic events based on aggregator state changes. The caller
     // emits them after releasing g_aggregators_mutex so event recording never
     // runs while the aggregator map is locked.
@@ -369,42 +383,68 @@ namespace session_history {
       (void) enqueue(std::move(cmd));
     }
 
-    void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
-      auto infos = stream::get_all_session_info();
-      for (const auto &info : infos) {
+    void sample_sessions(
+      const std::vector<sampled_session_t> &sessions,
+      double ts,
+      const platf::host_stats_t &host) {
+      for (const auto &session : sessions) {
         const auto aggregated = update_aggregator(
-          info.uuid,
+          session.uuid,
           ts,
-          info.frames_sent,
-          info.bytes_sent,
-          info.client_reported_losses);
+          session.frames_sent,
+          session.bytes_sent_total,
+          session.client_reported_losses);
 
         for (const auto &evt : aggregated.pending_events) {
-          record_event(info.uuid, evt.event_type, evt.payload);
+          record_event(session.uuid, evt.event_type, evt.payload);
         }
 
-        session_sample_t s;
-        s.session_uuid = info.uuid;
-        s.timestamp_unix = ts;
-        s.bytes_sent_total = info.bytes_sent;
-        s.packets_sent_video = info.packets_sent;
-        s.frames_sent = info.frames_sent;
-        s.last_frame_index = info.last_frame_index;
-        s.client_reported_losses = info.client_reported_losses;
-        s.idr_requests = info.idr_requests;
-        s.ref_invalidations = info.invalidate_ref_count;
-        s.encode_latency_ms = info.encode_latency_ms;
-        s.actual_fps = aggregated.actual_fps;
-        s.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
-        s.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
-        populate_host_snapshot(s, host);
+        session_sample_t sample;
+        sample.session_uuid = session.uuid;
+        sample.timestamp_unix = ts;
+        sample.bytes_sent_total = session.bytes_sent_total;
+        sample.packets_sent_video = session.packets_sent_video;
+        sample.frames_sent = session.frames_sent;
+        sample.last_frame_index = session.last_frame_index;
+        sample.video_dropped = session.video_dropped;
+        sample.audio_dropped = session.audio_dropped;
+        sample.client_reported_losses = session.client_reported_losses;
+        sample.idr_requests = session.idr_requests;
+        sample.ref_invalidations = session.ref_invalidations;
+        sample.encode_latency_ms = session.encode_latency_ms;
+        sample.actual_fps = aggregated.actual_fps;
+        sample.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
+        sample.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
+        populate_host_snapshot(sample, host);
 
-        enqueue_sample(std::move(s));
+        enqueue_sample(std::move(sample));
       }
+    }
+
+    void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
+      auto infos = stream::get_all_session_info();
+      std::vector<sampled_session_t> sessions;
+      sessions.reserve(infos.size());
+      for (const auto &info : infos) {
+        sessions.push_back(sampled_session_t {
+          .uuid = info.uuid,
+          .bytes_sent_total = info.bytes_sent,
+          .packets_sent_video = info.packets_sent,
+          .frames_sent = info.frames_sent,
+          .last_frame_index = info.last_frame_index,
+          .client_reported_losses = info.client_reported_losses,
+          .idr_requests = info.idr_requests,
+          .ref_invalidations = info.invalidate_ref_count,
+          .encode_latency_ms = info.encode_latency_ms,
+        });
+      }
+      sample_sessions(sessions, ts, host);
     }
 
     void sample_webrtc_sessions(double ts, const platf::host_stats_t &host) {
       auto sessions = webrtc_stream::list_sessions();
+      std::vector<sampled_session_t> samples;
+      samples.reserve(sessions.size());
       for (const auto &ws : sessions) {
         // Use true frame index (one per encoded video frame) for FPS, and
         // accumulated video+audio byte totals for bitrate. video_dropped
@@ -413,35 +453,18 @@ namespace session_history {
           ws.last_video_frame_index > 0 ? ws.last_video_frame_index : 0);
         const auto bytes_total = ws.video_bytes_total + ws.audio_bytes_total;
         const auto losses_total = static_cast<std::int64_t>(ws.video_dropped);
-
-        const auto aggregated = update_aggregator(
-          ws.id,
-          ts,
-          frames_total,
-          bytes_total,
-          losses_total);
-
-        for (const auto &evt : aggregated.pending_events) {
-          record_event(ws.id, evt.event_type, evt.payload);
-        }
-
-        session_sample_t s;
-        s.session_uuid = ws.id;
-        s.timestamp_unix = ts;
-        s.bytes_sent_total = bytes_total;
-        s.packets_sent_video = ws.video_packets;
-        s.frames_sent = frames_total;
-        s.last_frame_index = ws.last_video_frame_index;
-        s.video_dropped = ws.video_dropped;
-        s.audio_dropped = ws.audio_dropped;
-        s.client_reported_losses = losses_total;
-        s.actual_fps = aggregated.actual_fps;
-        s.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
-        s.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
-        populate_host_snapshot(s, host);
-
-        enqueue_sample(std::move(s));
+        samples.push_back(sampled_session_t {
+          .uuid = ws.id,
+          .bytes_sent_total = bytes_total,
+          .packets_sent_video = ws.video_packets,
+          .frames_sent = frames_total,
+          .last_frame_index = ws.last_video_frame_index,
+          .video_dropped = ws.video_dropped,
+          .audio_dropped = ws.audio_dropped,
+          .client_reported_losses = losses_total,
+        });
       }
+      sample_sessions(samples, ts, host);
     }
 
     void sampler_loop() {
