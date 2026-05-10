@@ -289,7 +289,7 @@ Split the implementation into smaller responsibilities. A reasonable shape would
 
 At minimum, extract the repeated writer command dispatch into one helper used by both the normal loop and final drain path.
 
-**Status (2026-05-10):** **Mostly done.** The storage/schema/migration/query layer now lives in `src/session_history_storage.cpp` / `src/session_history_storage.h`, and the repeated writer dispatch was already collapsed behind shared helpers. `src/session_history.cpp` still owns the public facade, writer queue, and sampler/aggregator flow, so a deeper writer/sampler split remains optional follow-up rather than open review debt for this branch.
+**Status (2026-05-10):** **Done.** The storage/schema/migration/query layer lives in `src/session_history_storage.cpp` / `src/session_history_storage.h`, the writer queue and transaction/readback flow now live in `src/session_history_writer.cpp` / `src/session_history_writer.h`, the active-session polling and aggregation flow now live in `src/session_history_sampler.cpp` / `src/session_history_sampler.h`, and `src/session_history.cpp` is reduced to the public facade/lifecycle wiring.
 
 ### 2. Medium: JSON response serialization is duplicated across handlers
 
