@@ -1045,9 +1045,6 @@ private:
     uint64_t frame_qpc = 0;
   };
 
-  static constexpr auto WGC_CADENCE_LOG_INTERVAL = std::chrono::seconds(30);
-  static constexpr auto WGC_CADENCE_SPIKE_LOG_INTERVAL = std::chrono::seconds(10);
-
   std::atomic<bool> _shutting_down {false};
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
@@ -1064,12 +1061,6 @@ private:
   std::atomic<int> _peak_outstanding {0};  ///< Peak number of outstanding frames (for monitoring)
   std::chrono::steady_clock::time_point _last_quiet_start = std::chrono::steady_clock::now();  ///< Last time frame processing became quiet
   std::chrono::steady_clock::time_point _last_buffer_check = std::chrono::steady_clock::now();  ///< Last time buffer size was checked
-  std::mutex _stats_mutex;
-  std::optional<std::chrono::steady_clock::time_point> _last_arrival_time;
-  std::optional<std::chrono::steady_clock::time_point> _last_cadence_log_time;
-  std::optional<std::chrono::steady_clock::time_point> _last_cadence_spike_log_time;
-  uint64_t _last_arrival_frame_qpc = 0;
-  std::atomic<uint64_t> _frame_arrival_count {0};
   std::atomic<uint64_t> _drained_pool_frames {0};
   std::atomic<uint64_t> _slow_mutex_waits {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
@@ -1307,12 +1298,11 @@ public:
     } else {
       // Frame successfully retrieved
       try {
-        const auto arrival_time = std::chrono::steady_clock::now();
         auto surface = frame.Surface();
 
         // Get frame timing information from the WGC frame
         uint64_t frame_qpc = frame.SystemRelativeTime().count();
-        record_frame_arrival(frame_qpc, arrival_time, drained_frames);
+        record_frame_arrival(drained_frames);
         queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
       } catch (const winrt::hresult_error &ex) {
         // Log error
@@ -1333,58 +1323,13 @@ private:
     return (g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) != 0;
   }
 
-  void record_frame_arrival(uint64_t frame_qpc, const std::chrono::steady_clock::time_point &arrival_time, uint32_t drained_frames) {
-    const auto count = _frame_arrival_count.fetch_add(1, std::memory_order_relaxed) + 1;
+  void record_frame_arrival(uint32_t drained_frames) {
     if (drained_frames > 0) {
       const auto total_drained = _drained_pool_frames.fetch_add(drained_frames, std::memory_order_relaxed) + drained_frames;
       if (total_drained == drained_frames || total_drained % 300 == 0) {
         BOOST_LOG(debug) << "WGC drained " << drained_frames << " queued frame(s) from frame pool"
                          << " (total drained=" << total_drained << ")";
       }
-    }
-
-    std::optional<double> arrival_delta_ms;
-    std::optional<int64_t> frame_qpc_delta;
-    bool log_cadence = false;
-    {
-      std::lock_guard lock(_stats_mutex);
-      if (_last_arrival_time) {
-        arrival_delta_ms = std::chrono::duration<double, std::milli>(arrival_time - *_last_arrival_time).count();
-      }
-      if (_last_arrival_frame_qpc != 0 && frame_qpc >= _last_arrival_frame_qpc) {
-        frame_qpc_delta = static_cast<int64_t>(frame_qpc - _last_arrival_frame_qpc);
-      }
-      _last_arrival_time = arrival_time;
-      _last_arrival_frame_qpc = frame_qpc;
-
-      const double expected_frame_ms = 1000.0 / static_cast<double>(std::max(1, g_config.target_fps));
-      const double cadence_spike_ms = std::max(100.0, expected_frame_ms * 4.0);
-      const bool cadence_interval_elapsed = !_last_cadence_log_time ||
-                                            arrival_time - *_last_cadence_log_time >= WGC_CADENCE_LOG_INTERVAL;
-      const bool cadence_spike = arrival_delta_ms && *arrival_delta_ms > cadence_spike_ms;
-      const bool spike_interval_elapsed = !_last_cadence_spike_log_time ||
-                                          arrival_time - *_last_cadence_spike_log_time >= WGC_CADENCE_SPIKE_LOG_INTERVAL;
-
-      log_cadence = count == 1 || drained_frames > 0 || cadence_interval_elapsed ||
-                    (cadence_spike && spike_interval_elapsed);
-      if (log_cadence) {
-        _last_cadence_log_time = arrival_time;
-        if (cadence_spike) {
-          _last_cadence_spike_log_time = arrival_time;
-        }
-      }
-    }
-
-    if (log_cadence) {
-      BOOST_LOG(debug) << "WGC frame cadence: count=" << count
-                       << " published=" << _published_frames.load(std::memory_order_relaxed)
-                       << " arrival_delta_ms=" << (arrival_delta_ms ? *arrival_delta_ms : 0.0)
-                       << " frame_qpc_delta=" << (frame_qpc_delta ? *frame_qpc_delta : 0)
-                       << " buffer=" << _current_buffer_size
-                       << " delivery_backpressure_waits=" << _delivery_backpressure_waits.load(std::memory_order_relaxed)
-                       << " delivery_replaced=" << _delivery_replaced_frames.load(std::memory_order_relaxed)
-                       << " scratch_dropped=" << _scratch_dropped_frames.load(std::memory_order_relaxed)
-                       << " drained_pool=" << _drained_pool_frames.load(std::memory_order_relaxed);
     }
   }
 
