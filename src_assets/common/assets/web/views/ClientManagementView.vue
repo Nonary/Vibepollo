@@ -1,46 +1,80 @@
 <template>
-  <div class="clients-page px-4 pb-10 space-y-10">
-    <h1 class="text-2xl font-semibold my-6 flex items-center gap-3 text-brand">
-      <i class="fas fa-users-cog" /> {{ $t('clients.title') }}
-    </h1>
+  <div class="clients-page space-y-5 px-2 pb-10 md:px-4">
+    <section class="clients-hero">
+      <div class="min-w-0">
+        <div class="clients-hero__identity">
+          <span class="clients-hero__icon">
+            <i class="fas fa-users-cog" />
+          </span>
+          <h1 class="text-xl md:text-2xl font-semibold text-dark dark:text-light">
+            {{ $t('clients.title') }}
+          </h1>
+        </div>
+      </div>
+      <div class="clients-stats">
+        <div class="clients-stat">
+          <span class="clients-stat__value">{{ clients.length }}</span>
+          <span class="clients-stat__label">{{ $t('clients.existing_title') }}</span>
+        </div>
+        <div class="clients-stat">
+          <span class="clients-stat__value">{{ connectedClientCount }}</span>
+          <span class="clients-stat__label">{{ $t('clients.connected') }}</span>
+        </div>
+      </div>
+    </section>
 
     <!-- Pair New Client -->
-    <n-card class="mb-8" :segmented="{ content: true, footer: true }">
+    <n-card class="clients-card" :segmented="{ content: true, footer: false }">
       <template #header>
-        <h2 class="text-lg font-medium flex items-center gap-2">
-          <i class="fas fa-link" /> {{ $t('clients.pair_title') }}
-        </h2>
+        <div class="clients-section-heading">
+          <span class="clients-section-icon">
+            <i class="fas fa-link" />
+          </span>
+          <div class="min-w-0">
+            <h2 class="text-lg font-medium">{{ $t('clients.pair_title') }}</h2>
+            <p class="text-xs opacity-70 max-w-2xl mt-1">{{ $t('clients.pair_desc') }}</p>
+          </div>
+        </div>
       </template>
       <div class="space-y-4">
-        <p class="text-sm opacity-75">{{ $t('clients.pair_desc') }}</p>
         <n-form
-          class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end"
+          class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(8rem,12rem)_minmax(12rem,1fr)_auto] md:items-end"
           @submit.prevent="registerDevice"
         >
           <n-form-item class="flex flex-col" :label="$t('navbar.pin')" label-placement="top">
             <n-input
               v-model:value="pin"
               :placeholder="$t('navbar.pin')"
+              clearable
+              maxlength="4"
               :input-props="{
                 inputmode: 'numeric',
                 pattern: '^[0-9]{4}$',
-                maxlength: 4,
+                autocomplete: 'one-time-code',
                 required: true,
               }"
             />
           </n-form-item>
           <n-form-item class="flex flex-col" :label="$t('pin.device_name')" label-placement="top">
-            <n-input v-model:value="deviceName" :placeholder="$t('pin.device_name')" />
+            <n-input
+              v-model:value="deviceName"
+              :placeholder="$t('pin.device_name')"
+              clearable
+              :input-props="{ autocomplete: 'off', required: true }"
+            />
           </n-form-item>
           <n-form-item class="flex flex-col md:items-end">
             <n-button
-              :disabled="pairing"
+              :disabled="pairing || !canPairClient"
+              :loading="pairing"
               class="w-full md:w-auto"
               type="primary"
+              strong
               attr-type="submit"
             >
-              <span v-if="!pairing">{{ $t('pin.send') }}</span>
-              <span v-else>{{ $t('clients.pairing') }}</span>
+              <i class="fas fa-plus" />
+              <span v-if="!pairing" class="ml-2">{{ $t('pin.send') }}</span>
+              <span v-else class="ml-2">{{ $t('clients.pairing') }}</span>
             </n-button>
           </n-form-item>
         </n-form>
@@ -55,119 +89,159 @@
     </n-card>
 
     <!-- Existing Clients -->
-    <n-card class="mb-8" :segmented="{ content: true, footer: true }">
+    <n-card class="clients-card" :segmented="{ content: true, footer: false }">
       <template #header>
-        <h2 class="text-lg font-medium flex items-center gap-2">
-          <i class="fas fa-users" /> {{ $t('clients.existing_title') }}
-        </h2>
+        <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div class="clients-section-heading">
+            <span class="clients-section-icon">
+              <i class="fas fa-users" />
+            </span>
+            <div class="min-w-0">
+              <h2 class="text-lg font-medium">{{ $t('clients.existing_title') }}</h2>
+              <p class="text-xs opacity-70 max-w-2xl mt-1">
+                {{ $t('troubleshooting.unpair_desc') }}
+              </p>
+            </div>
+          </div>
+          <div class="clients-toolbar">
+            <label class="clients-toolbar__sort">
+              <span>{{ $t('clients.sort_label') }}</span>
+              <n-select
+                v-model:value="clientSortMode"
+                :options="clientSortOptions"
+                size="small"
+                class="min-w-[10rem]"
+              />
+            </label>
+            <n-button
+              size="small"
+              type="error"
+              strong
+              secondary
+              :loading="unpairAllPressed"
+              :disabled="unpairAllPressed || clients.length === 0"
+              @click="askConfirmUnpairAll"
+            >
+              <i class="fas fa-user-slash" />
+              <span class="ml-2">{{ $t('troubleshooting.unpair_all') }}</span>
+            </n-button>
+          </div>
+        </div>
       </template>
 
-      <div class="flex flex-col gap-3 md:flex-row md:items-center">
-        <p class="text-sm opacity-75 md:flex-1">{{ $t('troubleshooting.unpair_desc') }}</p>
-        <div class="flex items-center gap-2">
-          <span class="text-xs opacity-70">{{ $t('clients.sort_label') }}</span>
-          <n-select
-            v-model:value="clientSortMode"
-            :options="clientSortOptions"
-            size="small"
-            class="min-w-[160px]"
-          />
-        </div>
-        <n-button
-          class="md:ml-auto"
-          type="error"
-          strong
-          :disabled="unpairAllPressed || clients.length === 0"
-          @click="askConfirmUnpairAll"
-        >
-          <i class="fas fa-user-slash" />
-          {{ $t('troubleshooting.unpair_all') }}
-        </n-button>
-      </div>
+      <div class="space-y-4">
+        <n-alert v-if="unpairAllStatus === true" type="success">{{
+          $t('troubleshooting.unpair_all_success')
+        }}</n-alert>
+        <n-alert v-if="unpairAllStatus === false" type="error">{{
+          $t('troubleshooting.unpair_all_error')
+        }}</n-alert>
 
-      <n-alert v-if="unpairAllStatus === true" type="success" class="mt-3">{{
-        $t('troubleshooting.unpair_all_success')
-      }}</n-alert>
-      <n-alert v-if="unpairAllStatus === false" type="error" class="mt-3">{{
-        $t('troubleshooting.unpair_all_error')
-      }}</n-alert>
-
-      <div v-if="clients.length > 0" class="mt-4 space-y-4">
-        <div
-          v-for="client in sortedClients"
-          :key="client.uuid"
-          class="rounded-2xl border border-dark/[0.06] bg-light/[0.02] p-4 shadow-sm dark:border-light/[0.12]"
-        >
-          <div class="flex flex-wrap items-center gap-3">
-            <span
-              class="rounded-full px-3 py-1 text-xs font-semibold text-white"
-              :class="client.perm >= highlightPermissionThreshold ? 'bg-red-500' : 'bg-brand'"
-            >
-              [ {{ permToStr(client.perm) }} ]
-            </span>
-            <span class="text-base font-medium">
-              {{ client.name !== '' ? client.name : $t('troubleshooting.unpair_single_unknown') }}
-            </span>
-            <n-tag v-if="client.connected" type="warning" size="small">{{
-              $t('clients.connected')
-            }}</n-tag>
-            <div class="ml-auto flex items-center gap-2">
+        <div v-if="clients.length > 0" class="client-list">
+          <article v-for="client in sortedClients" :key="client.uuid" class="client-record">
+            <div class="client-record__main">
+              <div class="client-avatar" :class="{ 'client-avatar--connected': client.connected }">
+                <i class="fas fa-display" />
+              </div>
+              <div class="client-record__body">
+                <div class="client-record__title-row">
+                  <h3 class="client-record__title">
+                    {{
+                      client.name !== '' ? client.name : $t('troubleshooting.unpair_single_unknown')
+                    }}
+                  </h3>
+                  <n-tag v-if="client.connected" type="success" size="small" round>
+                    {{ $t('clients.connected') }}
+                  </n-tag>
+                  <n-tag
+                    size="small"
+                    :type="client.perm >= highlightPermissionThreshold ? 'error' : 'default'"
+                    round
+                  >
+                    [ {{ permToStr(client.perm) }} ]
+                  </n-tag>
+                </div>
+                <div class="client-record__meta">
+                  <span>
+                    <i class="fas fa-clock" />
+                    {{ lastSeenLabel(client) }}
+                  </span>
+                  <span v-if="client.displayMode">
+                    <i class="fas fa-tv" />
+                    {{ client.displayMode }}
+                  </span>
+                  <span v-if="client.hdrProfile">
+                    <i class="fas fa-sun" />
+                    {{ client.hdrProfile }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="client-record__actions">
               <n-button
                 v-if="client.connected"
                 size="small"
                 type="warning"
-                quaternary
+                secondary
+                :title="t('clients.disconnect')"
+                :loading="disconnecting[client.uuid] === true"
                 :disabled="disconnecting[client.uuid] === true"
                 @click="disconnectClient(client)"
               >
                 <i class="fas fa-link-slash" />
+                <span class="ml-2">{{ t('clients.disconnect') }}</span>
               </n-button>
               <n-button
                 v-if="client.editing"
                 size="small"
                 type="success"
-                quaternary
+                strong
+                secondary
+                :loading="saving[client.uuid] === true"
                 :disabled="saving[client.uuid] === true || !isClientDisplayOverrideValid"
                 @click="saveClient(client)"
               >
                 <i class="fas fa-check" />
+                <span class="ml-2">{{ t('_common.save') }}</span>
               </n-button>
               <n-button
                 v-if="client.editing"
                 size="small"
-                quaternary
+                secondary
                 :disabled="saving[client.uuid] === true"
                 @click="cancelEdit(client)"
               >
                 <i class="fas fa-times" />
+                <span class="ml-2">{{ t('_common.cancel') }}</span>
               </n-button>
               <n-button
                 v-if="!client.editing"
                 size="small"
-                quaternary
                 type="primary"
+                secondary
                 @click="editClient(client)"
               >
                 <i class="fas fa-edit" />
+                <span class="ml-2">{{ $t('_common.edit') }}</span>
               </n-button>
               <n-button
                 size="small"
-                quaternary
                 type="error"
+                secondary
+                :loading="removing[client.uuid] === true"
                 :disabled="removing[client.uuid] === true"
                 @click="askConfirmUnpair(client)"
               >
                 <i class="fas fa-trash" />
+                <span class="ml-2">{{ $t('clients.remove') }}</span>
               </n-button>
             </div>
-          </div>
-          <div class="mt-1 text-xs opacity-60">{{ lastSeenLabel(client) }}</div>
 
-          <div v-if="client.editing" class="mt-4">
-            <n-form label-placement="top" class="space-y-4" @submit.prevent>
-              <n-form-item :label="$t('pin.device_name')">
-                <n-input v-model:value="client.editName" />
-              </n-form-item>
+            <div v-if="client.editing" class="client-edit-panel">
+              <n-form label-placement="top" class="grid gap-4 lg:grid-cols-2" @submit.prevent>
+                <n-form-item :label="$t('pin.device_name')">
+                  <n-input v-model:value="client.editName" />
+                </n-form-item>
 
               <div class="space-y-3">
                 <div class="grid gap-4 md:grid-cols-3">
@@ -305,277 +379,261 @@
                 </div>
               </div>
 
-              <div v-if="isWindows" class="space-y-3">
-                <n-checkbox
-                  v-model:checked="client.editDisplayOverrideEnabled"
-                  size="small"
-                  @update:checked="(v) => applyClientDisplayOverrideEnabled(client, v)"
-                >
-                  <div class="flex flex-col">
-                    <span>{{ t('config.client_display_override_label') }}</span>
-                    <span class="text-[11px] opacity-60">
-                      {{ t('config.client_display_override_hint') }}
-                    </span>
-                  </div>
-                </n-checkbox>
-
-                <div
-                  v-if="client.editDisplayOverrideEnabled"
-                  class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
-                >
-                  <div class="space-y-2">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        {{ t('config.client_display_override_label') }}
+                <div v-if="isWindows" class="space-y-3 lg:col-span-2">
+                  <n-checkbox
+                    v-model:checked="client.editDisplayOverrideEnabled"
+                    size="small"
+                    @update:checked="(v: boolean) => applyClientDisplayOverrideEnabled(client, v)"
+                  >
+                    <div class="flex flex-col">
+                      <span>{{ t('config.client_display_override_label') }}</span>
+                      <span class="text-[11px] opacity-60">
+                        {{ t('config.client_display_override_hint') }}
                       </span>
                     </div>
-                    <p class="text-[11px] opacity-70">
-                      {{ t('config.client_display_override_hint') }}
-                    </p>
-                  </div>
+                  </n-checkbox>
 
-                  <div class="space-y-2">
-                    <n-radio-group
-                      :value="client.editDisplaySelection"
-                      @update:value="
-                        (v) => applyClientDisplaySelection(client, v as ClientDisplaySelection)
-                      "
-                      class="grid gap-3 sm:grid-cols-2"
-                    >
-                      <n-radio value="virtual" class="app-radio-card cursor-pointer">
-                        <span class="app-radio-card-title">{{
-                          t('config.app_display_override_virtual')
-                        }}</span>
-                      </n-radio>
-                      <n-radio value="physical" class="app-radio-card cursor-pointer">
-                        <span class="app-radio-card-title">{{
-                          t('config.app_display_override_physical')
-                        }}</span>
-                      </n-radio>
-                    </n-radio-group>
-                  </div>
-
-                  <div v-if="client.editDisplaySelection === 'physical'" class="space-y-2">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        {{ t('config.app_display_physical_label') }}
-                      </span>
-                      <n-button
-                        size="tiny"
-                        tertiary
-                        :loading="displayDevicesLoading"
-                        @click="loadDisplayDevices"
-                      >
-                        {{ t('_common.refresh') }}
-                      </n-button>
-                    </div>
-                    <p class="text-[11px] opacity-70">
-                      {{ t('config.app_display_physical_hint') }}
-                    </p>
-                    <n-select
-                      v-model:value="client.editPhysicalOutputOverride"
-                      :options="displayDeviceOptions"
-                      :loading="displayDevicesLoading"
-                      :placeholder="t('config.app_display_physical_placeholder')"
-                      filterable
-                      clearable
-                      :fallback-option="
-                        (value) => ({
-                          label: value as string,
-                          value: value as string,
-                          displayName: value as string,
-                          id: value as string,
-                          active: null,
-                        })
-                      "
-                      @focus="ensureDisplayDevicesLoaded"
-                    >
-                      <template #option="{ option }">
-                        <div class="leading-tight">
-                          <div class="">{{ option?.displayName || option?.label }}</div>
-                          <div class="text-[12px] opacity-60 font-mono">
-                            {{ option?.id || option?.value }}
-                            <span
-                              v-if="option?.active === true"
-                              class="ml-1 text-green-600 dark:text-green-400"
-                            >
-                              ({{ t('config.app_display_status_active') }})
-                            </span>
-                            <span v-else-if="option?.active === false" class="ml-1 opacity-70">
-                              ({{ t('config.app_display_status_inactive') }})
-                            </span>
-                          </div>
-                        </div>
-                      </template>
-                      <template #value="{ option }">
-                        <div class="leading-tight">
-                          <div class="">{{ option?.displayName || option?.label }}</div>
-                          <div class="text-[12px] opacity-60 font-mono">
-                            {{ option?.id || option?.value }}
-                          </div>
-                        </div>
-                      </template>
-                    </n-select>
-                    <div class="text-[11px] opacity-70">
-                      <span v-if="displayDevicesError" class="text-red-500">{{
-                        displayDevicesError
-                      }}</span>
-                      <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
-                    </div>
-                  </div>
-
-                  <div v-else class="space-y-5">
+                  <div v-if="client.editDisplayOverrideEnabled" class="client-advanced-panel">
                     <div class="space-y-2">
                       <div class="flex items-center justify-between gap-3">
-                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          {{ t('config.virtual_display_mode_label') }}
+                        <span class="text-xs font-semibold uppercase opacity-70">
+                          {{ t('config.client_display_override_label') }}
                         </span>
                       </div>
                       <p class="text-[11px] opacity-70">
-                        {{ t('config.virtual_display_mode_step_hint') }}
+                        {{ t('config.client_display_override_hint') }}
                       </p>
-                      <n-radio-group
-                        v-model:value="client.editVirtualDisplayMode"
-                        class="grid gap-3 sm:grid-cols-2"
-                      >
-                        <n-radio
-                          v-for="option in virtualDisplayModeOptions"
-                          :key="String(option.value)"
-                          :value="option.value"
-                          class="app-radio-card cursor-pointer"
-                        >
-                          <span class="app-radio-card-title">{{ option.label }}</span>
-                        </n-radio>
-                      </n-radio-group>
-                      <div
-                        v-if="client.editVirtualDisplayMode === 'global'"
-                        class="text-[11px] opacity-70"
-                      >
-                        {{ t('config.app_virtual_display_mode_follow_global') }}
-                      </div>
                     </div>
 
                     <div class="space-y-2">
+                      <n-radio-group
+                        :value="client.editDisplaySelection"
+                        @update:value="
+                          (v: string) =>
+                            applyClientDisplaySelection(client, v as ClientDisplaySelection)
+                        "
+                        class="grid gap-3 sm:grid-cols-2"
+                      >
+                        <n-radio value="virtual" class="app-radio-card cursor-pointer">
+                          <span class="app-radio-card-title">{{
+                            t('config.app_display_override_virtual')
+                          }}</span>
+                        </n-radio>
+                        <n-radio value="physical" class="app-radio-card cursor-pointer">
+                          <span class="app-radio-card-title">{{
+                            t('config.app_display_override_physical')
+                          }}</span>
+                        </n-radio>
+                      </n-radio-group>
+                    </div>
+
+                    <div v-if="client.editDisplaySelection === 'physical'" class="space-y-2">
                       <div class="flex items-center justify-between gap-3">
-                        <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          {{ t('config.virtual_display_layout_label') }}
+                        <span class="text-xs font-semibold uppercase opacity-70">
+                          {{ t('config.app_display_physical_label') }}
                         </span>
                         <n-button
-                          v-if="client.editVirtualDisplayLayout !== null"
                           size="tiny"
                           tertiary
-                          @click="client.editVirtualDisplayLayout = null"
+                          :loading="displayDevicesLoading"
+                          @click="loadDisplayDevices"
                         >
-                          {{ t('config.app_virtual_display_layout_reset') }}
+                          {{ t('_common.refresh') }}
                         </n-button>
                       </div>
                       <p class="text-[11px] opacity-70">
-                        {{ t('config.virtual_display_layout_hint') }}
+                        {{ t('config.app_display_physical_hint') }}
                       </p>
-                      <n-radio-group
-                        :value="
-                          client.editVirtualDisplayLayout ??
-                          globalVirtualDisplayLayout ??
-                          'exclusive'
+                      <n-select
+                        v-model:value="client.editPhysicalOutputOverride"
+                        :options="displayDeviceOptions"
+                        :loading="displayDevicesLoading"
+                        :placeholder="t('config.app_display_physical_placeholder')"
+                        filterable
+                        clearable
+                        :fallback-option="
+                          (value) => ({
+                            label: value as string,
+                            value: value as string,
+                            displayName: value as string,
+                            id: value as string,
+                            active: null,
+                          })
                         "
-                        @update:value="
-                          (v) =>
-                            (client.editVirtualDisplayLayout =
-                              v === globalVirtualDisplayLayout ? null : (v as any))
-                        "
-                        class="space-y-4"
+                        @focus="ensureDisplayDevicesLoaded"
                       >
-                        <div
-                          v-for="option in virtualDisplayLayoutOptions"
-                          :key="option.value"
-                          class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
-                          @click="
-                            client.editVirtualDisplayLayout =
-                              option.value === globalVirtualDisplayLayout ? null : option.value
-                          "
-                          @keydown.enter.prevent="
-                            client.editVirtualDisplayLayout =
-                              option.value === globalVirtualDisplayLayout ? null : option.value
-                          "
-                          @keydown.space.prevent="
-                            client.editVirtualDisplayLayout =
-                              option.value === globalVirtualDisplayLayout ? null : option.value
-                          "
-                          tabindex="0"
-                        >
-                          <div class="flex items-center gap-3">
-                            <n-radio :value="option.value" />
-                            <span class="text-sm font-semibold">{{ option.label }}</span>
-                          </div>
-                          <span class="text-[11px] opacity-70 leading-snug ml-6">
-                            {{ t(`config.virtual_display_layout_${option.value}_desc`) }}
+                      </n-select>
+                      <div class="text-[11px] opacity-70">
+                        <span v-if="displayDevicesError" class="text-red-500">{{
+                          displayDevicesError
+                        }}</span>
+                        <span v-else>{{ t('config.app_display_physical_status_hint') }}</span>
+                      </div>
+                    </div>
+
+                    <div v-else class="space-y-5">
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-3">
+                          <span class="text-xs font-semibold uppercase opacity-70">
+                            {{ t('config.virtual_display_mode_label') }}
                           </span>
                         </div>
-                      </n-radio-group>
-                      <div
-                        v-if="client.editVirtualDisplayLayout === null"
-                        class="text-[11px] opacity-70"
-                      >
-                        {{ t('config.app_virtual_display_layout_follow_global') }}
+                        <p class="text-[11px] opacity-70">
+                          {{ t('config.virtual_display_mode_step_hint') }}
+                        </p>
+                        <n-radio-group
+                          v-model:value="client.editVirtualDisplayMode"
+                          class="grid gap-3 sm:grid-cols-2"
+                        >
+                          <n-radio
+                            v-for="option in virtualDisplayModeOptions"
+                            :key="String(option.value)"
+                            :value="option.value"
+                            class="app-radio-card cursor-pointer"
+                          >
+                            <span class="app-radio-card-title">{{ option.label }}</span>
+                          </n-radio>
+                        </n-radio-group>
+                        <div
+                          v-if="client.editVirtualDisplayMode === 'global'"
+                          class="text-[11px] opacity-70"
+                        >
+                          {{ t('config.app_virtual_display_mode_follow_global') }}
+                        </div>
+                      </div>
+
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-3">
+                          <span class="text-xs font-semibold uppercase opacity-70">
+                            {{ t('config.virtual_display_layout_label') }}
+                          </span>
+                          <n-button
+                            v-if="client.editVirtualDisplayLayout !== null"
+                            size="tiny"
+                            tertiary
+                            @click="client.editVirtualDisplayLayout = null"
+                          >
+                            {{ t('config.app_virtual_display_layout_reset') }}
+                          </n-button>
+                        </div>
+                        <p class="text-[11px] opacity-70">
+                          {{ t('config.virtual_display_layout_hint') }}
+                        </p>
+                        <n-radio-group
+                          :value="
+                            client.editVirtualDisplayLayout ??
+                            globalVirtualDisplayLayout ??
+                            'exclusive'
+                          "
+                          @update:value="
+                            (v: string) =>
+                              (client.editVirtualDisplayLayout =
+                                v === globalVirtualDisplayLayout
+                                  ? null
+                                  : (v as ClientVirtualDisplayLayout))
+                          "
+                          class="space-y-4"
+                        >
+                          <div
+                            v-for="option in virtualDisplayLayoutOptions"
+                            :key="option.value"
+                            class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                            @click="
+                              client.editVirtualDisplayLayout =
+                                option.value === globalVirtualDisplayLayout ? null : option.value
+                            "
+                            @keydown.enter.prevent="
+                              client.editVirtualDisplayLayout =
+                                option.value === globalVirtualDisplayLayout ? null : option.value
+                            "
+                            @keydown.space.prevent="
+                              client.editVirtualDisplayLayout =
+                                option.value === globalVirtualDisplayLayout ? null : option.value
+                            "
+                            tabindex="0"
+                          >
+                            <div class="flex items-center gap-3">
+                              <n-radio :value="option.value" />
+                              <span class="text-sm font-semibold">{{ option.label }}</span>
+                            </div>
+                            <span class="text-[11px] opacity-70 leading-snug ml-6">
+                              {{ t(`config.virtual_display_layout_${option.value}_desc`) }}
+                            </span>
+                          </div>
+                        </n-radio-group>
+                        <div
+                          v-if="client.editVirtualDisplayLayout === null"
+                          class="text-[11px] opacity-70"
+                        >
+                          {{ t('config.app_virtual_display_layout_follow_global') }}
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <n-form-item v-if="isWindows" :label="t('clients.hdr_profile_label')">
-                <n-select
-                  v-model:value="client.editHdrProfile"
-                  :options="hdrProfileOptions"
-                  :loading="hdrProfilesLoading"
-                  :placeholder="t('clients.hdr_profile_placeholder')"
-                  filterable
-                  clearable
-                  @focus="ensureHdrProfilesLoaded"
+                <n-form-item v-if="isWindows" :label="t('clients.hdr_profile_label')">
+                  <n-select
+                    v-model:value="client.editHdrProfile"
+                    :options="hdrProfileOptions"
+                    :loading="hdrProfilesLoading"
+                    :placeholder="t('clients.hdr_profile_placeholder')"
+                    filterable
+                    clearable
+                    @focus="ensureHdrProfilesLoaded"
+                  />
+                  <template #feedback>
+                    <span class="text-xs opacity-70">{{ t('clients.hdr_profile_desc') }}</span>
+                    <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{
+                      hdrProfilesError
+                    }}</span>
+                  </template>
+                </n-form-item>
+
+                <n-form-item :label="t('config.prefer_10bit_sdr')">
+                  <n-select
+                    v-model:value="client.editPrefer10BitSdr"
+                    :options="prefer10BitSdrOptions"
+                    clearable
+                    :placeholder="t('config.prefer_10bit_sdr_follow_global')"
+                  />
+                  <template #feedback>
+                    <span class="text-xs opacity-70">{{ t('config.prefer_10bit_sdr_desc') }}</span>
+                    <span
+                      v-if="client.editPrefer10BitSdr === null"
+                      class="text-xs opacity-70 block"
+                    >
+                      {{ t('config.prefer_10bit_sdr_follow_global') }}
+                      ({{ globalPrefer10BitSdr ? t('_common.enabled') : t('_common.disabled') }})
+                    </span>
+                  </template>
+                </n-form-item>
+
+                <AppEditConfigOverridesSection
+                  class="lg:col-span-2"
+                  v-model:overrides="client.editConfigOverrides"
+                  scope-label="client"
                 />
-                <template #feedback>
-                  <span class="text-xs opacity-70">{{ t('clients.hdr_profile_desc') }}</span>
-                  <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{
-                    hdrProfilesError
-                  }}</span>
-                </template>
-              </n-form-item>
-
-              <n-form-item :label="t('config.prefer_10bit_sdr')">
-                <n-select
-                  v-model:value="client.editPrefer10BitSdr"
-                  :options="prefer10BitSdrOptions"
-                  clearable
-                  :placeholder="t('config.prefer_10bit_sdr_follow_global')"
-                />
-                <template #feedback>
-                  <span class="text-xs opacity-70">{{ t('config.prefer_10bit_sdr_desc') }}</span>
-                  <span v-if="client.editPrefer10BitSdr === null" class="text-xs opacity-70 block">
-                    {{ t('config.prefer_10bit_sdr_follow_global') }}
-                    ({{ globalPrefer10BitSdr ? t('_common.enabled') : t('_common.disabled') }})
-                  </span>
-                </template>
-              </n-form-item>
-
-              <AppEditConfigOverridesSection
-                v-model:overrides="client.editConfigOverrides"
-                scope-label="client"
-              />
-            </n-form>
-          </div>
+              </n-form>
+            </div>
+          </article>
         </div>
-      </div>
-      <div v-else class="p-4 text-center italic opacity-75">
-        {{ $t('troubleshooting.unpair_single_no_devices') }}
+        <div v-else class="client-empty">
+          <i class="fas fa-users-slash" />
+          {{ $t('troubleshooting.unpair_single_no_devices') }}
+        </div>
       </div>
     </n-card>
 
     <TrustedDevicesCard />
-    <ApiTokenManager />
+    <section ref="apiTokensSectionRef" id="clients-api-tokens" class="clients-api-section">
+      <ApiTokenManager />
+    </section>
 
     <!-- Confirm remove single client -->
-    <n-modal :show="showConfirmRemove" @update:show="(v) => (showConfirmRemove = v)">
+    <n-modal :show="showConfirmRemove" @update:show="setConfirmRemoveVisible">
       <n-card
+        class="clients-modal-card"
         :title="
           $t('clients.confirm_remove_title_named', {
             name: pendingRemoveName || $t('troubleshooting.unpair_single_unknown'),
@@ -593,18 +651,28 @@
         </div>
         <template #footer>
           <div class="flex justify-end gap-2">
-            <n-button @click="showConfirmRemove = false">{{ $t('_common.cancel') }}</n-button>
-            <n-button type="error" secondary @click="confirmRemove">{{
-              $t('clients.remove')
-            }}</n-button>
+            <n-button :disabled="pendingRemoveBusy" @click="setConfirmRemoveVisible(false)">
+              {{ $t('_common.cancel') }}
+            </n-button>
+            <n-button
+              type="error"
+              strong
+              secondary
+              :loading="pendingRemoveBusy"
+              :disabled="pendingRemoveBusy"
+              @click="confirmRemove"
+            >
+              {{ $t('clients.remove') }}
+            </n-button>
           </div>
         </template>
       </n-card>
     </n-modal>
 
     <!-- Confirm unpair all -->
-    <n-modal :show="showConfirmUnpairAll" @update:show="(v) => (showConfirmUnpairAll = v)">
+    <n-modal :show="showConfirmUnpairAll" @update:show="setConfirmUnpairAllVisible">
       <n-card
+        class="clients-modal-card"
         :title="$t('clients.confirm_unpair_all_title')"
         style="max-width: 32rem; width: 100%"
         :bordered="false"
@@ -618,10 +686,19 @@
         </div>
         <template #footer>
           <div class="flex justify-end gap-2">
-            <n-button @click="showConfirmUnpairAll = false">{{ $t('_common.cancel') }}</n-button>
-            <n-button secondary @click="confirmUnpairAll">{{
-              $t('troubleshooting.unpair_all')
-            }}</n-button>
+            <n-button :disabled="unpairAllPressed" @click="setConfirmUnpairAllVisible(false)">
+              {{ $t('_common.cancel') }}
+            </n-button>
+            <n-button
+              type="error"
+              strong
+              secondary
+              :loading="unpairAllPressed"
+              :disabled="unpairAllPressed"
+              @click="confirmUnpairAll"
+            >
+              {{ $t('troubleshooting.unpair_all') }}
+            </n-button>
           </div>
         </template>
       </n-card>
@@ -630,8 +707,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 import { http } from '@/http';
 import {
   NAlert,
@@ -825,11 +903,36 @@ interface DisplayDevice {
   info?: unknown;
 }
 
+interface DisplayDeviceInfo {
+  active?: unknown;
+}
+
+interface ClientUpdatePayload {
+  uuid: string;
+  name: string;
+  hdr_profile: string;
+  display_mode: string;
+  perm: number;
+  allow_client_commands: boolean;
+  do: ClientCommandEntry[];
+  undo: ClientCommandEntry[];
+  output_name_override: string;
+  always_use_virtual_display: boolean;
+  virtual_display_mode: string | null;
+  virtual_display_layout: string | null;
+  config_overrides?: Record<string, unknown>;
+  prefer_10bit_sdr?: boolean;
+}
+
+type UnknownRecord = Record<string, unknown>;
+
 const { t } = useI18n();
+const route = useRoute();
 const message = useMessage();
 const configStore = useConfigStore();
+const apiTokensSectionRef = ref<HTMLElement | null>(null);
 const globalPrefer10BitSdr = computed<boolean>(() =>
-  toBool((configStore.config as any)?.prefer_10bit_sdr, false),
+  toBool(configValue('prefer_10bit_sdr'), false),
 );
 const prefer10BitSdrOptions = computed(() => [
   { label: t('_common.enabled'), value: 'enabled' },
@@ -839,9 +942,15 @@ const prefer10BitSdrOptions = computed(() => [
 const clients = ref<ClientViewModel[]>([]);
 const platform = ref<string>('');
 const clientSortMode = ref<ClientSortMode>('recent');
+const connectedClientCount = computed(
+  () => clients.value.filter((client) => client.connected).length,
+);
 
 const pin = ref<string>('');
 const deviceName = ref<string>('');
+const canPairClient = computed(
+  () => /^[0-9]{4}$/.test(pin.value.trim()) && deviceName.value.trim().length > 0,
+);
 const pairing = ref<boolean>(false);
 const pairStatus = ref<boolean | null>(null);
 
@@ -855,14 +964,23 @@ let refreshIntervalId: ReturnType<typeof setInterval> | null = null;
 const showConfirmRemove = ref<boolean>(false);
 const pendingRemoveUuid = ref<string>('');
 const pendingRemoveName = ref<string>('');
+const pendingRemoveBusy = computed(
+  () => !!pendingRemoveUuid.value && removing.value[pendingRemoveUuid.value] === true,
+);
 const showConfirmUnpairAll = ref<boolean>(false);
 
 const isWindows = computed(() => {
   const p = (platform.value || '').toLowerCase();
   if (p) return p.startsWith('win') || p === 'windows';
-  const meta = String((configStore.metadata as any)?.platform || '').toLowerCase();
+  const metadata = configStore.metadata as UnknownRecord | null | undefined;
+  const meta = String(metadata?.['platform'] || '').toLowerCase();
   return meta === 'windows' || meta.startsWith('win');
 });
+
+function configValue(key: string): unknown {
+  const config = configStore.config as UnknownRecord | null | undefined;
+  return config?.[key];
+}
 
 function toBool(value: unknown, fallback = false): boolean {
   if (typeof value === 'boolean') return value;
@@ -1081,7 +1199,7 @@ const virtualDisplayModeOptions = computed(() => [
 ]);
 
 const globalVirtualDisplayLayout = computed<ClientVirtualDisplayLayout>(() =>
-  parseClientVirtualDisplayLayout((configStore.config as any)?.virtual_display_layout),
+  parseClientVirtualDisplayLayout(configValue('virtual_display_layout')),
 );
 
 const virtualDisplayLayoutOptions = computed(() => {
@@ -1099,12 +1217,10 @@ const hdrProfiles = ref<HdrProfileEntry[]>([]);
 const hdrProfilesLoading = ref(false);
 const hdrProfilesError = ref('');
 
-const hdrProfileOptions = computed(() => {
+const hdrProfileOptions = computed<any[]>(() => {
   const list = Array.isArray(hdrProfiles.value) ? [...hdrProfiles.value] : [];
   list.sort((a, b) => (Number(b.added_ms || 0) || 0) - (Number(a.added_ms || 0) || 0));
-  const options: Array<{ label: string; value: string | null }> = [
-    { label: t('clients.hdr_profile_auto'), value: null },
-  ];
+  const options: any[] = [{ label: t('clients.hdr_profile_auto'), value: null }];
   for (const p of list) {
     const filename = String(p?.filename || '').trim();
     if (!filename) continue;
@@ -1319,44 +1435,75 @@ function askConfirmUnpair(client: ClientViewModel): void {
   showConfirmRemove.value = true;
 }
 
-async function confirmRemove(): Promise<void> {
-  const uuid = pendingRemoveUuid.value;
-  showConfirmRemove.value = false;
-  pendingRemoveUuid.value = '';
-  pendingRemoveName.value = '';
-  if (!uuid) return;
-  await unpairSingle(uuid);
+function setConfirmRemoveVisible(value: boolean): void {
+  if (!value && pendingRemoveBusy.value) return;
+  showConfirmRemove.value = value;
 }
 
-async function unpairSingle(uuid: string): Promise<void> {
-  if (removing.value[uuid]) return;
+async function confirmRemove(): Promise<void> {
+  const uuid = pendingRemoveUuid.value;
+  if (!uuid) return;
+  const removed = await unpairSingle(uuid);
+  if (removed) {
+    showConfirmRemove.value = false;
+    pendingRemoveUuid.value = '';
+    pendingRemoveName.value = '';
+  }
+}
+
+async function unpairSingle(uuid: string): Promise<boolean> {
+  if (removing.value[uuid]) return false;
   removing.value = { ...removing.value, [uuid]: true };
+  let removed = false;
   try {
-    await http.post('./api/clients/unpair', { uuid }, { validateStatus: () => true });
+    const r = await http.post('./api/clients/unpair', { uuid }, { validateStatus: () => true });
+    if (r.status >= 200 && r.status < 300 && r.data?.status === true) {
+      removed = true;
+      message.success(t('clients.remove_success'));
+    } else {
+      message.error(t('clients.remove_failed'));
+    }
   } catch {
+    message.error(t('clients.remove_failed'));
   } finally {
     delete removing.value[uuid];
     removing.value = { ...removing.value };
     refreshClients();
   }
+  return removed;
 }
 
 function askConfirmUnpairAll(): void {
   showConfirmUnpairAll.value = true;
 }
 
-async function confirmUnpairAll(): Promise<void> {
-  showConfirmUnpairAll.value = false;
-  await unpairAll();
+function setConfirmUnpairAllVisible(value: boolean): void {
+  if (!value && unpairAllPressed.value) return;
+  showConfirmUnpairAll.value = value;
 }
 
-async function unpairAll(): Promise<void> {
+async function confirmUnpairAll(): Promise<void> {
+  const removed = await unpairAll();
+  if (removed) {
+    showConfirmUnpairAll.value = false;
+  }
+}
+
+async function unpairAll(): Promise<boolean> {
   unpairAllPressed.value = true;
+  let removed = false;
   try {
     const r = await http.post('./api/clients/unpair-all', {}, { validateStatus: () => true });
-    unpairAllStatus.value = r.data?.status === true;
+    removed = r.data?.status === true;
+    unpairAllStatus.value = removed;
+    if (removed) {
+      message.success(t('troubleshooting.unpair_all_success'));
+    } else {
+      message.error(t('troubleshooting.unpair_all_error'));
+    }
   } catch {
     unpairAllStatus.value = false;
+    message.error(t('troubleshooting.unpair_all_error'));
   } finally {
     unpairAllPressed.value = false;
     setTimeout(() => {
@@ -1364,6 +1511,7 @@ async function unpairAll(): Promise<void> {
     }, 5000);
     refreshClients();
   }
+  return removed;
 }
 
 function editClient(client: ClientViewModel): void {
@@ -1388,7 +1536,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
   if (saving.value[client.uuid]) return;
   saving.value = { ...saving.value, [client.uuid]: true };
   try {
-    const payload: any = {
+    const payload: ClientUpdatePayload = {
       uuid: client.uuid,
       name: (client.editName || '').trim(),
       hdr_profile: String(client.editHdrProfile ?? '').trim(),
@@ -1413,6 +1561,10 @@ async function saveClient(client: ClientViewModel): Promise<void> {
         });
         return result;
       }, []),
+      output_name_override: '',
+      always_use_virtual_display: false,
+      virtual_display_mode: '',
+      virtual_display_layout: '',
     };
 
     if (!client.editDisplayOverrideEnabled) {
@@ -1566,13 +1718,7 @@ const displayDeviceOptions = computed(() => {
     const value = d.device_id || d.display_name || '';
     if (!value || seen.has(value)) continue;
     const displayName = d.friendly_name || d.display_name || 'Display';
-    const info = d.info as any;
-    let active: boolean | null = null;
-    if (info && typeof info === 'object' && 'active' in info) {
-      active = !!(info as any).active;
-    } else if (info) {
-      active = true;
-    }
+    const active = displayDeviceActiveState(d.info);
     const suffix =
       active === null
         ? ''
@@ -1591,17 +1737,43 @@ const displayDeviceOptions = computed(() => {
   return opts;
 });
 
+function displayDeviceActiveState(info: unknown): boolean | null {
+  if (info && typeof info === 'object' && 'active' in info) {
+    return Boolean((info as DisplayDeviceInfo).active);
+  }
+  return info ? true : null;
+}
+
+function scrollToTokenSection(): void {
+  apiTokensSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 onMounted(async () => {
   const auth = useAuthStore();
   await configStore.fetchConfig().catch(() => {});
   await auth.waitForAuthentication();
   await refreshClients();
+  if (route.query['sec'] === 'tokens') {
+    await nextTick();
+    scrollToTokenSection();
+  }
   if (refreshIntervalId === null) {
     refreshIntervalId = setInterval(() => {
       void refreshClients();
     }, 5000);
   }
 });
+
+watch(
+  () => route.query['sec'],
+  async (section) => {
+    if (section !== 'tokens') {
+      return;
+    }
+    await nextTick();
+    scrollToTokenSection();
+  },
+);
 
 onBeforeUnmount(() => {
   if (refreshIntervalId !== null) {
@@ -1612,8 +1784,135 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.clients-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  border: 1px solid rgb(var(--color-dark) / 0.1);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-light) / 0.72);
+  padding: 1rem;
+  box-shadow: 0 1px 2px rgb(var(--color-dark) / 0.04);
+  backdrop-filter: blur(6px);
+}
+
+.dark .clients-hero {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-surface) / 0.68);
+  box-shadow: none;
+}
+
+@media (min-width: 768px) {
+  .clients-hero {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.5rem;
+  }
+}
+
+.clients-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-width: min(100%, 18rem);
+}
+
+@media (max-width: 360px) {
+  .clients-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.clients-hero__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.clients-hero__icon {
+  display: inline-flex;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  background: rgb(var(--color-primary) / 0.16);
+  color: rgb(var(--color-primary));
+}
+
+.clients-stat {
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-light) / 0.56);
+  padding: 0.625rem 0.75rem;
+}
+
+.dark .clients-stat {
+  border-color: rgb(var(--color-light) / 0.1);
+  background: rgb(var(--color-dark) / 0.22);
+}
+
+.clients-stat__value,
+.clients-stat__label {
+  display: block;
+}
+
+.clients-stat__value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.clients-stat__label {
+  margin-top: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.15;
+  opacity: 0.68;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+.clients-section-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.clients-section-icon {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  background: rgb(var(--color-primary) / 0.16);
+  color: rgb(var(--color-primary));
+}
+
+.clients-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.75rem;
+}
+
+.clients-toolbar__sort {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.78;
+}
+
 .clients-page :deep(.n-card) {
-  border-radius: 1rem;
+  border-radius: 0.5rem;
   overflow: hidden;
   border: 1px solid rgb(var(--color-dark) / 0.1);
   background: rgb(var(--color-light) / 0.8);
@@ -1629,7 +1928,16 @@ onBeforeUnmount(() => {
 .clients-page :deep(.n-card .n-card-header),
 .clients-page :deep(.n-card .n-card__footer),
 .clients-page :deep(.n-card .n-card-footer) {
-  border-radius: 0.95rem;
+  border-radius: 0.5rem;
+}
+
+.clients-modal-card {
+  border-radius: 0.5rem;
+  border: 1px solid rgb(var(--color-dark) / 0.12);
+}
+
+.dark .clients-modal-card {
+  border-color: rgb(var(--color-light) / 0.14);
 }
 
 .clients-page :deep(.n-alert),
@@ -1639,6 +1947,207 @@ onBeforeUnmount(() => {
 .clients-page :deep(.n-base-selection .n-base-selection-label),
 .clients-page :deep(.n-data-table-wrapper),
 .clients-page :deep(.n-table-wrapper) {
-  border-radius: 0.8rem !important;
+  border-radius: 0.5rem !important;
+}
+
+.clients-api-section {
+  scroll-margin-top: 5rem;
+}
+
+.client-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.client-record {
+  display: grid;
+  gap: 0.875rem;
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-light) / 0.5);
+  padding: 0.875rem 1rem;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.client-record:hover {
+  border-color: rgb(var(--color-primary) / 0.2);
+  background: rgb(var(--color-light) / 0.62);
+}
+
+.dark .client-record {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-dark) / 0.22);
+}
+
+.dark .client-record:hover {
+  border-color: rgb(var(--color-primary) / 0.34);
+  background: rgb(var(--color-light) / 0.08);
+}
+
+@media (min-width: 900px) {
+  .client-record {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+}
+
+.client-record__main {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.client-record__body {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.5rem;
+}
+
+.client-avatar {
+  display: inline-flex;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-surface) / 0.65);
+  color: rgb(var(--color-dark) / 0.74);
+}
+
+.dark .client-avatar {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-light) / 0.06);
+  color: rgb(var(--color-light) / 0.76);
+}
+
+.client-avatar--connected {
+  border-color: rgb(var(--color-success) / 0.36);
+  background: rgb(var(--color-success) / 0.14);
+  color: rgb(var(--color-success));
+}
+
+.client-record__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+}
+
+.client-record__title {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.client-record__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.875rem;
+  font-size: 0.73rem;
+  line-height: 1.35;
+  opacity: 0.68;
+}
+
+.client-record__meta span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.client-record__meta i {
+  width: 0.875rem;
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+.client-record__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+}
+
+@media (max-width: 520px) {
+  .client-record__actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    width: 100%;
+  }
+
+  .client-record__actions :deep(.n-button) {
+    justify-content: center;
+  }
+}
+
+@media (min-width: 900px) {
+  .client-record__actions {
+    justify-content: flex-end;
+  }
+}
+
+.client-edit-panel {
+  border-top: 1px solid rgb(var(--color-dark) / 0.08);
+  padding-top: 0.875rem;
+}
+
+.dark .client-edit-panel {
+  border-top-color: rgb(var(--color-light) / 0.1);
+}
+
+@media (min-width: 900px) {
+  .client-edit-panel {
+    grid-column: 1 / -1;
+  }
+}
+
+.client-advanced-panel {
+  display: grid;
+  gap: 1.25rem;
+  border: 1px solid rgb(var(--color-dark) / 0.08);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-light) / 0.42);
+  padding: 1rem;
+}
+
+.dark .client-advanced-panel {
+  border-color: rgb(var(--color-light) / 0.12);
+  background: rgb(var(--color-dark) / 0.24);
+}
+
+.client-empty {
+  display: flex;
+  min-height: 8rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  border: 1px dashed rgb(var(--color-dark) / 0.14);
+  border-radius: 0.5rem;
+  background: rgb(var(--color-light) / 0.38);
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.9rem;
+  opacity: 0.78;
+}
+
+.client-empty i {
+  font-size: 1.3rem;
+  opacity: 0.72;
+}
+
+.dark .client-empty {
+  border-color: rgb(var(--color-light) / 0.14);
+  background: rgb(var(--color-dark) / 0.2);
 }
 </style>
