@@ -253,7 +253,7 @@ Make session lifecycle ordering explicit in the writer. Late samples or events f
 
 Add a regression test for a sampler/end interleaving where a sample is queued immediately after the session end command.
 
-**Status (2026-05-10):** **Done for the production fix.** Late samples/events for ended or missing sessions are now rejected so history rows cannot be appended after end finalization. The suggested regression test remains desirable but could not be run from the current build tree because no native tests are registered there.
+**Status (2026-05-10):** **Done.** Late samples/events for ended or missing sessions are now rejected so history rows cannot be appended after end finalization, and `tests/unit/test_session_history.cpp` now covers the post-`end_session()` late-event and late-sample interleavings explicitly.
 
 ---
 
@@ -269,7 +269,7 @@ Either include `session_uuid` in each serialized sample and event, or make the f
 
 Including the field in the API is the cleaner option because it keeps raw history data self-contained.
 
-**Status (2026-05-10):** **Done.** The detail API now includes `session_uuid` in serialized samples and events, so the raw payload matches the frontend contract.
+**Status (2026-05-10):** **Done.** The detail API now includes `session_uuid` in serialized samples and events, so the raw payload matches the frontend contract, and the unit suite now locks in both the per-row UUID contract and the default truncation/`include_all` behavior.
 
 ---
 

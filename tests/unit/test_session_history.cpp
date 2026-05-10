@@ -67,6 +67,21 @@ namespace {
     return m;
   }
 
+  session_history::session_sample_t
+    make_sample(const std::string &uuid, std::uint64_t frames_sent = 10, std::uint64_t bytes_sent_total = 4096) {
+    session_history::session_sample_t sample;
+    sample.session_uuid = uuid;
+    sample.timestamp_unix = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    sample.frames_sent = frames_sent;
+    sample.bytes_sent_total = bytes_sent_total;
+    sample.packets_sent_video = frames_sent;
+    sample.last_frame_index = static_cast<std::int64_t>(frames_sent);
+    sample.encode_latency_ms = 4.0;
+    sample.actual_fps = 60.0;
+    sample.actual_bitrate_kbps = 12000.0;
+    return sample;
+  }
+
   /**
    * @brief RAII guard that calls session_history::shutdown() on destruction.
    *
@@ -353,4 +368,108 @@ TEST(SessionHistory, DbQuotaPrunesOldestEndedSessionsOnStartup) {
   }, std::chrono::seconds(6)));
 
   EXPECT_LT(session_history::list_sessions(50, 0).size(), 8u);
+}
+
+TEST(SessionHistory, DropsLateEventQueuedAfterEndSession) {
+  auto path = make_temp_db_path("late-event");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  session_history::begin_session(make_metadata(uuid));
+  session_history::end_session(uuid);
+  session_history::record_event(uuid, "late_event", R"({"should":"drop"})");
+
+  ASSERT_TRUE(wait_for([&] {
+    auto detail = session_history::get_session_detail(uuid);
+    return detail && detail->summary.end_time_unix > 0 && detail->events.size() == 2;
+  }));
+
+  const auto detail = session_history::get_session_detail(uuid);
+  ASSERT_TRUE(detail.has_value());
+  EXPECT_EQ(detail->events.size(), 2u);
+  for (const auto &event : detail->events) {
+    EXPECT_NE(event.event_type, "late_event");
+  }
+}
+
+TEST(SessionHistory, DropsLateSampleQueuedAfterEndSession) {
+  auto path = make_temp_db_path("late-sample");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+  session_history::begin_session(make_metadata(uuid));
+  session_history::end_session(uuid);
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(uuid)));
+
+  ASSERT_TRUE(wait_for([&] {
+    auto detail = session_history::get_session_detail(uuid);
+    return detail && detail->summary.end_time_unix > 0;
+  }));
+
+  const auto detail = session_history::get_session_detail(uuid);
+  ASSERT_TRUE(detail.has_value());
+  EXPECT_EQ(detail->total_samples, 0u);
+  EXPECT_TRUE(detail->samples.empty());
+}
+
+TEST(SessionHistory, DetailSamplesAndEventsPreserveSessionUuid) {
+  auto path = make_temp_db_path("detail-uuid");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+  session_history::begin_session(make_metadata(uuid));
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(uuid, 42, 16384)));
+  session_history::record_event(uuid, "marker", R"({"kind":"detail"})");
+  session_history::end_session(uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto detail = session_history::get_session_detail(uuid);
+    return detail && !detail->samples.empty() && detail->events.size() >= 3;
+  }));
+
+  const auto detail = session_history::get_session_detail(uuid);
+  ASSERT_TRUE(detail.has_value());
+  EXPECT_EQ(detail->samples.front().session_uuid, uuid);
+
+  bool found_marker = false;
+  for (const auto &event : detail->events) {
+    EXPECT_EQ(event.session_uuid, uuid);
+    if (event.event_type == "marker") {
+      found_marker = true;
+    }
+  }
+  EXPECT_TRUE(found_marker);
+}
+
+TEST(SessionHistory, DetailDefaultEventLimitSetsTruncationAndIncludeAllRestoresRows) {
+  auto path = make_temp_db_path("detail-limit");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+  session_history::begin_session(make_metadata(uuid));
+  for (int i = 0; i < 550; ++i) {
+    session_history::record_event(uuid, "detail_limit", std::to_string(i));
+  }
+  session_history::end_session(uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto detail = session_history::get_session_detail(uuid);
+    return detail && detail->summary.end_time_unix > 0 && detail->total_events >= 552;
+  }, std::chrono::seconds(6)));
+
+  const auto limited_detail = session_history::get_session_detail(uuid);
+  ASSERT_TRUE(limited_detail.has_value());
+  EXPECT_TRUE(limited_detail->events_truncated);
+  EXPECT_EQ(limited_detail->total_events, 552u);
+  EXPECT_EQ(limited_detail->events.size(), 500u);
+
+  const auto full_detail = session_history::get_session_detail(uuid, true);
+  ASSERT_TRUE(full_detail.has_value());
+  EXPECT_FALSE(full_detail->events_truncated);
+  EXPECT_EQ(full_detail->total_events, 552u);
+  EXPECT_EQ(full_detail->events.size(), 552u);
 }

@@ -861,6 +861,20 @@ namespace session_history {
   }
 
 #ifdef SUNSHINE_TESTS
+  bool record_sample_for_tests(const session_sample_t &sample) {
+    if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    write_cmd_t cmd;
+    cmd.type = cmd_type::insert_sample;
+    cmd.sample = sample;
+    if (cmd.sample.timestamp_unix <= 0) {
+      cmd.sample.timestamp_unix = storage::now_unix();
+    }
+    return enqueue(std::move(cmd));
+  }
+
   bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix) {
     if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
       return false;
