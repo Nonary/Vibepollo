@@ -635,6 +635,7 @@ namespace session_history {
         enriched.host_gpu_model = info.gpu_model;
       }
     }
+    enriched.codec = stream::canonical_codec_name(enriched.codec);
     {
       std::lock_guard lk {g_active_mutex};
       g_active_sessions[enriched.uuid] = enriched;
@@ -763,7 +764,7 @@ namespace session_history {
       as.target_fps = info.fps;
       as.encoder_bitrate_kbps = info.encoder_bitrate_kbps;
       as.requested_bitrate_kbps = info.requested_bitrate_kbps ? info.requested_bitrate_kbps : info.encoder_bitrate_kbps;
-      as.codec = std::string(stream::video_format_name(info.video_format));
+      as.codec = !it->second.codec.empty() ? it->second.codec : std::string(stream::video_format_name(info.video_format));
       as.hdr = info.dynamic_range > 0;
       as.yuv444 = info.yuv444;
       as.uptime_seconds = info.uptime_seconds;
@@ -805,7 +806,7 @@ namespace session_history {
       as.target_fps = ws.fps.value_or(0);
       as.encoder_bitrate_kbps = ws.bitrate_kbps.value_or(0);
       as.requested_bitrate_kbps = ws.bitrate_kbps.value_or(0);
-      as.codec = ws.codec.value_or("");
+      as.codec = !it->second.codec.empty() ? it->second.codec : stream::canonical_codec_name(ws.codec.value_or(""));
       as.hdr = ws.hdr.value_or(false);
       as.yuv444 = ws.yuv444.value_or(false);
       as.frames_sent = static_cast<std::uint64_t>(

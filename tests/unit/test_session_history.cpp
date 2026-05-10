@@ -149,7 +149,7 @@ TEST(SessionHistory, BeginEndPersists) {
   EXPECT_EQ(detail->summary.app_name, "Solitaire");
   EXPECT_EQ(detail->summary.encoder_bitrate_kbps, 20000);
   EXPECT_EQ(detail->summary.requested_bitrate_kbps, 25000);
-  EXPECT_EQ(detail->summary.codec, "h264");
+  EXPECT_EQ(detail->summary.codec, "H.264");
   EXPECT_EQ(detail->summary.host_cpu_model, "TestCPU");
   EXPECT_EQ(detail->summary.host_gpu_model, "TestGPU");
 

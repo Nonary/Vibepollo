@@ -10,9 +10,23 @@
 
 namespace stream {
   std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2);
+  std::string canonical_codec_name(std::string_view codec);
 }
 
 #include "../tests_common.h"
+
+TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {
+  EXPECT_EQ(stream::canonical_codec_name("h264"), "H.264");
+  EXPECT_EQ(stream::canonical_codec_name("H.264"), "H.264");
+  EXPECT_EQ(stream::canonical_codec_name("hevc"), "HEVC");
+  EXPECT_EQ(stream::canonical_codec_name("H265"), "HEVC");
+  EXPECT_EQ(stream::canonical_codec_name("av1"), "AV1");
+}
+
+TEST(VideoFormatNameTests, CanonicalCodecNamePreservesUnknownValues) {
+  EXPECT_EQ(stream::canonical_codec_name("vp9"), "vp9");
+  EXPECT_TRUE(stream::canonical_codec_name({}).empty());
+}
 
 TEST(ConcatAndInsertTests, ConcatNoInsertionTest) {
   char b1[] = {'a', 'b'};

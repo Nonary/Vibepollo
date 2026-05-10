@@ -39,6 +39,34 @@ namespace stream {
     }
   }
 
+  inline std::string canonical_codec_name(std::string_view codec) {
+    if (codec.empty()) {
+      return {};
+    }
+
+    std::string lowered;
+    lowered.reserve(codec.size());
+    for (char ch : codec) {
+      if (ch >= 'A' && ch <= 'Z') {
+        lowered.push_back(static_cast<char>(ch - 'A' + 'a'));
+      } else {
+        lowered.push_back(ch);
+      }
+    }
+
+    if (lowered == "h264" || lowered == "h.264") {
+      return "H.264";
+    }
+    if (lowered == "h265" || lowered == "hevc") {
+      return "HEVC";
+    }
+    if (lowered == "av1") {
+      return "AV1";
+    }
+
+    return std::string(codec);
+  }
+
   struct session_t;
 
   struct config_t {

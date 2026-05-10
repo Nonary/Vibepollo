@@ -492,7 +492,7 @@ namespace confighttp {
     // WebRTC has no FEC/audio adjustment, so the requested bitrate is the same as the encoder bitrate.
     output["requested_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
     output["encoder_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
-    output["codec"] = state.codec ? nlohmann::json(*state.codec) : nlohmann::json(nullptr);
+    output["codec"] = state.codec ? nlohmann::json(stream::canonical_codec_name(*state.codec)) : nlohmann::json(nullptr);
     output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
     output["yuv444"] = state.yuv444 ? nlohmann::json(*state.yuv444) : nlohmann::json(false);
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);

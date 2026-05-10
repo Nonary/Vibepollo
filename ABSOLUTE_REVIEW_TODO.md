@@ -396,7 +396,7 @@ std::string_view codec_name(int video_format) {
 
 Use that helper everywhere live session metadata, history metadata, and HTTP responses need a codec label.
 
-**Status (2026-05-10):** **Mostly done for RTSP/live-history paths.** A shared `stream::video_format_name()` helper now drives the RTSP/history HTTP formatting paths that were duplicating the mapping. Other codec-label helpers still exist for separate WebRTC-specific enum spaces.
+**Status (2026-05-10):** **Done.** Codec display-name normalization now goes through shared `stream` helpers for RTSP and WebRTC paths, and the canonical labels are reused for live-session responses, active-session/history metadata, and persisted session-history summaries.
 
 ### 7. Low: `total_losses` and `total_frames` are misleading variable names
 
