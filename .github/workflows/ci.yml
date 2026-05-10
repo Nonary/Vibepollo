@@ -293,7 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           release_title="v${RELEASE_VERSION}"
-          versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${BASE_VERSION}-${CHANNEL}.exe"
+          # Keep the installer release asset aligned with the full tag version.
+          # This preserves prerelease/patch-channel suffixes such as
+          # -alpha.1, -beta.2, or -stable.3, while plain stable tags fall back
+          # to just the numeric version (for example, v1.2.3).
+          versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${RELEASE_VERSION}.exe"
 
           mapfile -t setup_assets < <(find artifacts -maxdepth 1 -type f -name "${PRODUCT_NAME}Setup*.exe" | sort)
           if (( ${#setup_assets[@]} != 1 )); then
