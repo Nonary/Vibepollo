@@ -4,9 +4,11 @@
  */
 
 // standard includes
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 // local includes
@@ -175,6 +177,134 @@ namespace session_history::storage {
       return sqlite3_column_int(stmt.get(), 0);
     }
 
+    std::int64_t read_pragma_int64(sqlite3 *db, const char *sql) {
+      auto stmt = prepare(db, sql);
+      if (!stmt) {
+        return 0;
+      }
+      if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return 0;
+      }
+      return sqlite3_column_int64(stmt.get(), 0);
+    }
+
+    bool delete_session_rows(sqlite3 *db, const std::string &uuid, bool track_changes, int &affected) {
+      constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
+      constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
+      constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
+
+      affected = 0;
+      for (const auto &[sql, counts_changes] : {
+             std::pair {DELETE_EVENTS, false},
+             std::pair {DELETE_SAMPLES, false},
+             std::pair {DELETE_SESSION, true},
+           }) {
+        auto stmt = prepare(db, sql);
+        if (!stmt) return false;
+
+        sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+          BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
+          return false;
+        }
+        if (track_changes && counts_changes) {
+          affected = sqlite3_changes(db);
+        }
+      }
+
+      return true;
+    }
+
+    bool prune_sessions_by_limit(sqlite3 *db, int max_history_sessions) {
+      const auto limit_str = std::to_string(max_history_sessions);
+      const std::string delete_events =
+        "DELETE FROM events WHERE session_uuid IN ("
+        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
+        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
+        ")";
+      const std::string delete_samples =
+        "DELETE FROM samples WHERE session_uuid IN ("
+        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
+        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
+        ")";
+      const std::string delete_sessions =
+        "DELETE FROM sessions WHERE end_time_unix IS NOT NULL "
+        "AND uuid NOT IN ("
+        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
+        "  ORDER BY end_time_unix DESC LIMIT " + limit_str +
+        ")";
+      return exec(db, delete_events.c_str()) &&
+             exec(db, delete_samples.c_str()) &&
+             exec(db, delete_sessions.c_str());
+    }
+
+    bool prune_sessions_older_than(sqlite3 *db, double cutoff_unix) {
+      auto delete_events = prepare(
+        db,
+        "DELETE FROM events WHERE session_uuid IN ("
+        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
+        ")"
+      );
+      if (!delete_events) return false;
+      sqlite3_bind_double(delete_events.get(), 1, cutoff_unix);
+      if (sqlite3_step(delete_events.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: TTL event prune failed: " << sqlite3_errmsg(db);
+        return false;
+      }
+
+      auto delete_samples = prepare(
+        db,
+        "DELETE FROM samples WHERE session_uuid IN ("
+        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
+        ")"
+      );
+      if (!delete_samples) return false;
+      sqlite3_bind_double(delete_samples.get(), 1, cutoff_unix);
+      if (sqlite3_step(delete_samples.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: TTL sample prune failed: " << sqlite3_errmsg(db);
+        return false;
+      }
+
+      auto delete_sessions = prepare(
+        db,
+        "DELETE FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
+      );
+      if (!delete_sessions) return false;
+      sqlite3_bind_double(delete_sessions.get(), 1, cutoff_unix);
+      if (sqlite3_step(delete_sessions.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: TTL session prune failed: " << sqlite3_errmsg(db);
+        return false;
+      }
+
+      return true;
+    }
+
+    std::optional<std::string> oldest_ended_session_uuid(sqlite3 *db) {
+      auto stmt = prepare(
+        db,
+        "SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL ORDER BY end_time_unix ASC LIMIT 1"
+      );
+      if (!stmt) {
+        return std::nullopt;
+      }
+      if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return std::string {};
+      }
+      auto text = sqlite3_column_text(stmt.get(), 0);
+      if (!text) {
+        return std::string {};
+      }
+      return std::string(reinterpret_cast<const char *>(text));
+    }
+
+    std::uint64_t estimate_live_db_bytes(sqlite3 *db) {
+      const auto page_size = static_cast<std::uint64_t>(std::max<std::int64_t>(read_pragma_int64(db, "PRAGMA page_size"), 0));
+      const auto page_count = static_cast<std::uint64_t>(std::max<std::int64_t>(read_pragma_int64(db, "PRAGMA page_count"), 0));
+      const auto freelist_count = static_cast<std::uint64_t>(std::max<std::int64_t>(read_pragma_int64(db, "PRAGMA freelist_count"), 0));
+      const auto live_pages = page_count > freelist_count ? page_count - freelist_count : 0;
+      return live_pages * page_size;
+    }
+
   }  // namespace
 
   void sqlite_deleter::operator()(sqlite3 *db) const {
@@ -206,6 +336,30 @@ namespace session_history::storage {
     }
     return true;
   }
+
+  bool checkpoint(sqlite3 *db) {
+    return exec(db, "PRAGMA wal_checkpoint(TRUNCATE)");
+  }
+
+#ifdef SUNSHINE_TESTS
+  bool force_set_end_time(sqlite3 *db, const std::string &uuid, double end_time_unix) {
+    auto stmt = prepare(
+      db,
+      "UPDATE sessions SET end_time_unix = ?, duration_seconds = ? - start_time_unix WHERE uuid = ?"
+    );
+    if (!stmt) return false;
+
+    sqlite3_bind_double(stmt.get(), 1, end_time_unix);
+    sqlite3_bind_double(stmt.get(), 2, end_time_unix);
+    sqlite3_bind_text(stmt.get(), 3, uuid.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+      BOOST_LOG(error) << "session_history: force_set_end_time failed for uuid=" << uuid
+                       << ": " << sqlite3_errmsg(db);
+      return false;
+    }
+    return sqlite3_changes(db) > 0;
+  }
+#endif
 
   double now_unix() {
     auto tp = std::chrono::system_clock::now();
@@ -627,54 +781,43 @@ namespace session_history::storage {
   }
 
   delete_apply_e process_delete(sqlite3 *db, const std::string &uuid) {
-    constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
-    constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
-    constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
-
     int affected = 0;
-    for (const auto &[sql, track_changes] : {
-           std::pair {DELETE_EVENTS, false},
-           std::pair {DELETE_SAMPLES, false},
-           std::pair {DELETE_SESSION, true},
-         }) {
-      auto stmt = prepare(db, sql);
-      if (!stmt) return delete_apply_e::failed;
-
-      sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
-      if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-        BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
-        return delete_apply_e::failed;
-      }
-      if (track_changes) {
-        affected = sqlite3_changes(db);
-      }
+    if (!delete_session_rows(db, uuid, true, affected)) {
+      return delete_apply_e::failed;
     }
 
     BOOST_LOG(info) << "Deleted session " << uuid << " from history (rows=" << affected << ")";
     return affected > 0 ? delete_apply_e::deleted : delete_apply_e::not_found;
   }
 
-  bool process_prune(sqlite3 *db, int max_history_sessions) {
-    const auto limit_str = std::to_string(max_history_sessions);
-    const std::string delete_events =
-      "DELETE FROM events WHERE session_uuid IN ("
-      "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-      "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
-      ")";
-    const std::string delete_samples =
-      "DELETE FROM samples WHERE session_uuid IN ("
-      "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-      "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
-      ")";
-    const std::string delete_sessions =
-      "DELETE FROM sessions WHERE end_time_unix IS NOT NULL "
-      "AND uuid NOT IN ("
-      "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-      "  ORDER BY end_time_unix DESC LIMIT " + limit_str +
-      ")";
-    return exec(db, delete_events.c_str()) &&
-           exec(db, delete_samples.c_str()) &&
-           exec(db, delete_sessions.c_str());
+  bool process_prune(sqlite3 *db, const prune_options_t &options) {
+    if (options.max_history_sessions > 0 && !prune_sessions_by_limit(db, options.max_history_sessions)) {
+      return false;
+    }
+
+    if (options.prune_sessions_ended_before_unix > 0 &&
+        !prune_sessions_older_than(db, options.prune_sessions_ended_before_unix)) {
+      return false;
+    }
+
+    if (options.max_db_size_bytes > 0) {
+      while (estimate_live_db_bytes(db) > options.max_db_size_bytes) {
+        auto oldest = oldest_ended_session_uuid(db);
+        if (!oldest.has_value()) {
+          return false;
+        }
+        if (oldest->empty()) {
+          break;
+        }
+
+        int affected = 0;
+        if (!delete_session_rows(db, *oldest, false, affected)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   std::vector<session_summary_t> read_session_summaries(sqlite3 *db, int limit, int offset) {

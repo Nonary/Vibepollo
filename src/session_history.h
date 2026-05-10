@@ -199,4 +199,10 @@ namespace session_history {
    */
   delete_result_e delete_session(const std::string &uuid);
 
+#ifdef SUNSHINE_TESTS
+  bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix);
+  void configure_retention_for_tests(bool enabled, int ttl_days, std::uint64_t max_db_size_bytes);
+  bool prune_now_for_tests();
+#endif
+
 }  // namespace session_history

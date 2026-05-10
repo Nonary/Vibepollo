@@ -25,6 +25,7 @@
 // local includes
 #include "session_history.h"
 #include "session_history_storage.h"
+#include "config.h"
 #include "host_stats.h"
 #include "logging.h"
 #include "rtsp.h"
@@ -47,6 +48,7 @@ namespace session_history {
       insert_sample,
       insert_event,
       prune,
+      set_end_time_for_tests,
       stop
     };
 
@@ -56,6 +58,7 @@ namespace session_history {
       session_sample_t sample;
       session_event_t event;
       std::string uuid;
+      double timestamp_unix = 0;
       std::shared_ptr<std::promise<bool>> completion;
     };
 
@@ -132,6 +135,15 @@ namespace session_history {
     std::thread g_writer_thread;
     std::thread g_sampler_thread;
     std::atomic<bool> g_running {false};
+    std::filesystem::path g_history_db_path;
+
+    struct history_settings_t {
+      bool enabled = true;
+      int ttl_days = 0;
+      std::uint64_t max_db_size_bytes = 0;
+    };
+
+    history_settings_t g_history_settings;
 
     // Per-session aggregators. Mutated by the sampler thread, by the caller of
     // end_session(), and read by the HTTP handler thread (get_active_sessions).
@@ -152,6 +164,17 @@ namespace session_history {
     constexpr int MAX_EVENTS_PER_SESSION = 2000;
     constexpr int SESSION_HISTORY_SCHEMA_VERSION = 4;
     constexpr auto DELETE_WAIT_TIMEOUT = std::chrono::seconds(5);
+
+    storage::prune_options_t current_prune_options() {
+      storage::prune_options_t options;
+      options.max_history_sessions = MAX_HISTORY_SESSIONS;
+      if (g_history_settings.ttl_days > 0) {
+        options.prune_sessions_ended_before_unix =
+          storage::now_unix() - (static_cast<double>(g_history_settings.ttl_days) * 24.0 * 60.0 * 60.0);
+      }
+      options.max_db_size_bytes = g_history_settings.max_db_size_bytes;
+      return options;
+    }
 
     // ── Queue helpers ──────────────────────────────────────────────
 
@@ -200,8 +223,24 @@ namespace session_history {
           return storage::process_sample(db, cmd.sample, MAX_SAMPLES_PER_SESSION);
         case cmd_type::insert_event:
           return storage::process_event(db, cmd.event, MAX_EVENTS_PER_SESSION);
-        case cmd_type::prune:
-          return storage::process_prune(db, MAX_HISTORY_SESSIONS);
+        case cmd_type::prune: {
+          const bool pruned = storage::process_prune(db, current_prune_options());
+          if (cmd.completion) {
+            completions.emplace_back(cmd.completion, pruned);
+          }
+          return pruned;
+        }
+        case cmd_type::set_end_time_for_tests: {
+#ifdef SUNSHINE_TESTS
+          const bool updated = storage::force_set_end_time(db, cmd.uuid, cmd.timestamp_unix);
+          if (cmd.completion) {
+            completions.emplace_back(cmd.completion, updated);
+          }
+          return updated;
+#else
+          return false;
+#endif
+        }
         case cmd_type::stop:
           return true;
       }
@@ -222,6 +261,9 @@ namespace session_history {
       }
 
       std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
+      const bool batch_requested_prune = std::any_of(batch.begin(), batch.end(), [](const write_cmd_t &cmd) {
+        return cmd.type == cmd_type::prune;
+      });
       if (!storage::exec(g_write_db.get(), "BEGIN TRANSACTION")) {
         BOOST_LOG(error) << "session_history: failed to begin write transaction";
         resolve_completions(completions, false);
@@ -246,6 +288,11 @@ namespace session_history {
       if (!committed) {
         BOOST_LOG(error) << "session_history: failed to commit write transaction";
         storage::exec(g_write_db.get(), "ROLLBACK");
+      } else if (batch_requested_prune) {
+        (void) storage::checkpoint(g_write_db.get());
+        if (!g_history_db_path.empty()) {
+          storage::tighten_history_db_permissions(g_history_db_path);
+        }
       }
       resolve_completions(completions, committed);
       return committed;
@@ -495,6 +542,18 @@ namespace session_history {
   void init(const std::string &db_path) {
     BOOST_LOG(info) << "session_history: initializing database at " << db_path;
     const std::filesystem::path history_db_path {db_path};
+    g_history_db_path = history_db_path;
+    g_history_settings.enabled = config::sunshine.session_history_enabled;
+    g_history_settings.ttl_days = std::max(config::sunshine.session_history_ttl_days, 0);
+    g_history_settings.max_db_size_bytes =
+      config::sunshine.session_history_db_size_limit_mb > 0 ?
+        static_cast<std::uint64_t>(config::sunshine.session_history_db_size_limit_mb) * 1024ull * 1024ull :
+        0ull;
+
+    if (!g_history_settings.enabled) {
+      BOOST_LOG(info) << "session_history: disabled by configuration";
+      return;
+    }
 
     if (!storage::open_write_db(db_path, g_write_db)) {
       return;
@@ -553,11 +612,15 @@ namespace session_history {
 
     g_read_db.reset();
     g_write_db.reset();
+    g_history_db_path.clear();
 
     BOOST_LOG(info) << "session_history: shut down";
   }
 
   void begin_session(const session_metadata_t &metadata) {
+    if (!g_history_settings.enabled || !g_running.load(std::memory_order_acquire) || !g_write_db) {
+      return;
+    }
     BOOST_LOG(info) << "session_history: begin_session uuid=" << metadata.uuid
                     << " protocol=" << metadata.protocol;
     // Auto-populate static host identification from the host_stats subsystem
@@ -598,6 +661,9 @@ namespace session_history {
   }
 
   void end_session(const std::string &uuid) {
+    if (!g_history_settings.enabled || !g_running.load(std::memory_order_acquire) || !g_write_db) {
+      return;
+    }
     BOOST_LOG(info) << "session_history: end_session uuid=" << uuid;
     {
       std::lock_guard lk {g_active_mutex};
@@ -634,6 +700,9 @@ namespace session_history {
   }
 
   void record_event(const std::string &uuid, const std::string &event_type, const std::string &payload) {
+    if (!g_history_settings.enabled || !g_running.load(std::memory_order_acquire) || !g_write_db) {
+      return;
+    }
     session_event_t evt;
     evt.session_uuid = uuid;
     evt.timestamp_unix = storage::now_unix();
@@ -790,5 +859,57 @@ namespace session_history {
 
     return result.get() ? delete_result_e::deleted : delete_result_e::not_found;
   }
+
+#ifdef SUNSHINE_TESTS
+  bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix) {
+    if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    auto completion = std::make_shared<std::promise<bool>>();
+    auto result = completion->get_future();
+
+    write_cmd_t cmd;
+    cmd.type = cmd_type::set_end_time_for_tests;
+    cmd.uuid = uuid;
+    cmd.timestamp_unix = end_time_unix;
+    cmd.completion = completion;
+    if (!enqueue(std::move(cmd))) {
+      return false;
+    }
+
+    if (result.wait_for(DELETE_WAIT_TIMEOUT) != std::future_status::ready) {
+      return false;
+    }
+    return result.get();
+  }
+
+  void configure_retention_for_tests(bool enabled, int ttl_days, std::uint64_t max_db_size_bytes) {
+    g_history_settings.enabled = enabled;
+    g_history_settings.ttl_days = std::max(ttl_days, 0);
+    g_history_settings.max_db_size_bytes = max_db_size_bytes;
+  }
+
+  bool prune_now_for_tests() {
+    if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    auto completion = std::make_shared<std::promise<bool>>();
+    auto result = completion->get_future();
+
+    write_cmd_t cmd;
+    cmd.type = cmd_type::prune;
+    cmd.completion = completion;
+    if (!enqueue(std::move(cmd))) {
+      return false;
+    }
+
+    if (result.wait_for(DELETE_WAIT_TIMEOUT) != std::future_status::ready) {
+      return false;
+    }
+    return result.get();
+  }
+#endif
 
 }  // namespace session_history

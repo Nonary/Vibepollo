@@ -950,7 +950,10 @@ namespace config {
     {},  // server commands
     std::chrono::hours {2},  // session_token_ttl default 2h
     std::chrono::hours {24 * 7},  // remember_me_refresh_token_ttl default 7d
-    86400  // update_check_interval_seconds default 24h
+    86400,  // update_check_interval_seconds default 24h
+    true,  // session_history_enabled
+    0,  // session_history_ttl_days (disabled by default)
+    0  // session_history_db_size_limit_mb (disabled by default)
   };
 
   namespace {
@@ -1695,6 +1698,7 @@ namespace config {
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);
 
     int_f(vars, "update_check_interval", config::sunshine.update_check_interval_seconds);
+    bool_f(vars, "session_history_enabled", config::sunshine.session_history_enabled);
 
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
@@ -1880,6 +1884,20 @@ namespace config {
       );
       if (ttl_secs > 0) {
         sunshine.remember_me_refresh_token_ttl = std::chrono::seconds {ttl_secs};
+      }
+    }
+    {
+      int retention_days = config::sunshine.session_history_ttl_days;
+      int_between_f(vars, "session_history_ttl_days", retention_days, {0, std::numeric_limits<int>::max()});
+      if (retention_days >= 0) {
+        sunshine.session_history_ttl_days = retention_days;
+      }
+    }
+    {
+      int quota_mb = config::sunshine.session_history_db_size_limit_mb;
+      int_between_f(vars, "session_history_db_size_limit_mb", quota_mb, {0, std::numeric_limits<int>::max()});
+      if (quota_mb >= 0) {
+        sunshine.session_history_db_size_limit_mb = quota_mb;
       }
     }
 

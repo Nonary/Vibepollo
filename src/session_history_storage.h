@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -37,6 +38,12 @@ namespace session_history::storage {
     failed
   };
 
+  struct prune_options_t {
+    int max_history_sessions = 0;
+    double prune_sessions_ended_before_unix = 0;
+    std::uint64_t max_db_size_bytes = 0;
+  };
+
   stmt_ptr prepare(sqlite3 *db, const char *sql);
   bool exec(sqlite3 *db, const char *sql);
   double now_unix();
@@ -51,7 +58,12 @@ namespace session_history::storage {
   bool process_sample(sqlite3 *db, const session_sample_t &sample, int max_samples_per_session);
   bool process_event(sqlite3 *db, const session_event_t &event, int max_events_per_session);
   delete_apply_e process_delete(sqlite3 *db, const std::string &uuid);
-  bool process_prune(sqlite3 *db, int max_history_sessions);
+  bool process_prune(sqlite3 *db, const prune_options_t &options);
+  bool checkpoint(sqlite3 *db);
+
+#ifdef SUNSHINE_TESTS
+  bool force_set_end_time(sqlite3 *db, const std::string &uuid, double end_time_unix);
+#endif
 
   std::vector<session_summary_t> read_session_summaries(sqlite3 *db, int limit, int offset);
   std::optional<session_detail_t> read_session_detail(

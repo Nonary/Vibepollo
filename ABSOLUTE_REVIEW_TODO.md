@@ -24,7 +24,7 @@ This creates DB growth risk, including WAL/SHM sidecars, and an authenticated re
 
 Add retention at the samples/events layer. Cap rows per session, add TTL or DB size quota, and expose pagination or time-windowing on the detail API. Return summary or downsampled chart data by default rather than full raw history.
 
-**Status (2026-05-10):** **Mostly done.** The detail API now returns capped default drawer payloads, reports `total_samples` / `total_events`, marks truncation, allows explicit `?full=1` fetches for full export, and the writer now enforces per-session row caps for samples and events. TTL and DB-size quotas are still future follow-up work if we want stronger long-term retention controls.
+**Status (2026-05-10):** **Done.** The detail API now returns capped default drawer payloads, reports `total_samples` / `total_events`, marks truncation, allows explicit `?full=1` fetches for full export, the writer enforces per-session row caps for samples and events, and session-history pruning now also supports configurable TTL-based cleanup plus an approximate live DB-size quota.
 
 ### 3. Medium: local telemetry DB persists sensitive metadata without explicit permission hardening
 
@@ -36,7 +36,7 @@ Set restrictive permissions on `session_history.db`, `session_history.db-wal`, a
 
 Also consider a config option to disable persistence or shorten retention.
 
-**Status (2026-05-10):** **Mostly done.** `src/session_history.cpp` now tightens the containing history directory plus `session_history.db`, `-wal`, and `-shm` during init (owner-only directory/file permissions on non-Windows, Administrators+SYSTEM DACL on Windows). The remaining follow-up here is the optional persistence-disable / shorter-retention configuration, not the filesystem hardening itself.
+**Status (2026-05-10):** **Done.** `src/session_history.cpp` now tightens the containing history directory plus `session_history.db`, `-wal`, and `-shm` during init (owner-only directory/file permissions on non-Windows, Administrators+SYSTEM DACL on Windows), and configuration now allows disabling session-history persistence entirely or shortening retention with TTL / DB-quota controls.
 
 ### 4. Medium/Low: deleting active sessions can orphan samples/events and corrupt history state
 

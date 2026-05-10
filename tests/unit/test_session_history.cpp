@@ -10,6 +10,7 @@
  */
 #include "../tests_common.h"
 
+#include <src/config.h>
 #include <src/session_history.h>
 
 #include <chrono>
@@ -75,6 +76,14 @@ namespace {
   struct HistoryGuard {
     ~HistoryGuard() {
       session_history::shutdown();
+    }
+  };
+
+  struct SunshineConfigGuard {
+    config::sunshine_t saved = config::sunshine;
+
+    ~SunshineConfigGuard() {
+      config::sunshine = saved;
     }
   };
 
@@ -256,4 +265,92 @@ TEST(SessionHistory, GetSessionDetailMissingReturnsEmpty) {
   // delete_session() on an unknown uuid must not throw and should
   // report no rows affected.
   EXPECT_EQ(session_history::delete_session("also-not-there"), session_history::delete_result_e::not_found);
+}
+
+TEST(SessionHistory, DisabledHistorySkipsPersistence) {
+  SunshineConfigGuard config_guard;
+  config::sunshine.session_history_enabled = false;
+
+  auto path = make_temp_db_path("disabled");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "77777777-7777-7777-7777-777777777777";
+  session_history::begin_session(make_metadata(uuid));
+  session_history::record_event(uuid, "ignored_event");
+  session_history::end_session(uuid);
+
+  EXPECT_TRUE(session_history::list_sessions(50, 0).empty());
+  EXPECT_FALSE(session_history::get_session_detail(uuid).has_value());
+  EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::unavailable);
+}
+
+TEST(SessionHistory, RetentionDaysPrunesOldEndedSessionsOnStartup) {
+  SunshineConfigGuard config_guard;
+  config::sunshine.session_history_enabled = true;
+  config::sunshine.session_history_ttl_days = 0;
+  config::sunshine.session_history_db_size_limit_mb = 0;
+
+  auto path = make_temp_db_path("ttl");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string old_uuid = "88888888-8888-8888-8888-888888888888";
+  const std::string new_uuid = "99999999-9999-9999-9999-999999999999";
+  session_history::begin_session(make_metadata(old_uuid, "Old App"));
+  session_history::end_session(old_uuid);
+  session_history::begin_session(make_metadata(new_uuid, "New App"));
+  session_history::end_session(new_uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::list_sessions(50, 0).size() >= 2;
+  }));
+
+  session_history::configure_retention_for_tests(true, 1, 0);
+  const auto stale_end_time =
+    std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() - (3.0 * 24.0 * 60.0 * 60.0);
+  ASSERT_TRUE(session_history::set_session_end_time_for_tests(old_uuid, stale_end_time));
+  ASSERT_TRUE(session_history::prune_now_for_tests());
+
+  ASSERT_TRUE(wait_for([&] {
+    auto rows = session_history::list_sessions(50, 0);
+    return rows.size() == 1;
+  }));
+
+  const auto rows = session_history::list_sessions(50, 0);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows.front().uuid, new_uuid);
+}
+
+TEST(SessionHistory, DbQuotaPrunesOldestEndedSessionsOnStartup) {
+  SunshineConfigGuard config_guard;
+  config::sunshine.session_history_enabled = true;
+  config::sunshine.session_history_ttl_days = 0;
+  config::sunshine.session_history_db_size_limit_mb = 0;
+
+  auto path = make_temp_db_path("quota");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  for (int i = 0; i < 8; ++i) {
+    const std::string uuid = "aaaaaaa0-0000-0000-0000-00000000000" + std::to_string(i);
+    session_history::begin_session(make_metadata(uuid, "QuotaApp" + std::to_string(i)));
+    for (int e = 0; e < 12; ++e) {
+      session_history::record_event(uuid, "quota_payload", std::string(32 * 1024, static_cast<char>('a' + i)));
+    }
+    session_history::end_session(uuid);
+  }
+
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::list_sessions(50, 0).size() >= 8;
+  }, std::chrono::seconds(6)));
+
+  session_history::configure_retention_for_tests(true, 0, 1024ull * 1024ull);
+  ASSERT_TRUE(session_history::prune_now_for_tests());
+
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::list_sessions(50, 0).size() < 8;
+  }, std::chrono::seconds(6)));
+
+  EXPECT_LT(session_history::list_sessions(50, 0).size(), 8u);
 }
