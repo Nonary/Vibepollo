@@ -12,7 +12,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useSessionsStore } from '@/stores/sessions';
 
@@ -23,6 +23,10 @@ onMounted(async () => {
   const auth = useAuthStore();
   await auth.waitForAuthentication();
   sessionsStore.startPolling();
+});
+
+onBeforeUnmount(() => {
+  sessionsStore.stopPolling();
 });
 </script>
 <style scoped></style>

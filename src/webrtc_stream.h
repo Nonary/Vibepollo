@@ -32,6 +32,7 @@ namespace webrtc_stream {
     std::optional<int> bitrate_kbps;
     std::optional<std::string> codec;
     std::optional<bool> hdr;
+    std::optional<bool> yuv444;
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
       std::optional<std::string> profile;
@@ -69,6 +70,7 @@ namespace webrtc_stream {
     std::optional<int> bitrate_kbps;
     std::optional<std::string> codec;
     std::optional<bool> hdr;
+    std::optional<bool> yuv444;
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
     std::optional<std::string> profile;

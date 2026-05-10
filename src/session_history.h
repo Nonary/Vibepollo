@@ -32,11 +32,13 @@ namespace session_history {
     int width = 0;
     int height = 0;
     int target_fps = 0;
-    int target_bitrate_kbps = 0;
-    int target_requested_bitrate_kbps = 0;
+    int encoder_bitrate_kbps = 0;
+    int requested_bitrate_kbps = 0;
     std::string codec;
     bool hdr = false;
+    bool yuv444 = false;
     int audio_channels = 0;
+    std::string server_version;
     // Static host identification captured at session start.
     std::string host_cpu_model;
     std::string host_gpu_model;
@@ -92,21 +94,27 @@ namespace session_history {
     int width = 0;
     int height = 0;
     int target_fps = 0;
-    int target_bitrate_kbps = 0;
-    int target_requested_bitrate_kbps = 0;
+    int encoder_bitrate_kbps = 0;
+    int requested_bitrate_kbps = 0;
     std::string codec;
     bool hdr = false;
+    bool yuv444 = false;
     int audio_channels = 0;
     double start_time_unix = 0;
     double end_time_unix = 0;
     double duration_seconds = 0;
     std::string verdict;  // "healthy", "degraded", "failed", "unknown"
+    std::string server_version;
     std::string host_cpu_model;
     std::string host_gpu_model;
   };
 
   struct session_detail_t {
     session_summary_t summary;
+    std::size_t total_samples = 0;
+    std::size_t total_events = 0;
+    bool samples_truncated = false;
+    bool events_truncated = false;
     std::vector<session_sample_t> samples;
     std::vector<session_event_t> events;
   };
@@ -120,10 +128,11 @@ namespace session_history {
     int width = 0;
     int height = 0;
     int target_fps = 0;
-    int target_bitrate_kbps = 0;
-    int client_bitrate_kbps = 0;
+    int encoder_bitrate_kbps = 0;
+    int requested_bitrate_kbps = 0;
     std::string codec;
     bool hdr = false;
+    bool yuv444 = false;
     double uptime_seconds = 0;
 
     // Latest computed metrics
@@ -170,16 +179,24 @@ namespace session_history {
   // ── Read API (called from confighttp.cpp) ──────────────────────────
 
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);
-  std::optional<session_detail_t> get_session_detail(const std::string &uuid);
+  std::optional<session_detail_t> get_session_detail(const std::string &uuid, bool include_all = false);
   std::vector<active_session_t> get_active_sessions();
+  enum class delete_result_e {
+    deleted,
+    not_found,
+    active_session,
+    unavailable,
+    timeout,
+    failed
+  };
   /**
    * @brief Delete a persisted session and its child rows.
    *
    * The delete is executed on the dedicated writer thread and this call blocks
    * until that delete transaction has committed.
    *
-   * @return true if the session row existed and was deleted, false otherwise.
+   * @return Detailed outcome for HTTP/API callers.
    */
-  bool delete_session(const std::string &uuid);
+  delete_result_e delete_session(const std::string &uuid);
 
 }  // namespace session_history

@@ -1,80 +1,15 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import { http } from '@/http';
+import {
+  fetchRtspSessions,
+  fetchSessionStatus,
+  fetchWebRtcSessions,
+} from '@/services/sessionsApi';
 import { useAuthStore } from '@/stores/auth';
-
-export interface SessionStatus {
-  activeSessions: number;
-  appRunning: boolean;
-  appName: string;
-  paused: boolean;
-  status: boolean;
-}
-
-export interface RTSPSession {
-  uuid: string;
-  device_name: string;
-  width: number;
-  height: number;
-  fps: number;
-  bitrate_kbps: number;
-  client_bitrate_kbps?: number;
-  video_format: number;
-  codec: string;
-  hdr: boolean;
-  audio_channels: number;
-  state: string;
-  frames_sent: number;
-  packets_sent: number;
-  bytes_sent: number;
-  idr_requests: number;
-  invalidate_ref_count: number;
-  client_reported_losses: number;
-  encode_latency_ms: number;
-  last_frame_index: number;
-  uptime_seconds: number;
-}
-
-export interface WebRTCSession {
-  id: string;
-  audio: boolean;
-  video: boolean;
-  encoded: boolean;
-  audio_packets: number;
-  video_packets: number;
-  audio_dropped: number;
-  video_dropped: number;
-  audio_queue_frames: number;
-  video_queue_frames: number;
-  video_inflight_frames: number;
-  has_remote_offer: boolean;
-  has_local_answer: boolean;
-  ice_candidates: number;
-  width?: number;
-  height?: number;
-  fps?: number;
-  bitrate_kbps?: number;
-  client_bitrate_kbps?: number;
-  codec?: string;
-  hdr?: boolean;
-  audio_channels?: number;
-  audio_codec?: string;
-  profile?: string;
-  video_pacing_mode?: string;
-  video_pacing_slack_ms?: number;
-  video_max_frame_age_ms?: number;
-  video_bytes_total: number;
-  audio_bytes_total: number;
-  bytes_sent: number;
-  last_audio_bytes: number;
-  last_video_bytes: number;
-  last_video_idr: boolean;
-  last_video_frame_index: number;
-  last_audio_age_ms?: number;
-  last_video_age_ms?: number;
-}
+import type { RTSPSession, SessionStatus, WebRTCSession } from '@/types/sessions';
 
 const POLL_INTERVAL_MS = 2000;
+const MAX_POLL_BACKOFF_MS = 16000;
 
 export const useSessionsStore = defineStore('sessions', () => {
   const rtspSessions = ref<RTSPSession[]>([]);
@@ -84,9 +19,12 @@ export const useSessionsStore = defineStore('sessions', () => {
   const appName = ref('');
   const loading = ref(false);
 
-  // eslint-disable-next-line @typescript-eslint/ban-types, no-restricted-syntax -- timer ID needs null sentinel for clearInterval guard
-  let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+  // eslint-disable-next-line @typescript-eslint/ban-types, no-restricted-syntax -- timer ID needs null sentinel for clearTimeout guard
+  let pollTimerId: ReturnType<typeof setTimeout> | null = null;
   let started = false;
+  let pollingConsumers = 0;
+  let pollInFlight: Promise<void> | null = null;
+  let consecutivePollFailures = 0;
 
   const hasActiveSessions = computed(
     () => rtspCount.value > 0 || rtspSessions.value.length > 0 || webrtcSessions.value.length > 0,
@@ -94,55 +32,84 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   const isStreaming = computed(() => hasActiveSessions.value);
 
-  async function fetchSessionStatus(): Promise<void> {
-    try {
-      const r = await http.get<SessionStatus>('./api/session/status', {
-        validateStatus: () => true,
-      });
-      if (r.status === 200 && r.data) {
-        rtspCount.value = r.data.activeSessions ?? 0;
-        appRunning.value = r.data.appRunning ?? false;
-        appName.value = r.data.appName ?? '';
-      }
-    } catch {
-      // Silently ignore — will retry on next poll
+  async function loadSessionStatus(): Promise<boolean> {
+    const data: SessionStatus | null = await fetchSessionStatus();
+    if (!data) {
+      return false;
     }
+    rtspCount.value = data.activeSessions ?? 0;
+    appRunning.value = data.appRunning ?? false;
+    appName.value = data.appName ?? '';
+    return true;
   }
 
-  async function fetchRTSPSessions(): Promise<void> {
-    try {
-      const r = await http.get<{ sessions: RTSPSession[] }>('./api/rtsp/sessions', {
-        validateStatus: () => true,
-      });
-      if (r.status === 200 && r.data?.sessions) {
-        rtspSessions.value = r.data.sessions;
-      } else {
-        rtspSessions.value = [];
-      }
-    } catch {
+  async function loadRtspSessions(): Promise<boolean> {
+    const data = await fetchRtspSessions();
+    if (!data) {
       rtspSessions.value = [];
+      return false;
     }
+    rtspSessions.value = data;
+    return true;
   }
 
-  async function fetchWebRTCSessions(): Promise<void> {
-    try {
-      const r = await http.get<{ sessions: WebRTCSession[] }>('./api/webrtc/sessions', {
-        validateStatus: () => true,
-      });
-      if (r.status === 200 && r.data?.sessions) {
-        webrtcSessions.value = r.data.sessions;
-      } else {
-        webrtcSessions.value = [];
-      }
-    } catch {
+  async function loadWebRtcSessions(): Promise<boolean> {
+    const data = await fetchWebRtcSessions();
+    if (!data) {
       webrtcSessions.value = [];
+      return false;
     }
+    webrtcSessions.value = data;
+    return true;
+  }
+
+  function nextPollDelayMs(): number {
+    if (consecutivePollFailures <= 0) {
+      return POLL_INTERVAL_MS;
+    }
+    return Math.min(POLL_INTERVAL_MS * 2 ** consecutivePollFailures, MAX_POLL_BACKOFF_MS);
+  }
+
+  function scheduleNextPoll(delayMs = nextPollDelayMs()): void {
+    if (!started) {
+      return;
+    }
+    if (pollTimerId !== null) {
+      clearTimeout(pollTimerId);
+    }
+    pollTimerId = setTimeout(() => {
+      pollTimerId = null;
+      void poll();
+    }, delayMs);
   }
 
   async function poll(): Promise<void> {
+    if (pollInFlight) {
+      return pollInFlight;
+    }
     const auth = useAuthStore();
-    if (!auth.isAuthenticated) return;
-    await Promise.all([fetchSessionStatus(), fetchRTSPSessions(), fetchWebRTCSessions()]);
+    if (!auth.isAuthenticated) {
+      scheduleNextPoll(POLL_INTERVAL_MS);
+      return;
+    }
+    pollInFlight = (async () => {
+      const results = await Promise.all([
+        loadSessionStatus(),
+        loadRtspSessions(),
+        loadWebRtcSessions(),
+      ]);
+      if (results.every(Boolean)) {
+        consecutivePollFailures = 0;
+      } else {
+        consecutivePollFailures += 1;
+      }
+    })();
+    try {
+      await pollInFlight;
+    } finally {
+      pollInFlight = null;
+      scheduleNextPoll();
+    }
   }
 
   async function refresh(): Promise<void> {
@@ -152,19 +119,28 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function startPolling(): void {
+    pollingConsumers += 1;
     if (started) return;
     started = true;
+    consecutivePollFailures = 0;
     // Initial fetch
     void poll();
-    pollIntervalId = setInterval(() => void poll(), POLL_INTERVAL_MS);
   }
 
   function stopPolling(): void {
-    if (pollIntervalId !== null) {
-      clearInterval(pollIntervalId);
-      pollIntervalId = null;
+    if (pollingConsumers > 0) {
+      pollingConsumers -= 1;
+    }
+    if (pollingConsumers > 0) {
+      return;
+    }
+    if (pollTimerId !== null) {
+      clearTimeout(pollTimerId);
+      pollTimerId = null;
     }
     started = false;
+    consecutivePollFailures = 0;
+    pollInFlight = null;
     rtspSessions.value = [];
     webrtcSessions.value = [];
     rtspCount.value = 0;

@@ -219,8 +219,13 @@ namespace {
   }
 
   /**
-   * @brief Query the primary DXGI adapter and return total VRAM bytes,
+   * @brief Query the best-fit DXGI adapter and return total VRAM bytes,
    *        adapter LUID, and a printable description.
+   *
+   * On Windows we currently approximate the "host GPU" by selecting the
+   * non-software adapter with the largest dedicated VRAM. That is stable and
+   * good enough for host telemetry, but on hybrid/eGPU/multi-GPU systems it
+   * may not be the exact adapter used by capture or encode for the stream.
    */
   void
     query_dxgi(std::uint64_t &vram_total_bytes, LUID &adapter_luid, std::string &gpu_model) {
@@ -282,9 +287,8 @@ namespace {
   /**
    * @brief NVIDIA NVML temperature query (runtime-loaded).
    *
-   * Returns -1.f when nvml.dll is missing or the query fails. Loaded once
-   * per process and the loaded module is intentionally leaked at process
-   * exit (matches existing nvprefs pattern).
+   * Returns -1.f when nvml.dll is missing or the query fails. The DLL is
+   * loaded only from trusted locations to avoid unsafe search-order behavior.
    */
   class nvml_t {
   public:
@@ -368,19 +372,32 @@ namespace {
       unsigned long long used;
     };
 
-    nvml_t() {
-      HMODULE mod = LoadLibraryA("nvml.dll");
-      if (!mod) {
-        // try the 64-bit driver path
-        char buf[MAX_PATH];
-        UINT n = GetSystemDirectoryA(buf, sizeof(buf));
-        if (n && n < sizeof(buf)) {
-          std::string p(buf);
-          p += "\\..\\NVSMI\\nvml.dll";
-          mod = LoadLibraryA(p.c_str());
-        }
+    static HMODULE
+      load_module() {
+      if (HMODULE mod = LoadLibraryExA("nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        return mod;
       }
-      if (!mod) {
+
+      char base[MAX_PATH] {};
+      DWORD n = GetEnvironmentVariableA("ProgramW6432", base, static_cast<DWORD>(sizeof(base)));
+      if (!n || n >= sizeof(base)) {
+        n = GetEnvironmentVariableA("ProgramFiles", base, static_cast<DWORD>(sizeof(base)));
+      }
+      if (!n || n >= sizeof(base)) {
+        return nullptr;
+      }
+
+      std::string path(base);
+      path += "\\NVIDIA Corporation\\NVSMI\\nvml.dll";
+      return LoadLibraryExA(
+        path.c_str(),
+        nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+
+    nvml_t() {
+      _module = load_module();
+      if (!_module) {
         return;
       }
       using init_fn = int (*)();
@@ -388,21 +405,32 @@ namespace {
       using devh_fn = int (*)(unsigned int, void **);
       using temp_fn = int (*)(void *, int, unsigned int *);
       using mem_fn = int (*)(void *, nvml_memory_t *);
-      auto init_v2 = reinterpret_cast<init_fn>(GetProcAddress(mod, "nvmlInit_v2"));
-      _device_get_count = reinterpret_cast<count_fn>(GetProcAddress(mod, "nvmlDeviceGetCount_v2"));
-      _device_get_handle = reinterpret_cast<devh_fn>(GetProcAddress(mod, "nvmlDeviceGetHandleByIndex_v2"));
-      _device_get_temperature = reinterpret_cast<temp_fn>(GetProcAddress(mod, "nvmlDeviceGetTemperature"));
-      _device_get_memory_info = reinterpret_cast<mem_fn>(GetProcAddress(mod, "nvmlDeviceGetMemoryInfo"));
+      auto init_v2 = reinterpret_cast<init_fn>(GetProcAddress(_module, "nvmlInit_v2"));
+      _device_get_count = reinterpret_cast<count_fn>(GetProcAddress(_module, "nvmlDeviceGetCount_v2"));
+      _device_get_handle = reinterpret_cast<devh_fn>(GetProcAddress(_module, "nvmlDeviceGetHandleByIndex_v2"));
+      _device_get_temperature = reinterpret_cast<temp_fn>(GetProcAddress(_module, "nvmlDeviceGetTemperature"));
+      _device_get_memory_info = reinterpret_cast<mem_fn>(GetProcAddress(_module, "nvmlDeviceGetMemoryInfo"));
       if (!init_v2 || !_device_get_handle || !_device_get_temperature) {
+        FreeLibrary(_module);
+        _module = nullptr;
         return;
       }
       if (init_v2() != 0) {
+        FreeLibrary(_module);
+        _module = nullptr;
         return;
       }
       _ok = true;
     }
 
+    ~nvml_t() {
+      if (_module) {
+        FreeLibrary(_module);
+      }
+    }
+
     bool _ok = false;
+    HMODULE _module = nullptr;
     int (*_device_get_count)(unsigned int *) = nullptr;
     int (*_device_get_handle)(unsigned int, void **) = nullptr;
     int (*_device_get_temperature)(void *, int, unsigned int *) = nullptr;
@@ -614,6 +642,9 @@ namespace {
       _net_iface_name.assign(narrow);
       // ReceiveLinkSpeed is in bits/sec; report Mbps.
       _net_link_speed_mbps = row.ReceiveLinkSpeed / 1'000'000ULL;
+      if (_net_have_iface && _net_iface_luid.Value != luid.Value) {
+        _have_net_baseline = false;
+      }
       _net_iface_luid = luid;
       _net_have_iface = true;
       _net_iface_chosen_at = std::chrono::steady_clock::now();
@@ -703,8 +734,14 @@ namespace {
         s.net_tx_bps = 0.0;
         return;
       }
-      // Counters wrap around modulo 2^64; the unsigned subtraction does
-      // the right thing if the wrap is small enough that one tick fits.
+      if (rx < _last_rx || tx < _last_tx) {
+        _last_rx = rx;
+        _last_tx = tx;
+        _last_net_sample_at = now;
+        s.net_rx_bps = 0.0;
+        s.net_tx_bps = 0.0;
+        return;
+      }
       auto drx = rx - _last_rx;
       auto dtx = tx - _last_tx;
       s.net_rx_bps = static_cast<double>(drx) * 8.0 / dt;

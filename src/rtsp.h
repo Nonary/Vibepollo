@@ -128,6 +128,9 @@ namespace rtsp_stream {
   std::list<std::string>
     get_all_session_uuids();
 
+  std::vector<std::shared_ptr<stream::session_t>>
+    get_sessions_snapshot();
+
   /**
    * @brief Terminates all running streaming sessions.
    */

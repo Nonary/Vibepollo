@@ -59,6 +59,7 @@
               >
             </n-tag>
             <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+            <n-tag v-if="session.yuv444" type="info" size="small" :bordered="false">YUV444</n-tag>
             <n-tag type="default" size="small" :bordered="false">{{ session.state }}</n-tag>
           </div>
 
@@ -76,16 +77,16 @@
               :tip="t('sessions.tip_fps')"
             />
             <StatCell
-              v-if="session.bitrate_kbps"
+              v-if="session.encoder_bitrate_kbps"
               :label="t('sessions.bitrate')"
-              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :value="formatBitrate(session.requested_bitrate_kbps || session.encoder_bitrate_kbps)"
               :sub-value="
-                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
-                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                session.requested_bitrate_kbps && session.requested_bitrate_kbps !== session.encoder_bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.encoder_bitrate_kbps)}`
                   : undefined
               "
               :tip="
-                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                session.requested_bitrate_kbps && session.requested_bitrate_kbps !== session.encoder_bitrate_kbps
                   ? t('sessions.tip_bitrate_dual')
                   : t('sessions.tip_bitrate')
               "
@@ -227,6 +228,7 @@
               {{ t('sessions.encoded') }}
             </n-tag>
             <n-tag v-if="session.hdr" type="warning" size="small" :bordered="false">HDR</n-tag>
+            <n-tag v-if="session.yuv444" type="info" size="small" :bordered="false">YUV444</n-tag>
           </div>
 
           <!-- Stats grid -->
@@ -244,16 +246,16 @@
               :tip="t('sessions.tip_fps')"
             />
             <StatCell
-              v-if="session.bitrate_kbps != null"
+              v-if="session.encoder_bitrate_kbps != null"
               :label="t('sessions.bitrate')"
-              :value="formatBitrate(session.client_bitrate_kbps || session.bitrate_kbps)"
+              :value="formatBitrate(session.requested_bitrate_kbps || session.encoder_bitrate_kbps)"
               :sub-value="
-                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
-                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.bitrate_kbps)}`
+                session.requested_bitrate_kbps && session.requested_bitrate_kbps !== session.encoder_bitrate_kbps
+                  ? `${t('sessions.bitrate_encode_label')} ${formatBitrate(session.encoder_bitrate_kbps)}`
                   : undefined
               "
               :tip="
-                session.client_bitrate_kbps && session.client_bitrate_kbps !== session.bitrate_kbps
+                session.requested_bitrate_kbps && session.requested_bitrate_kbps !== session.encoder_bitrate_kbps
                   ? t('sessions.tip_bitrate_dual')
                   : t('sessions.tip_bitrate')
               "
@@ -349,7 +351,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NButton, NCard, NTag } from 'naive-ui';
 import { useAuthStore } from '@/stores/auth';
@@ -401,6 +403,10 @@ async function refresh(): Promise<void> {
 onMounted(async () => {
   await auth.waitForAuthentication();
   sessionsStore.startPolling();
+});
+
+onBeforeUnmount(() => {
+  sessionsStore.stopPolling();
 });
 </script>
 

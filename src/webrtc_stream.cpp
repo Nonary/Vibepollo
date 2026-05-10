@@ -89,6 +89,17 @@
 
 namespace webrtc_stream {
   namespace {
+    std::string current_server_version() {
+      std::string version = PROJECT_VERSION;
+#ifdef PROJECT_VERSION_PRERELEASE
+      if (std::string_view(PROJECT_VERSION_PRERELEASE).size() > 0) {
+        version += ' ';
+        version += PROJECT_VERSION_PRERELEASE;
+      }
+#endif
+      return version;
+    }
+
 #ifdef _WIN32
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
@@ -4505,6 +4516,7 @@ namespace webrtc_stream {
     session.state.bitrate_kbps = session.video_config.bitrate;
     session.state.codec = video_format_to_codec(session.video_config.videoFormat);
     session.state.hdr = session.video_config.dynamicRange != 0;
+    session.state.yuv444 = session.video_config.chromaSamplingType != 0;
     session.video_pacing = build_video_pacing_config(options);
     session.state.video_pacing_mode = video_pacing_mode_to_string(session.video_pacing.mode);
     session.state.video_pacing_slack_ms = static_cast<int>(
@@ -4535,11 +4547,13 @@ namespace webrtc_stream {
       meta.width = snapshot.width.value_or(0);
       meta.height = snapshot.height.value_or(0);
       meta.target_fps = snapshot.fps.value_or(0);
-      meta.target_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
-      meta.target_requested_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.encoder_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.requested_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
       meta.codec = snapshot.codec.value_or("");
       meta.hdr = snapshot.hdr.value_or(false);
+      meta.yuv444 = snapshot.yuv444.value_or(false);
       meta.audio_channels = snapshot.audio_channels.value_or(0);
+      meta.server_version = current_server_version();
       session_history::begin_session(meta);
     }
 

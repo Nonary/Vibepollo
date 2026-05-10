@@ -559,6 +559,9 @@ int main(int argc, char *argv[]) {
     auto history_db = state_path.parent_path() / "session_history.db";
     session_history::init(history_db.string());
   }
+  auto session_history_shutdown_guard = util::fail_guard([]() {
+    session_history::shutdown();
+  });
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
@@ -640,6 +643,7 @@ int main(int argc, char *argv[]) {
 #endif
 
   session_history::shutdown();
+  session_history_shutdown_guard.disable();
 
   return lifetime::desired_exit_code;
 }

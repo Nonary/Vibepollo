@@ -14,13 +14,20 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <future>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 
 // lib includes
 #include <sqlite3.h>
+
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <AclAPI.h>
+#endif
 
 // local includes
 #include "session_history.h"
@@ -75,6 +82,101 @@ namespace session_history {
       return true;
     }
 
+    void tighten_history_db_permissions(const std::filesystem::path &db_path) {
+#ifdef _WIN32
+      auto apply_windows_permissions = [&](const std::filesystem::path &path) {
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec) || ec) {
+          return;
+        }
+
+        SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+        PSID admin_sid = nullptr;
+        PSID system_sid = nullptr;
+        if (!AllocateAndInitializeSid(&nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+                                      0, 0, 0, 0, 0, 0, &admin_sid)) {
+          BOOST_LOG(warning) << "session_history: failed to allocate Administrators SID for " << path.string();
+          return;
+        }
+        auto free_admin_sid = util::fail_guard([admin_sid]() {
+          FreeSid(admin_sid);
+        });
+
+        if (!AllocateAndInitializeSid(&nt_authority, 1, SECURITY_LOCAL_SYSTEM_RID,
+                                      0, 0, 0, 0, 0, 0, 0, &system_sid)) {
+          BOOST_LOG(warning) << "session_history: failed to allocate SYSTEM SID for " << path.string();
+          return;
+        }
+        auto free_system_sid = util::fail_guard([system_sid]() {
+          FreeSid(system_sid);
+        });
+
+        EXPLICIT_ACCESSW access[2] {};
+        access[0].grfAccessPermissions = GENERIC_ALL;
+        access[0].grfAccessMode = SET_ACCESS;
+        access[0].grfInheritance = NO_INHERITANCE;
+        access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access[0].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+        access[0].Trustee.ptstrName = static_cast<LPWSTR>(admin_sid);
+
+        access[1].grfAccessPermissions = GENERIC_ALL;
+        access[1].grfAccessMode = SET_ACCESS;
+        access[1].grfInheritance = NO_INHERITANCE;
+        access[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access[1].Trustee.TrusteeType = TRUSTEE_IS_USER;
+        access[1].Trustee.ptstrName = static_cast<LPWSTR>(system_sid);
+
+        PACL raw_acl = nullptr;
+        DWORD acl_status = SetEntriesInAclW(2, access, nullptr, &raw_acl);
+        if (acl_status != ERROR_SUCCESS) {
+          BOOST_LOG(warning) << "session_history: SetEntriesInAclW failed for " << path.string()
+                             << " (error=" << acl_status << ")";
+          return;
+        }
+        auto free_acl = util::fail_guard([raw_acl]() {
+          LocalFree(raw_acl);
+        });
+
+        DWORD sec_status = SetNamedSecurityInfoW(
+          const_cast<LPWSTR>(path.c_str()),
+          SE_FILE_OBJECT,
+          DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+          nullptr,
+          nullptr,
+          raw_acl,
+          nullptr);
+        if (sec_status != ERROR_SUCCESS) {
+          BOOST_LOG(warning) << "session_history: SetNamedSecurityInfoW failed for " << path.string()
+                             << " (error=" << sec_status << ")";
+        }
+      };
+
+      apply_windows_permissions(db_path);
+      apply_windows_permissions(db_path.string() + "-wal");
+      apply_windows_permissions(db_path.string() + "-shm");
+#else
+      const auto apply_posix_permissions = [&](const std::filesystem::path &path) {
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec) || ec) {
+          return;
+        }
+        std::filesystem::permissions(
+          path,
+          std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+          std::filesystem::perm_options::replace,
+          ec);
+        if (ec) {
+          BOOST_LOG(warning) << "session_history: failed to tighten permissions for " << path.string()
+                             << ": " << ec.message();
+        }
+      };
+
+      apply_posix_permissions(db_path);
+      apply_posix_permissions(db_path.string() + "-wal");
+      apply_posix_permissions(db_path.string() + "-shm");
+#endif
+    }
+
     double now_unix() {
       auto tp = std::chrono::system_clock::now();
       return std::chrono::duration<double>(tp.time_since_epoch()).count();
@@ -96,13 +198,16 @@ namespace session_history {
         height INTEGER,
         target_fps INTEGER,
         target_bitrate_kbps INTEGER,
+        target_requested_bitrate_kbps INTEGER,
         codec TEXT,
         hdr INTEGER DEFAULT 0,
+        yuv444 INTEGER DEFAULT 0,
         audio_channels INTEGER,
         start_time_unix REAL NOT NULL,
         end_time_unix REAL,
         duration_seconds REAL,
         verdict TEXT DEFAULT 'unknown',
+        server_version TEXT,
         host_cpu_model TEXT,
         host_gpu_model TEXT
       );
@@ -147,6 +252,10 @@ namespace session_history {
       );
 
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_uuid);
+      CREATE INDEX IF NOT EXISTS idx_events_time ON events(session_uuid, timestamp_unix);
+      CREATE INDEX IF NOT EXISTS idx_sessions_end_time
+      ON sessions(end_time_unix DESC)
+      WHERE end_time_unix IS NOT NULL;
     )";
 
     // ── Write command variants ─────────────────────────────────────
@@ -233,6 +342,7 @@ namespace session_history {
 
     db_ptr g_write_db;
     db_ptr g_read_db;
+    std::mutex g_read_mutex;
 
     // Thread-safe write queue (simple mutex + condition_variable + vector)
     std::mutex g_queue_mutex;
@@ -255,15 +365,30 @@ namespace session_history {
 
     constexpr int MAX_HISTORY_SESSIONS = 50;
     constexpr auto SAMPLE_INTERVAL = std::chrono::seconds(2);
+    constexpr std::size_t MAX_PENDING_WRITE_COMMANDS = 4096;
+    constexpr int DEFAULT_DETAIL_SAMPLE_LIMIT = 1800;
+    constexpr int DEFAULT_DETAIL_EVENT_LIMIT = 500;
+    constexpr int MAX_SAMPLES_PER_SESSION = 7200;
+    constexpr int MAX_EVENTS_PER_SESSION = 2000;
+    constexpr int SESSION_HISTORY_SCHEMA_VERSION = 4;
+    constexpr auto DELETE_WAIT_TIMEOUT = std::chrono::seconds(5);
 
     // ── Queue helpers ──────────────────────────────────────────────
 
-    void enqueue(write_cmd_t cmd) {
+    bool enqueue(write_cmd_t cmd) {
       {
         std::lock_guard lk {g_queue_mutex};
+        if (!g_running.load(std::memory_order_acquire) || !g_write_db) {
+          return false;
+        }
+        if (cmd.type == cmd_type::insert_sample && g_queue.size() >= MAX_PENDING_WRITE_COMMANDS) {
+          BOOST_LOG(warning) << "session_history: dropping sample because writer queue is full";
+          return false;
+        }
         g_queue.push_back(std::move(cmd));
       }
       g_queue_cv.notify_one();
+      return true;
     }
 
     std::vector<write_cmd_t> drain_queue() {
@@ -278,14 +403,14 @@ namespace session_history {
 
     // ── Writer thread ──────────────────────────────────────────────
 
-    void process_begin(sqlite3 *db, const session_metadata_t &m) {
+    bool process_begin(sqlite3 *db, const session_metadata_t &m) {
       auto s = prepare(db,
         "INSERT OR IGNORE INTO sessions "
         "(uuid, protocol, client_name, device_name, app_name, "
         " width, height, target_fps, target_bitrate_kbps, target_requested_bitrate_kbps, "
-        " codec, hdr, audio_channels, start_time_unix, host_cpu_model, host_gpu_model) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-      if (!s) return;
+        " codec, hdr, yuv444, audio_channels, start_time_unix, server_version, host_cpu_model, host_gpu_model) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      if (!s) return false;
 
       sqlite3_bind_text(s.get(), 1, m.uuid.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_text(s.get(), 2, m.protocol.c_str(), -1, SQLITE_TRANSIENT);
@@ -295,16 +420,22 @@ namespace session_history {
       sqlite3_bind_int(s.get(), 6, m.width);
       sqlite3_bind_int(s.get(), 7, m.height);
       sqlite3_bind_int(s.get(), 8, m.target_fps);
-      sqlite3_bind_int(s.get(), 9, m.target_bitrate_kbps);
-      sqlite3_bind_int(s.get(), 10, m.target_requested_bitrate_kbps);
+      sqlite3_bind_int(s.get(), 9, m.encoder_bitrate_kbps);
+      sqlite3_bind_int(s.get(), 10, m.requested_bitrate_kbps);
       sqlite3_bind_text(s.get(), 11, m.codec.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_int(s.get(), 12, m.hdr ? 1 : 0);
-      sqlite3_bind_int(s.get(), 13, m.audio_channels);
-      sqlite3_bind_double(s.get(), 14, now_unix());
-      sqlite3_bind_text(s.get(), 15, m.host_cpu_model.c_str(), -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(s.get(), 16, m.host_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(s.get(), 13, m.yuv444 ? 1 : 0);
+      sqlite3_bind_int(s.get(), 14, m.audio_channels);
+      sqlite3_bind_double(s.get(), 15, now_unix());
+      sqlite3_bind_text(s.get(), 16, m.server_version.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(s.get(), 17, m.host_cpu_model.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(s.get(), 18, m.host_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
 
-      sqlite3_step(s.get());
+      if (sqlite3_step(s.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: begin_session insert failed for uuid=" << m.uuid
+                         << ": " << sqlite3_errmsg(db);
+        return false;
+      }
 
       // Defensive: if no row was inserted then a session with this uuid
       // already exists. With the per-stream history_uuid contract this
@@ -315,9 +446,22 @@ namespace session_history {
           << "session_history: begin_session ignored - uuid already present in DB: "
           << m.uuid << " (sessions will be merged into the existing row)";
       }
+      return true;
     }
 
-    void process_end(sqlite3 *db, const std::string &uuid) {
+    bool session_accepts_live_updates(sqlite3 *db, const std::string &uuid) {
+      auto s = prepare(db, "SELECT end_time_unix FROM sessions WHERE uuid = ?");
+      if (!s) return false;
+
+      sqlite3_bind_text(s.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(s.get()) != SQLITE_ROW) {
+        return false;
+      }
+
+      return sqlite3_column_type(s.get(), 0) == SQLITE_NULL;
+    }
+
+    bool process_end(sqlite3 *db, const std::string &uuid) {
       double end_time = now_unix();
 
       // Compute verdict from samples
@@ -334,16 +478,16 @@ namespace session_history {
           if (sqlite3_step(s.get()) == SQLITE_ROW) {
             int sample_count = sqlite3_column_int(s.get(), 0);
             int high_latency_count = sqlite3_column_int(s.get(), 1);
-            int64_t total_losses = sqlite3_column_int64(s.get(), 2);
-            int64_t total_frames = sqlite3_column_int64(s.get(), 3);
+            int64_t max_reported_losses = sqlite3_column_int64(s.get(), 2);
+            int64_t max_frames_sent = sqlite3_column_int64(s.get(), 3);
 
             if (sample_count > 0) {
-              double loss_ratio = total_frames > 0 ? static_cast<double>(total_losses) / static_cast<double>(total_frames) : 0;
+              double loss_ratio = max_frames_sent > 0 ? static_cast<double>(max_reported_losses) / static_cast<double>(max_frames_sent) : 0;
 
               if (loss_ratio > 0.05) {
                 verdict = "failed";
               }
-              else if (high_latency_count > 0 || total_losses > 0) {
+              else if (high_latency_count > 0 || max_reported_losses > 0) {
                 verdict = "degraded";
               }
               else {
@@ -359,16 +503,26 @@ namespace session_history {
         "duration_seconds = ? - start_time_unix, "
         "verdict = ? "
         "WHERE uuid = ?");
-      if (!s) return;
+      if (!s) return false;
 
       sqlite3_bind_double(s.get(), 1, end_time);
       sqlite3_bind_double(s.get(), 2, end_time);
       sqlite3_bind_text(s.get(), 3, verdict.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_text(s.get(), 4, uuid.c_str(), -1, SQLITE_TRANSIENT);
-      sqlite3_step(s.get());
+      if (sqlite3_step(s.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: end_session update failed for uuid=" << uuid
+                         << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+      return true;
     }
 
-    void process_sample(sqlite3 *db, const session_sample_t &sample) {
+    bool process_sample(sqlite3 *db, const session_sample_t &sample) {
+      if (!session_accepts_live_updates(db, sample.session_uuid)) {
+        BOOST_LOG(debug) << "session_history: dropping stale sample for ended or missing session "
+                         << sample.session_uuid;
+        return true;
+      }
       auto s = prepare(db,
         "INSERT INTO samples "
         "(session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
@@ -379,7 +533,7 @@ namespace session_history {
         " host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
         " host_net_rx_bps, host_net_tx_bps) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-      if (!s) return;
+      if (!s) return false;
 
       sqlite3_bind_text(s.get(), 1, sample.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_double(s.get(), 2, sample.timestamp_unix);
@@ -406,24 +560,79 @@ namespace session_history {
       sqlite3_bind_double(s.get(), 23, sample.host_net_rx_bps);
       sqlite3_bind_double(s.get(), 24, sample.host_net_tx_bps);
 
-      sqlite3_step(s.get());
+      if (sqlite3_step(s.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: sample insert failed for uuid=" << sample.session_uuid
+                         << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+
+      auto trim = prepare(
+        db,
+        "DELETE FROM samples WHERE id IN ("
+        "  SELECT id FROM samples WHERE session_uuid = ? "
+        "  ORDER BY timestamp_unix DESC, id DESC LIMIT -1 OFFSET ?"
+        ")");
+      if (!trim) {
+        return false;
+      }
+      sqlite3_bind_text(trim.get(), 1, sample.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(trim.get(), 2, MAX_SAMPLES_PER_SESSION);
+      if (sqlite3_step(trim.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: sample trim failed for uuid=" << sample.session_uuid
+                         << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+      return true;
     }
 
-    void process_event(sqlite3 *db, const session_event_t &evt) {
+    bool process_event(sqlite3 *db, const session_event_t &evt) {
+      if (!session_accepts_live_updates(db, evt.session_uuid)) {
+        BOOST_LOG(debug) << "session_history: dropping stale event for ended or missing session "
+                         << evt.session_uuid << " type=" << evt.event_type;
+        return true;
+      }
       auto s = prepare(db,
         "INSERT INTO events (session_uuid, timestamp_unix, event_type, payload) "
         "VALUES (?,?,?,?)");
-      if (!s) return;
+      if (!s) return false;
 
       sqlite3_bind_text(s.get(), 1, evt.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_double(s.get(), 2, evt.timestamp_unix);
       sqlite3_bind_text(s.get(), 3, evt.event_type.c_str(), -1, SQLITE_TRANSIENT);
       sqlite3_bind_text(s.get(), 4, evt.payload.c_str(), -1, SQLITE_TRANSIENT);
 
-      sqlite3_step(s.get());
+      if (sqlite3_step(s.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: event insert failed for uuid=" << evt.session_uuid
+                         << " type=" << evt.event_type << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+
+      auto trim = prepare(
+        db,
+        "DELETE FROM events WHERE id IN ("
+        "  SELECT id FROM events WHERE session_uuid = ? "
+        "  ORDER BY timestamp_unix DESC, id DESC LIMIT -1 OFFSET ?"
+        ")");
+      if (!trim) {
+        return false;
+      }
+      sqlite3_bind_text(trim.get(), 1, evt.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(trim.get(), 2, MAX_EVENTS_PER_SESSION);
+      if (sqlite3_step(trim.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: event trim failed for uuid=" << evt.session_uuid
+                         << " type=" << evt.event_type << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+      return true;
     }
 
-    bool process_delete(sqlite3 *db, const std::string &uuid) {
+    enum class delete_apply_e {
+      deleted,
+      not_found,
+      failed
+    };
+
+    delete_apply_e process_delete(sqlite3 *db, const std::string &uuid) {
       constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
       constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
       constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
@@ -435,12 +644,12 @@ namespace session_history {
              std::pair {DELETE_SESSION, true},
            }) {
         auto stmt = prepare(db, sql);
-        if (!stmt) return false;
+        if (!stmt) return delete_apply_e::failed;
 
         sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
           BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
-          return false;
+          return delete_apply_e::failed;
         }
         if (track_changes) {
           affected = sqlite3_changes(db);
@@ -448,10 +657,10 @@ namespace session_history {
       }
 
       BOOST_LOG(info) << "Deleted session "sv << uuid << " from history (rows="sv << affected << ")"sv;
-      return affected > 0;
+      return affected > 0 ? delete_apply_e::deleted : delete_apply_e::not_found;
     }
 
-    void process_prune(sqlite3 *db) {
+    bool process_prune(sqlite3 *db) {
       // Keep only the most recent MAX_HISTORY_SESSIONS completed sessions
       const auto limit_str = std::to_string(MAX_HISTORY_SESSIONS);
       const std::string del_events =
@@ -470,9 +679,77 @@ namespace session_history {
         "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
         "  ORDER BY end_time_unix DESC LIMIT " + limit_str +
         ")";
-      exec(db, del_events.c_str());
-      exec(db, del_samples.c_str());
-      exec(db, del_sessions.c_str());
+      return exec(db, del_events.c_str()) &&
+             exec(db, del_samples.c_str()) &&
+             exec(db, del_sessions.c_str());
+    }
+
+    bool apply_write_cmd(sqlite3 *db, write_cmd_t &cmd, std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> &completions) {
+      switch (cmd.type) {
+        case cmd_type::begin_session:
+          return process_begin(db, cmd.metadata);
+        case cmd_type::end_session:
+          return process_end(db, cmd.uuid);
+        case cmd_type::delete_session: {
+          auto result = process_delete(db, cmd.uuid);
+          if (cmd.completion) {
+            completions.emplace_back(cmd.completion, result == delete_apply_e::deleted);
+          }
+          return result != delete_apply_e::failed;
+        }
+        case cmd_type::insert_sample:
+          return process_sample(db, cmd.sample);
+        case cmd_type::insert_event:
+          return process_event(db, cmd.event);
+        case cmd_type::prune:
+          return process_prune(db);
+        case cmd_type::stop:
+          return true;
+      }
+      return true;
+    }
+
+    void resolve_completions(std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> &completions, bool committed) {
+      for (auto &[completion, result] : completions) {
+        if (completion) {
+          completion->set_value(committed && result);
+        }
+      }
+    }
+
+    bool process_batch(std::vector<write_cmd_t> &batch) {
+      if (batch.empty()) {
+        return true;
+      }
+
+      std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
+      if (!exec(g_write_db.get(), "BEGIN TRANSACTION")) {
+        BOOST_LOG(error) << "session_history: failed to begin write transaction";
+        resolve_completions(completions, false);
+        return false;
+      }
+
+      bool ok = true;
+      for (auto &cmd : batch) {
+        if (!apply_write_cmd(g_write_db.get(), cmd, completions)) {
+          ok = false;
+          break;
+        }
+      }
+
+      if (!ok) {
+        exec(g_write_db.get(), "ROLLBACK");
+        resolve_completions(completions, false);
+        return false;
+      }
+
+      const bool committed = exec(g_write_db.get(), "COMMIT");
+      if (!committed) {
+        BOOST_LOG(error) << "session_history: failed to commit write transaction";
+        exec(g_write_db.get(), "ROLLBACK");
+      }
+      resolve_completions(completions, committed);
+      return committed;
     }
 
     void writer_loop() {
@@ -481,77 +758,14 @@ namespace session_history {
         auto batch = drain_queue();
         if (batch.empty()) continue;
 
-        std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
-        exec(g_write_db.get(), "BEGIN TRANSACTION");
-        for (auto &cmd : batch) {
-          switch (cmd.type) {
-            case cmd_type::begin_session:
-              process_begin(g_write_db.get(), cmd.metadata);
-              break;
-            case cmd_type::end_session:
-              process_end(g_write_db.get(), cmd.uuid);
-              break;
-            case cmd_type::delete_session:
-              if (cmd.completion) {
-                completions.emplace_back(cmd.completion, process_delete(g_write_db.get(), cmd.uuid));
-              } else {
-                process_delete(g_write_db.get(), cmd.uuid);
-              }
-              break;
-            case cmd_type::insert_sample:
-              process_sample(g_write_db.get(), cmd.sample);
-              break;
-            case cmd_type::insert_event:
-              process_event(g_write_db.get(), cmd.event);
-              break;
-            case cmd_type::prune:
-              process_prune(g_write_db.get());
-              break;
-            case cmd_type::stop:
-              break;
-          }
-        }
-        bool committed = exec(g_write_db.get(), "COMMIT");
-        for (auto &[completion, result] : completions) {
-          completion->set_value(committed && result);
-        }
+        process_batch(batch);
       }
 
       // Final drain
       {
         std::lock_guard lk {g_queue_mutex};
         if (!g_queue.empty()) {
-          std::vector<std::pair<std::shared_ptr<std::promise<bool>>, bool>> completions;
-          exec(g_write_db.get(), "BEGIN TRANSACTION");
-          for (auto &cmd : g_queue) {
-            switch (cmd.type) {
-              case cmd_type::begin_session:
-                process_begin(g_write_db.get(), cmd.metadata);
-                break;
-              case cmd_type::end_session:
-                process_end(g_write_db.get(), cmd.uuid);
-                break;
-              case cmd_type::delete_session:
-                if (cmd.completion) {
-                  completions.emplace_back(cmd.completion, process_delete(g_write_db.get(), cmd.uuid));
-                } else {
-                  process_delete(g_write_db.get(), cmd.uuid);
-                }
-                break;
-              case cmd_type::insert_sample:
-                process_sample(g_write_db.get(), cmd.sample);
-                break;
-              case cmd_type::insert_event:
-                process_event(g_write_db.get(), cmd.event);
-                break;
-              default:
-                break;
-            }
-          }
-          bool committed = exec(g_write_db.get(), "COMMIT");
-          for (auto &[completion, result] : completions) {
-            completion->set_value(committed && result);
-          }
+          process_batch(g_queue);
           g_queue.clear();
         }
       }
@@ -563,6 +777,13 @@ namespace session_history {
     struct pending_event_t {
       std::string event_type;
       std::string payload;
+    };
+
+    struct aggregated_sample_t {
+      double actual_fps = 0;
+      double actual_bitrate_kbps = 0;
+      double frame_interval_jitter_ms = 0;
+      std::vector<pending_event_t> pending_events;
     };
 
     // Detect automatic events based on aggregator state changes. The caller
@@ -591,7 +812,8 @@ namespace session_history {
         agg.zero_frame_ticks++;
         if (agg.zero_frame_ticks >= 2 && !agg.in_stall) {
           agg.in_stall = true;
-          pending.push_back({"stall", "No frames for " + std::to_string(agg.zero_frame_ticks * 2) + "s"});
+          const auto stall_seconds = agg.zero_frame_ticks * std::chrono::duration_cast<std::chrono::seconds>(SAMPLE_INTERVAL).count();
+          pending.push_back({"stall", "No frames for " + std::to_string(stall_seconds) + "s"});
         }
       }
       else {
@@ -605,25 +827,60 @@ namespace session_history {
       return pending;
     }
 
+    aggregated_sample_t update_aggregator(
+      const std::string &session_uuid,
+      double ts,
+      std::uint64_t frames_total,
+      std::uint64_t bytes_total,
+      std::int64_t losses_total) {
+      aggregated_sample_t result;
+      std::lock_guard lk {g_aggregators_mutex};
+      auto &agg = g_aggregators[session_uuid];
+      result.pending_events = detect_events(agg, losses_total, frames_total);
+      agg.update(ts, frames_total, bytes_total, losses_total);
+      result.actual_fps = agg.last_actual_fps;
+      result.actual_bitrate_kbps = agg.last_actual_bitrate_kbps;
+      result.frame_interval_jitter_ms = agg.last_jitter_ms;
+      return result;
+    }
+
+    void populate_host_snapshot(session_sample_t &sample, const platf::host_stats_t &host) {
+      sample.host_cpu_percent = host.cpu_percent;
+      sample.host_gpu_percent = host.gpu_percent;
+      sample.host_gpu_encoder_percent = host.gpu_encoder_percent;
+      sample.host_ram_percent = host.ram_total_bytes > 0
+                                  ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
+                                  : -1.0;
+      const auto vram_used_bytes = host.vram_total_bytes > 0 && host.vram_used_bytes > host.vram_total_bytes
+                                     ? host.vram_total_bytes
+                                     : host.vram_used_bytes;
+      sample.host_vram_percent = host.vram_total_bytes > 0
+                                   ? static_cast<double>(vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
+                                   : -1.0;
+      sample.host_cpu_temp_c = host.cpu_temp_c;
+      sample.host_gpu_temp_c = host.gpu_temp_c;
+      sample.host_net_rx_bps = host.net_rx_bps;
+      sample.host_net_tx_bps = host.net_tx_bps;
+    }
+
+    void enqueue_sample(session_sample_t sample) {
+      write_cmd_t cmd;
+      cmd.type = cmd_type::insert_sample;
+      cmd.sample = std::move(sample);
+      (void) enqueue(std::move(cmd));
+    }
+
     void sample_rtsp_sessions(double ts, const platf::host_stats_t &host) {
       auto infos = stream::get_all_session_info();
       for (const auto &info : infos) {
-        // Snapshot/update aggregator under lock
-        double agg_fps = 0;
-        double agg_bitrate = 0;
-        double agg_jitter = 0;
-        std::vector<pending_event_t> pending_events;
-        {
-          std::lock_guard lk {g_aggregators_mutex};
-          auto &agg = g_aggregators[info.uuid];
-          pending_events = detect_events(agg, info.client_reported_losses, info.frames_sent);
-          agg.update(ts, info.frames_sent, info.bytes_sent, info.client_reported_losses);
-          agg_fps = agg.last_actual_fps;
-          agg_bitrate = agg.last_actual_bitrate_kbps;
-          agg_jitter = agg.last_jitter_ms;
-        }
+        const auto aggregated = update_aggregator(
+          info.uuid,
+          ts,
+          info.frames_sent,
+          info.bytes_sent,
+          info.client_reported_losses);
 
-        for (const auto &evt : pending_events) {
+        for (const auto &evt : aggregated.pending_events) {
           record_event(info.uuid, evt.event_type, evt.payload);
         }
 
@@ -638,30 +895,12 @@ namespace session_history {
         s.idr_requests = info.idr_requests;
         s.ref_invalidations = info.invalidate_ref_count;
         s.encode_latency_ms = info.encode_latency_ms;
-        s.actual_fps = agg_fps;
-        s.actual_bitrate_kbps = agg_bitrate;
-        s.frame_interval_jitter_ms = agg_jitter;
-        s.host_cpu_percent = host.cpu_percent;
-        s.host_gpu_percent = host.gpu_percent;
-        s.host_gpu_encoder_percent = host.gpu_encoder_percent;
-        s.host_ram_percent = host.ram_total_bytes > 0
-                               ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
-                               : -1.0;
-        const auto vram_used_bytes = host.vram_total_bytes > 0 && host.vram_used_bytes > host.vram_total_bytes
-                                       ? host.vram_total_bytes
-                                       : host.vram_used_bytes;
-        s.host_vram_percent = host.vram_total_bytes > 0
-                                ? static_cast<double>(vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
-                                : -1.0;
-        s.host_cpu_temp_c = host.cpu_temp_c;
-        s.host_gpu_temp_c = host.gpu_temp_c;
-        s.host_net_rx_bps = host.net_rx_bps;
-        s.host_net_tx_bps = host.net_tx_bps;
+        s.actual_fps = aggregated.actual_fps;
+        s.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
+        s.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
+        populate_host_snapshot(s, host);
 
-        write_cmd_t cmd;
-        cmd.type = cmd_type::insert_sample;
-        cmd.sample = std::move(s);
-        enqueue(std::move(cmd));
+        enqueue_sample(std::move(s));
       }
     }
 
@@ -676,21 +915,14 @@ namespace session_history {
         const auto bytes_total = ws.video_bytes_total + ws.audio_bytes_total;
         const auto losses_total = static_cast<std::int64_t>(ws.video_dropped);
 
-        double agg_fps = 0;
-        double agg_bitrate = 0;
-        double agg_jitter = 0;
-        std::vector<pending_event_t> pending_events;
-        {
-          std::lock_guard lk {g_aggregators_mutex};
-          auto &agg = g_aggregators[ws.id];
-          pending_events = detect_events(agg, losses_total, frames_total);
-          agg.update(ts, frames_total, bytes_total, losses_total);
-          agg_fps = agg.last_actual_fps;
-          agg_bitrate = agg.last_actual_bitrate_kbps;
-          agg_jitter = agg.last_jitter_ms;
-        }
+        const auto aggregated = update_aggregator(
+          ws.id,
+          ts,
+          frames_total,
+          bytes_total,
+          losses_total);
 
-        for (const auto &evt : pending_events) {
+        for (const auto &evt : aggregated.pending_events) {
           record_event(ws.id, evt.event_type, evt.payload);
         }
 
@@ -704,30 +936,12 @@ namespace session_history {
         s.video_dropped = ws.video_dropped;
         s.audio_dropped = ws.audio_dropped;
         s.client_reported_losses = losses_total;
-        s.actual_fps = agg_fps;
-        s.actual_bitrate_kbps = agg_bitrate;
-        s.frame_interval_jitter_ms = agg_jitter;
-        s.host_cpu_percent = host.cpu_percent;
-        s.host_gpu_percent = host.gpu_percent;
-        s.host_gpu_encoder_percent = host.gpu_encoder_percent;
-        s.host_ram_percent = host.ram_total_bytes > 0
-                               ? static_cast<double>(host.ram_used_bytes) * 100.0 / static_cast<double>(host.ram_total_bytes)
-                               : -1.0;
-        const auto vram_used_bytes = host.vram_total_bytes > 0 && host.vram_used_bytes > host.vram_total_bytes
-                                       ? host.vram_total_bytes
-                                       : host.vram_used_bytes;
-        s.host_vram_percent = host.vram_total_bytes > 0
-                                ? static_cast<double>(vram_used_bytes) * 100.0 / static_cast<double>(host.vram_total_bytes)
-                                : -1.0;
-        s.host_cpu_temp_c = host.cpu_temp_c;
-        s.host_gpu_temp_c = host.gpu_temp_c;
-        s.host_net_rx_bps = host.net_rx_bps;
-        s.host_net_tx_bps = host.net_tx_bps;
+        s.actual_fps = aggregated.actual_fps;
+        s.actual_bitrate_kbps = aggregated.actual_bitrate_kbps;
+        s.frame_interval_jitter_ms = aggregated.frame_interval_jitter_ms;
+        populate_host_snapshot(s, host);
 
-        write_cmd_t cmd;
-        cmd.type = cmd_type::insert_sample;
-        cmd.sample = std::move(s);
-        enqueue(std::move(cmd));
+        enqueue_sample(std::move(s));
       }
     }
 
@@ -767,35 +981,63 @@ namespace session_history {
       out.width = sqlite3_column_int(s, 5);
       out.height = sqlite3_column_int(s, 6);
       out.target_fps = sqlite3_column_int(s, 7);
-      out.target_bitrate_kbps = sqlite3_column_int(s, 8);
+      out.encoder_bitrate_kbps = sqlite3_column_int(s, 8);
       auto col9 = sqlite3_column_text(s, 9);
       out.codec = col9 ? reinterpret_cast<const char *>(col9) : "";
       out.hdr = sqlite3_column_int(s, 10) != 0;
-      out.audio_channels = sqlite3_column_int(s, 11);
-      out.start_time_unix = sqlite3_column_double(s, 12);
-      out.end_time_unix = sqlite3_column_double(s, 13);
-      out.duration_seconds = sqlite3_column_double(s, 14);
-      auto col15 = sqlite3_column_text(s, 15);
-      out.verdict = col15 ? reinterpret_cast<const char *>(col15) : "unknown";
-      // Column 16 is the post-migration target_requested_bitrate_kbps; may be NULL
-      // for sessions recorded before phase 14, in which case we fall back to the
+      out.yuv444 = sqlite3_column_int(s, 11) != 0;
+      out.audio_channels = sqlite3_column_int(s, 12);
+      out.start_time_unix = sqlite3_column_double(s, 13);
+      out.end_time_unix = sqlite3_column_double(s, 14);
+      out.duration_seconds = sqlite3_column_double(s, 15);
+      auto col16 = sqlite3_column_text(s, 16);
+      out.verdict = col16 ? reinterpret_cast<const char *>(col16) : "unknown";
+      // Column 17 is target_requested_bitrate_kbps and may be NULL for sessions
+      // recorded before that column existed, in which case we fall back to the
       // encode bitrate so the UI just shows a single value.
-      if (sqlite3_column_count(s) > 16 && sqlite3_column_type(s, 16) != SQLITE_NULL) {
-        out.target_requested_bitrate_kbps = sqlite3_column_int(s, 16);
-      } else {
-        out.target_requested_bitrate_kbps = out.target_bitrate_kbps;
-      }
-      // Columns 17/18 are post-phase-21 host identification; may be missing
-      // for sessions recorded before that migration.
       if (sqlite3_column_count(s) > 17 && sqlite3_column_type(s, 17) != SQLITE_NULL) {
-        auto col17 = sqlite3_column_text(s, 17);
-        out.host_cpu_model = col17 ? reinterpret_cast<const char *>(col17) : "";
+        out.requested_bitrate_kbps = sqlite3_column_int(s, 17);
+      } else {
+        out.requested_bitrate_kbps = out.encoder_bitrate_kbps;
       }
       if (sqlite3_column_count(s) > 18 && sqlite3_column_type(s, 18) != SQLITE_NULL) {
         auto col18 = sqlite3_column_text(s, 18);
-        out.host_gpu_model = col18 ? reinterpret_cast<const char *>(col18) : "";
+        out.server_version = col18 ? reinterpret_cast<const char *>(col18) : "";
+      }
+      // Columns 19/20 are post-phase-21 host identification; may be missing
+      // for sessions recorded before that migration.
+      if (sqlite3_column_count(s) > 19 && sqlite3_column_type(s, 19) != SQLITE_NULL) {
+        auto col19 = sqlite3_column_text(s, 19);
+        out.host_cpu_model = col19 ? reinterpret_cast<const char *>(col19) : "";
+      }
+      if (sqlite3_column_count(s) > 20 && sqlite3_column_type(s, 20) != SQLITE_NULL) {
+        auto col20 = sqlite3_column_text(s, 20);
+        out.host_gpu_model = col20 ? reinterpret_cast<const char *>(col20) : "";
       }
       return out;
+    }
+
+    std::size_t read_count(sqlite3 *db, const char *sql, const std::string &uuid) {
+      auto stmt = prepare(db, sql);
+      if (!stmt) {
+        return 0;
+      }
+      sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return 0;
+      }
+      return static_cast<std::size_t>(sqlite3_column_int64(stmt.get(), 0));
+    }
+
+    int read_pragma_int(sqlite3 *db, const char *sql) {
+      auto stmt = prepare(db, sql);
+      if (!stmt) {
+        return 0;
+      }
+      if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return 0;
+      }
+      return sqlite3_column_int(stmt.get(), 0);
     }
 
   }  // anonymous namespace
@@ -804,6 +1046,7 @@ namespace session_history {
 
   void init(const std::string &db_path) {
     BOOST_LOG(info) << "session_history: initializing database at " << db_path;
+    const std::filesystem::path history_db_path {db_path};
 
     // Open write connection
     {
@@ -816,6 +1059,8 @@ namespace session_history {
       }
       g_write_db.reset(raw);
     }
+    sqlite3_busy_timeout(g_write_db.get(), 3000);
+    exec(g_write_db.get(), "PRAGMA foreign_keys = ON");
 
     // Apply schema
     if (!exec(g_write_db.get(), SCHEMA_SQL)) {
@@ -823,8 +1068,10 @@ namespace session_history {
       g_write_db.reset();
       return;
     }
+    tighten_history_db_permissions(history_db_path);
 
-    // Idempotent migrations for columns added after initial release.
+    // Versioned migrations for older databases. Each step remains guarded by
+    // column existence so pre-versioning databases can be upgraded safely.
     {
       auto column_exists = [&](const char *table, const char *column) -> bool {
         sqlite3_stmt *check = nullptr;
@@ -850,20 +1097,32 @@ namespace session_history {
         }
       };
 
-      // Phase 14
-      add_column("sessions", "target_requested_bitrate_kbps", "INTEGER");
-      // Phase 21 — host identification on session, host snapshot on samples
-      add_column("sessions", "host_cpu_model", "TEXT");
-      add_column("sessions", "host_gpu_model", "TEXT");
-      add_column("samples", "host_cpu_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_encoder_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_ram_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_vram_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1");
-      add_column("samples", "host_net_rx_bps", "REAL DEFAULT -1");
-      add_column("samples", "host_net_tx_bps", "REAL DEFAULT -1");
+      const int schema_version = read_pragma_int(g_write_db.get(), "PRAGMA user_version");
+
+      if (schema_version < 2) {
+        add_column("sessions", "target_requested_bitrate_kbps", "INTEGER");
+      }
+      if (schema_version < 3) {
+        add_column("sessions", "host_cpu_model", "TEXT");
+        add_column("sessions", "host_gpu_model", "TEXT");
+        add_column("samples", "host_cpu_percent", "REAL DEFAULT -1");
+        add_column("samples", "host_gpu_percent", "REAL DEFAULT -1");
+        add_column("samples", "host_gpu_encoder_percent", "REAL DEFAULT -1");
+        add_column("samples", "host_ram_percent", "REAL DEFAULT -1");
+        add_column("samples", "host_vram_percent", "REAL DEFAULT -1");
+        add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1");
+        add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1");
+        add_column("samples", "host_net_rx_bps", "REAL DEFAULT -1");
+        add_column("samples", "host_net_tx_bps", "REAL DEFAULT -1");
+      }
+      if (schema_version < 4) {
+        add_column("sessions", "yuv444", "INTEGER DEFAULT 0");
+        add_column("sessions", "server_version", "TEXT");
+      }
+
+      exec(
+        g_write_db.get(),
+        ("PRAGMA user_version = " + std::to_string(SESSION_HISTORY_SCHEMA_VERSION)).c_str());
     }
 
     // Open read connection (read-only)
@@ -878,6 +1137,9 @@ namespace session_history {
       }
       g_read_db.reset(raw);
     }
+    sqlite3_busy_timeout(g_read_db.get(), 3000);
+    exec(g_read_db.get(), "PRAGMA foreign_keys = ON");
+    tighten_history_db_permissions(history_db_path);
 
     g_running.store(true, std::memory_order_release);
     g_writer_thread = std::thread {writer_loop};
@@ -886,7 +1148,7 @@ namespace session_history {
     // Prune old sessions on startup
     write_cmd_t cmd;
     cmd.type = cmd_type::prune;
-    enqueue(std::move(cmd));
+    (void) enqueue(std::move(cmd));
 
     BOOST_LOG(info) << "session_history: initialized";
   }
@@ -942,7 +1204,9 @@ namespace session_history {
     write_cmd_t cmd;
     cmd.type = cmd_type::begin_session;
     cmd.metadata = enriched;
-    enqueue(std::move(cmd));
+    if (!enqueue(std::move(cmd))) {
+      BOOST_LOG(error) << "session_history: failed to queue begin_session for uuid=" << enriched.uuid;
+    }
 
     // Emit stream_started event
     session_event_t evt;
@@ -952,7 +1216,9 @@ namespace session_history {
     write_cmd_t evt_cmd;
     evt_cmd.type = cmd_type::insert_event;
     evt_cmd.event = std::move(evt);
-    enqueue(std::move(evt_cmd));
+    if (!enqueue(std::move(evt_cmd))) {
+      BOOST_LOG(error) << "session_history: failed to queue stream_started event for uuid=" << enriched.uuid;
+    }
   }
 
   void end_session(const std::string &uuid) {
@@ -974,17 +1240,21 @@ namespace session_history {
     write_cmd_t evt_cmd;
     evt_cmd.type = cmd_type::insert_event;
     evt_cmd.event = std::move(evt);
-    enqueue(std::move(evt_cmd));
+    if (!enqueue(std::move(evt_cmd))) {
+      BOOST_LOG(error) << "session_history: failed to queue stream_ended event for uuid=" << uuid;
+    }
 
     write_cmd_t cmd;
     cmd.type = cmd_type::end_session;
     cmd.uuid = uuid;
-    enqueue(std::move(cmd));
+    if (!enqueue(std::move(cmd))) {
+      BOOST_LOG(error) << "session_history: failed to queue end_session for uuid=" << uuid;
+    }
 
     // Prune after session ends
     write_cmd_t prune_cmd;
     prune_cmd.type = cmd_type::prune;
-    enqueue(std::move(prune_cmd));
+    (void) enqueue(std::move(prune_cmd));
   }
 
   void record_event(const std::string &uuid, const std::string &event_type, const std::string &payload) {
@@ -996,17 +1266,20 @@ namespace session_history {
     write_cmd_t cmd;
     cmd.type = cmd_type::insert_event;
     cmd.event = std::move(evt);
-    enqueue(std::move(cmd));
+    if (!enqueue(std::move(cmd))) {
+      BOOST_LOG(error) << "session_history: failed to queue event '" << event_type << "' for uuid=" << uuid;
+    }
   }
 
   std::vector<session_summary_t> list_sessions(int limit, int offset) {
     std::vector<session_summary_t> result;
     if (!g_read_db) return result;
+    std::lock_guard lk {g_read_mutex};
 
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
-      "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, "
+      "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
       "host_cpu_model, host_gpu_model "
       "FROM sessions WHERE end_time_unix IS NOT NULL "
       "ORDER BY end_time_unix DESC LIMIT ? OFFSET ?");
@@ -1021,14 +1294,15 @@ namespace session_history {
     return result;
   }
 
-  std::optional<session_detail_t> get_session_detail(const std::string &uuid) {
+  std::optional<session_detail_t> get_session_detail(const std::string &uuid, bool include_all) {
     if (!g_read_db) return std::nullopt;
+    std::lock_guard lk {g_read_mutex};
 
     // Fetch session summary
     auto s = prepare(g_read_db.get(),
       "SELECT uuid, protocol, client_name, device_name, app_name, "
-      "width, height, target_fps, target_bitrate_kbps, codec, hdr, audio_channels, "
-      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, "
+      "width, height, target_fps, target_bitrate_kbps, codec, hdr, yuv444, audio_channels, "
+      "start_time_unix, end_time_unix, duration_seconds, verdict, target_requested_bitrate_kbps, server_version, "
       "host_cpu_model, host_gpu_model "
       "FROM sessions WHERE uuid = ?");
     if (!s) return std::nullopt;
@@ -1037,19 +1311,45 @@ namespace session_history {
 
     session_detail_t detail;
     detail.summary = row_to_summary(s.get());
+    detail.total_samples = read_count(g_read_db.get(), "SELECT COUNT(*) FROM samples WHERE session_uuid = ?", uuid);
+    detail.total_events = read_count(g_read_db.get(), "SELECT COUNT(*) FROM events WHERE session_uuid = ?", uuid);
+    detail.samples_truncated = !include_all && detail.total_samples > DEFAULT_DETAIL_SAMPLE_LIMIT;
+    detail.events_truncated = !include_all && detail.total_events > DEFAULT_DETAIL_EVENT_LIMIT;
 
     // Fetch samples
     auto ss = prepare(g_read_db.get(),
-      "SELECT session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
-      "frames_sent, last_frame_index, video_dropped, audio_dropped, "
-      "client_reported_losses, idr_requests, ref_invalidations, "
-      "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
-      "host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
-      "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
-      "host_net_rx_bps, host_net_tx_bps "
-      "FROM samples WHERE session_uuid = ? ORDER BY timestamp_unix");
+      include_all ?
+        "SELECT session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
+        "frames_sent, last_frame_index, video_dropped, audio_dropped, "
+        "client_reported_losses, idr_requests, ref_invalidations, "
+        "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
+        "host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+        "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
+        "host_net_rx_bps, host_net_tx_bps "
+        "FROM samples WHERE session_uuid = ? ORDER BY timestamp_unix"
+        :
+        "SELECT session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
+        "frames_sent, last_frame_index, video_dropped, audio_dropped, "
+        "client_reported_losses, idr_requests, ref_invalidations, "
+        "encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
+        "host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+        "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
+        "host_net_rx_bps, host_net_tx_bps "
+        "FROM ("
+        "  SELECT session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
+        "  frames_sent, last_frame_index, video_dropped, audio_dropped, "
+        "  client_reported_losses, idr_requests, ref_invalidations, "
+        "  encode_latency_ms, actual_fps, actual_bitrate_kbps, frame_interval_jitter_ms, "
+        "  host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+        "  host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, "
+        "  host_net_rx_bps, host_net_tx_bps "
+        "  FROM samples WHERE session_uuid = ? ORDER BY timestamp_unix DESC LIMIT ?"
+        ") ORDER BY timestamp_unix");
     if (ss) {
       sqlite3_bind_text(ss.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (!include_all) {
+        sqlite3_bind_int(ss.get(), 2, DEFAULT_DETAIL_SAMPLE_LIMIT);
+      }
       while (sqlite3_step(ss.get()) == SQLITE_ROW) {
         session_sample_t sample;
         auto col0 = sqlite3_column_text(ss.get(), 0);
@@ -1090,10 +1390,20 @@ namespace session_history {
 
     // Fetch events
     auto es = prepare(g_read_db.get(),
-      "SELECT session_uuid, timestamp_unix, event_type, payload "
-      "FROM events WHERE session_uuid = ? ORDER BY timestamp_unix");
+      include_all ?
+        "SELECT session_uuid, timestamp_unix, event_type, payload "
+        "FROM events WHERE session_uuid = ? ORDER BY timestamp_unix"
+        :
+        "SELECT session_uuid, timestamp_unix, event_type, payload "
+        "FROM ("
+        "  SELECT session_uuid, timestamp_unix, event_type, payload "
+        "  FROM events WHERE session_uuid = ? ORDER BY timestamp_unix DESC LIMIT ?"
+        ") ORDER BY timestamp_unix");
     if (es) {
       sqlite3_bind_text(es.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (!include_all) {
+        sqlite3_bind_int(es.get(), 2, DEFAULT_DETAIL_EVENT_LIMIT);
+      }
       while (sqlite3_step(es.get()) == SQLITE_ROW) {
         session_event_t evt;
         auto col0 = sqlite3_column_text(es.get(), 0);
@@ -1136,10 +1446,11 @@ namespace session_history {
       as.width = info.width;
       as.height = info.height;
       as.target_fps = info.fps;
-      as.target_bitrate_kbps = info.bitrate_kbps;
-      as.client_bitrate_kbps = info.client_bitrate_kbps ? info.client_bitrate_kbps : info.bitrate_kbps;
-      as.codec = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
+      as.encoder_bitrate_kbps = info.encoder_bitrate_kbps;
+      as.requested_bitrate_kbps = info.requested_bitrate_kbps ? info.requested_bitrate_kbps : info.encoder_bitrate_kbps;
+      as.codec = std::string(stream::video_format_name(info.video_format));
       as.hdr = info.dynamic_range > 0;
+      as.yuv444 = info.yuv444;
       as.uptime_seconds = info.uptime_seconds;
       as.encode_latency_ms = info.encode_latency_ms;
       as.frames_sent = info.frames_sent;
@@ -1177,10 +1488,11 @@ namespace session_history {
       as.width = ws.width.value_or(0);
       as.height = ws.height.value_or(0);
       as.target_fps = ws.fps.value_or(0);
-      as.target_bitrate_kbps = ws.bitrate_kbps.value_or(0);
-      as.client_bitrate_kbps = ws.bitrate_kbps.value_or(0);
+      as.encoder_bitrate_kbps = ws.bitrate_kbps.value_or(0);
+      as.requested_bitrate_kbps = ws.bitrate_kbps.value_or(0);
       as.codec = ws.codec.value_or("");
       as.hdr = ws.hdr.value_or(false);
+      as.yuv444 = ws.yuv444.value_or(false);
       as.frames_sent = static_cast<std::uint64_t>(
         ws.last_video_frame_index > 0 ? ws.last_video_frame_index : 0);
       as.bytes_sent = ws.video_bytes_total + ws.audio_bytes_total;
@@ -1202,9 +1514,16 @@ namespace session_history {
     return result;
   }
 
-  bool delete_session(const std::string &uuid) {
+  delete_result_e delete_session(const std::string &uuid) {
     if (!g_write_db || !g_running.load(std::memory_order_acquire)) {
-      return false;
+      return delete_result_e::unavailable;
+    }
+
+    {
+      std::lock_guard lk {g_active_mutex};
+      if (g_active_sessions.contains(uuid)) {
+        return delete_result_e::active_session;
+      }
     }
 
     auto completion = std::make_shared<std::promise<bool>>();
@@ -1214,9 +1533,16 @@ namespace session_history {
     cmd.type = cmd_type::delete_session;
     cmd.uuid = uuid;
     cmd.completion = completion;
-    enqueue(std::move(cmd));
+    if (!enqueue(std::move(cmd))) {
+      return delete_result_e::unavailable;
+    }
 
-    return result.get();
+    if (result.wait_for(DELETE_WAIT_TIMEOUT) != std::future_status::ready) {
+      BOOST_LOG(error) << "session_history: timed out waiting for delete completion for uuid=" << uuid;
+      return delete_result_e::timeout;
+    }
+
+    return result.get() ? delete_result_e::deleted : delete_result_e::not_found;
   }
 
 }  // namespace session_history

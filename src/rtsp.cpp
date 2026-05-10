@@ -706,6 +706,17 @@ namespace rtsp_stream {
       return uuids;
     }
 
+    std::vector<std::shared_ptr<stream::session_t>>
+      get_sessions_snapshot() {
+      std::vector<std::shared_ptr<stream::session_t>> sessions;
+      auto lg = _session_state.lock();
+      sessions.reserve(_session_state->sessions.size());
+      for (auto &session : _session_state->sessions) {
+        sessions.push_back(session);
+      }
+      return sessions;
+    }
+
   private:
     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
 
@@ -746,6 +757,10 @@ namespace rtsp_stream {
 
   std::list<std::string> get_all_session_uuids() {
     return server.get_all_session_uuids();
+  }
+
+  std::vector<std::shared_ptr<stream::session_t>> get_sessions_snapshot() {
+    return server.get_sessions_snapshot();
   }
 
   void terminate_sessions() {

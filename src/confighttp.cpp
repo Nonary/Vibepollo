@@ -489,10 +489,12 @@ namespace confighttp {
     output["height"] = state.height ? nlohmann::json(*state.height) : nlohmann::json(nullptr);
     output["fps"] = state.fps ? nlohmann::json(*state.fps) : nlohmann::json(nullptr);
     output["bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
-    // WebRTC has no FEC/audio adjustment, so the client-requested bitrate is the same as the encode bitrate.
-    output["client_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
+    // WebRTC has no FEC/audio adjustment, so the requested bitrate is the same as the encoder bitrate.
+    output["requested_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
+    output["encoder_bitrate_kbps"] = state.bitrate_kbps ? nlohmann::json(*state.bitrate_kbps) : nlohmann::json(nullptr);
     output["codec"] = state.codec ? nlohmann::json(*state.codec) : nlohmann::json(nullptr);
     output["hdr"] = state.hdr ? nlohmann::json(*state.hdr) : nlohmann::json(nullptr);
+    output["yuv444"] = state.yuv444 ? nlohmann::json(*state.yuv444) : nlohmann::json(false);
     output["audio_channels"] = state.audio_channels ? nlohmann::json(*state.audio_channels) : nlohmann::json(nullptr);
     output["audio_codec"] = state.audio_codec ? nlohmann::json(*state.audio_codec) : nlohmann::json(nullptr);
     output["profile"] = state.profile ? nlohmann::json(*state.profile) : nlohmann::json(nullptr);
@@ -517,6 +519,114 @@ namespace confighttp {
 
     output["last_audio_age_ms"] = age_or_null(state.last_audio_time);
     output["last_video_age_ms"] = age_or_null(state.last_video_time);
+    return output;
+  }
+
+  nlohmann::json session_summary_to_json(const session_history::session_summary_t &summary) {
+    nlohmann::json output;
+    output["uuid"] = summary.uuid;
+    output["protocol"] = summary.protocol;
+    output["client_name"] = summary.client_name;
+    output["device_name"] = summary.device_name;
+    output["app_name"] = summary.app_name;
+    output["width"] = summary.width;
+    output["height"] = summary.height;
+    output["target_fps"] = summary.target_fps;
+    output["encoder_bitrate_kbps"] = summary.encoder_bitrate_kbps;
+    output["requested_bitrate_kbps"] = summary.requested_bitrate_kbps;
+    output["codec"] = summary.codec;
+    output["hdr"] = summary.hdr;
+    output["yuv444"] = summary.yuv444;
+    output["audio_channels"] = summary.audio_channels;
+    output["start_time_unix"] = summary.start_time_unix;
+    output["end_time_unix"] = summary.end_time_unix;
+    output["duration_seconds"] = std::round(summary.duration_seconds * 10.0) / 10.0;
+    output["verdict"] = summary.verdict;
+    output["server_version"] = summary.server_version;
+    output["host_cpu_model"] = summary.host_cpu_model;
+    output["host_gpu_model"] = summary.host_gpu_model;
+    return output;
+  }
+
+  nlohmann::json session_sample_to_json(const session_history::session_sample_t &sample) {
+    nlohmann::json output;
+    output["session_uuid"] = sample.session_uuid;
+    output["timestamp_unix"] = sample.timestamp_unix;
+    output["bytes_sent_total"] = sample.bytes_sent_total;
+    output["packets_sent_video"] = sample.packets_sent_video;
+    output["frames_sent"] = sample.frames_sent;
+    output["last_frame_index"] = sample.last_frame_index;
+    output["video_dropped"] = sample.video_dropped;
+    output["audio_dropped"] = sample.audio_dropped;
+    output["client_reported_losses"] = sample.client_reported_losses;
+    output["idr_requests"] = sample.idr_requests;
+    output["ref_invalidations"] = sample.ref_invalidations;
+    output["encode_latency_ms"] = std::round(sample.encode_latency_ms * 10.0) / 10.0;
+    output["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
+    output["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
+    output["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
+    output["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : std::round(sample.host_cpu_percent * 10.0) / 10.0;
+    output["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : std::round(sample.host_gpu_percent * 10.0) / 10.0;
+    output["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : std::round(sample.host_gpu_encoder_percent * 10.0) / 10.0;
+    output["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : std::round(sample.host_ram_percent * 10.0) / 10.0;
+    output["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
+    output["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
+    output["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
+    output["host_net_rx_bps"] = sample.host_net_rx_bps < 0 ? -1 : sample.host_net_rx_bps;
+    output["host_net_tx_bps"] = sample.host_net_tx_bps < 0 ? -1 : sample.host_net_tx_bps;
+    return output;
+  }
+
+  nlohmann::json session_event_to_json(const session_history::session_event_t &event) {
+    nlohmann::json output;
+    output["session_uuid"] = event.session_uuid;
+    output["timestamp_unix"] = event.timestamp_unix;
+    output["event_type"] = event.event_type;
+    output["payload"] = event.payload;
+    return output;
+  }
+
+  nlohmann::json active_session_to_json(const session_history::active_session_t &session) {
+    nlohmann::json output;
+    output["uuid"] = session.uuid;
+    output["protocol"] = session.protocol;
+    output["client_name"] = session.client_name;
+    output["device_name"] = session.device_name;
+    output["app_name"] = session.app_name;
+    output["width"] = session.width;
+    output["height"] = session.height;
+    output["target_fps"] = session.target_fps;
+    output["encoder_bitrate_kbps"] = session.encoder_bitrate_kbps;
+    output["requested_bitrate_kbps"] = session.requested_bitrate_kbps;
+    output["codec"] = session.codec;
+    output["hdr"] = session.hdr;
+    output["yuv444"] = session.yuv444;
+    output["uptime_seconds"] = std::round(session.uptime_seconds * 10.0) / 10.0;
+    output["actual_fps"] = std::round(session.actual_fps * 10.0) / 10.0;
+    output["actual_bitrate_kbps"] = std::round(session.actual_bitrate_kbps * 10.0) / 10.0;
+    output["encode_latency_ms"] = std::round(session.encode_latency_ms * 10.0) / 10.0;
+    output["frame_interval_jitter_ms"] = std::round(session.frame_interval_jitter_ms * 100.0) / 100.0;
+    output["frames_sent"] = session.frames_sent;
+    output["bytes_sent"] = session.bytes_sent;
+    output["client_reported_losses"] = session.client_reported_losses;
+    output["idr_requests"] = session.idr_requests;
+    return output;
+  }
+
+  nlohmann::json session_detail_to_json(const session_history::session_detail_t &detail) {
+    nlohmann::json output = session_summary_to_json(detail.summary);
+    output["total_samples"] = detail.total_samples;
+    output["total_events"] = detail.total_events;
+    output["samples_truncated"] = detail.samples_truncated;
+    output["events_truncated"] = detail.events_truncated;
+    output["samples"] = nlohmann::json::array();
+    for (const auto &sample : detail.samples) {
+      output["samples"].push_back(session_sample_to_json(sample));
+    }
+    output["events"] = nlohmann::json::array();
+    for (const auto &event : detail.events) {
+      output["events"].push_back(session_event_to_json(event));
+    }
     return output;
   }
 
@@ -836,6 +946,26 @@ namespace confighttp {
     add_cors_headers(headers);
     nlohmann::json error = {{"error", error_message}};
     response->write(SimpleWeb::StatusCode::server_error_service_unavailable, error.dump(), headers);
+  }
+
+  void conflict(resp_https_t response, const std::string &error_message) {
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    add_cors_headers(headers);
+    nlohmann::json error = {{"error", error_message}};
+    response->write(SimpleWeb::StatusCode::client_error_conflict, error.dump(), headers);
+  }
+
+  void gateway_timeout(resp_https_t response, const std::string &error_message) {
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json; charset=utf-8");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    add_cors_headers(headers);
+    nlohmann::json error = {{"error", error_message}};
+    response->write(SimpleWeb::StatusCode::server_error_gateway_timeout, error.dump(), headers);
   }
 
   /**
@@ -2468,11 +2598,12 @@ namespace confighttp {
       s["width"] = info.width;
       s["height"] = info.height;
       s["fps"] = info.fps;
-      s["bitrate_kbps"] = info.bitrate_kbps;
-      s["client_bitrate_kbps"] = info.client_bitrate_kbps;
+      s["encoder_bitrate_kbps"] = info.encoder_bitrate_kbps;
+      s["requested_bitrate_kbps"] = info.requested_bitrate_kbps;
       s["video_format"] = info.video_format;
-      s["codec"] = info.video_format == 0 ? "H.264" : info.video_format == 1 ? "HEVC" : info.video_format == 2 ? "AV1" : "Unknown";
+      s["codec"] = stream::video_format_name(info.video_format);
       s["hdr"] = info.dynamic_range > 0;
+      s["yuv444"] = info.yuv444;
       s["audio_channels"] = info.audio_channels;
       s["state"] = info.state;
 
@@ -2528,27 +2659,7 @@ namespace confighttp {
     nlohmann::json output;
     output["sessions"] = nlohmann::json::array();
     for (const auto &s : session_history::list_sessions(limit, offset)) {
-      nlohmann::json j;
-      j["uuid"] = s.uuid;
-      j["protocol"] = s.protocol;
-      j["client_name"] = s.client_name;
-      j["device_name"] = s.device_name;
-      j["app_name"] = s.app_name;
-      j["width"] = s.width;
-      j["height"] = s.height;
-      j["target_fps"] = s.target_fps;
-      j["target_bitrate_kbps"] = s.target_bitrate_kbps;
-      j["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
-      j["codec"] = s.codec;
-      j["hdr"] = s.hdr;
-      j["audio_channels"] = s.audio_channels;
-      j["start_time_unix"] = s.start_time_unix;
-      j["end_time_unix"] = s.end_time_unix;
-      j["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
-      j["verdict"] = s.verdict;
-      j["host_cpu_model"] = s.host_cpu_model;
-      j["host_gpu_model"] = s.host_gpu_model;
-      output["sessions"].push_back(std::move(j));
+      output["sessions"].push_back(session_summary_to_json(s));
     }
     send_response(response, output);
   }
@@ -2559,73 +2670,22 @@ namespace confighttp {
     }
 
     auto uuid = request->path_match[1].str();
-    auto detail = session_history::get_session_detail(uuid);
+    const auto query = request->parse_query_string();
+    const bool include_all = [&query]() {
+      auto it = query.find("full");
+      if (it == query.end()) {
+        return false;
+      }
+      return it->second == "1" || it->second == "true" || it->second == "yes";
+    }();
+
+    auto detail = session_history::get_session_detail(uuid, include_all);
     if (!detail) {
       not_found(response, request);
       return;
     }
 
-    nlohmann::json output;
-    auto &s = detail->summary;
-    output["uuid"] = s.uuid;
-    output["protocol"] = s.protocol;
-    output["client_name"] = s.client_name;
-    output["device_name"] = s.device_name;
-    output["app_name"] = s.app_name;
-    output["width"] = s.width;
-    output["height"] = s.height;
-    output["target_fps"] = s.target_fps;
-    output["target_bitrate_kbps"] = s.target_bitrate_kbps;
-    output["target_requested_bitrate_kbps"] = s.target_requested_bitrate_kbps;
-    output["codec"] = s.codec;
-    output["hdr"] = s.hdr;
-    output["audio_channels"] = s.audio_channels;
-    output["start_time_unix"] = s.start_time_unix;
-    output["end_time_unix"] = s.end_time_unix;
-    output["duration_seconds"] = std::round(s.duration_seconds * 10.0) / 10.0;
-    output["verdict"] = s.verdict;
-    output["host_cpu_model"] = s.host_cpu_model;
-    output["host_gpu_model"] = s.host_gpu_model;
-
-    output["samples"] = nlohmann::json::array();
-    for (const auto &sample : detail->samples) {
-      nlohmann::json js;
-      js["timestamp_unix"] = sample.timestamp_unix;
-      js["bytes_sent_total"] = sample.bytes_sent_total;
-      js["packets_sent_video"] = sample.packets_sent_video;
-      js["frames_sent"] = sample.frames_sent;
-      js["last_frame_index"] = sample.last_frame_index;
-      js["video_dropped"] = sample.video_dropped;
-      js["audio_dropped"] = sample.audio_dropped;
-      js["client_reported_losses"] = sample.client_reported_losses;
-      js["idr_requests"] = sample.idr_requests;
-      js["ref_invalidations"] = sample.ref_invalidations;
-      js["encode_latency_ms"] = std::round(sample.encode_latency_ms * 10.0) / 10.0;
-      js["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
-      js["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
-      js["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
-      js["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : std::round(sample.host_cpu_percent * 10.0) / 10.0;
-      js["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : std::round(sample.host_gpu_percent * 10.0) / 10.0;
-      js["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : std::round(sample.host_gpu_encoder_percent * 10.0) / 10.0;
-      js["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : std::round(sample.host_ram_percent * 10.0) / 10.0;
-      js["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
-      js["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
-      js["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
-      js["host_net_rx_bps"] = sample.host_net_rx_bps < 0 ? -1 : sample.host_net_rx_bps;
-      js["host_net_tx_bps"] = sample.host_net_tx_bps < 0 ? -1 : sample.host_net_tx_bps;
-      output["samples"].push_back(std::move(js));
-    }
-
-    output["events"] = nlohmann::json::array();
-    for (const auto &evt : detail->events) {
-      nlohmann::json je;
-      je["timestamp_unix"] = evt.timestamp_unix;
-      je["event_type"] = evt.event_type;
-      je["payload"] = evt.payload;
-      output["events"].push_back(std::move(je));
-    }
-
-    send_response(response, output);
+    send_response(response, session_detail_to_json(*detail));
   }
 
   void deleteSessionHistory(resp_https_t response, req_https_t request) {
@@ -2634,10 +2694,25 @@ namespace confighttp {
     }
 
     auto uuid = request->path_match[1].str();
-    bool ok = session_history::delete_session(uuid);
-    if (!ok) {
-      not_found(response, request);
-      return;
+    auto result = session_history::delete_session(uuid);
+    switch (result) {
+      case session_history::delete_result_e::deleted:
+        break;
+      case session_history::delete_result_e::not_found:
+        not_found(response, request);
+        return;
+      case session_history::delete_result_e::active_session:
+        conflict(response, "Cannot delete an active session");
+        return;
+      case session_history::delete_result_e::unavailable:
+        service_unavailable(response, "Session history subsystem unavailable");
+        return;
+      case session_history::delete_result_e::timeout:
+        gateway_timeout(response, "Timed out waiting for session history delete");
+        return;
+      case session_history::delete_result_e::failed:
+        service_unavailable(response, "Session history delete failed");
+        return;
     }
 
     nlohmann::json output;
@@ -2654,29 +2729,7 @@ namespace confighttp {
     nlohmann::json output;
     output["sessions"] = nlohmann::json::array();
     for (const auto &as : session_history::get_active_sessions()) {
-      nlohmann::json j;
-      j["uuid"] = as.uuid;
-      j["protocol"] = as.protocol;
-      j["client_name"] = as.client_name;
-      j["device_name"] = as.device_name;
-      j["app_name"] = as.app_name;
-      j["width"] = as.width;
-      j["height"] = as.height;
-      j["target_fps"] = as.target_fps;
-      j["target_bitrate_kbps"] = as.target_bitrate_kbps;
-      j["client_bitrate_kbps"] = as.client_bitrate_kbps;
-      j["codec"] = as.codec;
-      j["hdr"] = as.hdr;
-      j["uptime_seconds"] = std::round(as.uptime_seconds * 10.0) / 10.0;
-      j["actual_fps"] = std::round(as.actual_fps * 10.0) / 10.0;
-      j["actual_bitrate_kbps"] = std::round(as.actual_bitrate_kbps * 10.0) / 10.0;
-      j["encode_latency_ms"] = std::round(as.encode_latency_ms * 10.0) / 10.0;
-      j["frame_interval_jitter_ms"] = std::round(as.frame_interval_jitter_ms * 100.0) / 100.0;
-      j["frames_sent"] = as.frames_sent;
-      j["bytes_sent"] = as.bytes_sent;
-      j["client_reported_losses"] = as.client_reported_losses;
-      j["idr_requests"] = as.idr_requests;
-      output["sessions"].push_back(std::move(j));
+      output["sessions"].push_back(active_session_to_json(as));
     }
     send_response(response, output);
   }

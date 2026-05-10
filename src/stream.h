@@ -8,6 +8,7 @@
 #include <atomic>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,19 @@ namespace stream {
   constexpr auto VIDEO_STREAM_PORT = 9;
   constexpr auto CONTROL_PORT = 10;
   constexpr auto AUDIO_STREAM_PORT = 11;
+
+  constexpr std::string_view video_format_name(int video_format) {
+    switch (video_format) {
+      case 0:
+        return "H.264";
+      case 1:
+        return "HEVC";
+      case 2:
+        return "AV1";
+      default:
+        return "Unknown";
+    }
+  }
 
   struct session_t;
 
@@ -77,10 +91,11 @@ namespace stream {
     int width;
     int height;
     int fps;
-    int bitrate_kbps;
-    int client_bitrate_kbps;  // Original client-requested wire bitrate (== bitrate_kbps for clients that don't send maximumBitrateKbps)
+    int encoder_bitrate_kbps;
+    int requested_bitrate_kbps;  // Original client-requested wire bitrate (== encoder_bitrate_kbps for clients that don't send maximumBitrateKbps)
     int video_format;  // 0=H.264, 1=HEVC, 2=AV1
     int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
+    bool yuv444;
     int audio_channels;
     std::string state;
 

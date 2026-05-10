@@ -567,6 +567,35 @@ const eventColors: Record<string, string> = {
   recovery: 'rgba(34, 197, 94, 0.5)',
 };
 
+function findClosestSampleIndex(samples: SessionSample[], timestampUnix: number): number {
+  if (!samples.length) {
+    return 0;
+  }
+
+  let low = 0;
+  let high = samples.length - 1;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    const midTimestamp = samples[mid]?.timestamp_unix ?? 0;
+    if (midTimestamp < timestampUnix) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  const upperIndex = low;
+  if (upperIndex <= 0) {
+    return 0;
+  }
+
+  const lowerIndex = upperIndex - 1;
+  const lowerDiff = Math.abs(timestampUnix - (samples[lowerIndex]?.timestamp_unix ?? 0));
+  const upperDiff = Math.abs(timestampUnix - (samples[upperIndex]?.timestamp_unix ?? 0));
+  return lowerDiff <= upperDiff ? lowerIndex : upperIndex;
+}
+
 // Build annotation lines from events in history mode
 const eventAnnotations = computed(() => {
   if (props.mode !== 'history' || !props.events?.length || !props.historyData?.length) return {};
@@ -575,17 +604,8 @@ const eventAnnotations = computed(() => {
 
   const samples = props.historyData ?? [];
 
-  // Resolve every event to its closest sample index first.
   const resolved = props.events.map((evt, i) => {
-    let closest = 0;
-    let minDiff = Infinity;
-    for (let j = 0; j < data.length; j++) {
-      const diff = Math.abs(evt.timestamp_unix - (samples[j]?.timestamp_unix ?? 0));
-      if (diff < minDiff) {
-        minDiff = diff;
-        closest = j;
-      }
-    }
+    const closest = findClosestSampleIndex(samples, evt.timestamp_unix);
     return { i, evt, closest };
   });
 

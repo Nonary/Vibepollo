@@ -46,6 +46,31 @@
             }}
           </div>
         </n-alert>
+        <n-alert
+          v-if="detail.samples_truncated || detail.events_truncated"
+          type="warning"
+          :show-icon="false"
+          class="mb-4"
+        >
+          <div class="text-xs space-y-1">
+            <div v-if="detail.samples_truncated">
+              {{
+                t('sessions.history_samples_truncated', {
+                  shown: detail.samples?.length ?? 0,
+                  total: detail.total_samples ?? detail.samples?.length ?? 0,
+                })
+              }}
+            </div>
+            <div v-if="detail.events_truncated">
+              {{
+                t('sessions.history_events_truncated', {
+                  shown: detail.events?.length ?? 0,
+                  total: detail.total_events ?? detail.events?.length ?? 0,
+                })
+              }}
+            </div>
+          </div>
+        </n-alert>
         <!-- Session metadata header -->
         <div class="space-y-4 mb-6">
           <div class="flex flex-wrap items-center gap-2">
@@ -57,6 +82,7 @@
               {{ (detail.protocol || '').toUpperCase() || '—' }}
             </n-tag>
             <n-tag v-if="detail.hdr" size="small" :bordered="false" type="warning">HDR</n-tag>
+            <n-tag v-if="detail.yuv444" size="small" :bordered="false" type="info">YUV444</n-tag>
             <n-tag
               v-if="detail.verdict"
               size="small"
@@ -110,6 +136,12 @@
               :label="t('sessions.audio_channels')"
               :value="`${detail.audio_channels}ch`"
               :tip="t('sessions.tip_audio_channels')"
+            />
+            <StatCell
+              v-if="detail.server_version"
+              :label="t('sessions.history_server_version')"
+              :value="detail.server_version"
+              :tip="t('sessions.tip_history_server_version')"
             />
             <StatCell
               v-if="detail.host_cpu_model"
@@ -217,16 +249,16 @@ let lastLoadedUuid = '';
 const bitrateRequestedKbps = computed(() => {
   const d = detail.value;
   if (!d) return 0;
-  return d.target_requested_bitrate_kbps && d.target_requested_bitrate_kbps > 0
-    ? d.target_requested_bitrate_kbps
-    : d.target_bitrate_kbps;
+  return d.requested_bitrate_kbps && d.requested_bitrate_kbps > 0
+    ? d.requested_bitrate_kbps
+    : d.encoder_bitrate_kbps;
 });
 
 const bitrateEncodeSubValue = computed(() => {
   const d = detail.value;
   if (!d) return undefined;
-  const requested = d.target_requested_bitrate_kbps ?? 0;
-  const encode = d.target_bitrate_kbps ?? 0;
+  const requested = d.requested_bitrate_kbps ?? 0;
+  const encode = d.encoder_bitrate_kbps ?? 0;
   if (requested > 0 && encode > 0 && requested !== encode) {
     return `${t('sessions.bitrate_encode_label')} ${formatBitrate(encode)}`;
   }
@@ -235,28 +267,101 @@ const bitrateEncodeSubValue = computed(() => {
 
 const bitrateTip = computed(() => {
   const d = detail.value;
-  const requested = d?.target_requested_bitrate_kbps ?? 0;
-  const encode = d?.target_bitrate_kbps ?? 0;
+  const requested = d?.requested_bitrate_kbps ?? 0;
+  const encode = d?.encoder_bitrate_kbps ?? 0;
   if (requested > 0 && encode > 0 && requested !== encode) {
     return t('sessions.tip_bitrate_dual');
   }
   return t('sessions.tip_history_bitrate');
 });
 
-function exportJson(): void {
-  if (!detail.value) return;
-  const blob = new Blob([JSON.stringify(detail.value, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const safeName = (detail.value.app_name || detail.value.client_name || 'session')
+function buildExportFilename(source: SessionDetail): string {
+  const safeName = (source.app_name || source.client_name || 'session')
     .replace(/[^a-z0-9_-]+/gi, '_')
     .slice(0, 40);
-  const ts = new Date((detail.value.start_time_unix ?? Date.now() / 1000) * 1000)
+  const ts = new Date((source.start_time_unix ?? Date.now() / 1000) * 1000)
     .toISOString()
     .replace(/[:.]/g, '-')
     .slice(0, 19);
+  return `sunshine-session-${safeName}-${ts}.json`;
+}
+
+async function fetchDetailsWithConcurrency(
+  uuids: string[],
+  options?: { full?: boolean },
+): Promise<SessionDetail[]> {
+  const results: SessionDetail[] = [];
+  const concurrency = Math.min(3, uuids.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < uuids.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const detail = await fetchSessionDetail(uuids[currentIndex], options);
+      results.push(detail);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
+}
+
+function mergeGroupDetails(valid: SessionDetail[]): SessionDetail {
+  const sorted = [...valid].sort((a, b) => a.start_time_unix - b.start_time_unix);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const totalDuration = sorted.reduce((acc, s) => acc + (s.duration_seconds ?? 0), 0);
+  const verdictRank = (v?: string) =>
+    v === 'failed' ? 3 : v === 'degraded' ? 2 : v === 'healthy' ? 1 : 0;
+  const worstVerdict = sorted.reduce<string>(
+    (acc, s) => (verdictRank(s.verdict) > verdictRank(acc) ? (s.verdict ?? '') : acc),
+    '',
+  );
+  const maxRequested = Math.max(...sorted.map((s) => s.requested_bitrate_kbps ?? 0));
+  const maxEncode = Math.max(...sorted.map((s) => s.encoder_bitrate_kbps ?? 0));
+  const allSamples = sorted
+    .flatMap((s) => (s.samples ?? []).map((sm) => ({ ...sm, session_uuid: s.uuid })))
+    .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
+  const allEvents = sorted
+    .flatMap((s) => (s.events ?? []).map((ev) => ({ ...ev, session_uuid: s.uuid })))
+    .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
+
+  return {
+    ...first,
+    uuid: `group:${sorted.map((v) => v.uuid).join(',')}`,
+    duration_seconds: totalDuration,
+    end_time_unix: last.end_time_unix,
+    verdict: worstVerdict || undefined,
+    requested_bitrate_kbps: maxRequested,
+    encoder_bitrate_kbps: maxEncode,
+    total_samples: sorted.reduce((acc, s) => acc + (s.total_samples ?? s.samples?.length ?? 0), 0),
+    total_events: sorted.reduce((acc, s) => acc + (s.total_events ?? s.events?.length ?? 0), 0),
+    samples_truncated: sorted.some((s) => !!s.samples_truncated),
+    events_truncated: sorted.some((s) => !!s.events_truncated),
+    samples: allSamples,
+    events: allEvents,
+  };
+}
+
+async function exportJson(): Promise<void> {
+  if (!detail.value) return;
+  let exportDetail = detail.value;
+  if (detail.value.samples_truncated || detail.value.events_truncated) {
+    if (isGroupMode.value && (props.groupUuids?.length ?? 0) > 0) {
+      const valid = await fetchDetailsWithConcurrency(props.groupUuids!, { full: true }).catch(() => []);
+      if (valid.length > 0) {
+        exportDetail = mergeGroupDetails(valid);
+      }
+    } else if (props.uuid) {
+      exportDetail = await fetchSessionDetail(props.uuid, { full: true });
+    }
+  }
+  const blob = new Blob([JSON.stringify(exportDetail, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
   a.href = url;
-  a.download = `sunshine-session-${safeName}-${ts}.json`;
+  a.download = buildExportFilename(exportDetail);
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -310,47 +415,13 @@ async function loadGroup(uuids: string[]): Promise<void> {
   }
   loading.value = true;
   try {
-    const results = await Promise.all(
-      uuids.map((u) => fetchSessionDetail(u).catch(() => undefined)),
-    );
-    const valid = results.filter((r): r is SessionDetail => !!r);
+    const valid = await fetchDetailsWithConcurrency(uuids).catch(() => []);
     if (valid.length === 0) {
       detail.value = undefined;
       lastLoadedUuid = '';
       return;
     }
-    valid.sort((a, b) => a.start_time_unix - b.start_time_unix);
-    const first = valid[0];
-    const last = valid[valid.length - 1];
-
-    const allSamples = valid
-      .flatMap((s) => (s.samples ?? []).map((sm) => ({ ...sm, session_uuid: s.uuid })))
-      .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
-    const allEvents = valid
-      .flatMap((s) => (s.events ?? []).map((ev) => ({ ...ev, session_uuid: s.uuid })))
-      .sort((a, b) => a.timestamp_unix - b.timestamp_unix);
-
-    const totalDuration = valid.reduce((acc, s) => acc + (s.duration_seconds ?? 0), 0);
-    const verdictRank = (v?: string) =>
-      v === 'failed' ? 3 : v === 'degraded' ? 2 : v === 'healthy' ? 1 : 0;
-    const worstVerdict = valid.reduce<string>(
-      (acc, s) => (verdictRank(s.verdict) > verdictRank(acc) ? (s.verdict ?? '') : acc),
-      '',
-    );
-    const maxRequested = Math.max(...valid.map((s) => s.target_requested_bitrate_kbps ?? 0));
-    const maxEncode = Math.max(...valid.map((s) => s.target_bitrate_kbps ?? 0));
-
-    detail.value = {
-      ...first,
-      uuid: `group:${valid.map((v) => v.uuid).join(',')}`,
-      duration_seconds: totalDuration,
-      end_time_unix: last.end_time_unix,
-      verdict: worstVerdict || undefined,
-      target_requested_bitrate_kbps: maxRequested,
-      target_bitrate_kbps: maxEncode,
-      samples: allSamples,
-      events: allEvents,
-    };
+    detail.value = mergeGroupDetails(valid);
     lastLoadedUuid = uuids.join(',');
   } catch {
     detail.value = undefined;

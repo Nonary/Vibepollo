@@ -106,6 +106,18 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace stream {
+  namespace {
+    std::string current_server_version() {
+      std::string version = PROJECT_VERSION;
+#ifdef PROJECT_VERSION_PRERELEASE
+      if (std::string_view(PROJECT_VERSION_PRERELEASE).size() > 0) {
+        version += ' ';
+        version += PROJECT_VERSION_PRERELEASE;
+      }
+#endif
+      return version;
+    }
+  }  // namespace
 
   enum class socket_e : int {
     video,  ///< Video
@@ -470,6 +482,7 @@ namespace stream {
     } control;
 
     std::uint32_t launch_session_id;
+    std::mutex metadata_mutex;
     std::string device_name;
     std::string device_uuid;
     // Per-stream identifier used by the session_history subsystem. Distinct
@@ -596,23 +609,27 @@ namespace stream {
   std::vector<session_info_t> get_all_session_info() {
     std::vector<session_info_t> result;
     auto now = std::chrono::steady_clock::now();
-    auto uuids = rtsp_stream::get_all_session_uuids();
-    for (auto &uuid : uuids) {
-      auto session = rtsp_stream::find_session(uuid);
+    auto sessions = rtsp_stream::get_sessions_snapshot();
+    result.reserve(sessions.size());
+    for (auto &session : sessions) {
       if (!session) continue;
 
       session_info_t info;
       info.uuid = session->history_uuid;
-      info.device_name = session->device_name;
+      {
+        std::lock_guard lg {session->metadata_mutex};
+        info.device_name = session->device_name;
+      }
       info.width = session->config.monitor.width;
       info.height = session->config.monitor.height;
       info.fps = session->stream_fps;
-      info.bitrate_kbps = session->config.monitor.bitrate;
-      info.client_bitrate_kbps = session->config.monitor.client_requested_bitrate
-                                   ? session->config.monitor.client_requested_bitrate
-                                   : session->config.monitor.bitrate;
+      info.encoder_bitrate_kbps = session->config.monitor.bitrate;
+      info.requested_bitrate_kbps = session->config.monitor.client_requested_bitrate
+                                      ? session->config.monitor.client_requested_bitrate
+                                      : session->config.monitor.bitrate;
       info.video_format = session->config.monitor.videoFormat;
       info.dynamic_range = session->config.monitor.dynamicRange;
+      info.yuv444 = session->config.monitor.chromaSamplingType != 0;
       info.audio_channels = session->config.audio.channels;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
 
@@ -1193,11 +1210,19 @@ namespace stream {
     }
 
     server->map(packetTypes[IDX_LOSS_STATS], [&](session_t *session, const std::string_view &payload) {
-      int32_t *stats = (int32_t *) payload.data();
-      auto count = stats[0];
-      std::chrono::milliseconds t {stats[1]};
+      if (payload.size() < sizeof(std::int32_t) * 4) {
+        BOOST_LOG(warning) << "Ignoring short IDX_LOSS_STATS payload (" << payload.size() << " bytes)";
+        return;
+      }
 
-      auto lastGoodFrame = stats[3];
+      std::array<std::int32_t, 4> stats {};
+      std::memcpy(stats.data(), payload.data(), sizeof(stats));
+
+      auto count = util::endian::little(stats[0]);
+      std::chrono::milliseconds t {util::endian::little(stats[1])};
+      auto lastGoodFrame = util::endian::little(stats[3]);
+
+      count = std::clamp(count, 0, 1'000'000);
 
       session->stats.client_reported_losses.fetch_add(count, std::memory_order_relaxed);
 
@@ -1218,9 +1243,16 @@ namespace stream {
     });
 
     server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {
-      auto frames = (std::int64_t *) payload.data();
-      auto firstFrame = frames[0];
-      auto lastFrame = frames[1];
+      if (payload.size() < sizeof(std::int64_t) * 2) {
+        BOOST_LOG(warning) << "Ignoring short IDX_INVALIDATE_REF_FRAMES payload (" << payload.size() << " bytes)";
+        return;
+      }
+
+      std::array<std::int64_t, 2> frames {};
+      std::memcpy(frames.data(), payload.data(), sizeof(frames));
+
+      auto firstFrame = util::endian::little(frames[0]);
+      auto lastFrame = util::endian::little(frames[1]);
 
       session->stats.invalidate_ref_count.fetch_add(1, std::memory_order_relaxed);
 
@@ -2283,16 +2315,22 @@ namespace stream {
 
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm) {
       session.permission = newPerm;
+      std::string device_name;
+      {
+        std::lock_guard lg {session.metadata_mutex};
+        device_name = session.device_name;
+      }
       if (!(newPerm & crypto::PERM::_allow_view)) {
-        BOOST_LOG(debug) << "Session: View permission revoked for [" << session.device_name << "], disconnecting...";
+        BOOST_LOG(debug) << "Session: View permission revoked for [" << device_name << "], disconnecting...";
         graceful_stop(session);
         return true;
       }
 
-      BOOST_LOG(debug) << "Session: Permission updated for [" << session.device_name << "]";
+      BOOST_LOG(debug) << "Session: Permission updated for [" << device_name << "]";
 
-      if (session.device_name != name) {
-        BOOST_LOG(debug) << "Session: Device name changed from [" << session.device_name << "] to [" << name << "]";
+      if (device_name != name) {
+        BOOST_LOG(debug) << "Session: Device name changed from [" << device_name << "] to [" << name << "]";
+        std::lock_guard lg {session.metadata_mutex};
         session.device_name = name;
       }
 
@@ -2494,19 +2532,24 @@ namespace stream {
         session_history::session_metadata_t meta;
         meta.uuid = session.history_uuid;
         meta.protocol = "rtsp";
-        meta.client_name = session.device_name;
-        meta.device_name = session.device_name;
+        {
+          std::lock_guard lg {session.metadata_mutex};
+          meta.client_name = session.device_name;
+          meta.device_name = session.device_name;
+        }
         meta.app_name = proc::proc.get_last_run_app_name();
         meta.width = session.config.monitor.width;
         meta.height = session.config.monitor.height;
         meta.target_fps = session.stream_fps;
-        meta.target_bitrate_kbps = session.config.monitor.bitrate;
-        meta.target_requested_bitrate_kbps = session.config.monitor.client_requested_bitrate
-                                               ? session.config.monitor.client_requested_bitrate
-                                               : session.config.monitor.bitrate;
-        meta.codec = session.config.monitor.videoFormat == 0 ? "H.264" : session.config.monitor.videoFormat == 1 ? "HEVC" : "AV1";
+        meta.encoder_bitrate_kbps = session.config.monitor.bitrate;
+        meta.requested_bitrate_kbps = session.config.monitor.client_requested_bitrate
+                                        ? session.config.monitor.client_requested_bitrate
+                                        : session.config.monitor.bitrate;
+        meta.codec = std::string(video_format_name(session.config.monitor.videoFormat));
         meta.hdr = session.config.monitor.dynamicRange != 0;
+        meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
         meta.audio_channels = session.config.audio.channels;
+        meta.server_version = current_server_version();
         session_history::begin_session(meta);
       }
 
