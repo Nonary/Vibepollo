@@ -163,6 +163,7 @@ namespace {
    */
   struct HistoryGuard {
     ~HistoryGuard() {
+      session_history::reset_queue_limits_for_tests();
       session_history::shutdown();
     }
   };
@@ -387,6 +388,37 @@ TEST(SessionHistory, DeleteRejectsActiveSessions) {
   EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::active_session);
 
   session_history::end_session(uuid);
+}
+
+TEST(SessionHistory, HistoryStatusReportsDroppedSamplesWhenQueueBackpressures) {
+  auto path = make_temp_db_path("history-status");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  session_history::configure_queue_limits_for_tests(64, 64, 1, 1);
+
+  const std::string uuid = "34343434-3434-3434-3434-343434343434";
+  session_history::begin_session(make_metadata(uuid));
+
+  bool dropped = false;
+  for (int i = 0; i < 2000; ++i) {
+    auto sample = make_sample(uuid, static_cast<std::uint64_t>(i + 1), 8192);
+    if (!session_history::record_sample_for_tests(sample)) {
+      dropped = true;
+      break;
+    }
+  }
+
+  ASSERT_TRUE(dropped);
+  ASSERT_TRUE(wait_for([&] {
+    const auto status = session_history::get_history_status();
+    return status.degraded && status.dropped_samples > 0;
+  }));
+
+  const auto status = session_history::get_history_status();
+  EXPECT_TRUE(status.available);
+  EXPECT_TRUE(status.degraded);
+  EXPECT_GT(status.dropped_samples, 0u);
 }
 
 TEST(SessionHistoryStorage, DeleteCascadesChildRows) {

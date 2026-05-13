@@ -35,10 +35,17 @@ namespace session_history::writer {
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);
   std::optional<session_detail_t> get_session_detail(const std::string &uuid, bool include_all = false);
   delete_result_e delete_session(const std::string &uuid);
+  history_status_t get_status();
 
 #ifdef SUNSHINE_TESTS
   bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix);
   bool prune_now_for_tests();
+  void configure_queue_limits_for_tests(
+    std::size_t priority_limit,
+    std::size_t regular_limit,
+    std::size_t sample_limit,
+    std::size_t sample_batch_size);
+  void reset_queue_limits_for_tests();
 #endif
 
 }  // namespace session_history::writer

@@ -148,6 +148,10 @@ namespace session_history {
     return sampler::get_active_sessions();
   }
 
+  history_status_t get_history_status() {
+    return writer::get_status();
+  }
+
   delete_result_e delete_session(const std::string &uuid) {
     if (!history_available()) {
       return delete_result_e::unavailable;
@@ -177,6 +181,18 @@ namespace session_history {
 
   bool prune_now_for_tests() {
     return writer::prune_now_for_tests();
+  }
+
+  void configure_queue_limits_for_tests(
+    std::size_t priority_limit,
+    std::size_t regular_limit,
+    std::size_t sample_limit,
+    std::size_t sample_batch_size) {
+    writer::configure_queue_limits_for_tests(priority_limit, regular_limit, sample_limit, sample_batch_size);
+  }
+
+  void reset_queue_limits_for_tests() {
+    writer::reset_queue_limits_for_tests();
   }
 #endif
 

@@ -633,6 +633,17 @@ namespace confighttp {
     return output;
   }
 
+  nlohmann::json history_status_to_json(const session_history::history_status_t &status) {
+    nlohmann::json output;
+    output["available"] = status.available;
+    output["degraded"] = status.degraded;
+    output["dropped_samples"] = status.dropped_samples;
+    output["pending_priority_commands"] = status.pending_priority_commands;
+    output["pending_regular_commands"] = status.pending_regular_commands;
+    output["pending_samples"] = status.pending_samples;
+    return output;
+  }
+
   /**
    * @brief Write an APIResponse to an HTTP response object.
    * @param response The HTTP response object.
@@ -2665,6 +2676,7 @@ namespace confighttp {
     for (const auto &s : session_history::list_sessions(limit, offset)) {
       output["sessions"].push_back(session_summary_to_json(s));
     }
+    output["history_status"] = history_status_to_json(session_history::get_history_status());
     send_response(response, output);
   }
 
@@ -2689,7 +2701,9 @@ namespace confighttp {
       return;
     }
 
-    send_response(response, session_detail_to_json(*detail));
+    auto output = session_detail_to_json(*detail);
+    output["history_status"] = history_status_to_json(session_history::get_history_status());
+    send_response(response, output);
   }
 
   void deleteSessionHistory(resp_https_t response, req_https_t request) {

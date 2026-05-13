@@ -121,6 +121,15 @@ namespace session_history {
     std::vector<session_event_t> events;
   };
 
+  struct history_status_t {
+    bool available = false;
+    bool degraded = false;
+    std::uint64_t dropped_samples = 0;
+    std::size_t pending_priority_commands = 0;
+    std::size_t pending_regular_commands = 0;
+    std::size_t pending_samples = 0;
+  };
+
   struct active_session_t {
     std::string uuid;
     std::string protocol;
@@ -184,6 +193,7 @@ namespace session_history {
   std::vector<session_summary_t> list_sessions(int limit = 25, int offset = 0);
   std::optional<session_detail_t> get_session_detail(const std::string &uuid, bool include_all = false);
   std::vector<active_session_t> get_active_sessions();
+  history_status_t get_history_status();
   enum class delete_result_e {
     deleted,
     not_found,
@@ -207,6 +217,12 @@ namespace session_history {
   bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix);
   void configure_retention_for_tests(bool enabled, int ttl_days, std::uint64_t max_db_size_bytes);
   bool prune_now_for_tests();
+  void configure_queue_limits_for_tests(
+    std::size_t priority_limit,
+    std::size_t regular_limit,
+    std::size_t sample_limit,
+    std::size_t sample_batch_size);
+  void reset_queue_limits_for_tests();
 #endif
 
 }  // namespace session_history
