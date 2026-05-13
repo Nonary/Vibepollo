@@ -523,6 +523,78 @@ namespace confighttp {
     return output;
   }
 
+  double round_to(double value, double factor) {
+    return std::round(value * factor) / factor;
+  }
+
+  nlohmann::json rtsp_session_to_json(const stream::session_info_t &info) {
+    nlohmann::json output;
+    output["uuid"] = info.uuid;
+    output["device_name"] = info.device_name;
+    output["width"] = info.width;
+    output["height"] = info.height;
+    output["fps"] = info.fps;
+    output["encoder_bitrate_kbps"] = info.encoder_bitrate_kbps;
+    output["requested_bitrate_kbps"] = info.requested_bitrate_kbps;
+    output["video_format"] = info.video_format;
+    output["codec"] = stream::canonical_codec_name(stream::video_format_name(info.video_format));
+    output["hdr"] = info.dynamic_range != 0;
+    output["yuv444"] = info.yuv444;
+    output["audio_channels"] = info.audio_channels;
+    output["stream_gpu_model"] = info.stream_gpu_model;
+    output["state"] = info.state;
+    output["frames_sent"] = info.frames_sent;
+    output["packets_sent"] = info.packets_sent;
+    output["bytes_sent"] = info.bytes_sent;
+    output["idr_requests"] = info.idr_requests;
+    output["invalidate_ref_count"] = info.invalidate_ref_count;
+    output["client_reported_losses"] = info.client_reported_losses;
+    output["encode_latency_ms"] = round_to(info.encode_latency_ms, 10.0);
+    output["last_frame_index"] = info.last_frame_index;
+    output["uptime_seconds"] = round_to(info.uptime_seconds, 10.0);
+    return output;
+  }
+
+  nlohmann::json host_stats_to_json(const platf::host_stats_t &stats) {
+    nlohmann::json output;
+    output["cpu_percent"] = stats.cpu_percent;
+    output["cpu_temp_c"] = stats.cpu_temp_c;
+    output["ram_used_bytes"] = stats.ram_used_bytes;
+    output["ram_total_bytes"] = stats.ram_total_bytes;
+    output["ram_percent"] = stats.ram_total_bytes > 0
+                              ? (static_cast<double>(stats.ram_used_bytes) * 100.0 /
+                                 static_cast<double>(stats.ram_total_bytes))
+                              : 0.0;
+    output["gpu_percent"] = stats.gpu_percent;
+    output["gpu_encoder_percent"] = stats.gpu_encoder_percent;
+    output["gpu_temp_c"] = stats.gpu_temp_c;
+    const auto vram_used_bytes =
+      stats.vram_total_bytes > 0 && stats.vram_used_bytes > stats.vram_total_bytes ?
+        stats.vram_total_bytes :
+        stats.vram_used_bytes;
+    output["vram_used_bytes"] = vram_used_bytes;
+    output["vram_total_bytes"] = stats.vram_total_bytes;
+    output["vram_percent"] = stats.vram_total_bytes > 0
+                               ? (static_cast<double>(vram_used_bytes) * 100.0 /
+                                  static_cast<double>(stats.vram_total_bytes))
+                               : 0.0;
+    output["net_rx_bps"] = stats.net_rx_bps;
+    output["net_tx_bps"] = stats.net_tx_bps;
+    return output;
+  }
+
+  nlohmann::json host_info_to_json(const platf::host_info_t &info) {
+    nlohmann::json output;
+    output["cpu_model"] = info.cpu_model;
+    output["gpu_model"] = info.gpu_model;
+    output["cpu_logical_cores"] = info.cpu_logical_cores;
+    output["ram_total_bytes"] = info.ram_total_bytes;
+    output["vram_total_bytes"] = info.vram_total_bytes;
+    output["net_interface"] = info.net_interface;
+    output["net_link_speed_mbps"] = info.net_link_speed_mbps;
+    return output;
+  }
+
   nlohmann::json session_summary_to_json(const session_history::session_summary_t &summary) {
     nlohmann::json output;
     output["uuid"] = summary.uuid;
@@ -541,7 +613,7 @@ namespace confighttp {
     output["audio_channels"] = summary.audio_channels;
     output["start_time_unix"] = summary.start_time_unix;
     output["end_time_unix"] = summary.end_time_unix;
-    output["duration_seconds"] = std::round(summary.duration_seconds * 10.0) / 10.0;
+    output["duration_seconds"] = round_to(summary.duration_seconds, 10.0);
     output["verdict"] = summary.verdict;
     output["server_version"] = summary.server_version;
     output["host_cpu_model"] = summary.host_cpu_model;
@@ -563,17 +635,17 @@ namespace confighttp {
     output["client_reported_losses"] = sample.client_reported_losses;
     output["idr_requests"] = sample.idr_requests;
     output["ref_invalidations"] = sample.ref_invalidations;
-    output["encode_latency_ms"] = std::round(sample.encode_latency_ms * 10.0) / 10.0;
-    output["actual_fps"] = std::round(sample.actual_fps * 10.0) / 10.0;
-    output["actual_bitrate_kbps"] = std::round(sample.actual_bitrate_kbps * 10.0) / 10.0;
-    output["frame_interval_jitter_ms"] = std::round(sample.frame_interval_jitter_ms * 100.0) / 100.0;
-    output["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : std::round(sample.host_cpu_percent * 10.0) / 10.0;
-    output["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : std::round(sample.host_gpu_percent * 10.0) / 10.0;
-    output["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : std::round(sample.host_gpu_encoder_percent * 10.0) / 10.0;
-    output["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : std::round(sample.host_ram_percent * 10.0) / 10.0;
-    output["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : std::round(sample.host_vram_percent * 10.0) / 10.0;
-    output["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : std::round(sample.host_cpu_temp_c * 10.0) / 10.0;
-    output["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : std::round(sample.host_gpu_temp_c * 10.0) / 10.0;
+    output["encode_latency_ms"] = round_to(sample.encode_latency_ms, 10.0);
+    output["actual_fps"] = round_to(sample.actual_fps, 10.0);
+    output["actual_bitrate_kbps"] = round_to(sample.actual_bitrate_kbps, 10.0);
+    output["frame_interval_jitter_ms"] = round_to(sample.frame_interval_jitter_ms, 100.0);
+    output["host_cpu_percent"] = sample.host_cpu_percent < 0 ? -1 : round_to(sample.host_cpu_percent, 10.0);
+    output["host_gpu_percent"] = sample.host_gpu_percent < 0 ? -1 : round_to(sample.host_gpu_percent, 10.0);
+    output["host_gpu_encoder_percent"] = sample.host_gpu_encoder_percent < 0 ? -1 : round_to(sample.host_gpu_encoder_percent, 10.0);
+    output["host_ram_percent"] = sample.host_ram_percent < 0 ? -1 : round_to(sample.host_ram_percent, 10.0);
+    output["host_vram_percent"] = sample.host_vram_percent < 0 ? -1 : round_to(sample.host_vram_percent, 10.0);
+    output["host_cpu_temp_c"] = sample.host_cpu_temp_c < 0 ? -1 : round_to(sample.host_cpu_temp_c, 10.0);
+    output["host_gpu_temp_c"] = sample.host_gpu_temp_c < 0 ? -1 : round_to(sample.host_gpu_temp_c, 10.0);
     output["host_net_rx_bps"] = sample.host_net_rx_bps < 0 ? -1 : sample.host_net_rx_bps;
     output["host_net_tx_bps"] = sample.host_net_tx_bps < 0 ? -1 : sample.host_net_tx_bps;
     return output;
@@ -604,11 +676,11 @@ namespace confighttp {
     output["hdr"] = session.hdr;
     output["yuv444"] = session.yuv444;
     output["stream_gpu_model"] = session.stream_gpu_model;
-    output["uptime_seconds"] = std::round(session.uptime_seconds * 10.0) / 10.0;
-    output["actual_fps"] = std::round(session.actual_fps * 10.0) / 10.0;
-    output["actual_bitrate_kbps"] = std::round(session.actual_bitrate_kbps * 10.0) / 10.0;
-    output["encode_latency_ms"] = std::round(session.encode_latency_ms * 10.0) / 10.0;
-    output["frame_interval_jitter_ms"] = std::round(session.frame_interval_jitter_ms * 100.0) / 100.0;
+    output["uptime_seconds"] = round_to(session.uptime_seconds, 10.0);
+    output["actual_fps"] = round_to(session.actual_fps, 10.0);
+    output["actual_bitrate_kbps"] = round_to(session.actual_bitrate_kbps, 10.0);
+    output["encode_latency_ms"] = round_to(session.encode_latency_ms, 10.0);
+    output["frame_interval_jitter_ms"] = round_to(session.frame_interval_jitter_ms, 100.0);
     output["frames_sent"] = session.frames_sent;
     output["bytes_sent"] = session.bytes_sent;
     output["client_reported_losses"] = session.client_reported_losses;
@@ -2551,31 +2623,7 @@ namespace confighttp {
     }
     print_req(request);
 
-    const auto s = host_stats::latest();
-    nlohmann::json out;
-    out["cpu_percent"] = s.cpu_percent;
-    out["cpu_temp_c"] = s.cpu_temp_c;
-    out["ram_used_bytes"] = s.ram_used_bytes;
-    out["ram_total_bytes"] = s.ram_total_bytes;
-    out["ram_percent"] = s.ram_total_bytes > 0
-                          ? (static_cast<double>(s.ram_used_bytes) * 100.0 /
-                             static_cast<double>(s.ram_total_bytes))
-                          : 0.0;
-    out["gpu_percent"] = s.gpu_percent;
-    out["gpu_encoder_percent"] = s.gpu_encoder_percent;
-    out["gpu_temp_c"] = s.gpu_temp_c;
-    const auto vram_used_bytes = s.vram_total_bytes > 0 && s.vram_used_bytes > s.vram_total_bytes
-                                   ? s.vram_total_bytes
-                                   : s.vram_used_bytes;
-    out["vram_used_bytes"] = vram_used_bytes;
-    out["vram_total_bytes"] = s.vram_total_bytes;
-    out["vram_percent"] = s.vram_total_bytes > 0
-                           ? (static_cast<double>(vram_used_bytes) * 100.0 /
-                              static_cast<double>(s.vram_total_bytes))
-                           : 0.0;
-    out["net_rx_bps"] = s.net_rx_bps;
-    out["net_tx_bps"] = s.net_tx_bps;
-    send_response(response, out);
+    send_response(response, host_stats_to_json(host_stats::latest()));
   }
 
   // Static host info — model strings + total RAM/VRAM, sampled once.
@@ -2585,16 +2633,7 @@ namespace confighttp {
     }
     print_req(request);
 
-    const auto &i = host_stats::info();
-    nlohmann::json out;
-    out["cpu_model"] = i.cpu_model;
-    out["gpu_model"] = i.gpu_model;
-    out["cpu_logical_cores"] = i.cpu_logical_cores;
-    out["ram_total_bytes"] = i.ram_total_bytes;
-    out["vram_total_bytes"] = i.vram_total_bytes;
-    out["net_interface"] = i.net_interface;
-    out["net_link_speed_mbps"] = i.net_link_speed_mbps;
-    send_response(response, out);
+    send_response(response, host_info_to_json(host_stats::info()));
   }
 
 
@@ -2606,33 +2645,7 @@ namespace confighttp {
     nlohmann::json output;
     output["sessions"] = nlohmann::json::array();
     for (const auto &info : stream::get_all_session_info()) {
-      nlohmann::json s;
-      s["uuid"] = info.uuid;
-      s["device_name"] = info.device_name;
-      s["width"] = info.width;
-      s["height"] = info.height;
-      s["fps"] = info.fps;
-      s["encoder_bitrate_kbps"] = info.encoder_bitrate_kbps;
-      s["requested_bitrate_kbps"] = info.requested_bitrate_kbps;
-      s["video_format"] = info.video_format;
-      s["codec"] = stream::video_format_name(info.video_format);
-      s["hdr"] = info.dynamic_range > 0;
-      s["yuv444"] = info.yuv444;
-      s["stream_gpu_model"] = info.stream_gpu_model;
-      s["audio_channels"] = info.audio_channels;
-      s["state"] = info.state;
-
-      // Real-time performance stats
-      s["frames_sent"] = info.frames_sent;
-      s["packets_sent"] = info.packets_sent;
-      s["bytes_sent"] = info.bytes_sent;
-      s["idr_requests"] = info.idr_requests;
-      s["invalidate_ref_count"] = info.invalidate_ref_count;
-      s["client_reported_losses"] = info.client_reported_losses;
-      s["encode_latency_ms"] = std::round(info.encode_latency_ms * 10.0) / 10.0;
-      s["last_frame_index"] = info.last_frame_index;
-      s["uptime_seconds"] = std::round(info.uptime_seconds * 10.0) / 10.0;
-      output["sessions"].push_back(std::move(s));
+      output["sessions"].push_back(rtsp_session_to_json(info));
     }
     send_response(response, output);
   }

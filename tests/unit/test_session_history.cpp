@@ -583,6 +583,27 @@ TEST(SessionHistory, MigratesChildTablesToOnDeleteCascade) {
   EXPECT_TRUE(foreign_key_has_delete_cascade(migrated_db.get(), "events", "sessions", "session_uuid"));
 }
 
+TEST(SessionHistoryStorage, FreshSchemaUsesCurrentLayout) {
+  auto path = make_temp_db_path("fresh-schema");
+
+  session_history::storage::db_ptr db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(db.get(), 7));
+
+  sqlite3_stmt *stmt = nullptr;
+  ASSERT_EQ(sqlite3_prepare_v2(db.get(), "PRAGMA user_version", -1, &stmt, nullptr), SQLITE_OK);
+  ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+  EXPECT_EQ(sqlite3_column_int(stmt, 0), 7);
+  sqlite3_finalize(stmt);
+
+  EXPECT_TRUE(column_exists(db.get(), "sessions", "encoder_bitrate_kbps"));
+  EXPECT_TRUE(column_exists(db.get(), "sessions", "requested_bitrate_kbps"));
+  EXPECT_FALSE(column_exists(db.get(), "sessions", "target_bitrate_kbps"));
+  EXPECT_FALSE(column_exists(db.get(), "sessions", "target_requested_bitrate_kbps"));
+  EXPECT_TRUE(foreign_key_has_delete_cascade(db.get(), "samples", "sessions", "session_uuid"));
+  EXPECT_TRUE(foreign_key_has_delete_cascade(db.get(), "events", "sessions", "session_uuid"));
+}
+
 TEST(SessionHistory, RetentionDaysPrunesOldEndedSessionsOnStartup) {
   SunshineConfigGuard config_guard;
   config::sunshine.session_history_enabled = true;

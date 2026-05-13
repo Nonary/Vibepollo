@@ -193,6 +193,19 @@ namespace session_history::storage {
       return sqlite3_column_int64(stmt.get(), 0);
     }
 
+    bool table_exists(sqlite3 *db, const char *table_name) {
+      auto stmt = prepare(
+        db,
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1"
+      );
+      if (!stmt) {
+        return false;
+      }
+
+      sqlite3_bind_text(stmt.get(), 1, table_name, -1, SQLITE_TRANSIENT);
+      return sqlite3_step(stmt.get()) == SQLITE_ROW;
+    }
+
     bool table_has_delete_cascade(sqlite3 *db, const char *table_name, const char *parent_table, const char *from_column) {
       sqlite3_stmt *check = nullptr;
       const std::string sql = std::string("PRAGMA foreign_key_list(") + table_name + ")";
@@ -535,9 +548,18 @@ namespace session_history::storage {
   }
 
   bool apply_schema_and_migrations(sqlite3 *db, int schema_version) {
+    const bool had_existing_history_tables =
+      table_exists(db, "sessions") ||
+      table_exists(db, "samples") ||
+      table_exists(db, "events");
+
     if (!exec(db, SCHEMA_SQL)) {
       BOOST_LOG(error) << "session_history: schema creation failed";
       return false;
+    }
+
+    if (!had_existing_history_tables) {
+      return exec(db, ("PRAGMA user_version = " + std::to_string(schema_version)).c_str());
     }
 
     auto column_exists = [&](const char *table, const char *column) -> bool {
