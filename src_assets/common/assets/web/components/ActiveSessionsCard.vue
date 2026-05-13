@@ -64,6 +64,7 @@ const { rtspSessions, webrtcSessions, rtspCount, appRunning, appName, loading, h
 
 const showCharts = ref(false);
 const showWebrtcCharts = ref(false);
+let unmounted = false;
 
 async function refresh(): Promise<void> {
   await sessionsStore.refresh();
@@ -71,10 +72,14 @@ async function refresh(): Promise<void> {
 
 onMounted(async () => {
   await auth.waitForAuthentication();
+  if (unmounted) {
+    return;
+  }
   sessionsStore.startPolling();
 });
 
 onBeforeUnmount(() => {
+  unmounted = true;
   sessionsStore.stopPolling();
 });
 </script>

@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@web': resolve(__dirname, 'src_assets/common/assets/web'),
+      '@': resolve(__dirname, 'src_assets/common/assets/web'),
     },
   },
   test: {

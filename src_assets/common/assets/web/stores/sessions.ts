@@ -1,12 +1,8 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import {
-  fetchRtspSessions,
-  fetchSessionStatus,
-  fetchWebRtcSessions,
-} from '@/services/sessionsApi';
+import { fetchRtspSessions, fetchSessionStatus, fetchWebRtcSessions } from '@/services/sessionsApi';
 import { useAuthStore } from '@/stores/auth';
-import type { RTSPSession, SessionStatus, WebRTCSession } from '@/types/sessions';
+import type { RTSPSession, WebRTCSession } from '@/types/sessions';
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_BACKOFF_MS = 16000;
@@ -23,8 +19,14 @@ export const useSessionsStore = defineStore('sessions', () => {
   let pollTimerId: ReturnType<typeof setTimeout> | null = null;
   let started = false;
   let pollingConsumers = 0;
-  let pollInFlight: Promise<void> | null = null;
+  let pollInFlight: Promise<void> | void;
   let consecutivePollFailures = 0;
+  let pollingGeneration = 0;
+  let latestRequestToken = 0;
+
+  type SessionStatusResult = Awaited<ReturnType<typeof fetchSessionStatus>>;
+  type RtspSessionsResult = Awaited<ReturnType<typeof fetchRtspSessions>>;
+  type WebRtcSessionsResult = Awaited<ReturnType<typeof fetchWebRtcSessions>>;
 
   const hasActiveSessions = computed(
     () => rtspCount.value > 0 || rtspSessions.value.length > 0 || webrtcSessions.value.length > 0,
@@ -32,8 +34,15 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   const isStreaming = computed(() => hasActiveSessions.value);
 
-  async function loadSessionStatus(): Promise<boolean> {
-    const data: SessionStatus | null = await fetchSessionStatus();
+  function clearSessionState(): void {
+    rtspSessions.value = [];
+    webrtcSessions.value = [];
+    rtspCount.value = 0;
+    appRunning.value = false;
+    appName.value = '';
+  }
+
+  function applySessionStatus(data: SessionStatusResult): boolean {
     if (!data) {
       return false;
     }
@@ -43,8 +52,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     return true;
   }
 
-  async function loadRtspSessions(): Promise<boolean> {
-    const data = await fetchRtspSessions();
+  function applyRtspSessions(data: RtspSessionsResult): boolean {
     if (!data) {
       rtspSessions.value = [];
       return false;
@@ -53,8 +61,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     return true;
   }
 
-  async function loadWebRtcSessions(): Promise<boolean> {
-    const data = await fetchWebRtcSessions();
+  function applyWebRtcSessions(data: WebRtcSessionsResult): boolean {
     if (!data) {
       webrtcSessions.value = [];
       return false;
@@ -88,27 +95,47 @@ export const useSessionsStore = defineStore('sessions', () => {
       return pollInFlight;
     }
     const auth = useAuthStore();
+    const generation = pollingGeneration;
     if (!auth.isAuthenticated) {
-      scheduleNextPoll(POLL_INTERVAL_MS);
+      if (started && generation === pollingGeneration) {
+        scheduleNextPoll(POLL_INTERVAL_MS);
+      }
       return;
     }
-    pollInFlight = (async () => {
-      const results = await Promise.all([
-        loadSessionStatus(),
-        loadRtspSessions(),
-        loadWebRtcSessions(),
+
+    const requestToken = ++latestRequestToken;
+    const currentPoll = (async () => {
+      const [status, rtsp, webrtc] = await Promise.all([
+        fetchSessionStatus(),
+        fetchRtspSessions(),
+        fetchWebRtcSessions(),
       ]);
+      if (generation !== pollingGeneration || requestToken !== latestRequestToken) {
+        return;
+      }
+
+      const results = [
+        applySessionStatus(status),
+        applyRtspSessions(rtsp),
+        applyWebRtcSessions(webrtc),
+      ];
       if (results.every(Boolean)) {
         consecutivePollFailures = 0;
       } else {
         consecutivePollFailures += 1;
       }
     })();
+
+    pollInFlight = currentPoll;
     try {
-      await pollInFlight;
+      await currentPoll;
     } finally {
-      pollInFlight = null;
-      scheduleNextPoll();
+      if (pollInFlight === currentPoll) {
+        pollInFlight = undefined;
+      }
+      if (started && generation === pollingGeneration) {
+        scheduleNextPoll();
+      }
     }
   }
 
@@ -123,6 +150,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (started) return;
     started = true;
     consecutivePollFailures = 0;
+    pollingGeneration += 1;
+    latestRequestToken = 0;
     // Initial fetch
     void poll();
   }
@@ -140,12 +169,10 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
     started = false;
     consecutivePollFailures = 0;
-    pollInFlight = null;
-    rtspSessions.value = [];
-    webrtcSessions.value = [];
-    rtspCount.value = 0;
-    appRunning.value = false;
-    appName.value = '';
+    pollingGeneration += 1;
+    latestRequestToken += 1;
+    pollInFlight = undefined;
+    clearSessionState();
   }
 
   return {

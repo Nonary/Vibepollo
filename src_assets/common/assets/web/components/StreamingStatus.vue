@@ -18,14 +18,19 @@ import { useSessionsStore } from '@/stores/sessions';
 
 const sessionsStore = useSessionsStore();
 const streaming = computed(() => sessionsStore.isStreaming);
+let unmounted = false;
 
 onMounted(async () => {
   const auth = useAuthStore();
   await auth.waitForAuthentication();
+  if (unmounted) {
+    return;
+  }
   sessionsStore.startPolling();
 });
 
 onBeforeUnmount(() => {
+  unmounted = true;
   sessionsStore.stopPolling();
 });
 </script>
