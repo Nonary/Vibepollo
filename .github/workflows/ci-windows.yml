@@ -40,6 +40,8 @@ on:
     secrets:
       symbol_token:
         required: false
+      signpath_api_token:
+        required: false
 
 jobs:
   build_windows:
@@ -408,11 +410,19 @@ jobs:
         shell: msys2 {0}
         env:
           SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+          SIGNPATH_API_TOKEN: ${{ secrets.signpath_api_token }}
+          SIGNPATH_ORGANIZATION_ID: 1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15
+          SIGNPATH_PROJECT_SLUG: Vibepollo
+          SIGNPATH_SIGNING_POLICY_SLUG: test-signing
         run: |
           mkdir -p artifacts
           cd build
 
           set -euo pipefail
+
+          if [[ -z "${SIGNPATH_API_TOKEN:-}" ]]; then
+            echo "SIGNPATH_API_TOKEN was not provided; Windows artifacts will not be submitted to SignPath."
+          fi
 
           # package
           cpack -G WIX

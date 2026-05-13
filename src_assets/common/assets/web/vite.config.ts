@@ -1,11 +1,13 @@
 import fs from 'fs';
 import { resolve } from 'path';
 import { defineConfig } from 'vite';
+import type { Plugin } from 'vite';
 import Components from 'unplugin-vue-components/vite';
 import { NaiveUiResolver } from 'unplugin-vue-components/resolvers';
 import vue from '@vitejs/plugin-vue';
 import { ViteEjsPlugin } from 'vite-plugin-ejs';
 import { fileURLToPath } from 'url';
+import { parseBundledReleaseNote, sortChangelogEntries } from './utils/changelog';
 
 // Resolve directory of this config file (works even if the folder was moved)
 const CONFIG_DIR = fileURLToPath(new URL('.', import.meta.url));
@@ -75,7 +77,7 @@ function getManualChunk(id: string): string | undefined {
   const packagePath = normalized.slice(markerIndex + nodeModulesMarker.length);
   const packageName = packagePath.startsWith('@')
     ? packagePath.split('/').slice(0, 2).join('/')
-    : packagePath.split('/')[0];
+    : (packagePath.split('/')[0] ?? '');
 
   if (
     packageName === 'vue' ||
@@ -109,8 +111,41 @@ function getManualChunk(id: string): string | undefined {
   return 'vendor';
 }
 
+function bundledChangelogPlugin(repoRoot: string): Plugin {
+  return {
+    name: 'vibepollo-bundled-changelog',
+    generateBundle() {
+      const releaseNotesDir = resolve(repoRoot, 'release_notes');
+      const releases = fs.existsSync(releaseNotesDir)
+        ? fs
+            .readdirSync(releaseNotesDir)
+            .filter((name) => name.toLowerCase().endsWith('.md'))
+            .map((name) => {
+              const path = resolve(releaseNotesDir, name);
+              return parseBundledReleaseNote(name, fs.readFileSync(path, 'utf-8'));
+            })
+            .filter((entry) => entry !== null)
+        : [];
+
+      this.emitFile({
+        type: 'asset',
+        fileName: 'assets/changelog.json',
+        source: JSON.stringify(
+          {
+            generatedAt: new Date().toISOString(),
+            releases: sortChangelogEntries(releases),
+          },
+          null,
+          2,
+        ),
+      });
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const isDebug = mode === 'debug';
+  const repoRoot = findRepoRoot(CONFIG_DIR);
 
   return {
     root: resolve(assetsSrcPath),
@@ -132,6 +167,7 @@ export default defineConfig(({ mode }) => {
         resolvers: [NaiveUiResolver()],
         dts: false,
       }),
+      bundledChangelogPlugin(repoRoot),
       ViteEjsPlugin({ header }),
     ],
     css: {

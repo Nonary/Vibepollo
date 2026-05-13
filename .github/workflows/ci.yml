@@ -184,6 +184,7 @@ jobs:
       symbol_release_prefix: polo
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
+      signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
 
   release:
     name: Release

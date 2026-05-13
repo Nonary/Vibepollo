@@ -4,7 +4,17 @@ param(
     [string]$BuildDir,
     [string]$MsiPath = "",
     [string]$OutputName = "",
-    [switch]$UninstallOnly
+    [switch]$UninstallOnly,
+    [switch]$SignWithSignPath,
+    [switch]$DisableSignPath,
+    [switch]$SkipSignPathIfNoToken,
+    [switch]$NoInstallSignPathModuleIfMissing,
+    [string]$SignPathApiToken = $env:SIGNPATH_API_TOKEN,
+    [string]$SignPathOrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
+    [string]$SignPathProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
+    [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
+    [string]$SignPathPeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
+    [string]$SignPathMsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG })
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,6 +129,30 @@ function Get-MsiProductVersion([string]$MsiPath) {
     return $null
 }
 
+function Get-GeneratedWindowsFileVersion([string]$BuildDir) {
+    $headerPath = Join-Path $BuildDir "generated_versioninfo\windows_versioninfo_generated.h"
+    if (-not (Test-Path -LiteralPath $headerPath)) {
+        return $null
+    }
+
+    $content = Get-Content -LiteralPath $headerPath -Raw
+    $fields = @{}
+    foreach ($name in @("MAJOR", "MINOR", "BUILD", "REVISION")) {
+        if ($content -match "(?m)^\s*#define\s+RC_VERSION_$name\s+(\d+)\s*$") {
+            $fields[$name] = [int]$matches[1]
+        }
+    }
+
+    foreach ($name in @("MAJOR", "MINOR", "BUILD", "REVISION")) {
+        if (-not $fields.ContainsKey($name)) {
+            Write-Warning "Generated Windows version header is missing RC_VERSION_$name`: $headerPath"
+            return $null
+        }
+    }
+
+    return "{0}.{1}.{2}.{3}" -f $fields["MAJOR"], $fields["MINOR"], $fields["BUILD"], $fields["REVISION"]
+}
+
 function Resolve-CscPath {
     $candidates = @(
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -133,6 +167,36 @@ function Resolve-CscPath {
     }
 
     throw "Could not locate a C# compiler (csc.exe)."
+}
+
+function Invoke-SignPathForArtifact(
+    [string]$ArtifactPath,
+    [string]$Description
+) {
+    $signPathScript = Resolve-PathStrict (Join-Path $repoRoot "scripts\signpath_sign.ps1")
+
+    $signArgs = @{
+        InputArtifactPath = $ArtifactPath
+        OutputArtifactPath = $ArtifactPath
+        ApiToken = $SignPathApiToken
+        OrganizationId = $SignPathOrganizationId
+        ProjectSlug = $SignPathProjectSlug
+        SigningPolicySlug = $SignPathSigningPolicySlug
+        PeArtifactConfigurationSlug = $SignPathPeArtifactConfigurationSlug
+        MsiArtifactConfigurationSlug = $SignPathMsiArtifactConfigurationSlug
+        Description = $Description
+        WaitForCompletionTimeoutInSeconds = 1800
+    }
+
+    if ($SkipSignPathIfNoToken) {
+        $signArgs.SkipIfMissingToken = $true
+    }
+
+    if (-not $NoInstallSignPathModuleIfMissing) {
+        $signArgs.InstallModuleIfMissing = $true
+    }
+
+    & $signPathScript @signArgs
 }
 
 $scriptDir = Split-Path -Parent $PSCommandPath
@@ -175,11 +239,12 @@ $outputPath = Join-Path $artifactDir $OutputName
 $tagVersion = Get-GitTagVersion -RepoRoot $repoRoot
 $fallbackTag = if ($null -eq $tagVersion) { "" } else { $tagVersion.Tag }
 $informationalVersion = Get-GitInformationalVersion -RepoRoot $repoRoot -fallbackTag $fallbackTag
-$assemblyVersion = $null
+$generatedFileVersion = Get-GeneratedWindowsFileVersion -BuildDir $BuildDir
+$assemblyVersion = $generatedFileVersion
 
 if (-not $UninstallOnly) {
     $msiProductVersion = Get-MsiProductVersion -MsiPath $MsiPath
-    if (-not [string]::IsNullOrWhiteSpace($msiProductVersion) -and $msiProductVersion -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
+    if ([string]::IsNullOrWhiteSpace($assemblyVersion) -and -not [string]::IsNullOrWhiteSpace($msiProductVersion) -and $msiProductVersion -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
         $revision = if ([string]::IsNullOrWhiteSpace($matches[4])) { 0 } else { [int]$matches[4] }
         $assemblyVersion = "{0}.{1}.{2}.{3}" -f [int]$matches[1], [int]$matches[2], [int]$matches[3], $revision
         if ([string]::IsNullOrWhiteSpace($informationalVersion)) {
@@ -218,6 +283,17 @@ $assemblyInfoContent = @(
     "[assembly: AssemblyInformationalVersion(""$informationalVersion"")]"
 )
 Set-Content -Path $assemblyInfoPath -Value $assemblyInfoContent -Encoding UTF8
+
+$shouldSignWithSignPath = -not $DisableSignPath -and (
+    $SignWithSignPath -or
+    -not [string]::IsNullOrWhiteSpace($SignPathApiToken)
+)
+
+if ($shouldSignWithSignPath -and -not $UninstallOnly) {
+    Invoke-SignPathForArtifact `
+        -ArtifactPath $MsiPath `
+        -Description "Vibepollo MSI payload $informationalVersion"
+}
 
 $references = @(
     (Join-Path $frameworkRoot "System.dll"),
@@ -271,6 +347,17 @@ Write-Host "[bootstrapper] Version: $assemblyVersion ($informationalVersion)"
 & $cscPath @args
 if ($LASTEXITCODE -ne 0) {
     throw "C# compiler failed with exit code $LASTEXITCODE"
+}
+
+if ($shouldSignWithSignPath) {
+    $artifactDescription = if ($UninstallOnly) {
+        "Vibepollo uninstaller $informationalVersion"
+    } else {
+        "Vibepollo setup executable $informationalVersion"
+    }
+    Invoke-SignPathForArtifact `
+        -ArtifactPath $outputPath `
+        -Description $artifactDescription
 }
 
 if ($UninstallOnly) {
