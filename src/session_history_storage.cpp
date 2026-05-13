@@ -55,7 +55,7 @@ namespace session_history::storage {
 
       CREATE TABLE IF NOT EXISTS samples (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_uuid TEXT NOT NULL REFERENCES sessions(uuid),
+        session_uuid TEXT NOT NULL REFERENCES sessions(uuid) ON DELETE CASCADE,
         timestamp_unix REAL NOT NULL,
         bytes_sent_total INTEGER DEFAULT 0,
         packets_sent_video INTEGER DEFAULT 0,
@@ -86,7 +86,7 @@ namespace session_history::storage {
 
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_uuid TEXT NOT NULL REFERENCES sessions(uuid),
+        session_uuid TEXT NOT NULL REFERENCES sessions(uuid) ON DELETE CASCADE,
         timestamp_unix REAL NOT NULL,
         event_type TEXT NOT NULL,
         payload TEXT
@@ -193,28 +193,74 @@ namespace session_history::storage {
       return sqlite3_column_int64(stmt.get(), 0);
     }
 
+    bool table_has_delete_cascade(sqlite3 *db, const char *table_name, const char *parent_table, const char *from_column) {
+      sqlite3_stmt *check = nullptr;
+      const std::string sql = std::string("PRAGMA foreign_key_list(") + table_name + ")";
+      bool found = false;
+      if (sqlite3_prepare_v2(db, sql.c_str(), -1, &check, nullptr) != SQLITE_OK) {
+        return false;
+      }
+
+      while (sqlite3_step(check) == SQLITE_ROW) {
+        const auto *table = sqlite3_column_text(check, 2);
+        const auto *from = sqlite3_column_text(check, 3);
+        const auto *on_delete = sqlite3_column_text(check, 6);
+        if (table && from && on_delete &&
+            std::string(reinterpret_cast<const char *>(table)) == parent_table &&
+            std::string(reinterpret_cast<const char *>(from)) == from_column &&
+            std::string(reinterpret_cast<const char *>(on_delete)) == "CASCADE") {
+          found = true;
+          break;
+        }
+      }
+
+      sqlite3_finalize(check);
+      return found;
+    }
+
+    bool rebuild_child_table_with_cascade(sqlite3 *db, const char *table_name, const char *temp_name, const char *create_sql, const char *column_list, const char *index_sql) {
+      if (!exec(db, "PRAGMA foreign_keys = OFF")) {
+        return false;
+      }
+
+      const auto foreign_keys_guard = util::fail_guard([db]() {
+        (void) exec(db, "PRAGMA foreign_keys = ON");
+      });
+
+      if (!exec(db, (std::string("ALTER TABLE ") + table_name + " RENAME TO " + temp_name).c_str())) {
+        return false;
+      }
+      if (!exec(db, create_sql)) {
+        return false;
+      }
+      if (!exec(db, (std::string("INSERT INTO ") + table_name + " (" + column_list + ") SELECT " + column_list + " FROM " + temp_name).c_str())) {
+        return false;
+      }
+      if (!exec(db, (std::string("DROP TABLE ") + temp_name).c_str())) {
+        return false;
+      }
+      if (!exec(db, index_sql)) {
+        return false;
+      }
+      return exec(db, "PRAGMA foreign_keys = ON");
+    }
+
     bool delete_session_rows(sqlite3 *db, const std::string &uuid, bool track_changes, int &affected) {
-      constexpr const char *DELETE_EVENTS = "DELETE FROM events WHERE session_uuid = ?";
-      constexpr const char *DELETE_SAMPLES = "DELETE FROM samples WHERE session_uuid = ?";
       constexpr const char *DELETE_SESSION = "DELETE FROM sessions WHERE uuid = ?";
 
       affected = 0;
-      for (const auto &[sql, counts_changes] : {
-             std::pair {DELETE_EVENTS, false},
-             std::pair {DELETE_SAMPLES, false},
-             std::pair {DELETE_SESSION, true},
-           }) {
-        auto stmt = prepare(db, sql);
-        if (!stmt) return false;
+      auto stmt = prepare(db, DELETE_SESSION);
+      if (!stmt) {
+        return false;
+      }
 
-        sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-          BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
-          return false;
-        }
-        if (track_changes && counts_changes) {
-          affected = sqlite3_changes(db);
-        }
+      sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
+        return false;
+      }
+      if (track_changes) {
+        affected = sqlite3_changes(db);
       }
 
       return true;
@@ -222,54 +268,16 @@ namespace session_history::storage {
 
     bool prune_sessions_by_limit(sqlite3 *db, int max_history_sessions) {
       const auto limit_str = std::to_string(max_history_sessions);
-      const std::string delete_events =
-        "DELETE FROM events WHERE session_uuid IN ("
-        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
-        ")";
-      const std::string delete_samples =
-        "DELETE FROM samples WHERE session_uuid IN ("
-        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
-        "  ORDER BY end_time_unix DESC LIMIT -1 OFFSET " + limit_str +
-        ")";
       const std::string delete_sessions =
         "DELETE FROM sessions WHERE end_time_unix IS NOT NULL "
         "AND uuid NOT IN ("
         "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL "
         "  ORDER BY end_time_unix DESC LIMIT " + limit_str +
         ")";
-      return exec(db, delete_events.c_str()) &&
-             exec(db, delete_samples.c_str()) &&
-             exec(db, delete_sessions.c_str());
+      return exec(db, delete_sessions.c_str());
     }
 
     bool prune_sessions_older_than(sqlite3 *db, double cutoff_unix) {
-      auto delete_events = prepare(
-        db,
-        "DELETE FROM events WHERE session_uuid IN ("
-        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
-        ")"
-      );
-      if (!delete_events) return false;
-      sqlite3_bind_double(delete_events.get(), 1, cutoff_unix);
-      if (sqlite3_step(delete_events.get()) != SQLITE_DONE) {
-        BOOST_LOG(error) << "session_history: TTL event prune failed: " << sqlite3_errmsg(db);
-        return false;
-      }
-
-      auto delete_samples = prepare(
-        db,
-        "DELETE FROM samples WHERE session_uuid IN ("
-        "  SELECT uuid FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
-        ")"
-      );
-      if (!delete_samples) return false;
-      sqlite3_bind_double(delete_samples.get(), 1, cutoff_unix);
-      if (sqlite3_step(delete_samples.get()) != SQLITE_DONE) {
-        BOOST_LOG(error) << "session_history: TTL sample prune failed: " << sqlite3_errmsg(db);
-        return false;
-      }
-
       auto delete_sessions = prepare(
         db,
         "DELETE FROM sessions WHERE end_time_unix IS NOT NULL AND end_time_unix < ?"
@@ -509,6 +517,7 @@ namespace session_history::storage {
       return false;
     }
     out_db.reset(raw);
+    exec(out_db.get(), "PRAGMA foreign_keys = ON");
     return true;
   }
 
@@ -521,6 +530,7 @@ namespace session_history::storage {
       return false;
     }
     out_db.reset(raw);
+    exec(out_db.get(), "PRAGMA foreign_keys = ON");
     return true;
   }
 
@@ -597,6 +607,82 @@ namespace session_history::storage {
         return false;
       }
       if (!rename_column("sessions", "target_requested_bitrate_kbps", "requested_bitrate_kbps")) {
+        return false;
+      }
+    }
+    if (current_schema_version < 7 ||
+        !table_has_delete_cascade(db, "samples", "sessions", "session_uuid") ||
+        !table_has_delete_cascade(db, "events", "sessions", "session_uuid")) {
+      constexpr const char *CREATE_SAMPLES_TABLE = R"(
+        CREATE TABLE samples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_uuid TEXT NOT NULL REFERENCES sessions(uuid) ON DELETE CASCADE,
+          timestamp_unix REAL NOT NULL,
+          bytes_sent_total INTEGER DEFAULT 0,
+          packets_sent_video INTEGER DEFAULT 0,
+          frames_sent INTEGER DEFAULT 0,
+          last_frame_index INTEGER DEFAULT 0,
+          video_dropped INTEGER DEFAULT 0,
+          audio_dropped INTEGER DEFAULT 0,
+          client_reported_losses INTEGER DEFAULT 0,
+          idr_requests INTEGER DEFAULT 0,
+          ref_invalidations INTEGER DEFAULT 0,
+          encode_latency_ms REAL DEFAULT 0,
+          actual_fps REAL DEFAULT 0,
+          actual_bitrate_kbps REAL DEFAULT 0,
+          frame_interval_jitter_ms REAL DEFAULT 0,
+          host_cpu_percent REAL DEFAULT -1,
+          host_gpu_percent REAL DEFAULT -1,
+          host_gpu_encoder_percent REAL DEFAULT -1,
+          host_ram_percent REAL DEFAULT -1,
+          host_vram_percent REAL DEFAULT -1,
+          host_cpu_temp_c REAL DEFAULT -1,
+          host_gpu_temp_c REAL DEFAULT -1,
+          host_net_rx_bps REAL DEFAULT -1,
+          host_net_tx_bps REAL DEFAULT -1
+        );
+      )";
+      constexpr const char *SAMPLES_COLUMNS =
+        "id, session_uuid, timestamp_unix, bytes_sent_total, packets_sent_video, "
+        "frames_sent, last_frame_index, video_dropped, audio_dropped, client_reported_losses, "
+        "idr_requests, ref_invalidations, encode_latency_ms, actual_fps, actual_bitrate_kbps, "
+        "frame_interval_jitter_ms, host_cpu_percent, host_gpu_percent, host_gpu_encoder_percent, "
+        "host_ram_percent, host_vram_percent, host_cpu_temp_c, host_gpu_temp_c, host_net_rx_bps, host_net_tx_bps";
+      constexpr const char *SAMPLES_INDEXES =
+        "CREATE INDEX IF NOT EXISTS idx_samples_session ON samples(session_uuid);"
+        "CREATE INDEX IF NOT EXISTS idx_samples_time ON samples(session_uuid, timestamp_unix);";
+      if (!rebuild_child_table_with_cascade(
+            db,
+            "samples",
+            "samples_legacy_no_cascade",
+            CREATE_SAMPLES_TABLE,
+            SAMPLES_COLUMNS,
+            SAMPLES_INDEXES)) {
+        BOOST_LOG(error) << "session_history: failed to rebuild samples table with ON DELETE CASCADE";
+        return false;
+      }
+
+      constexpr const char *CREATE_EVENTS_TABLE = R"(
+        CREATE TABLE events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_uuid TEXT NOT NULL REFERENCES sessions(uuid) ON DELETE CASCADE,
+          timestamp_unix REAL NOT NULL,
+          event_type TEXT NOT NULL,
+          payload TEXT
+        );
+      )";
+      constexpr const char *EVENTS_COLUMNS = "id, session_uuid, timestamp_unix, event_type, payload";
+      constexpr const char *EVENTS_INDEXES =
+        "CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_uuid);"
+        "CREATE INDEX IF NOT EXISTS idx_events_time ON events(session_uuid, timestamp_unix);";
+      if (!rebuild_child_table_with_cascade(
+            db,
+            "events",
+            "events_legacy_no_cascade",
+            CREATE_EVENTS_TABLE,
+            EVENTS_COLUMNS,
+            EVENTS_INDEXES)) {
+        BOOST_LOG(error) << "session_history: failed to rebuild events table with ON DELETE CASCADE";
         return false;
       }
     }

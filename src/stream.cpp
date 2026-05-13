@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <optional>
 #include <queue>
 #include <thread>
@@ -117,6 +118,31 @@ namespace stream {
       }
 #endif
       return version;
+    }
+
+    template<typename T>
+    void saturating_add_relaxed(std::atomic<T> &target, T delta) {
+      static_assert(std::is_integral_v<T>, "saturating_add_relaxed requires integral atomics");
+
+      auto current = target.load(std::memory_order_relaxed);
+      while (true) {
+        T next {};
+        if constexpr (std::is_unsigned_v<T>) {
+          next = current > std::numeric_limits<T>::max() - delta ? std::numeric_limits<T>::max() : static_cast<T>(current + delta);
+        } else {
+          if (delta > 0 && current > std::numeric_limits<T>::max() - delta) {
+            next = std::numeric_limits<T>::max();
+          } else if (delta < 0 && current < std::numeric_limits<T>::lowest() - delta) {
+            next = std::numeric_limits<T>::lowest();
+          } else {
+            next = static_cast<T>(current + delta);
+          }
+        }
+
+        if (target.compare_exchange_weak(current, next, std::memory_order_relaxed, std::memory_order_relaxed)) {
+          return;
+        }
+      }
     }
   }  // namespace
 
@@ -1213,21 +1239,19 @@ namespace stream {
     }
 
     server->map(packetTypes[IDX_LOSS_STATS], [&](session_t *session, const std::string_view &payload) {
-      if (payload.size() < sizeof(std::int32_t) * 4) {
+      const auto count_value = util::packet::read_i32_le(payload, 0);
+      const auto elapsed_ms = util::packet::read_i32_le(payload, sizeof(std::int32_t));
+      const auto last_good_frame = util::packet::read_i32_le(payload, sizeof(std::int32_t) * 3);
+      if (!count_value || !elapsed_ms || !last_good_frame) {
         BOOST_LOG(warning) << "Ignoring short IDX_LOSS_STATS payload (" << payload.size() << " bytes)";
         return;
       }
 
-      std::array<std::int32_t, 4> stats {};
-      std::memcpy(stats.data(), payload.data(), sizeof(stats));
+      auto count = std::clamp(*count_value, 0, 1'000'000);
+      std::chrono::milliseconds t {*elapsed_ms};
+      auto lastGoodFrame = *last_good_frame;
 
-      auto count = util::endian::little(stats[0]);
-      std::chrono::milliseconds t {util::endian::little(stats[1])};
-      auto lastGoodFrame = util::endian::little(stats[3]);
-
-      count = std::clamp(count, 0, 1'000'000);
-
-      session->stats.client_reported_losses.fetch_add(count, std::memory_order_relaxed);
+      saturating_add_relaxed(session->stats.client_reported_losses, static_cast<std::int64_t>(count));
 
       BOOST_LOG(verbose)
         << "type [IDX_LOSS_STATS]"sv << std::endl
@@ -1241,23 +1265,27 @@ namespace stream {
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
-      session->stats.idr_requests.fetch_add(1, std::memory_order_relaxed);
+      saturating_add_relaxed(session->stats.idr_requests, 1u);
       session->video.idr_events->raise(true);
     });
 
     server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {
-      if (payload.size() < sizeof(std::int64_t) * 2) {
+      const auto first_frame = util::packet::read_i64_le(payload, 0);
+      const auto last_frame = util::packet::read_i64_le(payload, sizeof(std::int64_t));
+      if (!first_frame || !last_frame) {
         BOOST_LOG(warning) << "Ignoring short IDX_INVALIDATE_REF_FRAMES payload (" << payload.size() << " bytes)";
         return;
       }
 
-      std::array<std::int64_t, 2> frames {};
-      std::memcpy(frames.data(), payload.data(), sizeof(frames));
+      const auto firstFrame = *first_frame;
+      const auto lastFrame = *last_frame;
+      if (firstFrame < 0 || lastFrame < 0 || lastFrame < firstFrame) {
+        BOOST_LOG(warning) << "Ignoring invalid IDX_INVALIDATE_REF_FRAMES payload first=" << firstFrame
+                           << " last=" << lastFrame;
+        return;
+      }
 
-      auto firstFrame = util::endian::little(frames[0]);
-      auto lastFrame = util::endian::little(frames[1]);
-
-      session->stats.invalidate_ref_count.fetch_add(1, std::memory_order_relaxed);
+      saturating_add_relaxed(session->stats.invalidate_ref_count, 1u);
 
       BOOST_LOG(debug)
         << "type [IDX_INVALIDATE_REF_FRAMES]"sv << std::endl
@@ -1270,14 +1298,29 @@ namespace stream {
     server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_INPUT_DATA]"sv;
 
-      auto tagged_cipher_length = util::endian::big(*(int32_t *) payload.data());
-      std::string_view tagged_cipher {payload.data() + sizeof(tagged_cipher_length), (size_t) tagged_cipher_length};
+      const auto tagged_cipher_length = util::packet::read_i32_be(payload, 0);
+      if (!tagged_cipher_length || *tagged_cipher_length < 0) {
+        BOOST_LOG(warning) << "Ignoring malformed IDX_INPUT_DATA payload (" << payload.size() << " bytes)";
+        session::stop(*session);
+        return;
+      }
+
+      const auto tagged_cipher = util::packet::slice(
+        payload,
+        sizeof(std::int32_t),
+        static_cast<std::size_t>(*tagged_cipher_length));
+      if (!tagged_cipher) {
+        BOOST_LOG(warning) << "Ignoring truncated IDX_INPUT_DATA payload (" << payload.size() << " bytes, cipher="
+                           << *tagged_cipher_length << ')';
+        session::stop(*session);
+        return;
+      }
 
       std::vector<uint8_t> plaintext;
 
       auto &cipher = session->control.cipher;
       auto &iv = session->control.legacy_input_enc_iv;
-      if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
+      if (cipher.decrypt(*tagged_cipher, plaintext, &iv)) {
         // something went wrong :(
 
         BOOST_LOG(error) << "Failed to verify tag"sv;
@@ -1286,7 +1329,7 @@ namespace stream {
         return;
       }
 
-      if (tagged_cipher_length >= 16 + iv.size()) {
+      if (tagged_cipher->size() >= 16 + iv.size()) {
         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
       }
 
@@ -1301,10 +1344,14 @@ namespace stream {
         return;
       }
 
-      uint8_t cmdIndex = *(uint8_t *) payload.data();
+      const auto cmdIndex = util::packet::read_u8(payload, 0);
+      if (!cmdIndex) {
+        BOOST_LOG(warning) << "Ignoring short IDX_EXEC_SERVER_CMD payload (" << payload.size() << " bytes)";
+        return;
+      }
 
-      if (cmdIndex < config::sunshine.server_cmds.size()) {
-        const auto &cmd = config::sunshine.server_cmds[cmdIndex];
+      if (*cmdIndex < config::sunshine.server_cmds.size()) {
+        const auto &cmd = config::sunshine.server_cmds[*cmdIndex];
         BOOST_LOG(info) << "Executing server command: " << cmd.cmd_name;
 
         auto exec_thread = std::thread([&cmd] {
@@ -1322,7 +1369,7 @@ namespace stream {
 
         exec_thread.detach();
       } else {
-        BOOST_LOG(error) << "Invalid server command index: " << (int) cmdIndex;
+        BOOST_LOG(error) << "Invalid server command index: " << static_cast<int>(*cmdIndex);
       }
     });
 
@@ -1347,18 +1394,41 @@ namespace stream {
     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_ENCRYPTED]"sv;
 
-      auto header = (control_encrypted_p) (payload.data() - 2);
+      if (payload.size() < sizeof(control_encrypted_t) - sizeof(std::uint16_t)) {
+        BOOST_LOG(warning) << "Control: Runt encrypted packet payload";
+        return;
+      }
 
-      auto length = util::endian::little(header->length);
-      auto seq = util::endian::little(header->seq);
+      const std::string_view packet_bytes {payload.data() - sizeof(std::uint16_t), payload.size() + sizeof(std::uint16_t)};
+      const auto encrypted_header_type = util::packet::read_u16_le(packet_bytes, 0);
+      const auto length = util::packet::read_u16_le(packet_bytes, sizeof(std::uint16_t));
+      const auto seq = util::packet::read_u32_le(packet_bytes, sizeof(std::uint16_t) * 2);
+      if (!encrypted_header_type || !length || !seq) {
+        BOOST_LOG(warning) << "Control: malformed encrypted packet header";
+        return;
+      }
+      if (*encrypted_header_type != packetTypes[IDX_ENCRYPTED]) {
+        BOOST_LOG(warning) << "Control: unexpected encrypted packet header type 0x"
+                           << util::hex(*encrypted_header_type).to_string_view();
+        return;
+      }
+      if (packet_bytes.size() != static_cast<std::size_t>(*length) + sizeof(std::uint16_t) * 2) {
+        BOOST_LOG(warning) << "Control: malformed encrypted packet length " << *length
+                           << " for payload " << packet_bytes.size();
+        return;
+      }
 
-      if (length < (16 + 4 + 4)) {
+      if (*length < (16 + 4 + 4)) {
         BOOST_LOG(warning) << "Control: Runt packet"sv;
         return;
       }
 
-      auto tagged_cipher_length = length - 4;
-      std::string_view tagged_cipher {(char *) header->payload(), (size_t) tagged_cipher_length};
+      const auto tagged_cipher_length = static_cast<std::size_t>(*length) - sizeof(std::uint32_t);
+      const auto tagged_cipher = util::packet::slice(packet_bytes, sizeof(control_encrypted_t), tagged_cipher_length);
+      if (!tagged_cipher) {
+        BOOST_LOG(warning) << "Control: truncated encrypted payload";
+        return;
+      }
 
       auto &cipher = session->control.cipher;
       auto &iv = session->control.incoming_iv;
@@ -1372,18 +1442,18 @@ namespace stream {
         // The sequence number is 32 bits long which allows for 2^32 control stream messages
         // to be received from each client before the IV repeats.
         iv.resize(12);
-        std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
+        std::copy_n(reinterpret_cast<const uint8_t *>(&*seq), sizeof(*seq), std::begin(iv));
         iv[10] = 'C';  // Client originated
         iv[11] = 'C';  // Control stream
       } else {
         // Nvidia's old style encryption uses a 16-byte IV
         iv.resize(16);
 
-        iv[0] = (std::uint8_t) seq;
+        iv[0] = static_cast<std::uint8_t>(*seq);
       }
 
       std::vector<uint8_t> plaintext;
-      if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
+      if (cipher.decrypt(*tagged_cipher, plaintext, &iv)) {
         // something went wrong :(
 
         BOOST_LOG(error) << "Failed to verify tag"sv;
@@ -1392,21 +1462,30 @@ namespace stream {
         return;
       }
 
-      auto type = *(std::uint16_t *) plaintext.data();
-      std::string_view next_payload {(char *) plaintext.data() + 4, plaintext.size() - 4};
+      const auto plaintext_view = std::string_view {
+        reinterpret_cast<const char *>(plaintext.data()),
+        plaintext.size()
+      };
+      const auto type = util::packet::read_u16_le(plaintext_view, 0);
+      if (!type || plaintext.size() < 4) {
+        BOOST_LOG(warning) << "Control: malformed decrypted control packet";
+        session::stop(*session);
+        return;
+      }
+      std::string_view next_payload {reinterpret_cast<const char *>(plaintext.data()) + 4, plaintext.size() - 4};
 
-      if (type == packetTypes[IDX_ENCRYPTED]) {
+      if (*type == packetTypes[IDX_ENCRYPTED]) {
         BOOST_LOG(error) << "Bad packet type [IDX_ENCRYPTED] found"sv;
         session::stop(*session);
         return;
       }
 
       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
-      if (type == packetTypes[IDX_INPUT_DATA]) {
+      if (*type == packetTypes[IDX_INPUT_DATA]) {
         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
         input::passthrough(session->input, std::move(plaintext), session->permission);
       } else {
-        server->call(type, session, next_payload, true);
+        server->call(*type, session, next_payload, true);
       }
     });
 

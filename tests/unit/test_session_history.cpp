@@ -24,7 +24,8 @@ namespace {
   std::filesystem::path
     make_temp_db_path(const char *label) {
     auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto path = std::filesystem::path("vibepollo-tests-" + std::string(label) + "-" + std::to_string(stamp) + ".sqlite");
+    auto path = std::filesystem::temp_directory_path() /
+                ("vibepollo-tests-" + std::string(label) + "-" + std::to_string(stamp) + ".sqlite");
     std::error_code ec;
     std::filesystem::remove(path, ec);
     return path;
@@ -73,6 +74,47 @@ namespace {
     }
     sqlite3_finalize(stmt);
     return found;
+  }
+
+  bool foreign_key_has_delete_cascade(sqlite3 *db, const char *table, const char *parent_table, const char *from_column) {
+    sqlite3_stmt *stmt = nullptr;
+    const std::string sql = std::string("PRAGMA foreign_key_list(") + table + ")";
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+      return false;
+    }
+
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      const auto *parent = sqlite3_column_text(stmt, 2);
+      const auto *from = sqlite3_column_text(stmt, 3);
+      const auto *on_delete = sqlite3_column_text(stmt, 6);
+      if (parent && from && on_delete &&
+          std::string(reinterpret_cast<const char *>(parent)) == parent_table &&
+          std::string(reinterpret_cast<const char *>(from)) == from_column &&
+          std::string(reinterpret_cast<const char *>(on_delete)) == "CASCADE") {
+        found = true;
+        break;
+      }
+    }
+
+    sqlite3_finalize(stmt);
+    return found;
+  }
+
+  std::size_t count_rows_for_uuid(sqlite3 *db, const char *table, const std::string &uuid) {
+    sqlite3_stmt *stmt = nullptr;
+    const std::string sql = std::string("SELECT COUNT(*) FROM ") + table + " WHERE session_uuid = ?";
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+      return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+    std::size_t count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      count = static_cast<std::size_t>(sqlite3_column_int64(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+    return count;
   }
 
   session_history::session_metadata_t
@@ -240,6 +282,7 @@ TEST(SessionHistory, DeleteRemovesSessionAndChildren) {
 
   const std::string uuid = "33333333-3333-3333-3333-333333333333";
   session_history::begin_session(make_metadata(uuid));
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(uuid)));
   session_history::record_event(uuid, "test_event");
   session_history::end_session(uuid);
 
@@ -258,6 +301,7 @@ TEST(SessionHistory, DeleteRemovesSessionAndChildren) {
   for (const auto &r : rows) {
     EXPECT_NE(r.uuid, uuid);
   }
+
 }
 
 TEST(SessionHistory, DeleteFlushesQueuedWritesBeforeReturning) {
@@ -332,6 +376,45 @@ TEST(SessionHistory, DisabledHistorySkipsPersistence) {
   EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::unavailable);
 }
 
+TEST(SessionHistory, DeleteRejectsActiveSessions) {
+  auto path = make_temp_db_path("active-delete");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "abababab-abab-abab-abab-abababababab";
+  session_history::begin_session(make_metadata(uuid));
+
+  EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::active_session);
+
+  session_history::end_session(uuid);
+}
+
+TEST(SessionHistoryStorage, DeleteCascadesChildRows) {
+  auto path = make_temp_db_path("storage-delete-cascade");
+
+  session_history::storage::db_ptr db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(db.get(), 7));
+
+  const std::string uuid = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd";
+  ASSERT_TRUE(session_history::storage::process_begin(db.get(), make_metadata(uuid)));
+  ASSERT_TRUE(session_history::storage::process_sample(db.get(), make_sample(uuid), 7200));
+
+  session_history::session_event_t event;
+  event.session_uuid = uuid;
+  event.timestamp_unix = session_history::storage::now_unix();
+  event.event_type = "storage-test";
+  ASSERT_TRUE(session_history::storage::process_event(db.get(), event, 2000));
+  ASSERT_TRUE(session_history::storage::process_end(db.get(), uuid));
+
+  EXPECT_GT(count_rows_for_uuid(db.get(), "samples", uuid), 0u);
+  EXPECT_GT(count_rows_for_uuid(db.get(), "events", uuid), 0u);
+
+  EXPECT_EQ(session_history::storage::process_delete(db.get(), uuid), session_history::storage::delete_apply_e::deleted);
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "samples", uuid), 0u);
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "events", uuid), 0u);
+}
+
 TEST(SessionHistory, MigratesLegacyBitrateColumnsToCanonicalNames) {
   auto path = make_temp_db_path("legacy-bitrate-migration");
 
@@ -367,7 +450,7 @@ TEST(SessionHistory, MigratesLegacyBitrateColumnsToCanonicalNames) {
 
   session_history::storage::db_ptr migrated_db;
   ASSERT_TRUE(session_history::storage::open_write_db(path.string(), migrated_db));
-  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(migrated_db.get(), 6));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(migrated_db.get(), 7));
   EXPECT_TRUE(column_exists(migrated_db.get(), "sessions", "encoder_bitrate_kbps"));
   EXPECT_TRUE(column_exists(migrated_db.get(), "sessions", "requested_bitrate_kbps"));
   EXPECT_FALSE(column_exists(migrated_db.get(), "sessions", "target_bitrate_kbps"));
@@ -392,6 +475,80 @@ TEST(SessionHistory, MigratesLegacyBitrateColumnsToCanonicalNames) {
   ASSERT_TRUE(detail.has_value());
   EXPECT_EQ(detail->summary.encoder_bitrate_kbps, 20000);
   EXPECT_EQ(detail->summary.requested_bitrate_kbps, 25000);
+}
+
+TEST(SessionHistory, MigratesChildTablesToOnDeleteCascade) {
+  auto path = make_temp_db_path("cascade-migration");
+
+  sqlite3 *seed_db = nullptr;
+  ASSERT_EQ(sqlite3_open(path.string().c_str(), &seed_db), SQLITE_OK);
+  ASSERT_TRUE(exec_sql(seed_db,
+    "CREATE TABLE sessions ("
+    "uuid TEXT PRIMARY KEY,"
+    "protocol TEXT NOT NULL,"
+    "client_name TEXT,"
+    "device_name TEXT,"
+    "app_name TEXT,"
+    "width INTEGER,"
+    "height INTEGER,"
+    "target_fps INTEGER,"
+    "encoder_bitrate_kbps INTEGER,"
+    "requested_bitrate_kbps INTEGER,"
+    "codec TEXT,"
+    "hdr INTEGER DEFAULT 0,"
+    "yuv444 INTEGER DEFAULT 0,"
+    "audio_channels INTEGER,"
+    "start_time_unix REAL NOT NULL,"
+    "end_time_unix REAL,"
+    "duration_seconds REAL,"
+    "verdict TEXT DEFAULT 'unknown',"
+    "server_version TEXT,"
+    "host_cpu_model TEXT,"
+    "host_gpu_model TEXT,"
+    "stream_gpu_model TEXT"
+    ");"
+    "CREATE TABLE samples ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "session_uuid TEXT NOT NULL REFERENCES sessions(uuid),"
+    "timestamp_unix REAL NOT NULL,"
+    "bytes_sent_total INTEGER DEFAULT 0,"
+    "packets_sent_video INTEGER DEFAULT 0,"
+    "frames_sent INTEGER DEFAULT 0,"
+    "last_frame_index INTEGER DEFAULT 0,"
+    "video_dropped INTEGER DEFAULT 0,"
+    "audio_dropped INTEGER DEFAULT 0,"
+    "client_reported_losses INTEGER DEFAULT 0,"
+    "idr_requests INTEGER DEFAULT 0,"
+    "ref_invalidations INTEGER DEFAULT 0,"
+    "encode_latency_ms REAL DEFAULT 0,"
+    "actual_fps REAL DEFAULT 0,"
+    "actual_bitrate_kbps REAL DEFAULT 0,"
+    "frame_interval_jitter_ms REAL DEFAULT 0,"
+    "host_cpu_percent REAL DEFAULT -1,"
+    "host_gpu_percent REAL DEFAULT -1,"
+    "host_gpu_encoder_percent REAL DEFAULT -1,"
+    "host_ram_percent REAL DEFAULT -1,"
+    "host_vram_percent REAL DEFAULT -1,"
+    "host_cpu_temp_c REAL DEFAULT -1,"
+    "host_gpu_temp_c REAL DEFAULT -1,"
+    "host_net_rx_bps REAL DEFAULT -1,"
+    "host_net_tx_bps REAL DEFAULT -1"
+    ");"
+    "CREATE TABLE events ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "session_uuid TEXT NOT NULL REFERENCES sessions(uuid),"
+    "timestamp_unix REAL NOT NULL,"
+    "event_type TEXT NOT NULL,"
+    "payload TEXT"
+    ");"
+    "PRAGMA user_version = 6;"));
+  sqlite3_close(seed_db);
+
+  session_history::storage::db_ptr migrated_db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), migrated_db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(migrated_db.get(), 7));
+  EXPECT_TRUE(foreign_key_has_delete_cascade(migrated_db.get(), "samples", "sessions", "session_uuid"));
+  EXPECT_TRUE(foreign_key_has_delete_cascade(migrated_db.get(), "events", "sessions", "session_uuid"));
 }
 
 TEST(SessionHistory, RetentionDaysPrunesOldEndedSessionsOnStartup) {
@@ -429,6 +586,47 @@ TEST(SessionHistory, RetentionDaysPrunesOldEndedSessionsOnStartup) {
   const auto rows = session_history::list_sessions(50, 0);
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows.front().uuid, new_uuid);
+}
+
+TEST(SessionHistoryStorage, PruneCascadesChildRows) {
+  auto path = make_temp_db_path("storage-prune-cascade");
+
+  session_history::storage::db_ptr db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(db.get(), 7));
+
+  const std::string old_uuid = "efefefef-efef-efef-efef-efefefefefef";
+  const std::string new_uuid = "12121212-1212-1212-1212-121212121212";
+
+  ASSERT_TRUE(session_history::storage::process_begin(db.get(), make_metadata(old_uuid, "Old App")));
+  ASSERT_TRUE(session_history::storage::process_sample(db.get(), make_sample(old_uuid), 7200));
+  ASSERT_TRUE(session_history::storage::process_event(
+    db.get(),
+    session_history::session_event_t {old_uuid, session_history::storage::now_unix(), "old-event", {}},
+    2000));
+  ASSERT_TRUE(session_history::storage::process_end(db.get(), old_uuid));
+
+  ASSERT_TRUE(session_history::storage::process_begin(db.get(), make_metadata(new_uuid, "New App")));
+  ASSERT_TRUE(session_history::storage::process_sample(db.get(), make_sample(new_uuid), 7200));
+  ASSERT_TRUE(session_history::storage::process_event(
+    db.get(),
+    session_history::session_event_t {new_uuid, session_history::storage::now_unix(), "new-event", {}},
+    2000));
+  ASSERT_TRUE(session_history::storage::process_end(db.get(), new_uuid));
+
+  const auto stale_end_time =
+    std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() - (3.0 * 24.0 * 60.0 * 60.0);
+  ASSERT_TRUE(session_history::storage::force_set_end_time(db.get(), old_uuid, stale_end_time));
+
+  session_history::storage::prune_options_t options;
+  options.prune_sessions_ended_before_unix =
+    std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() - (24.0 * 60.0 * 60.0);
+  ASSERT_TRUE(session_history::storage::process_prune(db.get(), options));
+
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "samples", old_uuid), 0u);
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "events", old_uuid), 0u);
+  EXPECT_GT(count_rows_for_uuid(db.get(), "samples", new_uuid), 0u);
+  EXPECT_GT(count_rows_for_uuid(db.get(), "events", new_uuid), 0u);
 }
 
 TEST(SessionHistory, DbQuotaPrunesOldestEndedSessionsOnStartup) {

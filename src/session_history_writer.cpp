@@ -66,7 +66,7 @@ namespace session_history::writer {
     constexpr int DEFAULT_DETAIL_EVENT_LIMIT = 500;
     constexpr int MAX_SAMPLES_PER_SESSION = 7200;
     constexpr int MAX_EVENTS_PER_SESSION = 2000;
-    constexpr int SESSION_HISTORY_SCHEMA_VERSION = 6;
+    constexpr int SESSION_HISTORY_SCHEMA_VERSION = 7;
     constexpr auto DELETE_WAIT_TIMEOUT = std::chrono::seconds(5);
 
     settings_t current_settings() {
