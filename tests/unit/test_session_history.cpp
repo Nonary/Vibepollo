@@ -738,6 +738,28 @@ TEST(SessionHistory, DropsLateSampleQueuedAfterEndSession) {
   EXPECT_TRUE(detail->samples.empty());
 }
 
+TEST(SessionHistory, PersistsSampleQueuedBeforeEndSession) {
+  auto path = make_temp_db_path("sample-before-end");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string uuid = "c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1";
+  session_history::begin_session(make_metadata(uuid));
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(uuid, 7, 7000)));
+  session_history::end_session(uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto detail = session_history::get_session_detail(uuid);
+    return detail && detail->summary.end_time_unix > 0 && detail->total_samples > 0;
+  }));
+
+  const auto detail = session_history::get_session_detail(uuid);
+  ASSERT_TRUE(detail.has_value());
+  ASSERT_FALSE(detail->samples.empty());
+  EXPECT_EQ(detail->samples.front().session_uuid, uuid);
+  EXPECT_EQ(detail->samples.front().frames_sent, 7u);
+}
+
 TEST(SessionHistory, DetailSamplesAndEventsPreserveSessionUuid) {
   auto path = make_temp_db_path("detail-uuid");
   session_history::init(path.string());
@@ -766,6 +788,51 @@ TEST(SessionHistory, DetailSamplesAndEventsPreserveSessionUuid) {
     }
   }
   EXPECT_TRUE(found_marker);
+}
+
+TEST(SessionHistory, SameDeviceConsecutiveSessionsStayDistinct) {
+  auto path = make_temp_db_path("same-device-consecutive");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  auto first = make_metadata("f1f1f1f1-f1f1-f1f1-f1f1-f1f1f1f1f1f1", "First App");
+  auto second = make_metadata("f2f2f2f2-f2f2-f2f2-f2f2-f2f2f2f2f2f2", "Second App");
+  first.client_name = "LivingRoomClient";
+  first.device_name = "LivingRoomClient";
+  second.client_name = "LivingRoomClient";
+  second.device_name = "LivingRoomClient";
+
+  session_history::begin_session(first);
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(first.uuid, 11, 11000)));
+  session_history::end_session(first.uuid);
+
+  session_history::begin_session(second);
+  ASSERT_TRUE(session_history::record_sample_for_tests(make_sample(second.uuid, 22, 22000)));
+  session_history::end_session(second.uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto rows = session_history::list_sessions(50, 0);
+    return rows.size() >= 2;
+  }));
+
+  const auto first_detail = session_history::get_session_detail(first.uuid, true);
+  const auto second_detail = session_history::get_session_detail(second.uuid, true);
+  ASSERT_TRUE(first_detail.has_value());
+  ASSERT_TRUE(second_detail.has_value());
+
+  EXPECT_EQ(first_detail->summary.uuid, first.uuid);
+  EXPECT_EQ(first_detail->summary.app_name, "First App");
+  EXPECT_EQ(first_detail->summary.device_name, "LivingRoomClient");
+  ASSERT_FALSE(first_detail->samples.empty());
+  EXPECT_EQ(first_detail->samples.front().session_uuid, first.uuid);
+  EXPECT_EQ(first_detail->samples.front().frames_sent, 11u);
+
+  EXPECT_EQ(second_detail->summary.uuid, second.uuid);
+  EXPECT_EQ(second_detail->summary.app_name, "Second App");
+  EXPECT_EQ(second_detail->summary.device_name, "LivingRoomClient");
+  ASSERT_FALSE(second_detail->samples.empty());
+  EXPECT_EQ(second_detail->samples.front().session_uuid, second.uuid);
+  EXPECT_EQ(second_detail->samples.front().frames_sent, 22u);
 }
 
 TEST(SessionHistory, DetailDefaultEventLimitSetsTruncationAndIncludeAllRestoresRows) {

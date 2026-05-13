@@ -39,6 +39,7 @@ namespace session_history::writer {
 
     struct write_cmd_t {
       cmd_type type;
+      std::uint64_t sequence = 0;
       session_metadata_t metadata;
       session_sample_t sample;
       session_event_t event;
@@ -98,6 +99,7 @@ namespace session_history::writer {
     queue_limits_t g_queue_limits;
     std::atomic<std::uint64_t> g_dropped_sample_count {0};
     std::atomic<bool> g_writer_degraded {false};
+    std::atomic<std::uint64_t> g_next_sequence {0};
 
     settings_t current_settings() {
       std::lock_guard lk {g_settings_mutex};
@@ -145,12 +147,29 @@ namespace session_history::writer {
       return !g_priority_queue.empty() || !g_regular_queue.empty() || !g_sample_queue.empty();
     }
 
+    void extract_older_session_samples(const write_cmd_t &barrier, std::vector<write_cmd_t> &batch) {
+      if ((barrier.type != cmd_type::end_session && barrier.type != cmd_type::delete_session) ||
+          barrier.uuid.empty()) {
+        return;
+      }
+
+      for (auto it = g_sample_queue.begin(); it != g_sample_queue.end();) {
+        if (it->sample.session_uuid == barrier.uuid && it->sequence < barrier.sequence) {
+          batch.push_back(std::move(*it));
+          it = g_sample_queue.erase(it);
+          continue;
+        }
+        ++it;
+      }
+    }
+
     bool enqueue(write_cmd_t cmd) {
       {
         std::lock_guard lk {g_queue_mutex};
         if (!g_running.load(std::memory_order_acquire) || !g_write_db) {
           return false;
         }
+        cmd.sequence = g_next_sequence.fetch_add(1, std::memory_order_relaxed);
         const auto limits = current_queue_limits();
         if (cmd.type == cmd_type::insert_sample) {
           if (g_sample_queue.size() >= limits.sample_limit) {
@@ -189,6 +208,7 @@ namespace session_history::writer {
         }
 
         while (!g_priority_queue.empty()) {
+          extract_older_session_samples(g_priority_queue.front(), batch);
           batch.push_back(std::move(g_priority_queue.front()));
           g_priority_queue.pop_front();
         }
@@ -433,6 +453,7 @@ namespace session_history::writer {
     }
     storage::tighten_history_db_permissions(g_history_db_path);
 
+    g_next_sequence.store(0, std::memory_order_relaxed);
     g_running.store(true, std::memory_order_release);
     g_writer_thread = std::thread {writer_loop};
 

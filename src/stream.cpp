@@ -511,6 +511,7 @@ namespace stream {
     std::uint32_t launch_session_id;
     std::mutex metadata_mutex;
     std::string device_name;
+    std::string history_device_name;
     std::string device_uuid;
     // Per-stream identifier used by the session_history subsystem. Distinct
     // from device_uuid so that consecutive streams from the same Moonlight
@@ -646,7 +647,7 @@ namespace stream {
       info.uuid = session->history_uuid;
       {
         std::lock_guard lg {session->metadata_mutex};
-        info.device_name = session->device_name;
+        info.device_name = !session->history_device_name.empty() ? session->history_device_name : session->device_name;
       }
       info.width = session->config.monitor.width;
       info.height = session->config.monitor.height;
@@ -2619,8 +2620,9 @@ namespace stream {
         meta.protocol = "rtsp";
         {
           std::lock_guard lg {session.metadata_mutex};
-          meta.client_name = session.device_name;
-          meta.device_name = session.device_name;
+          session.history_device_name = session.device_name;
+          meta.client_name = session.history_device_name;
+          meta.device_name = session.history_device_name;
         }
         meta.app_name = proc::proc.get_last_run_app_name();
         meta.width = session.config.monitor.width;

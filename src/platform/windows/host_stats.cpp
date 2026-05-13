@@ -627,6 +627,8 @@ namespace {
      */
     void
       refresh_primary_interface() {
+      const bool had_iface = _net_have_iface;
+      const auto previous_luid = _net_iface_luid;
       _net_have_iface = false;
       _net_iface_name.clear();
       _net_link_speed_mbps = 0;
@@ -635,6 +637,9 @@ namespace {
       if (!find_default_route_luid(luid)) {
         // fallback: first non-loopback interface that is up
         if (!find_first_up_interface_luid(luid)) {
+          if (had_iface) {
+            _have_net_baseline = false;
+          }
           return;
         }
       }
@@ -643,6 +648,9 @@ namespace {
       MIB_IF_ROW2 row {};
       row.InterfaceLuid = luid;
       if (GetIfEntry2(&row) != NO_ERROR) {
+        if (had_iface) {
+          _have_net_baseline = false;
+        }
         return;
       }
       char narrow[ARRAYSIZE(row.Alias) + 1] {};
@@ -650,7 +658,7 @@ namespace {
       _net_iface_name.assign(narrow);
       // ReceiveLinkSpeed is in bits/sec; report Mbps.
       _net_link_speed_mbps = row.ReceiveLinkSpeed / 1'000'000ULL;
-      if (_net_have_iface && _net_iface_luid.Value != luid.Value) {
+      if (had_iface && previous_luid.Value != luid.Value) {
         _have_net_baseline = false;
       }
       _net_iface_luid = luid;
