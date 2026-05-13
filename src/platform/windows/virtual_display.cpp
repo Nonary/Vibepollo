@@ -26,6 +26,7 @@
 #include <devguid.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
@@ -172,6 +173,35 @@ namespace VDISPLAY {
     void store_watchdog_fail_cb(const std::function<void()> &fail_cb) {
       std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
       g_watchdog_fail_cb = fail_cb;
+    }
+
+    void dispatch_watchdog_fail_cb(std::shared_ptr<const std::function<void()>> fail_cb) {
+      if (!fail_cb || !*fail_cb) {
+        return;
+      }
+
+      try {
+        std::thread([fail_cb = std::move(fail_cb)]() {
+          try {
+            if (*fail_cb) {
+              (*fail_cb)();
+            }
+          } catch (const std::exception &err) {
+            BOOST_LOG(error) << "SudoVDA watchdog failure callback threw: " << err.what();
+          } catch (...) {
+            BOOST_LOG(error) << "SudoVDA watchdog failure callback threw an unknown exception.";
+          }
+        }).detach();
+      } catch (const std::system_error &err) {
+        BOOST_LOG(error) << "SudoVDA watchdog: failed to dispatch failure callback thread: " << err.what();
+        try {
+          (*fail_cb)();
+        } catch (const std::exception &cb_err) {
+          BOOST_LOG(error) << "SudoVDA watchdog failure callback threw: " << cb_err.what();
+        } catch (...) {
+          BOOST_LOG(error) << "SudoVDA watchdog failure callback threw an unknown exception.";
+        }
+      }
     }
 
     bool should_skip_restart_attempt(std::chrono::steady_clock::time_point now, std::chrono::milliseconds &cooldown_remaining) {
@@ -2774,6 +2804,7 @@ namespace VDISPLAY {
 
     // Save the callback so recovery can restart the ping thread with the same callback.
     store_watchdog_fail_cb(failCb);
+    auto failure_cb = std::make_shared<std::function<void()>>(std::move(failCb));
 
     if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
       return false;
@@ -2816,7 +2847,7 @@ namespace VDISPLAY {
     const auto interval_ms = std::max<long long>(static_cast<long long>(watchdogOut.Timeout) * 1000ll / 3ll, 100ll);
     const auto sleep_duration = std::chrono::milliseconds(interval_ms);
 
-    std::thread ping_thread([sleep_duration, failCb = std::move(failCb), ping_handle] {
+    std::thread ping_thread([sleep_duration, failure_cb = std::move(failure_cb), ping_handle] {
       auto close_ping_handle = [ping_handle]() {
         if (ping_handle != INVALID_HANDLE_VALUE) {
           CloseHandle(ping_handle);
@@ -2844,9 +2875,8 @@ namespace VDISPLAY {
           fail_count += 1;
           if (fail_count > 3) {
             close_ping_handle();
-            if (failCb) {
-              failCb();
-            }
+            BOOST_LOG(error) << "SudoVDA watchdog ping failed repeatedly; dispatching failure recovery.";
+            dispatch_watchdog_fail_cb(failure_cb);
             return;
           }
         } else {
