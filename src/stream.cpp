@@ -611,6 +611,30 @@ namespace stream {
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
+  std::optional<control_packet_view_t> decode_control_packet(std::string_view packet_bytes) {
+    if (packet_bytes.size() < sizeof(std::uint16_t)) {
+      return std::nullopt;
+    }
+
+    const auto type = util::packet::read_u16_le(packet_bytes, 0);
+    const auto payload = util::packet::slice(
+      packet_bytes,
+      sizeof(std::uint16_t),
+      packet_bytes.size() - sizeof(std::uint16_t)
+    );
+    if (!type || !payload) {
+      return std::nullopt;
+    }
+
+    return control_packet_view_t {*type, *payload};
+  }
+
+#ifdef SUNSHINE_TESTS
+  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes) {
+    return decode_control_packet(packet_bytes);
+  }
+#endif
+
   void request_idr_for_all_sessions() {
     auto ref = broadcast.ref();
     if (!ref) {
@@ -644,10 +668,11 @@ namespace stream {
       if (!session) continue;
 
       session_info_t info;
-      info.uuid = session->history_uuid;
       {
         std::lock_guard lg {session->metadata_mutex};
+        info.uuid = session->history_uuid;
         info.device_name = !session->history_device_name.empty() ? session->history_device_name : session->device_name;
+        info.stream_gpu_model = session->stream_gpu_model;
       }
       info.width = session->config.monitor.width;
       info.height = session->config.monitor.height;
@@ -660,7 +685,6 @@ namespace stream {
       info.dynamic_range = session->config.monitor.dynamicRange;
       info.yuv444 = session->config.monitor.chromaSamplingType != 0;
       info.audio_channels = session->config.audio.channels;
-      info.stream_gpu_model = session->stream_gpu_model;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
 
       // Real-time performance counters
@@ -862,10 +886,17 @@ namespace stream {
           {
             net::packet_t packet {event.packet};
 
-            auto type = *(std::uint16_t *) packet->data;
-            std::string_view payload {(char *) packet->data + sizeof(type), packet->dataLength - sizeof(type)};
+            std::string_view packet_bytes {
+              reinterpret_cast<const char *>(packet->data),
+              packet->dataLength
+            };
+            const auto decoded = decode_control_packet(packet_bytes);
+            if (!decoded) {
+              BOOST_LOG(warning) << "Ignoring runt control packet (" << packet->dataLength << " bytes)";
+              break;
+            }
 
-            call(type, session, payload, false);
+            call(decoded->type, session, decoded->payload, false);
           }
           break;
         case ENET_EVENT_TYPE_CONNECT:
@@ -2590,6 +2621,14 @@ namespace stream {
       session.control.expected_peer_address = addr_string;
       BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
 
+#ifdef _WIN32
+      const auto stream_gpu_model = platf::dxgi::current_display_adapter_name();
+      {
+        std::lock_guard lg {session.metadata_mutex};
+        session.stream_gpu_model = stream_gpu_model;
+      }
+#endif
+
       // Insert this session into the session list
       {
         auto lg = session.broadcast_ref->control_server._sessions.lock();
@@ -2612,17 +2651,15 @@ namespace stream {
 
       // Record session in persistent history
       {
-#ifdef _WIN32
-        session.stream_gpu_model = platf::dxgi::current_display_adapter_name();
-#endif
         session_history::session_metadata_t meta;
-        meta.uuid = session.history_uuid;
         meta.protocol = "rtsp";
         {
           std::lock_guard lg {session.metadata_mutex};
+          meta.uuid = session.history_uuid;
           session.history_device_name = session.device_name;
           meta.client_name = session.history_device_name;
           meta.device_name = session.history_device_name;
+          meta.stream_gpu_model = session.stream_gpu_model;
         }
         meta.app_name = proc::proc.get_last_run_app_name();
         meta.width = session.config.monitor.width;
@@ -2637,7 +2674,6 @@ namespace stream {
         meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
         meta.audio_channels = session.config.audio.channels;
         meta.server_version = current_server_version();
-        meta.stream_gpu_model = session.stream_gpu_model;
         session_history::begin_session(meta);
       }
 

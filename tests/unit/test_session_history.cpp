@@ -14,6 +14,7 @@
 #include <src/session_history.h>
 #include <src/session_history_storage.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <sqlite3.h>
@@ -419,6 +420,50 @@ TEST(SessionHistory, HistoryStatusReportsDroppedSamplesWhenQueueBackpressures) {
   EXPECT_TRUE(status.available);
   EXPECT_TRUE(status.degraded);
   EXPECT_GT(status.dropped_samples, 0u);
+}
+
+TEST(SessionHistory, FailedWriteBatchReportsDegradedStatus) {
+  auto path = make_temp_db_path("failed-write-status");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  EXPECT_FALSE(session_history::force_write_failure_for_tests());
+
+  ASSERT_TRUE(wait_for([&] {
+    const auto status = session_history::get_history_status();
+    return status.degraded && status.failed_writes > 0;
+  }));
+
+  const auto status = session_history::get_history_status();
+  EXPECT_TRUE(status.available);
+  EXPECT_TRUE(status.degraded);
+  EXPECT_GT(status.failed_writes, 0u);
+}
+
+TEST(SessionHistory, LifecycleCommandsAreIsolatedFromEventQueuePressure) {
+  auto path = make_temp_db_path("control-queue-isolation");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  session_history::configure_queue_limits_for_tests(1, 1, 1, 1);
+
+  const std::string uuid = "abababab-abab-abab-abab-abababababab";
+  session_history::begin_session(make_metadata(uuid));
+
+  for (int i = 0; i < 16; ++i) {
+    session_history::record_event(uuid, "pressure_event", "{}");
+  }
+
+  session_history::end_session(uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    auto rows = session_history::list_sessions(50, 0);
+    return std::any_of(rows.begin(), rows.end(), [&](const auto &row) {
+      return row.uuid == uuid;
+    });
+  }));
+
+  EXPECT_EQ(session_history::delete_session(uuid), session_history::delete_result_e::deleted);
 }
 
 TEST(SessionHistoryStorage, DeleteCascadesChildRows) {

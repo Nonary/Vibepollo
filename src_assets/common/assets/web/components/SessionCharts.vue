@@ -160,6 +160,15 @@ import type { SessionSample, SessionEvent } from '@/types/sessions';
 import SessionChartPanel from './session/SessionChartPanel.vue';
 import SessionChartZoomModal from './session/SessionChartZoomModal.vue';
 import {
+  buildFpsChartData,
+  buildHostComputeChartData,
+  buildHostMemoryChartData,
+  buildHostNetworkChartData,
+  buildLatencyChartData,
+  buildQualityChartData,
+  buildThroughputChartData,
+} from './session/sessionChartDatasets';
+import {
   buildBaseChartOptions,
   buildFpsChartOptions,
   buildHostNetworkChartOptions,
@@ -216,84 +225,14 @@ const fpsChartOptions = computed(() =>
   buildFpsChartOptions(baseChartOptions.value, props.session?.fps ?? 60),
 );
 
-// Chart data
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const latencyChartData = computed<any>(() => ({
-  labels: labels.value,
-  datasets: [
-    {
-      label: t('sessions.chart_encode_latency'),
-      data: displayData.value.map((p) => p.encode_latency_ms),
-      borderColor: 'rgb(59, 130, 246)',
-      backgroundColor: 'rgba(59, 130, 246, 0.1)',
-      fill: true,
-    },
-  ],
-}));
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const throughputChartData = computed<any>(() => ({
-  labels: labels.value,
-  datasets: [
-    {
-      label: t('sessions.chart_throughput'),
-      data: displayData.value.map((p) => p.throughput_mbps),
-      borderColor: 'rgb(16, 185, 129)',
-      backgroundColor: 'rgba(16, 185, 129, 0.1)',
-      fill: true,
-    },
-  ],
-}));
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const qualityChartData = computed<any>(() => {
-  const isRtsp = props.protocol !== 'webrtc';
-  return {
-    labels: labels.value,
-    datasets: [
-      {
-        label: isRtsp ? t('sessions.client_losses') : t('sessions.video_dropped'),
-        data: displayData.value.map((p) => p.delta_losses),
-        borderColor: 'rgb(239, 68, 68)',
-        backgroundColor: 'rgba(239, 68, 68, 0.15)',
-        fill: true,
-      },
-      {
-        label: isRtsp ? t('sessions.idr_requests') : t('sessions.audio_dropped'),
-        data: displayData.value.map((p) => p.delta_idr),
-        borderColor: 'rgb(245, 158, 11)',
-        backgroundColor: 'rgba(245, 158, 11, 0.15)',
-        fill: true,
-      },
-      ...(isRtsp
-        ? [
-            {
-              label: t('sessions.frame_invalidations'),
-              data: displayData.value.map((p) => p.delta_invalidations),
-              borderColor: 'rgb(168, 85, 247)',
-              backgroundColor: 'rgba(168, 85, 247, 0.15)',
-              fill: true,
-            },
-          ]
-        : []),
-    ],
-  };
-});
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const fpsChartData = computed<any>(() => ({
-  labels: labels.value,
-  datasets: [
-    {
-      label: t('sessions.chart_framerate'),
-      data: displayData.value.map((p) => p.actual_fps),
-      borderColor: 'rgb(236, 72, 153)',
-      backgroundColor: 'rgba(236, 72, 153, 0.1)',
-      fill: true,
-    },
-  ],
-}));
+const latencyChartData = computed(() => buildLatencyChartData(labels.value, displayData.value, t));
+const throughputChartData = computed(() =>
+  buildThroughputChartData(labels.value, displayData.value, t),
+);
+const qualityChartData = computed(() =>
+  buildQualityChartData(labels.value, displayData.value, props.protocol ?? 'rtsp', t),
+);
+const fpsChartData = computed(() => buildFpsChartData(labels.value, displayData.value, t));
 
 // Host stats charts (history mode only)
 
@@ -301,94 +240,21 @@ const hostPercentChartOptions = computed(() =>
   buildHostPercentChartOptions(baseChartOptions.value),
 );
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const hostComputeChartData = computed<any>(() => {
-  const datasets = [];
-  if (hasHostSeries('host_cpu_percent')) {
-    datasets.push({
-      label: t('sessions.chart_host_cpu'),
-      data: displayData.value.map((p) => p.host_cpu_percent),
-      borderColor: 'rgb(59, 130, 246)',
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
-      fill: true,
-    });
-  }
-  if (hasHostSeries('host_gpu_percent')) {
-    datasets.push({
-      label: t('sessions.chart_host_gpu'),
-      data: displayData.value.map((p) => p.host_gpu_percent),
-      borderColor: 'rgb(16, 185, 129)',
-      backgroundColor: 'rgba(16, 185, 129, 0.12)',
-      fill: true,
-    });
-  }
-  if (hasHostSeries('host_gpu_encoder_percent')) {
-    datasets.push({
-      label: t('sessions.chart_host_gpu_encoder'),
-      data: displayData.value.map((p) => p.host_gpu_encoder_percent),
-      borderColor: 'rgb(168, 85, 247)',
-      backgroundColor: 'rgba(168, 85, 247, 0.12)',
-      fill: true,
-    });
-  }
-  return { labels: labels.value, datasets };
-});
+const hostComputeChartData = computed(() =>
+  buildHostComputeChartData(labels.value, displayData.value, hasHostSeries, t),
+);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const hostMemoryChartData = computed<any>(() => {
-  const datasets = [];
-  if (hasHostSeries('host_ram_percent')) {
-    datasets.push({
-      label: t('sessions.chart_host_ram'),
-      data: displayData.value.map((p) => p.host_ram_percent),
-      borderColor: 'rgb(245, 158, 11)',
-      backgroundColor: 'rgba(245, 158, 11, 0.12)',
-      fill: true,
-    });
-  }
-  if (hasHostSeries('host_vram_percent')) {
-    datasets.push({
-      label: t('sessions.chart_host_vram'),
-      data: displayData.value.map((p) => p.host_vram_percent),
-      borderColor: 'rgb(236, 72, 153)',
-      backgroundColor: 'rgba(236, 72, 153, 0.12)',
-      fill: true,
-    });
-  }
-  return { labels: labels.value, datasets };
-});
+const hostMemoryChartData = computed(() =>
+  buildHostMemoryChartData(labels.value, displayData.value, hasHostSeries, t),
+);
 
 const hostNetworkChartOptions = computed(() =>
   buildHostNetworkChartOptions(baseChartOptions.value),
 );
 
-function bpsToMbps(v: number): number {
-  return Math.round((v / 1_000_000) * 100) / 100;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- vue-chartjs accepts the resulting Chart.js payload shape
-const hostNetworkChartData = computed<any>(() => {
-  const datasets = [];
-  if (hasHostSeries('host_net_rx_bps')) {
-    datasets.push({
-      label: t('sessions.chart_host_net_rx'),
-      data: displayData.value.map((p) => bpsToMbps(p.host_net_rx_bps)),
-      borderColor: 'rgb(34, 197, 94)',
-      backgroundColor: 'rgba(34, 197, 94, 0.12)',
-      fill: true,
-    });
-  }
-  if (hasHostSeries('host_net_tx_bps')) {
-    datasets.push({
-      label: t('sessions.chart_host_net_tx'),
-      data: displayData.value.map((p) => bpsToMbps(p.host_net_tx_bps)),
-      borderColor: 'rgb(59, 130, 246)',
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
-      fill: true,
-    });
-  }
-  return { labels: labels.value, datasets };
-});
+const hostNetworkChartData = computed(() =>
+  buildHostNetworkChartData(labels.value, displayData.value, hasHostSeries, t),
+);
 
 // Chart zoom modal
 type ZoomKey =

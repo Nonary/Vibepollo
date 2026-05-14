@@ -34,6 +34,7 @@ namespace session_history::writer {
       insert_event,
       prune,
       set_end_time_for_tests,
+      force_failure_for_tests,
       stop
     };
 
@@ -54,6 +55,7 @@ namespace session_history::writer {
 
     std::mutex g_queue_mutex;
     std::condition_variable g_queue_cv;
+    std::deque<write_cmd_t> g_control_queue;
     std::deque<write_cmd_t> g_priority_queue;
     std::deque<write_cmd_t> g_regular_queue;
     std::deque<write_cmd_t> g_sample_queue;
@@ -73,6 +75,7 @@ namespace session_history::writer {
     constexpr int MAX_EVENTS_PER_SESSION = 2000;
     constexpr int SESSION_HISTORY_SCHEMA_VERSION = 7;
     constexpr auto DELETE_WAIT_TIMEOUT = std::chrono::seconds(5);
+    constexpr std::size_t DEFAULT_MAX_PENDING_CONTROL_COMMANDS = 512;
     constexpr std::size_t DEFAULT_MAX_PENDING_PRIORITY_COMMANDS = 1024;
     constexpr std::size_t DEFAULT_MAX_PENDING_REGULAR_COMMANDS = 2048;
     constexpr std::size_t DEFAULT_MAX_PENDING_SAMPLE_COMMANDS = 4096;
@@ -80,6 +83,7 @@ namespace session_history::writer {
 
     struct queue_limits_t {
       std::size_t priority_limit = DEFAULT_MAX_PENDING_PRIORITY_COMMANDS;
+      std::size_t control_limit = DEFAULT_MAX_PENDING_CONTROL_COMMANDS;
       std::size_t regular_limit = DEFAULT_MAX_PENDING_REGULAR_COMMANDS;
       std::size_t sample_limit = DEFAULT_MAX_PENDING_SAMPLE_COMMANDS;
       std::size_t sample_batch_size = DEFAULT_MAX_SAMPLES_PER_BATCH;
@@ -98,6 +102,7 @@ namespace session_history::writer {
     std::mutex g_limits_mutex;
     queue_limits_t g_queue_limits;
     std::atomic<std::uint64_t> g_dropped_sample_count {0};
+    std::atomic<std::uint64_t> g_failed_write_count {0};
     std::atomic<bool> g_writer_degraded {false};
     std::atomic<std::uint64_t> g_next_sequence {0};
 
@@ -144,7 +149,29 @@ namespace session_history::writer {
     }
 
     bool has_pending_commands() {
-      return !g_priority_queue.empty() || !g_regular_queue.empty() || !g_sample_queue.empty();
+      return !g_control_queue.empty() || !g_priority_queue.empty() || !g_regular_queue.empty() || !g_sample_queue.empty();
+    }
+
+    bool is_control_cmd(cmd_type type) {
+      switch (type) {
+        case cmd_type::begin_session:
+        case cmd_type::end_session:
+        case cmd_type::delete_session:
+        case cmd_type::prune:
+        case cmd_type::set_end_time_for_tests:
+        case cmd_type::force_failure_for_tests:
+        case cmd_type::stop:
+          return true;
+        case cmd_type::insert_sample:
+        case cmd_type::insert_event:
+          return false;
+      }
+      return false;
+    }
+
+    void record_writer_failure() {
+      g_failed_write_count.fetch_add(1, std::memory_order_relaxed);
+      g_writer_degraded.store(true, std::memory_order_relaxed);
     }
 
     void extract_older_session_samples(const write_cmd_t &barrier, std::vector<write_cmd_t> &batch) {
@@ -163,6 +190,22 @@ namespace session_history::writer {
       }
     }
 
+    void extract_older_session_events(const write_cmd_t &barrier, std::vector<write_cmd_t> &batch) {
+      if ((barrier.type != cmd_type::end_session && barrier.type != cmd_type::delete_session) ||
+          barrier.uuid.empty()) {
+        return;
+      }
+
+      for (auto it = g_priority_queue.begin(); it != g_priority_queue.end();) {
+        if (it->type == cmd_type::insert_event && it->event.session_uuid == barrier.uuid && it->sequence < barrier.sequence) {
+          batch.push_back(std::move(*it));
+          it = g_priority_queue.erase(it);
+          continue;
+        }
+        ++it;
+      }
+    }
+
     bool enqueue(write_cmd_t cmd) {
       {
         std::lock_guard lk {g_queue_mutex};
@@ -171,7 +214,13 @@ namespace session_history::writer {
         }
         cmd.sequence = g_next_sequence.fetch_add(1, std::memory_order_relaxed);
         const auto limits = current_queue_limits();
-        if (cmd.type == cmd_type::insert_sample) {
+        if (is_control_cmd(cmd.type)) {
+          if (g_control_queue.size() >= limits.control_limit) {
+            BOOST_LOG(error) << "session_history: control writer queue is full; rejecting command";
+            return false;
+          }
+          g_control_queue.push_back(std::move(cmd));
+        } else if (cmd.type == cmd_type::insert_sample) {
           if (g_sample_queue.size() >= limits.sample_limit) {
             g_dropped_sample_count.fetch_add(1, std::memory_order_relaxed);
             g_writer_degraded.store(true, std::memory_order_relaxed);
@@ -207,8 +256,13 @@ namespace session_history::writer {
           return batch;
         }
 
+        while (!g_control_queue.empty()) {
+          extract_older_session_samples(g_control_queue.front(), batch);
+          extract_older_session_events(g_control_queue.front(), batch);
+          batch.push_back(std::move(g_control_queue.front()));
+          g_control_queue.pop_front();
+        }
         while (!g_priority_queue.empty()) {
-          extract_older_session_samples(g_priority_queue.front(), batch);
           batch.push_back(std::move(g_priority_queue.front()));
           g_priority_queue.pop_front();
         }
@@ -282,6 +336,15 @@ namespace session_history::writer {
           return false;
 #endif
         }
+        case cmd_type::force_failure_for_tests:
+#ifdef SUNSHINE_TESTS
+          if (cmd.bool_completion) {
+            bool_completions.push_back(bool_completion_t {cmd.bool_completion, false});
+          }
+          return false;
+#else
+          return false;
+#endif
         case cmd_type::stop:
           return true;
       }
@@ -310,6 +373,7 @@ namespace session_history::writer {
 
       std::lock_guard db_lock {g_db_mutex};
       if (!g_write_db) {
+        record_writer_failure();
         for (auto &cmd : batch) {
           if (cmd.delete_completion) {
             cmd.delete_completion->set_value(delete_result_e::failed);
@@ -323,6 +387,7 @@ namespace session_history::writer {
 
       if (!storage::exec(g_write_db.get(), "BEGIN IMMEDIATE TRANSACTION")) {
         BOOST_LOG(error) << "session_history: failed to begin transaction";
+        record_writer_failure();
         for (auto &cmd : batch) {
           if (cmd.delete_completion) {
             cmd.delete_completion->set_value(delete_result_e::failed);
@@ -352,6 +417,7 @@ namespace session_history::writer {
         }
       }
       if (!committed) {
+        record_writer_failure();
         storage::exec(g_write_db.get(), "ROLLBACK");
       }
 
@@ -388,6 +454,12 @@ namespace session_history::writer {
           std::lock_guard lk {g_queue_mutex};
           if (!has_pending_commands()) {
             break;
+          }
+          while (!g_control_queue.empty()) {
+            extract_older_session_samples(g_control_queue.front(), remaining);
+            extract_older_session_events(g_control_queue.front(), remaining);
+            remaining.push_back(std::move(g_control_queue.front()));
+            g_control_queue.pop_front();
           }
           while (!g_priority_queue.empty()) {
             remaining.push_back(std::move(g_priority_queue.front()));
@@ -454,6 +526,9 @@ namespace session_history::writer {
     storage::tighten_history_db_permissions(g_history_db_path);
 
     g_next_sequence.store(0, std::memory_order_relaxed);
+    g_failed_write_count.store(0, std::memory_order_relaxed);
+    g_dropped_sample_count.store(0, std::memory_order_relaxed);
+    g_writer_degraded.store(false, std::memory_order_relaxed);
     g_running.store(true, std::memory_order_release);
     g_writer_thread = std::thread {writer_loop};
 
@@ -578,12 +653,14 @@ namespace session_history::writer {
     }
     {
       std::lock_guard lk {g_queue_mutex};
+      status.pending_control_commands = g_control_queue.size();
       status.pending_priority_commands = g_priority_queue.size();
       status.pending_regular_commands = g_regular_queue.size();
       status.pending_samples = g_sample_queue.size();
     }
     status.degraded = g_writer_degraded.load(std::memory_order_relaxed);
     status.dropped_samples = g_dropped_sample_count.load(std::memory_order_relaxed);
+    status.failed_writes = g_failed_write_count.load(std::memory_order_relaxed);
     return status;
   }
 
@@ -632,6 +709,27 @@ namespace session_history::writer {
     return result.get();
   }
 
+  bool force_write_failure_for_tests() {
+    if (!is_available()) {
+      return false;
+    }
+
+    auto completion = std::make_shared<std::promise<bool>>();
+    auto result = completion->get_future();
+
+    write_cmd_t cmd;
+    cmd.type = cmd_type::force_failure_for_tests;
+    cmd.bool_completion = completion;
+    if (!enqueue(std::move(cmd))) {
+      return false;
+    }
+
+    if (result.wait_for(DELETE_WAIT_TIMEOUT) != std::future_status::ready) {
+      return false;
+    }
+    return result.get();
+  }
+
   void configure_queue_limits_for_tests(
     std::size_t priority_limit,
     std::size_t regular_limit,
@@ -639,10 +737,12 @@ namespace session_history::writer {
     std::size_t sample_batch_size) {
     std::lock_guard lk {g_limits_mutex};
     g_queue_limits.priority_limit = std::max<std::size_t>(1, priority_limit);
+    g_queue_limits.control_limit = std::max<std::size_t>(1, priority_limit);
     g_queue_limits.regular_limit = std::max<std::size_t>(1, regular_limit);
     g_queue_limits.sample_limit = std::max<std::size_t>(1, sample_limit);
     g_queue_limits.sample_batch_size = std::max<std::size_t>(1, sample_batch_size);
     g_dropped_sample_count.store(0, std::memory_order_relaxed);
+    g_failed_write_count.store(0, std::memory_order_relaxed);
     g_writer_degraded.store(false, std::memory_order_relaxed);
   }
 
@@ -650,6 +750,7 @@ namespace session_history::writer {
     std::lock_guard lk {g_limits_mutex};
     g_queue_limits = queue_limits_t {};
     g_dropped_sample_count.store(0, std::memory_order_relaxed);
+    g_failed_write_count.store(0, std::memory_order_relaxed);
     g_writer_degraded.store(false, std::memory_order_relaxed);
   }
 #endif

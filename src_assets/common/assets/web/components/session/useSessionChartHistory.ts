@@ -43,7 +43,7 @@ interface SessionChartHistoryProps {
   events?: SessionEvent[];
 }
 
-type HostSeriesField = keyof Pick<
+export type HostSeriesField = keyof Pick<
   SessionSample,
   | 'host_cpu_percent'
   | 'host_gpu_percent'

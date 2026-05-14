@@ -125,6 +125,8 @@ namespace session_history {
     bool available = false;
     bool degraded = false;
     std::uint64_t dropped_samples = 0;
+    std::uint64_t failed_writes = 0;
+    std::size_t pending_control_commands = 0;
     std::size_t pending_priority_commands = 0;
     std::size_t pending_regular_commands = 0;
     std::size_t pending_samples = 0;
@@ -217,6 +219,7 @@ namespace session_history {
   bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix);
   void configure_retention_for_tests(bool enabled, int ttl_days, std::uint64_t max_db_size_bytes);
   bool prune_now_for_tests();
+  bool force_write_failure_for_tests();
   void configure_queue_limits_for_tests(
     std::size_t priority_limit,
     std::size_t regular_limit,

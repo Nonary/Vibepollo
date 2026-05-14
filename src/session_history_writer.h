@@ -40,6 +40,7 @@ namespace session_history::writer {
 #ifdef SUNSHINE_TESTS
   bool set_session_end_time_for_tests(const std::string &uuid, double end_time_unix);
   bool prune_now_for_tests();
+  bool force_write_failure_for_tests();
   void configure_queue_limits_for_tests(
     std::size_t priority_limit,
     std::size_t regular_limit,

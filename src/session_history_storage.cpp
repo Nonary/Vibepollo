@@ -582,8 +582,12 @@ namespace session_history::storage {
     auto add_column = [&](const char *table, const char *column, const char *type_default) {
       if (!column_exists(table, column)) {
         std::string sql = std::string("ALTER TABLE ") + table + " ADD COLUMN " + column + " " + type_default;
-        exec(db, sql.c_str());
+        if (!exec(db, sql.c_str())) {
+          BOOST_LOG(error) << "session_history: failed to add column " << table << "." << column;
+          return false;
+        }
       }
+      return true;
     };
 
     auto rename_column = [&](const char *table, const char *old_name, const char *new_name) {
@@ -602,27 +606,35 @@ namespace session_history::storage {
     (void) schema_version;
 
     if (current_schema_version < 2) {
-      add_column("sessions", "target_requested_bitrate_kbps", "INTEGER");
+      if (!add_column("sessions", "target_requested_bitrate_kbps", "INTEGER")) {
+        return false;
+      }
     }
     if (current_schema_version < 3) {
-      add_column("sessions", "host_cpu_model", "TEXT");
-      add_column("sessions", "host_gpu_model", "TEXT");
-      add_column("samples", "host_cpu_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_encoder_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_ram_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_vram_percent", "REAL DEFAULT -1");
-      add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1");
-      add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1");
-      add_column("samples", "host_net_rx_bps", "REAL DEFAULT -1");
-      add_column("samples", "host_net_tx_bps", "REAL DEFAULT -1");
+      if (!add_column("sessions", "host_cpu_model", "TEXT") ||
+          !add_column("sessions", "host_gpu_model", "TEXT") ||
+          !add_column("samples", "host_cpu_percent", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_gpu_percent", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_gpu_encoder_percent", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_ram_percent", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_vram_percent", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_cpu_temp_c", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_gpu_temp_c", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_net_rx_bps", "REAL DEFAULT -1") ||
+          !add_column("samples", "host_net_tx_bps", "REAL DEFAULT -1")) {
+        return false;
+      }
     }
     if (current_schema_version < 4) {
-      add_column("sessions", "yuv444", "INTEGER DEFAULT 0");
-      add_column("sessions", "server_version", "TEXT");
+      if (!add_column("sessions", "yuv444", "INTEGER DEFAULT 0") ||
+          !add_column("sessions", "server_version", "TEXT")) {
+        return false;
+      }
     }
     if (current_schema_version < 5) {
-      add_column("sessions", "stream_gpu_model", "TEXT");
+      if (!add_column("sessions", "stream_gpu_model", "TEXT")) {
+        return false;
+      }
     }
     if (current_schema_version < 6) {
       if (!rename_column("sessions", "target_bitrate_kbps", "encoder_bitrate_kbps")) {

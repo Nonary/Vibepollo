@@ -710,6 +710,8 @@ namespace confighttp {
     output["available"] = status.available;
     output["degraded"] = status.degraded;
     output["dropped_samples"] = status.dropped_samples;
+    output["failed_writes"] = status.failed_writes;
+    output["pending_control_commands"] = status.pending_control_commands;
     output["pending_priority_commands"] = status.pending_priority_commands;
     output["pending_regular_commands"] = status.pending_regular_commands;
     output["pending_samples"] = status.pending_samples;

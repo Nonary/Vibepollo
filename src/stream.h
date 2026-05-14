@@ -6,6 +6,7 @@
 
 // standard includes
 #include <atomic>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -139,6 +140,15 @@ namespace stream {
     std::int64_t last_frame_index;
     double uptime_seconds;
   };
+
+  struct control_packet_view_t {
+    std::uint16_t type = 0;
+    std::string_view payload;
+  };
+
+#ifdef SUNSHINE_TESTS
+  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes);
+#endif
 
   std::vector<session_info_t> get_all_session_info();
 
