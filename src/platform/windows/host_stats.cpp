@@ -35,6 +35,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -53,6 +54,7 @@
 
 // local includes
 #include "src/logging.h"
+#include "src/utility.h"
 
 #ifdef _MSC_VER
   #pragma comment(lib, "iphlpapi.lib")
@@ -386,21 +388,81 @@ namespace {
         return mod;
       }
 
-      char base[MAX_PATH] {};
-      DWORD n = GetEnvironmentVariableA("ProgramW6432", base, static_cast<DWORD>(sizeof(base)));
-      if (!n || n >= sizeof(base)) {
-        n = GetEnvironmentVariableA("ProgramFiles", base, static_cast<DWORD>(sizeof(base)));
-      }
-      if (!n || n >= sizeof(base)) {
-        return nullptr;
+      const auto registry_path = read_registry_nvml_path();
+      if (!registry_path.empty() && is_trusted_nvml_path(registry_path)) {
+        return LoadLibraryExA(
+          registry_path.c_str(),
+          nullptr,
+          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
       }
 
-      std::string path(base);
-      path += "\\NVIDIA Corporation\\NVSMI\\nvml.dll";
-      return LoadLibraryExA(
-        path.c_str(),
+      return nullptr;
+    }
+
+    static std::string read_registry_nvml_path() {
+      HKEY key = nullptr;
+      const LONG open_status = RegOpenKeyExA(
+        HKEY_LOCAL_MACHINE,
+        "SOFTWARE\\NVIDIA Corporation\\Global\\NVSMI",
+        0,
+        KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+        &key);
+      if (open_status != ERROR_SUCCESS) {
+        return {};
+      }
+      auto close_key = util::fail_guard([key]() {
+        RegCloseKey(key);
+      });
+
+      char value[MAX_PATH] {};
+      DWORD type = 0;
+      DWORD size = sizeof(value);
+      const LONG query_status = RegQueryValueExA(
+        key,
+        "NVSMIPATH",
         nullptr,
-        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        &type,
+        reinterpret_cast<LPBYTE>(value),
+        &size);
+      if (query_status != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+        return {};
+      }
+
+      std::string path(value);
+      while (!path.empty() && path.back() == '\0') {
+        path.pop_back();
+      }
+      if (path.empty()) {
+        return {};
+      }
+
+      std::filesystem::path candidate {path};
+      if (_stricmp(candidate.filename().string().c_str(), "nvml.dll") != 0) {
+        candidate /= "nvml.dll";
+      }
+      return candidate.string();
+    }
+
+    static bool is_trusted_nvml_path(const std::string &path) {
+      const std::filesystem::path candidate {path};
+      if (!candidate.is_absolute()) {
+        BOOST_LOG(warning) << "host_stats(win): ignoring non-absolute NVML registry path";
+        return false;
+      }
+      if (_stricmp(candidate.filename().string().c_str(), "nvml.dll") != 0) {
+        BOOST_LOG(warning) << "host_stats(win): ignoring NVML registry path with unexpected filename";
+        return false;
+      }
+
+      const DWORD attributes = GetFileAttributesA(path.c_str());
+      if (attributes == INVALID_FILE_ATTRIBUTES ||
+          (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+          (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        BOOST_LOG(warning) << "host_stats(win): ignoring NVML registry path with unsafe file attributes";
+        return false;
+      }
+
+      return true;
     }
 
     nvml_t() {

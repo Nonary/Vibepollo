@@ -522,6 +522,8 @@ namespace session_history::storage {
       }
     }
 
+    tighten_history_db_permissions(path);
+
     sqlite3 *raw = nullptr;
     int rc = sqlite3_open(db_path.c_str(), &raw);
     if (rc != SQLITE_OK) {

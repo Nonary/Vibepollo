@@ -727,6 +727,60 @@ TEST(SessionHistoryStorage, PruneCascadesChildRows) {
   EXPECT_GT(count_rows_for_uuid(db.get(), "events", new_uuid), 0u);
 }
 
+TEST(SessionHistoryStorage, PerSessionSampleAndEventCapsTrimOldRows) {
+  auto path = make_temp_db_path("storage-row-caps");
+
+  session_history::storage::db_ptr db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(db.get(), 7));
+
+  const std::string uuid = "45454545-4545-4545-4545-454545454545";
+  ASSERT_TRUE(session_history::storage::process_begin(db.get(), make_metadata(uuid)));
+
+  for (int i = 0; i < 5; ++i) {
+    auto sample = make_sample(uuid, static_cast<std::uint64_t>(i + 1));
+    sample.timestamp_unix += i;
+    ASSERT_TRUE(session_history::storage::process_sample(db.get(), sample, 2));
+
+    session_history::session_event_t event {uuid, session_history::storage::now_unix() + i, "cap-test", std::to_string(i)};
+    ASSERT_TRUE(session_history::storage::process_event(db.get(), event, 3));
+  }
+
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "samples", uuid), 2u);
+  EXPECT_EQ(count_rows_for_uuid(db.get(), "events", uuid), 3u);
+}
+
+TEST(SessionHistoryStorage, DetailDefaultSampleLimitSetsTruncationAndIncludeAllRestoresRows) {
+  auto path = make_temp_db_path("storage-detail-sample-limit");
+
+  session_history::storage::db_ptr db;
+  ASSERT_TRUE(session_history::storage::open_write_db(path.string(), db));
+  ASSERT_TRUE(session_history::storage::apply_schema_and_migrations(db.get(), 7));
+
+  const std::string uuid = "56565656-5656-5656-5656-565656565656";
+  ASSERT_TRUE(session_history::storage::process_begin(db.get(), make_metadata(uuid)));
+  for (int i = 0; i < 5; ++i) {
+    auto sample = make_sample(uuid, static_cast<std::uint64_t>(i + 1));
+    sample.timestamp_unix += i;
+    ASSERT_TRUE(session_history::storage::process_sample(db.get(), sample, 10));
+  }
+  ASSERT_TRUE(session_history::storage::process_end(db.get(), uuid));
+
+  const auto limited_detail = session_history::storage::read_session_detail(db.get(), uuid, false, 2, 10);
+  ASSERT_TRUE(limited_detail.has_value());
+  EXPECT_TRUE(limited_detail->samples_truncated);
+  EXPECT_EQ(limited_detail->total_samples, 5u);
+  ASSERT_EQ(limited_detail->samples.size(), 2u);
+  EXPECT_EQ(limited_detail->samples.front().frames_sent, 4u);
+  EXPECT_EQ(limited_detail->samples.back().frames_sent, 5u);
+
+  const auto full_detail = session_history::storage::read_session_detail(db.get(), uuid, true, 2, 10);
+  ASSERT_TRUE(full_detail.has_value());
+  EXPECT_FALSE(full_detail->samples_truncated);
+  EXPECT_EQ(full_detail->total_samples, 5u);
+  EXPECT_EQ(full_detail->samples.size(), 5u);
+}
+
 TEST(SessionHistory, DbQuotaPrunesOldestEndedSessionsOnStartup) {
   SunshineConfigGuard config_guard;
   config::sunshine.session_history_enabled = true;
