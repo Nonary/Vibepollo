@@ -428,7 +428,7 @@ namespace confighttp {
       boost::property_tree::json_parser::read_json(path, tree);
     };
     dependencies.write_json = [](const std::string &path, const pt::ptree &tree) {
-      boost::property_tree::json_parser::write_json(path, tree);
+      statefile::write_json_atomic(path, tree);
     };
     dependencies.now = []() {
       return std::chrono::system_clock::now();
@@ -468,7 +468,7 @@ namespace confighttp {
       boost::property_tree::json_parser::read_json(path, tree);
     };
     deps.write_json = [](const std::string &path, const pt::ptree &tree) {
-      boost::property_tree::json_parser::write_json(path, tree);
+      statefile::write_json_atomic(path, tree);
     };
     return deps;
   }

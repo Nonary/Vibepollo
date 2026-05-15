@@ -658,7 +658,7 @@ namespace confighttp {
         BOOST_LOG(error) << "Crash dismissal: failed to prepare directories: " << e.what();
       }
       try {
-        pt::write_json(path.string(), tree);
+        statefile::write_json_atomic(path.string(), tree);
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Crash dismissal: failed to write state file: " << e.what();
         return false;

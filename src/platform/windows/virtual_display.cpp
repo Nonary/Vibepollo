@@ -2044,14 +2044,7 @@ namespace VDISPLAY {
       tree.put("root.virtual_display_guid", uuid.string());
 
       try {
-        if (!path.empty()) {
-          auto dir = path;
-          dir.remove_filename();
-          if (!dir.empty()) {
-            fs::create_directories(dir);
-          }
-        }
-        pt::write_json(path.string(), tree);
+        statefile::write_json_atomic(path.string(), tree);
       } catch (...) {
       }
     }

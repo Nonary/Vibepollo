@@ -1,6 +1,7 @@
 #include "state_storage.h"
 
 #include "config.h"
+#include "file_handler.h"
 #include "logging.h"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -9,6 +10,8 @@
 #include <cwctype>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 
 using namespace std::literals;
@@ -43,24 +46,21 @@ namespace statefile {
     }
 
     void write_tree(const fs::path &path, const pt::ptree &tree) {
-      try {
-        if (!path.empty()) {
-          auto dir = path;
-          dir.remove_filename();
-          if (!dir.empty() && !fs::exists(dir)) {
-            fs::create_directories(dir);
-          }
-        }
-        pt::write_json(path.string(), tree);
-      } catch (const std::exception &e) {
-        BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
-      }
+      write_json_atomic(path.string(), tree);
     }
   }  // namespace
 
   std::mutex &state_mutex() {
     static std::mutex mutex;
     return mutex;
+  }
+
+  void write_json_atomic(const std::string &path, const pt::ptree &tree) {
+    std::ostringstream out;
+    pt::write_json(out, tree);
+    if (file_handler::write_file(path.c_str(), out.str()) != 0) {
+      throw std::runtime_error("atomic JSON write failed");
+    }
   }
 
   const std::string &sunshine_state_path() {
@@ -130,10 +130,18 @@ namespace statefile {
       }
 
       if (new_modified) {
-        write_tree(new_path, new_tree);
+        try {
+          write_tree(new_path, new_tree);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "statefile: failed to write "sv << new_path.string() << ": "sv << e.what();
+        }
       }
       if (old_modified) {
-        write_tree(old_path, old_tree);
+        try {
+          write_tree(old_path, old_tree);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "statefile: failed to write "sv << old_path.string() << ": "sv << e.what();
+        }
       }
     });
   }
@@ -213,7 +221,12 @@ namespace statefile {
     auto &root_node = ensure_root(root);
     root_node.put_child("snapshot_exclude_devices", exclusions_pt);
 
-    write_tree(path, root);
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
+      return;
+    }
     BOOST_LOG(info) << "statefile: persisted " << devices.size() << " snapshot exclusion device(s) to vibeshine state";
   }
 

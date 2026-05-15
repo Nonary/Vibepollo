@@ -34,6 +34,7 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "state_storage.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -242,6 +243,8 @@ namespace http {
   int save_user_creds(const std::string &file, const std::string &username, const std::string &password, bool run_our_mouth) {
     pt::ptree outputTree;
 
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+
     if (fs::exists(file)) {
       try {
         pt::read_json(file, outputTree);
@@ -256,7 +259,7 @@ namespace http {
     outputTree.put("salt", salt);
     outputTree.put("password", util::hex(crypto::hash(password + salt)).to_string());
     try {
-      pt::write_json(file, outputTree);
+      statefile::write_json_atomic(file, outputTree);
     } catch (std::exception &e) {
       BOOST_LOG(error) << "error writing to the credentials file, perhaps try this again as an administrator? Details: "sv << e.what();
       return -1;
@@ -272,6 +275,7 @@ namespace http {
     }
 
     pt::ptree inputTree;
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
     try {
       pt::read_json(file, inputTree);
       return inputTree.find("username") != inputTree.not_found() &&
@@ -286,6 +290,7 @@ namespace http {
 
   int reload_user_creds(const std::string &file) {
     pt::ptree inputTree;
+    std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
     try {
       pt::read_json(file, inputTree);
       config::sunshine.username = inputTree.get<std::string>("username");
