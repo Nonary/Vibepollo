@@ -119,14 +119,8 @@ namespace update {
       state.check_in_progress = false;
     });
     try {
-      const bool allow_prerelease_updates = [&]() {
-#ifdef PROJECT_VERSION_PRERELEASE
-        const std::string installed_prerelease = PROJECT_VERSION_PRERELEASE;
-        return config::sunshine.notify_pre_releases || !installed_prerelease.empty();
-#else
-        return config::sunshine.notify_pre_releases;
-#endif
-      }();
+      const bool allow_prerelease_updates =
+        config::sunshine.notify_pre_releases || version_compare::is_prerelease_channel(PROJECT_VERSION);
       // Fetch releases list once and compute latest stable/prerelease
       BOOST_LOG(info) << "Update check: querying GitHub releases from repo "sv
                       << SUNSHINE_REPO_OWNER << '/' << SUNSHINE_REPO_NAME;

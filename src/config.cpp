@@ -41,6 +41,7 @@
 #include "rtsp.h"
 #include "state_storage.h"
 #include "utility.h"
+#include "version_compare.h"
 #include "video.h"
 
 #ifdef _WIN32
@@ -913,13 +914,10 @@ namespace config {
   };
 
   namespace {
-    constexpr int default_min_log_level() {
-#ifdef PROJECT_VERSION_PRERELEASE
-      constexpr std::string_view prerelease = PROJECT_VERSION_PRERELEASE;
-      if (!prerelease.empty()) {
+    int default_min_log_level() {
+      if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
         return 1;
       }
-#endif
       return 2;
     }
   }  // namespace

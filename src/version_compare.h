@@ -92,6 +92,11 @@ namespace version_compare {
     return ascii_lower(std::get<std::string>(version.prerelease.front())) == "stable";
   }
 
+  inline bool is_prerelease_channel(std::string_view version) {
+    const auto parsed = parse_semver(version);
+    return !parsed.prerelease.empty() && !is_stable_channel(parsed);
+  }
+
   inline int compare_identifier_lists(
     const std::vector<prerelease_identifier_t> &lhs,
     const std::vector<prerelease_identifier_t> &rhs,
@@ -151,7 +156,7 @@ namespace version_compare {
     const bool left_stable = is_stable_channel(left);
     const bool right_stable = is_stable_channel(right);
 
-    // Vibeshine uses `-stable.N` for post-release respins, so those need to sort
+    // Vibepollo uses `-stable.N` for post-release respins, so those need to sort
     // above the naked release while keeping normal prerelease semantics elsewhere.
     if (left_stable && right_stable) {
       return compare_identifier_lists(left.prerelease, right.prerelease, 1);

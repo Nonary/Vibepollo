@@ -22,6 +22,7 @@
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
+#include "version_compare.h"
 #include "uuid.h"
 #include "video.h"
 #include "webrtc_stream.h"
@@ -186,11 +187,9 @@ int main(int argc, char *argv[]) {
   // if anything is logged prior to this point, it will appear in stdout, but not in the log viewer in the UI
   // the version should be printed to the log before anything else
   BOOST_LOG(info) << PROJECT_NAME << " version: " << PROJECT_VERSION << " commit: " << PROJECT_VERSION_COMMIT;
-#ifdef PROJECT_VERSION_PRERELEASE
-  if (std::string_view(PROJECT_VERSION_PRERELEASE).size() > 0) {
+  if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
     BOOST_LOG(info) << "Prerelease build detected; default min_log_level is debug unless overridden.";
   }
-#endif
   BOOST_LOG(info) << "Effective min_log_level=" << config::sunshine.min_log_level;
 
   // Log publisher metadata
