@@ -42,6 +42,8 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   key_repeat_frequency: { placeholder: '24.9', step: 0.1 },
   session_token_ttl_seconds: { min: 60, step: 60, placeholder: '86400' },
   remember_me_refresh_token_ttl_seconds: { min: 3600, step: 3600, placeholder: '604800' },
+  session_history_ttl_days: { min: 0, step: 1, placeholder: '0' },
+  session_history_db_size_limit_mb: { min: 0, step: 1, placeholder: '0' },
   update_check_interval: { min: 0, step: 60, placeholder: '86400' },
   port: { min: 1029, max: 65514, placeholder: '47989' },
   ping_timeout: { min: 0, step: 100, placeholder: '10000' },
@@ -55,7 +57,7 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function inferDurationUnit(key: string): ConfigFieldDefinition['durationUnit'] | undefined {
+function inferDurationUnit(key: string): ConfigFieldDefinition['durationUnit'] {
   if (key === 'update_check_interval') return 'seconds';
   if (key.endsWith('_seconds') || key.endsWith('_secs')) return 'seconds';
   return undefined;
@@ -109,6 +111,7 @@ export function getConfigFieldDefinition(
         ? getConfigSelectOptions(key, {
             t: ctx.t,
             platform: ctx.platform,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- config metadata is intentionally schema-driven
             metadata: ctx.metadata,
             currentValue: ctx.currentValue,
           })
@@ -136,6 +139,7 @@ export function getConfigFieldDefinition(
     getConfigSelectOptions(key, {
       t: ctx.t,
       platform: ctx.platform,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- config metadata is intentionally schema-driven
       metadata: ctx.metadata,
       currentValue: ctx.currentValue,
     });

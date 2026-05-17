@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <codecvt>
 #include <csignal>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 
@@ -13,6 +14,7 @@
 #include "confighttp.h"
 #include "entry_handler.h"
 #include "globals.h"
+#include "host_stats.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "main.h"
@@ -25,6 +27,7 @@
 #include "version_compare.h"
 #include "uuid.h"
 #include "video.h"
+#include "session_history.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -428,6 +431,8 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+  auto host_stats_deinit_guard = host_stats::start();
+
   if (shutdown_event->peek()) {
     return lifetime::desired_exit_code;
   }
@@ -547,6 +552,16 @@ int main(int argc, char *argv[]) {
 
   startup_probe();
 
+  // Initialize session history database alongside the state file
+  {
+    std::filesystem::path state_path {config::nvhttp.file_state};
+    auto history_db = state_path.parent_path() / "session_history.db";
+    session_history::init(history_db.string());
+  }
+  auto session_history_shutdown_guard = util::fail_guard([]() {
+    session_history::shutdown();
+  });
+
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
 
@@ -625,6 +640,9 @@ int main(int argc, char *argv[]) {
     nvprefs_instance.unload();
   }
 #endif
+
+  session_history::shutdown();
+  session_history_shutdown_guard.disable();
 
   return lifetime::desired_exit_code;
 }

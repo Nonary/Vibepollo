@@ -233,6 +233,47 @@ namespace platf::dxgi {
     return g_dxgi_adapter_luid_override;
   }
 
+  std::string current_display_adapter_name() {
+    const auto selected_luid = []() -> std::optional<LUID> {
+      if (auto luid = get_dxgi_adapter_luid_override(); luid.has_value()) {
+        return luid;
+      }
+      return get_last_wgc_adapter_luid();
+    }();
+
+    if (!selected_luid.has_value()) {
+      return {};
+    }
+
+    IDXGIFactory1 *factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory)))) {
+      return {};
+    }
+
+    std::string adapter_name;
+    for (UINT i = 0;; ++i) {
+      IDXGIAdapter1 *adapter = nullptr;
+      if (factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (!adapter) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (SUCCEEDED(adapter->GetDesc1(&desc)) && luid_equal(desc.AdapterLuid, *selected_luid)) {
+        adapter_name = platf::to_utf8(desc.Description);
+        adapter->Release();
+        break;
+      }
+
+      adapter->Release();
+    }
+
+    factory->Release();
+    return adapter_name;
+  }
+
   capture_e duplication_t::next_frame(DXGI_OUTDUPL_FRAME_INFO &frame_info, std::chrono::milliseconds timeout, resource_t::pointer *res_p) {
     auto capture_status = release_frame();
     if (capture_status != capture_e::ok) {

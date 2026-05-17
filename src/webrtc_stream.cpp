@@ -30,6 +30,7 @@
 
 #ifdef _WIN32
   #include <winsock2.h>
+  #include "platform/windows/display.h"
 #endif
 
 // lib includes
@@ -55,6 +56,7 @@
 #include "logging.h"
 #include "process.h"
 #include "rtsp.h"
+#include "session_history.h"
 #include "stream.h"
 #include "utility.h"
 #include "uuid.h"
@@ -88,6 +90,17 @@
 
 namespace webrtc_stream {
   namespace {
+    std::string current_server_version() {
+      std::string version = PROJECT_VERSION;
+#ifdef PROJECT_VERSION_PRERELEASE
+      if (std::string_view(PROJECT_VERSION_PRERELEASE).size() > 0) {
+        version += ' ';
+        version += PROJECT_VERSION_PRERELEASE;
+      }
+#endif
+      return version;
+    }
+
 #ifdef _WIN32
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
@@ -4504,6 +4517,12 @@ namespace webrtc_stream {
     session.state.bitrate_kbps = session.video_config.bitrate;
     session.state.codec = video_format_to_codec(session.video_config.videoFormat);
     session.state.hdr = session.video_config.dynamicRange != 0;
+    session.state.yuv444 = session.video_config.chromaSamplingType != 0;
+#ifdef _WIN32
+    if (const auto stream_gpu_model = platf::dxgi::current_display_adapter_name(); !stream_gpu_model.empty()) {
+      session.state.stream_gpu_model = stream_gpu_model;
+    }
+#endif
     session.video_pacing = build_video_pacing_config(options);
     session.state.video_pacing_mode = video_pacing_mode_to_string(session.video_pacing.mode);
     session.state.video_pacing_slack_ms = static_cast<int>(
@@ -4522,6 +4541,29 @@ namespace webrtc_stream {
       first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
     }
     BOOST_LOG(debug) << "WebRTC: create_session exit id=" << snapshot.id;
+
+    // Record session in persistent history
+    {
+      session_history::session_metadata_t meta;
+      meta.uuid = snapshot.id;
+      meta.protocol = "webrtc";
+      meta.client_name = snapshot.client_name.value_or("");
+      meta.device_name = "";
+      meta.app_name = proc::proc.get_last_run_app_name();
+      meta.width = snapshot.width.value_or(0);
+      meta.height = snapshot.height.value_or(0);
+      meta.target_fps = snapshot.fps.value_or(0);
+      meta.encoder_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.requested_bitrate_kbps = snapshot.bitrate_kbps.value_or(0);
+      meta.codec = snapshot.codec.value_or("");
+      meta.hdr = snapshot.hdr.value_or(false);
+      meta.yuv444 = snapshot.yuv444.value_or(false);
+      meta.audio_channels = snapshot.audio_channels.value_or(0);
+      meta.server_version = current_server_version();
+      meta.stream_gpu_model = snapshot.stream_gpu_model.value_or("");
+      session_history::begin_session(meta);
+    }
+
     if (first_session && !rtsp_active) {
 #ifdef _WIN32
       WebRtcStreamStartParams start_params;
@@ -4651,6 +4693,10 @@ namespace webrtc_stream {
     }
 #endif
     BOOST_LOG(debug) << "WebRTC: close_session exit id=" << id;
+
+    // Record session end in persistent history
+    session_history::end_session(std::string {id});
+
     return true;
   }
 
@@ -4755,6 +4801,7 @@ namespace webrtc_stream {
       session.state.video_packets++;
       session.state.last_video_time = now;
       session.state.last_video_bytes = payload->size();
+      session.state.video_bytes_total += payload->size();
       session.state.last_video_idr = packet.is_idr();
       session.state.last_video_frame_index = packet.frame_index();
       if (dropped) {
@@ -4788,6 +4835,7 @@ namespace webrtc_stream {
       session.state.audio_packets++;
       session.state.last_audio_time = std::chrono::steady_clock::now();
       session.state.last_audio_bytes = payload->size();
+      session.state.audio_bytes_total += payload->size();
       if (dropped) {
         session.state.audio_dropped++;
       }
@@ -4896,6 +4944,7 @@ namespace webrtc_stream {
         session.state.audio_packets++;
         session.state.last_audio_time = now;
         session.state.last_audio_bytes = byte_count;
+        session.state.audio_bytes_total += byte_count;
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC

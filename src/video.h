@@ -52,6 +52,10 @@ namespace video {
 
     int encodingFramerate;  // Requested display framerate
     bool input_only;
+    // Original client-requested wire-bandwidth budget in Kbps, before Sunshine
+    // subtracts FEC/audio/control overhead from `bitrate` for the encoder.
+    // Same as `bitrate` for clients that don't send maximumBitrateKbps.
+    int client_requested_bitrate;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

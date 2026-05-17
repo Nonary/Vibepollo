@@ -198,6 +198,91 @@ namespace input {
     int32_t accumulated_hscroll_delta;
   };
 
+  struct validated_input_packet_t {
+    std::uint32_t magic = 0;
+    std::size_t total_size = 0;
+  };
+
+  struct packet_size_bounds_t {
+    std::size_t min_total_size = 0;
+    std::size_t max_total_size = 0;
+  };
+
+  std::optional<packet_size_bounds_t> packet_size_bounds(std::uint32_t magic) {
+    switch (magic) {
+      case MOUSE_MOVE_REL_MAGIC_GEN5:
+        return packet_size_bounds_t {sizeof(NV_REL_MOUSE_MOVE_PACKET), sizeof(NV_REL_MOUSE_MOVE_PACKET)};
+      case MOUSE_MOVE_ABS_MAGIC:
+        return packet_size_bounds_t {sizeof(NV_ABS_MOUSE_MOVE_PACKET), sizeof(NV_ABS_MOUSE_MOVE_PACKET)};
+      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
+      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
+        return packet_size_bounds_t {sizeof(NV_MOUSE_BUTTON_PACKET), sizeof(NV_MOUSE_BUTTON_PACKET)};
+      case SCROLL_MAGIC_GEN5:
+        return packet_size_bounds_t {sizeof(NV_SCROLL_PACKET), sizeof(NV_SCROLL_PACKET)};
+      case SS_HSCROLL_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_HSCROLL_PACKET), sizeof(SS_HSCROLL_PACKET)};
+      case KEY_DOWN_EVENT_MAGIC:
+      case KEY_UP_EVENT_MAGIC:
+        return packet_size_bounds_t {sizeof(NV_KEYBOARD_PACKET), sizeof(NV_KEYBOARD_PACKET)};
+      case UTF8_TEXT_EVENT_MAGIC:
+        return packet_size_bounds_t {sizeof(NV_INPUT_HEADER), sizeof(NV_UNICODE_PACKET)};
+      case MULTI_CONTROLLER_MAGIC_GEN5:
+        return packet_size_bounds_t {sizeof(NV_MULTI_CONTROLLER_PACKET), sizeof(NV_MULTI_CONTROLLER_PACKET)};
+      case SS_TOUCH_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_TOUCH_PACKET), sizeof(SS_TOUCH_PACKET)};
+      case SS_PEN_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_PEN_PACKET), sizeof(SS_PEN_PACKET)};
+      case SS_CONTROLLER_ARRIVAL_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_CONTROLLER_ARRIVAL_PACKET), sizeof(SS_CONTROLLER_ARRIVAL_PACKET)};
+      case SS_CONTROLLER_TOUCH_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_CONTROLLER_TOUCH_PACKET), sizeof(SS_CONTROLLER_TOUCH_PACKET)};
+      case SS_CONTROLLER_MOTION_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_CONTROLLER_MOTION_PACKET), sizeof(SS_CONTROLLER_MOTION_PACKET)};
+      case SS_CONTROLLER_BATTERY_MAGIC:
+        return packet_size_bounds_t {sizeof(SS_CONTROLLER_BATTERY_PACKET), sizeof(SS_CONTROLLER_BATTERY_PACKET)};
+      default:
+        return std::nullopt;
+    }
+  }
+
+  std::optional<validated_input_packet_t> validate_packet(const std::vector<std::uint8_t> &input_data) {
+    const auto payload = std::string_view {
+      reinterpret_cast<const char *>(input_data.data()),
+      input_data.size()
+    };
+    const auto declared_size = util::packet::read_u32_be(payload, 0);
+    const auto magic = util::packet::read_u32_le(payload, sizeof(std::uint32_t));
+    if (!declared_size || !magic) {
+      BOOST_LOG(warning) << "Ignoring short input packet (" << input_data.size() << " bytes)";
+      return std::nullopt;
+    }
+
+    const auto total_size = static_cast<std::size_t>(*declared_size) + sizeof(std::uint32_t);
+    if (total_size != input_data.size()) {
+      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
+                         << " (declared=" << total_size << ", actual=" << input_data.size() << ')';
+      return std::nullopt;
+    }
+
+    const auto bounds = packet_size_bounds(*magic);
+    if (!bounds) {
+      BOOST_LOG(warning) << "Ignoring unknown input packet magic 0x" << util::hex(*magic).to_string_view();
+      return std::nullopt;
+    }
+
+    if (total_size < bounds->min_total_size || total_size > bounds->max_total_size) {
+      auto expected_size = std::to_string(bounds->min_total_size);
+      if (bounds->min_total_size != bounds->max_total_size) {
+        expected_size += "-" + std::to_string(bounds->max_total_size);
+      }
+      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
+                         << " (size=" << total_size << ", expected " << expected_size << ')';
+      return std::nullopt;
+    }
+
+    return validated_input_packet_t {*magic, total_size};
+  }
+
   /**
    * @brief Apply shortcut based on VKEY
    * @param keyCode The VKEY code
@@ -1600,13 +1685,16 @@ namespace input {
       return;
     }
 
+    const auto packet = validate_packet(input_data);
+    if (!packet) {
+      return;
+    }
+
     // Have some input permission
     // Otherwise have all input permission
     if ((permission & crypto::PERM::_all_inputs) != crypto::PERM::_all_inputs) {
-      PNV_INPUT_HEADER payload = (PNV_INPUT_HEADER) input_data.data();
-
       // Check permission
-      switch (util::endian::little(payload->magic)) {
+      switch (packet->magic) {
         case MULTI_CONTROLLER_MAGIC_GEN5:
         case SS_CONTROLLER_ARRIVAL_MAGIC:
         case SS_CONTROLLER_TOUCH_MAGIC:
@@ -1662,6 +1750,12 @@ namespace input {
       task_pool.push(passthrough_next_message, input);
     }
   }
+
+#ifdef SUNSHINE_TESTS
+  bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data) {
+    return validate_packet(input_data).has_value();
+  }
+#endif
 
   void reset(std::shared_ptr<input_t> &input) {
     task_pool.cancel(key_press_repeat_id);

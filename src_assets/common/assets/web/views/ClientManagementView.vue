@@ -47,6 +47,15 @@
       </div>
     </section>
 
+    <!-- Active Streaming Sessions -->
+    <ActiveSessionsCard />
+
+    <!-- Host system stats -->
+    <HostStatsCard />
+
+    <!-- Session History -->
+    <SessionHistoryCard />
+
     <!-- Pair New Client -->
     <n-card class="clients-card" :segmented="{ content: true, footer: false }">
       <template #header>
@@ -870,6 +879,9 @@ import {
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
+import ActiveSessionsCard from '@/components/ActiveSessionsCard.vue';
+import HostStatsCard from '@/components/HostStatsCard.vue';
+import SessionHistoryCard from '@/components/SessionHistoryCard.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 

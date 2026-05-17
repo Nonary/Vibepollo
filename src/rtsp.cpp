@@ -706,6 +706,17 @@ namespace rtsp_stream {
       return uuids;
     }
 
+    std::vector<std::shared_ptr<stream::session_t>>
+      get_sessions_snapshot() {
+      std::vector<std::shared_ptr<stream::session_t>> sessions;
+      auto lg = _session_state.lock();
+      sessions.reserve(_session_state->sessions.size());
+      for (auto &session : _session_state->sessions) {
+        sessions.push_back(session);
+      }
+      return sessions;
+    }
+
   private:
     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
 
@@ -746,6 +757,10 @@ namespace rtsp_stream {
 
   std::list<std::string> get_all_session_uuids() {
     return server.get_all_session_uuids();
+  }
+
+  std::vector<std::shared_ptr<stream::session_t>> get_sessions_snapshot() {
+    return server.get_sessions_snapshot();
   }
 
   void terminate_sessions() {
@@ -1122,6 +1137,7 @@ namespace rtsp_stream {
       config.monitor.framerate = util::from_view(args.at("x-nv-video[0].maxFPS"sv));
       config.monitor.framerateX100 = util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
       config.monitor.bitrate = util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
+      config.monitor.client_requested_bitrate = config.monitor.bitrate;
       config.monitor.slicesPerFrame = util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
       config.monitor.numRefFrames = util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
       config.monitor.encoderCscMode = util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
@@ -1247,6 +1263,10 @@ namespace rtsp_stream {
     // down to nearly nothing.
     if (configuredBitrateKbps) {
       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+
+      // Preserve the original wire-bandwidth budget the client asked for so the
+      // UI can show it alongside the post-adjustment encoder bitrate.
+      config.monitor.client_requested_bitrate = static_cast<int>(configuredBitrateKbps);
 
       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
       // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.

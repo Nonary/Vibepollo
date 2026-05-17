@@ -32,6 +32,7 @@ namespace webrtc_stream {
     std::optional<int> bitrate_kbps;
     std::optional<std::string> codec;
     std::optional<bool> hdr;
+    std::optional<bool> yuv444;
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
       std::optional<std::string> profile;
@@ -69,9 +70,11 @@ namespace webrtc_stream {
     std::optional<int> bitrate_kbps;
     std::optional<std::string> codec;
     std::optional<bool> hdr;
+    std::optional<bool> yuv444;
     std::optional<int> audio_channels;
     std::optional<std::string> audio_codec;
     std::optional<std::string> profile;
+    std::optional<std::string> stream_gpu_model;
     std::optional<std::string> video_pacing_mode;
     std::optional<int> video_pacing_slack_ms;
     std::optional<int> video_max_frame_age_ms;
@@ -81,6 +84,8 @@ namespace webrtc_stream {
 
     std::size_t last_audio_bytes = 0;
     std::size_t last_video_bytes = 0;
+    std::uint64_t video_bytes_total = 0;
+    std::uint64_t audio_bytes_total = 0;
     bool last_video_idr = false;
     std::int64_t last_video_frame_index = 0;
   };

@@ -22,6 +22,9 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(CURL REQUIRED libcurl)
 
+# SQLite3 (session history persistence)
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+
 # miniupnp
 pkg_check_modules(MINIUPNP miniupnpc REQUIRED)
 include_directories(SYSTEM ${MINIUPNP_INCLUDE_DIRS})

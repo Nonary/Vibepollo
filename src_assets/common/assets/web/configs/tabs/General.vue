@@ -87,16 +87,16 @@ function removeServerCommand(index: number) {
 
 <template>
   <div id="general" class="config-page">
-    <ConfigFieldRenderer setting-key="locale" v-model="config.locale" class="mb-6" />
+    <ConfigFieldRenderer v-model="config.locale" setting-key="locale" class="mb-6" />
 
     <ConfigFieldRenderer
-      setting-key="sunshine_name"
       v-model="config.sunshine_name"
+      setting-key="sunshine_name"
       class="mb-6"
       placeholder="Vibeshine"
     />
 
-    <ConfigFieldRenderer setting-key="min_log_level" v-model="config.min_log_level" class="mb-6" />
+    <ConfigFieldRenderer v-model="config.min_log_level" setting-key="min_log_level" class="mb-6" />
 
     <div
       v-for="section in prepCommandSections"
@@ -235,47 +235,65 @@ function removeServerCommand(index: number) {
     </div>
 
     <ConfigFieldRenderer
-      setting-key="enable_pairing"
       v-model="config.enable_pairing"
+      setting-key="enable_pairing"
       class="mb-3"
     />
 
     <ConfigFieldRenderer
-      setting-key="enable_discovery"
       v-model="config.enable_discovery"
+      setting-key="enable_discovery"
       class="mb-6"
     />
 
     <ConfigFieldRenderer
-      setting-key="session_token_ttl_seconds"
       v-model="config.session_token_ttl_seconds"
+      setting-key="session_token_ttl_seconds"
       class="mb-6"
     />
 
     <ConfigFieldRenderer
-      setting-key="remember_me_refresh_token_ttl_seconds"
       v-model="config.remember_me_refresh_token_ttl_seconds"
+      setting-key="remember_me_refresh_token_ttl_seconds"
       class="mb-6"
     />
 
     <ConfigFieldRenderer
-      setting-key="update_check_interval"
       v-model="config.update_check_interval"
+      setting-key="update_check_interval"
       class="mb-6"
     />
 
     <ConfigFieldRenderer
-      setting-key="notify_pre_releases"
-      v-model="config.notify_pre_releases"
+      v-model="config.session_history_enabled"
+      setting-key="session_history_enabled"
       class="mb-3"
     />
 
-    <ConfigFieldRenderer setting-key="system_tray" v-model="config.system_tray" class="mb-3" />
+    <ConfigFieldRenderer
+      v-model="config.session_history_ttl_days"
+      setting-key="session_history_ttl_days"
+      class="mb-6"
+    />
+
+    <ConfigFieldRenderer
+      v-model="config.session_history_db_size_limit_mb"
+      setting-key="session_history_db_size_limit_mb"
+      class="mb-6"
+    />
+
+    <ConfigFieldRenderer
+      v-model="config.notify_pre_releases"
+      setting-key="notify_pre_releases"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer v-model="config.system_tray" setting-key="system_tray" class="mb-3" />
 
     <ConfigFieldRenderer
       v-if="config.system_tray"
-      setting-key="hide_tray_controls"
       v-model="config.hide_tray_controls"
+      setting-key="hide_tray_controls"
       class="mb-3"
     />
   </div>

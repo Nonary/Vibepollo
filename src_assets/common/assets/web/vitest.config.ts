@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 const repoRoot = resolve(__dirname, '../../../..');
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue() as unknown as never],
   resolve: {
     alias: {
       '@web': __dirname,

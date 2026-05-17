@@ -3,10 +3,11 @@ import vue from '@vitejs/plugin-vue';
 import { resolve } from 'node:path';
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue() as unknown as never],
   resolve: {
     alias: {
       '@web': resolve(__dirname, 'src_assets/common/assets/web'),
+      '@': resolve(__dirname, 'src_assets/common/assets/web'),
     },
   },
   test: {

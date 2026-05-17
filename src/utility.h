@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <condition_variable>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -1117,4 +1118,77 @@ namespace util {
       return endian_helper<T>::big(x);
     }
   }  // namespace endian
+
+  namespace packet {
+    inline bool has_range(const std::string_view &payload, std::size_t offset, std::size_t length) {
+      return offset <= payload.size() && length <= payload.size() - offset;
+    }
+
+    inline std::optional<std::string_view> slice(const std::string_view &payload, std::size_t offset, std::size_t length) {
+      if (!has_range(payload, offset, length)) {
+        return std::nullopt;
+      }
+      return payload.substr(offset, length);
+    }
+
+    template<typename T>
+    inline std::optional<T> read_raw(const std::string_view &payload, std::size_t offset = 0) {
+      T value {};
+      if (!has_range(payload, offset, sizeof(T))) {
+        return std::nullopt;
+      }
+      std::memcpy(&value, payload.data() + offset, sizeof(T));
+      return value;
+    }
+
+    template<typename T>
+    inline std::optional<T> read_le(const std::string_view &payload, std::size_t offset = 0) {
+      auto value = read_raw<T>(payload, offset);
+      if (!value) {
+        return std::nullopt;
+      }
+      return endian::little(*value);
+    }
+
+    template<typename T>
+    inline std::optional<T> read_be(const std::string_view &payload, std::size_t offset = 0) {
+      auto value = read_raw<T>(payload, offset);
+      if (!value) {
+        return std::nullopt;
+      }
+      return endian::big(*value);
+    }
+
+    inline std::optional<std::uint8_t> read_u8(const std::string_view &payload, std::size_t offset = 0) {
+      return read_raw<std::uint8_t>(payload, offset);
+    }
+
+    inline std::optional<std::uint16_t> read_u16_le(const std::string_view &payload, std::size_t offset = 0) {
+      return read_le<std::uint16_t>(payload, offset);
+    }
+
+    inline std::optional<std::uint16_t> read_u16_be(const std::string_view &payload, std::size_t offset = 0) {
+      return read_be<std::uint16_t>(payload, offset);
+    }
+
+    inline std::optional<std::uint32_t> read_u32_le(const std::string_view &payload, std::size_t offset = 0) {
+      return read_le<std::uint32_t>(payload, offset);
+    }
+
+    inline std::optional<std::uint32_t> read_u32_be(const std::string_view &payload, std::size_t offset = 0) {
+      return read_be<std::uint32_t>(payload, offset);
+    }
+
+    inline std::optional<std::int32_t> read_i32_le(const std::string_view &payload, std::size_t offset = 0) {
+      return read_le<std::int32_t>(payload, offset);
+    }
+
+    inline std::optional<std::int32_t> read_i32_be(const std::string_view &payload, std::size_t offset = 0) {
+      return read_be<std::int32_t>(payload, offset);
+    }
+
+    inline std::optional<std::int64_t> read_i64_le(const std::string_view &payload, std::size_t offset = 0) {
+      return read_le<std::int64_t>(payload, offset);
+    }
+  }  // namespace packet
 }  // namespace util
