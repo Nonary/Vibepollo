@@ -13,8 +13,9 @@ $certPath = Join-Path $scriptDir 'sudovda.cer'
 $catPath = Join-Path $scriptDir 'sudovda.cat'
 $dllPath = Join-Path $scriptDir 'SudoVDA.dll'
 $script:rebootRequired = $false
-
-Import-Module PnpDevice -ErrorAction SilentlyContinue | Out-Null
+$script:driverProbeTimedOut = $false
+$driverProbeTimeoutSeconds = 15
+$driverStepTimeoutSeconds = 120
 
 function Resolve-SystemToolPath {
     param([Parameter(Mandatory = $true)][string]$ToolName)
@@ -37,44 +38,129 @@ function Resolve-SystemToolPath {
 
 $pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
 
+function ConvertTo-ProcessArgumentString {
+    param([string[]]$ArgumentList = @())
+
+    $quoted = @()
+    foreach ($argument in $ArgumentList) {
+        $arg = [string]$argument
+        if ($arg.Length -eq 0) {
+            $quoted += '""'
+            continue
+        }
+        if ($arg -notmatch '[\s"]') {
+            $quoted += $arg
+            continue
+        }
+
+        $builder = New-Object System.Text.StringBuilder
+        [void]$builder.Append('"')
+        $backslashes = 0
+        foreach ($ch in $arg.ToCharArray()) {
+            if ($ch -eq '\') {
+                $backslashes++
+                continue
+            }
+            if ($ch -eq '"') {
+                if ($backslashes -gt 0) {
+                    [void]$builder.Append(('\' * ($backslashes * 2)))
+                    $backslashes = 0
+                }
+                [void]$builder.Append('\"')
+                continue
+            }
+            if ($backslashes -gt 0) {
+                [void]$builder.Append(('\' * $backslashes))
+                $backslashes = 0
+            }
+            [void]$builder.Append($ch)
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append(('\' * ($backslashes * 2)))
+        }
+        [void]$builder.Append('"')
+        $quoted += $builder.ToString()
+    }
+
+    return ($quoted -join ' ')
+}
+
 function Invoke-Process {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [string]$WorkingDirectory = $scriptDir
+        [string]$WorkingDirectory = $scriptDir,
+        [int]$TimeoutSeconds = 0
     )
 
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $timedOut = $false
 
     try {
-        $process = Start-Process -FilePath $FilePath `
-                                 -ArgumentList $ArgumentList `
-                                 -WorkingDirectory $WorkingDirectory `
-                                 -WindowStyle Hidden `
-                                 -Wait `
-                                 -PassThru `
-                                 -RedirectStandardOutput $stdoutPath `
-                                 -RedirectStandardError $stderrPath
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if ($TimeoutSeconds -gt 0) {
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                $timedOut = $true
+                try {
+                    $process.Kill()
+                    $process.WaitForExit(5000) | Out-Null
+                } catch {
+                    $null = $_
+                }
+            } else {
+                # Ensure async output readers have finished flushing.
+                $process.WaitForExit()
+            }
+        } else {
+            $process.WaitForExit()
+        }
 
         $stdout = ''
         $stderr = ''
-
-        if (Test-Path -LiteralPath $stdoutPath) {
-            $stdout = Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue
+        try {
+            if ($stdoutTask.Wait(5000)) { $stdout = $stdoutTask.Result }
+        } catch {
+            $stdout = ''
         }
-        if (Test-Path -LiteralPath $stderrPath) {
-            $stderr = Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue
+        try {
+            if ($stderrTask.Wait(5000)) { $stderr = $stderrTask.Result }
+        } catch {
+            $stderr = ''
+        }
+
+        $exitCode = 1460
+        if (-not $timedOut) {
+            try {
+                $exitCode = $process.ExitCode
+            } catch {
+                $exitCode = 1
+            }
         }
 
         return [pscustomobject]@{
-            ExitCode = $process.ExitCode
+            ExitCode = $exitCode
             StdOut   = $stdout
             StdErr   = $stderr
+            TimedOut = $timedOut
         }
     }
     finally {
-        Remove-Item -LiteralPath $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
+        if ($process) {
+            $process.Dispose()
+        }
     }
 }
 
@@ -85,13 +171,17 @@ function Invoke-DriverStep {
         [Parameter(Mandatory = $true)][string]$Description
     )
 
-    $result = Invoke-Process -FilePath $FilePath -ArgumentList $ArgumentList
+    $result = Invoke-Process -FilePath $FilePath -ArgumentList $ArgumentList -TimeoutSeconds $driverStepTimeoutSeconds
 
     if ($result.StdOut) {
         Write-Host $result.StdOut.TrimEnd()
     }
     if ($result.StdErr) {
         Write-Host $result.StdErr.TrimEnd()
+    }
+
+    if ($result.TimedOut) {
+        throw "[SudoVDA] $Description timed out after $driverStepTimeoutSeconds seconds."
     }
 
     switch ($result.ExitCode) {
@@ -197,34 +287,88 @@ function Get-TargetDriverVersion {
     return $null
 }
 
-function Get-InstalledDriverInfo {
+function Get-PresentSudoVdaDevices {
     try {
-        # The device InstanceId is assigned by Windows (e.g. ROOT\DISPLAY\0001), not the hardware ID.
-        # Detect by manufacturer or device name instead.
-        $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
-            Where-Object {
-                $_.Manufacturer -like "*SudoMaker*" -or
-                $_.DeviceName   -like "*SudoMaker*" -or
-                $_.DeviceName   -like "*SudoVDA*"
-            } |
-            Select-Object -First 1
-
-        if ($driver) {
-            return $driver
+        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', '/class', 'Display', '/connected') -TimeoutSeconds $driverProbeTimeoutSeconds
+        if ($result.TimedOut) {
+            $script:driverProbeTimedOut = $true
+            Write-Warning "[SudoVDA] Timed out while enumerating display devices with pnputil after $driverProbeTimeoutSeconds seconds."
+            return @()
+        }
+        if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StdOut)) {
+            return @()
         }
 
-        # Only consider devices that are currently present to avoid ghost entries.
-        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop |
-            Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
+        $entries = @()
+        $current = @{}
+        foreach ($line in ($result.StdOut -split "`r?`n")) {
+            if ($line -match '^\s*Instance ID\s*:\s*(.+)$') {
+                $current['InstanceId'] = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*Device Description\s*:\s*(.+)$') {
+                $current['DeviceDescription'] = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*Manufacturer Name\s*:\s*(.+)$') {
+                $current['ManufacturerName'] = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*Status\s*:\s*(.+)$') {
+                $current['Status'] = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*Driver Name\s*:\s*(.+)$') {
+                $current['DriverName'] = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*$') {
+                if ($current.ContainsKey('InstanceId')) {
+                    $entries += [pscustomobject]$current
+                }
+                $current = @{}
+            }
+        }
 
-        if ($devices) {
-            $device = $devices | Select-Object -First 1
-            $driver = Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop |
-                Where-Object { $_.DeviceID -eq $device.InstanceId } |
+        if ($current.ContainsKey('InstanceId')) {
+            $entries += [pscustomobject]$current
+        }
+
+        return $entries | Where-Object {
+            $_.ManufacturerName -like "*SudoMaker*" -or
+            $_.DeviceDescription -like "*SudoMaker*" -or
+            $_.DeviceDescription -like "*SudoVDA*"
+        }
+    } catch {
+        return @()
+    }
+}
+
+function Get-InstalledDriverInfo {
+    try {
+        # Avoid Win32_PnPSignedDriver/Get-PnpDevice here. They can block indefinitely
+        # under Windows Installer's hidden SYSTEM PowerShell host and stall the MSI.
+        # pnputil returns quickly in the same environment and gives us the driver
+        # store version needed to decide whether we can skip reinstalling SudoVDA.
+        $driverPackages = @(Get-InstalledDriverPackages -Quiet)
+        if ($driverPackages.Count -gt 0) {
+            $driverPackage = $driverPackages |
+                Sort-Object -Property @{ Expression = { Convert-Version -Version $_.DriverVersion }; Descending = $true }, PublishedName |
                 Select-Object -First 1
 
-            if ($driver) {
-                return $driver
+            return [pscustomobject]@{
+                DeviceName     = 'SudoMaker Virtual Display Adapter'
+                Manufacturer   = $driverPackage.ProviderName
+                DriverVersion  = $driverPackage.DriverVersion
+                DeviceID       = $driverPackage.PublishedName
+                PublishedName  = $driverPackage.PublishedName
+            }
+        }
+
+        $devices = @(Get-PresentSudoVdaDevices)
+        if ($devices.Count -gt 0) {
+            $device = $devices | Select-Object -First 1
+            return [pscustomobject]@{
+                DeviceName     = $device.DeviceDescription
+                Manufacturer   = $device.ManufacturerName
+                DriverVersion  = $null
+                DeviceID       = $device.InstanceId
+                PublishedName  = $device.DriverName
             }
         }
 
@@ -250,20 +394,11 @@ function Convert-Version {
 
 function Test-DriverPresent {
     # Only check present devices to avoid detecting ghost/phantom entries
-    # from previous installations that are no longer functional.
+    # from previous installations that are no longer functional. Use pnputil
+    # instead of Get-PnpDevice because PowerShell's PnP cmdlets can hang under MSI.
     try {
-        $devices = Get-PnpDevice -PresentOnly -ErrorAction Stop |
-            Where-Object { $_.FriendlyName -like "*SudoMaker*" -or $_.FriendlyName -like "*SudoVDA*" }
-        if ($devices) {
-            return $true
-        }
-    } catch {
-        $null = $_
-    }
-
-    try {
-        $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-devices', '/class', 'Display', '/connected')
-        if ($result.ExitCode -eq 0 -and $result.StdOut -and $result.StdOut -match 'SudoMaker') {
+        $devices = @(Get-PresentSudoVdaDevices)
+        if ($devices.Count -gt 0) {
             return $true
         }
     } catch {
@@ -274,8 +409,18 @@ function Test-DriverPresent {
 }
 
 function Get-InstalledDriverPackages {
-    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-drivers')
-    Write-ProcessOutput -Result $result
+    param([switch]$Quiet)
+
+    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/enum-drivers') -TimeoutSeconds $driverProbeTimeoutSeconds
+    if (-not $Quiet) {
+        Write-ProcessOutput -Result $result
+    }
+
+    if ($result.TimedOut) {
+        $script:driverProbeTimedOut = $true
+        Write-Warning "[SudoVDA] Timed out while enumerating driver packages with pnputil after $driverProbeTimeoutSeconds seconds."
+        return @()
+    }
 
     if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StdOut)) {
         return @()
@@ -292,6 +437,15 @@ function Get-InstalledDriverPackages {
         }
         elseif ($line -match '^\s*Provider Name\s*:\s*(.+)$') {
             $current['ProviderName'] = $matches[1].Trim()
+        }
+        elseif ($line -match '^\s*Driver Version\s*:\s*(.+)$') {
+            $driverVersionText = $matches[1].Trim()
+            $current['DriverVersionText'] = $driverVersionText
+            if ($driverVersionText -match '^\S+\s+([0-9]+(?:\.[0-9]+)+)\s*$') {
+                $current['DriverVersion'] = $matches[1].Trim()
+            } else {
+                $current['DriverVersion'] = $driverVersionText
+            }
         }
         elseif ($line -match '^\s*$') {
             if ($current.ContainsKey('PublishedName')) {
@@ -314,8 +468,11 @@ function Remove-DriverPackage {
     param([Parameter(Mandatory = $true)][string]$PublishedName)
 
     Write-Host "[SudoVDA] Removing driver package $PublishedName."
-    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', $PublishedName, '/uninstall', '/force')
+    $result = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', $PublishedName, '/uninstall', '/force') -TimeoutSeconds $driverStepTimeoutSeconds
     Write-ProcessOutput -Result $result
+    if ($result.TimedOut) {
+        throw "[SudoVDA] Timed out while removing driver package $PublishedName after $driverStepTimeoutSeconds seconds."
+    }
 
     switch ($result.ExitCode) {
         0     { return }
@@ -331,11 +488,12 @@ function Invoke-SudoVdaUninstall {
 
     if (Test-Path -Path $nefConc -PathType Leaf) {
         Write-Host '[SudoVDA] Removing existing SudoVDA device node.'
-        $removeResult = Invoke-Process -FilePath $nefConc -ArgumentList @('--remove-device-node', '--hardware-id', $hardwareId, '--class-guid', $classGuid)
+        $removeResult = Invoke-Process -FilePath $nefConc -ArgumentList @('--remove-device-node', '--hardware-id', $hardwareId, '--class-guid', $classGuid) -TimeoutSeconds $driverStepTimeoutSeconds
         Write-ProcessOutput -Result $removeResult
         switch ($removeResult.ExitCode) {
             0     { }
             3010  { $script:rebootRequired = $true }
+            1460  { Write-Warning "[SudoVDA] Remove-device-node timed out after $driverStepTimeoutSeconds seconds. Continuing." }
             default { Write-Warning "[SudoVDA] Remove-device-node returned exit code $($removeResult.ExitCode). Continuing." }
         }
     } else {
@@ -345,11 +503,12 @@ function Invoke-SudoVdaUninstall {
     $driverPackages = @(Get-InstalledDriverPackages)
     if ($driverPackages.Count -eq 0) {
         Write-Host '[SudoVDA] No matching installed driver package found; trying direct INF removal.'
-        $fallback = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', 'SudoVDA.inf', '/uninstall', '/force')
+        $fallback = Invoke-Process -FilePath $pnputil -ArgumentList @('/delete-driver', 'SudoVDA.inf', '/uninstall', '/force') -TimeoutSeconds $driverStepTimeoutSeconds
         Write-ProcessOutput -Result $fallback
         switch ($fallback.ExitCode) {
             0     { return }
             3010  { $script:rebootRequired = $true; return }
+            1460  { throw "[SudoVDA] Direct INF removal timed out after $driverStepTimeoutSeconds seconds." }
             default {
                 if (Test-DriverPresent) {
                     throw "[SudoVDA] Direct INF removal failed (exit code $($fallback.ExitCode)) and the driver is still present."
@@ -386,6 +545,11 @@ $targetVersionObj = Convert-Version -Version $targetVersion
 Write-Host "[SudoVDA] Target version: $targetVersion"
 Write-Host "[SudoVDA] Installed version: $installedVersion"
 Write-Host "[SudoVDA] Driver info found: $($null -ne $installedInfo)"
+
+if ($script:driverProbeTimedOut) {
+    Write-Host '[SudoVDA] Driver probe timed out; skipping driver changes to avoid stalling or disrupting a working adapter.'
+    exit 0
+}
 
 if ($installedInfo -and $installedVersionObj -and $targetVersionObj -and $installedVersionObj -ge $targetVersionObj) {
     Write-Host "[SudoVDA] Driver version $installedVersion already installed; skipping."
