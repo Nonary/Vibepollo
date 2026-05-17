@@ -24,7 +24,7 @@ on:
       symbol_release_repo:
         required: false
         type: string
-        default: Nonary/vibepollo_symbols
+        default: Nonary/vibeshine_symbols
       symbol_release_tag:
         required: false
         type: string
