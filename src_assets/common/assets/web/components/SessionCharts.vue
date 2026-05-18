@@ -1,5 +1,25 @@
 <template>
   <div class="space-y-4 mt-4">
+    <div class="chart-range-toolbar">
+      <span class="chart-range-label">
+        <i class="fas fa-clock-rotate-left" />
+        {{ t('sessions.chart_range') }}
+      </span>
+      <n-button-group size="tiny">
+        <n-button
+          v-for="option in rangeOptions"
+          :key="option.key"
+          size="tiny"
+          :type="isSelectedRange(option.value) ? 'primary' : 'default'"
+          :secondary="isSelectedRange(option.value)"
+          :title="option.title"
+          @click="selectedRangeMinutes = option.value"
+        >
+          {{ option.label }}
+        </n-button>
+      </n-button-group>
+    </div>
+
     <SessionChartPanel
       v-if="protocol === 'rtsp'"
       icon="fas fa-clock"
@@ -46,7 +66,7 @@
     </SessionChartPanel>
 
     <SessionChartPanel
-      v-if="mode === 'history' && hasHostCompute"
+      v-if="hasHostCompute"
       icon="fas fa-microchip"
       :title="t('sessions.chart_host_compute')"
       :tip="t('sessions.tip_chart_host_compute')"
@@ -58,7 +78,7 @@
     </SessionChartPanel>
 
     <SessionChartPanel
-      v-if="mode === 'history' && hasHostMemory"
+      v-if="hasHostMemory"
       icon="fas fa-memory"
       :title="t('sessions.chart_host_memory')"
       :tip="t('sessions.tip_chart_host_memory')"
@@ -70,7 +90,7 @@
     </SessionChartPanel>
 
     <SessionChartPanel
-      v-if="mode === 'history' && hasHostNetwork"
+      v-if="hasHostNetwork"
       icon="fas fa-network-wired"
       :title="t('sessions.chart_host_network')"
       :tip="t('sessions.tip_chart_host_network')"
@@ -141,8 +161,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { NButton, NButtonGroup } from 'naive-ui';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -157,6 +178,7 @@ import annotationPlugin from 'chartjs-plugin-annotation';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import { Line } from 'vue-chartjs';
 import type { SessionSample, SessionEvent } from '@/types/sessions';
+import { fetchSessionDetail } from '@/services/sessionsApi';
 import SessionChartPanel from './session/SessionChartPanel.vue';
 import SessionChartZoomModal from './session/SessionChartZoomModal.vue';
 import {
@@ -208,6 +230,133 @@ const props = defineProps<{
   historyData?: SessionSample[];
   events?: SessionEvent[];
 }>();
+
+const LIVE_HISTORY_REFRESH_MS = 15000;
+const RECENT_RANGE_MINUTES = [3, 5, 15, 30, 60] as const;
+const selectedRangeMinutes = ref<number | null>(null);
+const liveHistoryData = ref<SessionSample[]>([]);
+const liveEvents = ref<SessionEvent[]>([]);
+const isLiveMode = computed(() => props.mode !== 'history');
+
+let liveHistoryTimer: ReturnType<typeof setInterval> | undefined;
+let liveHistoryRequestToken = 0;
+
+const rangeOptions = computed(() => [
+  {
+    key: 'full',
+    value: null as number | null,
+    label: t('sessions.chart_range_full'),
+    title: t('sessions.chart_range_full_title'),
+  },
+  ...RECENT_RANGE_MINUTES.map((minutes) => ({
+    key: `recent-${minutes}`,
+    value: minutes as number | null,
+    label: t('sessions.chart_range_recent_short', { minutes }),
+    title: t('sessions.chart_range_recent_title', { minutes }),
+  })),
+]);
+
+const chartHistoryData = computed(() =>
+  isLiveMode.value ? liveHistoryData.value : props.historyData,
+);
+const chartEvents = computed(() => (isLiveMode.value ? liveEvents.value : props.events));
+
+function isSelectedRange(value: number | null): boolean {
+  return selectedRangeMinutes.value === value;
+}
+
+async function refreshLiveHistory(): Promise<void> {
+  const sessionId = props.sessionId;
+  if (!isLiveMode.value || !sessionId) {
+    return;
+  }
+
+  const requestToken = ++liveHistoryRequestToken;
+  try {
+    const detail = await fetchSessionDetail(sessionId, { full: true });
+    if (
+      requestToken !== liveHistoryRequestToken ||
+      props.sessionId !== sessionId ||
+      !isLiveMode.value
+    ) {
+      return;
+    }
+    liveHistoryData.value = detail.samples ?? [];
+    liveEvents.value = detail.events ?? [];
+  } catch {
+    // Session history can be disabled or the active session may not have been
+    // persisted yet. Keep the in-memory live chart as the fallback.
+  }
+}
+
+function stopLiveHistoryPolling(): void {
+  if (liveHistoryTimer !== undefined) {
+    clearInterval(liveHistoryTimer);
+    liveHistoryTimer = undefined;
+  }
+  liveHistoryRequestToken += 1;
+}
+
+function startLiveHistoryPolling(): void {
+  stopLiveHistoryPolling();
+  liveHistoryData.value = [];
+  liveEvents.value = [];
+  if (!isLiveMode.value || !props.sessionId) {
+    return;
+  }
+
+  void refreshLiveHistory();
+  liveHistoryTimer = setInterval(() => {
+    void refreshLiveHistory();
+  }, LIVE_HISTORY_REFRESH_MS);
+}
+
+watch([() => props.sessionId, isLiveMode], startLiveHistoryPolling, { immediate: true });
+onBeforeUnmount(stopLiveHistoryPolling);
+
+const chartHistoryProps = reactive<Parameters<typeof useSessionChartHistory>[0]>({});
+watchEffect(() => {
+  if (props.session) {
+    chartHistoryProps.session = props.session;
+  } else {
+    delete chartHistoryProps.session;
+  }
+
+  if (props.sessionId) {
+    chartHistoryProps.sessionId = props.sessionId;
+  } else {
+    delete chartHistoryProps.sessionId;
+  }
+
+  if (props.protocol) {
+    chartHistoryProps.protocol = props.protocol;
+  } else {
+    delete chartHistoryProps.protocol;
+  }
+
+  if (props.mode) {
+    chartHistoryProps.mode = props.mode;
+  } else {
+    delete chartHistoryProps.mode;
+  }
+
+  const historyData = chartHistoryData.value;
+  if (historyData) {
+    chartHistoryProps.historyData = historyData;
+  } else {
+    delete chartHistoryProps.historyData;
+  }
+
+  const events = chartEvents.value;
+  if (events) {
+    chartHistoryProps.events = events;
+  } else {
+    delete chartHistoryProps.events;
+  }
+
+  chartHistoryProps.windowMinutes = selectedRangeMinutes.value;
+});
+
 const {
   displayData,
   labels,
@@ -216,7 +365,7 @@ const {
   hasHostMemory,
   hasHostNetwork,
   eventAnnotations,
-} = useSessionChartHistory(props);
+} = useSessionChartHistory(chartHistoryProps);
 
 const baseChartOptions = computed(() => buildBaseChartOptions(eventAnnotations.value));
 const latencyChartOptions = computed(() => buildLatencyChartOptions(baseChartOptions.value));
@@ -327,6 +476,12 @@ function openZoom(key: ZoomKey): void {
 </script>
 
 <style scoped>
+.chart-range-toolbar {
+  @apply flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dark/[0.06] bg-light/[0.03] px-3 py-2 dark:border-light/[0.10] dark:bg-dark/[0.06];
+}
+.chart-range-label {
+  @apply inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider opacity-70;
+}
 .chart-container {
   @apply rounded-xl border border-dark/[0.06] bg-light/[0.03] p-3 dark:border-light/[0.10] dark:bg-dark/[0.06];
 }

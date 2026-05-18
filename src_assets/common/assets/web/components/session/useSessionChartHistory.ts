@@ -18,6 +18,7 @@ export interface SessionSnapshot {
 }
 
 export interface SessionChartPoint {
+  timestamp_unix: number;
   time: string;
   encode_latency_ms: number;
   throughput_mbps: number;
@@ -41,6 +42,7 @@ interface SessionChartHistoryProps {
   mode?: 'live' | 'history';
   historyData?: SessionSample[];
   events?: SessionEvent[];
+  windowMinutes?: number | null;
 }
 
 export type HostSeriesField = keyof Pick<
@@ -53,8 +55,6 @@ export type HostSeriesField = keyof Pick<
   | 'host_net_rx_bps'
   | 'host_net_tx_bps'
 >;
-
-const MAX_POINTS = 150;
 
 const eventColors: Record<string, string> = {
   stream_started: 'rgba(34, 197, 94, 0.6)',
@@ -79,6 +79,7 @@ function convertHistoryData(samples: SessionSample[]): SessionChartPoint[] {
   return samples.map((sample, i) => {
     const prev = i > 0 ? samples[i - 1] : undefined;
     return {
+      timestamp_unix: sample.timestamp_unix,
       time: formatTime(new Date(sample.timestamp_unix * 1000)),
       encode_latency_ms: sample.encode_latency_ms,
       throughput_mbps: Math.round((sample.actual_bitrate_kbps / 1000) * 100) / 100,
@@ -101,17 +102,30 @@ function convertHistoryData(samples: SessionSample[]): SessionChartPoint[] {
   });
 }
 
-function findClosestSampleIndex(samples: SessionSample[], timestampUnix: number): number {
-  if (!samples.length) {
+function filterByWindow<T extends { timestamp_unix: number }>(
+  points: T[],
+  windowMinutes?: number | null,
+): T[] {
+  if (!points.length || windowMinutes == null || windowMinutes <= 0) {
+    return points;
+  }
+
+  const latestTimestamp = points[points.length - 1]?.timestamp_unix ?? Date.now() / 1000;
+  const cutoff = latestTimestamp - windowMinutes * 60;
+  return points.filter((point) => point.timestamp_unix >= cutoff);
+}
+
+function findClosestPointIndex(points: SessionChartPoint[], timestampUnix: number): number {
+  if (!points.length) {
     return 0;
   }
 
   let low = 0;
-  let high = samples.length - 1;
+  let high = points.length - 1;
 
   while (low < high) {
     const mid = Math.floor((low + high) / 2);
-    const midTimestamp = samples[mid]?.timestamp_unix ?? 0;
+    const midTimestamp = points[mid]?.timestamp_unix ?? 0;
     if (midTimestamp < timestampUnix) {
       low = mid + 1;
     } else {
@@ -125,9 +139,31 @@ function findClosestSampleIndex(samples: SessionSample[], timestampUnix: number)
   }
 
   const lowerIndex = upperIndex - 1;
-  const lowerDiff = Math.abs(timestampUnix - (samples[lowerIndex]?.timestamp_unix ?? 0));
-  const upperDiff = Math.abs(timestampUnix - (samples[upperIndex]?.timestamp_unix ?? 0));
+  const lowerDiff = Math.abs(timestampUnix - (points[lowerIndex]?.timestamp_unix ?? 0));
+  const upperDiff = Math.abs(timestampUnix - (points[upperIndex]?.timestamp_unix ?? 0));
   return lowerDiff <= upperDiff ? lowerIndex : upperIndex;
+}
+
+function annotationBoundarySlackSeconds(points: SessionChartPoint[]): number {
+  if (points.length < 2) {
+    return 5;
+  }
+
+  const gaps: number[] = [];
+  for (let i = 1; i < points.length; i += 1) {
+    const gap = (points[i]?.timestamp_unix ?? 0) - (points[i - 1]?.timestamp_unix ?? 0);
+    if (gap > 0 && gap <= 60) {
+      gaps.push(gap);
+    }
+  }
+
+  if (!gaps.length) {
+    return 5;
+  }
+
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[Math.floor(gaps.length / 2)] ?? 2;
+  return Math.max(5, Math.min(60, medianGap * 2));
 }
 
 export function useSessionChartHistory(props: SessionChartHistoryProps) {
@@ -143,8 +179,8 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
   }
 
   function hasHostSeries(field: HostSeriesField): boolean {
-    if (props.mode !== 'history' || !props.historyData?.length) return false;
-    return props.historyData.some((sample) => {
+    if (!props.historyData?.length) return false;
+    return filterByWindow(props.historyData, props.windowMinutes).some((sample) => {
       const value = sample[field];
       return typeof value === 'number' && value >= 0;
     });
@@ -163,12 +199,26 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
     () => hasHostSeries('host_net_rx_bps') || hasHostSeries('host_net_tx_bps'),
   );
 
-  const displayData = computed<SessionChartPoint[]>(() => {
-    if (props.mode === 'history' && props.historyData) {
-      return convertHistoryData(props.historyData);
+  const sourceData = computed<SessionChartPoint[]>(() => {
+    const persisted = props.historyData?.length ? convertHistoryData(props.historyData) : [];
+    if (props.mode === 'history') {
+      return persisted;
     }
+
+    if (persisted.length) {
+      const lastPersistedTimestamp = persisted[persisted.length - 1]?.timestamp_unix ?? 0;
+      return [
+        ...persisted,
+        ...history.value.filter((point) => point.timestamp_unix > lastPersistedTimestamp),
+      ];
+    }
+
     return history.value;
   });
+
+  const displayData = computed<SessionChartPoint[]>(() =>
+    filterByWindow(sourceData.value, props.windowMinutes),
+  );
 
   watch(
     () => props.session,
@@ -230,6 +280,7 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
       }
 
       const point: SessionChartPoint = {
+        timestamp_unix: now / 1000,
         time: formatTime(new Date()),
         encode_latency_ms: session.encode_latency_ms ?? 0,
         throughput_mbps: Math.round(throughput_mbps * 100) / 100,
@@ -237,20 +288,16 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
         delta_idr,
         delta_invalidations,
         actual_fps: Math.round(actual_fps * 10) / 10,
-        host_cpu_percent: 0,
-        host_gpu_percent: 0,
-        host_gpu_encoder_percent: 0,
-        host_ram_percent: 0,
-        host_vram_percent: 0,
-        host_net_rx_bps: 0,
-        host_net_tx_bps: 0,
+        host_cpu_percent: Number.NaN,
+        host_gpu_percent: Number.NaN,
+        host_gpu_encoder_percent: Number.NaN,
+        host_ram_percent: Number.NaN,
+        host_vram_percent: Number.NaN,
+        host_net_rx_bps: Number.NaN,
+        host_net_tx_bps: Number.NaN,
       };
 
-      const nextHistory = [...history.value, point];
-      if (nextHistory.length > MAX_POINTS) {
-        nextHistory.shift();
-      }
-      history.value = nextHistory;
+      history.value = [...history.value, point];
 
       prevSnapshot = { ...session };
       prevTimestamp = now;
@@ -266,17 +313,30 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
   const labels = computed(() => displayData.value.map((point) => point.time));
 
   const eventAnnotations = computed(() => {
-    if (props.mode !== 'history' || !props.events?.length || !props.historyData?.length) {
-      return {};
-    }
-    if (!displayData.value.length) {
+    const points = displayData.value;
+    if (!props.events?.length || !points.length) {
       return {};
     }
 
-    const resolved = props.events.map((event, index) => ({
+    const firstTimestamp = points[0]?.timestamp_unix ?? 0;
+    const lastTimestamp = points[points.length - 1]?.timestamp_unix ?? 0;
+    const isFullRange = props.windowMinutes == null || props.windowMinutes <= 0;
+    const boundarySlack = annotationBoundarySlackSeconds(points);
+    const visibleEvents = isFullRange
+      ? props.events
+      : props.events.filter(
+          (event) =>
+            event.timestamp_unix >= firstTimestamp - boundarySlack &&
+            event.timestamp_unix <= lastTimestamp + boundarySlack,
+        );
+    if (!visibleEvents.length) {
+      return {};
+    }
+
+    const resolved = visibleEvents.map((event, index) => ({
       index,
       event,
-      closest: findClosestSampleIndex(props.historyData ?? [], event.timestamp_unix),
+      closest: findClosestPointIndex(points, event.timestamp_unix),
     }));
 
     const ordered = [...resolved].sort((a, b) => a.closest - b.closest);

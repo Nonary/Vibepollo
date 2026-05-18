@@ -2539,7 +2539,8 @@ namespace stream {
       }
 
       // If this is the last session, invoke the platform callbacks
-      if (--running_sessions == 0) {
+      const bool last_rtsp_session = --running_sessions == 0;
+      if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
         config::set_runtime_output_name_override(std::nullopt);
 #ifdef _WIN32
@@ -2599,15 +2600,19 @@ namespace stream {
         platf::frame_limiter_streaming_stop(is_paused);
 #endif
         platf::streaming_will_stop();
-
-        // No active sessions now; apply any deferred config updates
-        config::maybe_apply_deferred();
       }
 
       BOOST_LOG(info) << "Session ended"sv;
 
       // Record session end in persistent history (fires exactly once, after join)
       session_history::end_session(session.history_uuid);
+
+      if (last_rtsp_session) {
+        // Apply deferred config updates only after the session end is queued.
+        // This prevents a deferred session_history_enabled=false reload from
+        // disabling the writer before it records stream_ended/end_time_unix.
+        config::maybe_apply_deferred();
+      }
     }
 
     int start(session_t &session, const std::string &addr_string) {
