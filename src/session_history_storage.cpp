@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 // local includes
 #include "session_history_storage.h"
@@ -394,6 +395,31 @@ namespace session_history::storage {
 
   void tighten_history_db_permissions(const std::filesystem::path &db_path) {
 #ifdef _WIN32
+    auto restore_directory_inheritance = [&](const std::filesystem::path &path) {
+      std::error_code ec;
+      if (path.empty() || !std::filesystem::exists(path, ec) || ec) {
+        return;
+      }
+
+      // 1.16.0-alpha.1 accidentally protected the shared config directory
+      // while trying to protect only session_history.db. Undo that here so
+      // credentials, paired clients, logs, covers, and other config files keep
+      // their normal installer/inherited ACLs. The database files themselves
+      // are tightened below.
+      DWORD sec_status = SetNamedSecurityInfoW(
+        const_cast<LPWSTR>(path.c_str()),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr);
+      if (sec_status != ERROR_SUCCESS) {
+        BOOST_LOG(warning) << "session_history: failed to restore inherited permissions for "
+                           << path.string() << " (error=" << sec_status << ")";
+      }
+    };
+
     auto apply_windows_permissions = [&](const std::filesystem::path &path) {
       std::error_code ec;
       if (!std::filesystem::exists(path, ec) || ec) {
@@ -421,7 +447,28 @@ namespace session_history::storage {
         FreeSid(system_sid);
       });
 
-      EXPLICIT_ACCESSW access[2] {};
+      HANDLE token = nullptr;
+      std::vector<unsigned char> token_user_buffer;
+      PSID current_user_sid = nullptr;
+      if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        auto close_token = util::fail_guard([token]() {
+          CloseHandle(token);
+        });
+
+        DWORD token_user_size = 0;
+        (void) GetTokenInformation(token, TokenUser, nullptr, 0, &token_user_size);
+        if (token_user_size > 0) {
+          token_user_buffer.resize(token_user_size);
+          if (GetTokenInformation(token, TokenUser, token_user_buffer.data(), token_user_size, &token_user_size)) {
+            auto *token_user = reinterpret_cast<TOKEN_USER *>(token_user_buffer.data());
+            if (token_user && IsValidSid(token_user->User.Sid)) {
+              current_user_sid = token_user->User.Sid;
+            }
+          }
+        }
+      }
+
+      std::vector<EXPLICIT_ACCESSW> access(2);
       access[0].grfAccessPermissions = GENERIC_ALL;
       access[0].grfAccessMode = SET_ACCESS;
       access[0].grfInheritance = NO_INHERITANCE;
@@ -436,8 +483,21 @@ namespace session_history::storage {
       access[1].Trustee.TrusteeType = TRUSTEE_IS_USER;
       access[1].Trustee.ptstrName = static_cast<LPWSTR>(system_sid);
 
+      if (current_user_sid &&
+          !EqualSid(current_user_sid, admin_sid) &&
+          !EqualSid(current_user_sid, system_sid)) {
+        EXPLICIT_ACCESSW current_user_access {};
+        current_user_access.grfAccessPermissions = GENERIC_ALL;
+        current_user_access.grfAccessMode = SET_ACCESS;
+        current_user_access.grfInheritance = NO_INHERITANCE;
+        current_user_access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        current_user_access.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        current_user_access.Trustee.ptstrName = static_cast<LPWSTR>(current_user_sid);
+        access.push_back(current_user_access);
+      }
+
       PACL raw_acl = nullptr;
-      DWORD acl_status = SetEntriesInAclW(2, access, nullptr, &raw_acl);
+      DWORD acl_status = SetEntriesInAclW(static_cast<ULONG>(access.size()), access.data(), nullptr, &raw_acl);
       if (acl_status != ERROR_SUCCESS) {
         BOOST_LOG(warning) << "session_history: SetEntriesInAclW failed for " << path.string()
                            << " (error=" << acl_status << ")";
@@ -463,7 +523,7 @@ namespace session_history::storage {
 
     const auto parent_path = db_path.parent_path();
     if (!parent_path.empty() && db_path.filename() == "session_history.db") {
-      apply_windows_permissions(parent_path);
+      restore_directory_inheritance(parent_path);
     }
     apply_windows_permissions(db_path);
     apply_windows_permissions(db_path.string() + "-wal");
@@ -485,25 +545,6 @@ namespace session_history::storage {
       }
     };
 
-    const auto apply_posix_directory_permissions = [&](const std::filesystem::path &path) {
-      std::error_code ec;
-      if (path.empty() || !std::filesystem::exists(path, ec) || ec) {
-        return;
-      }
-      std::filesystem::permissions(
-        path,
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec,
-        std::filesystem::perm_options::replace,
-        ec);
-      if (ec) {
-        BOOST_LOG(warning) << "session_history: failed to tighten directory permissions for " << path.string()
-                           << ": " << ec.message();
-      }
-    };
-
-    if (db_path.filename() == "session_history.db") {
-      apply_posix_directory_permissions(db_path.parent_path());
-    }
     apply_posix_permissions(db_path);
     apply_posix_permissions(db_path.string() + "-wal");
     apply_posix_permissions(db_path.string() + "-shm");
