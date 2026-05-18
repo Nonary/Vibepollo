@@ -316,7 +316,10 @@ namespace session_history::sampler {
   }  // namespace
 
   void init() {
-    g_running.store(true, std::memory_order_release);
+    bool expected = false;
+    if (!g_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+      return;
+    }
     g_sampler_thread = std::thread {sampler_loop};
   }
 

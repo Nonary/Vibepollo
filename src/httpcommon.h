@@ -14,6 +14,14 @@
 
 namespace http {
 
+  enum class creds_state {
+    missing_file,
+    missing_fields,
+    unreadable,
+    malformed,
+    configured
+  };
+
   int init();
   int create_creds(const std::string &pkey, const std::string &cert);
   int save_user_creds(
@@ -23,6 +31,7 @@ namespace http {
     bool run_our_mouth = false
   );
 
+  creds_state user_creds_state(const std::string &file);
   int reload_user_creds(const std::string &file);
   bool download_file(const std::string &url, const std::string &file, long ssl_version = CURL_SSLVERSION_TLSv1_2);
   bool configure_curl_tls(CURL *curl);

@@ -39,10 +39,12 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "session_history.h"
 #include "state_storage.h"
 #include "utility.h"
 #include "version_compare.h"
 #include "video.h"
+#include "webrtc_stream.h"
 
 #ifdef _WIN32
   #include "platform/windows/utils.h"
@@ -2212,6 +2214,10 @@ namespace config {
       return g_runtime_config_overrides;
     }
 
+    bool has_active_stream_sessions() {
+      return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
+    }
+
 #ifdef _WIN32
     bool is_virtual_output_override(const std::optional<std::string> &output_name) {
       if (!output_name || output_name->empty()) {
@@ -2377,6 +2383,7 @@ namespace config {
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_double_refreshrate = video.double_refreshrate;
+      const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       for (const auto &[name, value] : command_line_overrides) {
@@ -2394,6 +2401,12 @@ namespace config {
       const std::string old_log_file = sunshine.log_file;
 
       apply_config(std::move(vars));
+      if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
+        BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
+        sunshine.session_history_enabled = prev_session_history_enabled;
+        g_deferred_reload.store(true, std::memory_order_release);
+      }
+      session_history::reload_settings();
 
       // If only the log level changed, we can reconfigure sinks in place.
       if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
@@ -2483,7 +2496,7 @@ namespace config {
 
   void maybe_apply_deferred() {
     // Single-shot winner clears the flag and applies atomically.
-    if (rtsp_stream::session_count() == 0 && g_deferred_reload.exchange(false, std::memory_order_acq_rel)) {
+    if (!has_active_stream_sessions() && g_deferred_reload.exchange(false, std::memory_order_acq_rel)) {
       apply_config_now();
     }
   }

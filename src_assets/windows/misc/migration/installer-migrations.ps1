@@ -159,7 +159,69 @@ function Update-SplitFrameEncodingInJson {
     return $true
 }
 
+function Invoke-IcaclsBestEffort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+    $output = & $icacls @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+
+    if ($output) {
+        $output | ForEach-Object { Write-Output $_ }
+    }
+    if ($exitCode -ne 0) {
+        Write-Output "icacls exited with code $exitCode for arguments: $($Arguments -join ' ')"
+    }
+
+    return ($exitCode -eq 0)
+}
+
+function Repair-ConfigAclInheritance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RootDir
+    )
+
+    $configDir = Join-Path $RootDir 'config'
+    if (-not (Test-Path -LiteralPath $configDir)) {
+        return
+    }
+
+    [void](Invoke-IcaclsBestEffort -Arguments @($configDir, '/inheritance:e'))
+    [void](Invoke-IcaclsBestEffort -Arguments @($configDir, '/reset'))
+
+    $configFiles = @(
+        (Join-Path $configDir 'sunshine_state.json'),
+        (Join-Path $configDir 'vibeshine_state.json'),
+        (Join-Path $configDir 'sunshine.conf'),
+        (Join-Path $configDir 'apps.json')
+    )
+
+    foreach ($path in $configFiles) {
+        if (Test-Path -LiteralPath $path) {
+            [void](Invoke-IcaclsBestEffort -Arguments @($path, '/inheritance:e'))
+            [void](Invoke-IcaclsBestEffort -Arguments @($path, '/reset'))
+        }
+    }
+
+    # Re-harden the intentionally private certificate/key directory after the
+    # shared config reset. Use SIDs so this works on localized Windows builds.
+    $credentialsDir = Join-Path $configDir 'credentials'
+    if (Test-Path -LiteralPath $credentialsDir) {
+        [void](Invoke-IcaclsBestEffort -Arguments @($credentialsDir, '/inheritance:r'))
+        [void](Invoke-IcaclsBestEffort -Arguments @($credentialsDir, '/grant:r', '*S-1-5-18:(OI)(CI)(F)'))
+        [void](Invoke-IcaclsBestEffort -Arguments @($credentialsDir, '/grant:r', '*S-1-5-32-544:(OI)(CI)(F)'))
+        [void](Invoke-IcaclsBestEffort -Arguments @($credentialsDir, '/grant:r', '*S-1-5-32-545:(R)'))
+    }
+}
+
 $rootDir = Split-Path -Parent $PSScriptRoot
+
+Repair-ConfigAclInheritance -RootDir $rootDir
+
 $candidateConfigs = @(
     (Join-Path $rootDir 'config\sunshine.conf'),
     (Join-Path $rootDir 'sunshine.conf')

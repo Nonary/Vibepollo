@@ -201,7 +201,6 @@ namespace http {
   namespace pt = boost::property_tree;
 
   int reload_user_creds(const std::string &file);
-  bool user_creds_exist(const std::string &file);
 
   std::string unique_id;
   uuid_util::uuid_t uuid;
@@ -228,10 +227,24 @@ namespace http {
         create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
       return -1;
     }
-    if (!user_creds_exist(config::sunshine.credentials_file)) {
-      BOOST_LOG(info) << "Open the Web UI to set your new username and password and getting started";
-    } else if (reload_user_creds(config::sunshine.credentials_file)) {
-      return -1;
+    switch (user_creds_state(config::sunshine.credentials_file)) {
+      case creds_state::missing_file:
+        BOOST_LOG(info) << "Open the Web UI to set your new username and password and getting started";
+        break;
+      case creds_state::missing_fields:
+        BOOST_LOG(warning) << "Credential file is missing required fields; open the Web UI to set your username and password: "
+                           << config::sunshine.credentials_file;
+        break;
+      case creds_state::configured:
+        if (reload_user_creds(config::sunshine.credentials_file)) {
+          return -1;
+        }
+        break;
+      case creds_state::unreadable:
+      case creds_state::malformed:
+        BOOST_LOG(error) << "Credential file cannot be used; refusing to start Web UI credential setup from "
+                         << config::sunshine.credentials_file;
+        return -1;
     }
     return 0;
   }
@@ -269,23 +282,53 @@ namespace http {
     return 0;
   }
 
-  bool user_creds_exist(const std::string &file) {
-    if (!fs::exists(file)) {
-      return false;
-    }
-
+  creds_state user_creds_state(const std::string &file) {
     pt::ptree inputTree;
     std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
-    try {
-      pt::read_json(file, inputTree);
-      return inputTree.find("username") != inputTree.not_found() &&
-             inputTree.find("password") != inputTree.not_found() &&
-             inputTree.find("salt") != inputTree.not_found();
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "validating user credentials: "sv << e.what();
+
+    std::error_code ec;
+    const bool exists = fs::exists(file, ec);
+    if (ec) {
+      BOOST_LOG(error) << "validating user credentials: unable to inspect "sv << file << ": "sv << ec.message();
+      return creds_state::unreadable;
+    }
+    if (!exists) {
+      return creds_state::missing_file;
+    }
+    if (!fs::is_regular_file(file, ec) || ec) {
+      if (ec) {
+        BOOST_LOG(error) << "validating user credentials: unable to inspect "sv << file << ": "sv << ec.message();
+      } else {
+        BOOST_LOG(error) << "validating user credentials: "sv << file << " is not a regular file"sv;
+      }
+      return creds_state::unreadable;
     }
 
-    return false;
+    {
+      std::ifstream probe(file, std::ios::binary);
+      if (!probe.is_open()) {
+        BOOST_LOG(error) << "validating user credentials: unable to open "sv << file;
+        return creds_state::unreadable;
+      }
+    }
+
+    try {
+      pt::read_json(file, inputTree);
+    } catch (const pt::json_parser::json_parser_error &e) {
+      BOOST_LOG(error) << "validating user credentials: malformed JSON in "sv << file << ": "sv << e.what();
+      return creds_state::malformed;
+    } catch (std::exception &e) {
+      BOOST_LOG(error) << "validating user credentials: unable to read "sv << file << ": "sv << e.what();
+      return creds_state::unreadable;
+    }
+
+    if (inputTree.find("username") == inputTree.not_found() ||
+        inputTree.find("password") == inputTree.not_found() ||
+        inputTree.find("salt") == inputTree.not_found()) {
+      return creds_state::missing_fields;
+    }
+
+    return creds_state::configured;
   }
 
   int reload_user_creds(const std::string &file) {

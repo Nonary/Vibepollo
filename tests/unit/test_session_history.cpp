@@ -193,6 +193,75 @@ TEST(SessionHistory, InitAndShutdown) {
   EXPECT_TRUE(active.empty());
 }
 
+TEST(SessionHistory, ReloadSettingsEnablesAfterDisabledInit) {
+  SunshineConfigGuard config_guard;
+  config::sunshine.session_history_enabled = false;
+  config::sunshine.session_history_ttl_days = 0;
+  config::sunshine.session_history_db_size_limit_mb = 0;
+
+  auto path = make_temp_db_path("reload-enable");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string disabled_uuid = "10101010-1010-1010-1010-101010101010";
+  session_history::begin_session(make_metadata(disabled_uuid));
+  session_history::end_session(disabled_uuid);
+  EXPECT_TRUE(session_history::list_sessions(50, 0).empty());
+
+  config::sunshine.session_history_enabled = true;
+  session_history::reload_settings();
+
+  const std::string enabled_uuid = "20202020-2020-2020-2020-202020202020";
+  session_history::begin_session(make_metadata(enabled_uuid));
+  session_history::end_session(enabled_uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::get_session_detail(enabled_uuid).has_value();
+  }));
+  EXPECT_FALSE(session_history::get_session_detail(disabled_uuid).has_value());
+}
+
+TEST(SessionHistory, ReloadSettingsDisablesImmediately) {
+  SunshineConfigGuard config_guard;
+  config::sunshine.session_history_enabled = true;
+  config::sunshine.session_history_ttl_days = 0;
+  config::sunshine.session_history_db_size_limit_mb = 0;
+
+  auto path = make_temp_db_path("reload-disable");
+  session_history::init(path.string());
+  HistoryGuard guard;
+
+  const std::string enabled_uuid = "30303030-3030-3030-3030-303030303030";
+  session_history::begin_session(make_metadata(enabled_uuid));
+  session_history::end_session(enabled_uuid);
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::get_session_detail(enabled_uuid).has_value();
+  }));
+
+  config::sunshine.session_history_enabled = false;
+  session_history::reload_settings();
+  EXPECT_FALSE(session_history::get_history_status().available);
+
+  const std::string disabled_uuid = "40404040-4040-4040-4040-404040404040";
+  session_history::begin_session(make_metadata(disabled_uuid));
+  session_history::end_session(disabled_uuid);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(session_history::get_session_detail(disabled_uuid).has_value());
+
+  config::sunshine.session_history_enabled = true;
+  session_history::reload_settings();
+  EXPECT_TRUE(session_history::get_history_status().available);
+
+  const std::string reenabled_uuid = "50505050-5050-5050-5050-505050505050";
+  session_history::begin_session(make_metadata(reenabled_uuid));
+  session_history::end_session(reenabled_uuid);
+
+  ASSERT_TRUE(wait_for([&] {
+    return session_history::get_session_detail(reenabled_uuid).has_value();
+  }));
+}
+
 TEST(SessionHistory, BeginEndPersists) {
   auto path = make_temp_db_path("begin-end");
   session_history::init(path.string());

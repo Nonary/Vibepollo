@@ -209,7 +209,7 @@ namespace session_history::writer {
     bool enqueue(write_cmd_t cmd) {
       {
         std::lock_guard lk {g_queue_mutex};
-        if (!g_running.load(std::memory_order_acquire) || !g_write_db) {
+        if (!is_enabled() || !g_running.load(std::memory_order_acquire) || !g_write_db) {
           return false;
         }
         cmd.sequence = g_next_sequence.fetch_add(1, std::memory_order_relaxed);
@@ -499,10 +499,12 @@ namespace session_history::writer {
   }
 
   void init(const std::string &db_path) {
-    BOOST_LOG(info) << "session_history: initializing database at " << db_path;
     {
       std::lock_guard lk {g_db_mutex};
       g_history_db_path = std::filesystem::path {db_path};
+      if (g_running.load(std::memory_order_acquire) && g_write_db) {
+        return;
+      }
     }
 
     if (!is_enabled()) {
@@ -510,8 +512,13 @@ namespace session_history::writer {
       return;
     }
 
+    BOOST_LOG(info) << "session_history: initializing database at " << db_path;
+
     {
       std::lock_guard lk {g_db_mutex};
+      if (g_running.load(std::memory_order_acquire) && g_write_db) {
+        return;
+      }
       if (!storage::open_write_db(db_path, g_write_db)) {
         return;
       }

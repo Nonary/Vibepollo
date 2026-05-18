@@ -181,6 +181,14 @@ namespace session_history {
    */
   void shutdown();
 
+  /**
+   * @brief Reload session history runtime settings from config::sunshine.
+   *
+   * Used by config hot-apply so persistence enablement and retention/quota
+   * changes take effect without restarting Sunshine.
+   */
+  void reload_settings();
+
   // ── Session lifecycle (called from stream.cpp / webrtc_stream.cpp) ─
 
   void begin_session(const session_metadata_t &metadata);

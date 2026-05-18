@@ -28,6 +28,7 @@
 #include "uuid.h"
 #include "video.h"
 #include "session_history.h"
+#include "state_storage.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -203,6 +204,10 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(info) << "config: '"sv << name << "' = "sv << val;
   }
   config::modified_config_settings.clear();
+
+#ifdef _WIN32
+  statefile::repair_config_permissions();
+#endif
 
 #ifdef _WIN32
   platf::frame_limiter_nvcp::restore_pending_overrides();
@@ -552,10 +557,52 @@ int main(int argc, char *argv[]) {
 
   startup_probe();
 
-  // Initialize session history database alongside the state file
+  // Initialize session history in its own directory so database hardening never
+  // touches the shared config root that also contains credentials/pairing state.
   {
     std::filesystem::path state_path {config::nvhttp.file_state};
-    auto history_db = state_path.parent_path() / "session_history.db";
+    const auto config_dir = state_path.parent_path();
+    const auto history_dir = config_dir / "session_history";
+    const auto history_db = history_dir / "session_history.db";
+
+    // Best-effort alpha.1/alpha.2 migration: preserve any database that was
+    // created in the shared config root before the storage was isolated.
+    const auto legacy_history_db = config_dir / "session_history.db";
+    auto move_if_needed = [](const std::filesystem::path &from, const std::filesystem::path &to) -> bool {
+      std::error_code ec;
+      const bool from_exists = std::filesystem::exists(from, ec);
+      if (!from_exists || ec) {
+        return false;
+      }
+      ec.clear();
+      const bool to_exists = std::filesystem::exists(to, ec);
+      if (to_exists || ec) {
+        return false;
+      }
+
+      ec.clear();
+      std::filesystem::create_directories(to.parent_path(), ec);
+      if (ec) {
+        BOOST_LOG(warning) << "session_history: failed to create isolated history directory "
+                           << to.parent_path().string() << ": " << ec.message();
+        return false;
+      }
+
+      std::filesystem::rename(from, to, ec);
+      if (ec) {
+        BOOST_LOG(warning) << "session_history: failed to move legacy database file "
+                           << from.string() << " to " << to.string() << ": " << ec.message();
+        return false;
+      }
+
+      return true;
+    };
+    const bool migrated_main_db = move_if_needed(legacy_history_db, history_db);
+    if (migrated_main_db) {
+      move_if_needed(legacy_history_db.string() + "-wal", history_db.string() + "-wal");
+      move_if_needed(legacy_history_db.string() + "-shm", history_db.string() + "-shm");
+    }
+
     session_history::init(history_db.string());
   }
   auto session_history_shutdown_guard = util::fail_guard([]() {

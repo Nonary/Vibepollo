@@ -5135,6 +5135,7 @@ namespace VibepolloInstaller {
           "nvprefs_undo.json",
           "sunshine_playnite.log",
           "credentials",
+          "session_history",
           "covers",
           "logs"
         };

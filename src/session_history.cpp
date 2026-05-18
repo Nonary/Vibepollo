@@ -6,6 +6,7 @@
 // standard includes
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 
 // local includes
 #include "session_history.h"
@@ -26,6 +27,9 @@ namespace session_history {
 
   namespace {
 
+    std::mutex g_lifecycle_mutex;
+    std::string g_history_db_path;
+
     writer::settings_t current_writer_settings() {
       writer::settings_t settings;
       settings.enabled = config::sunshine.session_history_enabled;
@@ -44,18 +48,42 @@ namespace session_history {
   }  // namespace
 
   void init(const std::string &db_path) {
+    std::scoped_lock lk {g_lifecycle_mutex};
+    g_history_db_path = db_path;
     writer::update_settings(current_writer_settings());
-    writer::init(db_path);
+    writer::init(g_history_db_path);
     if (writer::is_available()) {
       sampler::init();
     }
   }
 
   void shutdown() {
+    std::scoped_lock lk {g_lifecycle_mutex};
     BOOST_LOG(info) << "session_history: shutting down";
     sampler::shutdown();
     writer::shutdown();
+    g_history_db_path.clear();
     BOOST_LOG(info) << "session_history: shut down";
+  }
+
+  void reload_settings() {
+    std::scoped_lock lk {g_lifecycle_mutex};
+    const auto settings = current_writer_settings();
+    writer::update_settings(settings);
+
+    if (!settings.enabled) {
+      sampler::shutdown();
+      writer::shutdown();
+      return;
+    }
+
+    if (!g_history_db_path.empty()) {
+      writer::init(g_history_db_path);
+    }
+    if (writer::is_available()) {
+      sampler::init();
+      (void) writer::enqueue_prune();
+    }
   }
 
   void begin_session(const session_metadata_t &metadata) {
@@ -99,12 +127,13 @@ namespace session_history {
   }
 
   void end_session(const std::string &uuid) {
+    sampler::unregister_session(uuid);
+
     if (!history_available()) {
       return;
     }
 
     BOOST_LOG(info) << "session_history: end_session uuid=" << uuid;
-    sampler::unregister_session(uuid);
 
     session_event_t event;
     event.session_uuid = uuid;

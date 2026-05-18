@@ -395,32 +395,7 @@ namespace session_history::storage {
 
   void tighten_history_db_permissions(const std::filesystem::path &db_path) {
 #ifdef _WIN32
-    auto restore_directory_inheritance = [&](const std::filesystem::path &path) {
-      std::error_code ec;
-      if (path.empty() || !std::filesystem::exists(path, ec) || ec) {
-        return;
-      }
-
-      // 1.16.0-alpha.1 accidentally protected the shared config directory
-      // while trying to protect only session_history.db. Undo that here so
-      // credentials, paired clients, logs, covers, and other config files keep
-      // their normal installer/inherited ACLs. The database files themselves
-      // are tightened below.
-      DWORD sec_status = SetNamedSecurityInfoW(
-        const_cast<LPWSTR>(path.c_str()),
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr);
-      if (sec_status != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "session_history: failed to restore inherited permissions for "
-                           << path.string() << " (error=" << sec_status << ")";
-      }
-    };
-
-    auto apply_windows_permissions = [&](const std::filesystem::path &path) {
+    auto apply_windows_permissions = [&](const std::filesystem::path &path, bool directory) {
       std::error_code ec;
       if (!std::filesystem::exists(path, ec) || ec) {
         return;
@@ -471,14 +446,14 @@ namespace session_history::storage {
       std::vector<EXPLICIT_ACCESSW> access(2);
       access[0].grfAccessPermissions = GENERIC_ALL;
       access[0].grfAccessMode = SET_ACCESS;
-      access[0].grfInheritance = NO_INHERITANCE;
+      access[0].grfInheritance = directory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
       access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
       access[0].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
       access[0].Trustee.ptstrName = static_cast<LPWSTR>(admin_sid);
 
       access[1].grfAccessPermissions = GENERIC_ALL;
       access[1].grfAccessMode = SET_ACCESS;
-      access[1].grfInheritance = NO_INHERITANCE;
+      access[1].grfInheritance = directory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
       access[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
       access[1].Trustee.TrusteeType = TRUSTEE_IS_USER;
       access[1].Trustee.ptstrName = static_cast<LPWSTR>(system_sid);
@@ -489,7 +464,7 @@ namespace session_history::storage {
         EXPLICIT_ACCESSW current_user_access {};
         current_user_access.grfAccessPermissions = GENERIC_ALL;
         current_user_access.grfAccessMode = SET_ACCESS;
-        current_user_access.grfInheritance = NO_INHERITANCE;
+        current_user_access.grfInheritance = directory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
         current_user_access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
         current_user_access.Trustee.TrusteeType = TRUSTEE_IS_USER;
         current_user_access.Trustee.ptstrName = static_cast<LPWSTR>(current_user_sid);
@@ -522,12 +497,12 @@ namespace session_history::storage {
     };
 
     const auto parent_path = db_path.parent_path();
-    if (!parent_path.empty() && db_path.filename() == "session_history.db") {
-      restore_directory_inheritance(parent_path);
+    if (!parent_path.empty() && parent_path.filename() == "session_history") {
+      apply_windows_permissions(parent_path, true);
     }
-    apply_windows_permissions(db_path);
-    apply_windows_permissions(db_path.string() + "-wal");
-    apply_windows_permissions(db_path.string() + "-shm");
+    apply_windows_permissions(db_path, false);
+    apply_windows_permissions(db_path.string() + "-wal", false);
+    apply_windows_permissions(db_path.string() + "-shm", false);
 #else
     const auto apply_posix_permissions = [&](const std::filesystem::path &path) {
       std::error_code ec;
@@ -545,6 +520,21 @@ namespace session_history::storage {
       }
     };
 
+    const auto parent_path = db_path.parent_path();
+    if (!parent_path.empty() && parent_path.filename() == "session_history") {
+      std::error_code ec;
+      if (std::filesystem::exists(parent_path, ec) && !ec) {
+        std::filesystem::permissions(
+          parent_path,
+          std::filesystem::perms::owner_all,
+          std::filesystem::perm_options::replace,
+          ec);
+        if (ec) {
+          BOOST_LOG(warning) << "session_history: failed to tighten permissions for " << parent_path.string()
+                             << ": " << ec.message();
+        }
+      }
+    }
     apply_posix_permissions(db_path);
     apply_posix_permissions(db_path.string() + "-wal");
     apply_posix_permissions(db_path.string() + "-shm");

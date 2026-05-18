@@ -8,8 +8,67 @@
 // lib imports
 #include <curl/curl.h>
 
+// standard includes
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+
 // local imports
 #include <src/httpcommon.h>
+
+namespace {
+  std::filesystem::path make_temp_credentials_path(const char *label) {
+    auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("vibepollo-creds-" + std::string(label) + "-" + std::to_string(stamp) + ".json");
+  }
+
+  void write_text_file(const std::filesystem::path &path, std::string_view contents) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << contents;
+  }
+}  // namespace
+
+TEST(UserCredsStateTest, MissingFile) {
+  const auto path = make_temp_credentials_path("missing");
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+
+  EXPECT_EQ(http::user_creds_state(path.string()), http::creds_state::missing_file);
+}
+
+TEST(UserCredsStateTest, MalformedJsonIsNotMissingCredentials) {
+  const auto path = make_temp_credentials_path("malformed");
+  write_text_file(path, "{not valid json");
+
+  EXPECT_EQ(http::user_creds_state(path.string()), http::creds_state::malformed);
+
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
+
+TEST(UserCredsStateTest, MissingRequiredFields) {
+  const auto path = make_temp_credentials_path("missing-fields");
+  write_text_file(path, R"({"username":"admin","password":"hash"})");
+
+  EXPECT_EQ(http::user_creds_state(path.string()), http::creds_state::missing_fields);
+
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
+
+TEST(UserCredsStateTest, Configured) {
+  const auto path = make_temp_credentials_path("configured");
+  write_text_file(path, R"({"username":"admin","password":"hash","salt":"salt"})");
+
+  EXPECT_EQ(http::user_creds_state(path.string()), http::creds_state::configured);
+
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
 
 struct UrlEscapeTest: testing::TestWithParam<std::tuple<std::string, std::string>> {};
 

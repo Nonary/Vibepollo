@@ -24,6 +24,16 @@ namespace statefile {
    */
   void write_json_atomic(const std::string &path, const boost::property_tree::ptree &tree);
 
+  /**
+   * @brief Best-effort repair for Windows config ACL inheritance.
+   *
+   * A previous session history build could protect the shared config directory
+   * while tightening the history database. This restores inheritance on the
+   * shared config directory and known mutable config/state files without
+   * touching intentionally private subdirectories such as credentials.
+   */
+  void repair_config_permissions();
+
   void migrate_recent_state_keys();
 
   /**

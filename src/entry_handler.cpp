@@ -40,9 +40,7 @@ namespace args {
       help(name);
     }
 
-    http::save_user_creds(config::sunshine.credentials_file, argv[0], argv[1]);
-
-    return 0;
+    return http::save_user_creds(config::sunshine.credentials_file, argv[0], argv[1]);
   }
 
   int help(const char *name) {

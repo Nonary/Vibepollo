@@ -3,16 +3,25 @@
 #include "config.h"
 #include "file_handler.h"
 #include "logging.h"
+#include "utility.h"
 
+#include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
-#include <algorithm>
 #include <cwctype>
 #include <filesystem>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <Windows.h>
+  #include <AclAPI.h>
+#endif
 
 using namespace std::literals;
 
@@ -48,6 +57,170 @@ namespace statefile {
     void write_tree(const fs::path &path, const pt::ptree &tree) {
       write_json_atomic(path.string(), tree);
     }
+
+#ifdef _WIN32
+    bool path_exists_or_may_be_access_denied(const fs::path &path) {
+      if (path.empty()) {
+        return false;
+      }
+
+      const auto wide_path = path.wstring();
+      const DWORD attributes = GetFileAttributesW(wide_path.c_str());
+      if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return true;
+      }
+
+      switch (GetLastError()) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_INVALID_NAME:
+          return false;
+        default:
+          // Access-denied and sharing failures are exactly the cases this
+          // repair path is meant to address. Try the ACL API anyway.
+          return true;
+      }
+    }
+
+    bool enable_acl_inheritance(const fs::path &path) {
+      if (!path_exists_or_may_be_access_denied(path)) {
+        return false;
+      }
+
+      const auto wide_path = path.wstring();
+      PSECURITY_DESCRIPTOR security_descriptor = nullptr;
+      PACL current_dacl = nullptr;
+      DWORD status = GetNamedSecurityInfoW(
+        const_cast<LPWSTR>(wide_path.c_str()),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        &current_dacl,
+        nullptr,
+        &security_descriptor
+      );
+      auto free_security_descriptor = util::fail_guard([&security_descriptor]() {
+        if (security_descriptor) {
+          LocalFree(security_descriptor);
+        }
+      });
+
+      if (status == ERROR_SUCCESS && current_dacl) {
+        status = SetNamedSecurityInfoW(
+          const_cast<LPWSTR>(wide_path.c_str()),
+          SE_FILE_OBJECT,
+          DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+          nullptr,
+          nullptr,
+          current_dacl,
+          nullptr
+        );
+        if (status == ERROR_SUCCESS) {
+          BOOST_LOG(debug) << "statefile: restored inherited ACLs for "sv << path.string();
+          return true;
+        }
+
+        BOOST_LOG(warning) << "statefile: failed to restore inherited ACLs for "sv << path.string()
+                           << " (error="sv << status << ')';
+        return false;
+      }
+      if (status == ERROR_SUCCESS) {
+        status = ERROR_INVALID_ACL;
+      }
+
+      // If the current DACL cannot be read, do not pass a null DACL together
+      // with DACL_SECURITY_INFORMATION. Only try to clear the protected-DACL
+      // bit; this avoids accidentally granting Everyone full access.
+      const DWORD unprotect_status = SetNamedSecurityInfoW(
+        const_cast<LPWSTR>(wide_path.c_str()),
+        SE_FILE_OBJECT,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr
+      );
+      if (unprotect_status == ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "statefile: restored inherited ACLs for "sv << path.string();
+        return true;
+      }
+
+      BOOST_LOG(warning) << "statefile: failed to inspect/restore inherited ACLs for "sv << path.string()
+                         << " (get_error="sv << status << ", set_error="sv << unprotect_status << ')';
+      return false;
+    }
+
+    std::wstring normalized_path_key(fs::path path) {
+      path = fs::absolute(path).lexically_normal();
+      path.make_preferred();
+
+      auto key = path.wstring();
+      std::transform(key.begin(), key.end(), key.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+      });
+      return key;
+    }
+
+    bool path_is_at_or_under(const fs::path &candidate, const fs::path &root) {
+      if (candidate.empty() || root.empty()) {
+        return false;
+      }
+
+      try {
+        auto candidate_key = normalized_path_key(candidate);
+        auto root_key = normalized_path_key(root);
+        while (root_key.size() > 3 && (root_key.back() == L'\\' || root_key.back() == L'/')) {
+          root_key.pop_back();
+        }
+
+        if (candidate_key == root_key) {
+          return true;
+        }
+
+        if (candidate_key.size() <= root_key.size() || candidate_key.compare(0, root_key.size(), root_key) != 0) {
+          return false;
+        }
+
+        const wchar_t separator = candidate_key[root_key.size()];
+        return separator == L'\\' || separator == L'/';
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "statefile: failed to normalize ACL repair path "
+                           << candidate.string() << " under " << root.string()
+                           << ": "sv << e.what();
+        return false;
+      }
+    }
+
+    void add_root_from_file(std::set<fs::path> &roots, const std::string &path) {
+      if (path.empty()) {
+        return;
+      }
+
+      fs::path candidate {path};
+      const auto parent = candidate.parent_path();
+      if (!parent.empty()) {
+        roots.insert(parent);
+      }
+    }
+
+    bool is_in_any_root(const fs::path &path, const std::set<fs::path> &roots) {
+      return std::any_of(roots.begin(), roots.end(), [&](const fs::path &root) {
+        return path_is_at_or_under(path, root);
+      });
+    }
+
+    void add_file_if_in_root(std::set<fs::path> &files, const std::set<fs::path> &roots, const std::string &path) {
+      if (path.empty()) {
+        return;
+      }
+
+      fs::path candidate {path};
+      if (is_in_any_root(candidate, roots)) {
+        files.insert(candidate);
+      }
+    }
+#endif
   }  // namespace
 
   std::mutex &state_mutex() {
@@ -72,6 +245,40 @@ namespace statefile {
       return config::nvhttp.vibeshine_file_state;
     }
     return config::nvhttp.file_state;
+  }
+
+  void repair_config_permissions() {
+#ifdef _WIN32
+    std::set<fs::path> config_roots;
+    std::set<fs::path> config_files;
+
+    add_root_from_file(config_roots, config::nvhttp.file_state);
+    add_root_from_file(config_roots, config::nvhttp.vibeshine_file_state);
+
+    add_file_if_in_root(config_files, config_roots, config::sunshine.config_file);
+    add_file_if_in_root(config_files, config_roots, config::stream.file_apps);
+    add_file_if_in_root(config_files, config_roots, config::nvhttp.file_state);
+    add_file_if_in_root(config_files, config_roots, config::nvhttp.vibeshine_file_state);
+    add_file_if_in_root(config_files, config_roots, config::sunshine.credentials_file);
+
+    static constexpr std::string_view known_config_files[] {
+      "sunshine_state.json"sv,
+      "vibeshine_state.json"sv,
+      "sunshine.conf"sv,
+      "apps.json"sv,
+    };
+
+    for (const auto &dir : config_roots) {
+      enable_acl_inheritance(dir);
+      for (const auto name : known_config_files) {
+        config_files.insert(dir / std::string {name});
+      }
+    }
+
+    for (const auto &path : config_files) {
+      enable_acl_inheritance(path);
+    }
+#endif
   }
 
   void migrate_recent_state_keys() {
