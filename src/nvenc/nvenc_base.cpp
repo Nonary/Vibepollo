@@ -509,12 +509,12 @@ namespace nvenc {
     };
 
       const auto set_hevc_10bit_format = [&](auto &format_config) {
-#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
         if (api::supports_separate_bit_depth_fields(selected_api_version)) {
           format_config.inputBitDepth = NV_ENC_BIT_DEPTH_10;
           format_config.outputBitDepth = NV_ENC_BIT_DEPTH_10;
         } else {
-          // SDK 13 removed the old HEVC bit-depth field names, but the v11/v12.0
+          // SDK 12.2 removed the old HEVC bit-depth field names, but the v11/v12.1
           // layout still occupies these reserved bits.
           format_config.reserved3 = 2;
         }
@@ -524,7 +524,7 @@ namespace nvenc {
       };
 
       const auto set_av1_10bit_format = [&](auto &format_config) {
-#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
         format_config.inputBitDepth = NV_ENC_BIT_DEPTH_10;
         format_config.outputBitDepth = NV_ENC_BIT_DEPTH_10;
 #else
@@ -545,7 +545,7 @@ namespace nvenc {
           } else {
             format_config.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
           }
-#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
           if (api::supports_separate_bit_depth_fields(selected_api_version)) {
             format_config.inputBitDepth = buffer_is_10bit() ? NV_ENC_BIT_DEPTH_10 : NV_ENC_BIT_DEPTH_8;
             format_config.outputBitDepth = buffer_is_10bit() ? NV_ENC_BIT_DEPTH_10 : NV_ENC_BIT_DEPTH_8;
@@ -565,7 +565,7 @@ namespace nvenc {
           if (buffer_is_10bit()) {
             set_hevc_10bit_format(format_config);
           }
-#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 1)
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
           else if (api::supports_separate_bit_depth_fields(selected_api_version)) {
             format_config.inputBitDepth = NV_ENC_BIT_DEPTH_8;
             format_config.outputBitDepth = NV_ENC_BIT_DEPTH_8;

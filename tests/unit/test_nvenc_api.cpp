@@ -81,10 +81,10 @@ TEST(NvencApiTest, SplitFrameSupportStartsAtSdk121) {
   EXPECT_TRUE(nvenc::api::supports_implicit_split_frame(kApi13_0));
 }
 
-TEST(NvencApiTest, SeparateBitDepthFieldsStartAtSdk121) {
+TEST(NvencApiTest, SeparateBitDepthFieldsStartAtSdk122) {
   EXPECT_FALSE(nvenc::api::supports_separate_bit_depth_fields(kApi11_0));
   EXPECT_FALSE(nvenc::api::supports_separate_bit_depth_fields(kApi12_0));
-  EXPECT_TRUE(nvenc::api::supports_separate_bit_depth_fields(kApi12_1));
+  EXPECT_FALSE(nvenc::api::supports_separate_bit_depth_fields(kApi12_1));
   EXPECT_TRUE(nvenc::api::supports_separate_bit_depth_fields(kApi12_2));
   EXPECT_TRUE(nvenc::api::supports_separate_bit_depth_fields(kApi13_0));
 }

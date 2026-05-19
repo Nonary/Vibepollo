@@ -137,7 +137,6 @@ namespace nvenc::api {
 
   constexpr bool supports_separate_bit_depth_fields(uint32_t api_version) {
     switch (api_version) {
-      case make_api_version(12U, 1U):
       case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return true;
