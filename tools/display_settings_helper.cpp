@@ -4745,10 +4745,10 @@ namespace {
       constexpr int kMaxSyncVerifyAttempts = 2;
       bool verified_sync = false;
       std::vector<std::chrono::milliseconds> reapply_delays {750ms};
-      if (cfg.m_hdr_state && *cfg.m_hdr_state == display_device::HdrState::Enabled) {
-        // HDR state can be (re)applied asynchronously by Windows shortly after topology/mode changes,
+      if (cfg.m_hdr_state) {
+        // HDR state can be changed asynchronously by Windows shortly after topology/mode changes,
         // especially for virtual displays. Schedule a few extra best-effort re-apply attempts to
-        // enforce the requested HDR state.
+        // enforce either HDR enablement or the SDR request's HDR disablement.
         reapply_delays = {750ms, 2500ms, 5500ms};
       }
 

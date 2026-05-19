@@ -1247,10 +1247,14 @@ namespace rtsp_stream {
     // Prefer 10-bit SDR encoding when enabled globally or overridden per-client.
     const auto client_prefer_10bit_sdr_override = nvhttp::get_client_prefer_10bit_sdr_override(session.client_uuid);
     const bool prefer_10bit_sdr = client_prefer_10bit_sdr_override.value_or(config::video.prefer_10bit_sdr);
-    if (prefer_10bit_sdr && !session.enable_hdr && config.monitor.dynamicRange == 0) {
-      const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
-      const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
-      if (hevc_main10 || av1_main10) {
+    const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
+    const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
+    const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
+    if (config.monitor.dynamicRange == 0) {
+      if (session.enable_hdr && supports_10bit_dynamic_range) {
+        BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
+        config.monitor.dynamicRange = 1;
+      } else if (prefer_10bit_sdr && !session.enable_hdr && supports_10bit_dynamic_range) {
         BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;

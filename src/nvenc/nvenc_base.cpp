@@ -525,8 +525,19 @@ namespace nvenc {
 
       const auto set_av1_10bit_format = [&](auto &format_config) {
 #if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
-        format_config.inputBitDepth = NV_ENC_BIT_DEPTH_10;
-        format_config.outputBitDepth = NV_ENC_BIT_DEPTH_10;
+        if (api::supports_separate_bit_depth_fields(selected_api_version)) {
+          format_config.inputBitDepth = NV_ENC_BIT_DEPTH_10;
+          format_config.outputBitDepth = NV_ENC_BIT_DEPTH_10;
+        } else {
+          // SDK 12.2 moved AV1 bit depth out of the packed bitfield, but API
+          // 12.1 drivers still read the original input/output bit-depth bits.
+#if NVENCAPI_MAJOR_VERSION > 12
+          format_config.enableTemporalSVC = 1;
+          format_config.reserved4 = 1;
+#else
+          format_config.reserved4 = 18;
+#endif
+        }
 #else
         format_config.inputPixelBitDepthMinus8 = 2;
         format_config.pixelBitDepthMinus8 = 2;
@@ -603,10 +614,13 @@ namespace nvenc {
           format_config.enableBitstreamPadding = config.insert_filler_data;
           if (buffer_is_10bit()) {
             set_av1_10bit_format(format_config);
-          } else {
+          }
+#if NVENCAPI_MAJOR_VERSION > 12 || (NVENCAPI_MAJOR_VERSION == 12 && NVENCAPI_MINOR_VERSION >= 2)
+          else if (api::supports_separate_bit_depth_fields(selected_api_version)) {
             format_config.inputBitDepth = NV_ENC_BIT_DEPTH_8;
             format_config.outputBitDepth = NV_ENC_BIT_DEPTH_8;
           }
+#endif
           format_config.colorPrimaries = colorspace.primaries;
           format_config.transferCharacteristics = colorspace.tranfer_function;
           format_config.matrixCoefficients = colorspace.matrix;
