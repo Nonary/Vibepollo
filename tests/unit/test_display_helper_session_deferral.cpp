@@ -3,6 +3,7 @@
  * @brief Unit tests for Sunshine display helper session deferral.
  */
 #include "../tests_common.h"
+#include "src/platform/windows/display_helper_request_helpers.h"
 #include "src/platform/windows/display_helper_session_deferral.h"
 #include "src/rtsp.h"
 
@@ -113,4 +114,16 @@ TEST(DisplayHelperSessionDeferral, ReschedulesAndDropsForNewerPending) {
 
   reschedule = manager.reschedule(*result.pending);
   EXPECT_TRUE(reschedule.dropped_for_newer);
+}
+
+TEST(DisplayHelperRequestHelpers, SkipsPhysicalOutputWhenDisplayConfigurationDisabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::disabled;
+
+  rtsp_stream::launch_session_t session {};
+  session.output_name_override = "{physical-monitor-guid}";
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  EXPECT_FALSE(request.has_value());
 }

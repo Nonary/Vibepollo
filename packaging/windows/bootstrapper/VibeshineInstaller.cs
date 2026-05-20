@@ -3376,12 +3376,15 @@ namespace VibepolloInstaller {
       }
 
       try {
-        var fullPath = Path.GetFullPath(msiPath);
-        var tempRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "VibepolloInstaller"));
-        return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
+        foreach (var root in GetEmbeddedMsiExtractRoots()) {
+          if (PathIsUnderDirectory(msiPath, root)) {
+            return true;
+          }
+        }
       } catch {
-        return false;
       }
+
+      return false;
     }
 
     private static bool LogShowsMsiAccessFailure(string logPath, string msiPath) {
@@ -4297,6 +4300,12 @@ namespace VibepolloInstaller {
       string injectedMsiPath = null;
       var recoveryDetails = new List<string>();
 
+      if (!IsProcessElevated()
+          && string.IsNullOrWhiteSpace(arguments.MsiPathOverride)
+          && ShouldElevateCliForEmbeddedPayload(cliArgs, hasOperation)) {
+        return RunElevatedBootstrapperCli(arguments);
+      }
+
       if (!hasOperation) {
         installMsiPath = ResolveMsiPath(arguments.MsiPathOverride);
         injectedMsiPath = installMsiPath;
@@ -4756,6 +4765,32 @@ namespace VibepolloInstaller {
       } catch {
         return false;
       }
+    }
+
+    private static bool ShouldElevateCliForEmbeddedPayload(IReadOnlyList<string> cliArgs, bool hasOperation) {
+      if (!hasOperation) {
+        return true;
+      }
+      if (cliArgs == null) {
+        return false;
+      }
+
+      for (var index = 0; index < cliArgs.Count; index++) {
+        var operation = cliArgs[index];
+        if (!IsOperationSwitch(operation)) {
+          continue;
+        }
+        if (!string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(operation, "/a", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(operation, "/x", StringComparison.OrdinalIgnoreCase)) {
+          return false;
+        }
+
+        return index + 1 >= cliArgs.Count || LooksLikeSwitch(cliArgs[index + 1]);
+      }
+
+      return false;
     }
 
     private static string BuildCompetingProductUninstallFailureMessage(string uninstallMessage) {
@@ -5268,15 +5303,37 @@ namespace VibepolloInstaller {
     }
 
     private static string BuildEmbeddedMsiExtractDirectory(string versionToken, bool forceFreshExtract) {
-      var root = Path.Combine(
-        Path.GetTempPath(),
-        "VibepolloInstaller",
-        versionToken);
+      var root = Path.Combine(GetEmbeddedMsiExtractRoot(), versionToken);
       if (!forceFreshExtract) {
         return root;
       }
 
       return Path.Combine(root, "recovery_" + Guid.NewGuid().ToString("N"));
+    }
+
+    private static string GetEmbeddedMsiExtractRoot() {
+      // Windows Installer may run in the service context and fail to read per-user temp payloads.
+      if (IsProcessElevated()) {
+        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (!string.IsNullOrWhiteSpace(programData)) {
+          return Path.Combine(programData, "Vibepollo", "InstallerCache");
+        }
+      }
+
+      return Path.Combine(Path.GetTempPath(), "VibepolloInstaller");
+    }
+
+    private static IEnumerable<string> GetEmbeddedMsiExtractRoots() {
+      var roots = new List<string> {
+        Path.Combine(Path.GetTempPath(), "VibepolloInstaller")
+      };
+
+      var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+      if (!string.IsNullOrWhiteSpace(programData)) {
+        roots.Add(Path.Combine(programData, "Vibepollo", "InstallerCache"));
+      }
+
+      return roots;
     }
 
     private static void WriteStreamAtomically(Stream input, string destinationPath) {

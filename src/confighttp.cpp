@@ -13,8 +13,8 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <filesystem>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <future>
@@ -26,6 +26,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -3791,6 +3792,102 @@ namespace confighttp {
 
   constexpr int kGoldenSnapshotLatestVersion = 2;
 
+  struct golden_current_mode_t {
+    unsigned int width {};
+    unsigned int height {};
+    double refresh_hz {};
+  };
+
+  struct golden_current_summary_t {
+    bool valid {false};
+    bool active_virtual_display {false};
+    std::set<std::string> devices;
+    std::unordered_map<std::string, golden_current_mode_t> modes;
+    std::unordered_map<std::string, bool> hdr;
+    std::unordered_map<std::string, std::pair<int, int>> origins;
+    std::string primary;
+  };
+
+  static std::string normalized_display_id(std::string id) {
+    id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) {
+               return !std::isspace(ch);
+             }));
+    id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char ch) {
+               return !std::isspace(ch);
+             }).base(),
+             id.end());
+    std::transform(id.begin(), id.end(), id.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    return id;
+  }
+
+  static bool contains_ci(const std::string &haystack, const std::string &needle) {
+    if (needle.empty()) {
+      return true;
+    }
+    if (haystack.size() < needle.size()) {
+      return false;
+    }
+    for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
+      bool match = true;
+      for (size_t j = 0; j < needle.size(); ++j) {
+        if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
+            std::tolower(static_cast<unsigned char>(needle[j]))) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool equals_ci(const std::string &lhs, const std::string &rhs) {
+    return lhs.size() == rhs.size() && contains_ci(lhs, rhs);
+  }
+
+  static bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
+    if (contains_ci(device.m_device_id, "SUDOVDA") ||
+        contains_ci(device.m_device_id, "SUDOMAKER") ||
+        contains_ci(device.m_display_name, "SUDOVDA") ||
+        contains_ci(device.m_display_name, "SUDOMAKER") ||
+        contains_ci(device.m_friendly_name, "SUDOVDA") ||
+        contains_ci(device.m_friendly_name, "SUDOMAKER")) {
+      return true;
+    }
+    if (equals_ci(device.m_friendly_name, "SudoMaker Virtual Display Adapter")) {
+      return true;
+    }
+    return device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SMK");
+  }
+
+  static bool is_active_display_device(const display_device::EnumeratedDevice &device) {
+    return device.m_info.has_value() || !device.m_display_name.empty();
+  }
+
+  static std::optional<double> floating_to_double(const display_device::FloatingPoint &value) {
+    if (std::holds_alternative<double>(value)) {
+      return std::get<double>(value);
+    }
+    const auto &rat = std::get<display_device::Rational>(value);
+    if (rat.m_denominator == 0) {
+      return std::nullopt;
+    }
+    return static_cast<double>(rat.m_numerator) / static_cast<double>(rat.m_denominator);
+  }
+
+  static bool nearly_equal_refresh(double lhs, double rhs) {
+    if (!std::isfinite(lhs) || !std::isfinite(rhs)) {
+      return false;
+    }
+    const double diff = std::abs(lhs - rhs);
+    const double scale = std::max({1.0, std::abs(lhs), std::abs(rhs)});
+    return diff <= scale * 1e-4;
+  }
+
   static std::optional<nlohmann::json> read_json_file_nofail(const std::filesystem::path &path) {
     try {
       std::ifstream file(path, std::ios::binary);
@@ -3840,6 +3937,213 @@ namespace confighttp {
     return false;
   }
 
+  static std::set<std::string> snapshot_topology_devices(const nlohmann::json &root) {
+    std::set<std::string> ids;
+    auto topology = root.find("topology");
+    if (topology != root.end() && topology->is_array()) {
+      for (const auto &group : *topology) {
+        if (!group.is_array()) {
+          continue;
+        }
+        for (const auto &device : group) {
+          if (device.is_string()) {
+            auto id = normalized_display_id(device.get<std::string>());
+            if (!id.empty()) {
+              ids.insert(std::move(id));
+            }
+          }
+        }
+      }
+    }
+    if (ids.empty()) {
+      auto modes = root.find("modes");
+      if (modes != root.end() && modes->is_object()) {
+        for (auto it = modes->begin(); it != modes->end(); ++it) {
+          auto id = normalized_display_id(it.key());
+          if (!id.empty()) {
+            ids.insert(std::move(id));
+          }
+        }
+      }
+    }
+    return ids;
+  }
+
+  static std::unordered_map<std::string, golden_current_mode_t> snapshot_modes(const nlohmann::json &root) {
+    std::unordered_map<std::string, golden_current_mode_t> modes;
+    auto modes_it = root.find("modes");
+    if (modes_it == root.end() || !modes_it->is_object()) {
+      return modes;
+    }
+    for (auto it = modes_it->begin(); it != modes_it->end(); ++it) {
+      if (!it->is_object()) {
+        continue;
+      }
+      auto id = normalized_display_id(it.key());
+      const auto width = it->value("w", 0u);
+      const auto height = it->value("h", 0u);
+      const auto num = it->value("num", 0u);
+      const auto den = it->value("den", 0u);
+      if (id.empty() || width == 0 || height == 0 || den == 0) {
+        continue;
+      }
+      modes.emplace(std::move(id), golden_current_mode_t {
+                                      .width = width,
+                                      .height = height,
+                                      .refresh_hz = static_cast<double>(num) / static_cast<double>(den),
+                                    });
+    }
+    return modes;
+  }
+
+  static std::unordered_map<std::string, bool> snapshot_hdr_states(const nlohmann::json &root) {
+    std::unordered_map<std::string, bool> states;
+    auto hdr_it = root.find("hdr");
+    if (hdr_it == root.end() || !hdr_it->is_object()) {
+      return states;
+    }
+    for (auto it = hdr_it->begin(); it != hdr_it->end(); ++it) {
+      if (!it->is_string()) {
+        continue;
+      }
+      auto id = normalized_display_id(it.key());
+      auto value = boost::algorithm::to_lower_copy(it->get<std::string>());
+      if (id.empty() || (value != "on" && value != "off")) {
+        continue;
+      }
+      states.emplace(std::move(id), value == "on");
+    }
+    return states;
+  }
+
+  static std::unordered_map<std::string, std::pair<int, int>> snapshot_origins(const nlohmann::json &root) {
+    std::unordered_map<std::string, std::pair<int, int>> origins;
+    auto origins_it = root.find("origins");
+    if (origins_it == root.end() || !origins_it->is_object()) {
+      return origins;
+    }
+    for (auto it = origins_it->begin(); it != origins_it->end(); ++it) {
+      if (!it->is_object()) {
+        continue;
+      }
+      auto id = normalized_display_id(it.key());
+      if (id.empty()) {
+        continue;
+      }
+      origins.emplace(std::move(id), std::make_pair(it->value("x", 0), it->value("y", 0)));
+    }
+    return origins;
+  }
+
+  static golden_current_summary_t current_golden_comparison_summary() {
+    golden_current_summary_t summary;
+    const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Full);
+    if (!devices) {
+      return summary;
+    }
+
+    std::set<std::string> exclusions;
+    for (auto id : config::video.dd.snapshot_exclude_devices) {
+      id = normalized_display_id(std::move(id));
+      if (!id.empty()) {
+        exclusions.insert(std::move(id));
+      }
+    }
+
+    for (const auto &device : *devices) {
+      if (is_virtual_display_device(device)) {
+        if (is_active_display_device(device)) {
+          summary.active_virtual_display = true;
+        }
+        continue;
+      }
+      if (!device.m_info || device.m_display_name.empty()) {
+        continue;
+      }
+
+      auto id = normalized_display_id(device.m_device_id.empty() ? device.m_display_name : device.m_device_id);
+      if (id.empty() || exclusions.contains(id)) {
+        continue;
+      }
+
+      summary.devices.insert(id);
+      if (auto refresh = floating_to_double(device.m_info->m_refresh_rate)) {
+        summary.modes[id] = golden_current_mode_t {
+          .width = device.m_info->m_resolution.m_width,
+          .height = device.m_info->m_resolution.m_height,
+          .refresh_hz = *refresh,
+        };
+      }
+      if (device.m_info->m_hdr_state) {
+        summary.hdr[id] = *device.m_info->m_hdr_state == display_device::HdrState::Enabled;
+      }
+      summary.origins[id] = std::make_pair(device.m_info->m_origin_point.m_x, device.m_info->m_origin_point.m_y);
+      if (device.m_info->m_primary) {
+        summary.primary = id;
+      }
+    }
+
+    summary.valid = !summary.devices.empty();
+    return summary;
+  }
+
+  static std::optional<std::string> snapshot_current_mismatch_reason(const nlohmann::json &root) {
+    const auto current = current_golden_comparison_summary();
+    if (current.active_virtual_display) {
+      return std::nullopt;
+    }
+    if (!current.valid) {
+      return std::nullopt;
+    }
+
+    const auto snapshot_devices = snapshot_topology_devices(root);
+    if (snapshot_devices.empty()) {
+      return "invalid_snapshot";
+    }
+    if (snapshot_devices != current.devices) {
+      return "display_set_changed";
+    }
+
+    const auto modes = snapshot_modes(root);
+    for (const auto &[id, mode] : modes) {
+      auto current_mode = current.modes.find(id);
+      if (current_mode == current.modes.end()) {
+        continue;
+      }
+      if (mode.width != current_mode->second.width ||
+          mode.height != current_mode->second.height ||
+          !nearly_equal_refresh(mode.refresh_hz, current_mode->second.refresh_hz)) {
+        return "display_mode_changed";
+      }
+    }
+
+    const auto hdr_states = snapshot_hdr_states(root);
+    for (const auto &[id, hdr] : hdr_states) {
+      auto current_hdr = current.hdr.find(id);
+      if (current_hdr != current.hdr.end() && hdr != current_hdr->second) {
+        return "hdr_changed";
+      }
+    }
+
+    auto primary_it = root.find("primary");
+    if (primary_it != root.end() && primary_it->is_string()) {
+      const auto primary = normalized_display_id(primary_it->get<std::string>());
+      if (!primary.empty() && !current.primary.empty() && primary != current.primary) {
+        return "primary_changed";
+      }
+    }
+
+    const auto origins = snapshot_origins(root);
+    for (const auto &[id, origin] : origins) {
+      auto current_origin = current.origins.find(id);
+      if (current_origin != current.origins.end() && origin != current_origin->second) {
+        return "layout_changed";
+      }
+    }
+
+    return "";
+  }
+
   void getGoldenStatus(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3850,6 +4154,9 @@ namespace confighttp {
     std::optional<int> snapshot_version;
     bool has_layout = false;
     bool needs_layout_upgrade = false;
+    bool out_of_date = false;
+    bool comparison_available = false;
+    std::string out_of_date_reason;
     try {
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
@@ -3859,8 +4166,23 @@ namespace confighttp {
             has_layout = snapshot_has_layout_data(*root);
             const bool latest_schema = snapshot_version && *snapshot_version >= kGoldenSnapshotLatestVersion;
             needs_layout_upgrade = !latest_schema || !has_layout;
+            out_of_date = needs_layout_upgrade;
+            if (needs_layout_upgrade) {
+              out_of_date_reason = "schema_upgrade_required";
+            }
+            if (!has_active_stream_sessions()) {
+              if (auto mismatch = snapshot_current_mismatch_reason(*root)) {
+                comparison_available = true;
+                if (!mismatch->empty()) {
+                  out_of_date = true;
+                  out_of_date_reason = *mismatch;
+                }
+              }
+            }
           } else {
             needs_layout_upgrade = true;
+            out_of_date = true;
+            out_of_date_reason = "unreadable_snapshot";
           }
           break;
         }
@@ -3872,6 +4194,9 @@ namespace confighttp {
     out["latest_snapshot_version"] = kGoldenSnapshotLatestVersion;
     out["has_layout"] = has_layout;
     out["needs_layout_upgrade"] = needs_layout_upgrade;
+    out["out_of_date"] = out_of_date;
+    out["comparison_available"] = comparison_available;
+    out["out_of_date_reason"] = out_of_date_reason;
     send_response(response, out);
   }
 

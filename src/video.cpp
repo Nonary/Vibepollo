@@ -75,6 +75,13 @@ namespace video {
         return false;
       }
 
+      if (auto runtime_output_name = config::runtime_output_name_override()) {
+        if (!runtime_output_name->empty()) {
+          return boost::iequals(*runtime_output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION) ||
+                 VDISPLAY::is_virtual_display_output(*runtime_output_name);
+        }
+      }
+
       if (!VDISPLAY::isSudaVDADriverInstalled()) {
         return false;
       }
@@ -1379,6 +1386,8 @@ namespace video {
    */
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index, std::string &preferred_display_name) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
+    const auto runtime_output_override = config::runtime_output_name_override();
+    const bool has_runtime_output_override = runtime_output_override && !runtime_output_override->empty();
     const auto output_name = display_device::map_output_name(config::get_active_output_name());
     std::string current_display_name;
     auto names_match = [](const std::string &lhs, const std::string &rhs) {
@@ -1424,6 +1433,19 @@ namespace video {
 
     // We now have a new display name list, so reset the index back to 0
     current_display_index = 0;
+
+    if (has_runtime_output_override && !output_name.empty()) {
+      for (int x = 0; x < display_names.size(); ++x) {
+        if (names_match(display_names[x], output_name)) {
+          current_display_index = x;
+          return;
+        }
+      }
+
+      BOOST_LOG(warning) << "Runtime display override [" << *runtime_output_override
+                         << "] mapped to [" << output_name
+                         << "] but was not found in the capture display list";
+    }
 
     if (current_display_name.empty()) {
       current_display_name = display_device::map_output_name(config::video.output_name);

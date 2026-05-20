@@ -8,6 +8,7 @@
 
   #include "src/display_device.h"
   #include "src/globals.h"
+  #include "src/logging.h"
   #include "src/platform/common.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
@@ -76,6 +77,17 @@ namespace display_helper_integration::helpers {
       }
 
       return it->cmd.empty() && it->playnite_id.empty();
+    }
+
+    bool output_name_targets_virtual(const std::string &output_name) {
+      return boost::iequals(output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION) ||
+             VDISPLAY::is_virtual_display_output(output_name);
+    }
+
+    bool session_has_physical_output_override(const rtsp_stream::launch_session_t &session) {
+      return session.output_name_override &&
+             !session.output_name_override->empty() &&
+             !output_name_targets_virtual(*session.output_name_override);
     }
 
     rtsp_stream::launch_session_t make_display_request_session_snapshot_impl(const rtsp_stream::launch_session_t &session) {
@@ -217,7 +229,8 @@ namespace display_helper_integration::helpers {
         effective_video_config_.output_name = *runtime_output_override;
       }
     }
-    if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
+    if (session_.virtual_display &&
+        effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
         !effective_video_config_.output_name.empty()) {
       effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
     }
@@ -459,7 +472,8 @@ namespace display_helper_integration::helpers {
         effective_video_config_.output_name = *runtime_output_override;
       }
     }
-    if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
+    if (session_.virtual_display &&
+        effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
         !effective_video_config_.output_name.empty()) {
       effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
     }
@@ -664,6 +678,15 @@ namespace display_helper_integration::helpers {
   }
 
   std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    const auto effective_config_option =
+      session.dd_config_option_override.value_or(video_config.dd.configuration_option);
+    if (!session.virtual_display &&
+        session_has_physical_output_override(session) &&
+        effective_config_option == config::video_t::dd_t::config_option_e::disabled) {
+      BOOST_LOG(info) << "Display helper: physical output override with display configuration disabled; using capture target only.";
+      return std::nullopt;
+    }
+
     DisplayApplyBuilder builder;
     SessionDisplayConfigurationHelper config_helper(video_config, session);
     if (!config_helper.configure(builder)) {

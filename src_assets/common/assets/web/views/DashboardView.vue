@@ -223,7 +223,7 @@
               </div>
             </n-alert>
             <n-alert
-              v-if="showGoldenLayoutUpgradeBanner"
+              v-if="showGoldenSnapshotOutOfDateBanner"
               type="warning"
               :show-icon="true"
               class="rounded-xl"
@@ -235,16 +235,16 @@
                   <p class="text-sm m-0 font-medium">
                     {{
                       translate(
-                        'config.golden_layout_upgrade_title',
-                        'Golden display snapshot needs an update',
+                        'config.golden_snapshot_outdated_title',
+                        'Display snapshot may be out of date',
                       )
                     }}
                   </p>
                   <p class="text-xs opacity-80 m-0">
                     {{
                       translate(
-                        'config.golden_layout_upgrade_desc',
-                        'Your saved snapshot predates display layout support. Recreate it to restore portrait and landscape monitor layouts correctly.',
+                        'config.golden_snapshot_outdated_desc',
+                        'Your saved snapshot may no longer match your display setup. Recreate it when possible to reduce the chance of display recovery issues.',
                       )
                     }}
                   </p>
@@ -268,7 +268,7 @@
                       >
                         <i class="fas fa-rotate-right" />
                         <span>{{
-                          translate('config.golden_layout_upgrade_action', 'Open Display Settings')
+                          translate('config.golden_snapshot_outdated_action', 'Open Display Settings')
                         }}</span>
                       </n-button>
                     </a>
@@ -528,6 +528,9 @@ type GoldenStatus = {
   latest_snapshot_version?: number;
   has_layout?: boolean;
   needs_layout_upgrade?: boolean;
+  out_of_date?: boolean;
+  comparison_available?: boolean;
+  out_of_date_reason?: string;
 };
 const playnite = ref<PlayniteStatus | null>(null);
 
@@ -1017,10 +1020,14 @@ const showVigemBanner = computed(() => {
   return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
 });
 
-const showGoldenLayoutUpgradeBanner = computed(() => {
+const showGoldenSnapshotOutOfDateBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  return goldenStatus.value?.exists === true && goldenStatus.value?.needs_layout_upgrade === true;
+  return (
+    goldenStatus.value?.exists === true &&
+    (goldenStatus.value?.needs_layout_upgrade === true ||
+      goldenStatus.value?.out_of_date === true)
+  );
 });
 
 const playniteUpdateAvailable = computed(() => {
