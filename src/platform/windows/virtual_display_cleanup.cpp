@@ -88,6 +88,7 @@ namespace platf::virtual_display_cleanup {
                     << ", enforce_db_restore=" << (enforce_db_restore ? "true" : "false")
                     << ", revert_order="
                     << (revert_order == revert_order_t::restore_before_remove ? "restore_before_remove" : "remove_before_restore")
+                    << ", prefer_golden_if_current_missing=" << (prefer_golden_if_current_missing ? "true" : "false")
                     << ")";
 
     const bool had_active_virtual_display = has_active_virtual_display();

@@ -20,7 +20,7 @@ namespace platf::virtual_display_cleanup {
     std::string_view reason,
     bool enforce_db_restore = true,
     revert_order_t revert_order = revert_order_t::remove_before_restore,
-    bool prefer_golden_if_current_missing = false
+    bool prefer_golden_if_current_missing = true
   );
 }  // namespace platf::virtual_display_cleanup
 

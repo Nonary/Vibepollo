@@ -1001,12 +1001,9 @@ namespace {
   }
 
   std::string build_revert_payload(bool prefer_golden_if_current_missing) {
-    if (!prefer_golden_if_current_missing) {
-      return {};
-    }
-
     nlohmann::json j = nlohmann::json::object();
-    j["sunshine_prefer_golden_if_current_missing"] = true;
+    j["sunshine_prefer_golden_if_current_missing"] = prefer_golden_if_current_missing;
+    j["sunshine_always_restore_from_golden"] = config::video.dd.always_restore_from_golden;
     return j.dump();
   }
 
