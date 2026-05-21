@@ -112,6 +112,9 @@ jobs:
                 return notes_path
             return None
 
+          def canonical_release_tag(tag):
+            return tag if tag.startswith("v") else f"v{tag}"
+
           event_name = os.environ["EVENT_NAME"]
           if event_name != "push":
             skip("Release gate only applies to push events.")
@@ -134,8 +137,9 @@ jobs:
             key = version_key(tag)
             if key is None:
               continue
-            if tag in release_tags:
-              print(f"Skipping {tag}: release already exists.")
+            release_tag = canonical_release_tag(tag)
+            if tag in release_tags or release_tag in release_tags:
+              print(f"Skipping {tag}: release already exists as {release_tag}.")
               continue
             comparable_releases = [
               release_key for release_key in release_versions
@@ -158,7 +162,7 @@ jobs:
             if notes_file is None:
               print(f"Skipping {tag}: no exact matching release_notes file in the tag commit.")
               continue
-            valid_candidates.append((key, tag, notes_file, release_commit))
+            valid_candidates.append((key, release_tag, notes_file, release_commit))
 
           if not valid_candidates:
             skip("No unreleased newer tag with exact matching release notes was found.")
@@ -186,6 +190,7 @@ jobs:
     with:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       symbol_product_name: Vibepollo
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       symbol_release_draft: true
