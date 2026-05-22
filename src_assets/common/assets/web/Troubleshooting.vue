@@ -96,47 +96,44 @@
           </n-button>
         </div>
       </section>
-
-      <section v-if="platform === 'windows'" class="troubleshoot-card space-y-4">
-        <div>
-          <h2 class="text-base font-semibold text-dark dark:text-light">
-            {{ translate('troubleshooting.remote_mic_title', 'Remote Microphone') }}
-          </h2>
-          <p class="text-xs opacity-70 leading-snug">
-            {{
-              translate(
-                'troubleshooting.remote_mic_desc',
-                'Use Moonlight microphone preview first, then follow the host-side validation stages below.',
-              )
-            }}
-          </p>
-        </div>
-
-        <n-alert :type="micStatusType">
-          {{ micDebug?.state || translate('troubleshooting.remote_mic_idle', 'No active remote microphone session') }}
-        </n-alert>
-
-        <div class="space-y-2">
-          <div
-            v-for="stage in micStages"
-            :key="stage.key"
-            class="rounded-lg border px-3 py-2"
-            :class="micStageClass(stage.state)"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <div class="text-sm font-medium">{{ stage.label }}</div>
-              <span class="text-xs font-semibold uppercase tracking-wide">
-                {{ micStageStateLabel(stage.state) }}
-              </span>
-            </div>
-            <p class="text-xs opacity-80 mt-1 leading-snug">{{ stage.detail }}</p>
-          </div>
-          <p v-if="micStages.length === 0" class="text-xs opacity-70">
-            {{ translate('troubleshooting.remote_mic_loading', 'Loading microphone status...') }}
-          </p>
-        </div>
-      </section>
     </div>
+
+    <section v-if="platform === 'windows'" class="troubleshoot-card space-y-4">
+      <div>
+        <h2 class="text-base font-semibold text-dark dark:text-light">
+          {{ translate('troubleshooting.remote_mic_title', 'Remote Microphone') }}
+        </h2>
+        <p class="text-xs opacity-70 leading-snug">
+          {{
+            translate(
+              'troubleshooting.remote_mic_desc',
+              'Use Moonlight microphone preview first, then follow the host-side validation stages below.',
+            )
+          }}
+        </p>
+      </div>
+
+      <n-alert :type="micStatusType">
+        {{ micDebug?.state || translate('troubleshooting.remote_mic_idle', 'No active remote microphone session') }}
+      </n-alert>
+
+      <div class="space-y-2">
+        <div
+          v-for="stage in micStages"
+          :key="stage.key"
+          class="rounded-lg border px-3 py-2"
+          :class="micStageClass(stage.state)"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div class="text-sm font-medium">{{ stage.label }}</div>
+            <span class="text-xs font-semibold uppercase tracking-wide">
+              {{ micStageStateLabel(stage.state) }}
+            </span>
+          </div>
+          <p class="text-xs opacity-80 mt-1 leading-snug">{{ stage.detail }}</p>
+        </div>
+      </div>
+    </section>
 
     <section class="troubleshoot-card space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -365,6 +362,7 @@ const restartPressed = ref(false);
 
 type MicDebugSnapshot = {
   sessionActive?: boolean;
+  micRequested?: boolean;
   firstPacketReceived?: boolean;
   decodeActive?: boolean;
   renderActive?: boolean;
@@ -380,7 +378,10 @@ type MicDebugSnapshot = {
 };
 
 const micDebug = ref<MicDebugSnapshot | null>(null);
-let micDebugInterval: number | null = null;
+let micDebugPollTimer: number | null = null;
+
+const MIC_DEBUG_POLL_ACTIVE_MS = 1000;
+const MIC_DEBUG_POLL_IDLE_MS = 5000;
 
 const isFreshMicAge = (ageMs?: number) => typeof ageMs === 'number' && ageMs >= 0 && ageMs < 3000;
 
@@ -1215,6 +1216,46 @@ async function refreshMicDebug() {
   }
 }
 
+function micDebugPollDelayMs() {
+  const debug = micDebug.value;
+  if (debug?.sessionActive || debug?.micRequested) {
+    return MIC_DEBUG_POLL_ACTIVE_MS;
+  }
+  return MIC_DEBUG_POLL_IDLE_MS;
+}
+
+function scheduleMicDebugPoll() {
+  if (platform.value !== 'windows' || typeof window === 'undefined') return;
+
+  if (micDebugPollTimer !== null) {
+    window.clearTimeout(micDebugPollTimer);
+    micDebugPollTimer = null;
+  }
+
+  if (typeof document !== 'undefined' && document.hidden) {
+    micDebugPollTimer = window.setTimeout(scheduleMicDebugPoll, MIC_DEBUG_POLL_IDLE_MS);
+    return;
+  }
+
+  micDebugPollTimer = window.setTimeout(async () => {
+    await refreshMicDebug();
+    scheduleMicDebugPoll();
+  }, micDebugPollDelayMs());
+}
+
+function stopMicDebugPoll() {
+  if (micDebugPollTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(micDebugPollTimer);
+    micDebugPollTimer = null;
+  }
+}
+
+function handleMicDebugVisibilityChange() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  void refreshMicDebug();
+  scheduleMicDebugPoll();
+}
+
 onMounted(async () => {
   loginDisposer = authStore.onLogin(() => {
     void refreshLogs();
@@ -1234,13 +1275,19 @@ onMounted(async () => {
 
   if (platform.value === 'windows') {
     await refreshMicDebug();
-    micDebugInterval = window.setInterval(refreshMicDebug, 1000);
+    scheduleMicDebugPoll();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleMicDebugVisibilityChange);
+    }
   }
 });
 
 onBeforeUnmount(() => {
   if (logInterval) window.clearInterval(logInterval);
-  if (micDebugInterval) window.clearInterval(micDebugInterval);
+  stopMicDebugPoll();
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleMicDebugVisibilityChange);
+  }
   if (loginDisposer) loginDisposer();
   if (searchDebounce !== null && typeof window !== 'undefined') {
     window.clearTimeout(searchDebounce);

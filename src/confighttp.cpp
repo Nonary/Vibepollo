@@ -2447,8 +2447,6 @@ namespace confighttp {
       return;
     }
 
-    print_req(request);
-
     const auto snapshot = audio::get_mic_debug_snapshot();
     nlohmann::json output_tree;
     output_tree["status"] = true;
