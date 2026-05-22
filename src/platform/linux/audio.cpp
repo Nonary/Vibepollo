@@ -209,11 +209,11 @@ namespace platf {
               events->raise(ready);
               break;
             case PA_CONTEXT_TERMINATED:
-              BOOST_LOG(debug) << "Pulseadio context terminated"sv;
+              BOOST_LOG(debug) << "PulseAudio context terminated"sv;
               events->raise(terminated);
               break;
             case PA_CONTEXT_FAILED:
-              BOOST_LOG(debug) << "Pulseadio context failed"sv;
+              BOOST_LOG(debug) << "PulseAudio context failed"sv;
               events->raise(failed);
               break;
             case PA_CONTEXT_CONNECTING:
@@ -236,6 +236,7 @@ namespace platf {
         worker = std::thread {
           [](loop_t::pointer loop) {
             int retval;
+            platf::set_thread_name("audio::pulseaudio");
             auto status = pa_mainloop_run(loop, &retval);
 
             if (status < 0) {
@@ -440,7 +441,7 @@ namespace platf {
         return monitor_name;
       }
 
-      std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) override {
+      std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, [[maybe_unused]] bool host_audio_enabled) override {
         // Sink choice priority:
         // 1. Config sink
         // 2. Last sink swapped to (Usually virtual in this case)

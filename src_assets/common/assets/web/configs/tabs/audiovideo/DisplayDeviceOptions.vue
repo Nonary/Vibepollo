@@ -1140,6 +1140,7 @@ function clearSnapshotHotkey(): void {
         </fieldset>
       </div>
     </template>
+    <template #freebsd></template>
     <template #linux></template>
     <template #macos></template>
   </PlatformLayout>

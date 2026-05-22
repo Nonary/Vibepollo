@@ -10,11 +10,13 @@ extern "C" {
 }
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <format>
 #include <set>
 #include <sstream>
+#include <vector>
 #include <unordered_map>
 #include <utility>
 
@@ -226,7 +228,7 @@ namespace rtsp_stream {
       }
 
       msg_t req {new msg_t::element_type {}};
-      if (auto status = parseRtspMessage(req.get(), (char *) plaintext.data(), plaintext.size())) {
+      if (auto status = parseRtspMessage(req.get(), (char *) plaintext.data(), (int) plaintext.size())) {
         BOOST_LOG(error) << "Malformed RTSP message: ["sv << status << ']';
 
         respond(socket->sock, *socket->session, nullptr, 400, "BAD REQUEST", 0, {});
@@ -292,7 +294,7 @@ namespace rtsp_stream {
 
       auto end = socket->begin + bytes;
       msg_t req {new msg_t::element_type {}};
-      if (auto status = parseRtspMessage(req.get(), socket->msg_buf.data(), (std::size_t) (end - socket->msg_buf.data()))) {
+      if (auto status = parseRtspMessage(req.get(), socket->msg_buf.data(), (int) (end - socket->msg_buf.data()))) {
         BOOST_LOG(error) << "Malformed RTSP message: ["sv << status << ']';
 
         respond(socket->sock, *socket->session, nullptr, 400, "BAD REQUEST", 0, {});
@@ -317,7 +319,7 @@ namespace rtsp_stream {
             return (bool) std::isdigit(ch);
           });
 
-          content_length = util::from_chars(begin, std::end(content));
+          content_length = (int) util::from_chars(begin, std::end(content));
           break;
         }
       }
@@ -464,8 +466,11 @@ namespace rtsp_stream {
       }
 
       auto socket = std::move(next_socket);
+      boost::system::error_code remote_ec;
+      const auto remote_endpoint = socket->sock.remote_endpoint(remote_ec);
+      const auto remote_address = remote_ec ? std::string {} : remote_endpoint.address().to_string();
 
-      auto launch_session {launch_event.view(0s)};
+      auto launch_session {reserve_launch_session(remote_address)};
       if (launch_session) {
         // Associate the current RTSP session with this socket and start reading
         socket->session = launch_session;
@@ -499,23 +504,22 @@ namespace rtsp_stream {
      * @param launch_session Streaming session information.
      */
     void session_raise(std::shared_ptr<launch_session_t> launch_session) {
-      // If a launch event is still pending, don't overwrite it.
-      if (launch_event.view(0s)) {
-        return;
+      const auto launch_session_id = launch_session->id;
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        _launch_sessions.emplace_back(
+          launch_session_entry_t {
+            .session = std::move(launch_session),
+            .expires_at = std::chrono::steady_clock::now() + config::stream.ping_timeout,
+          }
+        );
+
+        BOOST_LOG(debug) << "Queued RTSP launch session "sv << launch_session_id
+                         << " [pending launches: "sv << _launch_sessions.size() << ']';
       }
 
-      // Raise the new launch session to prepare for the RTSP handshake
-      launch_event.raise(std::move(launch_session));
-
-      // Arm the timer to expire this launch session if the client times out
-      raised_timer.expires_after(config::stream.ping_timeout);
-      raised_timer.async_wait([this](const boost::system::error_code &ec) {
-        if (!ec) {
-          auto discarded = launch_event.pop(0s);
-          if (discarded) {
-            BOOST_LOG(debug) << "Event timeout: "sv << discarded->unique_id;
-          }
-        }
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
       });
     }
 
@@ -524,17 +528,23 @@ namespace rtsp_stream {
      * @param launch_session_id The ID of the session to clear.
      */
     void session_clear(uint32_t launch_session_id) {
-      // We currently only support a single pending RTSP session,
-      // so the ID should always match the one for that session.
-      auto launch_session = launch_event.view(0s);
-      if (launch_session) {
-        if (launch_session->id != launch_session_id) {
-          BOOST_LOG(error) << "Attempted to clear unexpected session: "sv << launch_session_id << " vs "sv << launch_session->id;
-        } else {
-          raised_timer.cancel();
-          launch_event.pop();
-        }
+      bool removed = false;
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        const auto before = _launch_sessions.size();
+        std::erase_if(_launch_sessions, [launch_session_id](const launch_session_entry_t &entry) {
+          return entry.session && entry.session->id == launch_session_id;
+        });
+        removed = before != _launch_sessions.size();
       }
+
+      if (!removed) {
+        BOOST_LOG(debug) << "Attempted to clear unknown RTSP launch session: "sv << launch_session_id;
+      }
+
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
+      });
     }
 
     /**
@@ -545,8 +555,6 @@ namespace rtsp_stream {
       auto lg = _session_state.lock();
       return static_cast<int>(_session_state->sessions.size());
     }
-
-    safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
 
     /**
      * @brief Clear launch sessions.
@@ -578,6 +586,10 @@ namespace rtsp_stream {
             ++i;
           }
         }
+      }
+
+      if (all) {
+        clear_launch_sessions();
       }
 
       // Stop and join outside the lock
@@ -718,6 +730,92 @@ namespace rtsp_stream {
     }
 
   private:
+    struct launch_session_entry_t {
+      std::shared_ptr<launch_session_t> session;
+      std::chrono::steady_clock::time_point expires_at;
+      bool accepted = false;
+      std::string remote_address;
+    };
+
+    std::shared_ptr<launch_session_t> reserve_launch_session(const std::string &remote_address) {
+      std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+      expire_launch_sessions_locked(std::chrono::steady_clock::now());
+
+      if (!remote_address.empty()) {
+        for (auto &entry : _launch_sessions) {
+          if (entry.accepted && entry.session && entry.remote_address == remote_address) {
+            BOOST_LOG(debug) << "Reusing RTSP launch session "sv << entry.session->id
+                             << " for "sv << remote_address;
+            arm_launch_timer_locked();
+            return entry.session;
+          }
+        }
+      }
+
+      for (auto &entry : _launch_sessions) {
+        if (!entry.accepted && entry.session) {
+          entry.accepted = true;
+          entry.remote_address = remote_address;
+          BOOST_LOG(debug) << "Reserved RTSP launch session "sv << entry.session->id
+                           << (remote_address.empty() ? ""sv : " for "sv) << remote_address;
+          arm_launch_timer_locked();
+          return entry.session;
+        }
+      }
+
+      arm_launch_timer_locked();
+      return nullptr;
+    }
+
+    void clear_launch_sessions() {
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        _launch_sessions.clear();
+      }
+      raised_timer.cancel();
+    }
+
+    void arm_launch_timer() {
+      std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+      expire_launch_sessions_locked(std::chrono::steady_clock::now());
+      arm_launch_timer_locked();
+    }
+
+    void expire_launch_sessions_locked(std::chrono::steady_clock::time_point now) {
+      std::erase_if(_launch_sessions, [now](const launch_session_entry_t &entry) {
+        if (entry.expires_at > now) {
+          return false;
+        }
+
+        if (entry.session) {
+          BOOST_LOG(debug) << "Event timeout: "sv << entry.session->unique_id;
+        }
+        return true;
+      });
+    }
+
+    void arm_launch_timer_locked() {
+      raised_timer.cancel();
+      if (_launch_sessions.empty()) {
+        return;
+      }
+
+      const auto next_expiry = std::min_element(
+        _launch_sessions.begin(),
+        _launch_sessions.end(),
+        [](const launch_session_entry_t &lhs, const launch_session_entry_t &rhs) {
+          return lhs.expires_at < rhs.expires_at;
+        }
+      )->expires_at;
+
+      raised_timer.expires_at(next_expiry);
+      raised_timer.async_wait([this](const boost::system::error_code &ec) {
+        if (!ec) {
+          arm_launch_timer();
+        }
+      });
+    }
+
     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
 
     struct session_state_t {
@@ -726,6 +824,8 @@ namespace rtsp_stream {
     };
 
     sync_util::sync_t<session_state_t> _session_state;
+    std::mutex _launch_sessions_mutex;
+    std::vector<launch_session_entry_t> _launch_sessions;
 
     boost::asio::io_context io_context;
     tcp::acceptor acceptor {io_context};
@@ -1112,39 +1212,39 @@ namespace rtsp_stream {
     std::int64_t configuredBitrateKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
     try {
-      config.audio.channels = util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
-      config.audio.mask = util::from_view(args.at("x-nv-audio.surround.channelMask"sv));
-      config.audio.packetDuration = util::from_view(args.at("x-nv-aqos.packetDuration"sv));
+      config.audio.channels = (int) util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
+      config.audio.mask = (int) util::from_view(args.at("x-nv-audio.surround.channelMask"sv));
+      config.audio.packetDuration = (int) util::from_view(args.at("x-nv-aqos.packetDuration"sv));
 
       config.audio.flags[audio::config_t::HIGH_QUALITY] =
         util::from_view(args.at("x-nv-audio.surround.AudioQuality"sv));
 
-      config.controlProtocolType = util::from_view(args.at("x-nv-general.useReliableUdp"sv));
-      config.packetsize = util::from_view(args.at("x-nv-video[0].packetSize"sv));
-      config.minRequiredFecPackets = util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
-      config.mlFeatureFlags = util::from_view(args.at("x-ml-general.featureFlags"sv));
-      config.audioQosType = util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
-      config.videoQosType = util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
-      config.encryptionFlagsEnabled = util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
+      config.controlProtocolType = (int) util::from_view(args.at("x-nv-general.useReliableUdp"sv));
+      config.packetsize = (int) util::from_view(args.at("x-nv-video[0].packetSize"sv));
+      config.minRequiredFecPackets = (int) util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
+      config.mlFeatureFlags = (int) util::from_view(args.at("x-ml-general.featureFlags"sv));
+      config.audioQosType = (int) util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
+      config.videoQosType = (int) util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
+      config.encryptionFlagsEnabled = (uint32_t) util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
 
       // Legacy clients use nvFeatureFlags to indicate support for audio encryption
       if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {
         config.encryptionFlagsEnabled |= SS_ENC_AUDIO;
       }
 
-      config.monitor.height = util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
-      config.monitor.width = util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
-      config.monitor.framerate = util::from_view(args.at("x-nv-video[0].maxFPS"sv));
-      config.monitor.framerateX100 = util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
-      config.monitor.bitrate = util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
+      config.monitor.height = (int) util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
+      config.monitor.width = (int) util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
+      config.monitor.framerate = (int) util::from_view(args.at("x-nv-video[0].maxFPS"sv));
+      config.monitor.framerateX100 = (int) util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
+      config.monitor.bitrate = (int) util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
       config.monitor.client_requested_bitrate = config.monitor.bitrate;
-      config.monitor.slicesPerFrame = util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
-      config.monitor.numRefFrames = util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
-      config.monitor.encoderCscMode = util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
-      config.monitor.videoFormat = util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv));
-      config.monitor.dynamicRange = util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
-      config.monitor.chromaSamplingType = util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
-      config.monitor.enableIntraRefresh = util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
+      config.monitor.slicesPerFrame = (int) util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
+      config.monitor.numRefFrames = (int) util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
+      config.monitor.encoderCscMode = (int) util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
+      config.monitor.videoFormat = (int) util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv));
+      config.monitor.dynamicRange = (int) util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
+      config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
+      config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session.fps;
@@ -1241,6 +1341,10 @@ namespace rtsp_stream {
       }
       config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
     }
+    if (session.continuous_audio) {
+      BOOST_LOG(info) << "Client requested continuous audio"sv;
+      config.audio.flags[audio::config_t::CONTINUOUS_AUDIO] = true;
+    }
 
     config.audio.input_only = session.input_only;
     
@@ -1288,7 +1392,7 @@ namespace rtsp_stream {
       configuredBitrateKbps -= std::min((std::int64_t) 500, configuredBitrateKbps / 10);
 
       BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
-      config.monitor.bitrate = configuredBitrateKbps;
+      config.monitor.bitrate = (int) configuredBitrateKbps;
     }
 
     if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
@@ -1356,6 +1460,7 @@ namespace rtsp_stream {
   }
 
   void start() {
+    platf::set_thread_name("rtsp");
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
     server.map("OPTIONS"sv, &cmd_option);
@@ -1373,6 +1478,7 @@ namespace rtsp_stream {
     }
 
     std::thread rtsp_thread {[&shutdown_event] {
+      platf::set_thread_name("rtsp::handler");
       auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 
       while (!shutdown_event->peek()) {

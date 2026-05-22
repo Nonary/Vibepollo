@@ -23,7 +23,11 @@
     "success": "Sucesso!",
     "undo_cmd": "Comando Desfazer",
     "username": "Nome de usuário",
-    "warning": "Atenção!"
+    "warning": "Atenção!",
+    "all": "TODOS",
+    "close": "FECHAR",
+    "loading": "Carregandochar@@0",
+    "search": "Buscar..."
   },
   "apps": {
     "actions": "Ações",
@@ -79,7 +83,10 @@
     "wait_all": "Continuar a transmissão até que todos os processos do aplicativo sejam encerrados",
     "wait_all_desc": "Isso continuará a transmissão até que todos os processos iniciados pelo aplicativo tenham sido encerrados. Quando desmarcada, a transmissão será interrompida quando o processo inicial do aplicativo for encerrado, mesmo que outros processos do aplicativo ainda estejam em execução.",
     "working_dir": "Diretório de trabalho",
-    "working_dir_desc": "O diretório de trabalho que deve ser passado para o processo. Por exemplo, alguns aplicativos usam o diretório de trabalho para procurar arquivos de configuração. Se não for definido, o padrão do Vibepollo será o diretório pai do comando"
+    "working_dir_desc": "O diretório de trabalho que deve ser passado para o processo. Por exemplo, alguns aplicativos usam o diretório de trabalho para procurar arquivos de configuração. Se não for definido, o padrão do Vibepollo será o diretório pai do comando",
+    "cover_search_hint": "Pesquisar nomes devem corresponder a convenções de nomenclatura IGDB.",
+    "no_covers_found": "Nenhuma tampa encontrada",
+    "searching_covers": "Procurando coberturas..."
   },
   "config": {
     "adapter_name": "Nome do adaptador",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "Modo de criptografia WAN",
     "wan_encryption_mode_1": "Ativado para clientes compatíveis (padrão)",
     "wan_encryption_mode_2": "Necessário para todos os clientes",
-    "wan_encryption_mode_desc": "Isso determina quando a criptografia será usada durante a transmissão pela Internet. A criptografia pode reduzir o desempenho da transmissão, principalmente em hosts e clientes menos potentes."
+    "wan_encryption_mode_desc": "Isso determina quando a criptografia será usada durante a transmissão pela Internet. A criptografia pode reduzir o desempenho da transmissão, principalmente em hosts e clientes menos potentes.",
+    "bind_address": "Vincular endereço",
+    "bind_address_desc": "Defina o endereço IP específico de Vibepollo será ligado. Se deixado em branco, Vibepollo será vinculado a todos os endereços disponíveis.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Pesquisar opções de configuração..."
   },
   "index": {
     "description": "O Vibepollo é um host de fluxo de jogos auto-hospedado para o Moonlight.",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>Atenção!</b> A Vibepollo detectou esses erros durante a inicialização. <b>RECOMENDAMOS FORTEMENTE</b> corrigi-los antes da transmissão.",
     "version_dirty": "Obrigado por ajudar a tornar o Vibepollo um software melhor!",
     "version_latest": "Você está executando a versão mais recente do Vibepollo",
-    "welcome": "Olá, Vibepollo!"
+    "welcome": "Olá, Vibepollo!",
+    "fix_now": "Corrigir agora",
+    "vigembus_not_installed_desc": "O suporte ao gamepad virtual não funcionará sem o driver do ViGEmBus. Clique no botão abaixo para instalá-lo.",
+    "vigembus_not_installed_title": "Driver ViGEmBus não instalado",
+    "vigembus_outdated_desc": "Você está executando uma versão desatualizada do ViGEmBus (v{version}). Versão 1. É necessário 7 ou superior para o suporte adequado ao controle. Clique no botão abaixo para atualizar.",
+    "vigembus_outdated_title": "Driver ViGEmBus desatualizado"
   },
   "navbar": {
     "applications": "Aplicativos",
@@ -391,7 +408,20 @@
     "theme_dark": "Escuro",
     "theme_light": "Luz",
     "toggle_theme": "Tema",
-    "troubleshoot": "Solução de problemas"
+    "troubleshoot": "Solução de problemas",
+    "featured": "Aplicativos em destaque",
+    "theme_ember": "Ember",
+    "theme_forest": "Floresta",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Meia-noite",
+    "theme_monochrome": "Monocromático",
+    "theme_moonlight": "Luar",
+    "theme_nord": "Nord",
+    "theme_ocean": "Oceano",
+    "theme_rose": "Rosa",
+    "theme_slate": "Ardósia",
+    "theme_sunshine": "Luz Solar"
   },
   "password": {
     "confirm_password": "Confirmar senha",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "Não há dispositivos emparelhados.",
     "unpair_single_success": "No entanto, o(s) dispositivo(s) ainda pode(m) estar em uma sessão ativa. Use o botão \"Forçar fechamento\" acima para encerrar todas as sessões abertas.",
     "unpair_single_unknown": "Cliente desconhecido",
-    "unpair_title": "Desemparelhar dispositivos"
+    "unpair_title": "Desemparelhar dispositivos",
+    "vigembus_compatible": "ViGEmBus é instalado e compatível.",
+    "vigembus_current_version": "Versão Atual",
+    "vigembus_desc": "ViGEmBus é necessário para suporte de controle virtual. Instale ou atualize o driver se estiver ausente ou desatualizado (versão 1.17 ou superior necessária).",
+    "vigembus_incompatible": "A versão do ViGEmBus é muito antiga. Por favor, instale a versão 1.17 ou superior.",
+    "vigembus_install": "Motorista ViGEmBus",
+    "vigembus_install_button": "Instalar ViGEmBus v{version}",
+    "vigembus_install_error": "Falha ao instalar o driver ViGEmBus.",
+    "vigembus_install_success": "ViGEmBus foi instalado com sucesso! Talvez seja necessário reiniciar seu computador.",
+    "vigembus_force_reinstall_button": "Forçar Reinstalação ViGEmBus v{version}",
+    "vigembus_not_installed": "O ViGEmBus não está instalado."
   },
   "welcome": {
     "confirm_password": "Confirmar senha",
@@ -451,5 +491,24 @@
     "greeting": "Bem-vindo ao Vibepollo!",
     "login": "Login",
     "welcome_success": "Esta página será recarregada em breve e seu navegador solicitará as novas credenciais"
+  },
+  "featured": {
+    "categories": {
+      "client": "Clientes",
+      "tool": "Ferramentas"
+    },
+    "description": "Descubra clientes, ferramentas e integrações que melhoram sua experiência de streaming Vibepollo.",
+    "docs": "Documentação",
+    "documentation": "Documentação",
+    "get": "Receber",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Problemas em Aberto",
+    "github_stars": "Favoritos",
+    "last_updated": "Última atualização",
+    "no_apps": "Nenhum aplicativo encontrado nesta categoria.",
+    "official": "Oficial",
+    "title": "Aplicativos em destaque",
+    "website": "site"
   }
 }

@@ -23,7 +23,11 @@
     "success": "Başarılı!",
     "undo_cmd": "Geri Al Komutu",
     "username": "Kullanıcı Adı",
-    "warning": "Uyarı!"
+    "warning": "Uyarı!",
+    "all": "Tümü",
+    "close": "Kapat",
+    "loading": "Yükleniyor...",
+    "search": "Arama..."
   },
   "apps": {
     "actions": "Eylemler",
@@ -79,7 +83,10 @@
     "wait_all": "Tüm uygulama süreçleri çıkana kadar akışa devam edin",
     "wait_all_desc": "Bu, uygulama tarafından başlatılan tüm işlemler sonlandırılana kadar akışa devam edecektir. İşaretlenmediğinde, diğer uygulama süreçleri hala çalışıyor olsa bile ilk uygulama süreci çıktığında akış duracaktır.",
     "working_dir": "Çalışma Dizini",
-    "working_dir_desc": "Sürece aktarılması gereken çalışma dizini. Örneğin, bazı uygulamalar yapılandırma dosyalarını aramak için çalışma dizinini kullanır. Ayarlanmazsa, Vibepollo varsayılan olarak komutun üst dizinini kullanır"
+    "working_dir_desc": "Sürece aktarılması gereken çalışma dizini. Örneğin, bazı uygulamalar yapılandırma dosyalarını aramak için çalışma dizinini kullanır. Ayarlanmazsa, Vibepollo varsayılan olarak komutun üst dizinini kullanır",
+    "cover_search_hint": "Arama adları IGDB adlandırma kurallarına uygun olmalıdır.",
+    "no_covers_found": "Kapak bulunamadı",
+    "searching_covers": "Kapak arıyorum..."
   },
   "config": {
     "adapter_name": "Adaptör Adı",
@@ -367,7 +374,24 @@
     "wan_encryption_mode": "WAN Şifreleme Modu",
     "wan_encryption_mode_1": "Desteklenen istemciler için etkin (varsayılan)",
     "wan_encryption_mode_2": "Tüm müşteriler için gereklidir",
-    "wan_encryption_mode_desc": "Bu, İnternet üzerinden akış yaparken şifrelemenin ne zaman kullanılacağını belirler. Şifreleme, özellikle daha az güçlü ana bilgisayarlarda ve istemcilerde akış performansını düşürebilir."
+    "wan_encryption_mode_desc": "Bu, İnternet üzerinden akış yaparken şifrelemenin ne zaman kullanılacağını belirler. Şifreleme, özellikle daha az güçlü ana bilgisayarlarda ve istemcilerde akış performansını düşürebilir.",
+    "bind_address": "Adres bağlama",
+    "bind_address_desc": "Vibepollo'ın bağlanacağı belirli IP adresini ayarlayın. Boş bırakılırsa, Vibepollo mevcut tüm adreslere bağlanır.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "minimum_fps_target": "Minimum FPS Hedefi",
+    "minimum_fps_target_desc": "Bir akışın ulaşabileceği en düşük etkin FPS. 0 değeri, akışın FPS'sinin yaklaşık yarısı olarak kabul edilir. 24 veya 30 fps içerik yayınlıyorsanız 20 ayarı önerilir.",
+    "min_log_level": "Günlük Seviyesi",
+    "min_log_level_0": "Ayrıntılı",
+    "min_log_level_1": "Hata Ayıklama",
+    "min_log_level_2": "Bilgi",
+    "min_log_level_3": "Uyarı",
+    "min_log_level_4": "Hata",
+    "min_log_level_5": "Kritik",
+    "min_log_level_6": "Hiçbiri",
+    "min_log_level_desc": "Standart çıkışa yazdırılan minimum günlük düzeyi",
+    "output_name": "Ekran Kimliği",
+    "search_options": "Arama yapılandırma seçenekleri..."
   },
   "index": {
     "description": "Vibepollo, Moonlight için kendi kendine barındırılan bir oyun akışı sunucusudur.",
@@ -379,7 +403,12 @@
     "startup_errors": "<b>Dikkat!</b> Vibepollo başlatma sırasında bu hataları tespit etti. Yayınlamadan önce bunları düzeltmenizi <b>ŞİDDETLE TAVSİYE</b> EDERİZ.",
     "version_dirty": "Vibepollo'ı daha iyi bir yazılım haline getirmeye yardımcı olduğunuz için teşekkür ederiz!",
     "version_latest": "Vibepollo'ın en son sürümünü çalıştırıyorsunuz",
-    "welcome": "Merhaba, Günışığı!"
+    "welcome": "Merhaba, Günışığı!",
+    "fix_now": "Şimdi Düzelt",
+    "vigembus_not_installed_desc": "Sanal gamepad desteği ViGEmBus sürücüsü olmadan çalışmayacaktır. Yüklemek için aşağıdaki düğmeye tıklayın.",
+    "vigembus_not_installed_title": "ViGEmBus Sürücüsü Yüklü Değil",
+    "vigembus_outdated_desc": "ViGEmBus'ın eski bir sürümünü çalıştırıyorsunuz (v{version}). Uygun gamepad desteği için sürüm 1.17 veya üstü gereklidir. Güncellemek için aşağıdaki düğmeye tıklayın.",
+    "vigembus_outdated_title": "ViGEmBus Sürücüsü Güncel Değil"
   },
   "navbar": {
     "applications": "Uygulamalar",
@@ -391,7 +420,20 @@
     "theme_dark": "Karanlık",
     "theme_light": "Açık",
     "toggle_theme": "Tema",
-    "troubleshoot": "Sorun Giderme"
+    "troubleshoot": "Sorun Giderme",
+    "featured": "Öne Çıkan Uygulamalar",
+    "theme_ember": "Kor",
+    "theme_forest": "Orman",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavanta",
+    "theme_midnight": "Gece yarısı",
+    "theme_monochrome": "Monokrom",
+    "theme_moonlight": "Ay Işığı",
+    "theme_nord": "Nord",
+    "theme_ocean": "Okyanus",
+    "theme_rose": "Gül",
+    "theme_slate": "Kayrak",
+    "theme_sunshine": "Günışığı"
   },
   "password": {
     "confirm_password": "Şifreyi Onayla",
@@ -442,7 +484,17 @@
     "unpair_single_no_devices": "Eşleştirilmiş cihaz yok.",
     "unpair_single_success": "Ancak, cihaz(lar) hala aktif bir oturumda olabilir. Açık oturumları sonlandırmak için yukarıdaki 'Kapatmaya Zorla' düğmesini kullanın.",
     "unpair_single_unknown": "Bilinmeyen Müşteri",
-    "unpair_title": "Cihazların Eşleşmesini Kaldırma"
+    "unpair_title": "Cihazların Eşleşmesini Kaldırma",
+    "vigembus_compatible": "ViGEmBus yüklü ve uyumludur.",
+    "vigembus_current_version": "Güncel Sürüm",
+    "vigembus_desc": "Sanal gamepad desteği için ViGEmBus gereklidir. Eksik veya eski ise sürücüyü yükleyin veya güncelleyin (sürüm 1.17 veya üstü gereklidir).",
+    "vigembus_incompatible": "ViGEmBus sürümü çok eski. Lütfen 1.17 veya daha yüksek bir sürüm yükleyin.",
+    "vigembus_install": "ViGEmBus Sürücüsü",
+    "vigembus_install_button": "ViGEmBus v{version}adresini yükleyin",
+    "vigembus_install_error": "ViGEmBus sürücüsü yüklenemedi.",
+    "vigembus_install_success": "ViGEmBus sürücüsü başarıyla yüklendi! Bilgisayarınızı yeniden başlatmanız gerekebilir.",
+    "vigembus_force_reinstall_button": "ViGEmBus v'yi Yeniden Yüklemeye Zorla{version}",
+    "vigembus_not_installed": "ViGEmBus yüklü değil."
   },
   "welcome": {
     "confirm_password": "Şifreyi onayla",
@@ -451,5 +503,24 @@
     "greeting": "Vibepollo'a hoş geldiniz!",
     "login": "Giriş",
     "welcome_success": "Bu sayfa yakında yeniden yüklenecek, tarayıcınız sizden yeni kimlik bilgilerinizi isteyecek"
+  },
+  "featured": {
+    "categories": {
+      "client": "Müşteriler",
+      "tool": "Araçlar"
+    },
+    "description": "Vibepollo yayın deneyiminizi geliştiren istemcileri, araçları ve entegrasyonları keşfedin.",
+    "docs": "Dokümanlar",
+    "documentation": "Dokümantasyon",
+    "get": "Almak",
+    "github": "GitHub Deposu",
+    "github_forks": "Çatallar",
+    "github_issues": "Açık Sorunlar",
+    "github_stars": "Yıldızlar",
+    "last_updated": "Son Güncelleme",
+    "no_apps": "Bu kategoride uygulama bulunamadı.",
+    "official": "Resmi",
+    "title": "Öne Çıkan Uygulamalar",
+    "website": "Web sitesi"
   }
 }

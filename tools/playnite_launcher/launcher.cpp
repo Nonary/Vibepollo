@@ -1108,18 +1108,50 @@ namespace playnite_launcher {
       };
 
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.timeout_sec);
+      // After gameStarted, monitor the launched game's processes (not Playnite itself).
+      // Playnite can be configured to close when launching a game, and that must not
+      // tear down the stream. We exit when either gameStopped arrives over IPC (sets
+      // should_exit), or the game's processes have all disappeared for a grace window.
+      std::optional<std::chrono::steady_clock::time_point> game_missing_since;
+      const auto game_missing_grace = std::chrono::seconds(15);
       while (!should_exit.load()) {
         focus_game_after_start();
         if (!got_started.load() && std::chrono::steady_clock::now() >= deadline) {
           break;
         }
         if (got_started.load()) {
-          auto d = platf::dxgi::find_process_ids_by_name(L"Playnite.DesktopApp.exe");
-          auto f = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
-          if (d.empty() && f.empty()) {
-            BOOST_LOG(warning) << "Playnite process appears to have exited; proceeding to cleanup";
-            should_exit.store(true);
-            break;
+          bool any_game_proc = false;
+          if (!last_install_dir.empty()) {
+            try {
+              std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
+              if (!focus::find_pids_under_install_dir_sorted(wdir, false).empty()) {
+                any_game_proc = true;
+              }
+            } catch (...) {
+            }
+          }
+          if (!any_game_proc && !last_game_exe.empty()) {
+            try {
+              std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
+              std::filesystem::path p(wexe);
+              std::wstring base = p.filename().wstring();
+              if (!base.empty() && !platf::dxgi::find_process_ids_by_name(base.c_str()).empty()) {
+                any_game_proc = true;
+              }
+            } catch (...) {
+            }
+          }
+          if (any_game_proc) {
+            game_missing_since.reset();
+          } else if (!last_install_dir.empty() || !last_game_exe.empty()) {
+            auto now = std::chrono::steady_clock::now();
+            if (!game_missing_since) {
+              game_missing_since = now;
+            } else if (now - *game_missing_since >= game_missing_grace) {
+              BOOST_LOG(info) << "Game processes have exited; proceeding to cleanup";
+              should_exit.store(true);
+              break;
+            }
           }
         }
         std::this_thread::sleep_for(250ms);

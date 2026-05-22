@@ -857,6 +857,7 @@ namespace {
         auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
         std::set<std::string> valid_device_ids;
         std::vector<std::string> enumerated_devices;
+        std::vector<std::string> virtual_devices;
         for (const auto &d : devices) {
           const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
           if (!id.empty()) {
@@ -866,11 +867,29 @@ namespace {
             detail += ")";
             enumerated_devices.push_back(std::move(detail));
           }
+          if (is_virtual_display_device(d)) {
+            if (is_active_display_device(d) && !id.empty()) {
+              virtual_devices.push_back(id);
+            }
+            continue;
+          }
           if (!d.m_display_name.empty()) {
             if (!id.empty()) {
               valid_device_ids.insert(id);
             }
           }
+        }
+        if (!virtual_devices.empty()) {
+          std::string joined;
+          for (size_t i = 0; i < virtual_devices.size(); ++i) {
+            if (i > 0) {
+              joined += ", ";
+            }
+            joined += virtual_devices[i];
+          }
+          BOOST_LOG(warning) << "Skipping display snapshot save; active virtual display device(s) are present: ["
+                             << joined << "]";
+          return false;
         }
 
         if (!snapshot_exclusions.empty()) {
@@ -1146,6 +1165,7 @@ namespace {
         return out;
       };
       std::set<std::string> valid_devices_norm;
+      std::set<std::string> virtual_devices_norm;
       std::vector<std::string> filtered_out_excluded;
       std::vector<std::string> enumerated_devices;
       const auto exclusions = snapshot_exclusions_copy();
@@ -1161,11 +1181,31 @@ namespace {
         }
         enumerated_devices.push_back(id);
         auto norm = normalize_device_id(id);
+        if (is_virtual_display_device(d)) {
+          if (is_active_display_device(d)) {
+            virtual_devices_norm.insert(std::move(norm));
+          }
+          continue;
+        }
         if (!exclusions_norm.empty() && exclusions_norm.count(norm)) {
           filtered_out_excluded.push_back(id);
           continue;
         }
         valid_devices_norm.insert(std::move(norm));
+      }
+
+      if (!virtual_devices_norm.empty()) {
+        std::vector<std::string> snapshot_devices;
+        for (const auto &grp : snap.m_topology) {
+          snapshot_devices.insert(snapshot_devices.end(), grp.begin(), grp.end());
+        }
+        for (const auto &device_id : snapshot_devices) {
+          if (virtual_devices_norm.count(normalize_device_id(device_id))) {
+            BOOST_LOG(warning) << "Snapshot load rejected: snapshot contains active virtual display device "
+                               << device_id << " for path=" << path.string();
+            return std::nullopt;
+          }
+        }
       }
 
       if (valid_devices_norm.empty()) {
@@ -1382,6 +1422,54 @@ namespace {
         return static_cast<char>(std::tolower(c));
       });
       return id;
+    }
+
+    static bool contains_ci(const std::string &haystack, const std::string &needle) {
+      if (needle.empty()) {
+        return true;
+      }
+      if (haystack.size() < needle.size()) {
+        return false;
+      }
+      for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
+        bool match = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+          if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
+              std::tolower(static_cast<unsigned char>(needle[j]))) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    static bool equals_ci(const std::string &lhs, const std::string &rhs) {
+      return lhs.size() == rhs.size() && contains_ci(lhs, rhs);
+    }
+
+    static bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
+      if (contains_ci(device.m_device_id, "SUDOVDA") ||
+          contains_ci(device.m_device_id, "SUDOMAKER") ||
+          contains_ci(device.m_display_name, "SUDOVDA") ||
+          contains_ci(device.m_display_name, "SUDOMAKER") ||
+          contains_ci(device.m_friendly_name, "SUDOVDA") ||
+          contains_ci(device.m_friendly_name, "SUDOMAKER")) {
+        return true;
+      }
+
+      if (equals_ci(device.m_friendly_name, "SudoMaker Virtual Display Adapter")) {
+        return true;
+      }
+
+      return device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SMK");
+    }
+
+    static bool is_active_display_device(const display_device::EnumeratedDevice &device) {
+      return device.m_info.has_value() || !device.m_display_name.empty();
     }
 
     std::vector<std::string> snapshot_exclusions_copy() const {

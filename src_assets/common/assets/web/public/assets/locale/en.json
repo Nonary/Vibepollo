@@ -35,7 +35,10 @@
     "remove": "Remove",
     "clear_all": "Clear All",
     "refresh": "Refresh",
-    "learn_more": "Learn More"
+    "learn_more": "Learn More",
+    "all": "All",
+    "loading": "Loading...",
+    "close": "Close"
   },
   "apps": {
     "actions": "Actions",
@@ -112,7 +115,10 @@
     "wait_all_desc": "This will continue streaming until all processes started by the app have terminated. When unchecked, streaming will stop when the initial app process exits, even if other app processes are still running.",
     "working_dir": "Working Directory",
     "working_dir_desc": "The working directory that should be passed to the process. For example, some applications use the working directory to search for configuration files. If not set, Vibepollo will default to the parent directory of the command",
-    "more_fields_below": "More fields below — scroll"
+    "more_fields_below": "More fields below — scroll",
+    "cover_search_hint": "Search names should match IGDB naming conventions.",
+    "no_covers_found": "No covers found",
+    "searching_covers": "Searching for covers..."
   },
   "offline": {
     "title": "Lost Connection to Vibepollo",
@@ -121,8 +127,7 @@
     "refresh_now": "Refresh now",
     "close_hint": "If you stopped Vibepollo intentionally, you may close this tab.",
     "output_name_desc_unix": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
-    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Vibepollo startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab.",
-    "close_hint": "If you stopped Vibepollo intentionally, you may close this tab."
+    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Vibepollo startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab."
   },
   "config": {
     "amf": {
@@ -613,7 +618,23 @@
     "ignore_encoder_probe_failure": "Ignore Encoder Probe Failure",
     "ignore_encoder_probe_failure_desc": "Allow streaming to continue even if probing for encoders fails. This may result in streaming failure if no encoder is available.",
     "legacy_ordering": "App ordering for legacy clients",
-    "legacy_ordering_desc": "Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly. Artemis clients support this by default."
+    "legacy_ordering_desc": "Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly. Artemis clients support this by default.",
+    "bind_address": "Bind address",
+    "bind_address_desc": "Set the specific IP address Vibepollo will bind to. If left blank, Vibepollo will bind to all available addresses.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "vk_rc_cbr": "CBR (Constant Bitrate)",
+    "vk_rc_cqp": "CQP (Constant QP)",
+    "vk_rc_mode": "Vulkan rate control",
+    "vk_rc_mode_desc": "Rate control mode for Vulkan encoding. Auto lets the driver decide.",
+    "vk_rc_vbr": "VBR (Variable Bitrate)",
+    "vk_tune": "Vulkan tuning preset",
+    "vk_tune_desc": "Encoder tuning preset for Vulkan encoding. Low latency modes reduce encoding delay at the cost of quality.",
+    "vk_tune_hq": "High Quality",
+    "vk_tune_ll": "Low Latency",
+    "vk_tune_lossless": "Lossless",
+    "vk_tune_ull": "Ultra Low Latency",
+    "search_options": "Search configuration options..."
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
@@ -632,7 +653,12 @@
     "version_compare_unknown": "Unable to determine commit distance to latest release.",
     "version_branch": "Branch: {branch} (commit {commit})",
     "view_logs": "Open Troubleshooting — Logs",
-    "welcome": "Hello, Vibepollo!"
+    "welcome": "Hello, Vibepollo!",
+    "fix_now": "Fix Now",
+    "vigembus_not_installed_desc": "Virtual gamepad support will not work without the ViGEmBus driver. Click the button below to install it.",
+    "vigembus_not_installed_title": "ViGEmBus Driver Not Installed",
+    "vigembus_outdated_desc": "You are running an outdated version of ViGEmBus (v{version}). Version 1.17 or higher is required for proper gamepad support. Click the button below to update.",
+    "vigembus_outdated_title": "ViGEmBus Driver Outdated"
   },
   "resources": {
     "title": "Resources"
@@ -650,7 +676,20 @@
     "toggle_theme": "Theme",
     "troubleshoot": "Troubleshooting",
     "logout": "Logout",
-    "api_tokens": "API Tokens"
+    "api_tokens": "API Tokens",
+    "featured": "Featured Apps",
+    "theme_ember": "Ember",
+    "theme_forest": "Forest",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Midnight",
+    "theme_monochrome": "Monochrome",
+    "theme_moonlight": "Moonlight",
+    "theme_nord": "Nord",
+    "theme_ocean": "Ocean",
+    "theme_rose": "Rose",
+    "theme_slate": "Slate",
+    "theme_sunshine": "Sunshine"
   },
   "webrtc": {
     "nav": "Stream",
@@ -1164,7 +1203,17 @@
     "unpair_single_no_devices": "There are no paired devices.",
     "unpair_single_success": "However, the device(s) may still be in an active session. Use the 'Force Close' button above to end any open sessions.",
     "unpair_single_unknown": "Unknown Client",
-    "unpair_title": "Unpair Devices"
+    "unpair_title": "Unpair Devices",
+    "vigembus_compatible": "ViGEmBus is installed and compatible.",
+    "vigembus_current_version": "Current Version",
+    "vigembus_desc": "ViGEmBus is required for virtual gamepad support. Install or update the driver if it's missing or outdated (version 1.17 or higher required).",
+    "vigembus_incompatible": "ViGEmBus version is too old. Please install version 1.17 or higher.",
+    "vigembus_install": "ViGEmBus Driver",
+    "vigembus_install_button": "Install ViGEmBus v{version}",
+    "vigembus_install_error": "Failed to install ViGEmBus driver.",
+    "vigembus_install_success": "ViGEmBus driver installed successfully! You may need to restart your computer.",
+    "vigembus_force_reinstall_button": "Force Reinstall ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus is not installed."
   },
   "welcome": {
     "confirm_password": "Confirm password",
@@ -1263,7 +1312,23 @@
     "sessions_expires": "Expires: {time}",
     "sessions_time_unknown": "Unknown",
     "sessions_unknown_device": "Unknown device",
-    "sessions_unknown_address": "Unknown address"
+    "sessions_unknown_address": "Unknown address",
+    "subtitle": "Create scoped tokens, manage active ones, and test safely.",
+    "least_privilege_hint": "Least-privilege scopes for better security",
+    "refresh_routes": "Refresh Routes",
+    "methods": "Methods",
+    "no_methods_for_route": "No methods available for this route.",
+    "creating": "Creating...",
+    "token_created_title": "API Token Created",
+    "token_modal_warning": "This token is shown only once. Save or copy it now. You cannot retrieve it later.",
+    "filter": "Filter",
+    "routes_load_failed": "Failed to load API routes",
+    "routes_empty": "No token-eligible API routes are currently available.",
+    "test_query": "Query String (optional)",
+    "test_query_placeholder": "e.g. limit=50&tail=true",
+    "sending": "Sending...",
+    "sort_newest": "Newest",
+    "sort_path": "Path"
   },
   "rtss": {
     "tab": "Frame Limiter",
@@ -1427,5 +1492,24 @@
     "all_releases_title": "All releases",
     "release_line_title": "Release line {line}",
     "current_version_title": "Current version {version}"
+  },
+  "featured": {
+    "categories": {
+      "client": "Clients",
+      "tool": "Tools"
+    },
+    "description": "Discover clients, tools, and integrations that enhance your Vibepollo streaming experience.",
+    "docs": "Docs",
+    "documentation": "Documentation",
+    "get": "Get",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Open Issues",
+    "github_stars": "Stars",
+    "last_updated": "Last Updated",
+    "no_apps": "No apps found in this category.",
+    "official": "Official",
+    "title": "Featured Apps",
+    "website": "Website"
   }
 }

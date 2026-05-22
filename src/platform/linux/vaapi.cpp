@@ -24,6 +24,18 @@ extern "C" {
     return VA_STATUS_ERROR_UNIMPLEMENTED;
   }
 #endif
+#if !VA_CHECK_VERSION(1, 21, 0)
+  // vaMapBuffer2 stub allows Sunshine built against libva <2.21.0 to link against ffmpeg on libva 2.21.0 or later
+  VAStatus
+    vaMapBuffer2(
+      VADisplay dpy,
+      VABufferID buf_id,
+      void **pbuf,
+      uint32_t flags
+    ) {
+    return vaMapBuffer(dpy, buf_id, pbuf);
+  }
+#endif
 }
 
 // local includes
@@ -386,7 +398,8 @@ namespace va {
     egl::sws_t sws;
     egl::nv12_t nv12;
 
-    int width, height;
+    int width;
+    int height;
   };
 
   class va_ram_t: public va_t {
@@ -443,7 +456,8 @@ namespace va {
     std::uint64_t sequence;
     egl::rgb_t rgb;
 
-    int offset_x, offset_y;
+    int offset_x;
+    int offset_y;
   };
 
   /**
@@ -508,9 +522,7 @@ namespace va {
 
     va::display_t display {vaGetDisplayDRM(fd)};
     if (!display) {
-      auto render_device = config::video.adapter_name.empty() ? "/dev/dri/renderD128" : config::video.adapter_name.c_str();
-
-      BOOST_LOG(error) << "Couldn't open a va display from DRM with device: "sv << render_device;
+      BOOST_LOG(error) << "Couldn't open a va display from DRM with device: "sv << platf::resolve_render_device();
       return -1;
     }
 
@@ -519,7 +531,8 @@ namespace va {
     vaSetErrorCallback(display.get(), __log, &error);
     vaSetErrorCallback(display.get(), __log, &info);
 
-    int major, minor;
+    int major;
+    int minor;
     auto status = vaInitialize(display.get(), &major, &minor);
     if (status) {
       BOOST_LOG(error) << "Couldn't initialize va display: "sv << vaErrorStr(status);
@@ -583,7 +596,8 @@ namespace va {
       return false;
     }
 
-    int major, minor;
+    int major;
+    int minor;
     auto status = vaInitialize(display.get(), &major, &minor);
     if (status) {
       BOOST_LOG(error) << "Couldn't initialize va display: "sv << vaErrorStr(status);
@@ -626,9 +640,9 @@ namespace va {
   }
 
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, int offset_x, int offset_y, bool vram) {
-    auto render_device = config::video.adapter_name.empty() ? "/dev/dri/renderD128" : config::video.adapter_name.c_str();
+    auto render_device = platf::resolve_render_device();
 
-    file_t file = open(render_device, O_RDWR);
+    file_t file = ::open(render_device.c_str(), O_RDWR);  // NOSONAR(cpp:S1874) - `_sopen_s` not available
     if (file.el < 0) {
       char string[1024];
       BOOST_LOG(error) << "Couldn't open "sv << render_device << ": " << strerror_r(errno, string, sizeof(string));

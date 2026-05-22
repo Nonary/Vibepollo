@@ -201,6 +201,7 @@ export function getConfigSelectOptions(
       } else if (platform === 'linux') {
         options.push(
           { label: 'NvFBC', value: 'nvfbc' },
+          { label: 'KWin', value: 'kwin' },
           { label: 'wlroots', value: 'wlr' },
           { label: 'KMS', value: 'kms' },
           { label: 'X11', value: 'x11' },
@@ -220,6 +221,7 @@ export function getConfigSelectOptions(
       } else if (platform === 'linux') {
         options.push(
           { label: 'NVIDIA NVENC', value: 'nvenc' },
+          { label: 'Vulkan', value: 'vulkan' },
           { label: 'VA-API', value: 'vaapi' },
         );
       } else if (platform === 'macos') {
@@ -277,6 +279,25 @@ export function getConfigSelectOptions(
         { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },
         { label: translateOr(t, '_common.enabled', 'Enabled'), value: 'enabled' },
         { label: translateOr(t, '_common.disabled', 'Disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'vk_tune': {
+      const options = [
+        { label: translateOr(t, '_common.auto', 'Auto'), value: 0 },
+        { label: translateOr(t, 'config.vk_tune_hq', 'High Quality'), value: 1 },
+        { label: translateOr(t, 'config.vk_tune_ll', 'Low Latency'), value: 2 },
+        { label: translateOr(t, 'config.vk_tune_ull', 'Ultra Low Latency'), value: 3 },
+        { label: translateOr(t, 'config.vk_tune_lossless', 'Lossless'), value: 4 },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'vk_rc_mode': {
+      const options = [
+        { label: translateOr(t, '_common.auto', 'Auto'), value: 0 },
+        { label: translateOr(t, 'config.vk_rc_cqp', 'CQP'), value: 1 },
+        { label: translateOr(t, 'config.vk_rc_cbr', 'CBR'), value: 2 },
+        { label: translateOr(t, 'config.vk_rc_vbr', 'VBR'), value: 4 },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }

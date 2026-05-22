@@ -7,6 +7,7 @@
 // standard includes
 #include <atomic>
 #include <optional>
+#include <string>
 
 // platform includes
 #include <winsock2.h>

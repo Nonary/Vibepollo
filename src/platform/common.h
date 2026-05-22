@@ -6,8 +6,10 @@
 
 // standard includes
 #include <bitset>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -247,6 +249,7 @@ namespace platf {
   struct touch_port_t {
     int offset_x, offset_y;
     int width, height;
+    int logical_width, logical_height;
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!
@@ -461,7 +464,15 @@ namespace platf {
 
     display_t() noexcept:
         offset_x {0},
-        offset_y {0} {
+        offset_y {0},
+        env_width {0},
+        env_height {0},
+        env_logical_width {0},
+        env_logical_height {0},
+        width {0},
+        height {0},
+        logical_width {0},
+        logical_height {0} {
     }
 
     /**
@@ -514,8 +525,10 @@ namespace platf {
     // Offsets for when streaming a specific monitor. By default, they are 0.
     int offset_x, offset_y;
     int env_width, env_height;
+    int env_logical_width, env_logical_height;
 
     int width, height;
+    int logical_width, logical_height;
 
   protected:
     // collect capture timing data (at loglevel debug)
@@ -533,7 +546,7 @@ namespace platf {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
-    virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) = 0;
+    virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
 
     /**
      * @brief Check if the audio sink is available in the system.
@@ -604,6 +617,14 @@ namespace platf {
     critical  ///< Critical priority
   };
   void adjust_thread_priority(thread_priority_e priority);
+
+  /**
+   * @brief Name the current thread for use with development tools.
+   * @note On Linux this will be truncated after 15 characters.
+   */
+  void set_thread_name(const std::string &name);
+
+  void enable_mouse_keys();
 
   // Allow OS-specific actions to be taken to prepare for streaming
   void streaming_will_start();
@@ -818,8 +839,8 @@ namespace platf {
    */
   platform_caps::caps_t get_capabilities();
 
-#define SERVICE_NAME "Apollo"
-#define SERVICE_TYPE "_nvstream._tcp"
+  inline constexpr std::string_view SERVICE_NAME = "Apollo";
+  inline constexpr std::string_view SERVICE_TYPE = "_nvstream._tcp";
 
   namespace publish {
     [[nodiscard]] std::unique_ptr<deinit_t> start();
@@ -934,5 +955,9 @@ namespace platf {
    */
   std::unique_ptr<host_stats_provider_t>
     create_host_stats_provider();
+
+  std::string resolve_render_device();
+  bool has_elevated_privileges(bool all_caps = true);
+  void drop_elevated_privileges(bool all_caps = true);
 
 }  // namespace platf

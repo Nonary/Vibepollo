@@ -23,7 +23,11 @@
     "success": "Klart!",
     "undo_cmd": "Ångra kommando",
     "username": "Användarnamn",
-    "warning": "Varning!"
+    "warning": "Varning!",
+    "all": "Alla",
+    "close": "Stäng",
+    "loading": "Laddar...",
+    "search": "Sök..."
   },
   "apps": {
     "actions": "Händelser",
@@ -79,7 +83,10 @@
     "wait_all": "Fortsätt strömma tills alla app-processer avslutas",
     "wait_all_desc": "Detta fortsätter strömningen tills alla processer som startats av appen har avslutats. När den avmarkeras kommer strömningen att sluta när den initiala app-processen avslutas, även om andra app-processer fortfarande är igång.",
     "working_dir": "Arbetskatalog",
-    "working_dir_desc": "Den arbetskatalog som ska skickas till processen. Till exempel använder vissa program arbetskatalogen för att söka efter konfigurationsfiler. Om inte anges, kommer Vibepollo standard till den överordnade katalogen i kommandot"
+    "working_dir_desc": "Den arbetskatalog som ska skickas till processen. Till exempel använder vissa program arbetskatalogen för att söka efter konfigurationsfiler. Om inte anges, kommer Vibepollo standard till den överordnade katalogen i kommandot",
+    "cover_search_hint": "Söknamn bör matcha IGDB namngivningskonventioner.",
+    "no_covers_found": "Inga omslag hittades",
+    "searching_covers": "Söker efter omslag..."
   },
   "config": {
     "adapter_name": "Adapter namn",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "WAN krypteringsläge",
     "wan_encryption_mode_1": "Aktiverad för stödda klienter (standard)",
     "wan_encryption_mode_2": "Krävs för alla kunder",
-    "wan_encryption_mode_desc": "Detta avgör när kryptering kommer att användas vid strömning över Internet. Kryptering kan minska strömningsprestanda, särskilt på mindre kraftfulla värdar och klienter."
+    "wan_encryption_mode_desc": "Detta avgör när kryptering kommer att användas vid strömning över Internet. Kryptering kan minska strömningsprestanda, särskilt på mindre kraftfulla värdar och klienter.",
+    "bind_address": "Bind adress",
+    "bind_address_desc": "Ange den specifika IP-adressen Vibepollo kommer att binda till. Om den lämnas tom, Vibepollo kommer att binda till alla tillgängliga adresser.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Sök konfigurationsalternativ..."
   },
   "index": {
     "description": "Solsken är en själv-värd spel ström värd för Moonlight.",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>Uppmärksamhet!</b> Solsken upptäckte dessa fel vid uppstart. Vi <b>STARKLIG KUNSKAP</b> fixar dem innan vi streamar.",
     "version_dirty": "Tack för att du hjälper till att göra Vibepollo till en bättre programvara!",
     "version_latest": "Du kör den senaste versionen av Vibepollo",
-    "welcome": "Hej, Vibepollo!"
+    "welcome": "Hej, Vibepollo!",
+    "fix_now": "Fixa nu",
+    "vigembus_not_installed_desc": "Stöd för virtuella spel fungerar inte utan ViGEmBus-drivrutinen. Klicka på knappen nedan för att installera det.",
+    "vigembus_not_installed_title": "ViGEmBus drivrutin inte installerad",
+    "vigembus_outdated_desc": "Du kör en föråldrad version av ViGEmBus (v{version}). 7 eller högre krävs för korrekt gamepad stöd. Klicka på knappen nedan för att uppdatera.",
+    "vigembus_outdated_title": "ViGEmBus förare föråldrad"
   },
   "navbar": {
     "applications": "Applikationer",
@@ -391,7 +408,20 @@
     "theme_dark": "Mörk",
     "theme_light": "Ljus",
     "toggle_theme": "Tema",
-    "troubleshoot": "Felsökning"
+    "troubleshoot": "Felsökning",
+    "featured": "Utvalda appar",
+    "theme_ember": "Ember",
+    "theme_forest": "Skog",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Midnatt",
+    "theme_monochrome": "Monokrom",
+    "theme_moonlight": "Månbelysning",
+    "theme_nord": "Nord",
+    "theme_ocean": "Hav",
+    "theme_rose": "Ros",
+    "theme_slate": "Skiffer",
+    "theme_sunshine": "Solsken"
   },
   "password": {
     "confirm_password": "Bekräfta lösenord",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "Det finns inga parkopplade enheter.",
     "unpair_single_success": "Enheten (er) kan dock fortfarande vara i en aktiv session. Använd knappen \"Tvinga nära\" ovan för att avsluta alla öppna sessioner.",
     "unpair_single_unknown": "Okänd klient",
-    "unpair_title": "Ta bort enheter"
+    "unpair_title": "Ta bort enheter",
+    "vigembus_compatible": "ViGEmBus är installerat och kompatibelt.",
+    "vigembus_current_version": "Nuvarande version",
+    "vigembus_desc": "ViGEmBus krävs för virtuell gamepad support. Installera eller uppdatera drivrutinen om den saknas eller är föråldrad (version 1.17 eller högre krävs).",
+    "vigembus_incompatible": "ViGEmBus version är för gammal. Installera version 1.17 eller senare.",
+    "vigembus_install": "ViGEmBus förare",
+    "vigembus_install_button": "Installera ViGEmBus v{version}",
+    "vigembus_install_error": "Det gick inte att installera ViGEmBus-drivrutinen.",
+    "vigembus_install_success": "ViGEmBus drivrutin installerad! Du kan behöva starta om datorn.",
+    "vigembus_force_reinstall_button": "Tvinga ominstallation av ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus är inte installerat."
   },
   "welcome": {
     "confirm_password": "Bekräfta lösenord",
@@ -451,5 +491,24 @@
     "greeting": "Välkommen till Vibepollo!",
     "login": "Inloggning",
     "welcome_success": "Denna sida kommer att laddas om snart, din webbläsare kommer att be dig om nya uppgifter"
+  },
+  "featured": {
+    "categories": {
+      "client": "Klienter",
+      "tool": "Verktyg"
+    },
+    "description": "Upptäck kunder, verktyg och integrationer som förbättrar din upplevelse av Vibepollo streaming.",
+    "docs": "Dokument",
+    "documentation": "Dokumentation",
+    "get": "Hämta",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Öppna ärenden",
+    "github_stars": "Stjärnor",
+    "last_updated": "Senast uppdaterad",
+    "no_apps": "Inga appar hittades i denna kategori.",
+    "official": "Officiell",
+    "title": "Utvalda appar",
+    "website": "Webbplats"
   }
 }

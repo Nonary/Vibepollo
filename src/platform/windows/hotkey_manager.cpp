@@ -18,6 +18,8 @@
   #include <ios>
   #include <mutex>
   #include <thread>
+  #include <winsock2.h>
+  #include <Windows.h>
 
 using namespace std::literals;
 

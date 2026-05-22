@@ -3,10 +3,24 @@
  * @brief Common declarations.
  */
 #pragma once
+
+// Suppress false positive warnings in Boost.Asio on some GCC versions (particularly Arch Linux)
+// These are known false positives in Boost.Asio's basic_resolver_results.hpp
+#if defined(__GNUC__) && !defined(__clang__)
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Warray-bounds"
+  #pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
+
 #include <gtest/gtest.h>
 #include <src/globals.h>
 #include <src/logging.h>
 #include <src/platform/common.h>
+
+// Restore warnings after including problematic headers
+#if defined(__GNUC__) && !defined(__clang__)
+  #pragma GCC diagnostic pop
+#endif
 
 // XFail/XPass pattern implementation (similar to pytest)
 namespace test_utils {
@@ -124,6 +138,12 @@ namespace test_utils {
   #define IS_MACOS true
 #else
   #define IS_MACOS false
+#endif
+
+#ifdef __FreeBSD__
+  #define IS_FREEBSD true
+#else
+  #define IS_FREEBSD false
 #endif
 
 struct PlatformTestSuite: testing::Test {

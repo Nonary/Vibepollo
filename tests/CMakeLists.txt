@@ -3,6 +3,13 @@ cmake_minimum_required(VERSION 3.13)
 
 project(test_sunshine)
 
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT DEFINED CMAKE_CUDA_STANDARD)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+endif()
+
 include_directories("${CMAKE_SOURCE_DIR}")
 
 enable_testing()
@@ -18,6 +25,45 @@ include_directories("${GTEST_SOURCE_DIR}/googletest/include" "${GTEST_SOURCE_DIR
 # https://gcovr.com/en/stable/guide/compiling.html#compiler-options
 set(CMAKE_CXX_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
 set(CMAKE_C_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
+
+# Find the correct libgcov library path matching the gcc compiler version
+# This ensures the test executable links against the same libgcov version used during compilation
+if(UNIX AND NOT APPLE)
+    # Get the gcc compiler version
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} -dumpversion
+        OUTPUT_VARIABLE GCC_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    # Extract major version
+    string(REGEX MATCH "^[0-9]+" GCC_MAJOR_VERSION "${GCC_VERSION}")
+
+    # Search for the gcc library directory matching this version
+    file(GLOB GCC_LIB_DIRS "/usr/lib/gcc/*/*${GCC_MAJOR_VERSION}.*")
+
+    if(GCC_LIB_DIRS)
+        list(GET GCC_LIB_DIRS 0 GCC_LIB_DIR)
+        message(STATUS "Found GCC library directory: ${GCC_LIB_DIR}")
+
+        # Look for libgcov.a in the gcc library directory
+        find_library(LIBGCOV_LIBRARY
+            NAMES gcov
+            PATHS ${GCC_LIB_DIR}
+            NO_DEFAULT_PATH
+        )
+
+        if(LIBGCOV_LIBRARY)
+            message(STATUS "Found libgcov: ${LIBGCOV_LIBRARY}")
+            # Store this to link against later
+            set(GCOV_LINK_LIBRARY ${LIBGCOV_LIBRARY})
+        else()
+            message(WARNING "Could not find libgcov in ${GCC_LIB_DIR}")
+        endif()
+    else()
+        message(WARNING "Could not find GCC library directory for version ${GCC_VERSION}")
+    endif()
+endif()
 
 # if windows
 if (WIN32)
@@ -40,6 +86,11 @@ list(APPEND TEST_DEFINITIONS SUNSHINE_TESTS)
 list(APPEND TEST_DEFINITIONS SUNSHINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 list(APPEND TEST_DEFINITIONS SUNSHINE_TEST_BIN_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
+# Override SUNSHINE_ASSETS_DIR to use a writable temp directory for tests
+# Remove the existing definition from SUNSHINE_DEFINITIONS to avoid redefinition error
+list(FILTER SUNSHINE_DEFINITIONS EXCLUDE REGEX "^SUNSHINE_ASSETS_DIR=")
+list(APPEND TEST_DEFINITIONS SUNSHINE_ASSETS_DIR="${CMAKE_CURRENT_BINARY_DIR}/test_assets")
+
 if(NOT WIN32)
     find_package(Udev 255)  # we need 255+ for udevadm verify
     message(STATUS "UDEV_FOUND: ${UDEV_FOUND}")
@@ -51,6 +102,12 @@ endif()
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
         ${CMAKE_SOURCE_DIR}/tests/*.cpp)
+# Add macOS-specific test files only when building tests for macOS
+if (APPLE)
+    file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
+            ${CMAKE_SOURCE_DIR}/tests/*.mm)
+    list(APPEND TEST_SOURCES ${MACOS_TEST_SOURCES})
+endif ()
 
 set(SUNSHINE_SOURCES
         ${SUNSHINE_TARGET_FILES})
@@ -100,12 +157,20 @@ endforeach()
 # Ensure locale files are synchronized before building the test executable
 add_dependencies(${PROJECT_NAME} sync_locale_files)
 
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
-target_link_libraries(${PROJECT_NAME}
-        ${SUNSHINE_EXTERNAL_LIBRARIES}
-        gtest
-        gmock
-        ${PLATFORM_LIBRARIES})
+# Build the list of libraries to link
+set(TEST_LINK_LIBRARIES
+    ${SUNSHINE_EXTERNAL_LIBRARIES}
+    gtest
+    gmock
+    ${PLATFORM_LIBRARIES}
+)
+
+# Add the specific libgcov library if found
+if(GCOV_LINK_LIBRARY)
+    list(APPEND TEST_LINK_LIBRARIES ${GCOV_LINK_LIBRARY})
+endif()
+
+target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE)
@@ -114,4 +179,15 @@ if (WIN32)
     # prefer static libraries since we're linking statically
     # this fixes libcurl linking errors when using non MSYS2 version of CMake
     set_target_properties(${PROJECT_NAME} PROPERTIES LINK_SEARCH_START_STATIC 1)
+
+    # Copy minhook-detours DLL to test binary directory for ARM64
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_MINHOOK_DLL}"
+                "${CMAKE_CURRENT_BINARY_DIR}"
+            COMMENT "Copying minhook-detours DLL to test binary directory"
+            VERBATIM
+        )
+    endif()
 endif ()

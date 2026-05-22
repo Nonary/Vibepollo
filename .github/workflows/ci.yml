@@ -4,6 +4,11 @@ permissions: {}
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag to publish, for example v1.16.0-alpha.4
+        required: false
+        type: string
   push:
     branches:
       - '**'
@@ -38,7 +43,7 @@ jobs:
         id: release-candidate
         env:
           EVENT_NAME: ${{ github.event_name }}
-          GITHUB_SHA_VALUE: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -89,6 +94,9 @@ jobs:
 
             return (major, minor, patch, suffix_rank, suffix_num, suffix)
 
+          def is_prerelease_key(key):
+            return key[3] < 40
+
           def release_notes_for(tag, commit):
             match = VERSION_RE.match(tag)
             if not match:
@@ -109,9 +117,12 @@ jobs:
                 return notes_path
             return None
 
+          def canonical_release_tag(tag):
+            return tag if tag.startswith("v") else f"v{tag}"
+
           event_name = os.environ["EVENT_NAME"]
-          if event_name != "push":
-            skip("Release gate only applies to push events.")
+          if event_name not in {"push", "workflow_dispatch"}:
+            skip("Release gate only applies to push and manual workflow_dispatch events.")
 
           run("git", "fetch", "--force", "--tags")
 
@@ -120,21 +131,29 @@ jobs:
           ).splitlines()))
           release_versions = [version_key(tag) for tag in release_tags]
           release_versions = [key for key in release_versions if key is not None]
-          current_release_version = max(release_versions) if release_versions else None
 
-          head_sha = os.environ["GITHUB_SHA_VALUE"]
-          candidate_tags = run("git", "tag", "--points-at", head_sha).splitlines()
-          if not candidate_tags:
-            skip("No unreleased version tag points at this push commit.")
+          release_tag_input = os.environ.get("RELEASE_TAG", "").strip()
+          if event_name == "workflow_dispatch":
+            if not release_tag_input:
+              skip("Manual release dispatch requires the release_tag input.")
+            candidate_tags = [release_tag_input]
+          else:
+            candidate_tags = run("git", "tag", "--points-at", "HEAD").splitlines()
 
           valid_candidates = []
           for tag in candidate_tags:
             key = version_key(tag)
             if key is None:
               continue
-            if tag in release_tags:
-              print(f"Skipping {tag}: release already exists.")
+            release_tag = canonical_release_tag(tag)
+            if tag in release_tags or release_tag in release_tags:
+              print(f"Skipping {tag}: release already exists as {release_tag}.")
               continue
+            comparable_releases = [
+              release_key for release_key in release_versions
+              if is_prerelease_key(release_key) == is_prerelease_key(key)
+            ]
+            current_release_version = max(comparable_releases) if comparable_releases else None
             if current_release_version is not None and key <= current_release_version:
               print(f"Skipping {tag}: not newer than the current release.")
               continue
@@ -145,13 +164,13 @@ jobs:
               stdout=subprocess.DEVNULL,
               stderr=subprocess.DEVNULL,
             ).returncode != 0:
-              print(f"Skipping {tag}: tag commit {release_commit} is not reachable from this push.")
+              print(f"Skipping {tag}: tag commit {release_commit} is not reachable from this run ref.")
               continue
             notes_file = release_notes_for(tag, release_commit)
             if notes_file is None:
               print(f"Skipping {tag}: no exact matching release_notes file in the tag commit.")
               continue
-            valid_candidates.append((key, tag, notes_file, release_commit))
+            valid_candidates.append((key, release_tag, notes_file, release_commit))
 
           if not valid_candidates:
             skip("No unreleased newer tag with exact matching release notes was found.")
@@ -179,6 +198,7 @@ jobs:
     with:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       symbol_product_name: Vibepollo
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       symbol_release_draft: true

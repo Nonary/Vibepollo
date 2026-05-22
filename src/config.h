@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <bitset>
 #include <chrono>
 #include <optional>
@@ -21,6 +22,12 @@ namespace config {
   inline std::unordered_map<std::string, std::string> modified_config_settings;
   // when a stream is active, we defer some settings until all sessions end
   inline std::unordered_map<std::string, std::string> pending_config_settings;
+
+  inline constexpr std::array redacted_config = {
+    "csrf_allowed_origins"
+  };
+
+  void log_config_settings(const std::unordered_map<std::string, std::string> &vars, bool save);
 
   struct video_t {
     enum class virtual_display_mode_e {
@@ -102,6 +109,11 @@ namespace config {
       bool strict_rc_buffer;
     } vaapi;
 
+    struct {
+      int tune;  // 0=default, 1=hq, 2=ll, 3=ull, 4=lossless
+      int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
+    } vk;
+
     std::string capture;
     std::string encoder;
     std::string adapter_name;
@@ -169,7 +181,7 @@ namespace config {
       hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
-      int paused_virtual_display_timeout_secs;  ///< Optional timeout to cleanup virtual display while stream is paused (0 disables).
+      int paused_virtual_display_timeout_secs;  ///< Optional delay before virtual display cleanup while stream is paused (0 keeps alive).
       bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
@@ -366,6 +378,7 @@ namespace config {
     bool session_history_enabled {true};  ///< Persist stream/session history to SQLite
     int session_history_ttl_days {0};  ///< Delete ended sessions older than this many days (0 disables age pruning)
     int session_history_db_size_limit_mb {0};  ///< Approximate live DB quota in MiB (0 disables size pruning)
+    std::vector<std::string> csrf_allowed_origins;
   };
 
   extern video_t video;

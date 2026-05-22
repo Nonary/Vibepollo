@@ -43,6 +43,8 @@ namespace VDISPLAY {
 #define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
 
 namespace bp = boost_process_shim;
+#define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
+
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
@@ -191,6 +193,7 @@ namespace proc {
     void pause();
     void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);
     bool last_run_app_frame_gen_limiter_fix() const;
+    bool is_launch_deferred() const;
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
@@ -254,11 +257,12 @@ namespace proc {
     find_working_directory(const std::string &cmd, const bp::environment &env);
 
   /**
-   * @brief Calculate a stable id based on name and image data
+   * @brief Calculate a stable id based on UUID when present, otherwise legacy name and image data.
    * @return Tuple of id calculated without index (for use if no collision) and one with.
    */
-  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, std::string app_image_path, int index);
+  std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index);
 
+  bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);

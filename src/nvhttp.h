@@ -103,6 +103,8 @@ namespace nvhttp {
   };
 
   struct pair_session_t {
+    std::chrono::steady_clock::time_point created_at = std::chrono::steady_clock::now();
+
     struct {
       std::string uniqueID = {};
       std::string cert = {};
@@ -216,11 +218,13 @@ namespace nvhttp {
   bool unpair_client(std::string_view uuid);
 
   /**
+
    * @brief Get a client's prefer_10bit_sdr override.
    * @param uuid The UUID of the client.
    * @return The client's override value, or std::nullopt to inherit the global value.
    */
   std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
+
 
   /**
    * @brief Get all paired clients.

@@ -183,15 +183,31 @@ if (-not $RootDir) {
 }
 $RootDir = (Resolve-Path $RootDir).Path
 
+# Resolve a per-user shared cache root for libwebrtc build artifacts so the
+# multi-hour build is not coupled to any single sunshine build directory.
+# Override priority: VIBESHINE_DEPS_DIR env var > WEBRTC_BUILD_DIR/WEBRTC_OUT_DIR
+# (legacy, unchanged) > %LOCALAPPDATA%\Vibeshine\deps default.
+$DepsRoot = $env:VIBESHINE_DEPS_DIR
+if (-not $DepsRoot) {
+  if ($env:LOCALAPPDATA) {
+    $DepsRoot = Join-Path $env:LOCALAPPDATA "Vibeshine\deps"
+  } else {
+    $DepsRoot = Join-Path $RootDir ".vibeshine-deps"
+  }
+}
+
 $BuildDir = Resolve-Value -Value $BuildDir -CacheKey "WEBRTC_BUILD_DIR" -EnvKey "WEBRTC_BUILD_DIR"
 if (-not $BuildDir) {
-  $BuildDir = Join-Path $RootDir "build\libwebrtc-src"
+  $BuildDir = Join-Path $DepsRoot "libwebrtc\src"
 }
 
 $OutDir = Resolve-Value -Value $OutDir -CacheKey "WEBRTC_OUT_DIR" -EnvKey "WEBRTC_OUT_DIR"
 if (-not $OutDir) {
-  $OutDir = Join-Path $RootDir "build\libwebrtc"
+  $OutDir = Join-Path $DepsRoot "libwebrtc\out"
 }
+
+Write-Step "Using libwebrtc build dir: $BuildDir"
+Write-Step "Using libwebrtc out dir:   $OutDir"
 
 $Configuration = Resolve-Value -Value $Configuration -CacheKey "WEBRTC_CONFIGURATION" -EnvKey "WEBRTC_CONFIGURATION"
 if (-not $Configuration) {

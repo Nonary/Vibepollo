@@ -104,9 +104,9 @@ namespace webrtc_stream {
 #ifdef _WIN32
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
-    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason) {
+    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason, bool enforce_display_restore) {
       const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-      std::thread([timeout, generation, reason = std::move(reason)]() {
+      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore]() {
         std::this_thread::sleep_for(timeout);
 
         if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
@@ -123,7 +123,7 @@ namespace webrtc_stream {
 
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
                         << reason << ").";
-        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", true);
+        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", enforce_display_restore);
         if (cleanup.helper_revert_dispatched) {
           display_helper_integration::stop_watchdog();
         }
@@ -131,6 +131,12 @@ namespace webrtc_stream {
     }
 #endif
   }  // namespace
+
+  void cancel_paused_display_cleanup() {
+#ifdef _WIN32
+    g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+#endif
+  }
 
   bool add_local_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
   bool set_local_answer(std::string_view id, const std::string &sdp, const std::string &type);
@@ -217,6 +223,7 @@ namespace webrtc_stream {
         session->output_name_override.reset();
       }
       session->virtual_display_recreated_on_demand = false;
+      session->virtual_display_needs_resume_apply = false;
 
       bool config_requests_virtual =
         config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
@@ -247,9 +254,11 @@ namespace webrtc_stream {
             session->virtual_display_failed = false;
             session->virtual_display_device_id = *existing_device;
             session->virtual_display_ready_since = std::chrono::steady_clock::now();
+            session->virtual_display_needs_resume_apply = true;
             config::set_runtime_output_name_override(session->virtual_display_device_id);
             BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
                             << *existing_device << ").";
+            BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for WebRTC resume.";
             return;
           }
 
@@ -1605,7 +1614,9 @@ namespace webrtc_stream {
         );
       }
     }
+#endif
 
+    #ifdef SUNSHINE_ENABLE_WEBRTC
     void feedback_thread_main(safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> queue) {
       using namespace std::chrono_literals;
       while (!webrtc_capture.feedback_shutdown.load(std::memory_order_acquire)) {
@@ -1620,7 +1631,7 @@ namespace webrtc_stream {
         send_gamepad_feedback_payload(*payload);
       }
     }
-    #endif
+#endif
 
     void request_keyframe(std::string_view reason) {
       auto mail = current_capture_mail();
@@ -2408,25 +2419,26 @@ namespace webrtc_stream {
         const bool is_paused = proc::proc.running() > 0;
         const bool revert_enabled = config::video.dd.config_revert_on_disconnect;
         const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
-        const bool skip_teardown_due_to_pause = is_paused && !revert_enabled;
-        if (!skip_teardown_due_to_pause) {
-          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
-        }
-        if (skip_teardown_due_to_pause) {
-          if (paused_timeout_secs > 0) {
-            BOOST_LOG(info) << "Display cleanup: WebRTC session paused with revert-on-disconnect disabled; "
-                            << "scheduling virtual display cleanup in " << paused_timeout_secs << "s.";
-            schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "webrtc_session_paused");
-          } else {
-            BOOST_LOG(debug) << "Display cleanup: WebRTC session is paused; keeping virtual display alive (config_revert_on_disconnect=false).";
-          }
+        const bool delay_virtual_display_cleanup_due_to_pause = is_paused && !revert_enabled && paused_timeout_secs > 0;
+        const bool keep_virtual_display_due_to_pause = is_paused && !revert_enabled && paused_timeout_secs == 0;
+        if (delay_virtual_display_cleanup_due_to_pause) {
+          BOOST_LOG(info) << "Display cleanup: WebRTC session paused with revert-on-disconnect disabled; "
+                          << "scheduling virtual display removal without display restore in " << paused_timeout_secs << "s.";
+          schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "webrtc_session_paused", false);
+        } else if (keep_virtual_display_due_to_pause) {
+          BOOST_LOG(debug) << "Display cleanup: WebRTC session is paused; keeping virtual display alive (config_revert_on_disconnect=false, paused timeout disabled).";
         } else {
+          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+          const auto cleanup_reason = is_paused && !revert_enabled ? "webrtc_session_paused" : "webrtc_capture_stop";
           const auto cleanup =
-            platf::virtual_display_cleanup::run("webrtc_capture_stop", revert_enabled);
+            platf::virtual_display_cleanup::run(cleanup_reason, revert_enabled);
           if (cleanup.helper_revert_dispatched) {
             display_helper_integration::stop_watchdog();
           } else if (revert_enabled) {
             BOOST_LOG(debug) << "Display helper: revert dispatch failed during WebRTC cleanup.";
+          } else if (is_paused) {
+            BOOST_LOG(info) << "Display cleanup: WebRTC session paused with revert-on-disconnect disabled; "
+                            << "removed virtual display(s) without restoring physical display configuration.";
           }
         }
       }
@@ -2519,15 +2531,24 @@ namespace webrtc_stream {
       }
 
       if (!rtsp_active) {
+#ifdef _WIN32
+        stream::cancel_paused_display_cleanup();
+        webrtc_stream::cancel_paused_display_cleanup();
+#endif
         // Ensure the latest config is applied before starting capture.
         config::maybe_apply_deferred();
         auto _hot_apply_gate = config::acquire_apply_read_gate();
 
 #ifdef _WIN32
         prepare_virtual_display_for_webrtc_session(launch_session, allow_display_changes);
-        if (allow_display_changes || launch_session->virtual_display_recreated_on_demand) {
+        if (allow_display_changes ||
+            launch_session->virtual_display_recreated_on_demand ||
+            launch_session->virtual_display_needs_resume_apply) {
           BOOST_LOG(debug) << "Display helper: applying WebRTC display request on "
-                           << (allow_display_changes ? "normal start" : "resume virtual-display recreation")
+                           << (allow_display_changes ? "normal start" :
+                                                         (launch_session->virtual_display_recreated_on_demand ?
+                                                            "resume virtual-display recreation" :
+                                                            "resume virtual-display refresh"))
                            << " for client '" << launch_session->client_name << "'.";
           if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
             config::set_runtime_output_name_override(*launch_session->output_name_override);
@@ -3529,7 +3550,7 @@ namespace webrtc_stream {
                                         colorspace_.full_range != colorspace.full_range ||
                                         colorspace_.bit_depth != colorspace.bit_depth;
         if (!color_matrix_cb_ || colorspace_changed) {
-          const video::color_t *colors = video::color_vectors_from_colorspace(colorspace);
+          const video::color_t *colors = video::color_vectors_from_colorspace(colorspace, true);
           if (!colors) {
             return false;
           }

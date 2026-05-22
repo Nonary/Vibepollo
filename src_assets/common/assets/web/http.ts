@@ -2,6 +2,10 @@
 import axios, { AxiosResponse, AxiosError } from 'axios';
 import { useAuthStore } from '@/stores/auth';
 
+const CSRF_ERRORS = new Set(['Missing CSRF token', 'Invalid CSRF token', 'CSRF token expired']);
+const CSRF_HEADER = 'X-CSRF-Token';
+const CSRF_TOKEN_URL = '/api/csrf-token';
+
 // Create a singleton axios instance
 export const http = axios.create({
   // baseURL left relative so it works behind reverse proxies
@@ -13,6 +17,82 @@ export const http = axios.create({
 
 let authInitialized = false;
 let refreshPromise: Promise<boolean> | null = null;
+let csrfToken: string | null = null;
+let csrfTokenPromise: Promise<string> | null = null;
+
+function requestMethod(config: any): string {
+  return String(config?.method || 'get').toUpperCase();
+}
+
+function requestPath(config: any): string {
+  const urlRaw = String(config?.url || '');
+  try {
+    return new URL(urlRaw, window.location.origin).pathname;
+  } catch {
+    return urlRaw;
+  }
+}
+
+function needsCsrfToken(config: any): boolean {
+  if (config?.__skipCsrf === true) return false;
+  if (requestPath(config) === CSRF_TOKEN_URL) return false;
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(requestMethod(config));
+}
+
+function csrfErrorFromResponse(response: AxiosResponse | undefined): string | null {
+  if (!response || response.status !== 400) return null;
+  const error = (response.data as any)?.error;
+  return typeof error === 'string' && CSRF_ERRORS.has(error) ? error : null;
+}
+
+function clearCsrfToken(): void {
+  csrfToken = null;
+  csrfTokenPromise = null;
+}
+
+async function getCsrfToken(forceRefresh = false): Promise<string> {
+  if (!forceRefresh && csrfToken) return csrfToken;
+  if (!forceRefresh && csrfTokenPromise) return csrfTokenPromise;
+
+  const cfg: any = {
+    validateStatus: () => true,
+    headers: {
+      'X-Skip-Auth-Refresh': '1',
+    },
+  };
+  cfg.__allowUnauthenticated = true;
+  cfg.__skipAuthRefresh = true;
+  cfg.__skipCsrf = true;
+
+  csrfTokenPromise = http
+    .get(CSRF_TOKEN_URL, cfg)
+    .then((res) => {
+      const token = (res.data as any)?.csrf_token;
+      if (res.status === 200 && typeof token === 'string' && token.length > 0) {
+        csrfToken = token;
+        return token;
+      }
+      throw new Error('Unable to obtain CSRF token');
+    })
+    .finally(() => {
+      csrfTokenPromise = null;
+    });
+
+  return csrfTokenPromise;
+}
+
+async function retryWithFreshCsrfToken(response: AxiosResponse): Promise<AxiosResponse> {
+  const originalRequest: any = response.config || {};
+  if (!needsCsrfToken(originalRequest) || originalRequest.__csrfRetry === true) {
+    return response;
+  }
+  originalRequest.__csrfRetry = true;
+  clearCsrfToken();
+  const token = await getCsrfToken(true);
+  originalRequest.headers = originalRequest.headers || {};
+  originalRequest.headers[CSRF_HEADER] = token;
+  return http(originalRequest);
+}
 
 export async function refreshSession(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
@@ -47,16 +127,9 @@ function initAuthHandling(): void {
   const auth = useAuthStore();
 
   // Block outgoing requests while logged out, except auth endpoints
-  http.interceptors.request.use((config) => {
+  http.interceptors.request.use(async (config) => {
     try {
-      const urlRaw = String(config.url || '');
-      // Extract pathname if absolute URL
-      let path = urlRaw;
-      try {
-        // If it parses, prefer the pathname; else keep as-is for relative paths
-        const u = new URL(urlRaw, window.location.origin);
-        path = u.pathname;
-      } catch {}
+      const path = requestPath(config);
       // If user initiated logout, block all outgoing requests
       if ((auth as any).logoutInitiated) {
         const err: any = new Error('Request blocked: user logged out');
@@ -64,6 +137,7 @@ function initAuthHandling(): void {
         return Promise.reject(err);
       }
       const allowWhenLoggedOut =
+        path === CSRF_TOKEN_URL ||
         /(\s*\/api\/auth\/(login|status|refresh)\b|\s*\/api\/password\b|\s*\/api\/configLocale\b)/.test(
           path,
         );
@@ -72,6 +146,12 @@ function initAuthHandling(): void {
         const err: any = new Error('Request blocked: unauthenticated');
         err.code = 'ERR_CANCELED';
         return Promise.reject(err);
+      }
+      if (needsCsrfToken(config)) {
+        config.headers = config.headers || {};
+        if (!config.headers[CSRF_HEADER]) {
+          config.headers[CSRF_HEADER] = await getCsrfToken();
+        }
       }
       return config;
     } catch {
@@ -92,6 +172,9 @@ function initAuthHandling(): void {
   // Response interceptor to detect auth changes
   http.interceptors.response.use(
     async (response: AxiosResponse) => {
+      if (csrfErrorFromResponse(response)) {
+        return retryWithFreshCsrfToken(response);
+      }
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('sunshine:online'));
@@ -128,6 +211,10 @@ function initAuthHandling(): void {
       );
       const userLoggedOut = (auth as any).logoutInitiated === true;
 
+      if (csrfErrorFromResponse(error.response)) {
+        return retryWithFreshCsrfToken(error.response);
+      }
+
       if (status === 401 && !skipAuthRetry && !isAuthRequest && !userLoggedOut) {
         const refreshed = await refreshSession();
         if (refreshed) {
@@ -138,6 +225,7 @@ function initAuthHandling(): void {
       }
 
       if (status === 401) {
+        clearCsrfToken();
         if (auth.isAuthenticated) auth.setAuthenticated(false);
         if (!userLoggedOut) triggerLoginModal();
       } else if (

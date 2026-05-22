@@ -8,24 +8,68 @@ It is recommended to use one of the following compilers:
 
 | Compiler    | Version |
 |:------------|:--------|
-| GCC         | 13+     |
+| GCC         | 14+     |
 | Clang       | 17+     |
 | Apple Clang | 15+     |
 
 ### Dependencies
 
+#### FreeBSD
+> [!CAUTION]
+> Sunshine support for FreeBSD is experimental and may be incomplete or not work as expected
+
+##### Install dependencies
+```sh
+pkg install -y \
+  audio/opus \
+  audio/pulseaudio \
+  devel/cmake \
+  devel/evdev-proto \
+  devel/git \
+  devel/libayatana-appindicator \
+  devel/libevdev \
+  devel/libnotify \
+  devel/ninja \
+  devel/pkgconf \
+  ftp/curl \
+  graphics/libdrm \
+  graphics/wayland \
+  multimedia/libva \
+  net/miniupnpc \
+  ports-mgmt/pkg \
+  security/openssl \
+  shells/bash \
+  www/npm \
+  x11/libX11 \
+  x11/libxcb \
+  x11/libXfixes \
+  x11/libXrandr \
+  x11/libXtst
+```
+
 #### Linux
 Dependencies vary depending on the distribution. You can reference our
 [linux_build.sh](https://github.com/LizardByte/Sunshine/blob/master/scripts/linux_build.sh) script for a list of
-dependencies we use in Debian-based and Fedora-based distributions. Please submit a PR if you would like to extend the
+dependencies we use in Debian-based, Fedora-based and Arch-based distributions. Please submit a PR if you would like to extend the
 script to support other distributions.
+
+##### KMS Capture
+If you are using KMS, patching the Sunshine binary with `setcap` is required. Some post-install scripts handle this. If building
+from source and using the binary directly, this will also work:
+
+```bash
+sudo cp build/sunshine /tmp
+sudo setcap cap_sys_admin,cap_sys_nice+p /tmp/sunshine
+sudo getcap /tmp/sunshine
+sudo mv /tmp/sunshine build/sunshine
+```
 
 ##### CUDA Toolkit
 Sunshine requires CUDA Toolkit for NVFBC capture. There are two caveats to CUDA:
 
 1. The version installed depends on the version of GCC.
 2. The version of CUDA you use will determine compatibility with various GPU generations.
-   At the time of writing, the recommended version to use is CUDA ~12.9.
+   At the time of writing, the recommended version to use is CUDA ~13.1.
    See [CUDA compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/index.html) for more info.
 
 > [!NOTE]
@@ -82,33 +126,53 @@ sudo port install "${dependencies[@]}"
 ```
 
 #### Windows
-First you need to install [MSYS2](https://www.msys2.org), then startup "MSYS2 UCRT64" and execute the following
-commands.
+
+> [!WARNING]
+> Cross-compilation is not supported on Windows. You must build on the target architecture.
+
+First, you need to install [MSYS2](https://www.msys2.org).
+
+For AMD64 startup "MSYS2 UCRT64" (or for ARM64 startup "MSYS2 CLANGARM64") then execute the following commands.
 
 ##### Update all packages
 ```bash
 pacman -Syu
 ```
 
+##### Set toolchain variable
+For UCRT64:
+```bash
+export TOOLCHAIN="ucrt-x86_64"
+```
+
+For CLANGARM64:
+```bash
+export TOOLCHAIN="clang-aarch64"
+```
+
 ##### Install dependencies
 ```bash
 dependencies=(
   "git"
-  "mingw-w64-ucrt-x86_64-boost"  # Optional
-  "mingw-w64-ucrt-x86_64-cmake"
-  "mingw-w64-ucrt-x86_64-cppwinrt"
-  "mingw-w64-ucrt-x86_64-curl-winssl"
-  "mingw-w64-ucrt-x86_64-doxygen"  # Optional, for docs... better to install official Doxygen
-  "mingw-w64-ucrt-x86_64-graphviz"  # Optional, for docs
-  "mingw-w64-ucrt-x86_64-MinHook"
-  "mingw-w64-ucrt-x86_64-miniupnpc"
-  "mingw-w64-ucrt-x86_64-nodejs"
-  "mingw-w64-ucrt-x86_64-onevpl"
-  "mingw-w64-ucrt-x86_64-openssl"
-  "mingw-w64-ucrt-x86_64-opus"
-  "mingw-w64-ucrt-x86_64-toolchain"
-  "mingw-w64-ucrt-x86_64-nlohmann_json"
+  "mingw-w64-${TOOLCHAIN}-boost"  # Optional
+  "mingw-w64-${TOOLCHAIN}-cmake"
+  "mingw-w64-${TOOLCHAIN}-cppwinrt"
+  "mingw-w64-${TOOLCHAIN}-curl-winssl"
+  "mingw-w64-${TOOLCHAIN}-doxygen"  # Optional, for docs... better to install official Doxygen
+  "mingw-w64-${TOOLCHAIN}-graphviz"  # Optional, for docs
+  "mingw-w64-${TOOLCHAIN}-miniupnpc"
+  "mingw-w64-${TOOLCHAIN}-onevpl"
+  "mingw-w64-${TOOLCHAIN}-openssl"
+  "mingw-w64-${TOOLCHAIN}-opus"
+  "mingw-w64-${TOOLCHAIN}-toolchain"
 )
+if [[ "${MSYSTEM}" == "UCRT64" ]]; then
+  dependencies+=(
+    "mingw-w64-${TOOLCHAIN}-MinHook"
+    "mingw-w64-${TOOLCHAIN}-nodejs"
+    "mingw-w64-${TOOLCHAIN}-nsis"
+  )
+fi
 pacman -S "${dependencies[@]}"
 ```
 
@@ -118,7 +182,30 @@ the `third-party/libwebrtc` submodule, but you must build WebRTC separately and 
 contains `include/` and `lib/` (e.g., `libwebrtc.dll` and its import library). We use the `third-party/depot_tools`
 submodule for `gclient`/`gn`.
 
-Build steps (summary from libwebrtc):
+###### Quickstart (recommended)
+A helper script automates the full depot_tools / gclient / gn / ninja flow:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_mingw_webrtc.ps1
+```
+
+By default the script caches its working tree and output to `%LOCALAPPDATA%\Vibepollo\deps\libwebrtc\{src,out}`,
+which is **shared across every Vibepollo build dir, worktree, and git checkout on the machine**. This means:
+
+- Wiping `build/` does not destroy libwebrtc — the next CMake configure picks it back up.
+- Switching git branches does not require rebuilding libwebrtc unless the WebRTC branch (`m125_release` etc.) actually changed.
+- Multiple Vibepollo build dirs share one cached libwebrtc.
+
+`cmake/dependencies/webrtc.cmake` looks at the same default location, so no `-DWEBRTC_ROOT=...` is needed after the
+first build. To relocate the cache, set `VIBEPOLLO_DEPS_DIR=<path>` in your environment before invoking either the
+script or CMake.
+
+For finer control the script accepts overrides via `-BuildDir`/`-OutDir` parameters or the legacy
+`WEBRTC_BUILD_DIR` / `WEBRTC_OUT_DIR` env vars (these still take precedence if set).
+
+###### Manual build (advanced / first-time porting)
+
+If you cannot use the helper script, the underlying steps are:
 
 1. Create a checkout directory and add a `.gclient` that points to
    `https://github.com/webrtc-sdk/webrtc.git@m137_release` with `target_os = ['win']`.
@@ -141,10 +228,16 @@ Build steps (summary from libwebrtc):
    gn gen out-debug/Windows-x64 --args="target_os=\"win\" target_cpu=\"x64\" is_component_build=false is_clang=true is_debug=true rtc_use_h264=true ffmpeg_branding=\"Chrome\" rtc_include_tests=false rtc_build_examples=false libwebrtc_desktop_capture=true" --ide=vs2022
    ninja -C out-debug/Windows-x64 libwebrtc
    ```
-7. Stage the artifacts into a directory with `include/` and `lib/` subfolders inside your Sunshine build tree (for
-   example, `build/libwebrtc`). Copy `libwebrtc.dll` and `libwebrtc.dll.lib` into `lib/`.
-8. Configure Sunshine with `-DSUNSHINE_ENABLE_WEBRTC=ON` (the default `WEBRTC_ROOT` points at `build/libwebrtc`). If
-   CMake still fails to find libwebrtc, pass `WEBRTC_INCLUDE_DIR` and `WEBRTC_LIBRARY` explicitly.
+7. Stage the artifacts into a directory with `include/` and `lib/` subfolders. Either place them at the default
+   shared cache location (`%LOCALAPPDATA%\Vibepollo\deps\libwebrtc\out`) so CMake finds them automatically, or
+   point CMake at your staging directory with `-DWEBRTC_ROOT=<path>`. Copy `libwebrtc.dll` and `libwebrtc.dll.lib`
+   into `lib/`.
+8. Configure Sunshine with `-DSUNSHINE_ENABLE_WEBRTC=ON`. If CMake still fails to find libwebrtc, pass
+   `WEBRTC_INCLUDE_DIR` and `WEBRTC_LIBRARY` explicitly.
+
+To create a WiX installer, you also need to install [.NET](https://dotnet.microsoft.com/download).
+
+For ARM64: To build frontend, you also need to install [Node.JS](https://nodejs.org/en/download)
 
 ### Clone
 Ensure [git](https://git-scm.com) is installed on your system, then clone the repository using the following command:
@@ -169,6 +262,11 @@ ninja -C build
 ### Package
 
 @tabs{
+  @tab{FreeBSD | @tabs{
+    @tab{pkg | ```bash
+      cpack -G FREEBSD --config ./build/CPackConfig.cmake
+      ```}
+  }}
   @tab{Linux | @tabs{
     @tab{deb | ```bash
       cpack -G DEB --config ./build/CPackConfig.cmake
@@ -186,6 +284,9 @@ ninja -C build
     @tab{Installer | ```bash
       cpack -G WIX --config ./build/CPackConfig.cmake
       # note: MSI packaging requires WiX Toolset v3 to be installed (e.g. `choco install wixtoolset`)
+      ```}
+    @tab{WiX Installer | ```bash
+      cpack -G WIX --config ./build/CPackConfig.cmake
       ```}
     @tab{Portable | ```bash
       cpack -G ZIP --config ./build/CPackConfig.cmake

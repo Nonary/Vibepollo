@@ -25,7 +25,12 @@ elseif(UNIX)
     configure_file(packaging/linux/${PROJECT_FQDN}.metainfo.xml ${PROJECT_FQDN}.metainfo.xml @ONLY)
 
     # configure service
-    configure_file(packaging/linux/sunshine.service.in sunshine.service @ONLY)
+    configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
+
+    # configure kwin desktop permission file
+    if (${SUNSHINE_ENABLE_KWIN})
+        configure_file(packaging/linux/${PROJECT_FQDN}.kwin.desktop.in ${PROJECT_FQDN}.kwin.desktop @ONLY)
+    endif()
 
     # configure the arch linux pkgbuild
     if(${SUNSHINE_CONFIGURE_PKGBUILD})

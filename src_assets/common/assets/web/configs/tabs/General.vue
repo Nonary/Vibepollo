@@ -10,7 +10,6 @@ import { NButton } from 'naive-ui';
 type PrepCommandKey = 'global_prep_cmd' | 'global_state_cmd';
 type PrepCommand = { do: string; undo: string; elevated?: boolean };
 type ServerCommand = { name: string; cmd: string; elevated?: boolean };
-
 const store = useConfigStore();
 const { config, metadata } = storeToRefs(store);
 const platform = computed(() => metadata.value?.platform || '');
@@ -45,8 +44,7 @@ function markManualDirty() {
   store.markManualDirty?.();
 }
 
-function addPrepCommand(key: PrepCommandKey) {
-  const template = {
+function addPrepCommand(key: PrepCommandKey) {  const template = {
     do: '',
     undo: '',
     ...(platform.value === 'windows' ? { elevated: false } : {}),
@@ -54,8 +52,7 @@ function addPrepCommand(key: PrepCommandKey) {
   const current = prepCommands(key);
   const next = [...current, template];
   store.updateOption(key, next);
-  markManualDirty();
-}
+  markManualDirty();}
 
 function removePrepCommand(key: PrepCommandKey, index: number) {
   const current = [...prepCommands(key)];
@@ -81,8 +78,7 @@ function removeServerCommand(index: number) {
   if (index < 0 || index >= current.length) return;
   current.splice(index, 1);
   store.updateOption('server_cmd', current);
-  markManualDirty();
-}
+  markManualDirty();}
 </script>
 
 <template>
@@ -112,8 +108,7 @@ function removeServerCommand(index: number) {
       </div>
       <div v-if="prepCommands(section.key).length > 0" class="mt-3 space-y-3">
         <div
-          v-for="(command, index) in prepCommands(section.key)"
-          :key="index"
+          v-for="(command, index) in prepCommands(section.key)"          :key="index"
           class="rounded-md border border-dark/10 dark:border-light/10 p-3 space-y-3"
         >
           <div class="flex items-center justify-between gap-2">
@@ -121,15 +116,13 @@ function removeServerCommand(index: number) {
             <div class="flex items-center gap-2">
               <Checkbox
                 v-if="platform === 'windows'"
-                :id="`${section.key}_elevated_${index}`"
-                v-model="command.elevated"
+                :id="`${section.key}_elevated_${index}`"                v-model="command.elevated"
                 :label="$t('_common.elevated')"
                 desc=""
                 class="mb-0"
                 @update:model-value="markManualDirty()"
               />
-              <n-button secondary size="small" @click="removePrepCommand(section.key, index)">
-                <i class="fas fa-trash" />
+              <n-button secondary size="small" @click="removePrepCommand(section.key, index)">                <i class="fas fa-trash" />
               </n-button>
               <n-button primary size="small" @click="addPrepCommand(section.key)">
                 <i class="fas fa-plus" />
@@ -139,8 +132,7 @@ function removeServerCommand(index: number) {
 
           <div class="grid grid-cols-1 gap-3">
             <ConfigInputField
-              :id="`${section.key}_do_${index}`"
-              v-model="command.do"
+              :id="`${section.key}_do_${index}`"              v-model="command.do"
               :label="$t('_common.do_cmd')"
               desc=""
               type="textarea"
@@ -150,15 +142,13 @@ function removeServerCommand(index: number) {
             />
 
             <ConfigInputField
-              :id="`${section.key}_undo_${index}`"
-              v-model="command.undo"
+              :id="`${section.key}_undo_${index}`"              v-model="command.undo"
               :label="$t('_common.undo_cmd')"
               desc=""
               type="textarea"
               monospace
               :autosize="{ minRows: 1, maxRows: 3 }"
-              @update:model-value="markManualDirty()"
-            />
+              @update:model-value="markManualDirty()"            />
           </div>
         </div>
       </div>
@@ -295,8 +285,7 @@ function removeServerCommand(index: number) {
       v-model="config.hide_tray_controls"
       setting-key="hide_tray_controls"
       class="mb-3"
-    />
-  </div>
+    />  </div>
 </template>
 
 <style scoped></style>

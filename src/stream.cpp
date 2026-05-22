@@ -15,6 +15,7 @@
 #include <optional>
 #include <queue>
 #include <thread>
+#include <type_traits>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -158,9 +159,9 @@ namespace stream {
   namespace {
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
-    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason) {
+    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason, bool enforce_display_restore) {
       const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-      std::thread([timeout, generation, reason = std::move(reason)]() {
+      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore]() {
         std::this_thread::sleep_for(timeout);
 
         if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
@@ -177,7 +178,7 @@ namespace stream {
 
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
                         << reason << ").";
-        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", true);
+        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", enforce_display_restore);
         if (cleanup.helper_revert_dispatched) {
           display_helper_integration::stop_watchdog();
         }
@@ -185,6 +186,12 @@ namespace stream {
     }
   }  // namespace
 #endif
+
+  void cancel_paused_display_cleanup() {
+#ifdef _WIN32
+    g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+#endif
+  }
 
 #pragma pack(push, 1)
 
@@ -353,7 +360,7 @@ namespace stream {
     // If encryption isn't enabled
     if (!encrypted) {
       std::copy(std::begin(plaintext), std::end(plaintext), destination);
-      return plaintext.size();
+      return (int) plaintext.size();
     }
 
     return cbc.encrypt(std::string_view {(char *) std::begin(plaintext), plaintext.size()}, destination, &iv);
@@ -826,7 +833,12 @@ namespace stream {
       // for other communications to the client. This is necessary to ensure
       // proper routing on multi-homed hosts.
       auto local_address = platf::from_sockaddr((sockaddr *) &peer->localAddress.address);
-      session_p->localAddress = boost::asio::ip::make_address(local_address);
+      try {
+        session_p->localAddress = boost::asio::ip::make_address(local_address);
+      } catch (const boost::system::system_error &e) {
+        BOOST_LOG(error) << "boost::system::system_error in address parsing: " << e.what() << " (code: " << e.code() << ")"sv;
+        throw;
+      }
 
       BOOST_LOG(debug) << "Control local address ["sv << local_address << ']';
       BOOST_LOG(debug) << "Control peer address ["sv << peer_addr << ':' << peer_port << ']';
@@ -868,7 +880,7 @@ namespace stream {
 
   void control_server_t::iterate(std::chrono::milliseconds timeout) {
     ENetEvent event;
-    auto res = enet_host_service(_host.get(), &event, timeout.count());
+    auto res = enet_host_service(_host.get(), &event, (enet_uint32) timeout.count());
 
     if (res > 0) {
       auto session = get_session(event.peer, event.data);
@@ -1006,9 +1018,9 @@ namespace stream {
         }
 
         // packets = parity_shards + data_shards
-        rs_t rs {reed_solomon_new(data_shards, parity_shards)};
+        rs_t rs {reed_solomon_new((int) data_shards, (int) parity_shards)};
 
-        reed_solomon_encode(rs.get(), shards_p.begin(), nr_shards, blocksize);
+        reed_solomon_encode(rs.get(), shards_p.begin(), (int) nr_shards, (int) blocksize);
       }
 
       return {
@@ -1522,6 +1534,7 @@ namespace stream {
     });
 
     // This thread handles latency-sensitive control messages
+    platf::set_thread_name("stream::controlBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     // Check for both the full shutdown event and the shutdown event for this
@@ -1674,6 +1687,8 @@ namespace stream {
     std::array<char, 2048> buf[2];
     std::function<void(const boost::system::error_code, size_t)> recv_func[2];
 
+    platf::set_thread_name("stream::recv");
+
     auto populate_peer_to_session = [&]() {
       while (message_queue_queue->peek()) {
         auto message_queue_opt = message_queue_queue->pop();
@@ -1754,6 +1769,7 @@ namespace stream {
     auto video_epoch = std::chrono::steady_clock::now();
 
     // Video traffic is sent on this thread
+    platf::set_thread_name("stream::videoBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
     logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
@@ -1839,6 +1855,7 @@ namespace stream {
 
       // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
       constexpr auto MAX_FEC_BLOCKS = 4;
+      constexpr auto MAX_TOTAL_FEC_SHARDS = 255;
 
       // The max number of data shards per block is found by solving this system of equations for D:
       // D = 255 - P
@@ -1847,7 +1864,7 @@ namespace stream {
       // D = 255 / (1 + F)
       // multiplied by 100 since F is the percentage as an integer:
       // D = (255 * 100) / (100 + F)
-      auto max_data_shards_per_fec_block = (DATA_SHARDS_MAX * 100) / (100 + fecPercentage);
+      auto max_data_shards_per_fec_block = (MAX_TOTAL_FEC_SHARDS * 100) / (100 + fecPercentage);
 
       // Compute the number of FEC blocks needed for this frame using the block size and max shards
       auto max_data_per_fec_block = max_data_shards_per_fec_block * blocksize;
@@ -1919,7 +1936,7 @@ namespace stream {
           for (int x = 0; x < packets; ++x) {
             auto *inspect = (video_packet_raw_t *) &current_payload[x * blocksize];
 
-            inspect->packet.frameIndex = packet->frame_index();
+            inspect->packet.frameIndex = (uint32_t) packet->frame_index();
             inspect->packet.streamPacketIndex = ((uint32_t) lowseq + x) << 8;
 
             // Match multiFecFlags with Moonlight
@@ -1972,16 +1989,16 @@ namespace stream {
             auto *inspect = (video_packet_raw_t *) shards.data(x);
 
             inspect->packet.fecInfo =
-              (x << 12 |
-               shards.data_shards << 22 |
-               shards.percentage << 4);
+              (uint32_t) (x << 12 |
+                          shards.data_shards << 22 |
+                          shards.percentage << 4);
 
             inspect->rtp.header = 0x80 | FLAG_EXTENSION;
             inspect->rtp.sequenceNumber = util::endian::big<uint16_t>(lowseq + x);
             inspect->rtp.timestamp = util::endian::big<uint32_t>(timestamp);
 
             inspect->packet.multiFecBlocks = (blockIndex << 4) | ((fec_blocks_needed - 1) << 6);
-            inspect->packet.frameIndex = packet->frame_index();
+            inspect->packet.frameIndex = (uint32_t) packet->frame_index();
 
             // Encrypt this shard if video encryption is enabled
             if (session->video.cipher) {
@@ -1999,7 +2016,7 @@ namespace stream {
 
               // Encrypt the target buffer in place
               auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
-              prefix->frameNumber = packet->frame_index();
+              prefix->frameNumber = (std::uint32_t) packet->frame_index();
               std::copy(std::begin(iv), std::end(iv), prefix->iv);
               session->video.cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
             }
@@ -2110,6 +2127,7 @@ namespace stream {
     audio_packet.rtp.ssrc = 0;
 
     // Audio traffic is sent on this thread
+    platf::set_thread_name("stream::audioBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
     while (auto packet = packets->pop()) {
@@ -2367,6 +2385,7 @@ namespace stream {
   }
 
   void videoThread(session_t *session) {
+    platf::set_thread_name("session::video");
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
     });
@@ -2388,6 +2407,7 @@ namespace stream {
   }
 
   void audioThread(session_t *session) {
+    platf::set_thread_name("session::audio");
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
     });
@@ -2424,7 +2444,7 @@ namespace stream {
     }
 
     bool uuid_match(const session_t &session, const std::string_view &uuid) {
-      return session.device_uuid == uuid;
+      return session.device_uuid == uuid || session.history_uuid == uuid;
     }
 
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm) {
@@ -2561,34 +2581,34 @@ namespace stream {
 #endif
         }
         const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
-
-        const bool skip_teardown_due_to_pause = is_paused && !revert_display_config;
+        const bool delay_virtual_display_cleanup_due_to_pause = is_paused && !revert_display_config && paused_timeout_secs > 0;
+        const bool keep_virtual_display_due_to_pause = is_paused && !revert_display_config && paused_timeout_secs == 0;
 
 #ifdef _WIN32
-        if (!skip_teardown_due_to_pause) {
-          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
-        }
         if (webrtc_active) {
           BOOST_LOG(debug) << "Display cleanup: WebRTC session is still active; skipping RTSP-triggered teardown.";
-        } else if (skip_teardown_due_to_pause) {
-          if (paused_timeout_secs > 0) {
-            BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
-                            << "scheduling virtual display cleanup in " << paused_timeout_secs << "s.";
-            schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "rtsp_session_paused");
-          } else {
-            BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false).";
-          }
+        } else if (delay_virtual_display_cleanup_due_to_pause) {
+          BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
+                          << "scheduling virtual display removal without display restore in " << paused_timeout_secs << "s.";
+          schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "rtsp_session_paused", false);
+        } else if (keep_virtual_display_due_to_pause) {
+          BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false, paused timeout disabled).";
         } else {
-          const auto cleanup = platf::virtual_display_cleanup::run("rtsp_session_end", revert_display_config);
+          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+          const auto cleanup_reason = is_paused && !revert_display_config ? "rtsp_session_paused" : "rtsp_session_end";
+          const auto cleanup = platf::virtual_display_cleanup::run(cleanup_reason, revert_display_config);
           if (cleanup.helper_revert_dispatched) {
             // If we reverted the display configuration, the helper watchdog is no longer needed.
             display_helper_integration::stop_watchdog();
           } else if (revert_display_config) {
             BOOST_LOG(debug) << "Display helper: revert dispatch failed; leaving watchdog running.";
+          } else if (is_paused) {
+            BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
+                            << "removed virtual display(s) without restoring physical display configuration.";
           }
         }
 #else
-        if (revert_display_config && !skip_teardown_due_to_pause && !webrtc_active) {
+        if (revert_display_config && !webrtc_active) {
           (void) display_helper_integration::revert();
         }
 #endif
@@ -2706,7 +2726,6 @@ namespace stream {
               }
             }
           }
-
           // Frame limiter should follow the stream FPS the user/client selected (NVHTTP "mode" fps),
           // not the capture display refresh rate.
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();

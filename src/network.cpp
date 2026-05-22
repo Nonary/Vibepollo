@@ -118,10 +118,12 @@ namespace net {
   }
 
   std::string get_bind_address(const af_e af) {
+    // If bind_address is configured, use it
     if (!config::sunshine.bind_address.empty()) {
       return config::sunshine.bind_address;
     }
 
+    // Otherwise use the wildcard address for the given address family
     return std::string(af_to_any_address_string(af));
   }
 

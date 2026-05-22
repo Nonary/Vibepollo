@@ -23,7 +23,11 @@
     "success": "Успешно!",
     "undo_cmd": "Команда закрытия",
     "username": "Имя пользователя",
-    "warning": "Предупреждение!"
+    "warning": "Предупреждение!",
+    "all": "Все",
+    "close": "Закрыть",
+    "loading": "Загрузка...",
+    "search": "Поиск..."
   },
   "apps": {
     "actions": "Действия",
@@ -79,7 +83,10 @@
     "wait_all": "Продолжать вещание, пока не завершатся все процессы приложения",
     "wait_all_desc": "Продолжать вещание, пока все процессы, запущенные приложением не будут завершены. Если не выбрано, вещание прекратится, по завершении начального процесса приложения, даже если запущены другие подпроцессы.",
     "working_dir": "Рабочая папка",
-    "working_dir_desc": "Рабочий каталог, передаваемый процессу. К примеру, некоторые приложения используют рабочий каталог для поиска конфигурационных файлов. Если не указан, Vibepollo по умолчанию использует вышестоящий каталог команды"
+    "working_dir_desc": "Рабочий каталог, передаваемый процессу. К примеру, некоторые приложения используют рабочий каталог для поиска конфигурационных файлов. Если не указан, Vibepollo по умолчанию использует вышестоящий каталог команды",
+    "cover_search_hint": "Поиск имен должен соответствовать конвенциям по именованию в IGDB.",
+    "no_covers_found": "Обложки не найдены",
+    "searching_covers": "Поиск обложек..."
   },
   "config": {
     "adapter_name": "Имя адаптера",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "Режим шифрования WAN",
     "wan_encryption_mode_1": "Включено для поддерживаемых клиентов (по умолчанию)",
     "wan_encryption_mode_2": "Требуется для всех клиентов",
-    "wan_encryption_mode_desc": "Определяет, когда будет использоваться шифрование при вещании через Интернет. Шифрование может снизить качество вещания, особенно на более слабых серверах и клиентах."
+    "wan_encryption_mode_desc": "Определяет, когда будет использоваться шифрование при вещании через Интернет. Шифрование может снизить качество вещания, особенно на более слабых серверах и клиентах.",
+    "bind_address": "Привязать адрес",
+    "bind_address_desc": "Установите IP адрес Vibepollo будет привязываться. Если оставить пустым, Vibepollo будет привязываться ко всем доступным адресам.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Опции поиска конфигурации..."
   },
   "index": {
     "description": "Vibepollo - это ваш собственный сервер вещания игр для Moonlight.",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>Внимание!</b> Vibepollo обнаружил эти ошибки во время запуска. Мы <b>НАСТОЯТЕЛЬНО РЕКОМЕНДУЕМ</b> исправить их перед запуском вещания.",
     "version_dirty": "Спасибо за помощь по улучшению Vibepollo!",
     "version_latest": "Вы используете свежую версию Vibepollo",
-    "welcome": "Привет, Vibepollo!"
+    "welcome": "Привет, Vibepollo!",
+    "fix_now": "Исправить сейчас",
+    "vigembus_not_installed_desc": "Поддержка виртуального геймпада не будет работать без драйвера ViGEmBus. Нажмите на кнопку ниже, чтобы установить его.",
+    "vigembus_not_installed_title": "Драйвер ViGEmBus не установлен",
+    "vigembus_outdated_desc": "Вы используете устаревшую версию ViGEmBus (v{version}). Версия 1. Для корректной поддержки геймпада требуется 7 или выше. Нажмите на кнопку ниже, чтобы обновиться.",
+    "vigembus_outdated_title": "Драйвер ViGEmBus устарел"
   },
   "navbar": {
     "applications": "Приложения",
@@ -391,7 +408,20 @@
     "theme_dark": "Тёмное",
     "theme_light": "Светлое",
     "toggle_theme": "Оформление",
-    "troubleshoot": "Устранение проблем"
+    "troubleshoot": "Устранение проблем",
+    "featured": "Рекомендуемые приложения",
+    "theme_ember": "Ember",
+    "theme_forest": "Леса",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Полночь",
+    "theme_monochrome": "Монохромный",
+    "theme_moonlight": "Лунный свет",
+    "theme_nord": "Nord",
+    "theme_ocean": "Океан",
+    "theme_rose": "Роза",
+    "theme_slate": "Спустя",
+    "theme_sunshine": "Солнечный свет"
   },
   "password": {
     "confirm_password": "Подтвердите пароль",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "Нет привязанных устройств.",
     "unpair_single_success": "Однако, устройство (устройства) может находиться в имеющемся сеансе. Воспользуйтесь кнопкой «Принудительное закрытие» выше для завершения всех сеансов.",
     "unpair_single_unknown": "Неизвестный клиент",
-    "unpair_title": "Отвязать устройства"
+    "unpair_title": "Отвязать устройства",
+    "vigembus_compatible": "ViGEmBus установлен и совместим.",
+    "vigembus_current_version": "Текущая версия",
+    "vigembus_desc": "Для поддержки виртуального геймпада требуется ViGEmBus. Установите или обновите драйвер, если он отсутствует или устарел (требуется версия 1.17 или выше).",
+    "vigembus_incompatible": "Версия ViGEmBus устарела. Пожалуйста, установите версию 1.17 или выше.",
+    "vigembus_install": "Водитель ViGEmBus",
+    "vigembus_install_button": "Установить ViGEmBus v{version}",
+    "vigembus_install_error": "Не удалось установить драйвер ViGEmBus.",
+    "vigembus_install_success": "Драйвер ViGEmBus успешно установлен! Вам может потребоваться перезагрузить компьютер.",
+    "vigembus_force_reinstall_button": "Принудительно переустановить ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus не установлен."
   },
   "welcome": {
     "confirm_password": "Подтвердите пароль",
@@ -451,5 +491,24 @@
     "greeting": "Добро пожаловать в Vibepollo!",
     "login": "Вход",
     "welcome_success": "Эта страница скоро перезагрузится и ваш браузер запросит новые учетные данные"
+  },
+  "featured": {
+    "categories": {
+      "client": "Клиенты",
+      "tool": "Инструменты"
+    },
+    "description": "Откройте для себя клиентов, инструментов и интеграции, которые улучшают ваши потоковые впечатления от Vibepollo.",
+    "docs": "Документ",
+    "documentation": "Документация",
+    "get": "Приобрести",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Открытые задачи",
+    "github_stars": "Звезды",
+    "last_updated": "Последнее обновление",
+    "no_apps": "В этой категории не найдено приложений.",
+    "official": "Официальный",
+    "title": "Рекомендуемые приложения",
+    "website": "Сайт"
   }
 }

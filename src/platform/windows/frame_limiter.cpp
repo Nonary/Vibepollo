@@ -124,6 +124,7 @@ namespace platf {
       return;
     }
     g_stream_owner_count = 1;
+
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
     g_gen1_framegen_fix_active = gen1_framegen_fix;

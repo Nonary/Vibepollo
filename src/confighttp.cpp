@@ -37,6 +37,13 @@
 #include <Simple-Web-Server/crypto.hpp>
 #include <Simple-Web-Server/server_https.hpp>
 
+#ifdef _WIN32
+  #include "platform/windows/misc.h"
+
+  #include <vector>
+  #include <Windows.h>
+#endif
+
 // local includes
 #include "config.h"
 #include "confighttp.h"
@@ -1024,13 +1031,15 @@ namespace confighttp {
    * @brief Send a 404 Not Found response.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
+   * @param error_message The error message to include in the response.
    */
-  void not_found(resp_https_t response, [[maybe_unused]] req_https_t request) {
+  void not_found(resp_https_t response, [[maybe_unused]] req_https_t request, const std::string &error_message = "Not Found") {
     constexpr auto code = client_error_not_found;
 
     nlohmann::json tree;
-    tree["status_code"] = static_cast<int>(code);
-    tree["error"] = "Not Found";
+    tree["status_code"] = code;
+    tree["error"] = error_message;
+
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
     headers.emplace("Access-Control-Allow-Origin", get_cors_origin());
@@ -1054,6 +1063,98 @@ namespace confighttp {
     add_cors_headers(headers);
     nlohmann::json error = {{"error", error_message}};
     response->write(client_error_bad_request, error.dump(), headers);
+  }
+
+  struct csrf_token_t {
+    std::string token;
+    std::chrono::steady_clock::time_point expiration;
+  };
+
+  std::map<std::string, csrf_token_t, std::less<>> csrf_tokens;
+  std::mutex csrf_tokens_mutex;
+  constexpr auto CSRF_TOKEN_SIZE = 32;
+  constexpr auto CSRF_TOKEN_LIFETIME = std::chrono::hours(1);
+
+  std::string get_client_id(const req_https_t &request) {
+    if (const auto auth = request->header.find("authorization"); auth != request->header.end()) {
+      return auth->second;
+    }
+    return net::addr_to_normalized_string(request->remote_endpoint().address());
+  }
+
+  std::string generate_csrf_token(const std::string &client_id) {
+    std::string token = crypto::rand_alphabet(CSRF_TOKEN_SIZE);
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock lock(csrf_tokens_mutex);
+    std::erase_if(csrf_tokens, [&now](const auto &entry) {
+      return entry.second.expiration < now;
+    });
+    csrf_tokens[client_id] = csrf_token_t {token, now + CSRF_TOKEN_LIFETIME};
+    return token;
+  }
+
+  bool validate_stored_csrf_token(const resp_https_t &response, const req_https_t &request, std::string_view client_id, std::string_view provided_token) {
+    std::scoped_lock lock(csrf_tokens_mutex);
+    auto token_it = csrf_tokens.find(client_id);
+    if (token_it == csrf_tokens.end()) {
+      bad_request(response, request, "Invalid CSRF token");
+      return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (token_it->second.expiration < now) {
+      csrf_tokens.erase(token_it);
+      bad_request(response, request, "CSRF token expired");
+      return false;
+    }
+    if (token_it->second.token != provided_token) {
+      bad_request(response, request, "Invalid CSRF token");
+      return false;
+    }
+    return true;
+  }
+
+  bool validate_csrf_token(const resp_https_t &response, const req_https_t &request, const std::string &client_id) {
+    auto is_allowed_origin = [](std::string_view url) {
+      return std::ranges::any_of(config::sunshine.csrf_allowed_origins, [&url](const std::string &allowed_origin) {
+        if (url.rfind(allowed_origin, 0) != 0) {
+          return false;
+        }
+        const size_t len = allowed_origin.length();
+        return url.length() == len || url[len] == ':' || url[len] == '/';
+      });
+    };
+
+    const auto origin_it = request->header.find("Origin");
+    if (origin_it != request->header.end() && is_allowed_origin(origin_it->second)) {
+      return true;
+    }
+    const auto referer_it = request->header.find("Referer");
+    if (referer_it != request->header.end() && is_allowed_origin(referer_it->second)) {
+      return true;
+    }
+    if (origin_it == request->header.end() && referer_it == request->header.end()) {
+      return true;
+    }
+
+    if (const auto header_it = request->header.find("X-CSRF-Token"); header_it != request->header.end()) {
+      return validate_stored_csrf_token(response, request, client_id, header_it->second);
+    }
+    auto query_params = request->parse_query_string();
+    if (const auto query_it = query_params.find("csrf_token"); query_it != query_params.end()) {
+      return validate_stored_csrf_token(response, request, client_id, query_it->second);
+    }
+
+    bad_request(response, request, "Missing CSRF token");
+    return false;
+  }
+
+  void getCSRFToken(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    nlohmann::json output_tree;
+    output_tree["csrf_token"] = generate_csrf_token(get_client_id(request));
+    send_response(response, output_tree);
   }
 
   void service_unavailable(resp_https_t response, const std::string &error_message) {
@@ -1123,6 +1224,33 @@ namespace confighttp {
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType) {
     return validateContentType(response, request, contentType);
   }
+
+  /**
+   * @brief Validates the application index and sends error response if invalid.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   * @param index The application index/id.
+   */
+  bool check_app_index(resp_https_t response, req_https_t request, int index) {
+    std::string file = file_handler::read_file(config::stream.file_apps.c_str());
+    nlohmann::json file_tree = nlohmann::json::parse(file);
+    if (const auto &apps = file_tree["apps"]; index < 0 || index >= static_cast<int>(apps.size())) {
+      std::string error;
+      if (const int max_index = static_cast<int>(apps.size()) - 1; max_index < 0) {
+        error = "No applications found";
+      } else {
+        error = std::format("'index' {} out of range, max index is {}", index, max_index);
+      }
+      bad_request(std::move(response), std::move(request), error);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * @brief Send an HTTP redirect.
+   */
+  // Consolidated redirect helper: use the const char* variant below.
 
   /**
    * @brief SPA entry responder - serves the single-page app shell (index.html)
@@ -1483,6 +1611,14 @@ namespace confighttp {
 
       // Migrate/merge the new app into the file tree.
       proc::migrate_apps(&file_tree, &input_tree);
+
+      if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
+        auto &overrides = input_tree["config-overrides"];
+        if (overrides.contains("nvenc_force_split_encode") && !overrides.contains("nvenc_split_encode")) {
+          overrides["nvenc_split_encode"] = overrides["nvenc_force_split_encode"];
+        }
+        overrides.erase("nvenc_force_split_encode");
+      }
 
       if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
         auto &overrides = input_tree["config-overrides"];
@@ -3297,6 +3433,69 @@ namespace confighttp {
     send_response(response, output);
   }
 
+
+  /**
+   * @brief Get an application's image.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @note{The index in the url path is the application index.}
+   *
+   * @api_examples{/api/covers/9999 | GET| null}
+   */
+  void getCover(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      const int index = std::stoi(request->path_match[1]);
+      if (!check_app_index(response, request, index)) {
+        return;
+      }
+
+      std::string file = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(file);
+      auto &apps = file_tree["apps"];
+
+      auto &app = apps[index];
+
+      // Get the image path from the app configuration
+      std::string app_image_path;
+      if (app.contains("image-path") && !app["image-path"].is_null()) {
+        app_image_path = app["image-path"];
+      }
+
+      // Use validate_app_image_path to resolve and validate the path
+      std::string validated_path = proc::validate_app_image_path(app_image_path);
+
+      if (validated_path == DEFAULT_APP_IMAGE_PATH) {
+        BOOST_LOG(debug) << "Application at index " << index << " does not have a valid cover image";
+        not_found(response, request, "Cover image not found");
+        return;
+      }
+
+      std::ifstream in(validated_path, std::ios::binary);
+      if (!in) {
+        BOOST_LOG(warning) << "Unable to read cover image file: " << validated_path;
+        bad_request(response, request, "Unable to read cover image file");
+        return;
+      }
+
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "image/png");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+
+      response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "GetCover: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
   /**
    * @brief Upload a cover image.
    * @param response The HTTP response object.
@@ -3684,6 +3883,9 @@ namespace confighttp {
       std::string pin = input_tree.value("pin", "");
       std::string name = input_tree.value("name", "");
       output_tree["status"] = nvhttp::pin(pin, name);
+      if (!output_tree["status"].get<bool>()) {
+        BOOST_LOG(warning) << "SavePin: no pending Moonlight pairing request accepted the submitted PIN";
+      }
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "SavePin: "sv << e.what();
@@ -4413,7 +4615,6 @@ namespace confighttp {
       ss << request->content.rdbuf();
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
 
-      // Check for required uuid field in body
       if (!input_tree.contains("uuid") || !input_tree["uuid"].is_string()) {
         bad_request(response, request, "Missing or invalid uuid in request body");
         return;
@@ -4476,55 +4677,240 @@ namespace confighttp {
   }
 
   /**
-   * @brief Login the user.
+   * @brief Get ViGEmBus driver version and installation status.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   *
-   * The body for the POST request should be JSON serialized in the following format:
-   * @code{.json}
-   * {
-   *   "username": "<username>",
-   *   "password": "<password>"
-   * }
-   * @endcode
    */
-  void login(resp_https_t response, req_https_t request) {
-    if (!checkIPOrigin(response, request) || !validateContentType(response, request, "application/json")) {
+  void getViGEmBusStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
       return;
     }
 
-    auto fg = util::fail_guard([&] {
-      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+    print_req(request);
+    nlohmann::json output_tree;
+
+#ifdef _WIN32
+    std::string version_str;
+    bool installed = false;
+    bool version_compatible = false;
+
+    std::filesystem::path driver_path = std::filesystem::path(std::getenv("SystemRoot") ? std::getenv("SystemRoot") : "C:\\Windows") / "System32" / "drivers" / "ViGEmBus.sys";
+
+    if (std::filesystem::exists(driver_path)) {
+      installed = platf::getFileVersionInfo(driver_path, version_str);
+      if (installed) {
+        std::vector<std::string> version_parts;
+        std::stringstream ss(version_str);
+        std::string part;
+        while (std::getline(ss, part, '.')) {
+          version_parts.push_back(part);
+        }
+
+        if (version_parts.size() >= 2) {
+          int major = std::stoi(version_parts[0]);
+          int minor = std::stoi(version_parts[1]);
+          version_compatible = (major > 1) || (major == 1 && minor >= 17);
+        }
+      }
+    }
+
+    output_tree["installed"] = installed;
+    output_tree["version"] = version_str;
+    output_tree["version_compatible"] = version_compatible;
+    output_tree["packaged_version"] = VIGEMBUS_PACKAGED_VERSION;
+#else
+    output_tree["error"] = "ViGEmBus is only available on Windows";
+    output_tree["installed"] = false;
+    output_tree["version"] = "";
+    output_tree["version_compatible"] = false;
+    output_tree["packaged_version"] = "";
+#endif
+
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief Install ViGEmBus driver with elevated permissions.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void installViGEmBus(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    nlohmann::json output_tree;
+
+#ifdef _WIN32
+    const std::filesystem::path installer_path = platf::appdata().parent_path() / "scripts" / "vigembus_installer.exe";
+
+    if (!std::filesystem::exists(installer_path)) {
+      output_tree["status"] = false;
+      output_tree["error"] = "ViGEmBus installer not found";
+      send_response(response, output_tree);
+      return;
+    }
+
+    std::error_code ec;
+    boost::filesystem::path working_dir = boost::filesystem::path(installer_path.string()).parent_path();
+    platf::bp::environment env = platf::bp::this_process::env();
+
+    const std::string install_cmd = std::format("{} /quiet", installer_path.string());
+    auto child = platf::run_command(true, false, install_cmd, working_dir, env, nullptr, ec, nullptr);
+
+    if (ec) {
+      output_tree["status"] = false;
+      output_tree["error"] = "Failed to start installer: " + ec.message();
+      send_response(response, output_tree);
+      return;
+    }
+
+    child.wait(ec);
+
+    if (ec) {
+      output_tree["status"] = false;
+      output_tree["error"] = "Installer failed: " + ec.message();
+    } else {
+      int exit_code = child.exit_code();
+      output_tree["status"] = (exit_code == 0);
+      output_tree["exit_code"] = exit_code;
+      if (exit_code != 0) {
+        output_tree["error"] = std::format("Installer exited with code {}", exit_code);
+      }
+    }
+#else
+    output_tree["status"] = false;
+    output_tree["error"] = "ViGEmBus installation is only available on Windows";
+#endif
+
+    send_response(response, output_tree);
+  }
+
+  bool is_browsable_executable(const std::filesystem::directory_entry &entry, const std::filesystem::file_status &status) {
+    if (!std::filesystem::is_regular_file(status)) {
+      return false;
+    }
+#ifdef _WIN32
+    auto ext = entry.path().extension().string();
+    boost::to_lower(ext);
+    return ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".ps1";
+#else
+    const auto perms = status.permissions();
+    return (perms & std::filesystem::perms::owner_exec) != std::filesystem::perms::none ||
+           (perms & std::filesystem::perms::group_exec) != std::filesystem::perms::none ||
+           (perms & std::filesystem::perms::others_exec) != std::filesystem::perms::none;
+#endif
+  }
+
+  nlohmann::json build_browse_entries(const std::filesystem::path &dir_path, const std::string &type_str) {
+    nlohmann::json entries = nlohmann::json::array();
+    std::error_code iter_ec;
+    for (auto it = std::filesystem::directory_iterator(dir_path, std::filesystem::directory_options::skip_permission_denied, iter_ec);
+         !iter_ec && it != std::filesystem::directory_iterator();
+         it.increment(iter_ec)) {
+      std::error_code status_ec;
+      const auto status = it->status(status_ec);
+      if (status_ec) {
+        continue;
+      }
+      const bool is_dir = std::filesystem::is_directory(status);
+      const bool is_file = std::filesystem::is_regular_file(status);
+      const bool include =
+        is_dir ||
+        type_str == "any" ||
+        (type_str == "file" && is_file) ||
+        (type_str == "executable" && is_browsable_executable(*it, status));
+      if (!include) {
+        continue;
+      }
+
+      entries.push_back({
+        {"name", it->path().filename().string()},
+        {"path", it->path().string()},
+        {"type", is_dir ? "directory" : "file"}
+      });
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const nlohmann::json &a, const nlohmann::json &b) {
+      const bool a_dir = a["type"] == "directory";
+      const bool b_dir = b["type"] == "directory";
+      if (a_dir != b_dir) {
+        return a_dir;
+      }
+      auto a_name = a["name"].get<std::string>();
+      auto b_name = b["name"].get<std::string>();
+      boost::to_lower(a_name);
+      boost::to_lower(b_name);
+      return a_name < b_name;
     });
+    return entries;
+  }
+
+#ifdef _WIN32
+  nlohmann::json get_windows_drives() {
+    nlohmann::json drives = nlohmann::json::array();
+    const DWORD mask = GetLogicalDrives();
+    for (char letter = 'A'; letter <= 'Z'; ++letter) {
+      if ((mask & (1u << (letter - 'A'))) == 0) {
+        continue;
+      }
+      std::string path {letter, ':', '\\'};
+      drives.push_back({{"name", path}, {"type", "directory"}, {"path", path}});
+    }
+    return drives;
+  }
+#endif
+
+  void browseDirectory(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
 
     try {
-      std::stringstream ss;
-      ss << request->content.rdbuf();
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
-      std::string username = input_tree.value("username", "");
-      std::string password = input_tree.value("password", "");
-      std::string hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
-      if (!boost::iequals(username, config::sunshine.username) || hash != config::sunshine.password) {
+      auto query_params = request->parse_query_string();
+      const auto type_it = query_params.find("type");
+      const std::string type_str = type_it == query_params.end() ? "any" : type_it->second;
+      const auto path_it = query_params.find("path");
+      std::filesystem::path dir_path = path_it == query_params.end() ? std::filesystem::path {} : std::filesystem::path {path_it->second};
+
+#ifdef _WIN32
+      if (dir_path.empty() || dir_path == "\\" || dir_path == "/") {
+        send_response(response, {{"path", ""}, {"parent", ""}, {"entries", get_windows_drives()}});
         return;
       }
-      std::string sessionCookieRaw = crypto::rand_alphabet(64);
-      sessionCookie = util::hex(crypto::hash(sessionCookieRaw + config::sunshine.salt)).to_string();
-      cookie_creation_time = std::chrono::steady_clock::now();
-      const SimpleWeb::CaseInsensitiveMultimap headers {
-        {"Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; SameSite=Strict; Max-Age=2592000; Path=/"}
-      };
-      response->write(headers);
-      fg.disable();
-    } catch (std::exception &e) {
-      BOOST_LOG(warning) << "Web UI Login failed: ["sv << net::addr_to_normalized_string(request->remote_endpoint().address())
-                         << "]: "sv << e.what();
-      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
-      fg.disable();
-      return;
+#else
+      if (dir_path.empty()) {
+        dir_path = "/";
+      }
+#endif
+
+      if (std::filesystem::is_regular_file(dir_path)) {
+        dir_path = dir_path.parent_path();
+      }
+      while (!dir_path.empty() && !std::filesystem::exists(dir_path)) {
+        dir_path = dir_path.parent_path();
+      }
+      if (dir_path.empty() || !std::filesystem::is_directory(dir_path)) {
+        bad_request(response, request, "Directory does not exist");
+        return;
+      }
+
+      nlohmann::json output_tree;
+      output_tree["path"] = dir_path.string();
+      output_tree["parent"] = dir_path.parent_path().empty() ? dir_path.string() : dir_path.parent_path().string();
+      output_tree["entries"] = build_browse_entries(dir_path, type_str);
+      send_response(response, output_tree);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
     }
   }
 
   void start() {
+    platf::set_thread_name("confighttp");
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
@@ -4559,12 +4945,24 @@ namespace confighttp {
     server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
     clear_token_route_catalog();
     auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
-      server.resource[pattern][method] = handler;
+      server.resource[pattern][method] = [method, handler](resp_https_t response, req_https_t request) {
+        const std::string_view verb {method};
+        if (verb == "POST" || verb == "PATCH" || verb == "PUT" || verb == "DELETE") {
+          const auto client_id = get_client_id(request);
+          if (!validate_csrf_token(response, request, client_id)) {
+            return;
+          }
+        }
+        handler(std::move(response), std::move(request));
+      };
       record_token_route(normalize_route_pattern(pattern), method);
     };
     register_api_route("^/api/pin$", "POST", savePin);
     register_api_route("^/api/otp$", "POST", getOTP);
     register_api_route("^/api/apps$", "GET", getApps);
+    register_api_route("^/api/logs$", "GET", getLogs);
+    register_api_route("^/api/browse$", "GET", browseDirectory);
+    register_api_route("^/api/csrf-token$", "GET", getCSRFToken);
     register_api_route("^/api/apps$", "POST", saveApp);
     register_api_route("^/api/apps/([^/]+)/cover$", "GET", getAppCover);
     register_api_route("^/api/apps/reorder$", "POST", reorderApps);
@@ -4623,6 +5021,9 @@ namespace confighttp {
     register_api_route("^/api/webrtc/cert$", "GET", getWebRTCCert);
     // Keep legacy cover upload endpoint present in upstream master
     register_api_route("^/api/covers/upload$", "POST", uploadCover);
+    register_api_route("^/api/covers/([0-9]+)$", "GET", getCover);
+    register_api_route("^/api/vigembus/status$", "GET", getViGEmBusStatus);
+    register_api_route("^/api/vigembus/install$", "POST", installViGEmBus);
     register_api_route("^/api/apps/purge_autosync$", "POST", purgeAutoSyncedApps);
 #ifdef _WIN32
     register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
@@ -4661,7 +5062,8 @@ namespace confighttp {
 
     auto accept_and_run = [&](auto *server) {
       try {
-        server->start([port_https](unsigned short port) {
+        platf::set_thread_name("confighttp::tcp");
+        server->start([](unsigned short port) {
           BOOST_LOG(info) << "Configuration UI available at [https://localhost:"sv << port << "]";
         });
       } catch (boost::system::system_error &err) {

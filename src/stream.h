@@ -7,6 +7,7 @@
 // standard includes
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +22,10 @@
 #include "crypto.h"
 #include "thread_safe.h"
 #include "video.h"
+
+namespace rtsp_stream {
+  struct launch_session_t;
+}
 
 namespace stream {
   constexpr auto VIDEO_STREAM_PORT = 9;
@@ -113,6 +118,8 @@ namespace stream {
     state_e state(session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
   }  // namespace session
+
+  void cancel_paused_display_cleanup();
 
   struct session_info_t {
     std::string uuid;

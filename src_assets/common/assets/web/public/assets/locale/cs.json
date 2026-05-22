@@ -33,7 +33,10 @@
     "add": "Přidat",
     "remove": "Odstranit",
     "clear_all": "Vymazat vše",
-    "refresh": "Obnovit"
+    "refresh": "Obnovit",
+    "all": "Vše",
+    "loading": "Načítám...",
+    "close": "Zavřít"
   },
   "apps": {
     "actions": "Akce",
@@ -110,7 +113,10 @@
     "wait_all_desc": "Streamování bude pokračovat, dokud nebudou ukončeny všechny procesy spuštěné aplikací. Pokud není zaškrtnuto, streamování se zastaví, jakmile se ukončí počáteční proces aplikace, i když ostatní procesy aplikace stále běží.",
     "working_dir": "Pracovní adresář",
     "working_dir_desc": "Pracovní adresář, který má být předán procesu. Některé aplikace například používají pracovní adresář k vyhledávání konfiguračních souborů. Pokud není nastaven, bude Vibepollo implicitně nastaven na nadřazený adresář příkazu",
-    "more_fields_below": "Další pole níže – přejděte"
+    "more_fields_below": "Další pole níže – přejděte",
+    "cover_search_hint": "Hledané názvy by měly odpovídat pravidlům IGDB pro jmenování.",
+    "no_covers_found": "Nebyly nalezeny žádné obálky",
+    "searching_covers": "Vyhledávání obalů..."
   },
   "offline": {
     "title": "Ztratilo se spojení se Vibepollo",
@@ -565,7 +571,12 @@
     "log_level_6": "Nic",
     "log_level_desc": "Minimální úroveň logu vypisovaná do standardního výstupu",
     "output_name_unix": "Zobrazit číslo",
-    "output_name_windows": "Zobrazit ID zařízení"
+    "output_name_windows": "Zobrazit ID zařízení",
+    "bind_address": "Vázat adresu",
+    "bind_address_desc": "Nastavte konkrétní IP adresu, ke které se bude Vibepollo vázat. Pokud zůstane prázdná, bude se Vibepollo vázat na všechny dostupné adresy.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Vyhledat možnosti konfigurace..."
   },
   "index": {
     "description": "Sluneční stream je hostitelem pro Měsíční světlo.",
@@ -584,7 +595,12 @@
     "version_compare_unknown": "Nelze určit vzdálenost potvrzení k nejnovější verzi.",
     "version_branch": "Větev: {branch} (potvrdit {commit})",
     "view_logs": "Otevřete Odstraňování problémů — Protokoly",
-    "welcome": "Ahoj, sunshine!"
+    "welcome": "Ahoj, sunshine!",
+    "fix_now": "Opravit nyní",
+    "vigembus_not_installed_desc": "Podpora virtuálního gamepadu nebude fungovat bez ovladače ViGEmBus. Pro jeho instalaci klikněte na tlačítko níže.",
+    "vigembus_not_installed_title": "Ovladač ViGEmBus není nainstalován",
+    "vigembus_outdated_desc": "Používáte zastaralou verzi ViGEmBus (v{version}). Pro správnou podporu gamepadu je vyžadována verze 1.17 nebo vyšší. Pro aktualizaci klikněte na tlačítko níže.",
+    "vigembus_outdated_title": "ViGEmBus Driver je zastaralý"
   },
   "resources": {
     "title": "Zdroje"
@@ -602,7 +618,20 @@
     "toggle_theme": "Téma",
     "troubleshoot": "Řešení problémů",
     "logout": "Odhlášení",
-    "api_tokens": "API tokeny"
+    "api_tokens": "API tokeny",
+    "featured": "Doporučené aplikace",
+    "theme_ember": "Ember",
+    "theme_forest": "Lesy",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "půlnoc",
+    "theme_monochrome": "Monochromní",
+    "theme_moonlight": "Měsíční světlo",
+    "theme_nord": "Nord",
+    "theme_ocean": "Oceán",
+    "theme_rose": "Celer bulvový",
+    "theme_slate": "Břidlice",
+    "theme_sunshine": "Sluneční"
   },
   "webrtc": {
     "nav": "Proud",
@@ -896,7 +925,17 @@
     "unpair_single_no_devices": "Neexistují žádná spárovaná zařízení.",
     "unpair_single_success": "Zařízení však mohou být stále v aktivní relaci. Pomocí výše uvedeného tlačítka \"Vynutit ukončení\" ukončete všechny otevřené relace.",
     "unpair_single_unknown": "Neznámý klient",
-    "unpair_title": "Zrušit párování"
+    "unpair_title": "Zrušit párování",
+    "vigembus_compatible": "ViGEmBus je nainstalován a kompatibilní.",
+    "vigembus_current_version": "Aktuální verze",
+    "vigembus_desc": "ViGEmBus je vyžadován pro podporu virtuálních gamepadů. Nainstalujte nebo aktualizujte ovladač, pokud chybí nebo je zastaralý (verze 1.17 nebo vyšší).",
+    "vigembus_incompatible": "Verze ViGEmBus je příliš stará. Nainstalujte prosím verzi 1.17 nebo vyšší.",
+    "vigembus_install": "Ovladač ViGEmBus",
+    "vigembus_install_button": "Nainstalovat ViGEmBus v{version}",
+    "vigembus_install_error": "Nepodařilo se nainstalovat ovladač ViGEmBus.",
+    "vigembus_install_success": "Ovladač ViGEmBus byl úspěšně nainstalován! Možná budete muset restartovat počítač.",
+    "vigembus_force_reinstall_button": "Vynutit přeinstalování ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus není nainstalován."
   },
   "welcome": {
     "confirm_password": "Potvrdit heslo",
@@ -1148,5 +1187,24 @@
     },
     "noticeTitle": "Doporučeno RTSS",
     "noticeCopy": "RTSS nabízí nejstabilnější snímkování. Vibepollo jej použije automaticky, jakmile bude k dispozici; Omezovač NVIDIA se nedoporučuje, protože nemůže zaručit dokonalé tempo snímků."
+  },
+  "featured": {
+    "categories": {
+      "client": "Klienti",
+      "tool": "Nástroje a nářadí"
+    },
+    "description": "Objevte klienty, nástroje a integrace, které zlepšují váš zážitek ze slunečního vysílání.",
+    "docs": "Dokumenty",
+    "documentation": "Dokumentace",
+    "get": "Získat",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Otevřít problémy",
+    "github_stars": "Hvězdy",
+    "last_updated": "Naposledy aktualizováno",
+    "no_apps": "V této kategorii nebyly nalezeny žádné aplikace.",
+    "official": "Úředník",
+    "title": "Doporučené aplikace",
+    "website": "Webová stránka"
   }
 }

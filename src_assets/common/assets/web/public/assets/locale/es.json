@@ -23,7 +23,11 @@
     "success": "¡Éxito!",
     "undo_cmd": "Deshacer comando",
     "username": "Nombre de usuario",
-    "warning": "¡Advertencia!"
+    "warning": "¡Advertencia!",
+    "all": "Todos",
+    "close": "Cerrar",
+    "loading": "Cargando...",
+    "search": "Buscar..."
   },
   "apps": {
     "actions": "Acciones",
@@ -79,7 +83,10 @@
     "wait_all": "Continuar la transmisión hasta que todos los procesos de la aplicación salgan",
     "wait_all_desc": "Esto continuará transmitiendo hasta que todos los procesos iniciados por la aplicación hayan terminado. Cuando no está marcado, la transmisión se detendrá cuando el proceso inicial de la aplicación se cierre, incluso si otros procesos de aplicación siguen ejecutándose.",
     "working_dir": "Directorio de trabajo",
-    "working_dir_desc": "El directorio de trabajo que debe pasarse al proceso. Por ejemplo, algunas aplicaciones usan el directorio de trabajo para buscar archivos de configuración. Si no se establece, Vibepollo se establecerá por defecto en el directorio padre del comando"
+    "working_dir_desc": "El directorio de trabajo que debe pasarse al proceso. Por ejemplo, algunas aplicaciones usan el directorio de trabajo para buscar archivos de configuración. Si no se establece, Vibepollo se establecerá por defecto en el directorio padre del comando",
+    "cover_search_hint": "Los nombres de búsqueda deben coincidir con las convenciones de nomenclatura del IGDB.",
+    "no_covers_found": "No se encontraron portadas",
+    "searching_covers": "Buscando portadas..."
   },
   "config": {
     "adapter_name": "Nombre del adaptador",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "Modo de cifrado WAN",
     "wan_encryption_mode_1": "Activado para clientes compatibles (por defecto)",
     "wan_encryption_mode_2": "Requerido para todos los clientes",
-    "wan_encryption_mode_desc": "Esto determina cuándo se utilizará el cifrado al transmitir a través de Internet. El cifrado puede reducir el rendimiento de la transmisión, especialmente en hosts y clientes menos poderosos."
+    "wan_encryption_mode_desc": "Esto determina cuándo se utilizará el cifrado al transmitir a través de Internet. El cifrado puede reducir el rendimiento de la transmisión, especialmente en hosts y clientes menos poderosos.",
+    "bind_address": "Enlazar dirección",
+    "bind_address_desc": "Establecer la dirección IP específica Vibepollo se enlazará. Si se deja en blanco, Vibepollo se enlazará a todas las direcciones disponibles.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Opciones de configuración de búsqueda..."
   },
   "index": {
     "description": "Vibepollo es un servidor de transmisión de juego autoalojado para Moonlight.",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>Atención.</b> Vibepollo ha detectado estos errores durante el arranque. <b>RECOMENDAMOS ENCARECIDAMENTE</b> solucionarlos antes de transmitir.",
     "version_dirty": "¡Gracias por ayudar a hacer de Vibepollo un mejor software!",
     "version_latest": "Está ejecutando la última versión de Vibepollo",
-    "welcome": "¡Hola, Vibepollo!"
+    "welcome": "¡Hola, Vibepollo!",
+    "fix_now": "Arreglar Ahora",
+    "vigembus_not_installed_desc": "El soporte para gamepad virtual no funcionará sin el controlador ViGEmBus. Haga clic en el botón de abajo para instalarlo.",
+    "vigembus_not_installed_title": "Controlador ViGEmBus no instalado",
+    "vigembus_outdated_desc": "Está ejecutando una versión desactualizada de ViGEmBus (v{version}). Versión 1. 7 o superior es necesario para el soporte adecuado del gamepad. Haga clic en el botón de abajo para actualizar.",
+    "vigembus_outdated_title": "Controlador ViGEmBus Desactualizado"
   },
   "navbar": {
     "applications": "Aplicaciones",
@@ -391,7 +408,20 @@
     "theme_dark": "Oscuro",
     "theme_light": "Claro",
     "toggle_theme": "Tema",
-    "troubleshoot": "Resolución de problemas"
+    "troubleshoot": "Resolución de problemas",
+    "featured": "Apps destacadas",
+    "theme_ember": "Ember",
+    "theme_forest": "Bosque",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Medianoche",
+    "theme_monochrome": "Monocromo",
+    "theme_moonlight": "Luz Lunar",
+    "theme_nord": "Nord",
+    "theme_ocean": "océano",
+    "theme_rose": "Rosa",
+    "theme_slate": "Pizarra",
+    "theme_sunshine": "Resplandor"
   },
   "password": {
     "confirm_password": "Confirmar contraseña",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "No hay dispositivos vinculados.",
     "unpair_single_success": "Sin embargo, los dispositivo(s) todavía pueden estar en una sesión activa. Utilice el botón \"Forzar cierre\" de arriba para terminar cualquier sesión abierta.",
     "unpair_single_unknown": "Cliente desconocido",
-    "unpair_title": "Desvincular dispositivos"
+    "unpair_title": "Desvincular dispositivos",
+    "vigembus_compatible": "ViGEmBus está instalado y es compatible.",
+    "vigembus_current_version": "Versión actual",
+    "vigembus_desc": "ViGEmBus es necesario para el soporte virtual de gamepad. Instale o actualice el controlador si falta o está desactualizado (se requiere la versión 1.17 o superior).",
+    "vigembus_incompatible": "La versión de ViGEmBus es demasiado antigua. Por favor, instale la versión 1.17 o superior.",
+    "vigembus_install": "Controlador de ViGEmBus",
+    "vigembus_install_button": "Instalar ViGEmBus v{version}",
+    "vigembus_install_error": "Error al instalar el controlador ViGEmBus.",
+    "vigembus_install_success": "¡Controlador ViGEmBus instalado correctamente! Es posible que necesite reiniciar su equipo.",
+    "vigembus_force_reinstall_button": "Forzar reinstalación de ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus no está instalado."
   },
   "welcome": {
     "confirm_password": "Confirmar contraseña",
@@ -451,5 +491,24 @@
     "greeting": "¡Bienvenido a Vibepollo!",
     "login": "Iniciar sesión",
     "welcome_success": "Esta página se recargará pronto, su navegador le pedirá las nuevas credenciales"
+  },
+  "featured": {
+    "categories": {
+      "client": "Clientes",
+      "tool": "Herramientas"
+    },
+    "description": "Descubra clientes, herramientas e integraciones que realzan su experiencia de transmisión solar.",
+    "docs": "Documentos",
+    "documentation": "Documentación",
+    "get": "Obtener",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Problemas abiertos",
+    "github_stars": "Estrellas",
+    "last_updated": "Última actualización",
+    "no_apps": "No hay aplicaciones en esta categoría.",
+    "official": "Oficial",
+    "title": "Apps destacadas",
+    "website": "Sitio web"
   }
 }

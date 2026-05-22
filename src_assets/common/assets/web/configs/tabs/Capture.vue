@@ -11,6 +11,7 @@ import AmdAmfEncoder from '@/configs/tabs/encoders/AmdAmfEncoder.vue';
 import VideotoolboxEncoder from '@/configs/tabs/encoders/VideotoolboxEncoder.vue';
 import SoftwareEncoder from '@/configs/tabs/encoders/SoftwareEncoder.vue';
 import VAAPIEncoder from '@/configs/tabs/encoders/VAAPIEncoder.vue';
+import VulkanEncoder from '@/configs/tabs/encoders/VulkanEncoder.vue';
 import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
 
@@ -348,6 +349,9 @@ const shouldShowVideotoolbox = computed(
 const shouldShowVaapi = computed(
   () => (showAll() || props.currentTab === 'vaapi') && platform.value === 'linux',
 );
+const shouldShowVulkan = computed(
+  () => (showAll() || props.currentTab === 'vulkan') && platform.value === 'linux',
+);
 const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw');
 </script>
 
@@ -462,6 +466,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
     <AmdAmfEncoder v-if="shouldShowAmd" />
     <VideotoolboxEncoder v-if="shouldShowVideotoolbox" />
     <VAAPIEncoder v-if="shouldShowVaapi" />
+    <VulkanEncoder v-if="shouldShowVulkan" />
 
     <div v-if="shouldShowSoftware" class="encoder-outline">
       <SoftwareEncoder />

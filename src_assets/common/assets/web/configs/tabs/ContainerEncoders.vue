@@ -6,6 +6,7 @@ import AmdAmfEncoder from '@/configs/tabs/encoders/AmdAmfEncoder.vue';
 import VideotoolboxEncoder from '@/configs/tabs/encoders/VideotoolboxEncoder.vue';
 import SoftwareEncoder from '@/configs/tabs/encoders/SoftwareEncoder.vue';
 import VAAPIEncoder from '@/configs/tabs/encoders/VAAPIEncoder.vue';
+import VulkanEncoder from '@/configs/tabs/encoders/VulkanEncoder.vue';
 
 const props = defineProps({
   currentTab: { type: String, default: '' },
@@ -29,6 +30,9 @@ const showAll = () => !props.currentTab;
 
   <!-- VAAPI Encoder Tab -->
   <VAAPIEncoder v-if="showAll() || currentTab === 'vaapi'" />
+
+  <!-- Vulkan Encoder Tab -->
+  <VulkanEncoder v-if="showAll() || currentTab === 'vulkan'" />
 
   <!-- Software Encoder Tab -->
   <SoftwareEncoder v-if="showAll() || currentTab === 'sw'" />

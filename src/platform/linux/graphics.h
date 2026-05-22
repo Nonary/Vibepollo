@@ -36,6 +36,13 @@ using frame_t = util::safe_ptr<AVFrame, free_frame>;
 
 namespace gl {
   extern GladGLContext ctx;
+
+  // glEGLImageTargetTexture2DOES (GL_OES_EGL_image) is not part of desktop GL —
+  // it is a GLES extension that must be loaded manually via eglGetProcAddress.
+  // GLeglImageOES is typedef void* per the Khronos spec (gl.xml).
+  using PFNGLEGLIMAGETARGETTEXTURE2DOESPROC = void (*)(GLenum target, void *image);
+  PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d();
+
   void drain_errors(const std::string_view &prefix);
 
   class tex_t: public util::buffer_t<GLuint> {
@@ -266,8 +273,10 @@ namespace egl {
 
   class cursor_t: public platf::img_t {
   public:
-    int x, y;
-    int src_w, src_h;
+    int x;
+    int y;
+    int src_w;
+    int src_h;
 
     unsigned long serial;
 
@@ -295,6 +304,15 @@ namespace egl {
 
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;
+
+    // Frame is vertically flipped (GL convention)
+    bool y_invert {false};
+
+    // PipeWire metadata
+    std::optional<uint64_t> pts;
+    std::optional<uint64_t> seq;
+    std::optional<bool> pw_damage;
+    std::optional<uint32_t> pw_flags;
   };
 
   class sws_t {
@@ -325,9 +343,12 @@ namespace egl {
     gl::program_t program[3];
     gl::buffer_t color_matrix;
 
-    int out_width, out_height;
-    int in_width, in_height;
-    int offsetX, offsetY;
+    int out_width;
+    int out_height;
+    int in_width;
+    int in_height;
+    int offsetX;
+    int offsetY;
 
     // Pointer to the texture to be converted to nv12
     int loaded_texture;

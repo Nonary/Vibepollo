@@ -51,7 +51,7 @@ namespace system_tray {
    * @brief Run the system tray with platform specific options.
    * @todo macOS requires that UI elements be created on the main thread, so the system tray is not currently implemented for macOS.
    */
-  int run_tray();
+  void run_tray();
 
   /**
    * @brief Exit the system tray.

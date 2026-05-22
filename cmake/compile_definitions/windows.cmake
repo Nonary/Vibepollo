@@ -9,6 +9,13 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
 # gcc complains about misleading indentation in some mingw includes
 list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-misleading-indentation)
 
+# Disable warnings for Windows ARM64
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64")
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-dll-attribute-on-redeclaration)  # Boost
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-unknown-warning-option)  # ViGEmClient
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-unused-variable)  # Boost
+endif()
+
 # see gcc bug 98723
 add_definitions(-DUSE_BOOST_REGEX)
 
@@ -24,9 +31,9 @@ add_definitions(-DMINIUPNP_STATICLIB)
 add_subdirectory(tools)  # todo - this is temporary, only tools for Windows are needed, for now
 
 # nvidia
-include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nvapi-open-source-sdk")
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nvapi")
 file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/third-party/nvapi-open-source-sdk/*.h"
+        "${CMAKE_SOURCE_DIR}/third-party/nvapi/*.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nvprefs/*.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nvprefs/*.h")
 
@@ -201,6 +208,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/focus_utils.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"

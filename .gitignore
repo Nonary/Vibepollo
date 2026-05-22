@@ -63,6 +63,6 @@ build-msvc
 .cache/
 
 # Local-only Copilot instructions (not committed)
+AGENTS.md
 .github/copilot-instructions.md
 /build_release
-

@@ -7,6 +7,7 @@
 // standard includes
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -18,6 +19,8 @@
 #include <WinSock2.h>
 #include <Windows.h>
 #include <winnt.h>
+
+#include "utf_utils.h"
 
 namespace platf {
   void print_status(const std::string_view &prefix, HRESULT status);
@@ -32,14 +35,18 @@ namespace platf {
    * @param string The UTF-8 string.
    * @return The converted UTF-16 wide string.
    */
-  std::wstring from_utf8(const std::string_view &string);
+  inline std::wstring from_utf8(const std::string_view &string) {
+    return utf_utils::from_utf8(std::string {string});
+  }
 
   /**
    * @brief Convert a UTF-16 wide string into a UTF-8 string.
    * @param string The UTF-16 wide string.
    * @return The converted UTF-8 string.
    */
-  std::string to_utf8(const std::wstring &string);
+  inline std::string to_utf8(const std::wstring &string) {
+    return utf_utils::to_utf8(string);
+  }
 
   /**
    * @brief Check if the current process is running under the SYSTEM account.
@@ -142,6 +149,14 @@ namespace platf {
    * @return true if the ViGEmBus driver file is present, false otherwise.
    */
   bool is_vigem_installed(std::string *version_out = nullptr);
+
+  /**
+   * @brief Get file version information from a Windows executable or driver file.
+   * @param file_path Path to the file to query.
+   * @param version_str Output parameter for version string in format "major.minor.build.revision".
+   * @return true if version info was successfully extracted, false otherwise.
+   */
+  bool getFileVersionInfo(const std::filesystem::path &file_path, std::string &version_str);
 
   struct gpu_info_t {
     std::string description;

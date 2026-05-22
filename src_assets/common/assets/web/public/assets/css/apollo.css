@@ -1,3 +1,7 @@
+/* ==========================================================================
+   Sunshine UI - Modern Design System
+   ========================================================================== */
+
 /* Hide pages while localization is loading */
 [v-cloak] {
   display: none;

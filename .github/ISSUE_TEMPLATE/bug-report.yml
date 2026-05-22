@@ -30,6 +30,77 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: package_type
+    attributes:
+      label: Package
+      description: The package you installed.
+      options:
+        - Windows - exe installer
+        - Windows - msi installer (recommended)
+        - Windows - portable (NOT recommended)
+        - Windows - Chocolatey (Third Party)
+        - Windows - Scoop (Third Party)
+        - Windows - Winget
+        - other (self built)
+        - other (fork of this repo)
+        - n/a
+    validations:
+      required: true
+
+  - type: dropdown
+    id: graphics_type
+    attributes:
+      label: GPU Type
+      description: The type of graphics card used for streaming.
+      options:
+        - AMD
+        - Intel
+        - NVIDIA
+        - Qualcomm (mediafoundation)
+        - none (software encoding)
+        - n/a
+    validations:
+      required: true
+
+  - type: input
+    id: graphics_model
+    attributes:
+      label: GPU Model
+      description: The model of the graphics card.
+    validations:
+      required: true
+
+  - type: input
+    id: graphics_driver
+    attributes:
+      label: GPU Driver Version
+      description: The driver version of the graphics card.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: capture_method
+    attributes:
+      label: Capture Method
+      description: The capture method being used.
+      options:
+        - Desktop Duplication API (Windows)
+        - Windows.Graphics.Capture (Windows)
+        - SudoVDA virtual display
+        - Unknown
+    validations:
+      required: false
+
+  - type: textarea
+    id: apps
+    attributes:
+      label: Apps
+      description: If this is an issue with launching a game or app, paste the relevant `apps.json` entry.
+      render: json
+    validations:
+      required: false
+
   - type: textarea
     id: logs
     attributes:

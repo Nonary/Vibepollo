@@ -6,15 +6,16 @@
 
 // standard includes
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
 
 // third-party includes
 #include <nlohmann/json.hpp>
-#include <unordered_map>
 
 // local includes
 #include "http_auth.h"
@@ -43,6 +44,9 @@ namespace confighttp {
   // Authentication helpers
   AuthResult check_auth(const req_https_t &request);
   bool authenticate(resp_https_t response, req_https_t request);
+  std::string get_client_id(const req_https_t &request);
+  std::string generate_csrf_token(const std::string &client_id);
+  bool validate_csrf_token(const resp_https_t &response, const req_https_t &request, const std::string &client_id);
 
   // Token scope helpers
   TokenScope scope_from_string(std::string_view s);
@@ -58,16 +62,16 @@ namespace confighttp {
   void authStatus(resp_https_t response, req_https_t request);
   void logoutUser(resp_https_t response, req_https_t request);
   void getSpaEntry(resp_https_t response, req_https_t request);
+  void getCSRFToken(resp_https_t response, req_https_t request);
+  void browseDirectory(resp_https_t response, req_https_t request);
+  bool is_browsable_executable(const std::filesystem::directory_entry &entry, const std::filesystem::file_status &status);
+  nlohmann::json build_browse_entries(const std::filesystem::path &dir_path, const std::string &type_str);
+#ifdef _WIN32
+  nlohmann::json get_windows_drives();
+#endif
 
   // Writes the apps file and refreshes the client-visible app cache/list.
   bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name = true);
-
-  // Authentication functions
-  AuthResult check_auth(const req_https_t &request);
-  bool authenticate(resp_https_t response, req_https_t request);
-
-  TokenScope scope_from_string(std::string_view s);
-  std::string scope_to_string(TokenScope scope);
 
 }  // namespace confighttp
 

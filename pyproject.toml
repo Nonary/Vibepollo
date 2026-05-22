@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Sunshine"
+dynamic = ["version"]
+description = "Helper scripts for Sunshine"
+requires-python = ">=3.14"
+license = {text = "GPL-3.0-only"}
+authors = [
+    {name = "LizardByte", email = "lizardbyte@users.noreply.github.com"}
+]
+
+dependencies = []
+
+[project.optional-dependencies]
+# glad2 declares Jinja2>=2.7,<4.0 as a dependency, so installing it pulls in jinja2 transitively.
+# The platform marker limits this to Linux where the glad generator is actually used.
+glad = [
+    "glad2 @ file:./third-party/glad",
+    # setuptools provides pkg_resources which glad's plugin.py imports.
+    # setuptools >= 81 removed pkg_resources; pin to the last series that includes it.
+    "setuptools<82",
+]
+
+flatpak = [
+    "flatpak_node_generator @ file:./packaging/linux/flatpak/deps/flatpak-builder-tools/node",
+    "flatpak_pip_generator @ file:./packaging/linux/flatpak/deps/flatpak-builder-tools/pip",
+]
+
+lint = [
+    "clang-format==20.*",
+    "flake8==7.3.0",
+]
+
+locale = [
+    "Babel==2.18.0",
+]
+
+test = [
+    "gcovr==8.6",
+]
+
+[project.urls]
+Homepage = "https://app.lizardbyte.dev/Sunshine"
+Repository = "https://github.com/LizardByte/Sunshine"
+Issues = "https://github.com/LizardByte/Sunshine/issues"

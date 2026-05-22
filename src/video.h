@@ -10,6 +10,9 @@
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
+// standard includes
+#include <array>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
@@ -74,8 +77,10 @@ namespace video {
   struct encoder_platform_formats_t {
     virtual ~encoder_platform_formats_t() = default;
     platf::mem_type_e dev_type;
-    platf::pix_fmt_e pix_fmt_8bit, pix_fmt_10bit;
-    platf::pix_fmt_e pix_fmt_yuv444_8bit, pix_fmt_yuv444_10bit;
+    platf::pix_fmt_e pix_fmt_8bit;
+    platf::pix_fmt_e pix_fmt_10bit;
+    platf::pix_fmt_e pix_fmt_yuv444_8bit;
+    platf::pix_fmt_e pix_fmt_yuv444_10bit;
   };
 
   struct encoder_platform_formats_avcodec: encoder_platform_formats_t {
@@ -106,10 +111,13 @@ namespace video {
       pix_fmt_yuv444_10bit = map_pix_fmt(avcodec_pix_fmt_yuv444_10bit);
     }
 
-    AVHWDeviceType avcodec_base_dev_type, avcodec_derived_dev_type;
+    AVHWDeviceType avcodec_base_dev_type;
+    AVHWDeviceType avcodec_derived_dev_type;
     AVPixelFormat avcodec_dev_pix_fmt;
-    AVPixelFormat avcodec_pix_fmt_8bit, avcodec_pix_fmt_10bit;
-    AVPixelFormat avcodec_pix_fmt_yuv444_8bit, avcodec_pix_fmt_yuv444_10bit;
+    AVPixelFormat avcodec_pix_fmt_8bit;
+    AVPixelFormat avcodec_pix_fmt_10bit;
+    AVPixelFormat avcodec_pix_fmt_yuv444_8bit;
+    AVPixelFormat avcodec_pix_fmt_yuv444_10bit;
 
     init_buffer_function_t init_avcodec_hardware_input_buffer;
   };
@@ -192,7 +200,11 @@ namespace video {
       std::bitset<MAX_FLAGS>::reference operator[](flag_e flag) {
         return capabilities[(std::size_t) flag];
       }
-    } av1, hevc, h264;
+    };
+
+    codec_t av1;
+    codec_t hevc;
+    codec_t h264;
 
     const codec_t &codec_from_config(const config_t &config) const {
       switch (config.videoFormat) {
@@ -233,9 +245,10 @@ namespace video {
 #ifdef _WIN32
   extern encoder_t amdvce;
   extern encoder_t quicksync;
+  extern encoder_t mediafoundation;
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
   extern encoder_t vaapi;
 #endif
 
@@ -353,7 +366,14 @@ namespace video {
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
 
+  struct advertised_encoder_capabilities_t {
+    int hevc_mode = 0;
+    int av1_mode = 0;
+    std::array<bool, 3> yuv444_for_codec {};
+  };
+
   bool has_attempted_encoder_probe();
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative = false);
 
   void capture(
     safe::mail_t mail,

@@ -3,18 +3,16 @@
  * @brief Handles collecting audio device information from Windows.
  */
 #define INITGUID
-#include "src/utility.h"
-#include "utils.h"
 
 // platform includes
 #include <Audioclient.h>
-#include <codecvt>
 #include <iostream>
 #include <locale>
 #include <mmdeviceapi.h>
 #include <roapi.h>
-#include <synchapi.h>
 
+#include "src/platform/windows/utf_utils.h"
+#include "src/utility.h"
 
 DEFINE_PROPERTYKEY(PKEY_Device_DeviceDesc, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 2);  // DEVPROP_TYPE_STRING
 DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 14);  // DEVPROP_TYPE_STRING
@@ -32,7 +30,7 @@ namespace audio {
 
   template<class T>
   void co_task_free(T *p) {
-    CoTaskMemFree((LPVOID) p);
+    CoTaskMemFree(static_cast<LPVOID>(p));
   }
 
   using device_enum_t = util::safe_ptr<IMMDeviceEnumerator, Release<IMMDeviceEnumerator>>;
@@ -59,10 +57,6 @@ namespace audio {
 
     PROPVARIANT prop;
   };
-
-  const wchar_t *no_null(const wchar_t *str) {
-    return str ? str : L"Unknown";
-  }
 
   struct format_t {
     std::string_view name;
@@ -115,7 +109,11 @@ namespace audio {
     wave_format->nAvgBytesPerSec = wave_format->nSamplesPerSec * wave_format->nBlockAlign;
 
     if (wave_format->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-      ((PWAVEFORMATEXTENSIBLE) wave_format.get())->dwChannelMask = format.channel_mask;
+      // Access the extended format through proper offsetting
+      // WAVEFORMATEXTENSIBLE has WAVEFORMATEX as first member, so this is safe
+      const auto ext_format =
+        static_cast<PWAVEFORMATEXTENSIBLE>(static_cast<void *>(wave_format.get()));
+      ext_format->dwChannelMask = format.channel_mask;
     }
   }
 
@@ -125,7 +123,7 @@ namespace audio {
       IID_IAudioClient,
       CLSCTX_ALL,
       nullptr,
-      (void **) &audio_client
+      static_cast<void **>(static_cast<void *>(&audio_client))
     );
 
     if (FAILED(status)) {
@@ -183,7 +181,7 @@ namespace audio {
       return;
     }
 
-    std::wstring device_state_string = L"Unknown"s;
+    std::wstring device_state_string;
     switch (device_state) {
       case DEVICE_STATE_ACTIVE:
         device_state_string = L"Active"s;
@@ -197,35 +195,36 @@ namespace audio {
       case DEVICE_STATE_NOTPRESENT:
         device_state_string = L"Not present"s;
         break;
+      default:
+        device_state_string = L"Unknown"s;
+        break;
     }
 
-    std::wstring current_format = L"Unknown"s;
+    std::string current_format = "Unknown";
     for (const auto &format : formats) {
       // This will fail for any format that's not the mix format for this device,
       // so we can take the first match as the current format to display.
-      auto audio_client = make_audio_client(device, format);
-      if (audio_client) {
-        current_format = from_utf8(format.name);
+      if (auto audio_client = make_audio_client(device, format)) {
+        current_format = std::string(format.name);
         break;
       }
     }
 
-    wprintf(
-      L"===== Device =====\n"
-      L"Device ID          : %ls\n"
-      L"Device name        : %ls\n"
-      L"Adapter name       : %ls\n"
-      L"Device description : %ls\n"
-      L"Device state       : %ls\n"
-      L"Current format     : %ls\n\n",
-      wstring.get(),
-      no_null((LPWSTR)device_friendly_name.prop.pszVal),
-      no_null((LPWSTR)adapter_friendly_name.prop.pszVal),
-      no_null((LPWSTR)device_desc.prop.pszVal),
-      device_state_string.c_str(),
-      current_format.c_str()
-    );
+    auto safe_wstring_output = [](const wchar_t *wstr) -> std::string {
+      if (!wstr) {
+        return "Unknown";
+      }
+      return utf_utils::to_utf8(std::wstring(wstr));
+    };
 
+    std::cout << "===== Device =====" << std::endl;
+    std::cout << "Device ID           : " << utf_utils::to_utf8(std::wstring(wstring.get())) << std::endl;
+    std::cout << "Device name         : " << safe_wstring_output(device_friendly_name.prop.pwszVal) << std::endl;
+    std::cout << "Adapter name        : " << safe_wstring_output(adapter_friendly_name.prop.pwszVal) << std::endl;
+    std::cout << "Device description  : " << safe_wstring_output(device_desc.prop.pwszVal) << std::endl;
+    std::cout << "Device state        : " << utf_utils::to_utf8(device_state_string) << std::endl;
+    std::cout << "Current format      : " << current_format << std::endl;
+    std::cout << std::endl;
   }
 }  // namespace audio
 
@@ -246,9 +245,6 @@ int main(int argc, char *argv[]) {
   if (argc > 1) {
     device_state_filter = 0;
   }
-
-  // Set the locale to support wide characters
-  std::setlocale(LC_ALL, "");
 
   for (auto x = 1; x < argc; ++x) {
     for (auto p = argv[x]; *p != '\0'; ++p) {
@@ -275,15 +271,13 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  HRESULT status;
-
   audio::device_enum_t device_enum;
-  status = CoCreateInstance(
+  HRESULT status = CoCreateInstance(
     CLSID_MMDeviceEnumerator,
     nullptr,
     CLSCTX_ALL,
     IID_IMMDeviceEnumerator,
-    (void **) &device_enum
+    static_cast<void **>(static_cast<void *>(&device_enum))
   );
 
   if (FAILED(status)) {

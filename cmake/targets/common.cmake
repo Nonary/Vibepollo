@@ -1,7 +1,11 @@
 # common target definitions
 # this file will also load platform specific macros
 
-add_executable(sunshine ${SUNSHINE_TARGET_FILES})
+if(APPLE AND NOT SUNSHINE_BUILD_HOMEBREW)
+    add_executable(sunshine MACOSX_BUNDLE ${SUNSHINE_TARGET_FILES})
+else()
+    add_executable(sunshine ${SUNSHINE_TARGET_FILES})
+endif()
 foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
     add_dependencies(sunshine ${dep})  # compile these before sunshine
 endforeach()
@@ -17,12 +21,6 @@ elseif(UNIX)
     else()
         include(${CMAKE_MODULE_PATH}/targets/linux.cmake)
     endif()
-endif()
-
-# todo - is this necessary? ... for anything except linux?
-if(NOT DEFINED CMAKE_CUDA_STANDARD)
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})

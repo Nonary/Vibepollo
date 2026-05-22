@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 // local includes
 #include "crypto.h"
@@ -70,6 +71,7 @@ namespace rtsp_stream {
     std::optional<app_metadata_t> app_metadata;
     int surround_info;
     std::string surround_params;
+    bool continuous_audio;
     bool enable_hdr;
     bool enable_sops;
     bool client_display_mode_override;
@@ -87,6 +89,7 @@ namespace rtsp_stream {
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     bool virtual_display_recreated_on_demand = false;
+    bool virtual_display_needs_resume_apply = false;
     std::optional<std::vector<std::vector<std::string>>> virtual_display_topology_snapshot;
 
     /// @brief Pre-virtual-display device refresh rates captured before VD creation.
@@ -107,6 +110,7 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_do_cmds;
     std::list<crypto::command_entry_t> client_undo_cmds;
 
+    std::string client_cert;
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
@@ -135,6 +139,7 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();
+  void terminate_sessions_by_cert(std::string_view cert);
 
   /**
    * @brief Get the client UUIDs for all active sessions.

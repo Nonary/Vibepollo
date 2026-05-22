@@ -11,6 +11,11 @@
 #include "src/logging.h"
 #include "src/video.h"
 
+// platform includes
+#if !defined(__FreeBSD__)
+  #include <sys/capability.h>
+#endif
+
 extern "C" {
 #include <libavutil/pixdesc.h>
 }
@@ -31,6 +36,12 @@ using namespace std::literals;
 
 namespace gl {
   GladGLContext ctx;
+
+  static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_fn = nullptr;
+
+  PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d() {
+    return egl_image_target_texture_2d_fn;
+  }
 
   void drain_errors(const std::string_view &prefix) {
     GLenum err;
@@ -297,28 +308,6 @@ namespace gbm {
 }  // namespace gbm
 
 namespace egl {
-  constexpr auto EGL_LINUX_DMA_BUF_EXT = 0x3270;
-  constexpr auto EGL_LINUX_DRM_FOURCC_EXT = 0x3271;
-  constexpr auto EGL_DMA_BUF_PLANE0_FD_EXT = 0x3272;
-  constexpr auto EGL_DMA_BUF_PLANE0_OFFSET_EXT = 0x3273;
-  constexpr auto EGL_DMA_BUF_PLANE0_PITCH_EXT = 0x3274;
-  constexpr auto EGL_DMA_BUF_PLANE1_FD_EXT = 0x3275;
-  constexpr auto EGL_DMA_BUF_PLANE1_OFFSET_EXT = 0x3276;
-  constexpr auto EGL_DMA_BUF_PLANE1_PITCH_EXT = 0x3277;
-  constexpr auto EGL_DMA_BUF_PLANE2_FD_EXT = 0x3278;
-  constexpr auto EGL_DMA_BUF_PLANE2_OFFSET_EXT = 0x3279;
-  constexpr auto EGL_DMA_BUF_PLANE2_PITCH_EXT = 0x327A;
-  constexpr auto EGL_DMA_BUF_PLANE3_FD_EXT = 0x3440;
-  constexpr auto EGL_DMA_BUF_PLANE3_OFFSET_EXT = 0x3441;
-  constexpr auto EGL_DMA_BUF_PLANE3_PITCH_EXT = 0x3442;
-  constexpr auto EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT = 0x3443;
-  constexpr auto EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT = 0x3444;
-  constexpr auto EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT = 0x3445;
-  constexpr auto EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT = 0x3446;
-  constexpr auto EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT = 0x3447;
-  constexpr auto EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT = 0x3448;
-  constexpr auto EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT = 0x3449;
-  constexpr auto EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT = 0x344A;
 
   bool fail() {
     return eglGetError() != EGL_SUCCESS;
@@ -328,10 +317,6 @@ namespace egl {
    * @memberof egl::display_t
    */
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display) {
-    constexpr auto EGL_PLATFORM_GBM_MESA = 0x31D7;
-    constexpr auto EGL_PLATFORM_WAYLAND_KHR = 0x31D8;
-    constexpr auto EGL_PLATFORM_X11_KHR = 0x31D5;
-
     int egl_platform;
     void *native_display_p;
 
@@ -354,16 +339,30 @@ namespace egl {
     }
 
     // native_display.left() equals native_display.right()
-    display_t display = eglGetPlatformDisplay(egl_platform, native_display_p, nullptr);
+    EGLDisplay raw_display = EGL_NO_DISPLAY;
 
-    if (fail()) {
-      BOOST_LOG(error) << "Couldn't open EGL display: ["sv << util::hex(eglGetError()).to_string_view() << ']';
+    if (eglGetPlatformDisplayEXT) {
+      raw_display = eglGetPlatformDisplayEXT(egl_platform, native_display_p, nullptr);
+    } else if (eglGetPlatformDisplay) {
+      raw_display = eglGetPlatformDisplay(egl_platform, native_display_p, nullptr);
+    }
+
+    if (raw_display == EGL_NO_DISPLAY) {
+      BOOST_LOG(error) << "Couldn't open EGL display: ["sv
+                       << util::hex(eglGetError()).to_string_view() << ']';
+      return nullptr;
+    }
+    display_t display {raw_display};
+
+    int major;
+    int minor;
+    if (!eglInitialize(display.get(), &major, &minor)) {
+      BOOST_LOG(error) << "Couldn't initialize EGL display: ["sv << util::hex(eglGetError()).to_string_view() << ']';
       return nullptr;
     }
 
-    int major, minor;
-    if (!eglInitialize(display.get(), &major, &minor)) {
-      BOOST_LOG(error) << "Couldn't initialize EGL display: ["sv << util::hex(eglGetError()).to_string_view() << ']';
+    if (!gladLoaderLoadEGL(display.get())) {
+      BOOST_LOG(error) << "Failed to reload EGL for initialized display"sv;
       return nullptr;
     }
 
@@ -393,6 +392,18 @@ namespace egl {
   }
 
   std::optional<ctx_t> make_ctx(display_t::pointer display) {
+    bool nice_warning = false;
+#if !defined(__FreeBSD__)
+    cap_t caps = cap_get_proc();
+
+    cap_value_t sys_nice = CAP_SYS_NICE;
+    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_SET) || cap_set_proc(caps)) {
+      BOOST_LOG(debug) << "Failed to gain CAP_SYS_NICE"sv;
+      nice_warning = true;
+    }
+    cap_free(caps);
+#endif
+
     constexpr int conf_attr[] {
       EGL_RENDERABLE_TYPE,
       EGL_OPENGL_BIT,
@@ -411,20 +422,42 @@ namespace egl {
       return std::nullopt;
     }
 
-    constexpr int attr[] {
-      EGL_CONTEXT_CLIENT_VERSION,
-      3,
-      EGL_NONE
-    };
+    const char *extension_st = eglQueryString(display, EGL_EXTENSIONS);
 
-    ctx_t ctx {display, eglCreateContext(display, conf, EGL_NO_CONTEXT, attr)};
-    if (fail()) {
+    std::vector<EGLint> attr;
+    attr.push_back(EGL_CONTEXT_CLIENT_VERSION);
+    attr.push_back(3);
+
+    // Only add the high priority attribute if the driver explicitly supports it
+    if (extension_st && std::string_view(extension_st).contains("EGL_IMG_context_priority"sv)) {
+      BOOST_LOG(debug) << "EGL: High priority context supported"sv;
+      attr.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
+      attr.push_back(EGL_CONTEXT_PRIORITY_HIGH_IMG);
+    }
+    attr.push_back(EGL_NONE);
+
+    EGLContext raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    if (raw_ctx == EGL_NO_CONTEXT) {
       BOOST_LOG(error) << "Couldn't create EGL context: ["sv << util::hex(eglGetError()).to_string_view() << ']';
       return std::nullopt;
     }
 
-    TUPLE_EL_REF(ctx_p, 1, ctx.el);
-    if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx_p)) {
+    ctx_t ctx {display, raw_ctx};
+
+    EGLint actual_priority = EGL_CONTEXT_PRIORITY_MEDIUM_IMG;
+    std::string actual_priority_str = "MEDIUM";
+    if (eglQueryContext(display, raw_ctx, EGL_CONTEXT_PRIORITY_LEVEL_IMG, &actual_priority)) {
+      if (actual_priority == EGL_CONTEXT_PRIORITY_HIGH_IMG) {
+        actual_priority_str = "HIGH";
+      }
+      if (nice_warning) {
+        BOOST_LOG(warning) << "EGL: context priority set to "sv << actual_priority_str << " but CAP_SYS_NICE capability is missing"sv;
+      } else {
+        BOOST_LOG(info) << "EGL: context priority set to "sv << actual_priority_str;
+      }
+    }
+
+    if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, raw_ctx)) {
       BOOST_LOG(error) << "Couldn't make current display"sv;
       return std::nullopt;
     }
@@ -434,12 +467,38 @@ namespace egl {
       return std::nullopt;
     }
 
-    BOOST_LOG(debug) << "GL: vendor: "sv << gl::ctx.GetString(GL_VENDOR);
-    BOOST_LOG(debug) << "GL: renderer: "sv << gl::ctx.GetString(GL_RENDERER);
-    BOOST_LOG(debug) << "GL: version: "sv << gl::ctx.GetString(GL_VERSION);
-    BOOST_LOG(debug) << "GL: shader: "sv << gl::ctx.GetString(GL_SHADING_LANGUAGE_VERSION);
+    gl::egl_image_target_texture_2d_fn =
+      (gl::PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLADapiproc) eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    if (!gl::egl_image_target_texture_2d_fn) {
+      BOOST_LOG(warning) << "GL: glEGLImageTargetTexture2DOES not available; DMA-BUF import will fail"sv;
+    }
+
+    // GetString returns const GLubyte* (unsigned char*); convert to std::string safely (avoids sonar cpp:S6996).
+    auto gl_string = [](const GLubyte *s) {
+      std::string result;
+      while (s && *s) {
+        result += static_cast<char>(*s++);
+      }
+      return result;
+    };
+    const auto gl_vendor = gl_string(gl::ctx.GetString(GL_VENDOR));
+    const auto gl_renderer = gl_string(gl::ctx.GetString(GL_RENDERER));
+    const auto gl_version = gl_string(gl::ctx.GetString(GL_VERSION));
+    const auto gl_shader = gl_string(gl::ctx.GetString(GL_SHADING_LANGUAGE_VERSION));
+    BOOST_LOG(debug) << "GL: vendor: "sv << gl_vendor;
+    BOOST_LOG(debug) << "GL: renderer: "sv << gl_renderer;
+    BOOST_LOG(debug) << "GL: version: "sv << gl_version;
+    BOOST_LOG(debug) << "GL: shader: "sv << gl_shader;
 
     gl::ctx.PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+#if !defined(__FreeBSD__)
+    caps = cap_get_proc();
+    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_CLEAR) || cap_set_proc(caps)) {
+      BOOST_LOG(debug) << "Failed to drop CAP_SYS_NICE"sv;
+    }
+    cap_free(caps);
+#endif
 
     return ctx;
   }
@@ -550,7 +609,11 @@ namespace egl {
     }
 
     gl::ctx.BindTexture(GL_TEXTURE_2D, rgb->tex[0]);
-    gl::ctx.EGLImageTargetTexture2DOES(GL_TEXTURE_2D, rgb->xrgb8);
+    if (!gl::egl_image_target_texture_2d()) {
+      BOOST_LOG(error) << "glEGLImageTargetTexture2DOES is not available; cannot import RGB DMA-BUF"sv;
+      return std::nullopt;
+    }
+    gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, rgb->xrgb8);
 
     gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
 
@@ -608,10 +671,14 @@ namespace egl {
     }
 
     gl::ctx.BindTexture(GL_TEXTURE_2D, nv12->tex[0]);
-    gl::ctx.EGLImageTargetTexture2DOES(GL_TEXTURE_2D, nv12->r8);
+    if (!gl::egl_image_target_texture_2d()) {
+      BOOST_LOG(error) << "glEGLImageTargetTexture2DOES is not available; cannot import YUV DMA-BUF"sv;
+      return std::nullopt;
+    }
+    gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, nv12->r8);
 
     gl::ctx.BindTexture(GL_TEXTURE_2D, nv12->tex[1]);
-    gl::ctx.EGLImageTargetTexture2DOES(GL_TEXTURE_2D, nv12->bg88);
+    gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, nv12->bg88);
 
     nv12->buf.bind(std::begin(nv12->tex), std::end(nv12->tex));
 
@@ -698,7 +765,7 @@ namespace egl {
   }
 
   void sws_t::apply_colorspace(const video::sunshine_colorspace_t &colorspace) {
-    auto color_p = video::color_vectors_from_colorspace(colorspace);
+    auto color_p = video::color_vectors_from_colorspace(colorspace, true);
 
     std::string_view members[] {
       util::view(color_p->color_vec_y),
@@ -811,7 +878,7 @@ namespace egl {
     gl::ctx.UseProgram(sws.program[1].handle());
     gl::ctx.Uniform1fv(loc_width_i, 1, &width_i);
 
-    auto color_p = video::color_vectors_from_colorspace(video::colorspace_e::rec601, false);
+    auto color_p = video::color_vectors_from_colorspace({video::colorspace_e::rec601, false, 8}, true);
     std::pair<const char *, std::string_view> members[] {
       std::make_pair("color_vec_y", util::view(color_p->color_vec_y)),
       std::make_pair("color_vec_u", util::view(color_p->color_vec_u)),

@@ -164,6 +164,15 @@ namespace confighttp {
     EXPECT_EQ(json_response["error"], "Unauthorized");
   }
 
+  TEST_F(ConfigHttpCheckAuthTest, given_csrf_token_endpoint_when_checking_auth_then_should_allow_without_authentication) {
+    auto result = check_auth("127.0.0.1", "", "/api/csrf-token", "GET");
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
+    EXPECT_TRUE(result.body.empty());
+    EXPECT_TRUE(result.headers.empty());
+  }
+
   TEST_F(ConfigHttpCheckAuthTest, given_empty_username_config_when_checking_auth_then_should_return_unauthorized) {
     // Given: Empty username configuration (initial setup)
     config::sunshine.username = "";

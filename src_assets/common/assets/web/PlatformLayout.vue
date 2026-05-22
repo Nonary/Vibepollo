@@ -12,6 +12,10 @@ const platform = computed(() => (store.metadata && store.metadata.platform) || '
     <slot name="windows" />
   </template>
 
+  <template v-if="$slots['freebsd'] && platform === 'freebsd'">
+    <slot name="freebsd" />
+  </template>
+
   <template v-if="$slots['linux'] && platform === 'linux'">
     <slot name="linux" />
   </template>

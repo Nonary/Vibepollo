@@ -62,8 +62,6 @@ export interface AppForm {
   excludeGlobalPrepCmd: boolean;
   excludeGlobalStateCmd: boolean;
   configOverrides: Record<string, unknown>;
-  excludeGlobalStateCmd: boolean;
-  configOverrides: Record<string, unknown>;
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;

@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bitset>
 #include <chrono>
@@ -418,6 +419,9 @@ namespace video {
   util::Either<avcodec_buffer_t, int> vaapi_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
   util::Either<avcodec_buffer_t, int> cuda_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
   util::Either<avcodec_buffer_t, int> vt_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
+#ifdef SUNSHINE_BUILD_VULKAN
+  util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
+#endif
 
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
@@ -596,6 +600,7 @@ namespace video {
     ALWAYS_REPROBE = 1 << 9,  ///< This is an encoder of last resort and we want to aggressively probe for a better one
     YUV444_SUPPORT = 1 << 10,  ///< Encoder may support 4:4:4 chroma sampling depending on hardware
     ASYNC_TEARDOWN = 1 << 11,  ///< Encoder supports async teardown on a different thread
+    FIXED_GOP_SIZE = 1 << 12,  ///< Use fixed small GOP size (encoder doesn't support on-demand IDR frames)
   };
 
   class avcodec_encode_session_t: public encode_session_t {
@@ -1122,6 +1127,63 @@ namespace video {
     },
     PARALLEL_ENCODING
   };
+
+  encoder_t mediafoundation {
+    "mediafoundation"sv,
+    std::make_unique<encoder_platform_formats_avcodec>(
+      AV_HWDEVICE_TYPE_D3D11VA,
+      AV_HWDEVICE_TYPE_NONE,
+      AV_PIX_FMT_D3D11,
+      AV_PIX_FMT_NV12,  // SDR 4:2:0 8-bit (only format Qualcomm supports)
+      AV_PIX_FMT_NONE,  // No HDR - Qualcomm MF only supports 8-bit
+      AV_PIX_FMT_NONE,  // No YUV444 SDR
+      AV_PIX_FMT_NONE,  // No YUV444 HDR
+      dxgi_init_avcodec_hardware_input_buffer
+    ),
+    {
+      // Common options for AV1 - Qualcomm MF encoder
+      {
+        {"hw_encoding"s, 1},
+        {"rate_control"s, "cbr"s},
+        {"scenario"s, "display_remoting"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "av1_mf"s,
+    },
+    {
+      // Common options for HEVC - Qualcomm MF encoder
+      {
+        {"hw_encoding"s, 1},
+        {"rate_control"s, "cbr"s},
+        {"scenario"s, "display_remoting"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "hevc_mf"s,
+    },
+    {
+      // Common options for H.264 - Qualcomm MF encoder
+      {
+        {"hw_encoding"s, 1},
+        {"rate_control"s, "cbr"s},
+        {"scenario"s, "display_remoting"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "h264_mf"s,
+    },
+    PARALLEL_ENCODING | FIXED_GOP_SIZE  // MF encoder doesn't support on-demand IDR frames
+  };
 #endif
 
   encoder_t software {
@@ -1194,7 +1256,7 @@ namespace video {
     H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT
   };
 
-#ifdef __linux__
+#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
   encoder_t vaapi {
     "vaapi"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -1321,6 +1383,74 @@ namespace video {
   };
 #endif
 
+#ifdef SUNSHINE_BUILD_VULKAN
+  encoder_t vulkan {
+    "vulkan"sv,
+    std::make_unique<encoder_platform_formats_avcodec>(
+      AV_HWDEVICE_TYPE_VULKAN,
+      AV_HWDEVICE_TYPE_NONE,
+      AV_PIX_FMT_VULKAN,
+      AV_PIX_FMT_NV12,
+      AV_PIX_FMT_P010,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NONE,
+      vulkan_init_avcodec_hardware_input_buffer
+    ),
+    {
+      // Common options
+      {
+        {"idr_interval"s, std::numeric_limits<int>::max()},
+        {"tune"s, &config::video.vk.tune},
+        {"rc_mode"s, &config::video.vk.rc_mode},
+        {"units"s, 0},
+        {"usage"s, "stream"s},
+        {"content"s, "rendered"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "av1_vulkan"s,
+    },
+    {
+      // Common options
+      {
+        {"idr_interval"s, std::numeric_limits<int>::max()},
+        {"tune"s, &config::video.vk.tune},
+        {"rc_mode"s, &config::video.vk.rc_mode},
+        {"units"s, 0},
+        {"usage"s, "stream"s},
+        {"content"s, "rendered"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "hevc_vulkan"s,
+    },
+    {
+      // Common options
+      {
+        {"idr_interval"s, std::numeric_limits<int>::max()},
+        {"tune"s, &config::video.vk.tune},
+        {"rc_mode"s, &config::video.vk.rc_mode},
+        {"units"s, 0},
+        {"usage"s, "stream"s},
+        {"content"s, "rendered"s},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "h264_vulkan"s,
+    },
+    LIMITED_GOP_SIZE | PARALLEL_ENCODING
+  };
+#endif
+
   static const std::vector<encoder_t *> encoders {
 #ifndef __APPLE__
     &nvenc,
@@ -1328,8 +1458,12 @@ namespace video {
 #ifdef _WIN32
     &quicksync,
     &amdvce,
+    &mediafoundation,
 #endif
-#ifdef __linux__
+#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
+  #ifdef SUNSHINE_BUILD_VULKAN
+    &vulkan,
+  #endif
     &vaapi,
 #endif
 #ifdef __APPLE__
@@ -1348,6 +1482,27 @@ namespace video {
 
   bool has_attempted_encoder_probe() {
     return encoder_probe_attempted.load(std::memory_order_acquire);
+  }
+
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
+    auto snapshot = []() {
+      return advertised_encoder_capabilities_t {
+        .hevc_mode = active_hevc_mode,
+        .av1_mode = active_av1_mode,
+        .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+      };
+    };
+
+    auto caps = snapshot();
+    if (probe_before_negative && caps.hevc_mode == 0 && caps.av1_mode == 0) {
+      BOOST_LOG(info) << "Encoder capabilities are unprobed before advertising no HDR; probing encoders now.";
+      if (probe_encoders()) {
+        BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
+      }
+      caps = snapshot();
+    }
+
+    return caps;
   }
 
   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
@@ -1660,6 +1815,7 @@ namespace video {
     };
 
     // Capture takes place on this thread
+    platf::set_thread_name("video::capture");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     while (capture_ctx_queue->running()) {
@@ -1998,6 +2154,11 @@ namespace video {
       ctx->height = config.height;
       ctx->time_base = AVRational {1, config.framerate};
       ctx->framerate = AVRational {config.framerate, 1};
+      if (config.framerateX100 > 0) {
+        AVRational fps = video::framerateX100_to_rational(config.framerateX100);
+        ctx->framerate = fps;
+        ctx->time_base = AVRational {fps.den, fps.num};
+      }
 
       switch (config.videoFormat) {
         case 0:
@@ -2026,11 +2187,17 @@ namespace video {
       ctx->max_b_frames = 0;
 
       // Use an infinite GOP length since I-frames are generated on demand
-      ctx->gop_size = encoder.flags & LIMITED_GOP_SIZE ?
-                        std::numeric_limits<std::int16_t>::max() :
-                        std::numeric_limits<int>::max();
-
-      ctx->keyint_min = std::numeric_limits<int>::max();
+      // Exception: encoders with FIXED_GOP_SIZE flag don't support on-demand IDR
+      if (encoder.flags & FIXED_GOP_SIZE) {
+        // Fixed GOP for encoders that don't support on-demand IDR (e.g. Media Foundation)
+        ctx->gop_size = 120;  // ~2 seconds at 60 FPS - larger to reduce oversized IDR frame frequency
+        ctx->keyint_min = 120;
+      } else {
+        ctx->gop_size = encoder.flags & LIMITED_GOP_SIZE ?
+                          std::numeric_limits<std::int16_t>::max() :
+                          std::numeric_limits<int>::max();
+        ctx->keyint_min = std::numeric_limits<int>::max();
+      }
 
       // Some client decoders have limits on the number of reference frames
       if (config.numRefFrames) {
@@ -2491,6 +2658,7 @@ namespace video {
             frame_timestamp.reset();
             host_processing_timestamp.reset();
           }
+
         } else if (!images->running()) {
           break;
         } else {
@@ -2512,6 +2680,10 @@ namespace video {
       }
 
       session->request_normal_frame();
+
+      // While streaming check to see if the mouse is present and enable Mouse Keys to force the cursor to appear
+      // This is useful for KVM switch scenarios where mouse may disappear during streaming
+      platf::enable_mouse_keys();
     }
   }
 
@@ -2523,6 +2695,19 @@ namespace video {
     float ht = config.height;
 
     auto scalar = std::fminf(wt / wd, ht / hd);
+
+    // we initialize scalar_tpcoords and logical dimensions to default values in case they are not set (non-KMS)
+    float scalar_tpcoords = 1.0f;
+    int display_env_logical_width = 0;
+    int display_env_logical_height = 0;
+    if (display->logical_width > 0 && display->logical_height > 0 &&
+        display->env_logical_width > 0 && display->env_logical_height > 0) {
+      float lwd = display->logical_width;
+      float lhd = display->logical_height;
+      scalar_tpcoords = std::fminf(wd / lwd, hd / lhd);
+      display_env_logical_width = display->env_logical_width;
+      display_env_logical_height = display->env_logical_height;
+    }
 
     auto w2 = scalar * wd;
     auto h2 = scalar * hd;
@@ -2542,6 +2727,9 @@ namespace video {
       offsetX,
       offsetY,
       1.0f / scalar,
+      scalar_tpcoords,
+      display_env_logical_width,
+      display_env_logical_height
     };
   }
 
@@ -2865,6 +3053,7 @@ namespace video {
     });
 
     // Encoding and capture takes place on this thread
+    platf::set_thread_name("video::capture_sync");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
     std::vector<std::string> display_names;
@@ -3562,6 +3751,31 @@ namespace video {
 
     return hw_device_buf;
   }
+
+#ifdef SUNSHINE_BUILD_VULKAN
+  typedef int (*vulkan_init_avcodec_hardware_input_buffer_fn)(platf::avcodec_encode_device_t *encode_device, AVBufferRef **hw_device_buf);
+
+  util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
+    avcodec_buffer_t hw_device_buf;
+
+    if (encode_device && encode_device->data) {
+      if (((vulkan_init_avcodec_hardware_input_buffer_fn) encode_device->data)(encode_device, &hw_device_buf)) {
+        return -1;
+      }
+      return hw_device_buf;
+    }
+
+    auto render_device = config::video.adapter_name.empty() ? nullptr : config::video.adapter_name.c_str();
+    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_VULKAN, render_device, nullptr, 0);
+    if (status < 0) {
+      char string[AV_ERROR_MAX_STRING_SIZE];
+      BOOST_LOG(error) << "Failed to create a Vulkan device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+      return -1;
+    }
+
+    return hw_device_buf;
+  }
+#endif
 
   util::Either<avcodec_buffer_t, int> cuda_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
     avcodec_buffer_t hw_device_buf;

@@ -23,7 +23,11 @@
     "success": "成功！",
     "undo_cmd": "復原指令",
     "username": "使用者名稱",
-    "warning": "警告！"
+    "warning": "警告！",
+    "all": "全部",
+    "close": "關閉",
+    "loading": "載入中...",
+    "search": "搜尋..."
   },
   "apps": {
     "actions": "行動",
@@ -79,7 +83,10 @@
     "wait_all": "繼續串流，直到所有應用程式處理程序結束",
     "wait_all_desc": "這會繼續串流，直到應用程式啟動的所有處理程序都結束。如果未勾選，當最初的應用程式處理程序結束時，串流就會停止，即使還有其他處理程序在運行。",
     "working_dir": "工作目錄",
-    "working_dir_desc": "這是要傳遞給處理程序的工作目錄。例如，有些應用程式會使用這個目錄來搜尋設定檔。如果沒有設定，Vibepollo 會自動使用指令所在的目錄"
+    "working_dir_desc": "這是要傳遞給處理程序的工作目錄。例如，有些應用程式會使用這個目錄來搜尋設定檔。如果沒有設定，Vibepollo 會自動使用指令所在的目錄",
+    "cover_search_hint": "搜尋名稱應符合 IGDB 的命名慣例。",
+    "no_covers_found": "未找到封面",
+    "searching_covers": "搜尋封面..."
   },
   "config": {
     "adapter_name": "顯示卡名稱",
@@ -367,7 +374,25 @@
     "wan_encryption_mode": "WAN 加密模式",
     "wan_encryption_mode_1": "對支援的用戶端啟用（預設）",
     "wan_encryption_mode_2": "所有客戶都需要",
-    "wan_encryption_mode_desc": "這會決定在網際網路上串流時，何時會使用加密。加密可能會降低串流效能，尤其是在效能較低的主機和用戶端上。"
+    "wan_encryption_mode_desc": "這會決定在網際網路上串流時，何時會使用加密。加密可能會降低串流效能，尤其是在效能較低的主機和用戶端上。",
+    "bind_address": "綁定地址",
+    "bind_address_desc": "設定陽光將綁定的特定 IP 位址。若留空，Vibepollo 將與所有可用位址綁定。",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "dd_resolution_option_ogs_desc": "必須在 Moonlight 用戶端啟用「最佳化遊戲設定」選項，才能讓這個功能正常運作。",
+    "minimum_fps_target": "最低 FPS 目標",
+    "minimum_fps_target_desc": "串流可達到的最低有效 FPS。0 的值會被視為串流 FPS 的一半左右。如果您串流 24 或 30fps 的內容，建議設定為 20。",
+    "min_log_level": "日誌層級",
+    "min_log_level_0": "繁體",
+    "min_log_level_1": "除錯",
+    "min_log_level_2": "資訊",
+    "min_log_level_3": "警告",
+    "min_log_level_4": "錯誤",
+    "min_log_level_5": "致命",
+    "min_log_level_6": "無",
+    "min_log_level_desc": "列印到標準輸出的最小記錄層級",
+    "output_name": "顯示 ID",
+    "search_options": "搜尋配置選項..."
   },
   "index": {
     "description": "Vibepollo 是 Moonlight 的自架遊戲串流主機。",
@@ -379,7 +404,12 @@
     "startup_errors": "<b>注意！</b> Vibepollo 在啟動時檢測到這些錯誤。我們<b>強烈建議</b>在開始串流之前修復它們。",
     "version_dirty": "感謝您的協助，讓 Vibepollo 成為更好的軟體！",
     "version_latest": "您正在執行最新版本的 Vibepollo",
-    "welcome": "你好，Vibepollo！"
+    "welcome": "你好，Vibepollo！",
+    "fix_now": "立即修復",
+    "vigembus_not_installed_desc": "如果沒有 ViGEmBus 驅動程式，虛擬遊戲板支援將無法運作。按一下下面的按鈕安裝。",
+    "vigembus_not_installed_title": "未安裝 ViGEmBus 驅動程式",
+    "vigembus_outdated_desc": "您運行的是過時版本的 ViGEmBus (v{version})。需要 1.17 或更高版本才能正常支援遊戲板。按一下下面的按鈕進行更新。",
+    "vigembus_outdated_title": "ViGEmBus 驅動程式過時"
   },
   "navbar": {
     "applications": "應用程式",
@@ -391,7 +421,20 @@
     "theme_dark": "深色主題",
     "theme_light": "淺色主題",
     "toggle_theme": "主題",
-    "troubleshoot": "疑難排解"
+    "troubleshoot": "疑難排解",
+    "featured": "精選應用程式",
+    "theme_ember": "微光",
+    "theme_forest": "森林",
+    "theme_indigo": "靛藍色",
+    "theme_lavender": "薰衣草",
+    "theme_midnight": "午夜",
+    "theme_monochrome": "單色",
+    "theme_moonlight": "月光",
+    "theme_nord": "北歐",
+    "theme_ocean": "海洋",
+    "theme_rose": "玫瑰",
+    "theme_slate": "石板",
+    "theme_sunshine": "陽光"
   },
   "password": {
     "confirm_password": "確認密碼",
@@ -442,7 +485,17 @@
     "unpair_single_no_devices": "沒有已配對的裝置。",
     "unpair_single_success": "然而，該裝置仍可能處於使用中的工作階段。請使用上方的「強制關閉」按鈕結束任何使用中的工作階段。",
     "unpair_single_unknown": "未知的用戶端",
-    "unpair_title": "解除配對裝置"
+    "unpair_title": "解除配對裝置",
+    "vigembus_compatible": "ViGEmBus 已安裝且相容。",
+    "vigembus_current_version": "目前版本",
+    "vigembus_desc": "虛擬遊戲手柄支援需要 ViGEmBus。如果驅動程式遺失或過時，請安裝或更新（需要 1.17 或更高版本）。",
+    "vigembus_incompatible": "ViGEmBus 版本太舊。請安裝 1.17 或更高版本。",
+    "vigembus_install": "ViGEmBus 驅動程式",
+    "vigembus_install_button": "安裝 ViGEmBus v{version}",
+    "vigembus_install_error": "安裝 ViGEmBus 驅動程式失敗。",
+    "vigembus_install_success": "ViGEmBus 驅動程式安裝成功！您可能需要重新啟動電腦。",
+    "vigembus_force_reinstall_button": "強制重新安裝 ViGEmBus v{version}",
+    "vigembus_not_installed": "未安裝 ViGEmBus。"
   },
   "welcome": {
     "confirm_password": "確認密碼",
@@ -451,5 +504,24 @@
     "greeting": "歡迎來到 Vibepollo！",
     "login": "登入",
     "welcome_success": "此頁面將很快重新載入，您的瀏覽器會要求您提供新的憑證"
+  },
+  "featured": {
+    "categories": {
+      "client": "客戶",
+      "tool": "工具"
+    },
+    "description": "探索用戶端、工具和整合，提升您的陽光串流體驗。",
+    "docs": "文件",
+    "documentation": "文件",
+    "get": "取得",
+    "github": "GitHub 儲存庫",
+    "github_forks": "叉子",
+    "github_issues": "公開議題",
+    "github_stars": "星級",
+    "last_updated": "最後更新",
+    "no_apps": "此類別中未找到任何應用程式。",
+    "official": "官方",
+    "title": "精選應用程式",
+    "website": "網站"
   }
 }

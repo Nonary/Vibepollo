@@ -948,6 +948,8 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'vt_software',
   'vt_realtime',
   'vaapi_strict_rc_buffer',
+  'vk_tune',
+  'vk_rc_mode',
   'sw_preset',
   'sw_tune',
 ]);

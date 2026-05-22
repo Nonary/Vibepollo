@@ -128,7 +128,7 @@ namespace config {
     }
 
     nvenc::split_encode_mode split_encode_mode_from_view(const std::string_view &value) {
-      if (value == "auto") {
+      if (value == "auto" || value == "driver_decides") {
         return nvenc::split_encode_mode::auto_mode;
       }
       if (value == "enabled") {
@@ -796,6 +796,11 @@ namespace config {
       false,  // strict_rc_buffer
     },  // vaapi
 
+    {
+      2,  // vk.tune (default: ll - low latency)
+      2,  // vk.rc_mode (default: cbr)
+    },  // vk
+
     {},  // capture
     {},  // encoder
     {},  // adapter_name
@@ -1184,7 +1189,7 @@ namespace config {
     if (val.size() >= 2 && val.substr(0, 2) == "0x"sv) {
       input = util::from_hex<int>(val.substr(2));
     } else {
-      input = util::from_view(val);
+      input = (int) util::from_view(val);
     }
 
     vars.erase(it);
@@ -1414,7 +1419,7 @@ namespace config {
       if (val.size() >= 2 && val.substr(0, 2) == "0x"sv) {
         tmp = util::from_hex<int>(val.substr(2));
       } else {
-        tmp = util::from_view(val);
+        tmp = (int) util::from_view(val);
       }
       input.emplace_back(tmp);
     }
@@ -1476,6 +1481,20 @@ namespace config {
     return opts;
   }
 
+  void log_config_settings(const std::unordered_map<std::string, std::string> &vars, bool save) {
+    for (auto &[name, val] : vars) {
+      bool is_redacted = std::ranges::find(config::redacted_config, name) != config::redacted_config.end();
+#ifdef _WIN32
+      BOOST_LOG(info) << "config: '"sv << name << "' = "sv << (is_redacted ? "[redacted]" : utf8ToAcp(val));
+#else
+      BOOST_LOG(info) << "config: '"sv << name << "' = "sv << (is_redacted ? "[redacted]" : val);
+#endif
+      if (save) {
+        modified_config_settings[name] = val;
+      }
+    }
+  }
+
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     reset_runtime_config_to_defaults();
 #ifndef __ANDROID__
@@ -1486,15 +1505,7 @@ namespace config {
 #endif
 
     nv::normalize_split_encode_alias(vars);
-
-    for (auto &[name, val] : vars) {
-#ifdef _WIN32
-      BOOST_LOG(info) << "config: ["sv << name << "] -- ["sv << utf8ToAcp(val) << ']';
-#else
-      BOOST_LOG(info) << "config: ["sv << name << "] -- ["sv << val << ']';
-#endif
-      modified_config_settings[name] = val;
-    }
+    log_config_settings(vars, true);
 
     auto drop_deprecated_option = [&](const char *name) {
       auto it = vars.find(name);
@@ -1598,6 +1609,9 @@ namespace config {
     int_f(vars, "vt_realtime", video.vt.vt_realtime, vt::rt_from_view);
 
     bool_f(vars, "vaapi_strict_rc_buffer", video.vaapi.strict_rc_buffer);
+
+    int_f(vars, "vk_tune", video.vk.tune);
+    int_f(vars, "vk_rc_mode", video.vk.rc_mode);
 
     string_f(vars, "capture", video.capture);
     string_f(vars, "encoder", video.encoder);
@@ -1713,6 +1727,28 @@ namespace config {
       http::refresh_origin_acl();
     }
 
+    std::vector<std::string> user_csrf_origins;
+    list_string_f(vars, "csrf_allowed_origins", user_csrf_origins);
+
+    sunshine.csrf_allowed_origins = {
+      "https://localhost",
+      "https://127.0.0.1",
+      "https://[::1]"
+    };
+
+    bool csrf_invalid_config = false;
+    for (const auto &origin : user_csrf_origins) {
+      if (origin.size() > 8 && origin.starts_with("https://")) {
+        sunshine.csrf_allowed_origins.push_back(origin);
+      } else if (!origin.empty()) {
+        csrf_invalid_config = true;
+        BOOST_LOG(warning) << "Invalid 'csrf_allowed_origins' entry rejected: "sv << origin;
+      }
+    }
+    if (csrf_invalid_config) {
+      BOOST_LOG(warning) << "csrf_allowed_origins entries must be https:// origins.";
+    }
+
     int to = -1;
     int_between_f(vars, "ping_timeout", to, {-1, std::numeric_limits<int>::max()});
     if (to != -1) {
@@ -1723,6 +1759,18 @@ namespace config {
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
 
     path_f(vars, "file_apps", stream.file_apps);
+#ifndef __ANDROID__
+    // TODO: Android can possibly support this
+    if (!fs::exists(stream.file_apps.c_str())) {
+      fs::copy_file(SUNSHINE_ASSETS_DIR "/apps.json", stream.file_apps);
+      fs::permissions(
+        stream.file_apps,
+        fs::perms::owner_read | fs::perms::owner_write,
+        fs::perm_options::add
+      );
+    }
+#endif
+
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
@@ -2202,6 +2250,8 @@ namespace config {
         "vt_software",
         "vt_realtime",
         "vaapi_strict_rc_buffer",
+        "vk_tune",
+        "vk_rc_mode",
         "sw_preset",
         "sw_tune",
       };

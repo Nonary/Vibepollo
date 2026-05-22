@@ -9,11 +9,14 @@
 [submodule "third-party/build-deps"]
 	path = third-party/build-deps
 	url = https://github.com/LizardByte/build-deps.git
-	branch = dist
+	branch = master
 [submodule "third-party/doxyconfig"]
 	path = third-party/doxyconfig
 	url = https://github.com/LizardByte/doxyconfig.git
 	branch = master
+[submodule "third-party/glad"]
+	path = third-party/glad
+	url = https://github.com/Dav1dde/glad.git
 [submodule "third-party/googletest"]
 	path = third-party/googletest
 	url = https://github.com/google/googletest.git
@@ -38,9 +41,17 @@
 	path = third-party/nvapi-open-source-sdk
 	url = https://github.com/LizardByte/nvapi-open-source-sdk.git
 	branch = sdk
+[submodule "third-party/nvapi"]
+	path = third-party/nvapi
+	url = https://github.com/NVIDIA/nvapi.git
+	branch = main
+[submodule "third-party/plasma-wayland-protocols"]
+	path = third-party/plasma-wayland-protocols
+	url = https://github.com/KDE/plasma-wayland-protocols.git
+	branch = master
 [submodule "third-party/Simple-Web-Server"]
 	path = third-party/Simple-Web-Server
-	url = https://github.com/ClassicOldSong/Simple-Web-Server
+	url = https://github.com/LizardByte-infrastructure/Simple-Web-Server.git
 	branch = master
 [submodule "third-party/TPCircularBuffer"]
 	path = third-party/TPCircularBuffer
@@ -52,15 +63,15 @@
 	branch = master
 [submodule "third-party/wayland-protocols"]
 	path = third-party/wayland-protocols
-	url = https://gitlab.freedesktop.org/wayland/wayland-protocols.git
+	url = https://github.com/LizardByte-infrastructure/wayland-protocols.git
 	branch = main
 [submodule "third-party/wlr-protocols"]
 	path = third-party/wlr-protocols
-	url = https://gitlab.freedesktop.org/wlroots/wlr-protocols.git
+	url = https://github.com/LizardByte-infrastructure/wlr-protocols.git
 	branch = master
 [submodule "third-party/moonlight-common-c"]
 	path = third-party/moonlight-common-c
-	url = https://github.com/ClassicOldSong/moonlight-common-c
+	url = https://github.com/moonlight-stream/moonlight-common-c.git
 	branch = master
 [submodule "third-party/tray"]
 	path = third-party/tray

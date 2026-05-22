@@ -23,7 +23,11 @@
     "success": "成功！",
     "undo_cmd": "退出应用时要执行的命令",
     "username": "用户名",
-    "warning": "警告！"
+    "warning": "警告！",
+    "all": "所有的",
+    "close": "关闭",
+    "loading": "加载中...",
+    "search": "搜索..."
   },
   "apps": {
     "actions": "操作",
@@ -79,7 +83,10 @@
     "wait_all": "继续串流直到所有应用进程退出",
     "wait_all_desc": "这将继续串流直到应用程序启动的所有进程终止。 当未选中时，串流将在初始应用进程终止时停止，即使其他应用进程仍在运行。",
     "working_dir": "工作目录",
-    "working_dir_desc": "应传递给进程的工作目录。例如，某些应用程序使用工作目录搜索配置文件。如果不设置，Vibepollo 将默认使用命令的父目录"
+    "working_dir_desc": "应传递给进程的工作目录。例如，某些应用程序使用工作目录搜索配置文件。如果不设置，Vibepollo 将默认使用命令的父目录",
+    "cover_search_hint": "搜索名称应匹配IGDB命名协议。",
+    "no_covers_found": "未找到封面",
+    "searching_covers": "正在搜索封面..."
   },
   "config": {
     "adapter_name": "适配器名称",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "公网加密模式",
     "wan_encryption_mode_1": "为支持的客户端启用（默认）",
     "wan_encryption_mode_2": "强制所有客户端使用",
-    "wan_encryption_mode_desc": "这决定了在公网串流时是否加密。加密会降低串流性能，尤其是在性能较弱的主机和客户端上。"
+    "wan_encryption_mode_desc": "这决定了在公网串流时是否加密。加密会降低串流性能，尤其是在性能较弱的主机和客户端上。",
+    "bind_address": "绑定地址",
+    "bind_address_desc": "设置指定的 IP 地址Vibepollo 将绑定到。如果留空，Vibepollo 将绑定到所有可用地址。",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "搜索配置选项..."
   },
   "index": {
     "description": "Vibepollo 是供 Moonlight 使用的自建游戏串流服务。",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>请注意！</b>Vibepollo 在启动过程中检测到这些错误。我们<b>强烈建议</b>您在串流之前修复这些错误。",
     "version_dirty": "感谢您的帮助，让 Vibepollo 变得更好！",
     "version_latest": "您正在运行最新版本的 Vibepollo",
-    "welcome": "你好，Vibepollo！"
+    "welcome": "你好，Vibepollo！",
+    "fix_now": "立即修复",
+    "vigembus_not_installed_desc": "ViGEmBus 驱动程序虚拟游戏板支持无法正常工作。点击下面的按钮安装它。",
+    "vigembus_not_installed_title": "ViGEmBus 驱动程序未安装",
+    "vigembus_outdated_desc": "您运行的是过时版本的 ViGEmBus (v{version})。需要 1.17 或更高版本才能正常支持游戏手柄。单击下面的按钮进行更新。",
+    "vigembus_outdated_title": "ViGEmBus 驱动程序已过期"
   },
   "navbar": {
     "applications": "应用程序",
@@ -391,7 +408,20 @@
     "theme_dark": "深色",
     "theme_light": "浅色",
     "toggle_theme": "主题",
-    "troubleshoot": "故障排除"
+    "troubleshoot": "故障排除",
+    "featured": "精选应用",
+    "theme_ember": "Ember",
+    "theme_forest": "森林",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "午夜：",
+    "theme_monochrome": "单色",
+    "theme_moonlight": "月光",
+    "theme_nord": "Nord",
+    "theme_ocean": "1. Ocean",
+    "theme_rose": "罗斯",
+    "theme_slate": "拉特尔",
+    "theme_sunshine": "阳光"
   },
   "password": {
     "confirm_password": "确认密码",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "没有配对的设备。",
     "unpair_single_success": "然而，设备可能仍然处于活动会话中，使用上面的“强制关闭”按钮结束任何打开的会话。",
     "unpair_single_unknown": "未知客户端",
-    "unpair_title": "取消配对设备"
+    "unpair_title": "取消配对设备",
+    "vigembus_compatible": "ViGEmBus 已安装并兼容。",
+    "vigembus_current_version": "当前版本",
+    "vigembus_desc": "ViGEmBus 需要虚拟游戏板支持。如果缺少或过时的驱动程序，请安装或更新驱动程序(需要1.17或更高版本)。",
+    "vigembus_incompatible": "ViGEmBus 版本过旧。请安装版本1.17或更多。",
+    "vigembus_install": "ViGEmBus 驱动",
+    "vigembus_install_button": "安装 ViGEmBus v{version}",
+    "vigembus_install_error": "安装 ViGEmBus 驱动程序失败。",
+    "vigembus_install_success": "ViGEmBus 驱动安装成功！您可能需要重新启动您的计算机。",
+    "vigembus_force_reinstall_button": "强制重装 ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus 未安装。"
   },
   "welcome": {
     "confirm_password": "确认密码",
@@ -451,5 +491,24 @@
     "greeting": "欢迎使用 Vibepollo！",
     "login": "登录",
     "welcome_success": "此页面将很快重新加载，您的浏览器将询问您新的账户信息"
+  },
+  "featured": {
+    "categories": {
+      "client": "客户",
+      "tool": "工具"
+    },
+    "description": "发现客户端、工具和集成可以增强您的阳光流媒体体验。",
+    "docs": "文档",
+    "documentation": "文件",
+    "get": "获取",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "打开问题",
+    "github_stars": "星星",
+    "last_updated": "最后更新",
+    "no_apps": "未找到此类别中的应用。",
+    "official": "官方的",
+    "title": "精选应用",
+    "website": "网址"
   }
 }

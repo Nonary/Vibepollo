@@ -24,29 +24,20 @@
   <url type="contact">https://app.lizardbyte.dev/support</url>
 
   <description>
-    <p>
-      @PROJECT_LONG_DESCRIPTION@
-    </p>
+    <p>@PROJECT_LONG_DESCRIPTION@</p>
 
-    <p>NOTE: Sunshine requires additional installation steps (Flatpak).</p>
+    <p>NOTE: Sunshine requires additional installation steps on Flatpak.</p>
     <p>
       <code>flatpak run --command=additional-install.sh @PROJECT_FQDN@</code>
     </p>
     <p>NOTE: Sunshine uses a self-signed certificate. The web browser will report it as not secure, but it is safe.</p>
-    <p>NOTE: KMS Grab (Flatpak)</p>
-    <p>
-      <code>sudo -i PULSE_SERVER=unix:/run/user/$(id -u $whoami)/pulse/native flatpak run @PROJECT_FQDN@</code>
-    </p>
   </description>
 
   <releases>
     <release version="@PROJECT_VERSION@" date="@PROJECT_YEAR@-@PROJECT_MONTH@-@PROJECT_DAY@">
+      <url>https://github.com/LizardByte/Sunshine/releases/tag/v@PROJECT_VERSION@</url>
       <description>
-        <p>
-          See the full changelog on GitHub
-
-          <!-- changelog -->
-        </p>
+        <p>See the changelog on GitHub</p>
       </description>
     </release>
   </releases>

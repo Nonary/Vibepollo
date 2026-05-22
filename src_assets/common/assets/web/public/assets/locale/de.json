@@ -23,7 +23,11 @@
     "success": "Erfolgreich!",
     "undo_cmd": "Befehl rückgängig machen",
     "username": "Benutzername",
-    "warning": "Warnung!"
+    "warning": "Warnung!",
+    "all": "Alle",
+    "close": "Schließen",
+    "loading": "Wird geladen...",
+    "search": "Suche..."
   },
   "apps": {
     "actions": "Aktionen",
@@ -79,7 +83,10 @@
     "wait_all": "Streaming fortsetzen bis alle App-Prozesse beendet sind",
     "wait_all_desc": "Dies wird fortgesetzt, bis alle Prozesse, die von der App gestartet werden, beendet sind. Wenn diese Option deaktiviert ist, wird das Streaming gestoppt, wenn der erste App-Prozess beendet wird, auch wenn andere App-Prozesse noch laufen.",
     "working_dir": "Arbeitsverzeichnis",
-    "working_dir_desc": "Das Arbeitsverzeichnis, das an den Prozess übergeben werden soll. Zum Beispiel verwenden einige Anwendungen das Arbeitsverzeichnis, um nach Konfigurationsdateien zu suchen. Falls nicht gesetzt, wird Vibepollo standardmäßig das übergeordnete Verzeichnis des Befehls verwenden"
+    "working_dir_desc": "Das Arbeitsverzeichnis, das an den Prozess übergeben werden soll. Zum Beispiel verwenden einige Anwendungen das Arbeitsverzeichnis, um nach Konfigurationsdateien zu suchen. Falls nicht gesetzt, wird Vibepollo standardmäßig das übergeordnete Verzeichnis des Befehls verwenden",
+    "cover_search_hint": "Suchnamen sollten mit IGDB-Namenskonventionen übereinstimmen.",
+    "no_covers_found": "Keine Cover gefunden",
+    "searching_covers": "Suche nach Covers..."
   },
   "config": {
     "adapter_name": "Adaptername",
@@ -367,7 +374,12 @@
     "wan_encryption_mode": "WAN-Verschlüsselungsmodus",
     "wan_encryption_mode_1": "Aktiviert für unterstützte Clients (Standard)",
     "wan_encryption_mode_2": "Benötigt für alle Kunden",
-    "wan_encryption_mode_desc": "Dies legt fest, wann Verschlüsselung beim Streaming über das Internet verwendet wird. Verschlüsselung kann die Streaming-Leistung senken, insbesondere auf weniger leistungsfähigen Hosts und Clients."
+    "wan_encryption_mode_desc": "Dies legt fest, wann Verschlüsselung beim Streaming über das Internet verwendet wird. Verschlüsselung kann die Streaming-Leistung senken, insbesondere auf weniger leistungsfähigen Hosts und Clients.",
+    "bind_address": "Binde Adresse",
+    "bind_address_desc": "Legen Sie die spezifische IP-Adresse fest, an die sich Vibepollo bindet. Wenn leer gelassen, wird Vibepollo an alle verfügbaren Adressen gebunden.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
+    "search_options": "Konfigurationsoptionen suchen..."
   },
   "index": {
     "description": "Vibepollo ist ein selbst gehosteter Game-Stream-Host für Moonlight.",
@@ -379,7 +391,12 @@
     "startup_errors": "<b>Achtung!</b> Vibepollo erkannte diese Fehler während des Starts. Wir <b>STRONGLY EMPFOHLEN</b> beheben sie vor dem Streaming.",
     "version_dirty": "Vielen Dank, dass Sie dazu beigetragen haben, Vibepollo zu einer besseren Software zu machen!",
     "version_latest": "Du verwendest die neueste Version von Vibepollo",
-    "welcome": "Hallo, Vibepollo!"
+    "welcome": "Hallo, Vibepollo!",
+    "fix_now": "Jetzt reparieren",
+    "vigembus_not_installed_desc": "Virtuelle Gamepad-Unterstützung funktioniert nicht ohne den ViGEmBus-Treiber. Klicken Sie auf den Button unten, um ihn zu installieren.",
+    "vigembus_not_installed_title": "ViGEmBus-Treiber nicht installiert",
+    "vigembus_outdated_desc": "Sie verwenden eine veraltete Version von ViGEmBus (v{version}). Version 1. 7 oder höher ist für einen korrekten Gamepad-Support erforderlich. Klicken Sie auf den Button unten, um zu aktualisieren.",
+    "vigembus_outdated_title": "ViGEmBus-Treiber veraltet"
   },
   "navbar": {
     "applications": "Anwendungen",
@@ -391,7 +408,20 @@
     "theme_dark": "Dunkel",
     "theme_light": "Hell",
     "toggle_theme": "Thema",
-    "troubleshoot": "Fehlerbehebung"
+    "troubleshoot": "Fehlerbehebung",
+    "featured": "Empfohlene Apps",
+    "theme_ember": "Ember",
+    "theme_forest": "Wald",
+    "theme_indigo": "Indigo",
+    "theme_lavender": "Lavender",
+    "theme_midnight": "Mitternacht",
+    "theme_monochrome": "Monochrom",
+    "theme_moonlight": "Mondlicht",
+    "theme_nord": "Nord",
+    "theme_ocean": "Ozean",
+    "theme_rose": "Rose",
+    "theme_slate": "Schiefer",
+    "theme_sunshine": "Sonnenschein"
   },
   "password": {
     "confirm_password": "Passwort wiederholen",
@@ -442,7 +472,17 @@
     "unpair_single_no_devices": "Es gibt keine gekoppelten Geräte.",
     "unpair_single_success": "Die Geräte(n) können sich jedoch immer noch in einer aktiven Sitzung befinden. Benutzen Sie die Schaltfläche \"Schließen erzwingen\", um alle geöffneten Sitzungen zu beenden.",
     "unpair_single_unknown": "Unbekannter Client",
-    "unpair_title": "Geräte trennen"
+    "unpair_title": "Geräte trennen",
+    "vigembus_compatible": "ViGEmBus ist installiert und kompatibel.",
+    "vigembus_current_version": "Aktuelle Version",
+    "vigembus_desc": "ViGEmBus wird für virtuelle Gamepad-Unterstützung benötigt. Installieren oder aktualisieren Sie den Treiber, falls er fehlt oder veraltet ist (Version 1.17 oder höher erforderlich).",
+    "vigembus_incompatible": "ViGEmBus-Version ist zu alt. Bitte installieren Sie Version 1.17 oder höher.",
+    "vigembus_install": "ViGEmBus-Treiber",
+    "vigembus_install_button": "ViGEmBus v{version} installieren",
+    "vigembus_install_error": "Installation des ViGEmBus-Treibers fehlgeschlagen.",
+    "vigembus_install_success": "ViGEmBus-Treiber erfolgreich installiert! Eventuell müssen Sie Ihren Computer neu starten.",
+    "vigembus_force_reinstall_button": "Erzwinge Neuinstallation des ViGEmBus v{version}",
+    "vigembus_not_installed": "ViGEmBus ist nicht installiert."
   },
   "welcome": {
     "confirm_password": "Passwort bestätigen",
@@ -451,5 +491,24 @@
     "greeting": "Willkommen bei Vibepollo!",
     "login": "Anmelden",
     "welcome_success": "Diese Seite wird bald neu geladen, Ihr Browser wird Sie nach den neuen Anmeldeinformationen fragen"
+  },
+  "featured": {
+    "categories": {
+      "client": "Kunden",
+      "tool": "Werkzeuge"
+    },
+    "description": "Entdecken Sie Clients, Tools und Integrationen, die Ihr Vibepollo Streaming Erlebnis verbessern.",
+    "docs": "Texte",
+    "documentation": "Dokumentation",
+    "get": "Erhalten",
+    "github": "GitHub Repository",
+    "github_forks": "Forks",
+    "github_issues": "Offene Fälle",
+    "github_stars": "Sterne",
+    "last_updated": "Zuletzt aktualisiert",
+    "no_apps": "Keine Apps in dieser Kategorie gefunden.",
+    "official": "Offiziell",
+    "title": "Empfohlene Apps",
+    "website": "Webseite"
   }
 }

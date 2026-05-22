@@ -262,8 +262,7 @@
                       round
                     >
                       [ {{ permToStr(client.perm) }} ]
-                    </n-tag>
-                  </div>
+                    </n-tag>                  </div>
                   <div class="client-record__meta">
                     <span class="client-record__meta-item">
                       <i class="fas fa-clock" />
@@ -513,7 +512,6 @@
                       </div>
                     </div>
                   </div>
-
                   <div v-if="isWindows" class="space-y-3 lg:col-span-2">
                     <n-checkbox
                       v-model:checked="client.editDisplayOverrideEnabled"
@@ -973,7 +971,6 @@ const permissionGroups: PermissionGroup[] = [
 ];
 
 const highlightPermissionThreshold = 0x04000000;
-
 interface ClientApiEntry {
   uuid?: string;
   name?: string;
@@ -1069,8 +1066,7 @@ interface ClientUpdatePayload {
   perm: number;
   allow_client_commands: boolean;
   do: ClientCommandEntry[];
-  undo: ClientCommandEntry[];
-  output_name_override: string;
+  undo: ClientCommandEntry[];  output_name_override: string;
   always_use_virtual_display: boolean;
   virtual_display_mode: string | null;
   virtual_display_layout: string | null;
@@ -1837,8 +1833,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
           elevated: !!entry?.elevated,
         });
         return result;
-      }, []),
-      output_name_override: '',
+      }, []),      output_name_override: '',
       always_use_virtual_display: false,
       virtual_display_mode: '',
       virtual_display_layout: '',

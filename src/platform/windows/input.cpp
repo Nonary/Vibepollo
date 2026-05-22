@@ -11,6 +11,7 @@
 // standard includes
 #include <cmath>
 #include <thread>
+#include <vector>
 
 // lib includes
 #include <ViGEm/Client.h>
@@ -157,7 +158,9 @@ namespace platf {
     z = std::isfinite(z) ? z : 0.0f;
 
     // Use int32 to process this data, so we can clamp if needed.
-    int32_t intX, intY, intZ;
+    int32_t intX;
+    int32_t intY;
+    int32_t intZ;
 
     switch (motion_type) {
       case LI_MOTION_TYPE_ACCEL:
@@ -547,8 +550,10 @@ namespace platf {
       // MOUSEEVENTF_VIRTUALDESK maps to the entirety of the desktop rather than the primary desktop
       MOUSEEVENTF_VIRTUALDESK;
 
-    auto scaled_x = std::lround((x + touch_port.offset_x) * ((float) target_touch_port.width / (float) touch_port.width));
-    auto scaled_y = std::lround((y + touch_port.offset_y) * ((float) target_touch_port.height / (float) touch_port.height));
+    // Note: x and y already include the display offset (offset_x/offset_y) from client_to_touchport(),
+    // so we must not add offset_x/offset_y again here to avoid double-offsetting on multi-monitor setups.
+    auto scaled_x = std::lround(x * ((float) target_touch_port.width / (float) touch_port.width));
+    auto scaled_y = std::lround(y * ((float) target_touch_port.height / (float) touch_port.height));
 
     mi.dx = scaled_x;
     mi.dy = scaled_y;
@@ -1171,9 +1176,9 @@ namespace platf {
 
   void unicode(input_t &input, char *utf8, int size) {
     // We can do no worse than one UTF-16 character per byte of UTF-8
-    WCHAR wide[size];
+    std::vector<WCHAR> wide(size);
 
-    int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, size, wide, size);
+    int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, size, wide.data(), size);
     if (chars <= 0) {
       return;
     }

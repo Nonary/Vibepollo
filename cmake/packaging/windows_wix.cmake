@@ -108,24 +108,11 @@ endforeach()
 
 set(CPACK_WIX_PRODUCT_VERSION "${_WIX_MAJ}.${_WIX_MIN}.${_WIX_PAT}.${_WIX_REV}")
 
-# Keep ProductCode stable within the same major.minor line so
-# x.y.a -> x.y.b stays a non-major update path.
-set(_WIX_PRODUCT_LINE_SEED "Vibepollo-${_WIX_MAJ}.${_WIX_MIN}")
-string(MD5 _WIX_PRODUCT_LINE_HASH "${_WIX_PRODUCT_LINE_SEED}")
-string(SUBSTRING "${_WIX_PRODUCT_LINE_HASH}" 0 8 _WIX_GUID_1)
-string(SUBSTRING "${_WIX_PRODUCT_LINE_HASH}" 8 4 _WIX_GUID_2)
-string(SUBSTRING "${_WIX_PRODUCT_LINE_HASH}" 12 4 _WIX_GUID_3)
-string(SUBSTRING "${_WIX_PRODUCT_LINE_HASH}" 16 4 _WIX_GUID_4)
-string(SUBSTRING "${_WIX_PRODUCT_LINE_HASH}" 20 12 _WIX_GUID_5)
-set(CPACK_WIX_PRODUCT_GUID "${_WIX_GUID_1}-${_WIX_GUID_2}-${_WIX_GUID_3}-${_WIX_GUID_4}-${_WIX_GUID_5}")
-string(TOUPPER "${CPACK_WIX_PRODUCT_GUID}" CPACK_WIX_PRODUCT_GUID)
-
 # Ensure WiX uses a valid numeric version; some templates reference CPACK_PACKAGE_VERSION
 set(CPACK_PACKAGE_VERSION "${CPACK_WIX_PRODUCT_VERSION}")
 
 # Helpful for diagnostics in CI/local logs
 message(STATUS "CPACK_WIX_PRODUCT_VERSION = ${CPACK_WIX_PRODUCT_VERSION} (from ${PROJECT_VERSION_FULL})")
-message(STATUS "CPACK_WIX_PRODUCT_GUID = ${CPACK_WIX_PRODUCT_GUID} (line ${_WIX_MAJ}.${_WIX_MIN})")
 
 
 # Merge our custom actions and sequencing directly into the generated Product

@@ -49,8 +49,10 @@
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
+  #include "platform/windows/misc.h"
   #include "platform/windows/playnite_integration.h"
   #include "platform/windows/display_helper_request_helpers.h"
+  #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
 
@@ -74,12 +76,11 @@
   // from_utf8() string conversion function
   #include "platform/windows/misc.h"
   #include "platform/windows/utils.h"
+  #include "platform/windows/utf_utils.h"
 
   // _SH constants for _wfsopen()
   #include <share.h>
 #endif
-
-#define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
 
 namespace proc {
   using namespace std::literals;
@@ -1631,7 +1632,7 @@ namespace proc {
 #ifdef _WIN32
       // fopen() interprets the filename as an ANSI string on Windows, so we must convert it
       // to UTF-16 and use the wchar_t variants for proper Unicode log file path support.
-      auto woutput = platf::from_utf8(_app.output);
+      auto woutput = utf_utils::from_utf8(_app.output);
 
       // Use _SH_DENYNO to allow us to open this log file again for writing even if it is
       // still open from a previous execution. This is required to handle the case of a
@@ -1709,10 +1710,14 @@ namespace proc {
         }
       }
 
-      child.wait();
+      child.wait(ec);
+      if (ec) {
+        BOOST_LOG(error) << '[' << cmd.do_cmd << "] wait failed with error code ["sv << ec << ']';
+        return -1;
+      }
       auto ret = child.exit_code();
-      if (ret != 0 && ec != std::errc::permission_denied) {
-        BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed with code ["sv << ret << ']';
+      if (ret != 0) {
+        BOOST_LOG(error) << '[' << cmd.do_cmd << "] exited with code ["sv << ret << ']';
         return -1;
       }
     }
@@ -2278,12 +2283,24 @@ namespace proc {
 
     _pipe.reset();
 
+    const bool other_streaming_session_active =
+      rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
+
 #ifdef _WIN32
     if (_virtual_display_active) {
-      if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) {
-        BOOST_LOG(warning) << "Failed to remove virtual display.";
+      if (!other_streaming_session_active) {
+        const auto cleanup = platf::virtual_display_cleanup::run("app_termination", false);
+        if (!cleanup.virtual_displays_removed) {
+          BOOST_LOG(warning) << "Failed to remove virtual display after app termination.";
+        } else {
+          BOOST_LOG(info) << "Virtual display cleanup completed after app termination.";
+        }
       } else {
-        BOOST_LOG(info) << "Virtual display removed.";
+        if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) {
+          BOOST_LOG(warning) << "Failed to remove virtual display.";
+        } else {
+          BOOST_LOG(info) << "Virtual display removed.";
+        }
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;
@@ -2306,9 +2323,6 @@ namespace proc {
       // Restore output name to its original value
       config::video.output_name = initial_display;
     }
-
-    const bool other_streaming_session_active =
-      rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
 
     if (should_dispatch_revert && skip_display_revert) {
 #ifdef _WIN32
@@ -2404,6 +2418,14 @@ namespace proc {
     return _app.frame_gen_limiter_fix;
   }
 
+  bool proc_t::is_launch_deferred() const {
+#ifdef _WIN32
+    return _deferred_launch;
+#else
+    return false;
+#endif
+  }
+
   proc_t::~proc_t() {
     // It's not safe to call terminate() here because our proc_t is a static variable
     // that may be destroyed after the Boost loggers have been destroyed. Instead,
@@ -2490,6 +2512,40 @@ namespace proc {
     return ss.str();
   }
 
+  /**
+   * @brief Validates a path whether it is a valid PNG.
+   * @param path The path to the PNG file.
+   * @return true if the file has a valid PNG signature, false otherwise.
+   */
+  bool check_valid_png(const std::filesystem::path &path) {
+    // PNG signature as defined in PNG specification
+    // http://www.libpng.org/pub/png/spec/1.2/PNG-Structure.html
+    static constexpr std::array<unsigned char, 8> PNG_SIGNATURE = {
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A
+    };
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      return false;
+    }
+
+    std::array<unsigned char, 8> header;
+    file.read(reinterpret_cast<char *>(header.data()), 8);
+
+    if (file.gcount() != 8) {
+      return false;
+    }
+
+    return header == PNG_SIGNATURE;
+  }
+
   std::string validate_app_image_path(std::string app_image_path) {
     if (app_image_path.empty()) {
       return DEFAULT_APP_IMAGE_PATH;
@@ -2499,25 +2555,36 @@ namespace proc {
     auto image_extension = std::filesystem::path(app_image_path).extension().string();
     boost::to_lower(image_extension);
 
-    // return the default box image if extension is not "png"
+    // return the default box image if the extension is not "png"
     if (image_extension != ".png") {
       return DEFAULT_APP_IMAGE_PATH;
     }
 
     // check if image is in assets directory
-    auto full_image_path = std::filesystem::path(SUNSHINE_ASSETS_DIR) / app_image_path;
-    if (std::filesystem::exists(full_image_path)) {
+    if (auto full_image_path = std::filesystem::path(SUNSHINE_ASSETS_DIR) / app_image_path; std::filesystem::exists(full_image_path)) {
+      // Validate PNG signature
+      if (!check_valid_png(full_image_path)) {
+        BOOST_LOG(warning) << "Invalid PNG file at path ["sv << full_image_path << ']';
+        return DEFAULT_APP_IMAGE_PATH;
+      }
       return full_image_path.string();
-    } else if (app_image_path == "./assets/steam.png") {
+    }
+
+    if (app_image_path == "./assets/steam.png") {
       // handle old default steam image definition
       return SUNSHINE_ASSETS_DIR "/steam.png";
     }
 
     // check if specified image exists
-    std::error_code code;
-    if (!std::filesystem::exists(app_image_path, code)) {
+    if (std::error_code code; !std::filesystem::exists(app_image_path, code)) {
       // return default box image if image does not exist
       BOOST_LOG(warning) << "Couldn't find app image at path ["sv << app_image_path << ']';
+      return DEFAULT_APP_IMAGE_PATH;
+    }
+
+    // Validate PNG signature
+    if (!check_valid_png(app_image_path)) {
+      BOOST_LOG(warning) << "Invalid PNG file at path ["sv << app_image_path << ']';
       return DEFAULT_APP_IMAGE_PATH;
     }
 

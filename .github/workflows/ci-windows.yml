@@ -11,6 +11,10 @@ on:
       release_version:
         required: true
         type: string
+      release_tag:
+        required: false
+        type: string
+        default: ''
       symbol_product_name:
         required: true
         type: string
@@ -493,7 +497,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.symbol_token }}
-          RELEASE_TAG: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag || inputs.release_version }}
           SYMBOL_RELEASE_DRAFT: ${{ inputs.symbol_release_draft }}
           SYMBOL_RELEASE_PREFIX: ${{ inputs.symbol_release_prefix }}
           SYMBOL_RELEASE_TAG: ${{ inputs.symbol_release_tag }}
@@ -513,7 +517,7 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($env:SYMBOL_RELEASE_TAG)) {
-            if ($releaseVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+((-(alpha|beta|rc)([.-][0-9A-Za-z.-]+)?)|-stable)?$') {
+            if ($releaseVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+((-(alpha|beta|rc|stable)([.-][0-9A-Za-z.-]+)?)|-stable)?$') {
               throw "Unsupported release tag '$sourceReleaseTag'. Expected a release tag like v1.15.2-beta.2."
             }
 

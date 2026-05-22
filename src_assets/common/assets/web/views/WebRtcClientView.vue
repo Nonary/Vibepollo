@@ -2248,6 +2248,33 @@ function updateAudioElement(stream: MediaStream): void {
   audioEl.value.muted = false;
 }
 
+function resetAudioElement(): void {
+  const el = audioEl.value;
+  const stream = audioStream;
+  if (!el || !stream) return;
+  el.srcObject = null;
+  window.setTimeout(() => {
+    const current = audioEl.value;
+    if (!current || audioStream !== stream) return;
+    current.srcObject = stream;
+    current.muted = false;
+    void current.play().catch(() => {});
+  }, 0);
+}
+
+function resetVideoElement(): void {
+  const el = videoEl.value;
+  const stream = videoStream;
+  if (!el || !stream) return;
+  el.srcObject = null;
+  window.setTimeout(() => {
+    const current = videoEl.value;
+    if (!current || videoStream !== stream) return;
+    current.srcObject = stream;
+    void current.play().catch(() => {});
+  }, 0);
+}
+
 function attachVideoDebug(el: HTMLVideoElement): () => void {
   const events = [
     'loadedmetadata',

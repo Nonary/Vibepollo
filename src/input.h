@@ -24,6 +24,10 @@ namespace input {
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
 #endif
 
+#ifdef SUNSHINE_TESTS
+  bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
+#endif
+
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
 
   bool probe_gamepads();
@@ -31,12 +35,18 @@ namespace input {
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
 
   struct touch_port_t: public platf::touch_port_t {
-    int env_width, env_height;
+    int env_width;
+    int env_height;
 
     // Offset x and y coordinates of the client
-    float client_offsetX, client_offsetY;
+    float client_offsetX;
+    float client_offsetY;
 
     float scalar_inv;
+    float scalar_tpcoords;
+
+    int env_logical_width;
+    int env_logical_height;
 
     explicit operator bool() const {
       return width != 0 && height != 0 && env_width != 0 && env_height != 0;

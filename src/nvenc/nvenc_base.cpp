@@ -506,6 +506,9 @@ namespace nvenc {
       vui_config.chromaSampleLocationFlag = buffer_is_yuv444() ? 0 : 1;
       vui_config.chromaSampleLocationTop = 0;
       vui_config.chromaSampleLocationBot = 0;
+
+      // This is critical for low decoding latency on certain devices
+      vui_config.bitstreamRestrictionFlag = 1;
     };
 
       const auto set_hevc_10bit_format = [&](auto &format_config) {

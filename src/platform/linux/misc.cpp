@@ -10,14 +10,30 @@
 
 // standard includes
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 
 // platform includes
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <gio/gio.h>  // For RTKit
 #include <ifaddrs.h>
+#include <netinet/in.h>
 #include <netinet/udp.h>
 #include <pwd.h>
+#include <sys/resource.h>  // For setpriority
+#include <sys/socket.h>
+
+#if !defined(__FreeBSD__)
+  #include <sys/capability.h>
+  #include <sys/prctl.h>
+#endif
+#ifdef __FreeBSD__
+  #include <net/if_dl.h>  // For sockaddr_dl, LLADDR, and AF_LINK
+  #include <sys/syscall.h>  // For syscall: SYS_thr_self
+  #include <sys/thr.h>  // For thr_self
+#endif
 
 // lib includes
 #include <boost/asio/ip/address.hpp>
@@ -26,6 +42,12 @@
 #include <boost/program_options/parsers.hpp>
 #include <fcntl.h>
 #include <unistd.h>
+
+#ifdef SUNSHINE_BUILD_DRM
+  #include <dirent.h>
+  #include <xf86drm.h>
+  #include <xf86drmMode.h>
+#endif
 
 // local includes
 #include "graphics.h"
@@ -37,12 +59,24 @@
 #include "src/platform/common.h"
 #include "vaapi.h"
 
-#include <linux/rtnetlink.h>
+#ifdef __linux__
+  #include <linux/rtnetlink.h>
+#endif
 
 #ifdef __GNUC__
   #define SUNSHINE_GNUC_EXTENSION __extension__
 #else
   #define SUNSHINE_GNUC_EXTENSION
+#endif
+
+#ifndef SOL_IP
+  #define SOL_IP IPPROTO_IP
+#endif
+#ifndef SOL_IPV6
+  #define SOL_IPV6 IPPROTO_IPV6
+#endif
+#ifndef SOL_UDP
+  #define SOL_UDP IPPROTO_UDP
 #endif
 
 using namespace std::literals;
@@ -219,6 +253,39 @@ namespace platf {
 
   std::string get_mac_address(const std::string_view &address) {
     auto ifaddrs = get_ifaddrs();
+
+#ifdef __FreeBSD__
+    // On FreeBSD, we need to find the interface name first, then look for its AF_LINK entry
+    std::string interface_name;
+    for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
+      if (pos->ifa_addr && address == from_sockaddr(pos->ifa_addr)) {
+        interface_name = pos->ifa_name;
+        break;
+      }
+    }
+
+    if (!interface_name.empty()) {
+      // Find the AF_LINK entry for this interface to get MAC address
+      for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
+        if (pos->ifa_addr && pos->ifa_addr->sa_family == AF_LINK && interface_name == pos->ifa_name) {
+          auto sdl = (struct sockaddr_dl *) pos->ifa_addr;
+          auto mac = (unsigned char *) LLADDR(sdl);
+
+          // Format MAC address as XX:XX:XX:XX:XX:XX
+          std::ostringstream mac_stream;
+          mac_stream << std::hex << std::setfill('0');
+          for (int i = 0; i < sdl->sdl_alen; i++) {
+            if (i > 0) {
+              mac_stream << ':';
+            }
+            mac_stream << std::setw(2) << (int) mac[i];
+          }
+          return mac_stream.str();
+        }
+      }
+    }
+#else
+    // On Linux, read MAC address from sysfs
     for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
       if (pos->ifa_addr && address == from_sockaddr(pos->ifa_addr)) {
         std::ifstream mac_file("/sys/class/net/"s + pos->ifa_name + "/address");
@@ -229,12 +296,14 @@ namespace platf {
         }
       }
     }
+#endif
 
     BOOST_LOG(warning) << "Unable to find MAC address for "sv << address;
     return "00:00:00:00:00:00"s;
   }
 
   std::string get_local_ip_for_gateway() {
+#ifdef __linux__
     int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (fd < 0) {
       BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
@@ -315,6 +384,9 @@ namespace platf {
     }
 
     return local_ip;
+#else
+    return "";
+#endif
   }
 
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
@@ -411,6 +483,75 @@ namespace platf {
   }
 
   void adjust_thread_priority(thread_priority_e priority) {
+#if defined(__FreeBSD__)
+    pid_t tid = syscall(SYS_thr_self);
+#else
+    pid_t tid = syscall(SYS_gettid);
+#endif
+    bool success = false;
+    int32_t linux_nice;
+
+    using enum thread_priority_e;
+    switch (priority) {
+      case low:
+        linux_nice = 10;
+        break;
+      case normal:
+        linux_nice = 0;
+        break;
+      case high:
+        linux_nice = -10;
+        break;
+      case critical:
+        linux_nice = -15;
+        break;
+      default:
+        BOOST_LOG(debug) << "Unknown thread priority: "sv << std::to_underlying(priority);
+        return;
+    }
+
+    g_autoptr(GError) err = nullptr;
+    GDBusConnection *conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
+
+    if (conn) {
+      g_dbus_connection_call_sync(
+        conn,
+        "org.freedesktop.RealtimeKit1",
+        "/org/freedesktop/RealtimeKit1",
+        "org.freedesktop.RealtimeKit1",
+        "MakeThreadHighPriority",
+        g_variant_new("(ti)", (guint64) tid, linux_nice),
+        nullptr,
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        nullptr,
+        &err
+      );
+
+      if (!err) {
+        success = true;
+        BOOST_LOG(debug) << "RTKit: Successfully set priority to "sv << linux_nice;
+      } else {
+        BOOST_LOG(debug) << "RTKit: Could not set priority: "sv << err->message;
+        g_clear_error(&err);
+      }
+    }
+
+    if (!success) {
+      // This will run on FreeBSD OR Linux if RTKit failed/was missing
+      if (setpriority(PRIO_PROCESS, 0, linux_nice) == -1) {
+        BOOST_LOG(warning) << "setpriority failed for nice "sv << linux_nice << ": "sv << strerror(errno);
+      } else {
+        BOOST_LOG(debug) << "setpriority success for nice "sv << linux_nice;
+      }
+    }
+  }
+
+  void set_thread_name(const std::string &name) {
+    pthread_setname_np(pthread_self(), name.c_str());
+  }
+
+  void enable_mouse_keys() {
     // Unimplemented
   }
 
@@ -517,7 +658,12 @@ namespace platf {
     }
 
     union {
+#ifdef IP_PKTINFO
       char buf[CMSG_SPACE(sizeof(uint16_t)) + std::max(CMSG_SPACE(sizeof(struct in_pktinfo)), CMSG_SPACE(sizeof(struct in6_pktinfo)))];
+#elif defined(IP_SENDSRCADDR)
+      // FreeBSD uses IP_SENDSRCADDR with struct in_addr instead of IP_PKTINFO with struct in_pktinfo
+      char buf[CMSG_SPACE(sizeof(uint16_t)) + std::max(CMSG_SPACE(sizeof(struct in_addr)), CMSG_SPACE(sizeof(struct in6_pktinfo)))];
+#endif
       struct cmsghdr alignment;
     } cmbuf = {};  // Must be zeroed for CMSG_NXTHDR()
 
@@ -543,6 +689,7 @@ namespace platf {
       pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(pktInfo));
       memcpy(CMSG_DATA(pktinfo_cm), &pktInfo, sizeof(pktInfo));
     } else {
+#ifdef IP_PKTINFO
       struct in_pktinfo pktInfo;
 
       struct sockaddr_in saddr_v4 = to_sockaddr(send_info.source_address.to_v4(), 0);
@@ -555,6 +702,18 @@ namespace platf {
       pktinfo_cm->cmsg_type = IP_PKTINFO;
       pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(pktInfo));
       memcpy(CMSG_DATA(pktinfo_cm), &pktInfo, sizeof(pktInfo));
+#elif defined(IP_SENDSRCADDR)
+      // FreeBSD uses IP_SENDSRCADDR with struct in_addr instead of IP_PKTINFO
+      struct sockaddr_in saddr_v4 = to_sockaddr(send_info.source_address.to_v4(), 0);
+      struct in_addr src_addr = saddr_v4.sin_addr;
+
+      cmbuflen += CMSG_SPACE(sizeof(src_addr));
+
+      pktinfo_cm->cmsg_level = IPPROTO_IP;
+      pktinfo_cm->cmsg_type = IP_SENDSRCADDR;
+      pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(src_addr));
+      memcpy(CMSG_DATA(pktinfo_cm), &src_addr, sizeof(src_addr));
+#endif
     }
 
     auto const max_iovs_per_msg = send_info.payload_buffers.size() + (send_info.headers ? 1 : 0);
@@ -647,8 +806,8 @@ namespace platf {
 
     {
       // If GSO is not supported, use sendmmsg() instead.
-      struct mmsghdr msgs[send_info.block_count];
-      struct iovec iovs[send_info.block_count * (send_info.headers ? 2 : 1)];
+      std::vector<struct mmsghdr> msgs(send_info.block_count);
+      std::vector<struct iovec> iovs(send_info.block_count * (send_info.headers ? 2 : 1));
       int iov_idx = 0;
       for (size_t i = 0; i < send_info.block_count; i++) {
         msgs[i].msg_len = 0;
@@ -724,7 +883,12 @@ namespace platf {
     }
 
     union {
+#ifdef IP_PKTINFO
       char buf[std::max(CMSG_SPACE(sizeof(struct in_pktinfo)), CMSG_SPACE(sizeof(struct in6_pktinfo)))];
+#elif defined(IP_SENDSRCADDR)
+      // FreeBSD uses IP_SENDSRCADDR with struct in_addr instead of IP_PKTINFO with struct in_pktinfo
+      char buf[std::max(CMSG_SPACE(sizeof(struct in_addr)), CMSG_SPACE(sizeof(struct in6_pktinfo)))];
+#endif
       struct cmsghdr alignment;
     } cmbuf;
 
@@ -748,6 +912,7 @@ namespace platf {
       pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(pktInfo));
       memcpy(CMSG_DATA(pktinfo_cm), &pktInfo, sizeof(pktInfo));
     } else {
+#ifdef IP_PKTINFO
       struct in_pktinfo pktInfo;
 
       struct sockaddr_in saddr_v4 = to_sockaddr(send_info.source_address.to_v4(), 0);
@@ -760,6 +925,18 @@ namespace platf {
       pktinfo_cm->cmsg_type = IP_PKTINFO;
       pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(pktInfo));
       memcpy(CMSG_DATA(pktinfo_cm), &pktInfo, sizeof(pktInfo));
+#elif defined(IP_SENDSRCADDR)
+      // FreeBSD uses IP_SENDSRCADDR with struct in_addr instead of IP_PKTINFO
+      struct sockaddr_in saddr_v4 = to_sockaddr(send_info.source_address.to_v4(), 0);
+      struct in_addr src_addr = saddr_v4.sin_addr;
+
+      cmbuflen += CMSG_SPACE(sizeof(src_addr));
+
+      pktinfo_cm->cmsg_level = IPPROTO_IP;
+      pktinfo_cm->cmsg_type = IP_SENDSRCADDR;
+      pktinfo_cm->cmsg_len = CMSG_LEN(sizeof(src_addr));
+      memcpy(CMSG_DATA(pktinfo_cm), &src_addr, sizeof(src_addr));
+#endif
     }
 
     struct iovec iovs[2];
@@ -893,6 +1070,10 @@ namespace platf {
     // reset SO_PRIORITY back to 0.
     //
     // 6 is the highest priority that can be used without SYS_CAP_ADMIN.
+#ifndef SO_PRIORITY
+    // FreeBSD doesn't support SO_PRIORITY, so we skip this
+    BOOST_LOG(debug) << "SO_PRIORITY not supported on this platform, skipping traffic priority setting";
+#else
     int priority = data_type == qos_data_type_e::audio ? 6 : 5;
     if (setsockopt(sockfd, SOL_SOCKET, SO_PRIORITY, &priority, sizeof(priority)) == 0) {
       // Reset SO_PRIORITY to 0 when QoS is disabled
@@ -900,6 +1081,7 @@ namespace platf {
     } else {
       BOOST_LOG(error) << "Failed to set SO_PRIORITY: "sv << errno;
     }
+#endif
 
     return std::make_unique<qos_t>(sockfd, reset_options);
   }
@@ -926,6 +1108,12 @@ namespace platf {
 #endif
 #ifdef SUNSHINE_BUILD_X11
       X11,  ///< X11
+#endif
+#ifdef SUNSHINE_BUILD_KWIN
+      KWIN,  ///< KWin ScreenCast
+#endif
+#ifdef SUNSHINE_BUILD_PORTAL
+      PORTAL,  ///< XDG PORTAL
 #endif
       MAX_FLAGS  ///< The maximum number of flags
     };
@@ -969,6 +1157,26 @@ namespace platf {
   }
 #endif
 
+#ifdef SUNSHINE_BUILD_PORTAL
+  std::vector<std::string> portal_display_names();
+  std::shared_ptr<display_t> portal_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+
+  bool verify_portal() {
+    return !portal_display_names().empty();
+  }
+#endif
+
+#ifdef SUNSHINE_BUILD_KWIN
+  bool kwin_available();
+  std::vector<std::string> kwin_display_names();
+  std::shared_ptr<display_t> kwin_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+
+  bool verify_kwin() {
+    // Note: The separate kwin_available check is necessary because with CAP_SYS_ADMIN kwin_display_names is never empty during startup
+    return window_system == window_system_e::WAYLAND && kwin_available() && !kwin_display_names().empty();
+  }
+#endif
+
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {
 #ifdef SUNSHINE_BUILD_CUDA
     // display using NvFBC only supports mem_type_e::cuda
@@ -991,6 +1199,16 @@ namespace platf {
       return x11_display_names();
     }
 #endif
+#ifdef SUNSHINE_BUILD_PORTAL
+    if (sources[source::PORTAL]) {
+      return portal_display_names();
+    }
+#endif
+#ifdef SUNSHINE_BUILD_KWIN
+    if (sources[source::KWIN]) {
+      return kwin_display_names();
+    }
+#endif
     return {};
   }
 
@@ -1004,6 +1222,19 @@ namespace platf {
   }
 
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+    // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
+#ifdef SUNSHINE_BUILD_DRM
+    if (sources[source::KMS]) {
+      BOOST_LOG(info) << "Screencasting with KMS"sv;
+      return kms_display(hwdevice_type, display_name, config);
+    }
+#endif
+
+    // KMS capture was passed; drop CAP_SYS_ADMIN only.
+    if (has_elevated_privileges(false)) {
+      drop_elevated_privileges(false);
+    }
+
 #ifdef SUNSHINE_BUILD_CUDA
     if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
       BOOST_LOG(info) << "Screencasting with NvFBC"sv;
@@ -1016,16 +1247,22 @@ namespace platf {
       return wl_display(hwdevice_type, display_name, config);
     }
 #endif
-#ifdef SUNSHINE_BUILD_DRM
-    if (sources[source::KMS]) {
-      BOOST_LOG(info) << "Screencasting with KMS"sv;
-      return kms_display(hwdevice_type, display_name, config);
-    }
-#endif
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
       BOOST_LOG(info) << "Screencasting with X11"sv;
       return x11_display(hwdevice_type, display_name, config);
+    }
+#endif
+#ifdef SUNSHINE_BUILD_PORTAL
+    if (sources[source::PORTAL]) {
+      BOOST_LOG(info) << "Screencasting with XDG portal"sv;
+      return portal_display(hwdevice_type, display_name, config);
+    }
+#endif
+#ifdef SUNSHINE_BUILD_KWIN
+    if (sources[source::KWIN]) {
+      BOOST_LOG(info) << "Screencasting with KWin ScreenCast"sv;
+      return kwin_display(hwdevice_type, display_name, config);
     }
 #endif
 
@@ -1036,6 +1273,9 @@ namespace platf {
     // enable low latency mode for AMD
     // https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/30039
     set_env("AMD_DEBUG", "lowlatencyenc");
+
+    // enable Vulkan video extensions for AMD RADV
+    set_env("RADV_PERFTEST", "video_encode");
 
     // These are allowed to fail.
     gbm::init();
@@ -1057,33 +1297,35 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_CUDA
-    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") {
-      if (verify_nvfbc()) {
-        sources[source::NVFBC] = true;
-      }
+    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") && verify_nvfbc()) {
+      sources[source::NVFBC] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
-    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") {
-      if (verify_wl()) {
-        sources[source::WAYLAND] = true;
-      }
+    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") && verify_wl()) {
+      sources[source::WAYLAND] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM
-    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "kms") {
-      if (verify_kms()) {
-        sources[source::KMS] = true;
-      }
+    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "kms") && verify_kms()) {
+      sources[source::KMS] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_X11
     // We enumerate this capture backend regardless of other suitable sources,
     // since it may be needed as a NvFBC fallback for software encoding on X11.
-    if (config::video.capture.empty() || config::video.capture == "x11") {
-      if (verify_x11()) {
-        sources[source::X11] = true;
-      }
+    if ((config::video.capture.empty() || config::video.capture == "x11") && verify_x11()) {
+      sources[source::X11] = true;
+    }
+#endif
+#ifdef SUNSHINE_BUILD_PORTAL
+    if ((config::video.capture.empty() || config::video.capture == "portal") && verify_portal()) {
+      sources[source::PORTAL] = true;
+    }
+#endif
+#ifdef SUNSHINE_BUILD_KWIN
+    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "kwin") && verify_kwin()) {
+      sources[source::KWIN] = true;
     }
 #endif
 
@@ -1092,8 +1334,9 @@ namespace platf {
       return nullptr;
     }
 
-    if (!gladLoaderLoadEGL(EGL_NO_DISPLAY) || !eglGetPlatformDisplay) {
-      BOOST_LOG(warning) << "Couldn't load EGL library"sv;
+    if (!gladLoaderLoadEGL(NULL)) {
+      BOOST_LOG(error) << "Failed to load EGL library symbols"sv;
+      return nullptr;
     }
 
     return std::make_unique<deinit_t>();
@@ -1124,5 +1367,128 @@ namespace platf {
     set_clipboard(const std::string &content) {
     // Placeholder
     return false;
+  }
+
+  std::string find_render_node_with_display() {
+#ifdef SUNSHINE_BUILD_DRM
+    auto *dir = opendir("/dev/dri");
+    if (!dir) {
+      return {};
+    }
+
+    std::string result;
+    while (auto *entry = readdir(dir)) {
+      if (strncmp(entry->d_name, "card", 4) != 0 || !isdigit(entry->d_name[4])) {
+        continue;
+      }
+
+      std::string path = std::string("/dev/dri/") + entry->d_name;
+      int fd = open(path.c_str(), O_RDWR);
+      if (fd < 0) {
+        continue;
+      }
+
+      auto *res = drmModeGetResources(fd);
+      if (res) {
+        for (int i = 0; i < res->count_connectors && result.empty(); i++) {
+          auto *conn = drmModeGetConnector(fd, res->connectors[i]);
+          if (conn) {
+            if (conn->connection == DRM_MODE_CONNECTED) {
+              char *render = drmGetRenderDeviceNameFromFd(fd);
+              if (render) {
+                result = render;
+                free(render);
+              }
+            }
+            drmModeFreeConnector(conn);
+          }
+        }
+        drmModeFreeResources(res);
+      }
+      close(fd);
+      if (!result.empty()) {
+        break;
+      }
+    }
+    closedir(dir);
+    return result;
+#else
+    return {};
+#endif
+  }
+
+  std::string resolve_render_device() {
+    if (!config::video.adapter_name.empty()) {
+      return config::video.adapter_name;
+    }
+    auto detected = find_render_node_with_display();
+    return detected.empty() ? "/dev/dri/renderD128" : detected;
+  }
+
+#if !defined(__FreeBSD__)
+  static constexpr cap_value_t FULL_CAPS[] = {CAP_SYS_ADMIN, CAP_SYS_NICE};
+  static constexpr cap_value_t ADMIN_CAPS[] = {CAP_SYS_ADMIN};
+
+  constexpr std::span<const cap_value_t> ELEVATED_PRIVILEGES_FULL {FULL_CAPS};
+  constexpr std::span<const cap_value_t> ELEVATED_PRIVILEGES_ADMIN {ADMIN_CAPS};
+#endif
+
+  bool has_elevated_privileges(bool all_caps) {
+#if !defined(__FreeBSD__)
+    const auto caps_to_check = all_caps ? ELEVATED_PRIVILEGES_FULL : ELEVATED_PRIVILEGES_ADMIN;
+    const cap_t caps = cap_get_proc();
+    if (!caps) {
+      BOOST_LOG(error) << "[misc] has_elevated_privileges failed to get process capabilities."sv;
+      return false;
+    }
+    for (const auto c : caps_to_check) {
+      cap_flag_value_t cap_flags_value;
+      cap_get_flag(caps, c, CAP_EFFECTIVE, &cap_flags_value);
+      if (cap_flags_value == CAP_SET) {
+        BOOST_LOG(debug) << "[misc] has_elevated_privileges found effective cap:"sv << c;
+        return true;
+      }
+    }
+    for (const auto c : caps_to_check) {
+      cap_flag_value_t cap_flags_value;
+      cap_get_flag(caps, c, CAP_PERMITTED, &cap_flags_value);
+      if (cap_flags_value == CAP_SET) {
+        BOOST_LOG(debug) << "[misc] has_elevated_privileges found permitted cap:"sv << c;
+        return true;
+      }
+    }
+    cap_free(caps);
+#endif
+    return false;
+  }
+
+  void drop_elevated_privileges(bool all_caps) {
+#if !defined(__FreeBSD__)
+    bool failed = false;
+    const auto caps_to_drop = all_caps ? ELEVATED_PRIVILEGES_FULL : ELEVATED_PRIVILEGES_ADMIN;
+    const cap_t caps = cap_get_proc();
+    if (!caps) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to get process capabilities"sv;
+      return;
+    }
+
+    cap_set_flag(caps, CAP_EFFECTIVE, caps_to_drop.size(), caps_to_drop.data(), CAP_CLEAR);
+    cap_set_flag(caps, CAP_PERMITTED, caps_to_drop.size(), caps_to_drop.data(), CAP_CLEAR);
+
+    if (cap_set_proc(caps) != 0) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to prune capabilities: "sv << std::strerror(errno);
+      failed = true;
+    }
+    cap_free(caps);
+
+    // Reset dumpable AFTER the caps have been pruned to ensure /proc/pid/root is accessible.
+    if (prctl(PR_SET_DUMPABLE, 1) != 0) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to set PR_SET_DUMPABLE: "sv << std::strerror(errno);
+      failed = true;
+    }
+    if (!failed) {
+      BOOST_LOG(info) << "[misc] drop_elevated_privileges succeeded in dropping capabilities"sv;
+    }
+#endif
   }
 }  // namespace platf

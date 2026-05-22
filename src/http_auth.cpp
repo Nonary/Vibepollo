@@ -1335,7 +1335,7 @@ namespace confighttp {
 
     // Only protect /api/ endpoints (except auth endpoints) for SPA model; all other paths (HTML shell, assets) are always allowed
     bool is_api = base_path.rfind("/api/", 0) == 0;
-    bool is_auth_api = (base_path == "/api/auth/login" || base_path == "/api/auth/logout");
+    bool is_auth_api = (base_path == "/api/auth/login" || base_path == "/api/auth/logout" || base_path == "/api/csrf-token");
     if (!is_api) {
       return {true, StatusCode::success_ok, {}, {}};  // public content served; SPA handles routing and will trigger API calls
     }

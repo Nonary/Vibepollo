@@ -65,9 +65,7 @@
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
       <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT REMOVE</Custom>
       <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT REMOVE</Custom>
-      <Custom Action="SetInstallGamepad" After="RunInstallerMigrations">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
-      <Custom Action="InstallGamepad" After="SetInstallGamepad">NOT REMOVE AND NOT VIGEMBUS_PRESENT</Custom>
-      <Custom Action="SetUpdatePathAdd" After="InstallGamepad">NOT REMOVE</Custom>
+      <Custom Action="SetUpdatePathAdd" After="RunInstallerMigrations">NOT REMOVE</Custom>
       <Custom Action="UpdatePathAdd" After="SetUpdatePathAdd">NOT REMOVE</Custom>
 
       <!-- Uninstall before file removal -->
