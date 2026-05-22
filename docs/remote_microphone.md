@@ -29,7 +29,7 @@ The working implementation includes:
 - `src/stream.cpp`: microphone socket handling, session startup/shutdown, and packet routing.
 - `src/audio.cpp`: shared microphone debug state and persistent audio context ownership for the redirect device.
 - `src/platform/windows/audio.cpp`: Windows microphone backend selection and redirect device ownership.
-- `src/platform/windows/apollo_vmic.cpp`: Steam Streaming Microphone backend wrapper.
+- `src/platform/windows/vibepollo_vmic.cpp`: Steam Streaming Microphone backend wrapper.
 - `src/platform/windows/mic_write.cpp`: device discovery, WASAPI initialization, Opus decode, and Steam Streaming Microphone rendering.
 - `src_assets/common/assets/web/Troubleshooting.vue`: Remote Microphone Debug UI.
 

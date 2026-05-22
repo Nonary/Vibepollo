@@ -18,7 +18,7 @@
 #include <Audioclient.h>
 #include <mmdeviceapi.h>
 
-#include "apollo_vmic.h"
+#include "vibepollo_vmic.h"
 #include "src/platform/common.h"
 
 struct OpusDecoder;

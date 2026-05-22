@@ -21,7 +21,7 @@
 #include <synchapi.h>
 
 // local includes
-#include "apollo_vmic.h"
+#include "vibepollo_vmic.h"
 #include "mic_write.h"
 #include "misc.h"
 #include "src/audio.h"
@@ -924,7 +924,7 @@ namespace platf::audio {
       config::audio.mic_backend = *normalized_backend;
 
       auto try_create_device = [this]() {
-        auto device = std::make_unique<apollo_vmic_t>();
+        auto device = std::make_unique<vibepollo_vmic_t>();
         if (device->init() != 0) {
           return false;
         }
@@ -1661,6 +1661,7 @@ namespace platf::audio {
 #endif
     }
 
+  public:
     bool install_steam_audio_drivers() {
       bool ok = true;
 
