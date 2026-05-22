@@ -67,6 +67,7 @@ if(WIN32)
             "${CMAKE_PREFIX_PATH}"
             "C:/msys64/ucrt64/lib/node_modules/npm/bin"
             REQUIRED)
+    set(NPM "${NODE}" "${NPM_CLI}")
 else()
     find_program(NPM npm REQUIRED)
 endif()
