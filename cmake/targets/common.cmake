@@ -58,7 +58,19 @@ endif()
 set(WEB_UI_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/web")
 
 #WebUI build
-find_program(NPM npm REQUIRED)
+if(WIN32)
+    unset(NODE CACHE)
+    unset(NPM_CLI CACHE)
+    find_program(NODE node.exe REQUIRED)
+    find_file(NPM_CLI npm-cli.js
+            PATHS
+            "${CMAKE_PREFIX_PATH}"
+            "C:/msys64/ucrt64/lib/node_modules/npm/bin"
+            REQUIRED)
+    set(NPM "${NODE}" "${NPM_CLI}")
+else()
+    find_program(NPM npm REQUIRED)
+endif()
 
 set(NPM_INSTALL_FLAGS
     --ignore-scripts
